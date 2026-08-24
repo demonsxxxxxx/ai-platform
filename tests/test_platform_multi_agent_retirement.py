@@ -383,7 +383,6 @@ async def test_chat_submission_resolver_stably_returns_retired_admission_code(mo
         "/api/ai/runs/run-parent/multi-agent/dispatch/claims",
         "/api/ai/runs/run-parent/multi-agent/dispatch/claims/dispatch-a/handoff",
         "/api/ai/runs/run-parent/multi-agent/dispatch/tick",
-        "/api/ai/admin/runtime/multi-agent/dispatch/cleanup",
     ],
 )
 def test_platform_multi_agent_control_routes_are_not_mounted(client, path):

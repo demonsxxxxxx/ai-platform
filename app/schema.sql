@@ -2376,6 +2376,7 @@ create table if not exists sandbox_leases (
   executor_reconciliation_claim_token text,
   executor_reconciliation_claimed_at timestamptz,
   executor_reconciliation_attempt_count integer not null default 0,
+  executor_terminal_reconciliation_attempt_count integer not null default 0,
   executor_reconciliation_error text not null default '',
   executor_reconciled_at timestamptz,
   heartbeat_at timestamptz,
@@ -2406,6 +2407,7 @@ alter table sandbox_leases add column if not exists executor_reconciliation_stat
 alter table sandbox_leases add column if not exists executor_reconciliation_claim_token text;
 alter table sandbox_leases add column if not exists executor_reconciliation_claimed_at timestamptz;
 alter table sandbox_leases add column if not exists executor_reconciliation_attempt_count integer not null default 0;
+alter table sandbox_leases add column if not exists executor_terminal_reconciliation_attempt_count integer not null default 0;
 alter table sandbox_leases add column if not exists executor_reconciliation_error text not null default '';
 alter table sandbox_leases add column if not exists executor_reconciled_at timestamptz;
 alter table sandbox_leases drop constraint if exists chk_sandbox_leases_executor_status;
@@ -2413,7 +2415,7 @@ alter table sandbox_leases add constraint chk_sandbox_leases_executor_status
   check (executor_status in ('pending', 'accepted', 'running', 'completed', 'failed', 'cancelled'));
 alter table sandbox_leases drop constraint if exists chk_sandbox_leases_executor_reconciliation_status;
 alter table sandbox_leases add constraint chk_sandbox_leases_executor_reconciliation_status
-  check (executor_reconciliation_status in ('waiting_terminal', 'pending', 'claimed', 'retry', 'finalized'));
+  check (executor_reconciliation_status in ('waiting_terminal', 'pending', 'claimed', 'retry', 'finalized', 'failed'));
 create index if not exists idx_sandbox_leases_attempt
   on sandbox_leases(tenant_id, run_id, attempt_id, status);
 

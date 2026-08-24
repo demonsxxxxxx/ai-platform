@@ -185,7 +185,7 @@ async def release_sandbox_lease(
                     reason=request.reason,
                     provider_factory=create_container_provider,
                 )
-            row = await repositories.release_sandbox_lease(
+            row = await sandbox_lease_repository.release_sandbox_lease(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,

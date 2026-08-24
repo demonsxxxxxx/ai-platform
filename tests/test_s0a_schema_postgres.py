@@ -1,5 +1,7 @@
 import hashlib
+import json
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 import uuid
 
@@ -540,6 +542,299 @@ async def test_context_snapshot_member_eligibility_is_atomic_in_postgres():
                 await repositories.create_context_snapshot(conn, **common, **material_ids)
             count_cursor = await conn.execute("select count(*) as count from run_context_snapshots")
             assert (await count_cursor.fetchone())["count"] == 1
+    finally:
+        await conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
+    monkeypatch,
+    tmp_path,
+):
+    """Exercise cleanup, recovery, and terminalization against the real schema."""
+
+    from app.executor_reconciler import reconcile_pending_executor_terminals_once
+    from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+    from app.routes.sandbox_runtime_cleanup import (
+        cleanup_expired_sandbox_runtime_leases,
+        cleanup_failed_sandbox_executor_reconciliation_leases,
+    )
+
+    dsn = _postgres_dsn()
+    schema_name = f"terminal_receipt_{uuid.uuid4().hex}"
+    schema_sql = Path("app/schema.sql").read_text(encoding="utf-8")
+    workspace_file = tmp_path / "workspace" / "outputs" / "delivery" / "result.txt"
+    workspace_file.parent.mkdir(parents=True)
+    workspace_file.write_text("retained", encoding="utf-8")
+    conn = await psycopg.AsyncConnection.connect(
+        dsn,
+        autocommit=True,
+        row_factory=dict_row,
+    )
+    try:
+        await conn.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await _set_search_path(conn, schema_name)
+        await conn.execute(schema_sql)
+        await conn.execute("insert into tenants(id, name) values ('tenant-a', 'Tenant A')")
+        await conn.execute(
+            "insert into workspaces(id, tenant_id, name) values ('workspace-a', 'tenant-a', 'A')"
+        )
+        await conn.execute(
+            "insert into users(id, tenant_id, display_name) values ('user-a', 'tenant-a', 'User A')"
+        )
+        await conn.execute(
+            "insert into agents(id, tenant_id, name, agent_type) values ('agent-a', 'tenant-a', 'Agent A', 'chat')"
+        )
+        await conn.execute(
+            """
+            insert into sessions(id, tenant_id, workspace_id, user_id, agent_id, title)
+            values ('session-a', 'tenant-a', 'workspace-a', 'user-a', 'agent-a', 'A')
+            """
+        )
+        await conn.execute(
+            """
+            insert into runs(
+              id, tenant_id, workspace_id, session_id, user_id, agent_id, status,
+              started_at
+            ) values (
+              'run-a', 'tenant-a', 'workspace-a', 'session-a', 'user-a',
+              'agent-a', 'running', now() - interval '10 minutes'
+            )
+            """
+        )
+        await conn.execute(
+            """
+            insert into artifacts(
+              id, tenant_id, run_id, artifact_type, label, content_type,
+              storage_key, size_bytes, expires_at, lifecycle_state
+            ) values
+              ('artifact-a', 'tenant-a', 'run-a', 'text', 'result.txt',
+               'text/plain', 'artifacts/result.txt', 8, now() + interval '1 day', 'active'),
+              ('artifact-deleted', 'tenant-a', 'run-a', 'text', 'deleted.txt',
+               'text/plain', 'artifacts/deleted.txt', 8, now() + interval '1 day', 'deleted'),
+              ('artifact-expired', 'tenant-a', 'run-a', 'text', 'expired.txt',
+               'text/plain', 'artifacts/expired.txt', 8, now() - interval '1 day', 'active')
+            """
+        )
+        await conn.execute(
+            """
+            insert into sandbox_leases(
+              id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
+              sandbox_mode, provider, status, lease_payload_json, executor_status,
+              executor_terminal_json, executor_terminal_received_at,
+              executor_reconciliation_context_json, executor_reconciliation_status,
+              expires_at
+            ) values (
+              'lease-a', 'tenant-a', 'workspace-a', 'user-a', 'session-a',
+              'run-a', 'attempt-a', 'ephemeral', 'fake', 'active', %s::jsonb,
+              'completed', %s::jsonb, now() - interval '5 minutes', '{}'::jsonb,
+              'pending', now() - interval '1 minute'
+            )
+            """,
+            (
+                json.dumps({"workspace_host_path": str(workspace_file.parent.parent)}),
+                json.dumps({"run_id": "run-a", "status": "succeeded"}),
+            ),
+        )
+
+        cleaned = await cleanup_expired_sandbox_runtime_leases(
+            conn,
+            tenant_id="tenant-a",
+            provider_factory=lambda _provider: pytest.fail(
+                "startup cleanup must not stop a durable terminal receipt"
+            ),
+        )
+        assert cleaned == []
+        assert await sandbox_lease_repository.release_stopped_sandbox_leases(
+            conn,
+            tenant_id="tenant-a",
+            reason="expired",
+            lease_ids=["lease-a"],
+        ) == []
+
+        # Simulate the stranded state written by an older deployment.
+        await conn.execute(
+            "update sandbox_leases set status = 'released', released_at = now() where id = 'lease-a'"
+        )
+        summary = await sandbox_lease_repository.get_sandbox_executor_reconciliation_summary(
+            conn,
+            tenant_id="tenant-a",
+            slo_seconds=60,
+        )
+        assert summary["pending_receipt_count"] == 1
+        assert summary["released_pending_receipt_count"] == 1
+        assert summary["terminalization_slo_breach_count"] == 1
+
+        contender = await psycopg.AsyncConnection.connect(
+            dsn,
+            autocommit=True,
+            row_factory=dict_row,
+        )
+        try:
+            await _set_search_path(contender, schema_name)
+            async with conn.transaction():
+                owner_rows = await sandbox_lease_repository.claim_sandbox_executor_reconciliations(
+                    conn,
+                    claim_token="owner-claim",
+                    limit=1,
+                    stale_after_seconds=300,
+                )
+            assert [row["id"] for row in owner_rows] == ["lease-a"]
+            async with conn.transaction():
+                assert await sandbox_lease_repository.has_sandbox_executor_reconciliation_claim(
+                    conn,
+                    lease_id="lease-a",
+                    claim_token="owner-claim",
+                )
+                async with contender.transaction():
+                    stale_rows = await sandbox_lease_repository.claim_sandbox_executor_reconciliations(
+                        contender,
+                        claim_token="stale-claim",
+                        limit=1,
+                        stale_after_seconds=0,
+                    )
+                assert stale_rows == []
+            async with conn.transaction():
+                assert await sandbox_lease_repository.retry_sandbox_executor_reconciliation(
+                    conn,
+                    lease_id="lease-a",
+                    claim_token="owner-claim",
+                    error="test_owner_released",
+                )
+        finally:
+            await contender.close()
+
+        @asynccontextmanager
+        async def test_transaction():
+            async with conn.transaction():
+                yield conn
+
+        async def ignore_terminal_child(**_kwargs):
+            return None
+
+        async def ignore_terminal_publish(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr("app.executor_reconciler.transaction", test_transaction)
+        monkeypatch.setattr(
+            "app.executor_reconciler.reconcile_terminalized_permission_run",
+            ignore_terminal_child,
+        )
+        monkeypatch.setattr(
+            "app.executor_reconciler.publish_pending_run_terminal",
+            ignore_terminal_publish,
+        )
+
+        assert await reconcile_pending_executor_terminals_once(worker_id="worker-a") == 1
+        run = await (
+            await conn.execute(
+                "select status, error_code, result_json from runs where id = 'run-a'"
+            )
+        ).fetchone()
+        lease = await (
+            await conn.execute(
+                "select status, executor_reconciliation_status from sandbox_leases where id = 'lease-a'"
+            )
+        ).fetchone()
+        artifact_count = await (
+            await conn.execute("select count(*) as count from artifacts where run_id = 'run-a'")
+        ).fetchone()
+
+        assert run["status"] == "failed"
+        assert run["error_code"] == "terminal_reconciliation_failed"
+        assert "artifact_count" not in run["result_json"]
+        assert lease == {
+            "status": "quarantined",
+            "executor_reconciliation_status": "failed",
+        }
+        assert artifact_count["count"] == 3
+        assert workspace_file.read_text(encoding="utf-8") == "retained"
+
+        await conn.execute(
+            """
+            insert into runs(
+              id, tenant_id, workspace_id, session_id, user_id, agent_id, status,
+              started_at, finished_at
+            ) values
+              ('run-b', 'tenant-a', 'workspace-a', 'session-a', 'user-a', 'agent-a',
+               'failed', now() - interval '10 minutes', now() - interval '5 minutes'),
+              ('run-c', 'tenant-a', 'workspace-a', 'session-a', 'user-a', 'agent-a',
+               'failed', now() - interval '10 minutes', now() - interval '5 minutes')
+            """
+        )
+        await conn.execute(
+            """
+            insert into sandbox_leases(
+              id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
+              sandbox_mode, provider, status, lease_payload_json, runtime_container_id,
+              runtime_container_name, runtime_executor_url, runtime_workspace_container_path,
+              runtime_handle_verified_at, executor_status, executor_terminal_json,
+              executor_terminal_received_at, executor_reconciliation_context_json,
+              executor_reconciliation_status, executor_reconciliation_error, expires_at,
+              released_at
+            ) values
+              ('lease-b', 'tenant-a', 'workspace-a', 'user-a', 'session-a', 'run-b',
+               'attempt-b', 'ephemeral', 'fake', 'active', '{}'::jsonb, 'container-b',
+               'executor-b', 'http://executor-b.test', '/workspace', now(), 'failed',
+               '{"status":"failed"}'::jsonb, now() - interval '5 minutes', '{}'::jsonb,
+               'failed', 'stop_failed', now() - interval '1 minute', null),
+              ('lease-c', 'tenant-a', 'workspace-a', 'user-a', 'session-a', 'run-c',
+               'attempt-c', 'ephemeral', 'fake', 'released', '{}'::jsonb, 'container-c',
+               'executor-c', 'http://executor-c.test', '/workspace', now(), 'failed',
+               '{"status":"failed"}'::jsonb, now() - interval '5 minutes', '{}'::jsonb,
+               'failed', 'stop_failed', now() - interval '1 minute', now())
+            """
+        )
+        stopped = []
+
+        class CleanupProvider:
+            async def stop(self, lease, *, reason):
+                stopped.append((lease.container_id, reason))
+                return type("StopResult", (), {"status": "stopped"})()
+
+        cleaned_failed = []
+        for _ in range(2):
+            async with conn.transaction():
+                cleaned_failed.extend(
+                    await cleanup_failed_sandbox_executor_reconciliation_leases(
+                        conn,
+                        tenant_id="tenant-a",
+                        provider_factory=lambda _provider: CleanupProvider(),
+                    )
+                )
+
+        cleaned_ids = {str(row["id"]) for row in cleaned_failed}
+        assert cleaned_ids == {"lease-b", "lease-c"}
+        assert sorted(stopped) == [
+            ("container-b", "executor_reconciliation_cleanup"),
+            ("container-c", "executor_reconciliation_cleanup"),
+        ]
+        cleaned_states = await (
+            await conn.execute(
+                """
+                select id, status, executor_reconciliation_status,
+                       executor_reconciliation_claim_token
+                from sandbox_leases
+                where id in ('lease-b', 'lease-c')
+                order by id
+                """
+            )
+        ).fetchall()
+        assert cleaned_states == [
+            {
+                "id": "lease-b",
+                "status": "released",
+                "executor_reconciliation_status": "finalized",
+                "executor_reconciliation_claim_token": None,
+            },
+            {
+                "id": "lease-c",
+                "status": "released",
+                "executor_reconciliation_status": "finalized",
+                "executor_reconciliation_claim_token": None,
+            },
+        ]
     finally:
         await conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         await conn.close()
