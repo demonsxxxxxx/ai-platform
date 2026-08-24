@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -10,6 +11,7 @@ from app.execution_boundary import (
     is_governed_egress_proof,
 )
 from app.settings import get_settings
+from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.runtime.sandbox.container_provider import ContainerProvider
 from app.runtime.sandbox.contracts import ContainerLease
 from app.runtime.sandbox.opensandbox_legacy_cleanup import trusted_internal_cleanup_labels_from_persisted_row
@@ -168,6 +170,11 @@ async def stop_sandbox_leases(
     stopped_leases: list[dict[str, Any]] = []
     failed_leases: list[dict[str, Any]] = []
     for row in sandbox_leases or []:
+        if (
+            row.get("executor_terminal_json") is not None
+            and row.get("executor_reconciliation_status") != "finalized"
+        ):
+            continue
         lease = container_lease_from_persisted_row(row)
         if lease is None:
             failures.append(
@@ -206,6 +213,201 @@ async def stop_sandbox_leases(
     return stopped_leases
 
 
+async def release_stopped_sandbox_leases_for_cancel(
+    conn: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    reason: str,
+    lease_ids: list[str],
+    trace_id: str | None = None,
+    requested_by_role: str | None = None,
+) -> list[dict[str, Any]]:
+    """Release leases after their runtime containers have been stopped."""
+    if not lease_ids:
+        return []
+    released_leases = await sandbox_lease_repository.release_stopped_sandbox_leases(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        reason=reason,
+        lease_ids=lease_ids,
+    )
+    for lease in released_leases:
+        payload: dict[str, Any] = {
+            "visible_to_user": True,
+            "lease_id": lease.get("id"),
+            "reason": reason,
+        }
+        if requested_by_role:
+            payload["requested_by_role"] = requested_by_role
+        await repositories.append_event(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            trace_id=lease.get("trace_id") or trace_id,
+            event_type="sandbox_lease_released",
+            stage="sandbox",
+            message="已因取消释放 Sandbox 租约",
+            payload=payload,
+        )
+    return released_leases
+
+
+def _sandbox_lease_release_message(reason: str) -> str:
+    if reason == "expired":
+        return "已释放过期 Sandbox 租约"
+    if reason in {"cancel_requested", "admin_cancel_requested"}:
+        return "已因取消释放 Sandbox 租约"
+    return "已释放 Sandbox 租约"
+
+
+async def release_stopped_sandbox_leases(
+    conn: Any,
+    *,
+    tenant_id: str,
+    reason: str,
+    lease_ids: list[str],
+    trace_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Release DB leases only after their runtime stop operation has succeeded."""
+    if not lease_ids:
+        return []
+    released_leases = await sandbox_lease_repository.release_stopped_sandbox_leases(
+        conn,
+        tenant_id=tenant_id,
+        reason=reason,
+        lease_ids=lease_ids,
+    )
+    for lease in released_leases:
+        await repositories.append_event(
+            conn,
+            tenant_id=tenant_id,
+            run_id=str(lease["run_id"]),
+            trace_id=lease.get("trace_id") or trace_id,
+            event_type="sandbox_lease_released",
+            stage="sandbox",
+            message=_sandbox_lease_release_message(reason),
+            payload={
+                "visible_to_user": True,
+                "lease_id": lease.get("id"),
+                "reason": reason,
+            },
+        )
+    return released_leases
+
+
+async def cleanup_expired_sandbox_leases(
+    conn: Any,
+    *,
+    tenant_id: str | None = None,
+    reason: str = "expired",
+) -> list[dict[str, Any]]:
+    """Release expired DB-only leases; runtime providers must be stopped first."""
+    rows = await sandbox_lease_repository.cleanup_expired_sandbox_leases(
+        conn,
+        tenant_id=tenant_id,
+        reason=reason,
+    )
+    for lease in rows:
+        await repositories.append_event(
+            conn,
+            tenant_id=str(lease["tenant_id"]),
+            run_id=str(lease["run_id"]),
+            trace_id=lease.get("trace_id"),
+            event_type="sandbox_lease_released",
+            stage="sandbox",
+            message="已释放过期 Sandbox 租约",
+            payload={
+                "visible_to_user": True,
+                "lease_id": lease.get("id"),
+                "reason": reason,
+            },
+        )
+    return rows
+
+
+async def cleanup_failed_sandbox_executor_reconciliation_leases(
+    conn: Any,
+    *,
+    tenant_id: str | None = None,
+    provider_factory: ProviderFactory,
+    stale_after_seconds: int = 45,
+) -> list[dict[str, Any]]:
+    """Retry one verified runtime cleanup under a failed-reconciliation row lock."""
+
+    claim_token = str(uuid.uuid4())
+    claimed = await sandbox_lease_repository.claim_failed_sandbox_executor_reconciliation_cleanups(
+        conn,
+        claim_token=claim_token,
+        tenant_id=tenant_id,
+        limit=1,
+        stale_after_seconds=stale_after_seconds,
+    )
+    released: list[dict[str, Any]] = []
+    for row in claimed:
+        owns_claim = await sandbox_lease_repository.has_failed_sandbox_executor_reconciliation_cleanup_claim(
+            conn,
+            lease_id=str(row["id"]),
+            claim_token=claim_token,
+        )
+        if not owns_claim:
+            continue
+        lease = container_lease_from_persisted_row(row)
+        if lease is None:
+            await sandbox_lease_repository.quarantine_failed_sandbox_executor_reconciliation_cleanup(
+                conn,
+                lease_id=str(row["id"]),
+                claim_token=claim_token,
+                error="executor_reconciliation_runtime_handle_invalid",
+            )
+            continue
+        try:
+            stop_result = await provider_factory(lease.provider).stop(
+                lease,
+                reason="executor_reconciliation_cleanup",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            stop_result = None
+        if getattr(stop_result, "status", "failed") not in {"stopped", "not_found"}:
+            await sandbox_lease_repository.release_failed_sandbox_executor_reconciliation_cleanup_claim(
+                conn,
+                lease_id=str(row["id"]),
+                claim_token=claim_token,
+                error="executor_reconciliation_sandbox_stop_failed",
+            )
+            continue
+        finalized = await sandbox_lease_repository.finalize_failed_sandbox_executor_reconciliation_cleanup(
+            conn,
+            tenant_id=str(row["tenant_id"]),
+            user_id=str(row["user_id"]),
+            run_id=str(row["run_id"]),
+            lease_id=str(row["id"]),
+            claim_token=claim_token,
+            reason="executor_reconciliation_cleanup",
+        )
+        if finalized is None:
+            continue
+        await repositories.append_event(
+            conn,
+            tenant_id=str(finalized["tenant_id"]),
+            run_id=str(finalized["run_id"]),
+            trace_id=finalized.get("trace_id"),
+            event_type="sandbox_lease_released",
+            stage="sandbox",
+            message="已释放 Sandbox 租约",
+            payload={
+                "visible_to_user": True,
+                "lease_id": finalized.get("id"),
+                "reason": "executor_reconciliation_cleanup",
+            },
+        )
+        released.append(finalized)
+    return released
+
+
 async def cleanup_expired_sandbox_runtime_leases(
     conn: Any,
     *,
@@ -215,7 +417,11 @@ async def cleanup_expired_sandbox_runtime_leases(
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     """Stop expired runtime containers before releasing their DB lease rows."""
-    expired_leases = await repositories.list_expired_active_sandbox_leases(conn, tenant_id=tenant_id, limit=limit)
+    expired_leases = await sandbox_lease_repository.list_expired_active_sandbox_leases(
+        conn,
+        tenant_id=tenant_id,
+        limit=limit,
+    )
     if not expired_leases:
         return []
 
@@ -226,7 +432,7 @@ async def cleanup_expired_sandbox_runtime_leases(
             grouped.setdefault(str(lease["tenant_id"]), []).append(lease)
         for release_tenant_id, tenant_leases in grouped.items():
             released.extend(
-                await repositories.release_stopped_sandbox_leases(
+                await release_stopped_sandbox_leases(
                     release_conn,
                     tenant_id=release_tenant_id,
                     reason=reason,

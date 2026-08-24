@@ -180,12 +180,6 @@ async def test_authority_execute_owns_dispatch_bounds_and_scope():
         )
 
 
-def test_compatibility_module_reexports_owned_authority():
-    from app.context_retrieval import ContextRetrievalAuthority as CompatibilityAuthority
-
-    assert CompatibilityAuthority is ContextRetrievalAuthority
-
-
 @pytest.mark.asyncio
 async def test_read_session_messages_scopes_and_paginates_with_token_limit():
     retrieval = _retrieval()

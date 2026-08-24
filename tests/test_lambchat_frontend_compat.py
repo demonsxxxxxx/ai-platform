@@ -2694,6 +2694,137 @@ def test_lambchat_history_places_artifact_and_safe_failure_detail_before_termina
     assert all(event["event_type"] != "run_failed" for event in events)
 
 
+def test_lambchat_reconciliation_failure_preserves_partial_content_and_artifact(monkeypatch):
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+        return [
+            {
+                "id": "run_a",
+                "trace_id": "trace_run_a",
+                "agent_id": "general-agent",
+                "skill_id": "general-chat",
+                "status": "failed",
+                "result_json": {"message": "Executor failed at /private/runtime.log"},
+                "error_code": "terminal_reconciliation_failed",
+                "error_message": "Executor failed at /private/runtime.log",
+                "created_at": None,
+                "finished_at": None,
+            }
+        ]
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id):
+        base = {
+            "trace_id": "trace_run_a",
+            "schema_version": "ai-platform.event-envelope.v1",
+            "severity": "info",
+            "visible_to_user": True,
+            "error_code": None,
+            "latency_ms": None,
+            "input_token_count": 0,
+            "output_token_count": 0,
+            "total_token_count": 0,
+            "estimated_cost_minor": 0,
+            "created_at": None,
+        }
+        return [
+            {
+                **base,
+                "id": "evt-partial",
+                "sequence": 11,
+                "event_type": "assistant_delta",
+                "stage": "answer",
+                "message": "",
+                "payload_json": {
+                    "delta": "已完成并保留的公开部分。",
+                    "source": "worker_answer_delta_v1",
+                    "visible_to_user": True,
+                    "severity": "info",
+                },
+            },
+            {
+                **base,
+                "id": "evt-failed",
+                "sequence": 12,
+                "event_type": "run_failed",
+                "stage": "worker",
+                "message": "Run failed",
+                "payload_json": {"visible_to_user": True},
+            },
+            {
+                **base,
+                "id": "evt-artifact",
+                "sequence": 13,
+                "event_type": "artifact_created",
+                "stage": "artifact",
+                "message": "Artifact created",
+                "payload_json": {"artifact_id": "artifact-a", "visible_to_user": True},
+            },
+        ]
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "artifact-a",
+                "trace_id": "trace_run_a",
+                "artifact_type": "report",
+                "label": "失败报告",
+                "content_type": "text/plain",
+                "storage_key": "tenants/tenant-a/runs/run_a/private.txt",
+                "size_bytes": 42,
+                "manifest_version": "ai-platform.artifact-manifest.v1",
+                "manifest_json": {"local_path": "/var/lib/private.txt"},
+                "created_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        fake_list_authorized_session_runs,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_events",
+        fake_list_run_events,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        fake_list_run_artifacts,
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/sessions/ses_a/events", headers=auth_headers())
+
+    assert response.status_code == 200
+    events = response.json()["events"]
+    event_types = [event["event_type"] for event in events]
+    assert event_types.index("message:chunk") < event_types.index("artifact_ready")
+    assert event_types.index("artifact_ready") < event_types.index("artifact_card")
+    assert event_types.index("artifact_card") < event_types.index("final_detail")
+    assert event_types.index("final_detail") < event_types.index("done")
+    assert events[event_types.index("message:chunk")]["data"]["content"] == "已完成并保留的公开部分。"
+    final = events[event_types.index("final_detail")]
+    assert final["payload"] == {
+        "run_id": "run_a",
+        "projection_version": "ai-platform.chat-public-projection.v1",
+        "detail_kind": "failed",
+        "detail_code": "terminal_reconciliation_failed",
+        "message": "任务执行已结束，但结果同步失败（terminal_reconciliation_failed）。已保留可恢复的内容；请刷新会话或联系管理员并提供任务编号。",
+    }
+    assert "Executor failed" not in str(final)
+    artifact = events[event_types.index("artifact_card")]
+    assert artifact["data"]["download_url"] == "/api/ai/artifacts/artifact-a/download"
+    assert "storage_key" not in str(artifact)
+    assert events[event_types.index("done")]["data"] == {"run_id": "run_a", "status": "failed"}
+    assert all(event["event_type"] != "run_failed" for event in events)
+
+
 def test_lambchat_session_event_data_redacts_runtime_private_message(monkeypatch):
     async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
         return {"id": session_id}

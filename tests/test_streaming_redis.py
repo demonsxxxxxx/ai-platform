@@ -55,6 +55,7 @@ class FakeRedis:
         event_type,
         digest,
         terminal_event_id,
+        protocol=None,
     ):
         self.eval_calls.append(
             (
@@ -70,6 +71,7 @@ class FakeRedis:
                 event_type,
                 digest,
                 terminal_event_id,
+                protocol,
             )
         )
         if (
@@ -406,6 +408,37 @@ def test_stable_event_id_is_deterministic_per_batch_item():
     assert stream_redis.stable_event_id(**kwargs) != stream_redis.stable_event_id(
         **{**kwargs, "item_index": 1}
     )
+
+
+def test_append_lua_protocol_guard_is_closed_and_precedes_mutation():
+    script = stream_redis._APPEND_WITH_TTL_LUA
+
+    assert "local request_protocol=ARGV[8]" in script
+    assert "if not request_protocol or request_protocol == '' then request_protocol='v3' end" in script
+    assert "if not stored_protocol or stored_protocol == '' then stored_protocol='v3' end" in script
+    assert "stream_protocol_conflict" in stream_redis._SCRIPT_CONTRACT_ERRORS
+    assert script.index("stream_protocol_conflict") < script.index("local id=redis.call('XADD'")
+
+
+@pytest.mark.asyncio
+async def test_append_protocol_arguments_preserve_legacy_default_and_explicit_v4():
+    publisher = FakeRedis()
+    bridge = stream_redis.RedisStreamBridge(publish_client=publisher)
+
+    await bridge.append(_envelope())
+    envelope = _envelope(event_id="v4-open")
+    await bridge.append_canonical(
+        tenant_scope_value=envelope.tenant_scope,
+        run_id=envelope.run_id,
+        stream_incarnation=envelope.stream_incarnation,
+        event_id=envelope.event_id,
+        event_type="stream.open",
+        envelope_bytes=envelope.canonical_bytes,
+        protocol="v4",
+    )
+
+    assert publisher.eval_calls[0][-1] is None
+    assert publisher.eval_calls[1][-1] == "v4"
 
 
 @pytest.mark.asyncio

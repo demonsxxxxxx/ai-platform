@@ -175,6 +175,61 @@ async def test_run_worker_maintenance_uses_configured_queue_visibility_timeout(m
 
 
 @pytest.mark.asyncio
+async def test_run_worker_maintenance_isolates_phase_failures(monkeypatch, caplog):
+    calls = []
+
+    class Settings:
+        queue_lease_visibility_timeout_seconds = 12
+
+    async def cleanup_sandbox():
+        calls.append("sandbox_cleanup")
+        raise RuntimeError("sandbox cleanup unavailable")
+
+    async def cleanup_memory(_settings):
+        calls.append("memory_cleanup")
+
+    async def retain_data(_settings):
+        calls.append("data_retention")
+
+    async def progress_permissions(_settings):
+        calls.append("tool_permission_terminalization")
+
+    async def reclaim(**_kwargs):
+        calls.append("queue_reclaim")
+
+    async def reconcile_stale(_settings):
+        calls.append("stale_run_reconciliation")
+
+    monkeypatch.setattr("app.worker_main.cleanup_expired_sandbox_leases", cleanup_sandbox)
+    monkeypatch.setattr("app.worker_main.cleanup_expired_memory_records_for_worker", cleanup_memory)
+    monkeypatch.setattr("app.worker_main.run_data_retention_maintenance", retain_data)
+    monkeypatch.setattr(
+        "app.worker_main.progress_pending_tool_permission_terminalizations_for_worker",
+        progress_permissions,
+    )
+    monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim)
+    monkeypatch.setattr("app.worker_main.reconcile_stale_runs_for_worker", reconcile_stale)
+
+    with caplog.at_level("ERROR", logger="app.worker_main"):
+        await worker_main.run_worker_maintenance(Settings())
+
+    assert calls == [
+        "sandbox_cleanup",
+        "memory_cleanup",
+        "data_retention",
+        "tool_permission_terminalization",
+        "queue_reclaim",
+        "stale_run_reconciliation",
+    ]
+    failure = next(
+        record
+        for record in caplog.records
+        if record.message == "Worker maintenance phase failed"
+    )
+    assert failure.maintenance_phase == "sandbox_cleanup"
+
+
+@pytest.mark.asyncio
 async def test_permission_terminalization_maintenance_drains_bounded_durable_run_work_items(monkeypatch):
     calls = []
 
@@ -1817,8 +1872,8 @@ async def test_run_forever_closes_database_pool_when_cancelled(monkeypatch):
 
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
     monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", _controlled_terminal_reconciler)
-    monkeypatch.setattr("app.worker_main.close_pool", fake_close_pool, raising=False)
-    monkeypatch.setattr("app.worker_main.close_redis_client", fake_close_redis_client)
+    monkeypatch.setattr("app.bootstrap.worker_maintenance.close_pool", fake_close_pool)
+    monkeypatch.setattr("app.bootstrap.worker_maintenance.close_redis_client", fake_close_redis_client)
 
     with pytest.raises(asyncio.CancelledError):
         await worker_main.run_forever(poll_timeout_seconds=2)
@@ -1854,8 +1909,8 @@ async def test_run_forever_continues_after_transient_run_once_error(monkeypatch)
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
     monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", _controlled_terminal_reconciler)
     monkeypatch.setattr("app.worker_main.asyncio.sleep", fake_sleep)
-    monkeypatch.setattr("app.worker_main.close_pool", fake_close_pool, raising=False)
-    monkeypatch.setattr("app.worker_main.close_redis_client", fake_close_redis_client)
+    monkeypatch.setattr("app.bootstrap.worker_maintenance.close_pool", fake_close_pool)
+    monkeypatch.setattr("app.bootstrap.worker_maintenance.close_redis_client", fake_close_redis_client)
 
     with pytest.raises(asyncio.CancelledError):
         await worker_main.run_forever(poll_timeout_seconds=2, idle_sleep_seconds=0.25)
@@ -1984,8 +2039,8 @@ def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
 
     monkeypatch.setattr(sys, "argv", ["worker", "--once", "--timeout", "7"])
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
-    monkeypatch.setattr("app.worker_main.close_pool", fake_close_pool, raising=False)
-    monkeypatch.setattr("app.worker_main.close_redis_client", fake_close_redis_client)
+    monkeypatch.setattr("app.bootstrap.worker_maintenance.close_pool", fake_close_pool)
+    monkeypatch.setattr("app.bootstrap.worker_maintenance.close_redis_client", fake_close_redis_client)
 
     worker_main.main()
 
@@ -2026,8 +2081,8 @@ async def test_runtime_close_still_closes_database_when_redis_close_fails(monkey
     async def fake_close_pool():
         calls.append(("close_pool",))
 
-    monkeypatch.setattr("app.worker_main.close_redis_client", fake_close_redis_client)
-    monkeypatch.setattr("app.worker_main.close_pool", fake_close_pool)
+    monkeypatch.setattr("app.bootstrap.worker_maintenance.close_redis_client", fake_close_redis_client)
+    monkeypatch.setattr("app.bootstrap.worker_maintenance.close_pool", fake_close_pool)
 
     with pytest.raises(RuntimeError, match="redis close failed"):
         await worker_main._close_runtime_clients()
@@ -2454,7 +2509,7 @@ async def test_run_once_reclaims_queue_when_sandbox_runtime_cleanup_fails(monkey
         cleanup_expired_sandbox_runtime_leases,
     )
     monkeypatch.setattr(
-        "app.worker_main.repositories.cleanup_expired_sandbox_leases",
+        "app.worker_main._cleanup_expired_sandbox_lease_records",
         cleanup_expired_sandbox_leases,
     )
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)

@@ -7,6 +7,7 @@ def normalize_run_status(status: str) -> str:
 
 PUBLIC_TERMINAL_DETAIL_MESSAGES = {
     "run_failed": "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
+    "terminal_reconciliation_failed": "任务执行已结束，但结果同步失败（terminal_reconciliation_failed）。已保留可恢复的内容；请刷新会话或联系管理员并提供任务编号。",
     "run_timeout": "任务执行超时。请缩小任务范围后重试。",
     "run_budget_exhausted": "任务已达到执行轮次上限。请缩小或拆分任务后重试。",
     "model_service_unavailable": "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
@@ -37,6 +38,7 @@ PUBLIC_TERMINAL_DETAIL_MESSAGES = {
 }
 
 PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
+    "terminal_reconciliation_failed": "terminal_reconciliation_failed",
     "native_tool_admission_failed": "skill_sandbox_admission_failed",
     "attachment_materialized_fact_invalid": "context_file_identity_mismatch",
     "attachment_parser_file_mapping_invalid": "context_file_identity_mismatch",

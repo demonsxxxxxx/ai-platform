@@ -11,7 +11,12 @@ from app.streaming.api import (
     project_public_envelope_v4,
     stream_key,
 )
-from app.streaming.redis import RedisStreamBridge, StreamContractError, StreamTransportUnavailable
+from app.streaming.redis import (
+    RedisStreamBridge,
+    StreamContractError,
+    StreamEnvelope,
+    StreamTransportUnavailable,
+)
 from app.streaming.v4 import V4RedisStreamBridge
 
 
@@ -75,6 +80,47 @@ async def _stream():
     await client.delete(key, state_key)
     await client.hset(state_key, mapping={"phase": "open"})
     return client, key, state_key, V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+
+
+@pytest.mark.asyncio
+async def test_real_redis_rejects_v4_append_to_legacy_v3_phase_without_mutation():
+    client, key, state_key, _legacy_bridge = await _stream()
+    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+    try:
+        before_state = await client.hgetall(state_key)
+        with pytest.raises(StreamContractError, match="stream_protocol_conflict"):
+            await bridge.append(_envelope(event_id="evt4_on_v3"))
+        assert await client.xlen(key) == 0
+        assert await client.hgetall(state_key) == before_state
+    finally:
+        await client.delete(key, state_key)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_redis_rejects_v3_append_to_v4_phase_without_mutation():
+    client, key, state_key, _v4_bridge = await _stream()
+    bridge = RedisStreamBridge(publish_client=client)
+    legacy = StreamEnvelope(
+        event_id="evt3_on_v4",
+        tenant_scope="scope_v4_evidence",
+        run_id="run-v4-evidence",
+        attempt_id="attempt-v4-evidence",
+        stream_incarnation=3,
+        event_type="assistant_text_delta",
+        emitted_at="2026-08-20T00:00:00Z",
+        payload={"delta": "legacy"},
+    )
+    try:
+        await client.hset(state_key, mapping={"phase": "open", "open_protocol": "v4"})
+        before_state = await client.hgetall(state_key)
+        with pytest.raises(StreamContractError, match="stream_protocol_conflict"):
+            await bridge.append(legacy)
+        assert await client.xlen(key) == 0
+        assert await client.hgetall(state_key) == before_state
+    finally:
+        await client.delete(key, state_key)
+        await client.aclose()
 
 
 @pytest.mark.asyncio

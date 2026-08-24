@@ -420,11 +420,11 @@ async def persist_worker_failure_event(
 
 async def finalize_parent_and_publish(
     transaction_factory: TransactionFactory,
-    finalize_parent: Callable[[Any, Any], Awaitable[None]],
+    finalize_parent: Callable[[TransactionFactory, Any, Any], Awaitable[None]],
     payload: Any,
     reconciled_parent: Any,
 ) -> None:
-    await finalize_parent(payload, reconciled_parent)
+    await finalize_parent(transaction_factory, payload, reconciled_parent)
     await publish_pending_run_terminal(
         transaction_factory,
         tenant_id=payload.tenant_id,

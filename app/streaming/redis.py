@@ -55,14 +55,19 @@ _REDIS_PUBLISH_TIMEOUT_SECONDS = 5
 
 _APPEND_WITH_TTL_LUA = """
 local phase=redis.call('HGET',KEYS[2],'phase')
+local request_protocol=ARGV[8]
+if not request_protocol or request_protocol == '' then request_protocol='v3' end
+if phase then
+  local stored_protocol=redis.call('HGET',KEYS[2],'open_protocol')
+  if not stored_protocol or stored_protocol == '' then stored_protocol='v3' end
+  if stored_protocol ~= request_protocol then
+    return redis.error_reply('stream_protocol_conflict')
+  end
+end
 if ARGV[5] == 'stream_open' then
   if phase
      and redis.call('HGET',KEYS[2],'open_event_id') == ARGV[2]
      and redis.call('HGET',KEYS[2],'open_digest') == ARGV[6] then
-    local stored_protocol=redis.call('HGET',KEYS[2],'open_protocol')
-    if ARGV[8] == 'v4' and stored_protocol ~= 'v4' then
-      return redis.error_reply('stream_open_protocol_conflict')
-    end
     if phase == 'open' then
       redis.call('PEXPIRE',KEYS[1],ARGV[4]);redis.call('PEXPIRE',KEYS[2],ARGV[4])
     end
@@ -91,8 +96,8 @@ elseif phase ~= 'open' then
 end
 local id=redis.call('XADD',KEYS[1],'MAXLEN','~',ARGV[1],'*','envelope',ARGV[3])
 if ARGV[5] == 'stream_open' then
-  if ARGV[8] then
-    redis.call('HSET',KEYS[2],'phase','open','open_event_id',ARGV[2],'open_digest',ARGV[6],'open_redis_id',id,'open_protocol',ARGV[8])
+  if request_protocol == 'v4' then
+    redis.call('HSET',KEYS[2],'phase','open','open_event_id',ARGV[2],'open_digest',ARGV[6],'open_redis_id',id,'open_protocol',request_protocol)
   else
     redis.call('HSET',KEYS[2],'phase','open','open_event_id',ARGV[2],'open_digest',ARGV[6],'open_redis_id',id)
   end
@@ -131,7 +136,7 @@ _SCRIPT_CONTRACT_ERRORS = frozenset(
     {
         "stream_end_without_terminal",
         "stream_open_conflict",
-        "stream_open_protocol_conflict",
+        "stream_protocol_conflict",
         "stream_restore_authority_conflict",
         "stream_restore_not_missing",
         "stream_restore_protocol_conflict",

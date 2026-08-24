@@ -23,6 +23,7 @@ from app.platform.postgres.errors import (
 )
 from app.platform.postgres.errors import RepositoryConflictError as PlatformRepositoryConflictError
 from app.skills.infrastructure import postgres as skill_persistence
+from app.routes import sandbox_runtime_cleanup
 from app.runs.api import RunTerminalizationProgress
 from app.runs.application.cancellation import RunCancellationUseCase
 from app.runs.infrastructure.postgres import PostgresRunCancellationPersistence
@@ -31,6 +32,7 @@ from app.platform.postgres.sandbox_leases import (
     SandboxLeaseReleaseScopeMismatchError,
     create_sandbox_lease,
     fence_sandbox_lease_release,
+    list_expired_active_sandbox_leases,
     record_sandbox_executor_heartbeat,
     record_sandbox_executor_terminal,
 )
@@ -9923,6 +9925,8 @@ async def test_sandbox_lease_release_fence_is_durable_before_or_after_insert():
     assert "insert into sandbox_leases" in conn.sql
     assert "on conflict (id) do update" in conn.sql
     assert "set status = 'released'" in conn.sql
+    assert "sandbox_leases.executor_terminal_json is null" in conn.sql
+    assert "sandbox_leases.executor_reconciliation_status = 'finalized'" in conn.sql
     assert "coalesce(sandbox_leases.attempt_id, '') = coalesce(excluded.attempt_id, '')" in conn.sql
     assert conn.params == (
         "lease-a",
@@ -10197,8 +10201,6 @@ async def test_sandbox_lease_insert_requires_returned_persisted_row():
 
 @pytest.mark.asyncio
 async def test_cleanup_expired_sandbox_leases_releases_expired_non_runtime_leases_and_emits_events(monkeypatch):
-    from app.repositories import cleanup_expired_sandbox_leases
-
     calls = []
 
     class ExpiredLeaseCursor:
@@ -10227,7 +10229,7 @@ async def test_cleanup_expired_sandbox_leases_releases_expired_non_runtime_lease
 
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
 
-    cleaned = await cleanup_expired_sandbox_leases(
+    cleaned = await sandbox_runtime_cleanup.cleanup_expired_sandbox_leases(
         FakeConnection(),
         tenant_id="tenant-a",
         reason="expired",
@@ -10260,8 +10262,6 @@ async def test_cleanup_expired_sandbox_leases_releases_expired_non_runtime_lease
 
 @pytest.mark.asyncio
 async def test_cleanup_expired_sandbox_leases_global_scope_emits_events_for_each_tenant(monkeypatch):
-    from app.repositories import cleanup_expired_sandbox_leases
-
     calls = []
 
     class ExpiredLeaseCursor:
@@ -10297,7 +10297,7 @@ async def test_cleanup_expired_sandbox_leases_global_scope_emits_events_for_each
 
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
 
-    cleaned = await cleanup_expired_sandbox_leases(FakeConnection())
+    cleaned = await sandbox_runtime_cleanup.cleanup_expired_sandbox_leases(FakeConnection())
 
     assert [item["id"] for item in cleaned] == ["lease-a", "lease-b"]
     update_sql, update_params = calls[0]
@@ -10308,9 +10308,59 @@ async def test_cleanup_expired_sandbox_leases_global_scope_emits_events_for_each
 
 
 @pytest.mark.asyncio
-async def test_list_expired_active_sandbox_leases_preserves_runtime_stop_targets():
-    from app.repositories import list_expired_active_sandbox_leases
+async def test_generic_sandbox_release_sql_fences_nonfinalized_terminal_receipts():
+    from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 
+    statements = []
+
+    class Cursor:
+        async def fetchone(self):
+            return None
+
+        async def fetchall(self):
+            return []
+
+    class Connection:
+        async def execute(self, sql, params):
+            statements.append((" ".join(sql.split()).lower(), params))
+            return Cursor()
+
+    conn = Connection()
+    await sandbox_lease_repository.release_sandbox_lease(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-a",
+        lease_id="lease-a",
+        reason="released",
+    )
+    await sandbox_lease_repository.release_active_sandbox_leases_for_run(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        reason="terminal",
+    )
+    await sandbox_lease_repository.release_stopped_sandbox_leases(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        reason="cancelled",
+        lease_ids=["lease-a"],
+    )
+    await sandbox_lease_repository.cleanup_expired_sandbox_leases(
+        conn,
+        tenant_id="tenant-a",
+        reason="expired",
+    )
+
+    assert len(statements) == 4
+    for statement, _params in statements:
+        assert "executor_terminal_json is null" in statement
+        assert "executor_reconciliation_status = 'finalized'" in statement
+
+
+@pytest.mark.asyncio
+async def test_list_expired_active_sandbox_leases_preserves_runtime_stop_targets():
     class ExpiredLeaseCursor:
         async def fetchall(self):
             return [
@@ -10334,21 +10384,26 @@ async def test_list_expired_active_sandbox_leases_preserves_runtime_stop_targets
 
     conn = FakeConnection()
 
-    rows = await list_expired_active_sandbox_leases(conn, tenant_id="tenant-a", limit=25)
+    rows = await list_expired_active_sandbox_leases(
+        conn,
+        tenant_id="tenant-a",
+        limit=25,
+    )
 
     assert [row["id"] for row in rows] == ["lease-docker"]
     select_sql, select_params = conn.calls[0]
     assert select_sql.startswith("select * from sandbox_leases")
     assert "status = 'active'" in select_sql
     assert "expires_at <= now()" in select_sql
+    assert "executor_terminal_json is null" in select_sql
+    assert "executor_reconciliation_status = 'finalized'" in select_sql
+    assert "for update skip locked" in select_sql
     assert "provider not in" not in select_sql
     assert select_params == ("tenant-a", "tenant-a", 25)
 
 
 @pytest.mark.asyncio
 async def test_release_stopped_sandbox_leases_releases_by_stopped_ids_and_emits_expired_events(monkeypatch):
-    from app import repositories
-
     calls = []
 
     class LeaseCursor:
@@ -10376,7 +10431,7 @@ async def test_release_stopped_sandbox_leases_releases_by_stopped_ids_and_emits_
 
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
 
-    released = await repositories.release_stopped_sandbox_leases(
+    released = await sandbox_runtime_cleanup.release_stopped_sandbox_leases(
         FakeConnection(),
         tenant_id="tenant-a",
         reason="expired",
@@ -10386,8 +10441,10 @@ async def test_release_stopped_sandbox_leases_releases_by_stopped_ids_and_emits_
     assert [lease["id"] for lease in released] == ["lease-a"]
     update_sql, update_params = calls[0]
     assert "id = any(%s)" in update_sql
-    assert "run_id = %s" not in update_sql
-    assert update_params == ("expired", "tenant-a", ["lease-a"])
+    assert "run_id = %s" in update_sql
+    assert "executor_terminal_json is null" in update_sql
+    assert "executor_reconciliation_status = 'finalized'" in update_sql
+    assert update_params == ("expired", "tenant-a", None, None, ["lease-a"])
     assert calls[1] == (
         "event",
         {

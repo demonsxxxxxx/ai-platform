@@ -82,7 +82,11 @@ from app.run_admission_policy import (
 from app.run_admission_terminalization import terminalize_retired_platform_multi_agent_run
 from app.run_control_readiness import run_control_readiness_snapshot
 from app.runs.api import RunCancellationUseCase
-from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, stop_sandbox_leases
+from app.routes.sandbox_runtime_cleanup import (
+    SandboxRuntimeCleanupError,
+    release_stopped_sandbox_leases_for_cancel,
+    stop_sandbox_leases,
+)
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.settings import get_settings
 from app.skills.lifecycle import is_user_runnable_status
@@ -168,7 +172,7 @@ async def _release_stopped_cancel_leases(
     trace_id: str | None,
 ) -> None:
     for lease_run_id, lease_ids in _lease_ids_by_run_id(leases).items():
-        await repositories.release_stopped_sandbox_leases_for_cancel(
+        await release_stopped_sandbox_leases_for_cancel(
             conn,
             tenant_id=tenant_id,
             run_id=lease_run_id,

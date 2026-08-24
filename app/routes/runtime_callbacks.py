@@ -34,7 +34,6 @@ from app.settings import get_settings
 from app.streaming.api import callback_item_to_v4
 from app.streaming.redis import get_stream_authority
 from app.streaming.v4 import V4ProjectionError, append_callback_v4_rows
-from app.streaming.worker_projection import publish_pending_v4_events
 from app.storage import ObjectStorage
 
 router = APIRouter()
@@ -78,22 +77,13 @@ async def record_executor_callback(
     tenant_id = ""
     lease_id = ""
     async with transaction() as conn:
-        run_identity = await repositories.get_run_identity(
-            conn, run_id=callback.run_id, for_update=True
-        )
-        if run_identity is None:
-            raise HTTPException(status_code=404, detail="run_not_found")
-        if str(run_identity.get("session_id") or "") != callback.session_id:
-            raise HTTPException(status_code=409, detail="callback_session_mismatch")
-        if str(run_identity.get("status") or "").lower() in TERMINAL_RUN_STATUSES:
-            raise HTTPException(status_code=409, detail="run_already_terminal")
-        tenant_id = str(run_identity["tenant_id"])
-        lease = await _require_current_runtime_attempt(
+        run_identity, lease = await _lock_current_runtime_attempt_then_run(
             conn,
-            tenant_id=tenant_id,
             run_id=callback.run_id,
             attempt_id=callback.attempt_id,
+            session_id=callback.session_id,
         )
+        tenant_id = str(run_identity["tenant_id"])
         source_digest = hashlib.sha256(
             json.dumps(
                 callback_for_events.model_dump(mode="json"),
@@ -263,11 +253,6 @@ async def record_executor_callback(
         except ExecutorSignalUnavailable:
             # PostgreSQL is authoritative; the worker falls back to bounded polling.
             logger.warning("executor_terminal_signal_unavailable")
-    if v4_items:
-        await publish_pending_v4_events(
-            transaction,
-            limit=min(max(len(v4_items), 1), 64),
-        )
     return _executor_callback_receipt(
         callback,
         deduplicated=callback_deduplicated,
@@ -298,6 +283,37 @@ async def _require_current_runtime_attempt(
     ):
         raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_mismatch")
     return lease
+
+
+async def _lock_current_runtime_attempt_then_run(
+    conn,
+    *,
+    run_id: str,
+    attempt_id: str,
+    session_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    run_hint = await repositories.get_run_identity(conn, run_id=run_id, for_update=False)
+    if run_hint is None:
+        raise HTTPException(status_code=404, detail="run_not_found")
+    if str(run_hint.get("session_id") or "") != session_id:
+        raise HTTPException(status_code=409, detail="callback_session_mismatch")
+    if str(run_hint.get("status") or "").lower() in TERMINAL_RUN_STATUSES:
+        raise HTTPException(status_code=409, detail="run_already_terminal")
+    tenant_id = str(run_hint.get("tenant_id") or "")
+    lease = await _require_current_runtime_attempt(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+    )
+    locked_run = await repositories.get_run_identity(conn, run_id=run_id, for_update=True)
+    if locked_run is None or str(locked_run.get("tenant_id") or "") != tenant_id:
+        raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_inactive")
+    if str(locked_run.get("session_id") or "") != session_id:
+        raise HTTPException(status_code=409, detail="callback_session_mismatch")
+    if str(locked_run.get("status") or "").lower() in TERMINAL_RUN_STATUSES:
+        raise HTTPException(status_code=409, detail="run_already_terminal")
+    return locked_run, lease
 
 
 def _require_valid_callback_token(
@@ -358,23 +374,16 @@ async def executor_context_retrieval_callback(
         attempt_id=request.attempt_id,
     )
     async with transaction() as conn:
-        run_identity = await repositories.get_run_identity(conn, run_id=request.run_id, for_update=True)
-        if run_identity is None:
-            raise HTTPException(status_code=404, detail="run_not_found")
-        if str(run_identity.get("session_id") or "") != request.session_id:
-            raise HTTPException(status_code=409, detail="callback_session_mismatch")
-        if str(run_identity.get("status") or "").lower() in TERMINAL_RUN_STATUSES:
-            raise HTTPException(status_code=409, detail="run_already_terminal")
+        run_identity, _lease = await _lock_current_runtime_attempt_then_run(
+            conn,
+            run_id=request.run_id,
+            attempt_id=request.attempt_id,
+            session_id=request.session_id,
+        )
         tenant_id = str(run_identity.get("tenant_id") or "")
         workspace_id = str(run_identity.get("workspace_id") or "")
         user_id = str(run_identity.get("user_id") or "")
         agent_id = str(run_identity.get("agent_id") or "")
-        await _require_current_runtime_attempt(
-            conn,
-            tenant_id=tenant_id,
-            run_id=request.run_id,
-            attempt_id=request.attempt_id,
-        )
         snapshot = await repositories.get_bound_executor_context_snapshot(
             conn,
             tenant_id=tenant_id,

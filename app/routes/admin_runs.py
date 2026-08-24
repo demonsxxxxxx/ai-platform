@@ -8,7 +8,11 @@ from app.db import transaction
 from app.models import AdminRunDetailResponse, AdminRunListResponse, RunControlResponse
 from app.queue import get_queue_insight, get_run_queue_position, remove_queued_run
 from app.runs.api import RunCancellationUseCase
-from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, stop_sandbox_leases
+from app.routes.sandbox_runtime_cleanup import (
+    SandboxRuntimeCleanupError,
+    release_stopped_sandbox_leases_for_cancel,
+    stop_sandbox_leases,
+)
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.control_plane_contracts import sanitize_public_text
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
@@ -47,7 +51,7 @@ async def _release_stopped_admin_cancel_leases(
     trace_id: str | None,
 ) -> None:
     for lease_run_id, lease_ids in _lease_ids_by_run_id(leases).items():
-        await repositories.release_stopped_sandbox_leases_for_cancel(
+        await release_stopped_sandbox_leases_for_cancel(
             conn,
             tenant_id=tenant_id,
             run_id=lease_run_id,

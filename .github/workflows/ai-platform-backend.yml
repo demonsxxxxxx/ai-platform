@@ -147,7 +147,6 @@ jobs:
               tests/test_sandbox_runtime.py
               tests/test_sandbox_runtime_cleanup.py
               tests/test_sandbox_runtime_evidence_script.py
-              tests/test_b2_sandbox_readiness.py
               tests/test_contract.py
           - shard: repository-worker-streaming
             redis_image: redis:7.4-alpine

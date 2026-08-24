@@ -188,8 +188,30 @@ async def test_migration_checksum_mismatch_fails_closed_without_schema_execution
     assert state.schema_execute_count == 0
 
 
+@pytest.mark.asyncio
+async def test_base_schema_ledger_advances_to_terminal_reconciliation_schema():
+    state = SharedMigrationState()
+    state.ledger["2026.08.18.1"] = (
+        "f4972e68f15ed1c3663cd3696bb2471e4503fbe23753617a6556887bc5075415"
+    )
+
+    result = await schema_migrations.apply_migrations(
+        transaction_factory=transaction_factory(state),
+        index_connection_factory=index_connection_factory(state),
+    )
+
+    assert result["status"] == "applied"
+    assert state.schema_execute_count == 1
+    assert state.ledger["2026.08.18.1"] == (
+        "f4972e68f15ed1c3663cd3696bb2471e4503fbe23753617a6556887bc5075415"
+    )
+    assert state.ledger[schema_migrations.TARGET_SCHEMA_VERSION] == (
+        schema_migrations.schema_checksum()
+    )
+
+
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.20.2"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.21.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -349,7 +371,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "c",
             "CHECK (executor_reconciliation_status = ANY (ARRAY["
             "'waiting_terminal'::text, 'pending'::text, 'claimed'::text, "
-            "'retry'::text, 'finalized'::text]))",
+            "'retry'::text, 'finalized'::text, 'failed'::text]))",
         ),
     )
     assert (
@@ -408,7 +430,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "f1c67e18269c803de3c046925d97153d70ee4b2c55509d9367640d626f0bd38d"
+        "5b054efc0229bd159a54063a03b3db89b4e0dc64de2435a073cad431a88ee053"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "
@@ -477,7 +499,12 @@ def test_sandbox_executor_async_terminal_columns_are_additive():
         "executor_reconciliation_claim_token text",
         "executor_reconciliation_claimed_at timestamptz",
         "executor_reconciliation_attempt_count integer",
+        "executor_terminal_reconciliation_attempt_count integer",
         "executor_reconciliation_error text",
         "executor_reconciled_at timestamptz",
     ):
         assert f"alter table sandbox_leases add column if not exists {column}" in schema
+    assert (
+        "check (executor_reconciliation_status in "
+        "('waiting_terminal', 'pending', 'claimed', 'retry', 'finalized', 'failed'))"
+    ) in schema
