@@ -20,6 +20,18 @@ from app.streaming.v4 import (
 )
 
 
+def test_callback_v4_values_have_one_application_owner():
+    from app.routes import runtime_callbacks
+    from app.streaming import api, v4
+    from app.streaming.application import callback_events_v4
+
+    assert api.V4CallbackItem is callback_events_v4.V4CallbackItem
+    assert v4.V4CallbackItem is callback_events_v4.V4CallbackItem
+    assert api.callback_item_to_v4 is callback_events_v4.callback_item_to_v4
+    assert v4.callback_item_to_v4 is callback_events_v4.callback_item_to_v4
+    assert runtime_callbacks.callback_item_to_v4 is callback_events_v4.callback_item_to_v4
+
+
 def _callback_conn():
     class Cursor:
         def __init__(self, row):

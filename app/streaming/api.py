@@ -1,5 +1,9 @@
 """Stable SSE v3 application boundary."""
 
+from app.streaming.application.callback_events_v4 import (
+    V4CallbackItem,
+    callback_item_to_v4,
+)
 from app.streaming.application.live_fanout import (
     LiveSubscription,
     LiveSubscriptionClosed,
@@ -64,10 +68,12 @@ __all__ = [
     "LivePublication",
     "LiveSubscription",
     "LiveSubscriptionClosed",
+    "V4CallbackItem",
     "V4ProjectionError",
     "V4StreamEntry",
     "build_public_v4_control",
     "build_v4_control",
+    "callback_item_to_v4",
     "opaque_message_id",
     "project_public_envelope_v4",
     "project_public_v4",

@@ -31,12 +31,9 @@ from app.runtime.sandbox.executor_signals import (
     publish_executor_terminal_signal,
 )
 from app.settings import get_settings
+from app.streaming.api import callback_item_to_v4
 from app.streaming.redis import get_stream_authority
-from app.streaming.v4 import (
-    V4ProjectionError,
-    append_callback_v4_rows,
-    callback_item_to_v4,
-)
+from app.streaming.v4 import V4ProjectionError, append_callback_v4_rows
 from app.streaming.worker_projection import publish_pending_v4_events
 from app.storage import ObjectStorage
 
