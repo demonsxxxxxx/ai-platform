@@ -133,6 +133,11 @@ def test_rule_evidence_text_violations_have_deterministic_field_order():
         and ".promotion.rule_evidence." in item.path
     ]
 
+    expected_paths = {
+        f"findings[0].promotion.rule_evidence.{field_name}"
+        for field_name in validate_pr_review_record.RULE_EVIDENCE_FIELDS - {"bounded_paths"}
+    }
+    assert set(paths) == expected_paths
     assert paths == sorted(paths)
 
 
