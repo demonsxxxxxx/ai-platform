@@ -19,7 +19,9 @@ HANDLE = re.compile(r"^@[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
 FINDING_ID = re.compile(r"^[A-Z][A-Z0-9_-]{0,31}$")
 PLACEHOLDER = re.compile(r"REPLACE_ME", re.IGNORECASE)
 PRIVATE_LOCAL_PATH = re.compile(
-    r"(?:/Users/[^/\s]+/|/home/[^/\s]+/|[A-Za-z]:\\Users\\[^\\\s]+\\)"
+    r"(?:/(?:Users|home)/[^/\s]+(?:/|(?=\s|$))|"
+    r"[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s]+(?:[\\/]+|(?=\s|$)))",
+    re.IGNORECASE,
 )
 REPOSITORY_RELATIVE_PATH = re.compile(
     r"^(?!/)(?!.*(?:^|/)\.\.(?:/|$))(?![A-Za-z][A-Za-z0-9+.-]*://)"

@@ -218,7 +218,10 @@ def test_code_governance_authority_uses_its_sibling_pr_review_record_validator()
     authority = CODE_GOVERNANCE.read_text(encoding="utf-8")
 
     assert "validate_pr_review_record.py" not in validation_job
-    assert 'os.environ.get("GITHUB_EVENT_NAME") != "pull_request"' in authority
+    assert (
+        'os.environ.get("GITHUB_EVENT_NAME") not in {"pull_request", "pull_request_target"}'
+        in authority
+    )
     assert 'os.environ.get("GITHUB_EVENT_PATH")' in authority
     assert 'Path(__file__).resolve().with_name("validate_pr_review_record.py")' in authority
     assert '"--expected-head",' in authority
@@ -837,7 +840,12 @@ def test_pull_request_target_governance_is_immutable_and_never_executes_candidat
     workflow = TRUSTED_GOVERNANCE_WORKFLOW.read_text(encoding="utf-8")
     parsed = yaml.load(workflow, Loader=yaml.BaseLoader)
 
-    assert parsed["on"] == {"pull_request_target": {"branches": ["main"]}}
+    assert parsed["on"] == {
+        "pull_request_target": {
+            "branches": ["main"],
+            "types": ["opened", "synchronize", "reopened", "edited"],
+        }
+    }
     assert parsed["permissions"] == {"contents": "read"}
     assert set(parsed["jobs"]) == {"trusted-governance"}
     trusted_job = parsed["jobs"]["trusted-governance"]

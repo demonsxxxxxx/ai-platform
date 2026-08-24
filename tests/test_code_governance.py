@@ -160,15 +160,17 @@ def _write_fake_review_validator(
     return path
 
 
+@pytest.mark.parametrize("event_name", ["pull_request", "pull_request_target"])
 def test_pull_request_review_record_runs_from_code_governance_authority(
     governance_repo: tuple[Path, str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    event_name: str,
 ) -> None:
     _repo, head = governance_repo
     event_path = tmp_path / "event.json"
     event_path.write_text(_review_event(head, body=_review_body(head)), encoding="utf-8")
-    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event_name)
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
     monkeypatch.setenv("GOVERNANCE_HEAD_REF", head)
     monkeypatch.setenv("GOVERNANCE_PR_NUMBER", "1200")
@@ -212,12 +214,14 @@ def test_pull_request_review_record_failure_is_closed_and_redacted(
     assert "missing structured record" not in str(captured.value)
 
 
-def test_review_record_requires_event_path_only_for_pull_requests(
+@pytest.mark.parametrize("event_name", ["pull_request", "pull_request_target"])
+def test_review_record_requires_event_path_only_for_pull_request_events(
     governance_repo: tuple[Path, str],
     monkeypatch: pytest.MonkeyPatch,
+    event_name: str,
 ) -> None:
     _repo, head = governance_repo
-    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event_name)
     monkeypatch.setenv("GOVERNANCE_HEAD_REF", head)
     monkeypatch.setenv("GOVERNANCE_PR_NUMBER", "1200")
     monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)

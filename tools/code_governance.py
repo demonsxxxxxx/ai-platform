@@ -933,7 +933,7 @@ def _validate_pull_request_review_record(
     *,
     validator_path: Path | None = None,
 ) -> None:
-    if os.environ.get("GITHUB_EVENT_NAME") != "pull_request":
+    if os.environ.get("GITHUB_EVENT_NAME") not in {"pull_request", "pull_request_target"}:
         return
     governance_head_ref = os.environ.get("GOVERNANCE_HEAD_REF")
     governance_pr_number = os.environ.get("GOVERNANCE_PR_NUMBER")

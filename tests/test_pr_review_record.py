@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from tools import validate_pr_review_record
 
 
@@ -214,6 +216,23 @@ def test_review_record_rejects_placeholders_private_paths_and_secret_shapes():
     assert "review_record_placeholder_present" in codes
     assert "review_record_private_path_present" in codes
     assert "review_record_secret_shape_present" in codes
+
+
+@pytest.mark.parametrize(
+    "private_path",
+    [
+        r"C:\Users\alice\project",
+        "C:/Users/alice/project",
+        "c:/users/alice",
+        "/Users/alice",
+        "/home/alice",
+    ],
+)
+def test_review_record_rejects_private_user_paths(private_path: str):
+    record = _record()
+    record["review_subject"]["scope"] = f"inspect {private_path}"
+
+    assert "review_record_private_path_present" in _codes(_body(record))
 
 
 def test_review_record_rejects_github_fine_grained_pat_shape():
