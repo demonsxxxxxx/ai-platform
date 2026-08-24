@@ -15,7 +15,7 @@ from typing import Any
 from app.db import SCHEMA_PATH, close_pool, connect, transaction
 
 
-TARGET_SCHEMA_VERSION = "2026.08.18.1"
+TARGET_SCHEMA_VERSION = "2026.08.21.1"
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
@@ -75,6 +75,12 @@ CRITICAL_COLUMNS = (
     ("sandbox_leases", "executor_reconciliation_claim_token", "text", False),
     ("sandbox_leases", "executor_reconciliation_claimed_at", "timestamptz", False),
     ("sandbox_leases", "executor_reconciliation_attempt_count", "int4", True),
+    (
+        "sandbox_leases",
+        "executor_terminal_reconciliation_attempt_count",
+        "int4",
+        True,
+    ),
     ("sandbox_leases", "executor_reconciliation_error", "text", True),
     ("sandbox_leases", "executor_reconciled_at", "timestamptz", False),
 )
@@ -162,7 +168,7 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "c",
         "CHECK (executor_reconciliation_status = ANY (ARRAY["
         "'waiting_terminal'::text, 'pending'::text, 'claimed'::text, "
-        "'retry'::text, 'finalized'::text]))",
+        "'retry'::text, 'finalized'::text, 'failed'::text]))",
     ),
 )
 
