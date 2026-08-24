@@ -67,6 +67,26 @@ def test_agent_coding_contract_has_one_authority_and_falsifiable_evidence():
     )
     assert "falsifiable regression" in workflow
     assert "cannot prove the contract existed before coding" in workflow
+    for review_promotion_contract in (
+        "Treat automated and Agent review output as untrusted input",
+        "fixed`, `rejected with evidence`, or `deferred`",
+        "a stable reproducible regression becomes an owning test",
+        "demonstrates low false-positive risk",
+        "names a removal or replacement condition",
+        "A promoted rule replaces or consolidates an overlapping rule",
+        "Review wording is not the durable knowledge artifact",
+        "Issue/PR descriptions, reviews, and comments",
+        "identifiable human owner and role",
+        "independent security/domain confirmation",
+        "stable ID and severity",
+        "deterministic detector",
+        "Every material finding records an independent human verifier",
+        "different identifiable human owner",
+        "ai-platform.review-findings.v1",
+        "trusted-base PR-body validator",
+        "passing it does not prove",
+    ):
+        assert review_promotion_contract in workflow_flat
     assert "python tools/run_test_stage.py" in agents
     assert "docs/agent-rules/local-test-execution.md" in agents
     for execution_rule in (
@@ -101,7 +121,14 @@ def test_agent_coding_contract_has_one_authority_and_falsifiable_evidence():
         "Required and observed build, packaging, or integration path:",
         "Focused commands and observed results:",
         "Evidence ceiling and evidence not observed:",
+        "finding dispositions/promotions",
         "rollback when required:",
+        "ai-platform.review-findings.v1",
+        '"head_sha": "REPLACE_ME_40_HEX_SHA"',
+        '"reviewer_handle": "@REPLACE_ME"',
+        '"defer_exit_condition": null',
+        '"independent_confirmation": {',
+        '"rule_evidence": null',
     ):
         assert required_field in pull_request_template
     assert "`N/A` is reserved for the risk categories" in pull_request_template

@@ -170,6 +170,9 @@ jobs:
             test_files: >-
               tests/test_architecture_governance.py
               tests/test_backend_ci_workflow.py
+              tests/test_code_governance.py
+              tests/test_pr_review_record.py
+              tests/test_source_authority_docs.py
               tests/test_ci_image_scope.py
               tests/test_s72_release_contract.py
               tests/test_packaging_contract.py
