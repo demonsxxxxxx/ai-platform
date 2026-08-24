@@ -223,7 +223,7 @@ def _validate_promotion(
     )
     if rule is None:
         return
-    for field_name in RULE_EVIDENCE_FIELDS - {"bounded_paths"}:
+    for field_name in sorted(RULE_EVIDENCE_FIELDS - {"bounded_paths"}):
         _bounded_text(
             rule.get(field_name),
             path=f"{path}.rule_evidence.{field_name}",

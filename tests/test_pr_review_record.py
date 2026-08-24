@@ -112,6 +112,30 @@ def test_review_record_accepts_fixed_finding_and_complete_rule_promotion():
     assert _codes(_body(record)) == set()
 
 
+def test_rule_evidence_text_violations_have_deterministic_field_order():
+    rule_evidence = {
+        field_name: ["tests/test_pr_review_record.py"] if field_name == "bounded_paths" else ""
+        for field_name in validate_pr_review_record.RULE_EVIDENCE_FIELDS
+    }
+    finding = _finding(
+        promotion={"target": "rule", "rule_evidence": rule_evidence}
+    )
+    record = _record(no_material_findings=None, findings=[finding])
+
+    violations = validate_pr_review_record.validate_pr_body(
+        _body(record),
+        expected_head=HEAD_SHA,
+    )
+    paths = [
+        item.path
+        for item in violations
+        if item.code == "review_record_text_invalid"
+        and ".promotion.rule_evidence." in item.path
+    ]
+
+    assert paths == sorted(paths)
+
+
 def test_review_record_rejects_non_repository_rule_boundaries():
     for invalid_path in ("/etc/passwd", "../outside", "https://example.test/path"):
         finding = _finding(
@@ -222,6 +246,8 @@ def test_review_record_rejects_placeholders_private_paths_and_secret_shapes():
     "private_path",
     [
         r"C:\Users\alice\project",
+        r"C:\Users\alice",
+        r"c:\users\alice",
         "C:/Users/alice/project",
         "c:/users/alice",
         "/Users/alice",

@@ -224,6 +224,7 @@ def test_code_governance_authority_uses_its_sibling_pr_review_record_validator()
     )
     assert 'os.environ.get("GITHUB_EVENT_PATH")' in authority
     assert 'Path(__file__).resolve().with_name("validate_pr_review_record.py")' in authority
+    assert '"-P",' in authority
     assert '"--expected-head",' in authority
     assert "review_record_event_missing" in authority
     assert "review_record_authority_context_invalid" in authority

@@ -150,9 +150,13 @@ def _write_fake_review_validator(
     *,
     returncode: int,
     stderr: str = "",
+    expected_args: list[str] | None = None,
 ) -> Path:
     path.write_text(
         "import sys\n"
+        f"expected_args = {expected_args!r}\n"
+        "if expected_args is not None and sys.argv[1:] != expected_args:\n"
+        "    raise SystemExit(9)\n"
         f"sys.stderr.write({stderr!r})\n"
         f"raise SystemExit({returncode})\n",
         encoding="utf-8",
@@ -178,6 +182,14 @@ def test_pull_request_review_record_runs_from_code_governance_authority(
     validator_path = _write_fake_review_validator(
         tmp_path / "validate_pr_review_record.py",
         returncode=0,
+        expected_args=[
+            "--github-event",
+            str(event_path),
+            "--expected-head",
+            head,
+            "--format",
+            "text",
+        ],
     )
     code_governance._validate_pull_request_review_record(
         head,
