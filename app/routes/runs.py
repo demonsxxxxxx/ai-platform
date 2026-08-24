@@ -3,7 +3,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import UUID4, BaseModel, ConfigDict
+from pydantic import UUID4, BaseModel, ConfigDict, Field
 
 from app import repositories
 from app.agent_profiles import reauthorize_pinned_run_for_replay
@@ -16,7 +16,6 @@ from app.db import transaction
 from app.models import (
     CreateRunRequest,
     CreateRunResponse,
-    McpContextId,
     QueueRunPayload,
     RunControlMutationResponse,
     RunControlOperationResponse,
@@ -117,7 +116,7 @@ class RunControlMutationRequest(BaseModel):
     """Optional fresh MCP context supplied only when replay requires it."""
 
     model_config = ConfigDict(extra="forbid")
-    mcp_context_id: McpContextId | None = None
+    mcp_context_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 
 router = APIRouter()
 RUN_PLAYBACK_CONTRACT_VERSION = "ai-platform.run-playback.v1"

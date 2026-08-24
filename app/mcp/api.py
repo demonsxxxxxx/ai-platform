@@ -21,6 +21,7 @@ from app.mcp.domain.headers import (
 )
 from app.mcp.domain.identifiers import assert_safe_mcp_id, is_safe_mcp_id
 from app.mcp.domain.tool_references import (
+    assert_mcp_tool_reference,
     build_mcp_tool_reference,
     is_valid_mcp_public_tool_name,
     parse_mcp_tool_reference,
@@ -196,6 +197,7 @@ __all__ = [
     "McpRelayError",
     "McpRuntimeContextError",
     "McpToolSelectionRequired",
+    "assert_mcp_tool_reference",
     "bind_run_mcp_context",
     "build_mcp_tool_reference",
     "configure_mcp_runtime_services",
