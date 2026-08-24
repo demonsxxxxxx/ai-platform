@@ -1,13 +1,3 @@
-"""Compatibility exports for MCP catalog consumers."""
+"""Legacy catalog path retained empty after discovery moved to infrastructure."""
 
-from app.mcp.infrastructure.catalog import (
-    McpDiscoveredTool,
-    McpToolDiscoveryError,
-    StreamableHttpMcpToolDiscoveryAdapter,
-)
-
-__all__ = [
-    "McpDiscoveredTool",
-    "McpToolDiscoveryError",
-    "StreamableHttpMcpToolDiscoveryAdapter",
-]
+__all__: tuple[str, ...] = ()
