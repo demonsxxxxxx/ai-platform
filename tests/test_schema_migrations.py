@@ -517,6 +517,12 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         ),
         (
             "sse_stream_rebuild_items",
+            "sse_stream_rebuild_items_pkey",
+            "p",
+            "PRIMARY KEY (rebuild_id, sequence)",
+        ),
+        (
+            "sse_stream_rebuild_items",
             "chk_sse_stream_rebuild_item",
             "c",
             "CHECK (sequence > 0 AND event_id <> ''::text AND event_type <> ''::text "

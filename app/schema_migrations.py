@@ -155,6 +155,7 @@ CRITICAL_CONSTRAINTS = (
     ("sse_stream_rebuilds", "chk_sse_stream_rebuild_progress"),
     ("sse_stream_rebuilds", "chk_sse_stream_rebuild_state"),
     ("sse_stream_rebuilds", "fk_sse_stream_rebuild_authority"),
+    ("sse_stream_rebuild_items", "sse_stream_rebuild_items_pkey"),
     ("sse_stream_rebuild_items", "chk_sse_stream_rebuild_item"),
     ("sse_stream_rebuild_items", "fk_sse_stream_rebuild_item_operation"),
     ("sse_stream_rebuild_items", "uq_sse_stream_rebuild_item_event"),
@@ -332,6 +333,12 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "f",
         "FOREIGN KEY (tenant_id, run_id) "
         "REFERENCES sse_stream_authorities(tenant_id, run_id)",
+    ),
+    (
+        "sse_stream_rebuild_items",
+        "sse_stream_rebuild_items_pkey",
+        "p",
+        "PRIMARY KEY (rebuild_id, sequence)",
     ),
     (
         "sse_stream_rebuild_items",

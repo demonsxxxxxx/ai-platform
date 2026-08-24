@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, suppress
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -23,9 +23,11 @@ from app.routes import runtime_callbacks
 from app.routes.lambchat_compat import _recover_v4_attach_gap
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent
 from app.streaming.api import (
+    build_v4_control,
     prepare_v4_successor_rebuild,
     publish_claimed_v4_events,
     stream_key,
+    successor_stream_open_event_id,
 )
 from app.streaming.redis import RedisStreamBridge, StreamAuthority, StreamTransportUnavailable
 from app.streaming.v4 import (
@@ -39,6 +41,7 @@ from app.streaming.v4 import (
     project_public_v4,
     recover_v4_rows,
 )
+from app.streaming.domain.transport import canonical_json_bytes
 from app.streaming.infrastructure.postgres_v4 import (
     PostgresV4PublicationClaims,
     PostgresV4SuccessorRebuilds,
@@ -184,6 +187,26 @@ async def _seed_run(conn: psycopg.AsyncConnection, suffix: str) -> tuple[str, st
         """,
         (tenant, workspace, user, session, run, attempt, f"trace_{run}", attempt),
     )
+    tenant_scope = f"scope_{suffix}"
+    open_event_id = successor_stream_open_event_id(
+        tenant_scope=tenant_scope,
+        run_id=run,
+        attempt_id=attempt,
+        stream_incarnation=2,
+    )
+    opening = build_v4_control(
+        event_id=open_event_id,
+        tenant_scope=tenant_scope,
+        run_id=run,
+        attempt_id=attempt,
+        stream_incarnation=2,
+        event_type="stream.open",
+        payload={"design_id": "ai-platform.redis-streams-sse-event-channel.v4"},
+        source={"kind": "stream_authority", "authority_id": open_event_id},
+        emitted_at=datetime(2026, 8, 24, tzinfo=timezone.utc),
+    )
+    open_payload_bytes = canonical_json_bytes(opening).decode("utf-8")
+    open_payload_digest = hashlib.sha256(open_payload_bytes.encode("utf-8")).hexdigest()
     await conn.execute(
         """
         insert into sse_stream_authorities(
@@ -192,9 +215,17 @@ async def _seed_run(conn: psycopg.AsyncConnection, suffix: str) -> tuple[str, st
           open_payload_bytes, open_payload_digest, authorization_epoch,
           revocation_state
         ) values (%s, %s, %s, 'ai-platform.redis-streams-sse-event-channel.v4',
-                  'public-stream-v4', %s, 2, 'confirmed', %s, '{}', 'digest', 4, 'active')
+                  'public-stream-v4', %s, 2, 'confirmed', %s, %s, %s, 4, 'active')
         """,
-        (tenant, run, attempt, f"scope_{suffix}", f"open_{suffix}"),
+        (
+            tenant,
+            run,
+            attempt,
+            tenant_scope,
+            open_event_id,
+            open_payload_bytes,
+            open_payload_digest,
+        ),
     )
     return tenant, run, attempt
 
@@ -442,6 +473,53 @@ async def _terminal_rebuild_source(
         """,
         (tenant, run),
     )
+
+
+async def _successor_source_facts(
+    conn: psycopg.AsyncConnection,
+    *,
+    tenant: str,
+    run: str,
+) -> dict[str, object]:
+    cursor = await conn.execute(
+        """
+        select
+          (select to_jsonb(run_record) from runs as run_record
+           where run_record.tenant_id = %s and run_record.id = %s) as run,
+          (select jsonb_agg(to_jsonb(attempt_record) order by attempt_record.ordinal)
+           from run_attempts as attempt_record
+           where attempt_record.tenant_id = %s and attempt_record.run_id = %s) as attempts,
+          (select to_jsonb(authority_record)
+           from sse_stream_authorities as authority_record
+           where authority_record.tenant_id = %s and authority_record.run_id = %s) as authority,
+          (select jsonb_agg(to_jsonb(lease_record) order by lease_record.id)
+           from sandbox_leases as lease_record
+           where lease_record.tenant_id = %s and lease_record.run_id = %s) as leases,
+          (select to_jsonb(cursor_record)
+           from run_event_cursors as cursor_record
+           where cursor_record.tenant_id = %s and cursor_record.run_id = %s) as cursor,
+          (select jsonb_agg(to_jsonb(event_record) order by event_record.sequence, event_record.id)
+           from run_events as event_record
+           where event_record.tenant_id = %s and event_record.run_id = %s) as events
+        """,
+        (
+            tenant,
+            run,
+            tenant,
+            run,
+            tenant,
+            run,
+            tenant,
+            run,
+            tenant,
+            run,
+            tenant,
+            run,
+        ),
+    )
+    facts = await cursor.fetchone()
+    assert facts is not None
+    return facts
 
 
 async def _redis_stream(tenant: str, run: str, *, incarnation: int = 2):
@@ -1124,6 +1202,11 @@ async def test_successor_rebuild_prepares_terminal_snapshot_without_activation()
             await _terminal_rebuild_source(
                 conn, tenant=tenant, run=run, attempt=attempt
             )
+            source_facts_before = await _successor_source_facts(
+                conn,
+                tenant=tenant,
+                run=run,
+            )
         rebuilds = PostgresV4SuccessorRebuilds(
             lambda: _connection_factory(dsn, schema_name),
             claim_token_factory=lambda: "rebuild-token-one",
@@ -1200,6 +1283,11 @@ async def test_successor_rebuild_prepares_terminal_snapshot_without_activation()
                 "authorization_epoch": 4,
                 "state": "terminal",
             }
+            assert await _successor_source_facts(
+                conn,
+                tenant=tenant,
+                run=run,
+            ) == source_facts_before
 
 
 @pytest.mark.asyncio
@@ -1401,6 +1489,151 @@ async def test_successor_rebuild_rejects_nonterminal_or_malformed_source_atomica
         async with _connection_factory(dsn, schema_name) as conn:
             count = await conn.execute("select count(*) as count from sse_stream_rebuilds")
             assert await count.fetchone() == {"count": 0}
+
+
+@pytest.mark.asyncio
+async def test_successor_rebuild_rejects_corrupt_source_open_authority():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _terminal_rebuild_source(
+                conn,
+                tenant=tenant,
+                run=run,
+                attempt=attempt,
+            )
+            await conn.execute(
+                """
+                update sse_stream_authorities
+                set open_payload_bytes = '{}'::text
+                where tenant_id = %s and run_id = %s
+                """,
+                (tenant, run),
+            )
+        rebuilds = PostgresV4SuccessorRebuilds(
+            lambda: _connection_factory(dsn, schema_name),
+            claim_token_factory=lambda: "rebuild-token-corrupt-open",
+        )
+        with pytest.raises(
+            V4SuccessorRebuildAuthorityError,
+            match="source_authority_invalid",
+        ):
+            await prepare_v4_successor_rebuild(
+                rebuilds,
+                tenant_id=tenant,
+                run_id=run,
+                attempt_id=attempt,
+                source_incarnation=2,
+                claim_ttl=timedelta(seconds=30),
+            )
+        async with _connection_factory(dsn, schema_name) as conn:
+            count = await conn.execute(
+                "select count(*) as count from sse_stream_rebuilds"
+            )
+            assert await count.fetchone() == {"count": 0}
+
+
+@pytest.mark.asyncio
+async def test_successor_rebuild_rejects_noncurrent_terminal_attempt():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _terminal_rebuild_source(
+                conn,
+                tenant=tenant,
+                run=run,
+                attempt=attempt,
+            )
+            await conn.execute(
+                """
+                insert into run_attempts(
+                  id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
+                  owner_generation, queue_attempt_id, queue_message_id,
+                  execution_spec_schema_version, execution_spec_json,
+                  execution_spec_canonical_json, execution_spec_sha256,
+                  started_at, finished_at
+                )
+                select 'attempt-current', tenant_id, run_id, ordinal + 1,
+                       status, owner_kind, owner_id, owner_generation,
+                       'queue-attempt-current', 'message-current',
+                       execution_spec_schema_version, execution_spec_json,
+                       execution_spec_canonical_json, execution_spec_sha256,
+                       started_at, finished_at
+                from run_attempts
+                where tenant_id = %s and run_id = %s and id = %s
+                """,
+                (tenant, run, attempt),
+            )
+        rebuilds = PostgresV4SuccessorRebuilds(
+            lambda: _connection_factory(dsn, schema_name),
+            claim_token_factory=lambda: "rebuild-token-old-attempt",
+        )
+        with pytest.raises(
+            V4SuccessorRebuildAuthorityError,
+            match="terminal_authority_missing",
+        ):
+            await prepare_v4_successor_rebuild(
+                rebuilds,
+                tenant_id=tenant,
+                run_id=run,
+                attempt_id=attempt,
+                source_incarnation=2,
+                claim_ttl=timedelta(seconds=30),
+            )
+        async with _connection_factory(dsn, schema_name) as conn:
+            count = await conn.execute(
+                "select count(*) as count from sse_stream_rebuilds"
+            )
+            assert await count.fetchone() == {"count": 0}
+
+
+@pytest.mark.asyncio
+async def test_successor_rebuild_rolls_back_parent_and_prior_item_on_late_write_failure():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _terminal_rebuild_source(
+                conn,
+                tenant=tenant,
+                run=run,
+                attempt=attempt,
+            )
+            source_facts_before = await _successor_source_facts(
+                conn,
+                tenant=tenant,
+                run=run,
+            )
+            await conn.execute(
+                """
+                alter table sse_stream_rebuild_items
+                add constraint chk_test_rebuild_second_item_failure
+                check (sequence <> 2)
+                """
+            )
+        rebuilds = PostgresV4SuccessorRebuilds(
+            lambda: _connection_factory(dsn, schema_name),
+            claim_token_factory=lambda: "rebuild-token-late-write",
+        )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await prepare_v4_successor_rebuild(
+                rebuilds,
+                tenant_id=tenant,
+                run_id=run,
+                attempt_id=attempt,
+                source_incarnation=2,
+                claim_ttl=timedelta(seconds=30),
+            )
+        async with _connection_factory(dsn, schema_name) as conn:
+            counts = await conn.execute(
+                """
+                select
+                  (select count(*) from sse_stream_rebuilds) as rebuilds,
+                  (select count(*) from sse_stream_rebuild_items) as items
+                """
+            )
+            assert await counts.fetchone() == {"rebuilds": 0, "items": 0}
+            assert await _successor_source_facts(
+                conn,
+                tenant=tenant,
+                run=run,
+            ) == source_facts_before
 
 
 @pytest.mark.asyncio
@@ -1645,6 +1878,11 @@ async def test_migration_applies_exact_scoped_constraint_and_index_then_rolls_ba
                     sequence=1,
                     event_id="evt4_migration_fact",
                 )
+                source_facts_before = await _successor_source_facts(
+                    conn,
+                    tenant=tenant,
+                    run=run,
+                )
                 index = await conn.execute(
                     """
                     select indexdef from pg_indexes
@@ -1726,6 +1964,11 @@ async def test_migration_applies_exact_scoped_constraint_and_index_then_rolls_ba
                 }
                 assert expected_constraints <= actual_constraints
                 await schema_migrations.rollback_v4_successor_rebuild_migration(conn)
+                assert await _successor_source_facts(
+                    conn,
+                    tenant=tenant,
+                    run=run,
+                ) == source_facts_before
                 successor_tables = await conn.execute(
                     """
                     select to_regclass('sse_stream_rebuilds') as rebuilds,
@@ -1785,6 +2028,23 @@ async def test_migration_applies_exact_scoped_constraint_and_index_then_rolls_ba
                 "select column_name from information_schema.columns where table_schema = current_schema() and table_name = 'run_events' and column_name = 'stream_publication_state'"
             )
             assert await columns.fetchone() == {"column_name": "stream_publication_state"}
+
+
+@pytest.mark.asyncio
+async def test_schema_status_requires_successor_item_primary_key():
+    async with _schema() as (dsn, schema_name, _ids):
+        async with _connection_factory(dsn, schema_name) as conn:
+            before = await schema_migrations.schema_status(conn)
+            assert before["constraints_current"] is True
+            await conn.execute(
+                """
+                alter table sse_stream_rebuild_items
+                drop constraint sse_stream_rebuild_items_pkey
+                """
+            )
+            after = await schema_migrations.schema_status(conn)
+            assert after["constraints_current"] is False
+            assert after["ready"] is False
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import secrets
 from collections.abc import Callable, Mapping
@@ -22,6 +23,7 @@ from app.streaming.domain.public_events_v4 import (
     project_public_v4,
     project_public_v4_successor,
     successor_stream_open_event_id,
+    validate_internal_envelope_v4,
 )
 from app.streaming.domain.transport import canonical_json_bytes
 
@@ -420,6 +422,12 @@ class PostgresV4SuccessorRebuilds:
                  and attempt.run_id = run_record.id
                  and attempt.id = %s
                 where run_record.tenant_id = %s and run_record.id = %s
+                  and attempt.ordinal = (
+                    select max(current_attempt.ordinal)
+                    from run_attempts as current_attempt
+                    where current_attempt.tenant_id = run_record.tenant_id
+                      and current_attempt.run_id = run_record.id
+                  )
                 for update of run_record, attempt
                 """,
                 (attempt_id, tenant_id, run_id),
@@ -444,7 +452,7 @@ class PostgresV4SuccessorRebuilds:
                 select tenant_id, tenant_scope, run_id, attempt_id,
                        stream_incarnation, authorization_epoch, design_id,
                        projection_version, state, revocation_state,
-                       open_event_id, open_payload_digest
+                       open_event_id, open_payload_bytes, open_payload_digest
                 from sse_stream_authorities
                 where tenant_id = %s and run_id = %s
                 for update
@@ -465,6 +473,10 @@ class PostgresV4SuccessorRebuilds:
                 raise V4SuccessorRebuildAuthorityError(
                     "v4_rebuild_stream_authority_conflict"
                 )
+            source_open_digest = _validated_source_open_digest(
+                authority=authority,
+                row=authority_row,
+            )
 
             clock_cursor = await conn.execute(
                 "select clock_timestamp() as current_time"
@@ -592,9 +604,7 @@ class PostgresV4SuccessorRebuilds:
                         "stream_incarnation": authority.stream_incarnation,
                         "authorization_epoch": authority.authorization_epoch,
                         "open_event_id": _row_text(authority_row, "open_event_id"),
-                        "open_payload_digest": _row_text(
-                            authority_row, "open_payload_digest"
-                        ),
+                        "open_payload_digest": source_open_digest,
                         "state": "terminal",
                         "run_status": run_status,
                         "source_cursor_sequence": source_cursor_sequence,
@@ -770,6 +780,40 @@ async def _lock_claim_authority(conn: Any, claim: V4PublicationClaim) -> bool:
         and authority.stream_incarnation == claim.stream_incarnation
         and authority.authorization_epoch == claim.authorization_epoch
     )
+
+
+def _validated_source_open_digest(
+    *,
+    authority: _StreamAuthority,
+    row: Mapping[str, object],
+) -> str:
+    try:
+        payload_text = _row_text(row, "open_payload_bytes")
+        payload_bytes = payload_text.encode("utf-8")
+        payload_digest = _row_text(row, "open_payload_digest")
+        opening = validate_internal_envelope_v4(json.loads(payload_text))
+    except (TypeError, UnicodeEncodeError, json.JSONDecodeError, ValueError) as exc:
+        raise V4SuccessorRebuildAuthorityError(
+            "v4_rebuild_source_authority_invalid"
+        ) from exc
+    open_event_id = _row_text(row, "open_event_id")
+    if (
+        hashlib.sha256(payload_bytes).hexdigest() != payload_digest
+        or canonical_json_bytes(opening) != payload_bytes
+        or opening["event_type"] != "stream.open"
+        or opening["event_id"] != open_event_id
+        or opening["tenant_scope"] != authority.tenant_scope
+        or opening["run_id"] != authority.run_id
+        or opening["attempt_id"] != authority.attempt_id
+        or opening["stream_incarnation"] != authority.stream_incarnation
+        or opening["source"]
+        != {"kind": "stream_authority", "authority_id": open_event_id}
+        or opening["payload"] != {"design_id": STREAM_DESIGN_ID}
+    ):
+        raise V4SuccessorRebuildAuthorityError(
+            "v4_rebuild_source_authority_invalid"
+        )
+    return payload_digest
 
 
 def _stream_authority(row: Mapping[str, object]) -> _StreamAuthority:

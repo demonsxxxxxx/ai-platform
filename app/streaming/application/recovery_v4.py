@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Protocol
 
@@ -72,7 +72,7 @@ class V4SuccessorRebuildClaim:
     successor_open_bytes: bytes
     successor_open_digest: str
     items: tuple[V4SuccessorRebuildItem, ...]
-    claim_token: str
+    claim_token: str = field(repr=False)
     claim_expires_at: datetime
 
     def __post_init__(self) -> None:
@@ -89,7 +89,13 @@ class V4SuccessorRebuildClaim:
             value = getattr(self, name)
             if not isinstance(value, str) or not value:
                 raise ValueError(f"v4_rebuild_claim_{name}_invalid")
-        if len(self.source_authority_fingerprint) != 64:
+        if (
+            len(self.source_authority_fingerprint) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in self.source_authority_fingerprint
+            )
+        ):
             raise ValueError("v4_rebuild_claim_source_fingerprint_invalid")
         for name in (
             "source_incarnation",
@@ -102,6 +108,8 @@ class V4SuccessorRebuildClaim:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"v4_rebuild_claim_{name}_invalid")
+        if self.source_cursor_sequence < self.source_through_sequence:
+            raise ValueError("v4_rebuild_claim_source_cursor_invalid")
         if self.successor_incarnation <= self.source_incarnation:
             raise ValueError("v4_rebuild_claim_successor_incarnation_invalid")
         if self.successor_authorization_epoch <= self.source_authorization_epoch:
@@ -129,6 +137,11 @@ class V4SuccessorRebuildClaim:
             or opening["run_id"] != self.run_id
             or opening["attempt_id"] != self.attempt_id
             or opening["stream_incarnation"] != self.successor_incarnation
+            or opening["source"]
+            != {
+                "kind": "stream_authority",
+                "authority_id": self.successor_open_event_id,
+            }
         ):
             raise ValueError("v4_rebuild_claim_open_mismatch")
         if not isinstance(self.items, tuple) or not self.items:
@@ -136,7 +149,33 @@ class V4SuccessorRebuildClaim:
         if any(not isinstance(item, V4SuccessorRebuildItem) for item in self.items):
             raise ValueError("v4_rebuild_claim_items_invalid")
         sequences = tuple(item.sequence for item in self.items)
-        if sequences != tuple(sorted(set(sequences))) or sequences[-1] != self.source_through_sequence:
+        event_ids: set[str] = set()
+        for item in self.items:
+            envelope = validate_internal_envelope_v4(
+                json.loads(item.canonical_envelope_bytes.decode("utf-8"))
+            )
+            if (
+                envelope["tenant_scope"] != self.tenant_scope
+                or envelope["run_id"] != self.run_id
+                or envelope["attempt_id"] != self.attempt_id
+                or envelope["stream_incarnation"] != self.successor_incarnation
+                or envelope["event_id"] != item.event_id
+                or envelope["event_type"] != item.event_type
+                or envelope["seq"] != item.sequence
+                or envelope["source"]
+                != {
+                    "kind": "run_event",
+                    "run_event_id": item.event_id,
+                    "sequence": item.sequence,
+                }
+                or item.event_id in event_ids
+            ):
+                raise ValueError("v4_rebuild_claim_item_mismatch")
+            event_ids.add(item.event_id)
+        if (
+            sequences != tuple(sorted(set(sequences)))
+            or sequences[-1] != self.source_through_sequence
+        ):
             raise ValueError("v4_rebuild_claim_item_order_invalid")
         if not isinstance(self.claim_expires_at, datetime):
             raise ValueError("v4_rebuild_claim_expiry_invalid")

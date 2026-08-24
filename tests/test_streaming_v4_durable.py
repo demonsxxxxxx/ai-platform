@@ -787,10 +787,68 @@ def test_successor_rebuild_claim_binds_exact_canonical_snapshot() -> None:
     assert json.loads(claim.items[0].canonical_envelope_bytes)[
         "stream_incarnation"
     ] == 3
+    assert "claim-a" not in repr(claim)
     with pytest.raises(ValueError, match="successor_incarnation_invalid"):
         replace(claim, successor_incarnation=2)
     with pytest.raises(ValueError, match="envelope_mismatch"):
         replace(item, sequence=8)
+    with pytest.raises(ValueError, match="source_cursor_invalid"):
+        replace(claim, source_cursor_sequence=6)
+    with pytest.raises(ValueError, match="source_fingerprint_invalid"):
+        replace(claim, source_authority_fingerprint="A" * 64)
+
+    foreign_envelope = json.loads(envelope_bytes)
+    foreign_envelope["run_id"] = "run-b"
+    foreign_bytes = canonical_json_bytes(foreign_envelope)
+    foreign_item = replace(
+        item,
+        canonical_envelope_bytes=foreign_bytes,
+        envelope_digest=hashlib.sha256(foreign_bytes).hexdigest(),
+    )
+    with pytest.raises(ValueError, match="item_mismatch"):
+        replace(claim, items=(foreign_item,))
+
+    wrong_source_envelope = json.loads(envelope_bytes)
+    wrong_source_envelope["source"]["run_event_id"] = "evt4_other"
+    wrong_source_bytes = canonical_json_bytes(wrong_source_envelope)
+    wrong_source_item = replace(
+        item,
+        canonical_envelope_bytes=wrong_source_bytes,
+        envelope_digest=hashlib.sha256(wrong_source_bytes).hexdigest(),
+    )
+    with pytest.raises(ValueError, match="item_mismatch"):
+        replace(claim, items=(wrong_source_item,))
+
+    duplicate_envelope = json.loads(envelope_bytes)
+    duplicate_envelope["seq"] = 8
+    duplicate_envelope["source"]["sequence"] = 8
+    duplicate_bytes = canonical_json_bytes(duplicate_envelope)
+    duplicate_item = replace(
+        item,
+        sequence=8,
+        canonical_envelope_bytes=duplicate_bytes,
+        envelope_digest=hashlib.sha256(duplicate_bytes).hexdigest(),
+    )
+    with pytest.raises(ValueError, match="item_mismatch"):
+        replace(
+            claim,
+            source_cursor_sequence=8,
+            source_through_sequence=8,
+            items=(item, duplicate_item),
+        )
+
+    wrong_opening = dict(opening)
+    wrong_opening["source"] = {
+        "kind": "stream_authority",
+        "authority_id": "other-open",
+    }
+    wrong_open_bytes = canonical_json_bytes(wrong_opening)
+    with pytest.raises(ValueError, match="open_mismatch"):
+        replace(
+            claim,
+            successor_open_bytes=wrong_open_bytes,
+            successor_open_digest=hashlib.sha256(wrong_open_bytes).hexdigest(),
+        )
 
 
 def test_publication_claim_keeps_only_validated_canonical_envelope_bytes() -> None:
