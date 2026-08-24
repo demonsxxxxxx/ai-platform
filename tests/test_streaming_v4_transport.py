@@ -16,7 +16,10 @@ from app.streaming.api import (
     stream_end_event_id,
     stream_key,
 )
+from app.streaming import api as streaming_api
 from app.streaming import redis as stream_redis
+from app.streaming import v4 as streaming_v4
+from app.streaming.domain import public_events_v4
 from app.streaming.infrastructure.redis_live import RedisLiveFanoutSource
 from app.streaming.infrastructure.redis_v4_rebuild import RedisV4SuccessorRebuildTransport
 from tests.test_streaming_v4_durable import (
@@ -265,6 +268,12 @@ def row() -> dict[str, object]:
         "stream_publication_state": "published",
         "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
     }
+
+
+def test_v4_same_incarnation_recovery_capabilities_are_absent() -> None:
+    assert not hasattr(streaming_v4, "rebind_v4_incarnation")
+    assert not hasattr(streaming_api, "_row_for_current_authority")
+    assert not hasattr(public_events_v4, "_row_for_current_authority")
 
 
 def test_v4_controls_are_strict_and_public_projection_preserves_replayability() -> None:

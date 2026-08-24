@@ -639,27 +639,6 @@ def validate_internal_envelope_v4(envelope: Mapping[str, object]) -> dict[str, o
     }
 
 
-def _row_for_current_authority(
-    row: Mapping[str, object], *, authority: StreamAuthorityView
-) -> dict[str, object] | None:
-    """Copy a durable row into the current stream incarnation for recovery only."""
-
-    metadata = _metadata(row)
-    if metadata is None or metadata.get("attempt_id") != authority.attempt_id:
-        return None
-    payload_json = row.get("payload_json")
-    if not isinstance(payload_json, Mapping):
-        return None
-    rebound_metadata = dict(metadata)
-    rebound_metadata["stream_incarnation"] = authority.stream_incarnation
-    rebound_metadata["authorization_epoch"] = authority.authorization_epoch
-    rebound_payload = dict(payload_json)
-    rebound_payload[V4_METADATA_KEY] = rebound_metadata
-    rebound = dict(row)
-    rebound["payload_json"] = rebound_payload
-    return rebound
-
-
 def _metadata(row: Mapping[str, object]) -> Mapping[str, object] | None:
     payload = row.get("payload_json")
     if not isinstance(payload, Mapping):

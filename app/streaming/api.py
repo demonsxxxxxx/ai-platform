@@ -51,7 +51,6 @@ from app.streaming.domain.public_events_v4 import (
     _immutable_v4_payload as _immutable_v4_payload,
     _nonempty as _nonempty,
     _publication_state as _publication_state,
-    _row_for_current_authority as _row_for_current_authority,
     _safe_ref as _safe_ref,
     _stable_event_id as _stable_event_id,
     _stable_run_event_id as _stable_run_event_id,

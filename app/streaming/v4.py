@@ -542,30 +542,6 @@ async def suppress_v4_event(
     return await result.fetchone() is not None
 
 
-async def rebind_v4_incarnation(
-    conn: Any,
-    *,
-    event_id: str,
-    stream_incarnation: int,
-    authorization_epoch: int,
-) -> bool:
-    if stream_incarnation < 1 or authorization_epoch < 1:
-        raise ValueError("v4_authority_binding_invalid")
-    result = await conn.execute(
-        """
-        update run_events
-        set payload_json = jsonb_set(
-          jsonb_set(payload_json, '{__stream_v4,stream_incarnation}', to_jsonb(%s::bigint)),
-          '{__stream_v4,authorization_epoch}', to_jsonb(%s::bigint)
-        )
-        where id = %s and stream_publication_state = 'pending'
-        returning id
-        """,
-        (stream_incarnation, authorization_epoch, event_id),
-    )
-    return await result.fetchone() is not None
-
-
 class V4RedisStreamBridge:
     """Use the existing Redis bridge client for the v4 bounded transport."""
 
@@ -965,7 +941,6 @@ __all__ = [
     "mark_v4_attempt",
     "mark_v4_published",
     "mark_v4_retry_error",
-    "rebind_v4_incarnation",
     "suppress_v4_event",
     "opaque_message_id",
     "project_public_envelope_v4",
