@@ -179,7 +179,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     )
     external_subject = worker_module._mcp_capability_subject(
         {
-            "tool_id": "corp-search",
+            "tool_id": "corp-search::query",
             "server_id": "corp-search",
             "allowed_tools": ["query"],
             "registry_status": "active",
@@ -188,7 +188,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             "risk_level": "high",
             "write_capable": True,
             "transport_type": "http",
-            "endpoint": "https://mcp.example.test/v1",
+            "endpoint": "",
             "auth_mode": "none",
         },
         types.SimpleNamespace(usable=True),
@@ -3656,7 +3656,7 @@ async def test_agent_run_rejects_pinned_skill_snapshot_file_over_worker_cap(monk
         input_payload={},
         builtin_skills=BuiltinSkillRegistry(tmp_path / "skills").list_builtin_skills(),
     )
-    monkeypatch.setattr("app.skills.pinning.MAX_SKILL_SNAPSHOT_FILE_BYTES", 8)
+    monkeypatch.setattr("app.skills.snapshot_materialization.MAX_SKILL_SNAPSHOT_FILE_BYTES", 8)
     async def no_files(payload, workspace):
         return []
 

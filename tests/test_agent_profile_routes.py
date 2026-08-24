@@ -444,11 +444,11 @@ async def test_authorize_run_capabilities_rejects_disabled_mcp_backed_skill(monk
 
     assert str(exc_info.value) == "capability_not_authorized"
     assert exc_info.value.denial.capability_kind == "mcp_tool"
-    assert exc_info.value.denial.capability_id == "ragflow::ragflow_search"
+    assert exc_info.value.denial.capability_id == "ragflow-knowledge-search"
     assert calls == [
         ("skill", "ragflow-knowledge-search"),
         ("distribution", "skill", "ragflow-knowledge-search"),
-        ("tool", "ragflow::ragflow_search"),
+        ("tool", "ragflow-knowledge-search"),
         ("distribution", "mcp_server", "ragflow-server"),
     ]
 

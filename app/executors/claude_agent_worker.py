@@ -84,7 +84,7 @@ from app.skills.catalog import (
     load_runtime_authorized_skill_catalog,
 )
 from app.skills.dependencies import skill_dependency_ids, with_skill_dependencies
-from app.skills.pinning import (
+from app.skills.snapshot_materialization import (
     pin_manifests_for_result as _pin_manifests_for_result,
     pinned_skill_manifests as _pinned_skill_manifests,
     select_pinned_skills as _select_pinned_skills,
