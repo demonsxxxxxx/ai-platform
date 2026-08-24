@@ -378,11 +378,14 @@ async def test_s0a_schema_workspace_scope_and_runtime_handle_apply_idempotently(
                 where tenant_id = 'tenant-a' and id = 'attempt-a'
                 """
             )
-        with pytest.raises(psycopg.errors.CheckViolation):
+        with pytest.raises(
+            psycopg.errors.CheckViolation,
+            match="run_attempt_owner_generation_invalid",
+        ):
             await conn.execute(
                 """
                 update run_attempts
-                set status = 'failed', owner_generation = 4
+                set status = 'failed', owner_generation = 4, finished_at = now()
                 where tenant_id = 'tenant-a' and id = 'attempt-a'
                 """
             )
