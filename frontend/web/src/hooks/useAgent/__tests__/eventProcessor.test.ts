@@ -33,20 +33,23 @@ test("normalizes hydrated text with deterministic message-local ordinals", () =>
     ],
   } satisfies Message;
 
-  const first = normalizeMessageTextLogicalIds(hydrated);
-  const replay = normalizeMessageTextLogicalIds({
-    ...hydrated,
-    parts: hydrated.parts?.map((part) =>
-      part.type === "subagent"
-        ? { ...part, parts: part.parts?.map((child) => ({ ...child })) }
-        : { ...part },
-    ),
-  });
+  const first = normalizeMessageTextLogicalIds(hydrated, "protocol-message");
+  const replay = normalizeMessageTextLogicalIds(
+    {
+      ...hydrated,
+      parts: hydrated.parts?.map((part) =>
+        part.type === "subagent"
+          ? { ...part, parts: part.parts?.map((child) => ({ ...child })) }
+          : { ...part },
+      ),
+    },
+    "protocol-message",
+  );
   assert.deepEqual(first.parts, replay.parts);
   assert.equal(first.parts?.[0]?.type, "text");
   assert.equal(
     first.parts?.[0]?.type === "text" ? first.parts[0].logical_id : null,
-    "persisted-assistant:text:0",
+    "protocol-message:text:0:0:root",
   );
   assert.equal(first.parts?.[1]?.type, "text");
   assert.equal(
@@ -59,7 +62,7 @@ test("normalizes hydrated text with deterministic message-local ordinals", () =>
     child?.type === "subagent" && child.parts?.[0]?.type === "text"
       ? child.parts[0].logical_id
       : null,
-    "persisted-assistant:text:2",
+    "protocol-message:text:0:1:child",
   );
 });
 

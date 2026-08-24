@@ -1257,15 +1257,31 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                 message.role === "assistant" && message.runId === targetRunId,
             );
           }
-          hydratedMessages = hydratedMessages.map(normalizeMessageTextLogicalIds);
+          const streamIncarnation =
+            acceptedStreamCursorRef.current.streamIncarnation;
+          const acceptedV4Owner = v4MessageOwnerRef.current;
+          const hydratedRootTextOwnerId =
+            acceptedV4Owner &&
+            acceptedV4Owner.sessionId === targetSessionId &&
+            acceptedV4Owner.runId === targetRunId &&
+            acceptedV4Owner.streamVersion === streamVersion &&
+            acceptedV4Owner.streamIncarnation === streamIncarnation
+              ? acceptedV4Owner.protocolMessageId
+              : fallbackMessageId;
+          hydratedMessages = hydratedMessages.map((message) =>
+            normalizeMessageTextLogicalIds(
+              message,
+              message.role === "assistant" && message.runId === targetRunId
+                ? hydratedRootTextOwnerId
+                : message.id,
+            ),
+          );
           hydratedAssistant = [...hydratedMessages]
             .reverse()
             .find(
               (message) =>
                 message.role === "assistant" && message.runId === targetRunId,
             );
-          const streamIncarnation =
-            acceptedStreamCursorRef.current.streamIncarnation;
           if (
             hydratedAssistant &&
             typeof streamIncarnation === "number" &&
@@ -1710,8 +1726,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               targetRunId,
             );
           }
-          reconstructedMessages = reconstructedMessages.map(
-            normalizeMessageTextLogicalIds,
+          reconstructedMessages = reconstructedMessages.map((message) =>
+            normalizeMessageTextLogicalIds(message),
           );
 
           if (feedbackList && feedbackList.items.length > 0) {

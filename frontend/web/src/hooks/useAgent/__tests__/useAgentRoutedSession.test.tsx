@@ -3657,12 +3657,10 @@ test("useAgent retains final answer and artifact frames that precede a succeeded
     return 0;
   }) as typeof animationWindow.requestAnimationFrame;
   animationWindow.cancelAnimationFrame = (() => {}) as typeof animationWindow.cancelAnimationFrame;
-  dom.window.fetch = async () => {
-    const response = completedPublicRunResponse("run-final-success", "succeeded", [
-      { eventType: "assistant_text_delta", payload: { delta: "最终答复" } },
-    ]);
-    return response;
-  };
+  const lifecycle = controlledPublicRunLifecycle("run-final-success", "succeeded", [
+    { eventType: "assistant_text_delta", payload: { delta: "最终答复" } },
+  ]);
+  dom.window.fetch = async () => lifecycle.response;
   sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "成功终态会话",
@@ -3714,13 +3712,35 @@ test("useAgent retains final answer and artifact frames that precede a succeeded
     });
     await settle(harness.act);
 
+    const liveAssistant = harness.hook.messages.find(
+      (message) => message.role === "assistant" && message.runId === "run-final-success",
+    );
+    const liveText = liveAssistant?.parts?.find((part) => part.type === "text");
+    assert.equal(liveAssistant?.content, "最终答复");
+    assert.equal(liveText?.type, "text");
+    if (liveText?.type !== "text" || !liveText.logical_id) {
+      throw new Error("expected live text identity before terminal hydration");
+    }
+    const liveLogicalId = liveText.logical_id;
+
+    await harness.act(async () => {
+      lifecycle.finish();
+    });
+    await settle(harness.act);
+
     const assistant = harness.hook.messages.find(
       (message) => message.role === "assistant" && message.runId === "run-final-success",
     );
+    const hydratedText = assistant?.parts?.find((part) => part.type === "text");
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.isLoading, false);
     assert.equal(harness.hook.connectionStatus, "disconnected");
     assert.equal(assistant?.content, "最终答复");
+    assert.equal(hydratedText?.type, "text");
+    assert.equal(
+      hydratedText?.type === "text" ? hydratedText.logical_id : null,
+      liveLogicalId,
+    );
     assert.equal(
       assistant?.parts?.some(
         (part) => part.type === "artifact" && part.artifact_id === "artifact-final",

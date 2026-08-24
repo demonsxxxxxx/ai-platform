@@ -142,24 +142,38 @@ function rootTextSegmentCount(parts: MessagePart[]): number {
   return parts.filter((part) => part.type === "text" && !part.depth).length;
 }
 
-export function normalizeMessageTextLogicalIds(message: Message): Message {
-  let textIndex = 0;
+export function normalizeMessageTextLogicalIds(
+  message: Message,
+  rootTextOwnerId: string = message.id,
+): Message {
+  const textSegmentCounts = new Map<string, number>();
   let changed = false;
 
-  const normalizeParts = (parts: MessagePart[]): MessagePart[] =>
+  const normalizeParts = (
+    parts: MessagePart[],
+    inheritedDepth = 0,
+    inheritedAgentId = "root",
+  ): MessagePart[] =>
     parts.map((part) => {
       if (part.type === "text") {
-        const stableIndex = textIndex;
-        textIndex += 1;
+        const depth = part.depth ?? inheritedDepth;
+        const agentId = part.agent_id || inheritedAgentId;
+        const scope = `${depth}:${agentId}`;
+        const segmentOrdinal = textSegmentCounts.get(scope) ?? 0;
+        textSegmentCounts.set(scope, segmentOrdinal + 1);
         if (part.logical_id) return part;
         changed = true;
         return {
           ...part,
-          logical_id: `${message.id}:text:${stableIndex}`,
+          logical_id: `${rootTextOwnerId}:text:${segmentOrdinal}:${depth}:${agentId}`,
         };
       }
       if (part.type === "subagent" && part.parts?.length) {
-        const normalizedParts = normalizeParts(part.parts);
+        const normalizedParts = normalizeParts(
+          part.parts,
+          part.depth + 1,
+          part.agent_id,
+        );
         if (
           normalizedParts.some(
             (nestedPart, index) => nestedPart !== part.parts?.[index],
