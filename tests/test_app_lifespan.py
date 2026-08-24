@@ -1,6 +1,11 @@
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
+import pytest
 
 import app.main as main
+from app.routes.admin_runs import _require_run_cancellation_use_case as require_admin_use_case
+from app.routes.runs import _require_run_cancellation_use_case as require_owner_use_case
 from app.runs.api import RunCancellationUseCase
 
 
@@ -29,3 +34,15 @@ def test_create_app_owns_one_run_stream_runtime_and_closes_dependencies(monkeypa
         assert type(app.state.run_cancellation_use_case) is RunCancellationUseCase
 
     assert calls == ["run_stream_runtime", "redis_client", "close_pool"]
+
+
+@pytest.mark.parametrize("getter", [require_owner_use_case, require_admin_use_case])
+@pytest.mark.parametrize("state_value", [None, object()])
+def test_cancel_routes_fail_closed_without_exact_lifespan_owner(getter, state_value):
+    state = SimpleNamespace()
+    if state_value is not None:
+        state.run_cancellation_use_case = state_value
+    request = SimpleNamespace(app=SimpleNamespace(state=state))
+
+    with pytest.raises(RuntimeError, match="^run_cancellation_use_case_unavailable$"):
+        getter(request)

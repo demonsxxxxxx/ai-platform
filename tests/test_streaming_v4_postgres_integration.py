@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import json
 import os
+from unittest.mock import patch
 import uuid
 
 import psycopg
@@ -13,12 +14,10 @@ import pytest
 from redis.asyncio import Redis
 
 from app import repositories, schema_migrations
+from app.bootstrap import run_lifecycle
 from app.repositories import complete_run
 from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
 from app.routes import runtime_callbacks
-from app.bootstrap.run_lifecycle import PostgresRunCancellationEventWriter
-from app.runs.application.cancellation import RunCancellationUseCase
-from app.runs.infrastructure.postgres import PostgresRunCancellationPersistence
 from app.routes.lambchat_compat import _recover_v4_attach_gap
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent
 from app.streaming.api import stream_key
@@ -74,25 +73,34 @@ def _redis_url() -> str:
     return value
 
 
-async def _request_owner_cancel(conn, *, tenant_id, user_id, run_id):
+def _production_cancellation_use_case(conn):
     @asynccontextmanager
     async def transaction_factory():
         async with conn.transaction():
             yield conn
 
-    use_case = RunCancellationUseCase(
-        transaction_factory=transaction_factory,
-        persistence=PostgresRunCancellationPersistence(
-            append_event=repositories.append_event,
-            append_audit_log=repositories.append_audit_log,
-            list_active_sandbox_leases=repositories.list_active_sandbox_leases_for_run,
-        ),
-        event_writer=PostgresRunCancellationEventWriter(),
-        progress_terminalization=repositories.progress_run_tool_permission_terminalization,
-    )
+    with patch.object(run_lifecycle, "transaction", transaction_factory):
+        return run_lifecycle.build_run_cancellation_use_case()
+
+
+async def _request_owner_cancel(
+    use_case, *, tenant_id: str, user_id: str, run_id: str
+):
     result = await use_case.request_owner_cancel(
         tenant_id=tenant_id,
         owner_user_id=user_id,
+        run_id=run_id,
+    )
+    return result.as_route_result() if result is not None else None
+
+
+async def _request_admin_cancel(
+    use_case, *, tenant_id: str, admin_user_id: str, target_user_id: str, run_id: str
+):
+    result = await use_case.request_admin_cancel(
+        tenant_id=tenant_id,
+        admin_user_id=admin_user_id,
+        target_user_id=target_user_id,
         run_id=run_id,
     )
     return result.as_route_result() if result is not None else None
@@ -1069,31 +1077,85 @@ async def test_failed_and_cancelled_run_producers_are_exact_once_and_conflict_cl
 
 
 @pytest.mark.asyncio
-async def test_cancel_request_precedes_cancelled_terminal_and_is_exact_once():
+async def test_production_cancel_composition_preserves_owner_fences_order_and_retry():
     async with _schema() as (_dsn_value, schema_name, ids):
         tenant, run, _attempt = ids
-        user = f"u_{tenant[2:]}"
+        suffix = tenant[2:]
+        user = f"u_{suffix}"
         async with _connection_factory(_dsn(), schema_name) as conn:
+            use_case = _production_cancellation_use_case(conn)
+            assert await _request_owner_cancel(
+                use_case,
+                tenant_id=tenant,
+                user_id="different-user",
+                run_id=run,
+            ) is None
+            assert await _request_admin_cancel(
+                use_case,
+                tenant_id="different-tenant",
+                admin_user_id=user,
+                target_user_id=user,
+                run_id=run,
+            ) is None
+            untouched_cursor = await conn.execute(
+                """
+                select
+                  (select count(*) from run_events where tenant_id = %s and run_id = %s) as event_count,
+                  (select count(*) from audit_logs where tenant_id = %s and target_id = %s) as audit_count
+                """,
+                (tenant, run, tenant, run),
+            )
+            assert await untouched_cursor.fetchone() == {
+                "event_count": 0,
+                "audit_count": 0,
+            }
+
             first = await _request_owner_cancel(
-                conn,
+                use_case,
                 tenant_id=tenant,
                 user_id=user,
                 run_id=run,
+            )
+            assert first is not None
+            assert first["status"] == "cancelled"
+
+            await conn.execute(
+                """
+                insert into run_tool_permission_requests(
+                  id, tenant_id, workspace_id, user_id, session_id, run_id,
+                  tool_id, tool_call_id, status
+                ) values (%s, %s, %s, %s, %s, %s, 'tool', 'call-retry', 'pending')
+                """,
+                (
+                    f"permission_{suffix}",
+                    tenant,
+                    f"w_{suffix}",
+                    user,
+                    f"s_{suffix}",
+                    run,
+                ),
             )
             second = await _request_owner_cancel(
-                conn,
+                use_case,
                 tenant_id=tenant,
                 user_id=user,
                 run_id=run,
             )
-            assert first is not None and second is not None
-            progress = await repositories.cancel_run(conn, tenant_id=tenant, run_id=run)
-            assert progress.did_transition is True
-            assert progress.status == "cancelled"
+            assert second is not None
+            assert second["status"] == "cancelled"
+
+            permission_cursor = await conn.execute(
+                """
+                select status from run_tool_permission_requests
+                where tenant_id = %s and run_id = %s and tool_call_id = 'call-retry'
+                """,
+                (tenant, run),
+            )
+            assert await permission_cursor.fetchone() == {"status": "cancelled"}
 
             cursor = await conn.execute(
                 """
-                select sequence, event_type
+                select sequence, event_type, payload_json
                 from run_events
                 where tenant_id = %s and run_id = %s
                   and event_type in ('run.cancel_requested', 'run.cancelled')
@@ -1107,28 +1169,95 @@ async def test_cancel_request_precedes_cancelled_terminal_and_is_exact_once():
                 "run.cancelled",
             ]
             assert rows[0]["sequence"] < rows[1]["sequence"]
+            assert rows[0]["payload_json"]["source"] == "user"
+
+            audit_cursor = await conn.execute(
+                """
+                select user_id, action, target_id, payload_json
+                from audit_logs
+                where tenant_id = %s and target_id = %s and action = 'run.cancel'
+                order by created_at, id
+                """,
+                (tenant, run),
+            )
+            audits = await audit_cursor.fetchall()
+            assert len(audits) == 2
+            assert all(row["user_id"] == user for row in audits)
+            assert all(row["target_id"] == run for row in audits)
+            assert all(
+                row["payload_json"]["requested_by_role"] == "owner"
+                for row in audits
+            )
 
 
 @pytest.mark.asyncio
-async def test_cancel_request_and_terminal_rows_roll_back_with_run_state():
+async def test_production_cancel_composition_preserves_admin_self_cancel_facts():
     async with _schema() as (_dsn_value, schema_name, ids):
         tenant, run, _attempt = ids
         user = f"u_{tenant[2:]}"
         async with _connection_factory(_dsn(), schema_name) as conn:
+            use_case = _production_cancellation_use_case(conn)
+            result = await _request_admin_cancel(
+                use_case,
+                tenant_id=tenant,
+                admin_user_id=user,
+                target_user_id=user,
+                run_id=run,
+            )
+            assert result is not None
+            assert result["status"] == "cancelled"
+
+            event_cursor = await conn.execute(
+                """
+                select payload_json
+                from run_events
+                where tenant_id = %s and run_id = %s
+                  and event_type = 'run.cancel_requested'
+                """,
+                (tenant, run),
+            )
+            event = await event_cursor.fetchone()
+            assert event is not None
+            assert event["payload_json"]["source"] == "system"
+
+            audit_cursor = await conn.execute(
+                """
+                select user_id, action, target_id, payload_json
+                from audit_logs
+                where tenant_id = %s and target_id = %s
+                """,
+                (tenant, run),
+            )
+            audit = await audit_cursor.fetchone()
+            assert audit == {
+                "user_id": user,
+                "action": "admin.run.cancel",
+                "target_id": run,
+                "payload_json": {
+                    "run_id": run,
+                    "target_user_id": user,
+                    "result_status": "cancelled",
+                },
+            }
+
+
+@pytest.mark.asyncio
+async def test_production_cancel_composition_rolls_back_run_events_and_audit():
+    async with _schema() as (_dsn_value, schema_name, ids):
+        tenant, run, _attempt = ids
+        user = f"u_{tenant[2:]}"
+        async with _connection_factory(_dsn(), schema_name) as conn:
+            use_case = _production_cancellation_use_case(conn)
             with pytest.raises(RuntimeError, match="force_cancel_rollback"):
                 async with conn.transaction():
-                    assert await _request_owner_cancel(
-                        conn,
+                    result = await _request_owner_cancel(
+                        use_case,
                         tenant_id=tenant,
                         user_id=user,
                         run_id=run,
-                    ) is not None
-                    progress = await repositories.cancel_run(
-                        conn,
-                        tenant_id=tenant,
-                        run_id=run,
                     )
-                    assert progress.did_transition is True
+                    assert result is not None
+                    assert result["status"] == "cancelled"
                     raise RuntimeError("force_cancel_rollback")
 
             run_cursor = await conn.execute(
@@ -1144,13 +1273,19 @@ async def test_cancel_request_and_terminal_rows_roll_back_with_run_state():
                 "cancel_requested_at": None,
                 "permission_terminalization_target": None,
             }
-            event_cursor = await conn.execute(
+            evidence_cursor = await conn.execute(
                 """
-                select count(*) as event_count
-                from run_events
-                where tenant_id = %s and run_id = %s
-                  and event_type in ('run.cancel_requested', 'run.cancelled')
+                select
+                  (select count(*) from run_events
+                   where tenant_id = %s and run_id = %s
+                     and event_type in ('run_cancel_requested', 'run.cancel_requested',
+                                        'run_cancelled', 'run.cancelled')) as event_count,
+                  (select count(*) from audit_logs
+                   where tenant_id = %s and target_id = %s) as audit_count
                 """,
-                (tenant, run),
+                (tenant, run, tenant, run),
             )
-            assert (await event_cursor.fetchone())["event_count"] == 0
+            assert await evidence_cursor.fetchone() == {
+                "event_count": 0,
+                "audit_count": 0,
+            }
