@@ -1683,7 +1683,11 @@ async def test_migration_applies_exact_scoped_constraint_and_index_then_rolls_ba
         )
         async with _connection_factory(dsn, schema_name) as conn:
             status = await schema_migrations.schema_status(conn)
-            assert status["ready"] is True
+            assert status["ledger_current"] is True
+            assert status["index_ledger_current"] is True
+            assert status["columns_current"] is True
+            assert status["indexes_current"] is True
+            assert status["static_index_definitions_current"] is True
             columns = await conn.execute(
                 "select column_name from information_schema.columns where table_schema = current_schema() and table_name = 'run_events' and column_name = 'stream_publication_state'"
             )
