@@ -170,6 +170,57 @@ failures require a new fixed SHA.
 - Runtime evidence identifies the exact commit/image/container, route and
   principal where applicable, API health, and target behavior.
 
+### Finding Disposition And Promotion
+
+Treat automated and Agent review output as untrusted input. For every material
+finding, verify the cited code and record one disposition in the existing issue
+or PR: `fixed`, `rejected with evidence`, or `deferred` with owner and exit
+condition. Repository files, Issue/PR descriptions, reviews, and comments must
+contain only a redacted structured summary. Do not copy raw review transcripts,
+prompts, credentials, private local paths, or secret-bearing payloads into any
+of those durable surfaces; cite a controlled incident/evidence identifier when
+the sensitive source must remain available outside GitHub.
+
+Promote the verified lesson to the smallest durable owning artifact:
+
+- a one-off implementation defect becomes a code fix;
+- a stable reproducible regression becomes an owning test;
+- a repeated defect class may become a repository rule only when the detector
+  is deterministic, has bounded paths and an explicit owner, demonstrates low
+  false-positive risk, and names a removal or replacement condition; and
+- security, authorization, tenant isolation, destructive lifecycle, release,
+  or credential findings require an identifiable human owner and role, the
+  applicable evidence link or controlled evidence identifier, and independent
+  security/domain confirmation before they can be rejected, deferred, or used
+  to weaken a gate. The author or Agent naming itself as owner is not that
+  independent confirmation.
+
+A promoted rule replaces or consolidates an overlapping rule instead of adding
+a second authority. Review wording is not the durable knowledge artifact: the
+accepted code, owning test, or existing authority rule is. A PR that changes a
+rule records the verified finding class, applicability boundary, alternatives,
+false-positive evidence, and removal condition in its existing Change Contract.
+The PR's structured finding table records, per material finding, its stable ID
+and severity, verified evidence, disposition, identifiable human owner and role
+when required, defer exit condition or reject confirmation, and promotion
+target. A rule promotion additionally records its deterministic detector,
+bounded paths, alternatives, false-positive evidence, and removal condition.
+Every material finding records an independent human verifier and role against
+the exact reviewed SHA. All non-fixed material findings, not only high-risk
+classes, additionally record a different identifiable human owner and role.
+Deferred findings also record a falsifiable exit condition. High-risk classes
+retain the stricter domain-appropriate confirmation requirement above.
+
+The PR template's `ai-platform.review-findings.v1` JSON block is the executable
+record, not a second ledger: it is the structured form of the PR disposition
+record above. The trusted-base PR-body validator rejects placeholders, unknown
+fields, incomplete non-fixed dispositions, mismatched exact SHA, oversized raw
+text, high-confidence credential shapes, and private local filesystem paths.
+That bounded scanner is defense in depth; passing it does not prove that a
+summary is secret-free or replace human redaction review. The introducing
+validator becomes trusted authority only after independent fixed-SHA review and
+merge; subsequent PRs execute the version from their immutable base checkout.
+
 SDK, worker, skill, terminal, or user-facing runtime diagnostics trace the fault
 through `tool registration -> runner selection -> subprocess/terminal -> SDK event -> user-facing error` and leave a minimal reproduction plus observable
 log/event evidence. Historical examples are non-normative and live in
