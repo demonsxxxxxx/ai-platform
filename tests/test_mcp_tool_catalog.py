@@ -4,8 +4,8 @@ import json
 import httpx
 import pytest
 
-from app.mcp import catalog
-from app.mcp.catalog import McpToolDiscoveryError, StreamableHttpMcpToolDiscoveryAdapter
+from app.mcp.infrastructure import catalog
+from app.mcp.infrastructure.catalog import McpToolDiscoveryError, StreamableHttpMcpToolDiscoveryAdapter
 
 
 async def _resolved(*addresses):

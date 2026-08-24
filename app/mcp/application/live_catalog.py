@@ -7,7 +7,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from app.mcp.catalog import McpToolDiscoveryError, StreamableHttpMcpToolDiscoveryAdapter
 from app.mcp.domain.tool_references import build_mcp_tool_reference
 
 
@@ -75,13 +74,13 @@ class LiveMcpCatalogService:
         redis_provider: Callable[[], Any],
         target_resolver: Callable[[str, str], Awaitable[Any]],
         revision_reader: Callable[[str], Awaitable[object | None]],
-        discovery: StreamableHttpMcpToolDiscoveryAdapter | None = None,
+        discovery: Any,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._redis_provider = redis_provider
         self._target_resolver = target_resolver
         self._revision_reader = revision_reader
-        self._discovery = discovery or StreamableHttpMcpToolDiscoveryAdapter()
+        self._discovery = discovery
         self._clock = clock
 
     @staticmethod
@@ -275,7 +274,7 @@ class LiveMcpCatalogService:
                 )
                 for definition in definitions
             )
-        except (McpToolDiscoveryError, ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError):
             stale = await self._latest_tools(tenant_id, user_id, server_id)
             return LiveMcpServerResult(server_id, stale or (), None if stale is not None else "discovery_failed")
 

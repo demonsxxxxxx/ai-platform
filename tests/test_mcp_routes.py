@@ -16,8 +16,7 @@ from app.mcp.application.live_catalog import (
     read_cached_live_mcp_tool,
     service_token_matches,
 )
-from app.mcp.api import McpRuntimeContextError
-from app.mcp.catalog import McpToolDiscoveryError
+from app.mcp.api import McpRuntimeContextError, McpToolDiscoveryError
 from app.mcp.domain.tool_references import (
     build_mcp_tool_reference,
     parse_mcp_tool_reference,

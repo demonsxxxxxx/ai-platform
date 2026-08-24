@@ -27,6 +27,7 @@ from app.mcp.application.live_catalog import (
 )
 from app.mcp.api import (
     McpRuntimeContextError,
+    StreamableHttpMcpToolDiscoveryAdapter,
     create_host_mcp_relay,
     discard_unbound_mcp_runtime_context,
     get_mcp_relay_auth_failure_limiter,
@@ -61,6 +62,7 @@ LIVE_MCP_CATALOG = LiveMcpCatalogService(
     redis_provider=get_redis_client,
     target_resolver=resolve_registered_mcp_target,
     revision_reader=_read_gateway_cache_revisions,
+    discovery=StreamableHttpMcpToolDiscoveryAdapter(),
 )
 MCP_RUNTIME_CONTEXT_MANAGER = get_mcp_runtime_context_manager()
 MCP_RELAY_AUTH_FAILURE_LIMITER = get_mcp_relay_auth_failure_limiter()

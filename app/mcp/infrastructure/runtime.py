@@ -1247,7 +1247,7 @@ def _registered_mcp_target(raw: str) -> str:
 async def validate_registered_mcp_target(raw: str) -> McpValidatedTarget:
     """Validate once and pin dispatch to one address from the accepted DNS set."""
 
-    from app.mcp.catalog import (
+    from app.mcp.infrastructure.catalog import (
         McpToolDiscoveryError,
         _address_is_permitted,
         _is_rfc1918,

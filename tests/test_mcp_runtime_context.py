@@ -513,7 +513,7 @@ async def test_runtime_target_rechecks_dns_policy_before_dispatch(monkeypatch):
         return (ipaddress.ip_address("127.0.0.1"),)
 
     monkeypatch.setattr(
-        "app.mcp.catalog._resolve_discovery_addresses",
+        "app.mcp.infrastructure.catalog._resolve_discovery_addresses",
         loopback_dns,
     )
     with pytest.raises(McpRelayError, match="mcp_server_target_invalid"):
@@ -550,7 +550,7 @@ async def test_runtime_target_pins_the_validated_address_and_preserves_tls_ident
         return (ipaddress.ip_address("8.8.8.8"),)
 
     monkeypatch.setattr(
-        "app.mcp.catalog._resolve_discovery_addresses",
+        "app.mcp.infrastructure.catalog._resolve_discovery_addresses",
         public_dns,
     )
 
