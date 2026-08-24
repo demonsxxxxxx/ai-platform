@@ -133,10 +133,10 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "run_events",
         "chk_run_events_stream_publication_claim",
         "c",
-        "CHECK ((stream_publication_claim_token IS NULL AND "
-        "stream_publication_claim_expires_at IS NULL) OR ("
+        "CHECK (stream_publication_claim_token IS NULL AND "
+        "stream_publication_claim_expires_at IS NULL OR "
         "stream_publication_claim_token IS NOT NULL AND "
-        "stream_publication_claim_expires_at IS NOT NULL))",
+        "stream_publication_claim_expires_at IS NOT NULL)",
     ),
     (
         "files",
