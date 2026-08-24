@@ -20,6 +20,7 @@ from app.mcp.domain.headers import (
     normalize_static_mcp_headers,
 )
 from app.mcp.domain.identifiers import assert_safe_mcp_id
+from app.mcp.domain.tool_references import parse_mcp_tool_reference
 from app.mcp.domain.targets import (
     mcp_targets_from_policy_subjects,
     normalize_mcp_targets,
@@ -208,6 +209,7 @@ __all__ = [
     "normalize_static_mcp_headers",
     "open_mcp_server_credentials",
     "persisted_mcp_context_id",
+    "parse_mcp_tool_reference",
     "preflight_mcp_admission",
     "queue_input_with_mcp_context",
     "record_mcp_server_credential",

@@ -16,7 +16,7 @@ from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
 from app.model_catalog import resolve_model_selection
-from app.mcp.domain.tool_references import parse_mcp_tool_reference
+from app.mcp.api import parse_mcp_tool_reference
 from app.models import (
     AgentConversationIdentity,
     AgentProfileAdminProjection,
