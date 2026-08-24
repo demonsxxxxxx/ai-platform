@@ -18,11 +18,15 @@ from typing import Any
 from redis.exceptions import ResponseError
 
 from app.run_projection import CHAT_PUBLIC_PROJECTION_VERSION, public_terminal_projection
-from app.streaming.api import redis_id_tuple as _redis_id_tuple, stream_key
-from app.streaming.contracts import ResumeDecision, StreamCursor, StreamGap
-
 from app.streaming import postgres
-from app.streaming.contracts import canonical_json_bytes
+from app.streaming.api import (
+    ResumeDecision,
+    StreamCursor,
+    StreamGap,
+    canonical_json_bytes,
+    redis_id_tuple as _redis_id_tuple,
+    stream_key,
+)
 from app.streaming.events import (
     INTERNAL_STREAM_EVENT_SCHEMA_V4 as INTERNAL_STREAM_EVENT_SCHEMA,
     PUBLIC_RUN_STREAM_SCHEMA_V4 as PUBLIC_RUN_STREAM_SCHEMA,
