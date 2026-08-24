@@ -15,7 +15,11 @@ test("normalizes hydrated text with deterministic message-local ordinals", () =>
     content: "",
     timestamp: new Date("2026-08-21T00:00:00Z"),
     parts: [
-      { type: "text", content: "first" },
+      {
+        type: "text",
+        content: "first",
+        logical_id: "persisted-assistant:text:0:0:root",
+      },
       {
         type: "text",
         content: "already identified",
@@ -28,7 +32,13 @@ test("normalizes hydrated text with deterministic message-local ordinals", () =>
         input: "delegate",
         status: "running",
         depth: 0,
-        parts: [{ type: "text", content: "nested" }],
+        parts: [
+          {
+            type: "text",
+            content: "nested",
+            logical_id: "persisted-assistant:text:0:1:child",
+          },
+        ],
       },
     ],
   } satisfies Message;

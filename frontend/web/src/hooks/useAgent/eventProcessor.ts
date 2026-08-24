@@ -161,11 +161,20 @@ export function normalizeMessageTextLogicalIds(
         const scope = `${depth}:${agentId}`;
         const segmentOrdinal = textSegmentCounts.get(scope) ?? 0;
         textSegmentCounts.set(scope, segmentOrdinal + 1);
-        if (part.logical_id) return part;
+        const fallbackLogicalId =
+          `${message.id}:text:${segmentOrdinal}:${depth}:${agentId}`;
+        const logicalId =
+          `${rootTextOwnerId}:text:${segmentOrdinal}:${depth}:${agentId}`;
+        if (
+          part.logical_id &&
+          (part.logical_id !== fallbackLogicalId || part.logical_id === logicalId)
+        ) {
+          return part;
+        }
         changed = true;
         return {
           ...part,
-          logical_id: `${rootTextOwnerId}:text:${segmentOrdinal}:${depth}:${agentId}`,
+          logical_id: logicalId,
         };
       }
       if (part.type === "subagent" && part.parts?.length) {
