@@ -14,6 +14,7 @@ from app.mcp.application.runtime_registry import (
 from app.mcp.application.live_catalog import (
     GatewayRevisions,
     MCP_CACHE_INVALIDATION_TOKEN_HEADER,
+    read_cached_live_mcp_tool,
     service_token_matches,
 )
 from app.mcp.domain.errors import (
@@ -233,6 +234,7 @@ __all__ = [
     "parse_mcp_tool_reference",
     "preflight_mcp_admission",
     "queue_input_with_mcp_context",
+    "read_cached_live_mcp_tool",
     "record_mcp_server_credential",
     "seal_mcp_server_credentials",
     "service_token_matches",

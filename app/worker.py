@@ -73,11 +73,11 @@ from app.mcp.api import (
     get_mcp_runtime_context_manager,
     invalidate_mcp_runtime_context,
     mcp_targets_from_policy_subjects,
+    parse_mcp_tool_reference,
     persisted_mcp_context_id,
     queue_input_with_mcp_context,
+    read_cached_live_mcp_tool,
 )
-from app.mcp.application.live_catalog import read_cached_live_mcp_tool
-from app.mcp.domain.tool_references import parse_mcp_tool_reference
 from app.principal_authority import (
     CURRENT_PRINCIPAL_DENIAL_REASON,
     resolve_current_principal,

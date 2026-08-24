@@ -2,8 +2,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.mcp.api import assert_mcp_tool_reference
 from app.validation import assert_safe_id, assert_safe_principal_user_id
-from app.mcp.domain.tool_references import assert_mcp_tool_reference
 
 SUPPORTED_AGENT_EVENT_TYPES = {
     "agent_public_progress",

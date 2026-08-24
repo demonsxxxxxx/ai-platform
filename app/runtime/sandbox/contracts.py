@@ -5,8 +5,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.mcp.api import assert_mcp_tool_reference
 from app.runtime.kernel_contracts import AgentEvent
-from app.mcp.domain.tool_references import assert_mcp_tool_reference
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
 from app.validation import (
     MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
