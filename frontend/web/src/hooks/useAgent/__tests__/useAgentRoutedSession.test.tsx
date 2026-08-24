@@ -5047,6 +5047,19 @@ test("useAgent hydrates the exact terminal run compatibility history before conv
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.isLoading, false);
     assert.equal(assistant?.content, "最终答案");
+    const assistantTextParts = (assistant?.parts ?? []).filter(
+      (part) => part.type === "text",
+    );
+    assert.equal(assistantTextParts.length, 1);
+    assert.equal(
+      typeof assistantTextParts[0]?.logical_id === "string" &&
+        assistantTextParts[0].logical_id.length > 0,
+      true,
+    );
+    assert.equal(
+      new Set(assistantTextParts.map((part) => part.logical_id)).size,
+      assistantTextParts.length,
+    );
     assert.equal(user?.content, "恢复终态");
     assert.equal(
       assistant?.parts?.some(

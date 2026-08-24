@@ -58,6 +58,7 @@ export interface EventHandlerContext {
   /** v4 terminal fence: stream.end is accepted only after its terminal event. */
   v4TerminalEventIdsRef?: React.MutableRefObject<Set<string>>;
   v4TerminalFenceRef?: React.MutableRefObject<V4TerminalFence | null>;
+  v4MessageOwnerRef?: React.MutableRefObject<V4MessageOwner | null>;
   lastHistoryTimestampRef: React.MutableRefObject<Date | null>;
   activeSubagentStackRef: React.MutableRefObject<SubagentStackItem[]>;
   streamVersionRef: React.MutableRefObject<number>;
@@ -75,6 +76,37 @@ export interface EventHandlerContext {
   onRunStatusUnavailable?: (runId: string, messageId: string) => boolean;
   dismissQueueToast?: () => void;
   publicStreamPresentation?: PublicStreamPresentation;
+}
+
+export interface V4MessageOwner {
+  sessionId: string;
+  runId: string;
+  streamVersion: number;
+  streamIncarnation: number;
+  protocolMessageId: string;
+  reducerMessageId: string;
+}
+
+export function rebindV4MessageOwner(
+  ownerRef: React.MutableRefObject<V4MessageOwner | null>,
+  binding: Pick<
+    V4MessageOwner,
+    "sessionId" | "runId" | "streamVersion" | "streamIncarnation"
+  >,
+  reducerMessageId: string,
+): boolean {
+  const owner = ownerRef.current;
+  if (
+    !owner ||
+    owner.sessionId !== binding.sessionId ||
+    owner.runId !== binding.runId ||
+    owner.streamVersion !== binding.streamVersion ||
+    owner.streamIncarnation !== binding.streamIncarnation
+  ) {
+    return false;
+  }
+  owner.reducerMessageId = reducerMessageId;
+  return true;
 }
 
 export interface V4TerminalFence {
@@ -381,8 +413,47 @@ export function handlePublicRunStreamEventV4(
     ctx.v4TerminalEventIdsRef?.current.clear();
     return true;
   }
-  const projected = projectV4EventToLegacyHandler(event, messageId);
+  const owner = ctx.v4MessageOwnerRef?.current;
+  const ownerMatchesRun = Boolean(
+    owner &&
+      owner.sessionId === binding.sessionId &&
+      owner.runId === binding.runId &&
+      owner.streamVersion === binding.streamVersion &&
+      owner.streamIncarnation === binding.streamIncarnation,
+  );
+  let projectedMessageId = messageId;
+  if (event.messageId) {
+    if (ownerMatchesRun) {
+      if (owner!.protocolMessageId !== event.messageId) return false;
+      projectedMessageId = owner!.reducerMessageId;
+    } else if (event.eventType !== "message.started") {
+      // A message-scoped event cannot invent an owner before the authoritative
+      // started frame has been accepted.
+      return false;
+    }
+  } else if (ownerMatchesRun) {
+    projectedMessageId = owner!.reducerMessageId;
+  }
+  const projected = projectV4EventToLegacyHandler(event, projectedMessageId);
   if (!projected) return false;
+  const commit = (semanticApplied: boolean) => {
+    if (
+      semanticApplied &&
+      event.eventType === "message.started" &&
+      event.messageId &&
+      ctx.v4MessageOwnerRef
+    ) {
+      ctx.v4MessageOwnerRef.current = {
+        sessionId: binding.sessionId,
+        runId: binding.runId,
+        streamVersion: binding.streamVersion,
+        streamIncarnation: binding.streamIncarnation,
+        protocolMessageId: event.messageId,
+        reducerMessageId: messageId,
+      };
+    }
+    onCommitted?.(semanticApplied);
+  };
   const accepted = handleStreamEvent(
     projected.streamEvent,
     projected.messageId,
@@ -390,7 +461,7 @@ export function handlePublicRunStreamEventV4(
     event.emittedAt,
     ctx,
     binding,
-    onCommitted,
+    commit,
   );
   if (accepted && terminalEventId && ctx.v4TerminalEventIdsRef) {
     ctx.v4TerminalEventIdsRef.current.add(terminalEventId);

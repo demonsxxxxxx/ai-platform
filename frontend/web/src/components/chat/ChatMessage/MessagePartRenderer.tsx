@@ -229,6 +229,7 @@ export function MessagePartRenderer({
         args={part.args}
         result={part.result}
         success={part.success}
+        status={part.status}
         isPending={part.isPending}
         cancelled={part.cancelled}
       />
@@ -509,8 +510,10 @@ function getMessagePartObjectToken(part: MessagePart): number {
   return token;
 }
 
-function createMessagePartIdentity(part: MessagePart): string {
+function createMessagePartIdentity(part: MessagePart, index: number): string {
   switch (part.type) {
+    case "text":
+      return `${part.type}:${part.logical_id || `index-${index}`}`;
     case "artifact":
       return `${part.type}:${part.artifact_id}`;
     case "tool":
@@ -547,7 +550,7 @@ export function createMessagePartRenderKeys(
   parts: MessagePart[],
 ): string[] {
   return parts.map(
-    (part) => `${messageId}:${createMessagePartIdentity(part)}`,
+    (part, index) => `${messageId}:${createMessagePartIdentity(part, index)}`,
   );
 }
 

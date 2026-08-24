@@ -337,13 +337,14 @@ export function projectV4EventToLegacyHandler(event: V4PublicEvent, fallbackMess
   const payload = (event.event as unknown as { payload: Record<string, unknown> }).payload;
   const base = {
     event_id: event.eventId,
+    message_id: event.messageId,
     run_id: event.runId,
     sequence: event.sequence,
     timestamp: event.emittedAt,
     trace_ref: (event.event as unknown as { trace_ref: string | null }).trace_ref,
     causation_event_id: event.causationEventId,
   };
-  const messageTarget = event.messageId || fallbackMessageId;
+  const messageTarget = fallbackMessageId;
   const activity = (phase: string, message: string, severity: "info" | "warning" | "error" = "info") => ({
     event: "run_event" as const,
     data: JSON.stringify({

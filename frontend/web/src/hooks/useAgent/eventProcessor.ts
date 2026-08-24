@@ -9,6 +9,7 @@
  */
 
 import type {
+  Message,
   MessagePart,
   MessageAttachment,
   ToolCall,
@@ -125,6 +126,55 @@ const CHAT_PUBLIC_STATUS_EVENT_TYPES: ReadonlySet<string> = new Set([
 const MAX_PUBLIC_ACTIVITY_TIMELINE_PARTS = 12;
 const ACTIONABLE_PUBLIC_STATUS_PATTERN =
   /error|failed|failure|denied|blocked|forbidden|unauthori[sz]ed|cancel/i;
+
+function stableTextLogicalId(
+  data: EventData,
+  messageId: string | undefined,
+  depth: number,
+  agentId: string | undefined,
+  segmentOrdinal: number,
+): string {
+  const owner = data.message_id || messageId || "assistant";
+  return `${owner}:text:${segmentOrdinal}:${depth}:${agentId || "root"}`;
+}
+
+function rootTextSegmentCount(parts: MessagePart[]): number {
+  return parts.filter((part) => part.type === "text" && !part.depth).length;
+}
+
+export function normalizeMessageTextLogicalIds(message: Message): Message {
+  let textIndex = 0;
+  let changed = false;
+
+  const normalizeParts = (parts: MessagePart[]): MessagePart[] =>
+    parts.map((part) => {
+      if (part.type === "text") {
+        const stableIndex = textIndex;
+        textIndex += 1;
+        if (part.logical_id) return part;
+        changed = true;
+        return {
+          ...part,
+          logical_id: `${message.id}:text:${stableIndex}`,
+        };
+      }
+      if (part.type === "subagent" && part.parts?.length) {
+        const normalizedParts = normalizeParts(part.parts);
+        if (
+          normalizedParts.some(
+            (nestedPart, index) => nestedPart !== part.parts?.[index],
+          )
+        ) {
+          changed = true;
+          return { ...part, parts: normalizedParts };
+        }
+      }
+      return part;
+    });
+
+  const parts = normalizeParts(message.parts || []);
+  return changed ? { ...message, parts } : message;
+}
 
 /**
  * Unified message event processor.
@@ -252,7 +302,17 @@ export function processMessageEvent(
         data.projection_kind === "assistant_final"
       ) {
         if (depth > 0) break;
-        result.parts = replaceAssistantTextWithFinal(parts, chunkContent);
+        result.parts = replaceAssistantTextWithFinal(
+          parts,
+          chunkContent,
+          stableTextLogicalId(
+            data,
+            messageId,
+            depth,
+            agentId,
+            rootTextSegmentCount(parts),
+          ),
+        );
         result.content = chunkContent;
         break;
       }
@@ -261,6 +321,13 @@ export function processMessageEvent(
         const textPart = {
           type: "text" as const,
           content: chunkContent,
+          logical_id: stableTextLogicalId(
+            data,
+            messageId,
+            depth,
+            agentId,
+            0,
+          ),
           depth,
           agent_id: agentId,
         };
@@ -279,9 +346,28 @@ export function processMessageEvent(
           newParts[newParts.length - 1] = {
             ...lastPart,
             content: lastPart.content + chunkContent,
+            logical_id:
+              lastPart.logical_id ||
+              stableTextLogicalId(
+                data,
+                messageId,
+                depth,
+                agentId,
+                Math.max(0, rootTextSegmentCount(parts) - 1),
+              ),
           };
         } else {
-          newParts.push({ type: "text" as const, content: chunkContent });
+          newParts.push({
+            type: "text" as const,
+            content: chunkContent,
+            logical_id: stableTextLogicalId(
+              data,
+              messageId,
+              depth,
+              agentId,
+              rootTextSegmentCount(parts),
+            ),
+          });
         }
         result.parts = newParts;
         result.content = content + chunkContent;
@@ -614,7 +700,13 @@ function createPublicToolPart(data: EventData): Extract<MessagePart, { type: "to
   const displayName = typeof data.display_name === "string" ? data.display_name : "";
   const category = typeof data.category === "string" ? data.category : "";
   const status = typeof data.status === "string" ? data.status : "";
-  if (!operationId || !displayName || !category || !status) return null;
+  if (
+    !operationId ||
+    !displayName ||
+    !category ||
+    !status ||
+    !["started", "completed", "failed", "denied"].includes(status)
+  ) return null;
   const failed = status === "failed" || status === "denied";
   return {
     type: "tool",
@@ -622,14 +714,9 @@ function createPublicToolPart(data: EventData): Extract<MessagePart, { type: "to
     name: displayName,
     args: { category },
     result: typeof data.result_summary === "string" ? data.result_summary : undefined,
+    status: status as "started" | "completed" | "failed" | "denied",
     success: failed ? false : status === "completed" ? true : undefined,
-    error: failed
-      ? typeof data.failure_category === "string"
-        ? data.failure_category
-        : typeof data.denial_code === "string"
-          ? data.denial_code
-          : undefined
-      : undefined,
+    error: undefined,
     isPending: status === "started",
     cancelled: false,
     depth: typeof data.depth === "number" ? data.depth : 0,
@@ -653,23 +740,25 @@ function upsertPublicToolPart(
   );
   if (index < 0) return [...parts, next];
   const updated = [...parts];
-  updated[index] = { ...updated[index], ...next };
+  const current = updated[index];
+  if (current?.type !== "tool") return parts;
+  updated[index] = { ...current, ...next };
   return updated;
 }
 
-function acceptedSubagentIdForEvent(
+function acceptedSubagentForEvent(
   parts: MessagePart[],
   parentEventId: string,
-): string | undefined {
+): Extract<MessagePart, { type: "subagent" }> | undefined {
   for (const part of parts) {
     if (
       part.type === "subagent" &&
       (part.origin_event_id === parentEventId || part.event_id === parentEventId)
     ) {
-      return part.public_operation_id || part.agent_id;
+      return part;
     }
     if (part.type === "subagent" && part.parts) {
-      const nested = acceptedSubagentIdForEvent(part.parts, parentEventId);
+      const nested = acceptedSubagentForEvent(part.parts, parentEventId);
       if (nested) return nested;
     }
   }
@@ -723,9 +812,10 @@ function createPublicSubagentPart(
   const causationEventId = typeof data.causation_event_id === "string"
     ? data.causation_event_id
     : null;
-  const parentAgentId = causationEventId
-    ? acceptedSubagentIdForEvent(parts, causationEventId)
+  const parent = causationEventId
+    ? acceptedSubagentForEvent(parts, causationEventId)
     : undefined;
+  const parentAgentId = parent?.public_operation_id || parent?.agent_id;
   const durationMs = boundedSubagentDuration(data.duration_ms);
   const progressPercent = boundedSubagentProgress(data.progress_percent);
   const currentCategory = boundedSubagentCategory(data.current_category);
@@ -736,7 +826,11 @@ function createPublicSubagentPart(
     input: "",
     isPending: !terminal,
     status: status === "progress" ? "running" : status === "started" ? "running" : status === "completed" ? "complete" : status === "cancelled" ? "cancelled" : "error",
-    depth: typeof data.depth === "number" ? data.depth : depth,
+    depth: parent
+      ? parent.depth + 1
+      : typeof data.depth === "number"
+        ? data.depth
+        : depth,
     parts: [],
     startedAt: typeof data.timestamp === "string" ? Date.parse(data.timestamp) : undefined,
     completedAt: terminal && typeof data.timestamp === "string" ? Date.parse(data.timestamp) : undefined,
@@ -752,28 +846,75 @@ function createPublicSubagentPart(
   };
 }
 
+function updateSubagentTree(
+  parts: MessagePart[],
+  next: Extract<MessagePart, { type: "subagent" }>,
+): { parts: MessagePart[]; found: boolean } {
+  let found = false;
+  const updated = parts.map((part) => {
+    if (part.type !== "subagent") return part;
+    if (
+      part.agent_id === next.agent_id &&
+      part.public_operation_id === next.public_operation_id
+    ) {
+      found = true;
+      return {
+        ...part,
+        ...next,
+        depth: part.depth,
+        parent_agent_id: part.parent_agent_id,
+        origin_event_id: part.origin_event_id,
+        causation_event_id: part.causation_event_id,
+        parts: part.parts ?? [],
+        startedAt: part.startedAt ?? next.startedAt,
+      };
+    }
+    if (part.parts) {
+      const nested = updateSubagentTree(part.parts, next);
+      if (nested.found) {
+        found = true;
+        return { ...part, parts: nested.parts };
+      }
+    }
+    return part;
+  });
+  return { parts: updated, found };
+}
+
+function appendSubagentToParent(
+  parts: MessagePart[],
+  next: Extract<MessagePart, { type: "subagent" }>,
+): { parts: MessagePart[]; found: boolean } {
+  let found = false;
+  const updated = parts.map((part) => {
+    if (part.type !== "subagent") return part;
+    if (part.public_operation_id === next.parent_agent_id) {
+      found = true;
+      return { ...part, parts: [...(part.parts || []), next] };
+    }
+    if (part.parts) {
+      const nested = appendSubagentToParent(part.parts, next);
+      if (nested.found) {
+        found = true;
+        return { ...part, parts: nested.parts };
+      }
+    }
+    return part;
+  });
+  return { parts: updated, found };
+}
+
 function upsertPublicSubagentPart(
   parts: MessagePart[],
   next: Extract<MessagePart, { type: "subagent" }>,
 ): MessagePart[] {
-  const index = parts.findIndex(
-    (part) => part.type === "subagent" && part.agent_id === next.agent_id && part.public_operation_id === next.public_operation_id,
-  );
-  if (index < 0) return [...parts, next];
-  const updated = [...parts];
-  const previous = updated[index];
-  if (previous.type === "subagent") {
-    updated[index] = {
-      ...previous,
-      ...next,
-      parent_agent_id: previous.parent_agent_id ?? next.parent_agent_id,
-      origin_event_id: previous.origin_event_id ?? next.origin_event_id,
-      causation_event_id: previous.causation_event_id ?? next.causation_event_id,
-      parts: previous.parts,
-      startedAt: previous.startedAt ?? next.startedAt,
-    };
+  const updated = updateSubagentTree(parts, next);
+  if (updated.found) return updated.parts;
+  if (next.parent_agent_id) {
+    const nested = appendSubagentToParent(parts, next);
+    if (nested.found) return nested.parts;
   }
-  return updated;
+  return [...parts, next];
 }
 
 
@@ -997,6 +1138,7 @@ function shouldProjectRunStatus(data: EventData): boolean {
 function replaceAssistantTextWithFinal(
   parts: MessagePart[],
   content: string,
+  logicalId?: string,
 ): MessagePart[] {
   let replacedText = false;
   const converged = parts.flatMap((part): MessagePart[] => {
@@ -1016,7 +1158,12 @@ function replaceAssistantTextWithFinal(
     replacedText = true;
     return [{ ...part, content }];
   });
-  return replacedText ? converged : [...converged, { type: "text", content }];
+  return replacedText
+    ? converged
+    : [
+        ...converged,
+        { type: "text", content, logical_id: logicalId },
+      ];
 }
 
 /** Replace an existing platform artifact card by artifact id. */

@@ -189,6 +189,8 @@ export interface SummaryPart {
 export interface TextPart {
   type: "text";
   content: string;
+  /** Stable logical identity for a protocol text segment across replay/hydration. */
+  logical_id?: string;
   depth?: number;
   agent_id?: string;
 }
@@ -208,6 +210,8 @@ export interface ToolPart {
   name: string;
   args: Record<string, unknown>;
   result?: string | Record<string, unknown>;
+  /** Public lifecycle status; never expose raw tool payloads. */
+  status?: "started" | "completed" | "failed" | "denied";
   success?: boolean;
   error?: string;
   isPending?: boolean;

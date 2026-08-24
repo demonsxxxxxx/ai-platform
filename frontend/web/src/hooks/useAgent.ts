@@ -58,6 +58,7 @@ import {
   mergeHydratedRunSegment,
   prepareMessagesForRunningRun,
 } from "./useAgent/historyLoader";
+import { normalizeMessageTextLogicalIds } from "./useAgent/eventProcessor";
 import {
   beginHistoryLoad,
   isCurrentHistoryLoad,
@@ -76,9 +77,11 @@ import {
 } from "./useAgent/publicStreamPresentation";
 import { getPublicTerminalPresentationDefinition } from "./useAgent/publicTerminalPresentation";
 import {
+  rebindV4MessageOwner,
   type AcceptedRunEventSequence,
   type AcceptedStreamCursor,
   type EventHandlerContext,
+  type V4MessageOwner,
   type V4TerminalFence,
 } from "./useAgent/eventHandlers";
 import {
@@ -721,6 +724,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
   const v4TerminalEventIdsRef = useRef<Set<string>>(new Set());
   const v4TerminalFenceRef = useRef<V4TerminalFence | null>(null);
+  const v4MessageOwnerRef = useRef<V4MessageOwner | null>(null);
 
   // Track last event timestamp from history
   const lastHistoryTimestampRef = useRef<Date | null>(null);
@@ -894,6 +898,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     reconcileOwnerRef.current = null;
     terminalHydrationOwnerRef.current = null;
     replayGapRecoveryRef.current = null;
+    v4MessageOwnerRef.current = null;
   }, []);
 
   useLayoutEffect(() => {
@@ -1252,6 +1257,31 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                 message.role === "assistant" && message.runId === targetRunId,
             );
           }
+          hydratedMessages = hydratedMessages.map(normalizeMessageTextLogicalIds);
+          hydratedAssistant = [...hydratedMessages]
+            .reverse()
+            .find(
+              (message) =>
+                message.role === "assistant" && message.runId === targetRunId,
+            );
+          const streamIncarnation =
+            acceptedStreamCursorRef.current.streamIncarnation;
+          if (
+            hydratedAssistant &&
+            typeof streamIncarnation === "number" &&
+            Number.isSafeInteger(streamIncarnation)
+          ) {
+            rebindV4MessageOwner(
+              v4MessageOwnerRef,
+              {
+                sessionId: targetSessionId,
+                runId: targetRunId,
+                streamVersion,
+                streamIncarnation,
+              },
+              hydratedAssistant.id,
+            );
+          }
           setMessages((previous) =>
             mergeHydratedRunSegment(previous, hydratedMessages, targetRunId),
           );
@@ -1297,6 +1327,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       acceptedStreamCursorRef,
       v4TerminalEventIdsRef,
       v4TerminalFenceRef,
+      v4MessageOwnerRef,
       lastHistoryTimestampRef,
       activeSubagentStackRef,
       streamVersionRef,
@@ -1679,6 +1710,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               targetRunId,
             );
           }
+          reconstructedMessages = reconstructedMessages.map(
+            normalizeMessageTextLogicalIds,
+          );
 
           if (feedbackList && feedbackList.items.length > 0) {
             const feedbackMap = new Map(

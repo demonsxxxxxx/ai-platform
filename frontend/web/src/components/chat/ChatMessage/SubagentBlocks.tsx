@@ -431,6 +431,17 @@ export function SubagentBlock({
     durationMs: duration_ms,
     progressPercent: progress_percent,
   });
+  const inlineNestedParts = (parts || []).filter(
+    (part) => part.type === "subagent",
+  );
+  const inlineNestedKeys = createSubagentPartRenderKeys(
+    agent_id,
+    inlineNestedParts,
+  );
+  const inlineNestedArtifactScope = createSubagentArtifactDownloadScope(
+    artifactDownloadScope,
+    agent_id,
+  );
   // Keep sidebar panel data in sync
   useEffect(() => {
     subagentPanelStore.set({
@@ -627,6 +638,21 @@ export function SubagentBlock({
           </div>
         </div>
       </button>
+      {inlineNestedParts.length > 0 && (
+        <div data-subagent-children className="ml-4 border-l-2 border-stone-200/60 pl-2 dark:border-stone-700/50">
+          {inlineNestedParts.map((part, index) => (
+            <MessagePartRenderer
+              key={inlineNestedKeys[index]}
+              part={part}
+              messageId={createSubagentAnchorOwnerId(agent_id)}
+              partIndex={index}
+              isStreaming={isPending}
+              isLast={index === inlineNestedParts.length - 1}
+              artifactDownloadScope={inlineNestedArtifactScope}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
