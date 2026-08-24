@@ -26,7 +26,6 @@ from app.mcp.application.live_catalog import (
     service_token_matches,
 )
 from app.mcp.api import (
-    McpRelayError,
     McpRuntimeContextError,
     create_host_mcp_relay,
     discard_unbound_mcp_runtime_context,

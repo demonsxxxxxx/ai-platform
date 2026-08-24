@@ -59,7 +59,7 @@ class ValidationPipeline:
 
         report = ValidationReport()
 
-        with TemporaryDirectory() as tmp:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             extract_dir = Path(tmp) / "unpacked"
 
             try:
