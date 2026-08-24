@@ -15,7 +15,7 @@ from app.execution.api import (
     context_file_failure_log_extra,
     validated_context_file_diagnostic,
 )
-from app.streaming.application.durable_v4 import V4PublicationTransportUnavailable
+from app.streaming.api import V4PublicationTransportUnavailable
 from app.streaming.redis import (
     RedisStreamBridge,
     RunStreamPublisher,
