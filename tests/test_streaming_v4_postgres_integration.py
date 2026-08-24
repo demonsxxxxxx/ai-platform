@@ -1552,15 +1552,46 @@ async def test_successor_rebuild_rejects_noncurrent_terminal_attempt():
                   started_at, finished_at
                 )
                 select 'attempt-current', tenant_id, run_id, ordinal + 1,
-                       status, owner_kind, owner_id, owner_generation,
-                       'queue-attempt-current', 'message-current',
+                       'created', owner_kind, owner_id, 1,
+                       'queue-attempt-current', null,
                        execution_spec_schema_version, execution_spec_json,
                        execution_spec_canonical_json, execution_spec_sha256,
-                       started_at, finished_at
+                       null, null
                 from run_attempts
                 where tenant_id = %s and run_id = %s and id = %s
                 """,
                 (tenant, run, attempt),
+            )
+            for next_status in ("queued", "claimed"):
+                await conn.execute(
+                    """
+                    update run_attempts
+                    set status = %s, owner_generation = owner_generation + 1,
+                        queue_message_id = case
+                          when %s = 'queued' then 'message-current'
+                          else queue_message_id
+                        end
+                    where tenant_id = %s and id = 'attempt-current'
+                    """,
+                    (next_status, next_status, tenant),
+                )
+            await conn.execute(
+                """
+                update run_attempts
+                set status = 'running', owner_generation = owner_generation + 1,
+                    started_at = clock_timestamp()
+                where tenant_id = %s and id = 'attempt-current'
+                """,
+                (tenant,),
+            )
+            await conn.execute(
+                """
+                update run_attempts
+                set status = 'succeeded', owner_generation = owner_generation + 1,
+                    finished_at = clock_timestamp()
+                where tenant_id = %s and id = 'attempt-current'
+                """,
+                (tenant,),
             )
         rebuilds = PostgresV4SuccessorRebuilds(
             lambda: _connection_factory(dsn, schema_name),
