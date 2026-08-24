@@ -338,7 +338,6 @@ async def _terminal_rebuild_source(
     run: str,
     attempt: str,
     status: str = "succeeded",
-    later_attempt_id: str | None = None,
 ) -> None:
     run_row = await conn.execute(
         """
@@ -387,32 +386,6 @@ async def _terminal_rebuild_source(
             hashlib.sha256(spec_json.encode("utf-8")).hexdigest(),
         ),
     )
-    if later_attempt_id is not None:
-        await conn.execute(
-            """
-            insert into run_attempts(
-              id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
-              owner_generation, queue_attempt_id, queue_message_id,
-              execution_spec_schema_version, execution_spec_json,
-              execution_spec_canonical_json, execution_spec_sha256,
-              started_at, finished_at
-            )
-            select %s, tenant_id, run_id, ordinal + 1, 'created',
-                   owner_kind, owner_id, 1, %s, null,
-                   execution_spec_schema_version, execution_spec_json,
-                   execution_spec_canonical_json, execution_spec_sha256,
-                   null, null
-            from run_attempts
-            where tenant_id = %s and run_id = %s and id = %s
-            """,
-            (
-                later_attempt_id,
-                f"queue_{later_attempt_id}",
-                tenant,
-                run,
-                attempt,
-            ),
-        )
     if status == "cancelled":
         await conn.execute(
             """
@@ -1568,7 +1541,65 @@ async def test_successor_rebuild_rejects_noncurrent_terminal_attempt():
                 tenant=tenant,
                 run=run,
                 attempt=attempt,
-                later_attempt_id="attempt-current",
+            )
+            await conn.execute(
+                """
+                update runs
+                set status = 'queued', started_at = null, finished_at = null
+                where tenant_id = %s and id = %s
+                """,
+                (tenant, run),
+            )
+            await conn.execute(
+                """
+                insert into run_attempts(
+                  id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
+                  owner_generation, queue_attempt_id, queue_message_id,
+                  execution_spec_schema_version, execution_spec_json,
+                  execution_spec_canonical_json, execution_spec_sha256,
+                  started_at, finished_at
+                )
+                select 'attempt-current', tenant_id, run_id, ordinal + 1,
+                       'created', owner_kind, owner_id, 1,
+                       'queue-attempt-current', null,
+                       execution_spec_schema_version, execution_spec_json,
+                       execution_spec_canonical_json, execution_spec_sha256,
+                       null, null
+                from run_attempts
+                where tenant_id = %s and run_id = %s and id = %s
+                """,
+                (tenant, run, attempt),
+            )
+            for next_status in ("queued", "claimed"):
+                await conn.execute(
+                    """
+                    update run_attempts
+                    set status = %s, owner_generation = owner_generation + 1,
+                        queue_message_id = case
+                          when %s = 'queued' then 'message-current'
+                          else queue_message_id
+                        end
+                    where tenant_id = %s and id = 'attempt-current'
+                    """,
+                    (next_status, next_status, tenant),
+                )
+            await conn.execute(
+                """
+                update run_attempts
+                set status = 'running', owner_generation = owner_generation + 1,
+                    started_at = clock_timestamp()
+                where tenant_id = %s and id = 'attempt-current'
+                """,
+                (tenant,),
+            )
+            await conn.execute(
+                """
+                update run_attempts
+                set status = 'succeeded', owner_generation = owner_generation + 1,
+                    finished_at = clock_timestamp()
+                where tenant_id = %s and id = 'attempt-current'
+                """,
+                (tenant,),
             )
         rebuilds = PostgresV4SuccessorRebuilds(
             lambda: _connection_factory(dsn, schema_name),
