@@ -16,7 +16,7 @@ from typing import Any
 
 from redis.exceptions import ResponseError
 
-from app.run_projection import CHAT_PUBLIC_PROJECTION_VERSION, public_terminal_projection
+from app.runs.api import CHAT_PUBLIC_PROJECTION_VERSION, public_terminal_projection
 from app.streaming import postgres
 from app.streaming.api import (
     ResumeDecision,
