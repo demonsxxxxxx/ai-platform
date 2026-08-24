@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
 import hashlib
 import json
@@ -1200,6 +1200,93 @@ async def test_successor_rebuild_prepares_terminal_snapshot_without_activation()
                 "authorization_epoch": 4,
                 "state": "terminal",
             }
+
+
+@pytest.mark.asyncio
+async def test_successor_rebuild_locks_run_before_stream_authority():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _terminal_rebuild_source(
+                conn, tenant=tenant, run=run, attempt=attempt
+            )
+
+        @asynccontextmanager
+        async def claim_factory():
+            conn = await psycopg.AsyncConnection.connect(
+                dsn,
+                options=(
+                    f"-c search_path={schema_name} "
+                    "-c application_name=i1187_b2a_claim"
+                ),
+                row_factory=dict_row,
+            )
+            try:
+                async with conn.transaction():
+                    yield conn
+            finally:
+                await conn.close()
+
+        rebuilds = PostgresV4SuccessorRebuilds(
+            claim_factory,
+            claim_token_factory=lambda: "rebuild-token-lock-order",
+        )
+        blocker = await psycopg.AsyncConnection.connect(
+            dsn,
+            options=f"-c search_path={schema_name}",
+            row_factory=dict_row,
+        )
+        claim_task: asyncio.Task[object] | None = None
+        try:
+            async with blocker.transaction():
+                await blocker.execute(
+                    "select id from runs where tenant_id = %s and id = %s for update",
+                    (tenant, run),
+                )
+                claim_task = asyncio.create_task(
+                    prepare_v4_successor_rebuild(
+                        rebuilds,
+                        tenant_id=tenant,
+                        run_id=run,
+                        attempt_id=attempt,
+                        source_incarnation=2,
+                        claim_ttl=timedelta(seconds=30),
+                    )
+                )
+                async with _connection_factory(dsn, schema_name) as observer:
+                    for _ in range(50):
+                        waiting = await observer.execute(
+                            """
+                            select wait_event_type
+                            from pg_stat_activity
+                            where application_name = 'i1187_b2a_claim'
+                            """
+                        )
+                        row = await waiting.fetchone()
+                        if row is not None and row["wait_event_type"] == "Lock":
+                            break
+                        await asyncio.sleep(0.02)
+                    else:
+                        pytest.fail("successor claim did not block on the Run lock")
+                    authority = await observer.execute(
+                        """
+                        select stream_incarnation
+                        from sse_stream_authorities
+                        where tenant_id = %s and run_id = %s
+                        for update nowait
+                        """,
+                        (tenant, run),
+                    )
+                    assert await authority.fetchone() == {"stream_incarnation": 2}
+                    assert claim_task.done() is False
+            claim = await claim_task
+        finally:
+            if claim_task is not None and not claim_task.done():
+                claim_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await claim_task
+            await blocker.close()
+        assert claim is not None
+        assert claim.successor_incarnation == 3
 
 
 @pytest.mark.asyncio
