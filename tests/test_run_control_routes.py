@@ -11,6 +11,7 @@ from app.auth import AuthPrincipal
 from app.main import create_app
 from app.queue import QueueAdmissionMetadata
 from app.repositories import RepositoryAuthorizationError, RepositoryConflictError
+from app.routes import sandbox_runtime_cleanup
 from app.runs.api import RunTerminalizationProgress
 from app.skills.pinning import build_skill_manifest_ref
 
@@ -6124,7 +6125,7 @@ def test_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -6202,7 +6203,7 @@ def test_cancel_run_ignores_user_controlled_sandbox_container_payload(monkeypatc
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -6253,7 +6254,7 @@ def test_cancel_run_uses_platform_verified_runtime_handle_not_user_payload(monke
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -6308,7 +6309,7 @@ def test_cancel_run_rejects_active_lease_without_platform_verified_runtime_handl
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -6359,7 +6360,7 @@ def test_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -6391,7 +6392,7 @@ def test_cancel_run_surfaces_unsupported_sandbox_provider_without_db_release(mon
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -6431,7 +6432,7 @@ def test_cancel_run_releases_successfully_stopped_leases_before_reporting_mixed_
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -6521,7 +6522,7 @@ def test_admin_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeyp
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.admin_runs.repositories.request_admin_run_cancel", fake_request_admin_run_cancel)
     monkeypatch.setattr(
-        "app.routes.admin_runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.admin_runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -6576,7 +6577,7 @@ def test_admin_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.admin_runs.repositories.request_admin_run_cancel", fake_request_admin_run_cancel)
     monkeypatch.setattr(
-        "app.routes.admin_runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.admin_runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -6616,7 +6617,7 @@ def test_admin_cancel_run_surfaces_cleanup_persistence_outage(monkeypatch):
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.admin_runs.repositories.request_admin_run_cancel", fake_request_admin_run_cancel)
     monkeypatch.setattr(
-        "app.routes.admin_runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.admin_runs.release_stopped_sandbox_leases_for_cancel",
         lambda *args, **kwargs: None,
         raising=False,
     )
@@ -6662,7 +6663,7 @@ def test_admin_cancel_run_releases_successfully_stopped_leases_before_reporting_
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.admin_runs.repositories.request_admin_run_cancel", fake_request_admin_run_cancel)
     monkeypatch.setattr(
-        "app.routes.admin_runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.admin_runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -6841,8 +6842,6 @@ async def test_request_run_cancel_allows_cancelled_run_with_active_sandbox_lease
 
 @pytest.mark.asyncio
 async def test_release_stopped_sandbox_leases_for_cancel_releases_only_stopped_lease_ids_and_emits_events(monkeypatch):
-    from app import repositories
-
     calls = []
 
     class LeaseCursor:
@@ -6855,7 +6854,13 @@ async def test_release_stopped_sandbox_leases_for_cancel_releases_only_stopped_l
             calls.append((normalized, params))
             if normalized.startswith("update sandbox_leases"):
                 assert "id = any(%s)" in normalized
-                assert params == ("cancel_requested", "default", "run_active", ["lease-a"])
+                assert params == (
+                    "cancel_requested",
+                    "default",
+                    "run_active",
+                    "run_active",
+                    ["lease-a"],
+                )
                 return LeaseCursor()
             raise AssertionError(f"unexpected sql: {normalized}")
 
@@ -6865,7 +6870,7 @@ async def test_release_stopped_sandbox_leases_for_cancel_releases_only_stopped_l
 
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
 
-    released = await repositories.release_stopped_sandbox_leases_for_cancel(
+    released = await sandbox_runtime_cleanup.release_stopped_sandbox_leases_for_cancel(
         FakeConnection(),
         tenant_id="default",
         run_id="run_active",
@@ -6878,7 +6883,14 @@ async def test_release_stopped_sandbox_leases_for_cancel_releases_only_stopped_l
     lease_updates = [call for call in calls if isinstance(call[0], str) and call[0].startswith("update sandbox_leases")]
     assert len(lease_updates) == 1
     assert "status = 'active'" in lease_updates[0][0]
-    assert lease_updates[0][1] == ("cancel_requested", "default", "run_active", ["lease-a"])
+    assert "executor_terminal_json is null" in lease_updates[0][0]
+    assert lease_updates[0][1] == (
+        "cancel_requested",
+        "default",
+        "run_active",
+        "run_active",
+        ["lease-a"],
+    )
     release_event = next(item for item in calls if item[0] == "event" and item[1]["event_type"] == "sandbox_lease_released")
     assert release_event[1]["trace_id"] == "trace_lease_a"
     assert release_event[1]["payload"] == {
@@ -7352,8 +7364,6 @@ async def test_request_admin_run_cancel_allows_cancelled_run_with_active_sandbox
 
 @pytest.mark.asyncio
 async def test_release_stopped_sandbox_leases_for_admin_cancel_emits_admin_role(monkeypatch):
-    from app import repositories
-
     calls = []
 
     class LeaseCursor:
@@ -7374,7 +7384,7 @@ async def test_release_stopped_sandbox_leases_for_admin_cancel_emits_admin_role(
 
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
 
-    released = await repositories.release_stopped_sandbox_leases_for_cancel(
+    released = await sandbox_runtime_cleanup.release_stopped_sandbox_leases_for_cancel(
         FakeConnection(),
         tenant_id="default",
         run_id="run_active",
@@ -7387,7 +7397,14 @@ async def test_release_stopped_sandbox_leases_for_admin_cancel_emits_admin_role(
     assert released == [{"id": "lease-admin", "trace_id": None}]
     lease_updates = [call for call in calls if isinstance(call[0], str) and call[0].startswith("update sandbox_leases")]
     assert len(lease_updates) == 1
-    assert lease_updates[0][1] == ("admin_cancel_requested", "default", "run_active", ["lease-admin"])
+    assert "executor_terminal_json is null" in lease_updates[0][0]
+    assert lease_updates[0][1] == (
+        "admin_cancel_requested",
+        "default",
+        "run_active",
+        "run_active",
+        ["lease-admin"],
+    )
     release_event = next(item for item in calls if item[0] == "event" and item[1]["event_type"] == "sandbox_lease_released")
     assert release_event[1]["trace_id"] == "trace_run_active"
     assert release_event[1]["payload"] == {

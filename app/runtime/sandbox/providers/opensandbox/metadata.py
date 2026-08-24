@@ -71,7 +71,10 @@ def opensandbox_metadata_matches(
     except OpenSandboxMetadataError:
         return False
     for key, value in normalized.items():
-        if key not in ignored_keys and str(observed.get(key) or "") != value:
+        if key in ignored_keys:
+            continue
+        observed_value = observed.get(key)
+        if not isinstance(observed_value, str) or observed_value != value:
             return False
     return True
 

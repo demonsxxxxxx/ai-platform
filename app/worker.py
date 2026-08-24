@@ -365,8 +365,7 @@ async def _reconcile_multi_agent_child_terminal_state(
 
 
 async def _finalize_multi_agent_parent_after_child_commit(
-    payload: QueueRunPayload,
-    reconciled: Any | None,
+    transaction_factory, payload: QueueRunPayload, reconciled: Any | None,
 ) -> Any | None:
     """Use the shared post-commit owner for worker child reconciliation and parent rollup."""
 
@@ -376,7 +375,7 @@ async def _finalize_multi_agent_parent_after_child_commit(
         tenant_id=payload.tenant_id,
         run_id=payload.run_id,
         progress=reconciled,
-        transaction_factory=transaction,
+        transaction_factory=transaction_factory,
     )
 
 
@@ -1820,7 +1819,7 @@ async def _release_worker_runtime_sandbox_lease(
 ) -> None:
     if lease is None:
         return
-    await repositories.release_sandbox_lease(
+    await sandbox_lease_repository.release_sandbox_lease(
         conn,
         tenant_id=lease.tenant_id,
         user_id=lease.user_id,
@@ -1924,7 +1923,9 @@ async def process_run_payload(
     *,
     worker_id: str | None = None,
     reconciliation: _WorkerExecutorReconciliation | None = None,
+    transaction_factory: Any | None = None,
 ) -> WorkerOutcome:
+    transaction = transaction_factory if transaction_factory is not None else globals()["transaction"]
     try:
         envelope = parse_leased_queue_envelope(raw)
     except InvalidLeasedQueueEnvelope as exc:
@@ -2350,6 +2351,7 @@ async def process_run_payload(
         if terminal_after_transaction is not None:
             try:
                 await _finalize_multi_agent_parent_after_child_commit(
+                    transaction,
                     terminal_after_transaction.payload,
                     terminal_after_transaction.reconciled_parent,
                 )
@@ -2741,7 +2743,7 @@ async def process_run_payload(
             )
             if locked_run is None or str(locked_run.get("status") or "") in {"succeeded", "failed", "cancelled"}:
                 raise _WorkerSuccessCommitBlocked()
-            if reconciliation is not None and not await sandbox_lease_repository.has_sandbox_executor_reconciliation_claim(
+            if reconciliation is not None and not await sandbox_lease_repository.is_sandbox_executor_reconciliation_claim_current(
                 conn,
                 lease_id=str(reconciliation.lease_row["id"]),
                 claim_token=reconciliation.claim_token,
@@ -3213,12 +3215,12 @@ async def reconcile_executor_terminal_result(
     registry: AdapterRegistry | None = None,
     worker_id: str | None = None,
     claim_token: str,
+    transaction_factory: Any | None = None,
 ) -> WorkerOutcome:
     context = lease_row.get("executor_reconciliation_context_json")
     if not isinstance(context, dict):
         raise ValueError("executor_reconciliation_context_missing")
-    adapter_context = context.get("adapter_context")
-    if not isinstance(adapter_context, dict):
+    if not isinstance(context.get("adapter_context"), dict):
         raise ValueError("executor_reconciliation_adapter_context_missing")
     run_payload_value = context.get("run_payload")
     if not isinstance(run_payload_value, dict):
@@ -3256,9 +3258,6 @@ async def reconcile_executor_terminal_result(
         },
         registry,
         worker_id=worker_id,
-        reconciliation=_WorkerExecutorReconciliation(
-            result=result,
-            lease_row=lease_row,
-            claim_token=claim_token,
-        ),
+        reconciliation=_WorkerExecutorReconciliation(result, lease_row, claim_token),
+        transaction_factory=transaction_factory,
     )

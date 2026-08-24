@@ -1003,7 +1003,7 @@ def default_cancel_not_requested(monkeypatch):
         "app.worker.sandbox_lease_repository.create_sandbox_lease",
         create_sandbox_lease,
     )
-    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease, raising=False)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease, raising=False)
 
     async def resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         ragflow_skill = skill_id == "ragflow-knowledge-search"
@@ -1597,9 +1597,17 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
 ):
     captured = []
 
-    async def capture_payload(raw, registry, *, worker_id, reconciliation):
+    async def capture_payload(
+        raw,
+        registry,
+        *,
+        worker_id,
+        reconciliation,
+        transaction_factory,
+    ):
         del registry, reconciliation
         assert worker_id == "worker-a"
+        assert transaction_factory is None
         assert raw["_queue_attempt_id"] == "attempt-a"
         queue_payload = QueueRunPayload.model_validate(
             {key: value for key, value in raw.items() if key != "_queue_attempt_id"}
@@ -1711,13 +1719,16 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         assert kwargs == {"lease_id": "lease-a", "claim_token": "claim-a"}
         return True
 
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    def unexpected_transaction():
+        raise AssertionError("reconciliation must use the claim-owning transaction factory")
+
+    monkeypatch.setattr("app.worker.transaction", unexpected_transaction)
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr(
-        "app.worker.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
+        "app.worker.sandbox_lease_repository.is_sandbox_executor_reconciliation_claim_current",
         has_reconciliation_claim,
     )
     monkeypatch.setattr(
@@ -1791,6 +1802,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         registry=AdapterRegistry({"claude-agent-worker": SuccessfulExecutorStub()}),
         worker_id="worker-a",
         claim_token="claim-a",
+        transaction_factory=fake_transaction,
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
@@ -1854,7 +1866,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr(
-        "app.worker.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
+        "app.worker.sandbox_lease_repository.is_sandbox_executor_reconciliation_claim_current",
         has_reconciliation_claim,
     )
 
@@ -3238,7 +3250,7 @@ async def test_worker_does_not_append_success_terminal_events_when_run_is_alread
     monkeypatch.setattr("app.worker.repositories.classify_success_commit_block", classify_success_commit_block, raising=False)
     monkeypatch.setattr("app.worker.drain_run_tool_permission_terminalization", drain_terminalization)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
 
@@ -3536,7 +3548,7 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
@@ -3772,7 +3784,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": RaisingAdapter()}))
 
@@ -3825,7 +3837,7 @@ async def test_worker_persists_native_tool_admission_failure_as_safe_stage_code(
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(),
@@ -3882,7 +3894,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_adapter_reports_failur
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FailingExecutorStub()}))
 
@@ -3924,7 +3936,7 @@ async def test_worker_does_not_append_failure_terminal_events_when_run_is_alread
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
     monkeypatch.setattr("app.worker.drain_run_tool_permission_terminalization", drain_terminalization)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FailingExecutorStub()}))
@@ -3989,7 +4001,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_cancelled_on_event_bou
     monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": StreamingAdapter()}))
 
@@ -4214,7 +4226,7 @@ async def test_worker_does_not_append_cancel_terminal_event_when_cancel_update_i
     monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": RaisingAdapter()}))
 
@@ -4374,7 +4386,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_terminal_persistence_r
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
     with pytest.raises(RuntimeError, match="terminal write failed"):
         await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
@@ -4421,10 +4433,16 @@ async def test_worker_reconciles_multi_agent_child_after_success(monkeypatch):
         return True
 
     async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
+        assert transaction_factory is fake_transaction
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    @asynccontextmanager
+    async def forbidden_module_transaction():
+        raise AssertionError("multi-agent reconciliation bypassed the injected transaction factory")
+        yield
+
+    monkeypatch.setattr("app.worker.transaction", forbidden_module_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
@@ -4435,6 +4453,7 @@ async def test_worker_reconciles_multi_agent_child_after_success(monkeypatch):
     outcome = await process_run_payload(
         base_payload(run_id="run-child", skill_id="general-chat", agent_id="general-agent", input=child_input),
         AdapterRegistry({"fake": SuccessfulExecutorStub()}),
+        transaction_factory=fake_transaction,
     )
 
     assert outcome.status == "succeeded"
@@ -7707,7 +7726,7 @@ async def test_worker_waits_for_non_cooperative_adapter_before_cancel_terminal_a
         get_context_snapshot_for_worker,
     )
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
     original_submit_until_cancelled = worker_module._submit_run_until_cancelled
 
@@ -9140,7 +9159,7 @@ def _install_task6_worker_fakes(
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
     monkeypatch.setattr("app.worker._get_live_mcp_tool_metadata", get_live_mcp_tool_metadata)
 
     raw = base_payload(

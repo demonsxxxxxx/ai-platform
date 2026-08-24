@@ -78,6 +78,12 @@ CRITICAL_COLUMNS = (
     ("sandbox_leases", "executor_reconciliation_claim_token", "text", False),
     ("sandbox_leases", "executor_reconciliation_claimed_at", "timestamptz", False),
     ("sandbox_leases", "executor_reconciliation_attempt_count", "int4", True),
+    (
+        "sandbox_leases",
+        "executor_terminal_reconciliation_attempt_count",
+        "int4",
+        True,
+    ),
     ("sandbox_leases", "executor_reconciliation_error", "text", True),
     ("sandbox_leases", "executor_reconciled_at", "timestamptz", False),
     ("runs", "mcp_context_id", "text", False),
@@ -181,7 +187,7 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "c",
         "CHECK (executor_reconciliation_status = ANY (ARRAY["
         "'waiting_terminal'::text, 'pending'::text, 'claimed'::text, "
-        "'retry'::text, 'finalized'::text]))",
+        "'retry'::text, 'finalized'::text, 'failed'::text]))",
     ),
 )
 

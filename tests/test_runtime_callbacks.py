@@ -184,8 +184,6 @@ def test_parallel_same_run_attempts_each_use_their_exact_lease_and_token(monkeyp
     assert crossed.status_code == 401
     assert lease_checks == [
         ("tenant-a", "run-a", "attempt-a"),
-        ("tenant-a", "run-a", "attempt-a"),
-        ("tenant-a", "run-a", "attempt-b"),
         ("tenant-a", "run-a", "attempt-b"),
     ]
     assert [event["payload"]["attempt_id"] for event in events] == ["attempt-a", "attempt-b"]
@@ -216,6 +214,48 @@ async def test_current_runtime_lease_query_locks_only_the_exact_attempt():
     assert "lease_payload_json ->> 'attempt_id' = %s" in query
     assert "status = 'active'" in query and "for update" in query
     assert parameters == ("tenant-a", "run-a", "attempt-b")
+
+
+@pytest.mark.asyncio
+async def test_runtime_callback_locks_exact_attempt_before_run(monkeypatch):
+    from app.routes import runtime_callbacks
+
+    calls = []
+
+    async def get_run_identity(_conn, *, run_id, for_update=False):
+        calls.append("run_lock" if for_update else "run_read")
+        return {
+            "tenant_id": "tenant-a",
+            "session_id": "session-a",
+            "status": "running",
+        }
+
+    async def list_current_leases(_conn, **_kwargs):
+        calls.append("lease_lock")
+        return [
+            {
+                "attempt_id": "attempt-a",
+                "lease_payload_json": {"attempt_id": "attempt-a"},
+            }
+        ]
+
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "list_current_sandbox_runtime_leases_for_attempt",
+        list_current_leases,
+    )
+
+    locked_run, lease = await runtime_callbacks._lock_current_runtime_attempt_then_run(
+        object(),
+        run_id="run-a",
+        attempt_id="attempt-a",
+        session_id="session-a",
+    )
+
+    assert locked_run["tenant_id"] == "tenant-a"
+    assert lease["attempt_id"] == "attempt-a"
+    assert calls == ["run_read", "lease_lock", "run_lock"]
 
 
 def test_executor_callback_rejects_duplicate_exact_attempt_leases(monkeypatch):
@@ -667,7 +707,7 @@ def test_executor_callback_rejects_session_mismatch(monkeypatch):
 
     assert response.status_code == 409
     assert response.json() == {"detail": "callback_session_mismatch"}
-    assert calls == [("identity", "run-a", True)]
+    assert calls == [("identity", "run-a", False)]
 
 
 def test_executor_callback_rejects_late_callback_for_terminal_run(monkeypatch):
@@ -703,7 +743,7 @@ def test_executor_callback_rejects_late_callback_for_terminal_run(monkeypatch):
 
     assert response.status_code == 409
     assert response.json() == {"detail": "run_already_terminal"}
-    assert calls == [("identity", "run-a", True)]
+    assert calls == [("identity", "run-a", False)]
 
 
 def test_executor_callback_persists_typed_events_with_standard_stages(monkeypatch):
@@ -1171,7 +1211,7 @@ def test_executor_callback_suppresses_delta_if_run_terminalizes_after_receipt_co
             "tenant_id": "tenant-a",
             "id": run_id,
             "session_id": "session-a",
-            "status": "running" if identity_reads == 1 else "succeeded",
+            "status": "running" if identity_reads <= 2 else "succeeded",
         }
 
     async def append_batch(conn, **receipt):
@@ -1197,7 +1237,7 @@ def test_executor_callback_suppresses_delta_if_run_terminalizes_after_receipt_co
         "executor_callback",
         "assistant_delta",
     ]
-    assert identity_reads == 2
+    assert identity_reads == 3
     assert published == []
 
 
