@@ -173,7 +173,7 @@ async def _seed_run(conn: psycopg.AsyncConnection, suffix: str) -> tuple[str, st
           id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
           trace_id, sandbox_mode, provider, status, expires_at, lease_payload_json
         ) values ('lease', %s, %s, %s, %s, %s, %s, %s, 'chat', 'fake', 'active',
-                  now() + interval '15 minutes', jsonb_build_object('attempt_id', %s))
+                  now() + interval '15 minutes', jsonb_build_object('attempt_id', %s::text))
         """,
         (tenant, workspace, user, session, run, attempt, f"trace_{run}", attempt),
     )
