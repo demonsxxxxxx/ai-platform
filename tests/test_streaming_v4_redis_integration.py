@@ -125,18 +125,17 @@ async def test_real_redis_rejects_v3_append_to_v4_phase_without_mutation():
 
 
 @pytest.mark.asyncio
-async def test_real_redis_append_keeps_same_event_identity_across_semantic_retry():
+async def test_real_redis_append_reuses_one_receipt_across_semantic_retry():
     client, key, state_key, bridge = await _stream()
     event = _envelope(event_id="evt4_retry")
     try:
         first = await bridge.append(event)
         second = await bridge.append(event)
-        assert first != second
+        assert second == first
         rows = await client.xrange(key, min="-", max="+")
-        assert len(rows) == 2
+        assert len(rows) == 1
         decoded = [json.loads(fields["envelope"]) for _, fields in rows]
-        assert [item["event_id"] for item in decoded] == ["evt4_retry", "evt4_retry"]
-        assert decoded[0] == decoded[1]
+        assert [item["event_id"] for item in decoded] == ["evt4_retry"]
         for item in decoded:
             public = project_public_envelope_v4(item)
             assert public is not None
