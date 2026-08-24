@@ -1210,16 +1210,19 @@ async def test_successor_rebuild_locks_run_before_stream_authority():
                 conn, tenant=tenant, run=run, attempt=attempt
             )
 
+        claim_connected = asyncio.Event()
+        claim_backend_pid: int | None = None
+
         @asynccontextmanager
         async def claim_factory():
+            nonlocal claim_backend_pid
             conn = await psycopg.AsyncConnection.connect(
                 dsn,
-                options=(
-                    f"-c search_path={schema_name} "
-                    "-c application_name=i1187_b2a_claim"
-                ),
+                options=f"-c search_path={schema_name}",
                 row_factory=dict_row,
             )
+            claim_backend_pid = conn.info.backend_pid
+            claim_connected.set()
             try:
                 async with conn.transaction():
                     yield conn
@@ -1252,14 +1255,17 @@ async def test_successor_rebuild_locks_run_before_stream_authority():
                         claim_ttl=timedelta(seconds=30),
                     )
                 )
+                await asyncio.wait_for(claim_connected.wait(), timeout=5)
+                assert claim_backend_pid is not None
                 async with _connection_factory(dsn, schema_name) as observer:
-                    for _ in range(50):
+                    for _ in range(250):
                         waiting = await observer.execute(
                             """
                             select wait_event_type
                             from pg_stat_activity
-                            where application_name = 'i1187_b2a_claim'
-                            """
+                            where pid = %s
+                            """,
+                            (claim_backend_pid,),
                         )
                         row = await waiting.fetchone()
                         if row is not None and row["wait_event_type"] == "Lock":
