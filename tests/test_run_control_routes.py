@@ -11,7 +11,92 @@ from app.main import create_app
 from app.queue import QueueAdmissionMetadata
 from app.repositories import RepositoryAuthorizationError, RepositoryConflictError
 from app.runs.api import RunTerminalizationProgress
+from app.runs.application.cancellation import RunCancellationUseCase
+from app.runs.infrastructure.postgres import PostgresRunCancellationPersistence
 from app.skills.pinning import build_skill_manifest_ref
+
+
+class _RouteCancellationReceipt:
+    def __init__(self, value):
+        self._value = value
+
+    def as_route_result(self):
+        return dict(self._value)
+
+
+class _RouteCancellationAdapter:
+    async def request_owner_cancel(self, *, tenant_id, owner_user_id, run_id):
+        handler = getattr(repository_module, "_test_owner_cancel")
+        value = await handler(None, tenant_id=tenant_id, user_id=owner_user_id, run_id=run_id)
+        return _RouteCancellationReceipt(value) if value is not None else None
+
+    async def request_admin_cancel(self, *, tenant_id, admin_user_id, run_id):
+        handler = getattr(repository_module, "_test_admin_cancel")
+        value = await handler(None, tenant_id=tenant_id, admin_user_id=admin_user_id, run_id=run_id)
+        return _RouteCancellationReceipt(value) if value is not None else None
+
+
+class _NoOpCancellationEventWriter:
+    async def append_cancel_requested(self, conn, **kwargs):
+        return None
+
+
+async def _request_owner_cancel(conn, *, tenant_id, user_id, run_id):
+    @asynccontextmanager
+    async def transaction_factory():
+        yield conn
+
+    use_case = RunCancellationUseCase(
+        transaction_factory=transaction_factory,
+        persistence=PostgresRunCancellationPersistence(
+            append_event=repository_module.append_event,
+            append_audit_log=repository_module.append_audit_log,
+            list_active_sandbox_leases=repository_module.list_active_sandbox_leases_for_run,
+        ),
+        event_writer=_NoOpCancellationEventWriter(),
+        progress_terminalization=repository_module.progress_run_tool_permission_terminalization,
+    )
+    result = await use_case.request_owner_cancel(
+        tenant_id=tenant_id,
+        owner_user_id=user_id,
+        run_id=run_id,
+    )
+    return result.as_route_result() if result is not None else None
+
+
+async def _request_admin_cancel(conn, *, tenant_id, admin_user_id, run_id):
+    @asynccontextmanager
+    async def transaction_factory():
+        yield conn
+
+    use_case = RunCancellationUseCase(
+        transaction_factory=transaction_factory,
+        persistence=PostgresRunCancellationPersistence(
+            append_event=repository_module.append_event,
+            append_audit_log=repository_module.append_audit_log,
+            list_active_sandbox_leases=repository_module.list_active_sandbox_leases_for_run,
+        ),
+        event_writer=_NoOpCancellationEventWriter(),
+        progress_terminalization=repository_module.progress_run_tool_permission_terminalization,
+    )
+    result = await use_case.request_admin_cancel(
+        tenant_id=tenant_id,
+        admin_user_id=admin_user_id,
+        run_id=run_id,
+    )
+    return result.as_route_result() if result is not None else None
+
+
+@pytest.fixture(autouse=True)
+def _install_route_cancellation_adapter(monkeypatch):
+    async def missing_cancel(*_args, **_kwargs):
+        return None
+
+    adapter = _RouteCancellationAdapter()
+    monkeypatch.setattr(repository_module, "_test_owner_cancel", missing_cancel, raising=False)
+    monkeypatch.setattr(repository_module, "_test_admin_cancel", missing_cancel, raising=False)
+    monkeypatch.setattr("app.routes.runs._require_run_cancellation_use_case", lambda _request: adapter)
+    monkeypatch.setattr("app.routes.admin_runs._require_run_cancellation_use_case", lambda _request: adapter)
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +113,7 @@ def _stub_permission_terminalization_for_run_control_mocks(monkeypatch):
         )
 
     monkeypatch.setattr(repository_module, "_stage_run_tool_permission_terminalization", stage)
+    monkeypatch.setattr("app.runs.infrastructure.postgres._stage_run_tool_permission_terminalization", stage)
     monkeypatch.setattr(repository_module, "progress_run_tool_permission_terminalization", progress)
 
 
@@ -5590,7 +5676,7 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
     client = TestClient(create_app())
 
     response = client.post("/api/ai/runs/run_active/cancel", headers=headers())
@@ -5600,11 +5686,10 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("module_path", "cancel_name", "path", "is_admin", "initial_progress", "drained_progress", "expected_status", "expected_calls"),
+    ("module_path", "path", "is_admin", "initial_progress", "drained_progress", "expected_status", "expected_calls"),
     [
         (
             "app.routes.runs",
-            "request_run_cancel",
             "/api/ai/runs/run_active/cancel",
             False,
             RunTerminalizationProgress(True, "cancelled", True, True),
@@ -5614,7 +5699,6 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
         ),
         (
             "app.routes.admin_runs",
-            "request_admin_run_cancel",
             "/api/ai/admin/runs/run_active/cancel",
             True,
             RunTerminalizationProgress(True, "cancelled", True, True),
@@ -5624,7 +5708,6 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
         ),
         (
             "app.routes.runs",
-            "request_run_cancel",
             "/api/ai/runs/run_active/cancel",
             False,
             RunTerminalizationProgress(False, "cancelled"),
@@ -5634,7 +5717,6 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
         ),
         (
             "app.routes.admin_runs",
-            "request_admin_run_cancel",
             "/api/ai/admin/runs/run_active/cancel",
             True,
             RunTerminalizationProgress(False, "cancelled"),
@@ -5644,7 +5726,6 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
         ),
         (
             "app.routes.runs",
-            "request_run_cancel",
             "/api/ai/runs/run_active/cancel",
             False,
             RunTerminalizationProgress(False, "cancel_requested"),
@@ -5654,7 +5735,6 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
         ),
         (
             "app.routes.admin_runs",
-            "request_admin_run_cancel",
             "/api/ai/admin/runs/run_active/cancel",
             True,
             RunTerminalizationProgress(False, "cancel_requested"),
@@ -5668,7 +5748,6 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
 def test_cancel_routes_reconcile_only_the_final_typed_terminalization_progress(
     monkeypatch,
     module_path,
-    cancel_name,
     path,
     is_admin,
     initial_progress,
@@ -5700,7 +5779,8 @@ def test_cancel_routes_reconcile_only_the_final_typed_terminalization_progress(
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr(f"{module_path}.transaction", fake_transaction)
-    monkeypatch.setattr(f"{module_path}.repositories.{cancel_name}", fake_request_cancel)
+    cancel_hook = "_test_admin_cancel" if is_admin else "_test_owner_cancel"
+    monkeypatch.setattr(repository_module, cancel_hook, fake_request_cancel)
     monkeypatch.setattr(f"{module_path}.drain_run_tool_permission_terminalization", drain)
     monkeypatch.setattr(f"{module_path}.reconcile_terminalized_permission_run", reconcile)
     monkeypatch.setattr(f"{module_path}.remove_queued_run", remove_queued_run, raising=False)
@@ -5752,7 +5832,7 @@ def test_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
     monkeypatch.setattr(
         "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -5830,7 +5910,7 @@ def test_cancel_run_ignores_user_controlled_sandbox_container_payload(monkeypatc
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
     monkeypatch.setattr(
         "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -5881,7 +5961,7 @@ def test_cancel_run_uses_platform_verified_runtime_handle_not_user_payload(monke
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
     monkeypatch.setattr(
         "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -5936,7 +6016,7 @@ def test_cancel_run_rejects_active_lease_without_platform_verified_runtime_handl
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
     monkeypatch.setattr(
         "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -5987,7 +6067,7 @@ def test_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
     monkeypatch.setattr(
         "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -6019,7 +6099,7 @@ def test_cancel_run_surfaces_unsupported_sandbox_provider_without_db_release(mon
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
     monkeypatch.setattr(
         "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -6059,7 +6139,7 @@ def test_cancel_run_releases_successfully_stopped_leases_before_reporting_mixed_
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
     monkeypatch.setattr(
         "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -6102,7 +6182,7 @@ def test_cancel_queued_run_removes_queued_payload(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
     monkeypatch.setattr("app.routes.runs.remove_queued_run", fake_remove_queued_run, raising=False)
     client = TestClient(create_app())
 
@@ -6149,7 +6229,7 @@ def test_admin_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeyp
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.admin_runs.repositories.request_admin_run_cancel", fake_request_admin_run_cancel)
+    monkeypatch.setattr("app.repositories._test_admin_cancel", fake_request_admin_run_cancel)
     monkeypatch.setattr(
         "app.routes.admin_runs.repositories.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -6204,7 +6284,7 @@ def test_admin_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.admin_runs.repositories.request_admin_run_cancel", fake_request_admin_run_cancel)
+    monkeypatch.setattr("app.repositories._test_admin_cancel", fake_request_admin_run_cancel)
     monkeypatch.setattr(
         "app.routes.admin_runs.repositories.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -6244,7 +6324,7 @@ def test_admin_cancel_run_surfaces_cleanup_persistence_outage(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.admin_runs.repositories.request_admin_run_cancel", fake_request_admin_run_cancel)
+    monkeypatch.setattr("app.repositories._test_admin_cancel", fake_request_admin_run_cancel)
     monkeypatch.setattr(
         "app.routes.admin_runs.repositories.release_stopped_sandbox_leases_for_cancel",
         lambda *args, **kwargs: None,
@@ -6290,7 +6370,7 @@ def test_admin_cancel_run_releases_successfully_stopped_leases_before_reporting_
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.admin_runs.repositories.request_admin_run_cancel", fake_request_admin_run_cancel)
+    monkeypatch.setattr("app.repositories._test_admin_cancel", fake_request_admin_run_cancel)
     monkeypatch.setattr(
         "app.routes.admin_runs.repositories.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -6317,7 +6397,6 @@ def test_admin_cancel_run_releases_successfully_stopped_leases_before_reporting_
 
 
 async def test_request_run_cancel_closes_pending_steps_when_owner_cancels_queued_run(monkeypatch):
-    from app import repositories
 
     calls = []
 
@@ -6348,7 +6427,7 @@ async def test_request_run_cancel_closes_pending_steps_when_owner_cancels_queued
 
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
 
-    result = await repositories.request_run_cancel(
+    result = await _request_owner_cancel(
         FakeConnection(),
         tenant_id="default",
         user_id="user-a",
@@ -6362,7 +6441,6 @@ async def test_request_run_cancel_closes_pending_steps_when_owner_cancels_queued
 
 @pytest.mark.asyncio
 async def test_request_run_cancel_defers_active_sandbox_lease_release_until_cleanup_success(monkeypatch):
-    from app import repositories
 
     calls = []
 
@@ -6394,7 +6472,7 @@ async def test_request_run_cancel_defers_active_sandbox_lease_release_until_clea
 
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
 
-    result = await repositories.request_run_cancel(
+    result = await _request_owner_cancel(
         FakeConnection(),
         tenant_id="default",
         user_id="user-a",
@@ -6416,7 +6494,6 @@ async def test_request_run_cancel_defers_active_sandbox_lease_release_until_clea
 
 @pytest.mark.asyncio
 async def test_request_run_cancel_allows_cancelled_run_with_active_sandbox_lease_for_cleanup_retry(monkeypatch):
-    from app import repositories
 
     calls = []
 
@@ -6454,7 +6531,7 @@ async def test_request_run_cancel_allows_cancelled_run_with_active_sandbox_lease
 
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
 
-    result = await repositories.request_run_cancel(
+    result = await _request_owner_cancel(
         FakeConnection(),
         tenant_id="default",
         user_id="user-a",
@@ -6527,7 +6604,7 @@ def test_cancel_running_run_does_not_remove_queued_payload(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
     monkeypatch.setattr("app.routes.runs.remove_queued_run", fake_remove_queued_run, raising=False)
     client = TestClient(create_app())
 
@@ -6677,7 +6754,6 @@ async def test_admin_run_detail_includes_multi_agent_steps(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_request_admin_run_cancel_does_not_filter_target_user_and_audits(monkeypatch):
-    from app import repositories
 
     calls = []
 
@@ -6711,7 +6787,7 @@ async def test_request_admin_run_cancel_does_not_filter_target_user_and_audits(m
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
 
-    result = await repositories.request_admin_run_cancel(
+    result = await _request_admin_cancel(
         FakeConnection(),
         tenant_id="default",
         admin_user_id="admin-a",
@@ -6757,7 +6833,6 @@ async def test_request_admin_run_cancel_does_not_filter_target_user_and_audits(m
 
 @pytest.mark.asyncio
 async def test_request_run_cancel_owner_cancel_writes_structured_audit(monkeypatch):
-    from app import repositories
 
     calls = []
 
@@ -6791,7 +6866,7 @@ async def test_request_run_cancel_owner_cancel_writes_structured_audit(monkeypat
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
 
-    result = await repositories.request_run_cancel(
+    result = await _request_owner_cancel(
         FakeConnection(),
         tenant_id="default",
         user_id="user-a",
@@ -6819,7 +6894,6 @@ async def test_request_run_cancel_owner_cancel_writes_structured_audit(monkeypat
 
 @pytest.mark.asyncio
 async def test_request_admin_run_cancel_closes_pending_steps_when_queued_cancelled(monkeypatch):
-    from app import repositories
 
     calls = []
 
@@ -6853,7 +6927,7 @@ async def test_request_admin_run_cancel_closes_pending_steps_when_queued_cancell
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
 
-    result = await repositories.request_admin_run_cancel(
+    result = await _request_admin_cancel(
         FakeConnection(),
         tenant_id="default",
         admin_user_id="admin-a",
@@ -6867,7 +6941,6 @@ async def test_request_admin_run_cancel_closes_pending_steps_when_queued_cancell
 
 @pytest.mark.asyncio
 async def test_request_admin_run_cancel_defers_active_sandbox_lease_release_until_cleanup_success(monkeypatch):
-    from app import repositories
 
     calls = []
 
@@ -6902,7 +6975,7 @@ async def test_request_admin_run_cancel_defers_active_sandbox_lease_release_unti
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
 
-    result = await repositories.request_admin_run_cancel(
+    result = await _request_admin_cancel(
         FakeConnection(),
         tenant_id="default",
         admin_user_id="admin-a",
@@ -6923,7 +6996,6 @@ async def test_request_admin_run_cancel_defers_active_sandbox_lease_release_unti
 
 @pytest.mark.asyncio
 async def test_request_admin_run_cancel_allows_cancelled_run_with_active_sandbox_lease_for_cleanup_retry(monkeypatch):
-    from app import repositories
 
     calls = []
 
@@ -6965,7 +7037,7 @@ async def test_request_admin_run_cancel_allows_cancelled_run_with_active_sandbox
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
 
-    result = await repositories.request_admin_run_cancel(
+    result = await _request_admin_cancel(
         FakeConnection(),
         tenant_id="default",
         admin_user_id="admin-a",

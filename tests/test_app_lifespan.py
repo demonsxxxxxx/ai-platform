@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 import app.main as main
+from app.runs.api import RunCancellationUseCase
 
 
 def test_create_app_owns_one_run_stream_runtime_and_closes_dependencies(monkeypatch):
@@ -25,5 +26,6 @@ def test_create_app_owns_one_run_stream_runtime_and_closes_dependencies(monkeypa
     app = main.create_app()
     with TestClient(app):
         assert app.state.run_stream_runtime is runtime
+        assert type(app.state.run_cancellation_use_case) is RunCancellationUseCase
 
     assert calls == ["run_stream_runtime", "redis_client", "close_pool"]

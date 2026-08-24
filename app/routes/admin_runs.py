@@ -1,12 +1,13 @@
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
 from app.models import AdminRunDetailResponse, AdminRunListResponse, RunControlResponse
 from app.queue import get_queue_insight, get_run_queue_position, remove_queued_run
+from app.runs.api import RunCancellationUseCase
 from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, stop_sandbox_leases
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.control_plane_contracts import sanitize_public_text
@@ -14,6 +15,14 @@ from app.tool_permission_lifecycle import drain_run_tool_permission_terminalizat
 from app.validation import assert_safe_id
 
 router = APIRouter()
+
+
+def _require_run_cancellation_use_case(request: Request) -> RunCancellationUseCase:
+    use_case = getattr(request.app.state, "run_cancellation_use_case", None)
+    if type(use_case) is not RunCancellationUseCase:
+        raise RuntimeError("run_cancellation_use_case_unavailable")
+    return use_case
+
 
 QUEUE_VISIBLE_STATUSES = {"queued", "running"}
 
@@ -117,6 +126,7 @@ async def admin_run_list(
 @router.post("/admin/runs/{run_id}/cancel", response_model=RunControlResponse, response_model_exclude={"queue_position", "queue_insight"})
 async def admin_run_cancel(
     run_id: str,
+    request: Request,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlResponse:
     if not is_ai_admin(principal):
@@ -125,13 +135,12 @@ async def admin_run_cancel(
         run_id = assert_safe_id(run_id, "run_id")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    async with transaction() as conn:
-        result = await repositories.request_admin_run_cancel(
-            conn,
-            tenant_id=principal.tenant_id,
-            admin_user_id=principal.user_id,
-            run_id=run_id,
-        )
+    cancellation = await _require_run_cancellation_use_case(request).request_admin_cancel(
+        tenant_id=principal.tenant_id,
+        admin_user_id=principal.user_id,
+        run_id=run_id,
+    )
+    result = cancellation.as_route_result() if cancellation is not None else None
     if result is not None:
         initial_progress = result.pop("_permission_terminalization_progress", None)
         if initial_progress is not None:

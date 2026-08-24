@@ -1,5 +1,12 @@
 """Public in-process contracts owned by the Runs bounded context."""
 
+from app.runs.application.cancellation import (
+    CancelRequestResult as CancelRequestResult,
+)
+from app.runs.application.cancellation import (
+    RunCancellationUseCase as RunCancellationUseCase,
+)
+
 from app.runs.domain.public_terminal import (
     CHAT_PUBLIC_PROJECTION_VERSION as CHAT_PUBLIC_PROJECTION_VERSION,
 )

@@ -24,6 +24,8 @@ from app.platform.postgres.errors import (
 from app.platform.postgres.errors import RepositoryConflictError as PlatformRepositoryConflictError
 from app.skills.infrastructure import postgres as skill_persistence
 from app.runs.api import RunTerminalizationProgress
+from app.runs.application.cancellation import RunCancellationUseCase
+from app.runs.infrastructure.postgres import PostgresRunCancellationPersistence
 from app.platform.postgres.sandbox_leases import (
     SandboxExecutorTerminalConflictError,
     SandboxLeaseReleaseScopeMismatchError,
@@ -77,6 +79,57 @@ from app.repositories import (
 
 async def _record_noop_event(*_args, **_kwargs):
     return "evt-test"
+
+
+class _CancellationEventWriter:
+    async def append_cancel_requested(self, conn, **kwargs):
+        await streaming_v4.append_run_cancel_requested_v4_row(conn, **kwargs)
+
+
+async def _request_owner_cancel(conn, *, tenant_id, user_id, run_id):
+    @asynccontextmanager
+    async def transaction_factory():
+        yield conn
+
+    use_case = RunCancellationUseCase(
+        transaction_factory=transaction_factory,
+        persistence=PostgresRunCancellationPersistence(
+            append_event=repositories.append_event,
+            append_audit_log=repositories.append_audit_log,
+            list_active_sandbox_leases=repositories.list_active_sandbox_leases_for_run,
+        ),
+        event_writer=_CancellationEventWriter(),
+        progress_terminalization=repositories.progress_run_tool_permission_terminalization,
+    )
+    result = await use_case.request_owner_cancel(
+        tenant_id=tenant_id,
+        owner_user_id=user_id,
+        run_id=run_id,
+    )
+    return result.as_route_result() if result is not None else None
+
+
+async def _request_admin_cancel(conn, *, tenant_id, admin_user_id, run_id):
+    @asynccontextmanager
+    async def transaction_factory():
+        yield conn
+
+    use_case = RunCancellationUseCase(
+        transaction_factory=transaction_factory,
+        persistence=PostgresRunCancellationPersistence(
+            append_event=repositories.append_event,
+            append_audit_log=repositories.append_audit_log,
+            list_active_sandbox_leases=repositories.list_active_sandbox_leases_for_run,
+        ),
+        event_writer=_CancellationEventWriter(),
+        progress_terminalization=repositories.progress_run_tool_permission_terminalization,
+    )
+    result = await use_case.request_admin_cancel(
+        tenant_id=tenant_id,
+        admin_user_id=admin_user_id,
+        run_id=run_id,
+    )
+    return result.as_route_result() if result is not None else None
 
 
 def test_repository_facade_binds_agent_profiles_to_one_canonical_module():
@@ -8325,7 +8378,7 @@ async def test_decision_loses_a_barrier_synchronized_cancel_race(monkeypatch):
         )
     )
     cancel_task = asyncio.create_task(
-        repositories.request_run_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
+        _request_owner_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
     )
     decision, cancellation = await asyncio.gather(decision_task, cancel_task)
 
@@ -8407,7 +8460,7 @@ async def test_request_creation_loses_a_barrier_synchronized_cancel_race(monkeyp
         )
     )
     cancel_task = asyncio.create_task(
-        repositories.request_run_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
+        _request_owner_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
     )
     cancellation = await cancel_task
     with pytest.raises(RepositoryConflictError, match="tool_permission_run_not_open"):
@@ -8476,6 +8529,7 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
         return None
 
     monkeypatch.setattr(repositories, "_stage_run_tool_permission_terminalization", stage)
+    monkeypatch.setattr("app.runs.infrastructure.postgres._stage_run_tool_permission_terminalization", stage)
     monkeypatch.setattr(repositories, "progress_run_tool_permission_terminalization", progress)
     monkeypatch.setattr(repositories, "append_event", record_event)
     monkeypatch.setattr(repositories, "append_audit_log", no_audit)
@@ -8483,8 +8537,8 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
     monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_leases)
     conn = Connection()
 
-    first = await repositories.request_run_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
-    second = await repositories.request_run_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
+    first = await _request_owner_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
+    second = await _request_owner_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
 
     assert first["status"] == second["status"] == "cancelled"
     assert events == ["cancel_requested", "v4.run.cancel_requested", "run_cancelled"]
@@ -9019,16 +9073,17 @@ async def test_cancel_request_response_reports_actual_conflicting_terminal_statu
         return None
 
     monkeypatch.setattr(repositories, "_stage_run_tool_permission_terminalization", stage)
+    monkeypatch.setattr("app.runs.infrastructure.postgres._stage_run_tool_permission_terminalization", stage)
     monkeypatch.setattr(repositories, "progress_run_tool_permission_terminalization", progress)
     monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_leases)
     monkeypatch.setattr(repositories, "append_audit_log", no_audit)
 
     if admin:
-        result = await repositories.request_admin_run_cancel(
+        result = await _request_admin_cancel(
             Connection(), tenant_id="tenant-a", admin_user_id="admin-a", run_id="run-a"
         )
     else:
-        result = await repositories.request_run_cancel(
+        result = await _request_owner_cancel(
             Connection(), tenant_id="tenant-a", user_id="owner-a", run_id="run-a"
         )
 
@@ -9560,7 +9615,7 @@ async def test_allow_once_consumption_loses_a_barrier_synchronized_cancel_race(m
         )
     )
     cancel_task = asyncio.create_task(
-        repositories.request_run_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
+        _request_owner_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
     )
     consumed, cancellation = await asyncio.gather(consume_task, cancel_task)
 
@@ -9634,7 +9689,7 @@ async def test_allow_for_run_lookup_loses_a_barrier_synchronized_cancel_race(mon
         )
     )
     cancel_task = asyncio.create_task(
-        repositories.request_run_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
+        _request_owner_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
     )
     reusable_grant, cancellation = await asyncio.gather(reuse_task, cancel_task)
 

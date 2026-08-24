@@ -2,7 +2,7 @@ import re
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import UUID4
 
 from app import repositories
@@ -81,6 +81,7 @@ from app.run_admission_policy import (
 )
 from app.run_admission_terminalization import terminalize_retired_platform_multi_agent_run
 from app.run_control_readiness import run_control_readiness_snapshot
+from app.runs.api import RunCancellationUseCase
 from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, stop_sandbox_leases
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.settings import get_settings
@@ -99,6 +100,15 @@ from app.skills.registry import BuiltinSkillRegistry
 from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
+
+
+def _require_run_cancellation_use_case(request: Request) -> RunCancellationUseCase:
+    use_case = getattr(request.app.state, "run_cancellation_use_case", None)
+    if type(use_case) is not RunCancellationUseCase:
+        raise RuntimeError("run_cancellation_use_case_unavailable")
+    return use_case
+
+
 RUN_PLAYBACK_CONTRACT_VERSION = "ai-platform.run-playback.v1"
 RUN_RESUME_MANIFEST_CONTRACT_VERSION = "ai-platform.run-resume-manifest.v1"
 _CAPABILITY_REVOCATION_LIFECYCLE_ERRORS = {"agent_or_skill_not_found", "skill_inactive", "mcp_tool_disabled"}
@@ -1627,15 +1637,15 @@ async def get_run_checkpoint_audit(
 @router.post("/runs/{run_id}/cancel", response_model=RunControlResponse, response_model_exclude={"queue_position", "queue_insight"})
 async def cancel_run(
     run_id: str,
+    request: Request,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlResponse:
-    async with transaction() as conn:
-        result = await repositories.request_run_cancel(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            run_id=run_id,
-        )
+    cancellation = await _require_run_cancellation_use_case(request).request_owner_cancel(
+        tenant_id=principal.tenant_id,
+        owner_user_id=principal.user_id,
+        run_id=run_id,
+    )
+    result = cancellation.as_route_result() if cancellation is not None else None
     if result is not None:
         initial_progress = result.pop("_permission_terminalization_progress", None)
         if initial_progress is not None:

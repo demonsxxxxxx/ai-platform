@@ -16,6 +16,9 @@ from app import repositories, schema_migrations
 from app.repositories import complete_run
 from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
 from app.routes import runtime_callbacks
+from app.bootstrap.run_lifecycle import PostgresRunCancellationEventWriter
+from app.runs.application.cancellation import RunCancellationUseCase
+from app.runs.infrastructure.postgres import PostgresRunCancellationPersistence
 from app.routes.lambchat_compat import _recover_v4_attach_gap
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent
 from app.streaming.api import stream_key
@@ -69,6 +72,30 @@ def _redis_url() -> str:
     if not value:
         pytest.skip(f"{REDIS_URL_ENV} is not configured")
     return value
+
+
+async def _request_owner_cancel(conn, *, tenant_id, user_id, run_id):
+    @asynccontextmanager
+    async def transaction_factory():
+        async with conn.transaction():
+            yield conn
+
+    use_case = RunCancellationUseCase(
+        transaction_factory=transaction_factory,
+        persistence=PostgresRunCancellationPersistence(
+            append_event=repositories.append_event,
+            append_audit_log=repositories.append_audit_log,
+            list_active_sandbox_leases=repositories.list_active_sandbox_leases_for_run,
+        ),
+        event_writer=PostgresRunCancellationEventWriter(),
+        progress_terminalization=repositories.progress_run_tool_permission_terminalization,
+    )
+    result = await use_case.request_owner_cancel(
+        tenant_id=tenant_id,
+        owner_user_id=user_id,
+        run_id=run_id,
+    )
+    return result.as_route_result() if result is not None else None
 
 
 @asynccontextmanager
@@ -1047,13 +1074,13 @@ async def test_cancel_request_precedes_cancelled_terminal_and_is_exact_once():
         tenant, run, _attempt = ids
         user = f"u_{tenant[2:]}"
         async with _connection_factory(_dsn(), schema_name) as conn:
-            first = await repositories.request_run_cancel(
+            first = await _request_owner_cancel(
                 conn,
                 tenant_id=tenant,
                 user_id=user,
                 run_id=run,
             )
-            second = await repositories.request_run_cancel(
+            second = await _request_owner_cancel(
                 conn,
                 tenant_id=tenant,
                 user_id=user,
@@ -1090,7 +1117,7 @@ async def test_cancel_request_and_terminal_rows_roll_back_with_run_state():
         async with _connection_factory(_dsn(), schema_name) as conn:
             with pytest.raises(RuntimeError, match="force_cancel_rollback"):
                 async with conn.transaction():
-                    assert await repositories.request_run_cancel(
+                    assert await _request_owner_cancel(
                         conn,
                         tenant_id=tenant,
                         user_id=user,

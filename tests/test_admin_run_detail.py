@@ -3,6 +3,44 @@ from contextlib import asynccontextmanager
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app.runs.api import RunTerminalizationProgress
+
+
+class _RouteCancellationReceipt:
+    def __init__(self, value):
+        self._value = value
+
+    def as_route_result(self):
+        return dict(self._value)
+
+
+class _AdminCancellationAdapter:
+    def __init__(self, handler):
+        self._handler = handler
+
+    async def request_admin_cancel(self, *, tenant_id, admin_user_id, run_id):
+        value = await self._handler(
+            None,
+            tenant_id=tenant_id,
+            admin_user_id=admin_user_id,
+            run_id=run_id,
+        )
+        return _RouteCancellationReceipt(value) if value is not None else None
+
+
+def _install_admin_cancel(monkeypatch, handler):
+    async def no_terminal_progress(**_kwargs):
+        return RunTerminalizationProgress(False, "cancelled")
+
+    adapter = _AdminCancellationAdapter(handler)
+    monkeypatch.setattr(
+        "app.routes.admin_runs._require_run_cancellation_use_case",
+        lambda _request: adapter,
+    )
+    monkeypatch.setattr(
+        "app.routes.admin_runs.drain_run_tool_permission_terminalization",
+        no_terminal_progress,
+    )
 
 
 def auth_settings():
@@ -23,6 +61,8 @@ class EmptyPropagationConnection:
         if normalized.startswith("select child.id") and "from runs child" in normalized:
             return EmptyPropagationCursor()
         if normalized.startswith("select id, tenant_id") and "cancel_requested_at" in normalized:
+            return EmptyPropagationCursor()
+        if normalized.startswith("select id, trace_id, status") and "from runs" in normalized:
             return EmptyPropagationCursor()
         raise AssertionError(f"unexpected fake transaction sql: {normalized}")
 
@@ -178,7 +218,7 @@ def test_admin_run_cancel_records_admin_actor(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.admin_runs.repositories.request_admin_run_cancel", fake_request_admin_run_cancel, raising=False)
+    _install_admin_cancel(monkeypatch, fake_request_admin_run_cancel)
     client = TestClient(create_app())
 
     response = client.post("/api/ai/admin/runs/run_a/cancel", headers=headers())
@@ -200,7 +240,7 @@ def test_admin_cancel_queued_run_removes_queued_payload(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.admin_runs.repositories.request_admin_run_cancel", fake_request_admin_run_cancel, raising=False)
+    _install_admin_cancel(monkeypatch, fake_request_admin_run_cancel)
     monkeypatch.setattr("app.routes.admin_runs.remove_queued_run", fake_remove_queued_run, raising=False)
     client = TestClient(create_app())
 
