@@ -12,6 +12,12 @@ import uuid
 
 from app import queue
 from app import repositories
+from app.bootstrap.worker_maintenance import (
+    close_runtime_clients as _close_runtime_clients,
+    maintenance_until_done,
+    run_maintenance_phases,
+    worker_maintenance_interval_seconds as _worker_maintenance_interval_seconds,
+)
 from app.execution.api import stage_stale_run_reconciliation
 from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_SKILL,
@@ -20,15 +26,15 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.data_retention import run_data_retention_maintenance
-from app.db import close_pool, transaction
+from app.db import transaction
 from app.executors.registry import AdapterRegistry
 from app.executor_reconciler import run_executor_terminal_reconciler
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.routes.sandbox_runtime_cleanup import (
     SandboxRuntimeCleanupError,
+    cleanup_expired_sandbox_leases as _cleanup_expired_sandbox_lease_records,
     cleanup_expired_sandbox_runtime_leases,
 )
-from app.redis_client import close_redis_client
 from app.schema_migrations import require_schema_current
 from app.settings import get_settings
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
@@ -38,13 +44,6 @@ from app.worker import WorkerOutcome, parse_leased_queue_envelope, process_run_p
 _next_memory_cleanup_at = 0.0
 logger = logging.getLogger(__name__)
 _CANCEL_REQUESTED_ORPHAN_RECONCILIATION_SECONDS = 5
-
-
-async def _close_runtime_clients() -> None:
-    try:
-        await close_redis_client()
-    finally:
-        await close_pool()
 
 
 class ReconciliationFenceLost(RuntimeError):
@@ -196,7 +195,7 @@ async def cleanup_expired_sandbox_leases() -> None:
             )
         except SandboxRuntimeCleanupError:
             logger.exception("Sandbox runtime cleanup maintenance failed")
-        await repositories.cleanup_expired_sandbox_leases(conn)
+        await _cleanup_expired_sandbox_lease_records(conn)
 
 
 async def cleanup_expired_memory_records_for_worker(settings: object | None = None, *, now: float | None = None) -> list[dict]:
@@ -452,35 +451,28 @@ async def reconcile_stale_runs_for_worker(
 
 async def run_worker_maintenance(settings: object | None = None) -> None:
     settings = settings or get_settings()
-    await cleanup_expired_sandbox_leases()
-    await cleanup_expired_memory_records_for_worker(settings)
-    await run_data_retention_maintenance(settings)
-    await progress_pending_tool_permission_terminalizations_for_worker(settings)
-    await queue.reclaim_expired_leases(
-        visibility_timeout_seconds=int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900))
+    await run_maintenance_phases(
+        {
+            "sandbox_cleanup": cleanup_expired_sandbox_leases,
+            "memory_cleanup": lambda: cleanup_expired_memory_records_for_worker(settings),
+            "data_retention": lambda: run_data_retention_maintenance(settings),
+            "tool_permission_terminalization": lambda: progress_pending_tool_permission_terminalizations_for_worker(settings),
+            "queue_reclaim": lambda: queue.reclaim_expired_leases(
+                visibility_timeout_seconds=int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900))
+            ),
+            "stale_run_reconciliation": lambda: reconcile_stale_runs_for_worker(settings),
+        },
+        logger=logger,
     )
-    await reconcile_stale_runs_for_worker(settings)
-
-
-def _worker_maintenance_interval_seconds(settings: object) -> float:
-    try:
-        interval = float(getattr(settings, "worker_maintenance_interval_seconds", 30.0))
-    except (TypeError, ValueError):
-        return 30.0
-    return max(interval, 0.0)
 
 
 async def _maintenance_until_done(settings: object, interval_seconds: float) -> None:
-    if interval_seconds <= 0:
-        return
-    while True:
-        await asyncio.sleep(interval_seconds)
-        try:
-            await run_worker_maintenance(settings)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Worker background maintenance failed")
+    await maintenance_until_done(
+        settings,
+        interval_seconds,
+        run_worker_maintenance,
+        logger=logger,
+    )
 
 
 async def _terminalize_escaped_process_exception(

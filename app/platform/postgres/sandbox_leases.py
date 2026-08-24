@@ -194,6 +194,157 @@ async def record_sandbox_executor_heartbeat(
     return dict(row) if row is not None else None
 
 
+async def release_sandbox_lease(
+    connection: Any,
+    *,
+    tenant_id: str,
+    user_id: str,
+    run_id: str,
+    lease_id: str,
+    reason: str,
+) -> dict[str, Any] | None:
+    cursor = await connection.execute(
+        """
+        update sandbox_leases
+        set status = 'released',
+            released_at = coalesce(released_at, now()),
+            release_reason = %s,
+            updated_at = now()
+        where tenant_id = %s
+          and user_id = %s
+          and run_id = %s
+          and id = %s
+          and status = 'active'
+          and (
+            executor_terminal_json is null
+            or executor_reconciliation_status = 'finalized'
+          )
+        returning *
+        """,
+        (reason, tenant_id, user_id, run_id, lease_id),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
+async def release_active_sandbox_leases_for_run(
+    connection: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    reason: str,
+) -> list[dict[str, Any]]:
+    cursor = await connection.execute(
+        """
+        update sandbox_leases
+        set status = 'released',
+            released_at = coalesce(released_at, now()),
+            release_reason = %s,
+            updated_at = now()
+        where tenant_id = %s
+          and run_id = %s
+          and status = 'active'
+          and (
+            executor_terminal_json is null
+            or executor_reconciliation_status = 'finalized'
+          )
+        returning *
+        """,
+        (reason, tenant_id, run_id),
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+async def release_stopped_sandbox_leases(
+    connection: Any,
+    *,
+    tenant_id: str,
+    reason: str,
+    lease_ids: list[str],
+    run_id: str | None = None,
+) -> list[dict[str, Any]]:
+    if not lease_ids:
+        return []
+    cursor = await connection.execute(
+        """
+        update sandbox_leases
+        set status = 'released',
+            released_at = coalesce(released_at, now()),
+            release_reason = %s,
+            updated_at = now()
+        where tenant_id = %s
+          and (%s::text is null or run_id = %s)
+          and id = any(%s)
+          and status = 'active'
+          and (
+            executor_terminal_json is null
+            or executor_reconciliation_status = 'finalized'
+          )
+        returning *
+        """,
+        (reason, tenant_id, run_id, run_id, lease_ids),
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+async def list_expired_active_sandbox_leases(
+    connection: Any,
+    *,
+    tenant_id: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Lock expired cleanup candidates that do not carry terminal recovery work."""
+
+    cursor = await connection.execute(
+        """
+        select *
+        from sandbox_leases
+        where (%s::text is null or tenant_id = %s)
+          and status = 'active'
+          and expires_at is not null
+          and expires_at <= now()
+          and (
+            executor_terminal_json is null
+            or executor_reconciliation_status = 'finalized'
+          )
+        order by expires_at asc, created_at asc
+        for update skip locked
+        limit %s
+        """,
+        (tenant_id, tenant_id, limit),
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+async def cleanup_expired_sandbox_leases(
+    connection: Any,
+    *,
+    tenant_id: str | None = None,
+    reason: str = "expired",
+) -> list[dict[str, Any]]:
+    cursor = await connection.execute(
+        """
+        update sandbox_leases
+        set status = 'released',
+            released_at = coalesce(released_at, now()),
+            release_reason = %s,
+            updated_at = now()
+        where (%s::text is null or tenant_id = %s)
+          and status = 'active'
+          and expires_at is not null
+          and expires_at <= now()
+          and provider not in ('fake', 'docker', 'opensandbox')
+          and (
+            executor_terminal_json is null
+            or executor_reconciliation_status = 'finalized'
+          )
+        returning id, tenant_id, run_id, trace_id, release_reason
+        """,
+        (reason, tenant_id, tenant_id),
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
 async def record_sandbox_executor_terminal(
     connection: Any,
     *,
@@ -203,6 +354,7 @@ async def record_sandbox_executor_terminal(
     lease_id: str,
     executor_status: str,
     terminal_result: dict[str, Any],
+    claim_token: str | None = None,
 ) -> dict[str, Any]:
     if executor_status not in {"completed", "failed", "cancelled"}:
         raise ValueError("sandbox_executor_terminal_status_invalid")
@@ -260,6 +412,13 @@ async def record_sandbox_executor_terminal(
           and attempt_id = %s
           and status = 'active'
           and executor_terminal_json is null
+          and (
+            %s::text is null
+            or (
+              executor_reconciliation_status = 'claimed'
+              and executor_reconciliation_claim_token = %s
+            )
+          )
         returning *
         """,
         (
@@ -269,6 +428,8 @@ async def record_sandbox_executor_terminal(
             tenant_id,
             run_id,
             attempt_id,
+            claim_token,
+            claim_token,
         ),
     )
     row = await cursor.fetchone()
@@ -299,7 +460,7 @@ async def record_sandbox_executor_terminal_diagnostics(
             ),
             updated_at = now()
         where id = %s
-          and status = 'active'
+          and status in ('active', 'released')
           and executor_terminal_json is not null
           and executor_reconciliation_status = 'claimed'
           and executor_reconciliation_claim_token = %s
@@ -374,9 +535,21 @@ async def claim_sandbox_executor_suspects(
           where status = 'active'
             and executor_terminal_json is null
             and executor_reconciliation_context_json is not null
-            and executor_reconciliation_status = 'waiting_terminal'
-            and coalesce(executor_heartbeat_at, updated_at, created_at)
-                < now() - make_interval(secs => %s)
+            and (
+              (
+                executor_reconciliation_status = 'waiting_terminal'
+                and coalesce(executor_heartbeat_at, updated_at, created_at)
+                    < now() - make_interval(secs => %s)
+              )
+              or (
+                executor_reconciliation_status = 'claimed'
+                and coalesce(
+                  executor_reconciliation_claimed_at,
+                  updated_at,
+                  created_at
+                ) < now() - make_interval(secs => %s)
+              )
+            )
           order by coalesce(executor_heartbeat_at, updated_at, created_at), id
           for update skip locked
           limit %s
@@ -392,7 +565,7 @@ async def claim_sandbox_executor_suspects(
         where lease.id = candidates.id
         returning lease.*
         """,
-        (stale_after_seconds, limit, claim_token),
+        (stale_after_seconds, stale_after_seconds, limit, claim_token),
     )
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
@@ -437,7 +610,7 @@ async def claim_sandbox_executor_reconciliations(
         with candidates as (
           select id
           from sandbox_leases
-          where status = 'active'
+          where status in ('active', 'released')
             and executor_terminal_json is not null
             and executor_reconciliation_context_json is not null
             and (
@@ -455,7 +628,8 @@ async def claim_sandbox_executor_reconciliations(
         set executor_reconciliation_status = 'claimed',
             executor_reconciliation_claim_token = %s,
             executor_reconciliation_claimed_at = now(),
-            executor_reconciliation_attempt_count = executor_reconciliation_attempt_count + 1,
+            executor_terminal_reconciliation_attempt_count =
+              executor_terminal_reconciliation_attempt_count + 1,
             executor_reconciliation_error = '',
             updated_at = now()
         from candidates
@@ -480,9 +654,34 @@ async def has_sandbox_executor_reconciliation_claim(
             select id
             from sandbox_leases
             where id = %s
+              and status in ('active', 'released')
               and executor_reconciliation_status = 'claimed'
               and executor_reconciliation_claim_token = %s
             for update
+            """,
+            (lease_id, claim_token),
+        )
+    ).fetchone()
+    return row is not None
+
+
+async def is_sandbox_executor_reconciliation_claim_current(
+    conn,
+    *,
+    lease_id: str,
+    claim_token: str,
+) -> bool:
+    """Read a claim already protected by the reconciler's owner transaction."""
+
+    row = await (
+        await conn.execute(
+            """
+            select id
+            from sandbox_leases
+            where id = %s
+              and status in ('active', 'released')
+              and executor_reconciliation_status = 'claimed'
+              and executor_reconciliation_claim_token = %s
             """,
             (lease_id, claim_token),
         )
@@ -506,7 +705,7 @@ async def retry_sandbox_executor_reconciliation(
             executor_reconciliation_error = %s,
             updated_at = now()
         where id = %s
-          and status = 'active'
+          and status in ('active', 'released')
           and executor_reconciliation_status = 'claimed'
           and executor_reconciliation_claim_token = %s
         returning id
@@ -516,26 +715,329 @@ async def retry_sandbox_executor_reconciliation(
     return await cursor.fetchone() is not None
 
 
-async def finalize_sandbox_executor_reconciliation(
+async def mark_sandbox_executor_reconciliation_cleanup_pending(
+    connection: Any,
+    *,
+    lease_id: str,
+    claim_token: str,
+    error: str,
+) -> bool:
+    """Leave a verified runtime eligible for claim-fenced cleanup retry."""
+
+    cursor = await connection.execute(
+        """
+        update sandbox_leases
+        set executor_reconciliation_status = 'failed',
+            executor_reconciliation_claim_token = null,
+            executor_reconciliation_claimed_at = null,
+            executor_reconciliation_error = %s,
+            expires_at = least(coalesce(expires_at, now()), now()),
+            updated_at = now()
+        where id = %s
+          and status in ('active', 'released')
+          and executor_reconciliation_status = 'claimed'
+          and executor_reconciliation_claim_token = %s
+        returning id
+        """,
+        (error[:1000], lease_id, claim_token),
+    )
+    return await cursor.fetchone() is not None
+
+
+async def claim_failed_sandbox_executor_reconciliation_cleanups(
+    connection: Any,
+    *,
+    claim_token: str,
+    tenant_id: str | None,
+    limit: int,
+    stale_after_seconds: int,
+) -> list[dict[str, Any]]:
+    cursor = await connection.execute(
+        """
+        with candidates as (
+          select id
+          from sandbox_leases
+          where status in ('active', 'released')
+            and executor_terminal_json is not null
+            and executor_reconciliation_status = 'failed'
+            and (
+              executor_reconciliation_claim_token is null
+              or executor_reconciliation_claimed_at is null
+              or executor_reconciliation_claimed_at < now() - make_interval(secs => %s)
+            )
+            and (%s::text is null or tenant_id = %s)
+          order by coalesce(executor_reconciliation_claimed_at, executor_terminal_received_at, created_at) asc, id asc
+          for update skip locked
+          limit %s
+        )
+        update sandbox_leases as lease
+        set executor_reconciliation_claim_token = %s,
+            executor_reconciliation_claimed_at = now(),
+            updated_at = now()
+        from candidates
+        where lease.id = candidates.id
+        returning lease.*
+        """,
+        (stale_after_seconds, tenant_id, tenant_id, limit, claim_token),
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def has_failed_sandbox_executor_reconciliation_cleanup_claim(
     connection: Any,
     *,
     lease_id: str,
     claim_token: str,
 ) -> bool:
+    row = await (
+        await connection.execute(
+            """
+            select id
+            from sandbox_leases
+            where id = %s
+              and status in ('active', 'released')
+              and executor_reconciliation_status = 'failed'
+              and executor_reconciliation_claim_token = %s
+            for update
+            """,
+            (lease_id, claim_token),
+        )
+    ).fetchone()
+    return row is not None
+
+
+async def release_failed_sandbox_executor_reconciliation_cleanup_claim(
+    connection: Any,
+    *,
+    lease_id: str,
+    claim_token: str,
+    error: str,
+) -> bool:
     cursor = await connection.execute(
         """
         update sandbox_leases
-        set executor_reconciliation_status = 'finalized',
-            executor_reconciliation_claim_token = null,
-            executor_reconciled_at = now(),
-            executor_reconciliation_error = '',
+        set executor_reconciliation_claim_token = null,
+            executor_reconciliation_claimed_at = now(),
+            executor_reconciliation_error = %s,
             updated_at = now()
         where id = %s
+          and status in ('active', 'released')
+          and executor_reconciliation_status = 'failed'
+          and executor_reconciliation_claim_token = %s
+        returning id
+        """,
+        (error[:1000], lease_id, claim_token),
+    )
+    return await cursor.fetchone() is not None
+
+
+async def finalize_failed_sandbox_executor_reconciliation_cleanup(
+    connection: Any,
+    *,
+    tenant_id: str,
+    user_id: str,
+    run_id: str,
+    lease_id: str,
+    claim_token: str,
+    reason: str,
+) -> dict[str, Any] | None:
+    row = await (
+        await connection.execute(
+            """
+            update sandbox_leases
+            set status = 'released',
+                released_at = coalesce(released_at, now()),
+                release_reason = %s,
+                executor_reconciliation_status = 'finalized',
+                executor_reconciliation_claim_token = null,
+                executor_reconciliation_claimed_at = null,
+                executor_reconciliation_error = '',
+                executor_reconciled_at = now(),
+                updated_at = now()
+            where tenant_id = %s
+              and user_id = %s
+              and run_id = %s
+              and id = %s
+              and status in ('active', 'released')
+              and executor_reconciliation_status = 'failed'
+              and executor_reconciliation_claim_token = %s
+            returning *
+            """,
+            (reason, tenant_id, user_id, run_id, lease_id, claim_token),
+        )
+    ).fetchone()
+    return dict(row) if row else None
+
+
+async def quarantine_failed_sandbox_executor_reconciliation_cleanup(
+    connection: Any,
+    *,
+    lease_id: str,
+    claim_token: str,
+    error: str,
+) -> bool:
+    cursor = await connection.execute(
+        """
+        update sandbox_leases
+        set status = 'quarantined',
+            executor_reconciliation_claim_token = null,
+            executor_reconciliation_claimed_at = null,
+            executor_reconciliation_error = %s,
+            updated_at = now()
+        where id = %s
+          and status in ('active', 'released')
+          and executor_reconciliation_status = 'failed'
+          and executor_reconciliation_claim_token = %s
+        returning id
+        """,
+        (error[:1000], lease_id, claim_token),
+    )
+    return await cursor.fetchone() is not None
+
+
+async def quarantine_sandbox_executor_reconciliation(
+    connection: Any,
+    *,
+    lease_id: str,
+    claim_token: str,
+    error: str,
+) -> bool:
+    """Stop automatic claims without falsely recording an unverifiable runtime as released."""
+
+    cursor = await connection.execute(
+        """
+        update sandbox_leases
+        set status = 'quarantined',
+            executor_reconciliation_status = 'failed',
+            executor_reconciliation_claim_token = null,
+            executor_reconciliation_claimed_at = null,
+            executor_reconciliation_error = %s,
+            updated_at = now()
+        where id = %s
+          and status in ('active', 'released')
           and executor_reconciliation_status = 'claimed'
           and executor_reconciliation_claim_token = %s
         returning id
         """,
-        (lease_id, claim_token),
+        (error[:1000], lease_id, claim_token),
+    )
+    return await cursor.fetchone() is not None
+
+
+async def get_sandbox_executor_reconciliation_summary(
+    connection: Any,
+    *,
+    tenant_id: str,
+    slo_seconds: int,
+) -> dict[str, int | None]:
+    """Return tenant-scoped aggregate receipt health without subject identifiers."""
+
+    cursor = await connection.execute(
+        """
+        select
+          count(*) filter (
+            where status in ('active', 'released')
+              and executor_terminal_json is not null
+              and executor_reconciliation_status in ('pending', 'claimed', 'retry')
+          ) as pending_receipt_count,
+          count(*) filter (
+            where status = 'released'
+              and executor_terminal_json is not null
+              and executor_reconciliation_status in ('pending', 'claimed', 'retry')
+          ) as released_pending_receipt_count,
+          count(*) filter (
+            where status in ('active', 'released')
+              and executor_terminal_json is not null
+              and executor_reconciliation_status = 'retry'
+          ) as retry_receipt_count,
+          coalesce(sum(greatest(executor_terminal_reconciliation_attempt_count - 1, 0)) filter (
+            where status in ('active', 'released', 'quarantined')
+              and executor_terminal_json is not null
+          ), 0)::bigint as retry_attempt_count,
+          count(*) filter (
+            where status in ('active', 'released')
+              and executor_reconciliation_status = 'failed'
+          ) as cleanup_pending_receipt_count,
+          count(*) filter (
+            where status = 'quarantined'
+              and executor_reconciliation_status = 'failed'
+          ) as quarantined_receipt_count,
+          max(executor_terminal_reconciliation_attempt_count) filter (
+            where executor_terminal_json is not null
+          ) as max_attempt_count,
+          floor(max(extract(epoch from (now() - executor_terminal_received_at))) filter (
+            where status in ('active', 'released')
+              and executor_terminal_json is not null
+              and executor_reconciliation_status in ('pending', 'claimed', 'retry')
+          ))::bigint as oldest_pending_receipt_age_seconds,
+          count(*) filter (
+            where status in ('active', 'released')
+              and executor_terminal_json is not null
+              and executor_reconciliation_status in ('pending', 'claimed', 'retry')
+              and executor_terminal_received_at < now() - make_interval(secs => %s)
+          ) as terminalization_slo_breach_count
+        from sandbox_leases
+        where tenant_id = %s
+        """,
+        (slo_seconds, tenant_id),
+    )
+    row = await cursor.fetchone() or {}
+    oldest_age = row.get("oldest_pending_receipt_age_seconds")
+    return {
+        "pending_receipt_count": int(row.get("pending_receipt_count") or 0),
+        "released_pending_receipt_count": int(
+            row.get("released_pending_receipt_count") or 0
+        ),
+        "retry_receipt_count": int(row.get("retry_receipt_count") or 0),
+        "retry_attempt_count": int(row.get("retry_attempt_count") or 0),
+        "cleanup_pending_receipt_count": int(
+            row.get("cleanup_pending_receipt_count") or 0
+        ),
+        "quarantined_receipt_count": int(row.get("quarantined_receipt_count") or 0),
+        "max_attempt_count": int(row.get("max_attempt_count") or 0),
+        "oldest_pending_receipt_age_seconds": (
+            int(oldest_age) if oldest_age is not None else None
+        ),
+        "terminalization_slo_seconds": int(slo_seconds),
+        "terminalization_slo_breach_count": int(
+            row.get("terminalization_slo_breach_count") or 0
+        ),
+    }
+
+
+async def release_and_finalize_sandbox_executor_reconciliation(
+    conn: Any,
+    *,
+    tenant_id: str,
+    user_id: str,
+    run_id: str,
+    lease_id: str,
+    claim_token: str,
+    reason: str,
+) -> bool:
+    cursor = await conn.execute(
+        """
+        update sandbox_leases
+        set status = 'released',
+            released_at = coalesce(released_at, now()),
+            release_reason = %s,
+            executor_reconciliation_status = 'finalized',
+            executor_reconciliation_claim_token = null,
+            executor_reconciliation_claimed_at = null,
+            executor_reconciliation_error = '',
+            executor_reconciled_at = now(),
+            updated_at = now()
+        where tenant_id = %s
+          and user_id = %s
+          and run_id = %s
+          and id = %s
+          and status in ('active', 'released')
+          and executor_reconciliation_status = 'claimed'
+          and executor_reconciliation_claim_token = %s
+        returning id
+        """,
+        (reason, tenant_id, user_id, run_id, lease_id, claim_token),
     )
     return await cursor.fetchone() is not None
 
@@ -583,6 +1085,10 @@ async def fence_sandbox_lease_release(
           and sandbox_leases.sandbox_mode = excluded.sandbox_mode
           and sandbox_leases.provider = excluded.provider
           and coalesce(sandbox_leases.attempt_id, '') = coalesce(excluded.attempt_id, '')
+          and (
+            sandbox_leases.executor_terminal_json is null
+            or sandbox_leases.executor_reconciliation_status = 'finalized'
+          )
         returning *
         """,
         (
