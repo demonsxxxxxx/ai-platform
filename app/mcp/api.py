@@ -19,8 +19,12 @@ from app.mcp.domain.headers import (
     MCP_JWT_AUTHORIZATION_HEADER,
     normalize_static_mcp_headers,
 )
-from app.mcp.domain.identifiers import assert_safe_mcp_id
-from app.mcp.domain.tool_references import parse_mcp_tool_reference
+from app.mcp.domain.identifiers import assert_safe_mcp_id, is_safe_mcp_id
+from app.mcp.domain.tool_references import (
+    build_mcp_tool_reference,
+    is_valid_mcp_public_tool_name,
+    parse_mcp_tool_reference,
+)
 from app.mcp.domain.targets import (
     mcp_targets_from_policy_subjects,
     normalize_mcp_targets,
@@ -193,6 +197,7 @@ __all__ = [
     "McpRuntimeContextError",
     "McpToolSelectionRequired",
     "bind_run_mcp_context",
+    "build_mcp_tool_reference",
     "configure_mcp_runtime_services",
     "create_host_mcp_relay",
     "discard_unbound_mcp_runtime_context",
@@ -202,6 +207,8 @@ __all__ = [
     "invalidate_committed_terminal_run_mcp_context",
     "invalidate_mcp_runtime_context",
     "invalidate_terminal_mcp_runtime_context",
+    "is_safe_mcp_id",
+    "is_valid_mcp_public_tool_name",
     "mcp_targets_from_policy_subjects",
     "normalize_mcp_targets",
     "normalize_static_mcp_headers",

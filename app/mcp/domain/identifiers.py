@@ -7,8 +7,12 @@ _SAFE_PRINCIPAL_USER_ID_PATTERN = re.compile(
 )
 
 
+def is_safe_mcp_id(value: object) -> bool:
+    return isinstance(value, str) and MCP_SAFE_ID_PATTERN.fullmatch(value) is not None
+
+
 def assert_safe_mcp_id(value: str, field_name: str) -> str:
-    if not MCP_SAFE_ID_PATTERN.fullmatch(value):
+    if not is_safe_mcp_id(value):
         raise ValueError(f"{field_name} contains unsupported characters")
     return value
 

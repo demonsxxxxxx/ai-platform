@@ -4,12 +4,12 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
-from app.mcp.domain.tool_references import (
-    MCP_PUBLIC_TOOL_NAME_PATTERN,
+from app.mcp.api import (
     build_mcp_tool_reference,
+    is_safe_mcp_id,
+    is_valid_mcp_public_tool_name,
     parse_mcp_tool_reference,
 )
-from app.validation import SAFE_ID_PATTERN
 
 
 TRUSTED_BUILTIN_MCP_TOOL_ID = "ragflow-knowledge-search"
@@ -68,12 +68,12 @@ def mcp_runtime_metadata_usable(tool: dict[str, Any]) -> bool:
     except ValueError:
         reference_server_id, reference_tool_name = "", ""
     return bool(
-        SAFE_ID_PATTERN.fullmatch(server_id)
+        is_safe_mcp_id(server_id)
         and reference_server_id == server_id
         and isinstance(allowed_tools, list)
         and len(allowed_tools) == 1
         and isinstance(allowed_tools[0], str)
-        and MCP_PUBLIC_TOOL_NAME_PATTERN.fullmatch(allowed_tools[0])
+        and is_valid_mcp_public_tool_name(allowed_tools[0])
         and allowed_tools[0] == reference_tool_name
         and str(tool.get("endpoint") or "") == ""
         and str(tool.get("transport_type") or "").lower() in {"http", "streamable_http", "sse"}

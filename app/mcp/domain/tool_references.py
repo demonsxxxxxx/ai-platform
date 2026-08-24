@@ -9,12 +9,19 @@ MCP_TOOL_REFERENCE_SEPARATOR = "::"
 MCP_PUBLIC_TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,383}$")
 
 
+def is_valid_mcp_public_tool_name(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and MCP_PUBLIC_TOOL_NAME_PATTERN.fullmatch(value) is not None
+    )
+
+
 def build_mcp_tool_reference(server_id: str, public_tool_name: str) -> str:
     server = str(server_id or "").strip()
     tool = str(public_tool_name or "").strip()
     if not MCP_SAFE_ID_PATTERN.fullmatch(server) or MCP_TOOL_REFERENCE_SEPARATOR in server:
         raise ValueError("mcp_server_id_invalid")
-    if not MCP_PUBLIC_TOOL_NAME_PATTERN.fullmatch(tool):
+    if not is_valid_mcp_public_tool_name(tool):
         raise ValueError("mcp_public_tool_name_invalid")
     return f"{server}{MCP_TOOL_REFERENCE_SEPARATOR}{tool}"
 
