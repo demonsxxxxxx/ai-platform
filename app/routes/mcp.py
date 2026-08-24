@@ -19,29 +19,21 @@ from app.capability_distribution import (
 )
 from app.control_plane_contracts import sanitize_public_payload, standard_trace_id
 from app.db import transaction
-from app.mcp.application.live_catalog import (
-    GatewayRevisions,
-    LiveMcpCatalogService,
-    MCP_CACHE_INVALIDATION_TOKEN_HEADER,
-    service_token_matches,
-)
 from app.mcp.api import (
+    GatewayRevisions,
+    MCP_CACHE_INVALIDATION_TOKEN_HEADER,
     McpRuntimeContextError,
     create_host_mcp_relay,
     discard_unbound_mcp_runtime_context,
     get_mcp_relay_auth_failure_limiter,
     get_mcp_runtime_context_manager,
+    get_live_mcp_catalog,
     normalize_static_mcp_headers,
     read_mcp_principal_jwt,
     record_mcp_server_credential,
     seal_mcp_server_credentials,
+    service_token_matches,
 )
-from app.mcp.infrastructure.catalog import StreamableHttpMcpToolDiscoveryAdapter
-from app.mcp.infrastructure.runtime import (
-    read_gateway_cache_revisions,
-    resolve_registered_mcp_target,
-)
-from app.redis_client import get_redis_client
 from app.settings import get_settings
 from app.validation import assert_safe_id
 
@@ -51,19 +43,7 @@ logger = logging.getLogger(__name__)
 MCP_LIFECYCLE_CONTRACT_VERSION = "ai-platform.mcp-lifecycle.v1"
 
 
-async def _read_gateway_cache_revisions(endpoint: str) -> object | None:
-    return await read_gateway_cache_revisions(
-        endpoint,
-        service_token=str(get_settings().mcp_gateway_service_token),
-    )
-
-
-LIVE_MCP_CATALOG = LiveMcpCatalogService(
-    redis_provider=get_redis_client,
-    target_resolver=resolve_registered_mcp_target,
-    revision_reader=_read_gateway_cache_revisions,
-    discovery=StreamableHttpMcpToolDiscoveryAdapter(),
-)
+LIVE_MCP_CATALOG = get_live_mcp_catalog()
 MCP_RUNTIME_CONTEXT_MANAGER = get_mcp_runtime_context_manager()
 MCP_RELAY_AUTH_FAILURE_LIMITER = get_mcp_relay_auth_failure_limiter()
 HostMcpRelay = create_host_mcp_relay

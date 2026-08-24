@@ -7,6 +7,7 @@ from app.mcp.domain.errors import McpRuntimeContextError
 
 class McpRuntimeServices(Protocol):
     context_manager: Any
+    live_catalog: Any
     principal_jwt_store: Any
     relay_auth_failure_limiter: Any
 
@@ -45,3 +46,8 @@ class RuntimeContextManagerProxy:
 class RelayAuthFailureLimiterProxy:
     def __getattr__(self, name: str) -> Any:
         return getattr(mcp_runtime_services().relay_auth_failure_limiter, name)
+
+
+class LiveMcpCatalogProxy:
+    def __getattr__(self, name: str) -> Any:
+        return getattr(mcp_runtime_services().live_catalog, name)

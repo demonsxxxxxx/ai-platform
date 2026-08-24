@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from app.db import transaction
+from app.mcp.application.live_catalog import LiveMcpCatalogService
 from app.mcp.api import configure_mcp_runtime_services
+from app.mcp.infrastructure.catalog import StreamableHttpMcpToolDiscoveryAdapter
 from app.mcp.infrastructure import postgres as mcp_postgres
 from app.mcp.infrastructure import runtime as mcp_runtime
 from app.redis_client import get_redis_client
@@ -21,8 +23,21 @@ class _McpRuntimeServices:
             relay_target_reader=target_reader,
         )
         self.context_manager = mcp_runtime.get_mcp_runtime_context_manager()
+        self.live_catalog = LiveMcpCatalogService(
+            redis_provider=get_redis_client,
+            target_resolver=mcp_runtime.resolve_registered_mcp_target,
+            revision_reader=self._read_gateway_cache_revisions,
+            discovery=StreamableHttpMcpToolDiscoveryAdapter(),
+        )
         self.principal_jwt_store = mcp_runtime.get_mcp_principal_jwt_store()
         self.relay_auth_failure_limiter = mcp_runtime.McpRelayAuthFailureLimiter()
+
+    @staticmethod
+    async def _read_gateway_cache_revisions(endpoint: str) -> object | None:
+        return await mcp_runtime.read_gateway_cache_revisions(
+            endpoint,
+            service_token=str(get_settings().mcp_gateway_service_token),
+        )
 
     def create_host_relay(self, *, context_manager: Any | None = None) -> Any:
         return mcp_runtime.HostMcpRelay(

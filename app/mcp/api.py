@@ -5,10 +5,16 @@ from __future__ import annotations
 from typing import Any
 
 from app.mcp.application.runtime_registry import (
+    LiveMcpCatalogProxy,
     RelayAuthFailureLimiterProxy,
     RuntimeContextManagerProxy,
     configure_mcp_runtime_services,
     mcp_runtime_services,
+)
+from app.mcp.application.live_catalog import (
+    GatewayRevisions,
+    MCP_CACHE_INVALIDATION_TOKEN_HEADER,
+    service_token_matches,
 )
 from app.mcp.domain.errors import (
     McpRelayError,
@@ -32,6 +38,7 @@ from app.mcp.domain.targets import (
 )
 _CONTEXT_MANAGER_PROXY = RuntimeContextManagerProxy()
 _FAILURE_LIMITER_PROXY = RelayAuthFailureLimiterProxy()
+_LIVE_CATALOG_PROXY = LiveMcpCatalogProxy()
 _TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
 
 
@@ -41,6 +48,10 @@ def get_mcp_runtime_context_manager() -> RuntimeContextManagerProxy:
 
 def get_mcp_relay_auth_failure_limiter() -> RelayAuthFailureLimiterProxy:
     return _FAILURE_LIMITER_PROXY
+
+
+def get_live_mcp_catalog() -> LiveMcpCatalogProxy:
+    return _LIVE_CATALOG_PROXY
 
 
 async def store_mcp_principal_jwt(principal: Any, jwt: str) -> None:
@@ -194,6 +205,8 @@ async def preflight_mcp_admission(
 
 __all__ = [
     "MCP_JWT_AUTHORIZATION_HEADER",
+    "MCP_CACHE_INVALIDATION_TOKEN_HEADER",
+    "GatewayRevisions",
     "McpRelayError",
     "McpRuntimeContextError",
     "McpToolSelectionRequired",
@@ -205,6 +218,7 @@ __all__ = [
     "discard_unbound_mcp_runtime_context",
     "get_mcp_relay_auth_failure_limiter",
     "get_mcp_runtime_context_manager",
+    "get_live_mcp_catalog",
     "read_mcp_principal_jwt",
     "invalidate_committed_terminal_run_mcp_context",
     "invalidate_mcp_runtime_context",
@@ -221,5 +235,6 @@ __all__ = [
     "queue_input_with_mcp_context",
     "record_mcp_server_credential",
     "seal_mcp_server_credentials",
+    "service_token_matches",
     "store_mcp_principal_jwt",
 ]
