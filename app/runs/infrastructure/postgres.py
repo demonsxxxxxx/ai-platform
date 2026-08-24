@@ -8,10 +8,264 @@ from typing import Any
 from psycopg import AsyncConnection
 
 from app.platform.postgres.errors import RepositoryConflictError
+from app.runs.domain.attempt_lifecycle import (
+    RUN_ATTEMPT_OWNER_KINDS,
+    TERMINAL_RUN_ATTEMPT_STATUSES,
+    decide_run_attempt_transition,
+)
+from app.runs.domain.execution_spec import ExecutionSpec
 
 
 def _dumps_json(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False)
+
+
+def _validated_attempt_owner(*, owner_kind: str, owner_id: str) -> tuple[str, str]:
+    if owner_kind not in RUN_ATTEMPT_OWNER_KINDS:
+        raise ValueError("run_attempt_owner_kind_invalid")
+    if not isinstance(owner_id, str) or not owner_id.strip():
+        raise ValueError("run_attempt_owner_id_invalid")
+    return owner_kind, owner_id.strip()
+
+
+async def create_run_attempt(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    ordinal: int,
+    owner_kind: str,
+    owner_id: str,
+    queue_attempt_id: str,
+    execution_spec: ExecutionSpec,
+) -> dict[str, Any]:
+    """Create the only legal initial attempt from one validated canonical spec."""
+
+    owner = _validated_attempt_owner(owner_kind=owner_kind, owner_id=owner_id)
+    if not isinstance(attempt_id, str) or not attempt_id.strip():
+        raise ValueError("run_attempt_id_invalid")
+    if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 1:
+        raise ValueError("run_attempt_ordinal_invalid")
+    if not isinstance(queue_attempt_id, str) or not queue_attempt_id.strip():
+        raise ValueError("run_attempt_queue_attempt_id_invalid")
+    if not isinstance(execution_spec, ExecutionSpec):
+        raise ValueError("run_attempt_execution_spec_invalid")
+    spec_mapping = execution_spec.to_mapping()
+    if spec_mapping["tenant_id"] != tenant_id or spec_mapping["run_id"] != run_id:
+        raise ValueError("run_attempt_execution_spec_identity_mismatch")
+    canonical_json = execution_spec.canonical_json.decode("utf-8")
+    cursor = await conn.execute(
+        """
+        insert into run_attempts(
+          id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
+          owner_generation, queue_attempt_id, execution_spec_schema_version,
+          execution_spec_json, execution_spec_canonical_json, execution_spec_sha256
+        ) values (
+          %s, %s, %s, %s, 'created', %s, %s,
+          1, %s, %s, %s::jsonb, %s, %s
+        )
+        returning *
+        """,
+        (
+            attempt_id.strip(),
+            tenant_id,
+            run_id,
+            ordinal,
+            owner[0],
+            owner[1],
+            queue_attempt_id.strip(),
+            spec_mapping["schema_version"],
+            canonical_json,
+            canonical_json,
+            execution_spec.spec_sha256,
+        ),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise RepositoryConflictError("run_attempt_create_conflict")
+    return dict(row)
+
+
+async def transition_run_attempt(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    expected_status: str,
+    requested_status: str,
+    expected_owner_kind: str,
+    expected_owner_id: str,
+    expected_owner_generation: int,
+    next_owner_kind: str | None = None,
+    next_owner_id: str | None = None,
+    queue_message_id: str | None = None,
+    lease_expires_at: Any | None = None,
+    last_heartbeat_at: Any | None = None,
+    terminal_reason: str = "",
+    error_code: str | None = None,
+) -> dict[str, Any]:
+    """Persist one owner-fenced attempt transition and its Run projection."""
+
+    current_owner = _validated_attempt_owner(
+        owner_kind=expected_owner_kind,
+        owner_id=expected_owner_id,
+    )
+    if (next_owner_kind is None) is not (next_owner_id is None):
+        raise ValueError("run_attempt_next_owner_incomplete")
+    next_owner = (
+        current_owner
+        if next_owner_kind is None or next_owner_id is None
+        else _validated_attempt_owner(
+            owner_kind=next_owner_kind,
+            owner_id=next_owner_id,
+        )
+    )
+    decision = decide_run_attempt_transition(
+        current_status=expected_status,
+        requested_status=requested_status,
+        owner_generation=expected_owner_generation,
+        expected_owner_generation=expected_owner_generation,
+    )
+    if requested_status == "expired" and next_owner[0] != "reconciler":
+        raise ValueError("run_attempt_expiry_reconciler_required")
+    if queue_message_id is not None and not queue_message_id.strip():
+        raise ValueError("run_attempt_queue_message_id_invalid")
+    if requested_status in TERMINAL_RUN_ATTEMPT_STATUSES and not terminal_reason.strip():
+        raise ValueError("run_attempt_terminal_reason_required")
+
+    if not decision.did_transition:
+        cursor = await conn.execute(
+            """
+            select *
+            from run_attempts
+            where tenant_id = %s
+              and run_id = %s
+              and id = %s
+              and status = %s
+              and owner_kind = %s
+              and owner_id = %s
+              and owner_generation = %s
+            """,
+            (
+                tenant_id,
+                run_id,
+                attempt_id,
+                expected_status,
+                current_owner[0],
+                current_owner[1],
+                expected_owner_generation,
+            ),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise RepositoryConflictError("run_attempt_transition_conflict")
+        return dict(row)
+
+    cursor = await conn.execute(
+        """
+        with locked as materialized (
+          select run_attempts.id
+          from run_attempts
+          join runs
+            on runs.tenant_id = run_attempts.tenant_id
+           and runs.id = run_attempts.run_id
+          where run_attempts.tenant_id = %s
+            and run_attempts.run_id = %s
+            and run_attempts.id = %s
+            and run_attempts.status = %s
+            and run_attempts.owner_kind = %s
+            and run_attempts.owner_id = %s
+            and run_attempts.owner_generation = %s
+            and (
+              (%s = 'queued' and runs.status = 'queued')
+              or (%s = 'running' and runs.status in ('queued', 'running'))
+              or (
+                %s in ('succeeded', 'failed', 'cancelled')
+                and runs.status in ('queued', 'running', %s)
+              )
+            )
+          for update of run_attempts, runs
+        ), transitioned as (
+          update run_attempts
+          set status = %s,
+              owner_kind = %s,
+              owner_id = %s,
+              owner_generation = %s,
+              queue_message_id = coalesce(%s, queue_message_id),
+              lease_expires_at = coalesce(%s, lease_expires_at),
+              last_heartbeat_at = coalesce(%s, last_heartbeat_at),
+              started_at = case
+                when %s = 'running' then coalesce(started_at, now())
+                else started_at
+              end,
+              finished_at = case
+                when %s in ('succeeded', 'failed', 'cancelled') then now()
+                else null
+              end,
+              terminal_reason = case
+                when %s in ('succeeded', 'failed', 'cancelled') then %s
+                else terminal_reason
+              end,
+              error_code = case
+                when %s in ('succeeded', 'failed', 'cancelled') then %s
+                else error_code
+              end,
+              updated_at = now()
+          where tenant_id = %s
+            and run_id = %s
+            and id = %s
+            and status = %s
+            and owner_kind = %s
+            and owner_id = %s
+            and owner_generation = %s
+            and exists (
+              select 1 from locked where locked.id = run_attempts.id
+            )
+          returning *
+        )
+        select *
+        from transitioned
+        """,
+        (
+            tenant_id,
+            run_id,
+            attempt_id,
+            expected_status,
+            current_owner[0],
+            current_owner[1],
+            expected_owner_generation,
+            decision.projected_run_status,
+            decision.projected_run_status,
+            decision.projected_run_status,
+            decision.projected_run_status,
+            requested_status,
+            next_owner[0],
+            next_owner[1],
+            decision.owner_generation,
+            queue_message_id,
+            lease_expires_at,
+            last_heartbeat_at,
+            requested_status,
+            requested_status,
+            requested_status,
+            terminal_reason.strip(),
+            requested_status,
+            error_code,
+            tenant_id,
+            run_id,
+            attempt_id,
+            expected_status,
+            current_owner[0],
+            current_owner[1],
+            expected_owner_generation,
+        ),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise RepositoryConflictError("run_attempt_transition_conflict")
+    return dict(row)
 
 
 async def count_active_runs_for_user(

@@ -310,12 +310,22 @@ async def test_real_postgres_upgrade_namespaces_every_legacy_file_outbox_state()
         "alter table object_deletion_outbox drop constraint chk_object_deletion_outbox_target",
         "alter table object_deletion_outbox drop constraint chk_object_deletion_outbox_target_state",
         "alter table object_deletion_outbox drop column lease_generation",
+        "alter table run_attempts drop column lease_expires_at",
+        "alter table run_attempts drop constraint run_attempts_tenant_id_run_id_ordinal_key",
+        "alter table run_attempts drop constraint run_attempts_tenant_id_run_id_queue_attempt_id_key",
         "drop index idx_messages_tenant_session_created",
         "drop index idx_runs_input_json_gin",
         "drop index idx_object_deletion_outbox_artifact_storage_live",
         "drop index uq_object_deletion_outbox_file",
         "drop trigger trg_agent_profile_legacy_insert_compatibility on agent_profile_revisions",
         "drop trigger trg_agent_profile_legacy_insert_reconcile on agent_profile_revisions",
+        "drop trigger trg_run_attempt_transition_guard on run_attempts",
+        """
+        drop trigger trg_run_attempt_transition_guard on run_attempts;
+        create trigger trg_run_attempt_transition_guard
+          before update on run_attempts
+          for each row execute function ai_platform_guard_run_attempt_transition()
+        """,
         "alter table agent_profile_revisions enable always trigger trg_agent_profile_legacy_insert_compatibility",
         """
         create or replace function agent_profile_legacy_insert_reconcile()
@@ -382,6 +392,26 @@ async def test_real_postgres_readiness_rejects_missing_critical_contract(damage_
         alter table object_deletion_outbox
           add constraint object_deletion_outbox_file_id_fkey
           foreign key (file_id) references artifacts(id)
+        """,
+        """
+        alter table run_attempts drop constraint chk_run_attempts_ordinal;
+        alter table run_attempts add constraint chk_run_attempts_ordinal
+          check (ordinal >= 0)
+        """,
+        """
+        alter table run_attempts drop constraint chk_run_attempts_owner_generation;
+        alter table run_attempts add constraint chk_run_attempts_owner_generation
+          check (owner_generation >= 0)
+        """,
+        """
+        alter table run_attempts drop constraint fk_run_attempts_run;
+        alter table run_attempts add constraint fk_run_attempts_run
+          foreign key (run_id) references runs(id)
+        """,
+        """
+        alter table run_attempts drop constraint chk_run_attempts_spec_sha256;
+        alter table run_attempts add constraint chk_run_attempts_spec_sha256
+          check (execution_spec_sha256 ~ '^[0-9a-f]{64}$')
         """,
     ],
 )
@@ -548,6 +578,59 @@ async def test_real_postgres_readiness_rejects_and_migration_repairs_wrong_index
             assert (await schema_migrations.schema_status(conn))["ready"] is True
     finally:
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("index_name", "replacement_sql"),
+    [
+        (
+            "uq_run_attempts_one_open",
+            "create unique index uq_run_attempts_one_open on run_attempts(id) "
+            "where status = 'running'",
+        ),
+        (
+            "idx_run_attempts_lease_reconcile",
+            "create index idx_run_attempts_lease_reconcile on run_attempts(id)",
+        ),
+    ],
+)
+async def test_real_postgres_readiness_rejects_wrong_static_index_definition(
+    index_name,
+    replacement_sql,
+):
+    dsn = _postgres_dsn()
+    schema_name = f"schema_static_index_drift_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(
+        dsn,
+        autocommit=True,
+        row_factory=dict_row,
+    )
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        factory = _transaction_factory(dsn, schema_name)
+        index_factory = _index_connection_factory(dsn, schema_name)
+        await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+        await admin.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+        await admin.execute(sql.SQL("drop index {}").format(sql.Identifier(index_name)))
+        await admin.execute(replacement_sql)
+
+        async with factory() as conn:
+            damaged = await schema_migrations.schema_status(conn)
+
+        assert damaged["ready"] is False
+        assert damaged["indexes_current"] is True
+        assert damaged["static_index_definitions_current"] is False
+    finally:
+        await admin.execute(
+            sql.SQL("drop schema if exists {} cascade").format(
+                sql.Identifier(schema_name)
+            )
+        )
         await admin.close()
 
 

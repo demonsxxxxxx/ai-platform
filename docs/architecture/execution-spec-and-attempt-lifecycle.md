@@ -2,9 +2,10 @@
 
 Status: normative source-architecture decision; implementation is incremental
 
-Current slice: the worker compiles an in-memory specification before dispatch.
-It does not yet persist the canonical JSON or digest and does not activate a
-durable `RunAttempt` authority; those changes begin at migration step 2.
+Current stacked foundation: the worker compiles an in-memory specification
+before dispatch, and Runs owns the durable attempt schema plus create/transition
+writers. Existing queue, worker, callback, and Sandbox paths are not yet cut over
+to those writers.
 
 Owner: `runs` bounded context
 
@@ -118,13 +119,38 @@ projection must remain unambiguous.
 Every transition is a compare-and-set over the full fence:
 
 ```text
-tenant_id + run_id + attempt_id + expected_state + owner_generation
+tenant_id + run_id + attempt_id + expected_state
++ expected_owner_kind + expected_owner_id + expected_owner_generation
 ```
 
 An owning transition transaction updates the attempt, projects the compatible
 Run status, records the safe lifecycle event/audit fact, and freezes any
 terminal publication intent. Queue acknowledgement and Redis publication occur
 after commit and cannot authorize a database transition.
+
+### 3.1 Implemented foundation and remaining cutover
+
+The current foundation adds the `run_attempts` relation, one-open-attempt
+uniqueness, a single Runs-owned create writer, immutable specification/attempt
+identity, exact legal-edge and generation-increment enforcement in PostgreSQL,
+and one Runs-owned CAS writer that advances the attempt through the database
+transition guard. That guard is the sole compatible Run projector in the same
+statement, so a legal direct attempt update cannot bypass the invariant or
+double-update the Run row.
+PostgreSQL accepts only `created` as an initial attempt, locks and verifies a
+queued parent Run plus its durable identity, retains the exact canonical UTF-8
+JSON text, and verifies both its JSON projection and SHA-256 before accepting
+the row.
+`expired` remains an open arbitration state: a reconciler must fence the old
+owner and finish that attempt before a later ordinal can be created.
+
+This foundation is not the worker cutover. Existing queue, worker, callback,
+Sandbox, event/audit, and terminalization writers do not yet create or advance
+`run_attempts`; they remain on the legacy Run/Sandbox authorities until the
+dual-write phase below. Real PostgreSQL DDL/readiness proof, event/audit
+publication, Redis reclaim, callback/Sandbox binding, and mixed-version runtime
+acceptance are therefore still required before the attempt migration can be
+called complete.
 
 Redis reclaim creates a new durable ordinal attempt before a new worker can
 execute. It never overwrites the old attempt identity. Retry, resume, and copy
@@ -172,8 +198,9 @@ Migration uses additive expand/contract ordering:
 
 1. Introduce the pure specification compiler, canonical codec, and owning tests.
    Keep existing `QueueRunPayload` and `RunPayload` behavior unchanged.
-2. Add nullable specification version/JSON/digest columns and a nullable
-   `run_attempts` relation. Deploy schema before new writers.
+2. Add the `run_attempts` relation with the specification version, canonical
+   JSON text, JSONB projection, and digest. Deploy schema before wiring runtime
+   callers to the new writers.
 3. Backfill and report legacy conflicts using Run columns, admitted input,
    Skill snapshots, context snapshots, queue/Sandbox lease facts, and stream
    authority. Never guess across conflicting identities.
@@ -209,6 +236,8 @@ The attempt slice additionally requires:
 
 - PostgreSQL CAS, rollback, lock contention, unique active attempt, and exact
   terminal event/audit facts;
+- rejection of non-`created` inserts, non-queued parent Runs, canonical
+  JSON/JSONB drift, digest drift, and wrong same-named schema constraints;
 - real Redis lease/reclaim races mapped to durable ordinal attempts;
 - cancellation before dispatch, during execution, after provider stop failure,
   and cleanup retry;
