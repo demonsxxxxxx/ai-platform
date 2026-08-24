@@ -20,13 +20,16 @@ from app.bootstrap import run_lifecycle
 from app.repositories import complete_run
 from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
 from app.routes import runtime_callbacks
-from app.routes.lambchat_compat import _recover_v4_attach_gap
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent
+from app.streaming.application.recovery_v4 import V4SuccessorRebuildReceipt
 from app.streaming.api import (
     build_v4_control,
+    build_v4_successor_rebuild,
     prepare_v4_successor_rebuild,
     publish_claimed_v4_events,
     stream_key,
+    stream_live_channel,
+    stream_end_event_id,
     successor_stream_open_event_id,
 )
 from app.streaming.redis import RedisStreamBridge, StreamAuthority, StreamTransportUnavailable
@@ -39,7 +42,6 @@ from app.streaming.v4 import (
     opaque_message_id,
     project_public_envelope_v4,
     project_public_v4,
-    recover_v4_rows,
 )
 from app.streaming.domain.transport import canonical_json_bytes
 from app.streaming.infrastructure.postgres_v4 import (
@@ -48,6 +50,7 @@ from app.streaming.infrastructure.postgres_v4 import (
     V4PublicationAuthorityError,
     V4SuccessorRebuildAuthorityError,
 )
+from app.streaming.infrastructure.redis_v4_rebuild import RedisV4SuccessorRebuildTransport
 from app.streaming.worker_projection import V4RedisPublicationTransport
 
 
@@ -473,6 +476,71 @@ async def _terminal_rebuild_source(
         """,
         (tenant, run),
     )
+
+
+async def _advance_to_newer_terminal_attempt(
+    conn, *, tenant: str, run: str, prior_attempt: str
+) -> str:
+    await conn.execute(
+        """
+        update runs
+        set status = 'queued', started_at = null, finished_at = null
+        where tenant_id = %s and id = %s
+        """,
+        (tenant, run),
+    )
+    await conn.execute(
+        """
+        insert into run_attempts(
+          id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
+          owner_generation, queue_attempt_id, queue_message_id,
+          execution_spec_schema_version, execution_spec_json,
+          execution_spec_canonical_json, execution_spec_sha256,
+          started_at, finished_at
+        )
+        select 'attempt-current', tenant_id, run_id, ordinal + 1,
+               'created', owner_kind, owner_id, 1,
+               'queue-attempt-current', null,
+               execution_spec_schema_version, execution_spec_json,
+               execution_spec_canonical_json, execution_spec_sha256,
+               null, null
+        from run_attempts
+        where tenant_id = %s and run_id = %s and id = %s
+        """,
+        (tenant, run, prior_attempt),
+    )
+    for next_status in ("queued", "claimed"):
+        await conn.execute(
+            """
+            update run_attempts
+            set status = %s, owner_generation = owner_generation + 1,
+                queue_message_id = case
+                  when %s = 'queued' then 'message-current'
+                  else queue_message_id
+                end
+            where tenant_id = %s and id = 'attempt-current'
+            """,
+            (next_status, next_status, tenant),
+        )
+    await conn.execute(
+        """
+        update run_attempts
+        set status = 'running', owner_generation = owner_generation + 1,
+            started_at = clock_timestamp()
+        where tenant_id = %s and id = 'attempt-current'
+        """,
+        (tenant,),
+    )
+    await conn.execute(
+        """
+        update run_attempts
+        set status = 'succeeded', owner_generation = owner_generation + 1,
+            finished_at = clock_timestamp()
+        where tenant_id = %s and id = 'attempt-current'
+        """,
+        (tenant,),
+    )
+    return "attempt-current"
 
 
 async def _successor_source_facts(
@@ -1091,64 +1159,7 @@ async def test_real_terminal_publish_and_restart_need_no_live_execution_lease(
 
 
 @pytest.mark.asyncio
-async def test_recovery_route_rebinds_each_frame_cursor_and_exposes_public_only_data():
-    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
-        async with _connection_factory(dsn, schema_name) as conn:
-            async with conn.transaction():
-                await _insert_v4_row(
-                    conn,
-                    tenant=tenant,
-                    run=run,
-                    attempt=attempt,
-                    sequence=1,
-                    event_id="evt4_old_incarnation",
-                    incarnation=1,
-                )
-                await _insert_v4_row(
-                    conn,
-                    tenant=tenant,
-                    run=run,
-                    attempt=attempt,
-                    sequence=2,
-                    event_id="evt4_current_incarnation",
-                    incarnation=1,
-                )
-        client, key, bridge = await _redis_stream(tenant, run, incarnation=2)
-        try:
-            authority = _authority(tenant, run, attempt, incarnation=2)
-            async with _connection_factory(dsn, schema_name) as conn:
-                recovery = await _recover_v4_attach_gap(
-                    conn,
-                    bridge=bridge,
-                    tenant_id=tenant,
-                    run_id=run,
-                    authority=authority,
-                    after_sequence=0,
-                    limit=8,
-                )
-            assert [item["seq"] for item in recovery.rows] == [1, 2]
-            assert len(recovery.transport_cursors) == 2
-            assert recovery.transport_cursors[0] != recovery.transport_cursors[1]
-            for item in recovery.rows:
-                assert item["schema"] == "ai-platform.public-run-stream-event.v4"
-                assert "tenant_scope" not in item
-                assert "attempt_id" not in item
-                assert "source" not in item
-            redis_rows = await client.xrange(key, min="-", max="+")
-            assert [json.loads(fields["envelope"])["seq"] for _, fields in redis_rows] == [1, 2]
-            for _, fields in redis_rows:
-                public = project_public_envelope_v4(json.loads(fields["envelope"]))
-                assert public is not None
-                assert "tenant_scope" not in public
-                assert "attempt_id" not in public
-                assert "source" not in public
-        finally:
-            await client.delete(key, f"{key}:state")
-            await client.aclose()
-
-
-@pytest.mark.asyncio
-async def test_recovery_scope_and_private_or_unknown_event_values_fail_closed():
+async def test_private_or_unknown_event_values_fail_closed():
     async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
         authority = _authority(tenant, run, attempt)
         async with _connection_factory(dsn, schema_name) as conn:
@@ -1167,13 +1178,6 @@ async def test_recovery_scope_and_private_or_unknown_event_values_fail_closed():
                 )
                 row = await private.fetchone()
                 assert project_public_v4(row, authority=authority) is None
-            with pytest.raises(V4ProjectionError, match="authority_scope"):
-                await recover_v4_rows(
-                    conn,
-                    tenant_id=tenant,
-                    run_id=run,
-                    authority=_authority(tenant, "other", attempt),
-                )
         unknown = {
             "schema": "ai-platform.stream-event.v4",
             "event_id": "evt4_unknown",
@@ -1290,6 +1294,467 @@ async def test_successor_rebuild_prepares_terminal_snapshot_without_activation()
             ) == source_facts_before
 
 
+def _receipt_for_successor_claim(claim):
+    terminal = claim.items[-1]
+    terminal_envelope = json.loads(terminal.canonical_envelope_bytes)
+    end = build_v4_control(
+        event_id=stream_end_event_id(terminal.event_id),
+        tenant_scope=claim.tenant_scope,
+        run_id=claim.run_id,
+        attempt_id=claim.attempt_id,
+        stream_incarnation=claim.successor_incarnation,
+        event_type="stream.end",
+        payload={"terminal_event_id": terminal.event_id},
+        source={"kind": "terminal_intent", "terminal_event_id": terminal.event_id},
+        causation_event_id=terminal.event_id,
+        emitted_at=terminal_envelope["emitted_at"],
+    )
+    return V4SuccessorRebuildReceipt(
+        stream_key=stream_key(
+            tenant_scope_value=claim.tenant_scope,
+            run_id=claim.run_id,
+            stream_incarnation=claim.successor_incarnation,
+        ),
+        stream_incarnation=claim.successor_incarnation,
+        entry_count=len(claim.items) + 2,
+        open_event_id=claim.successor_open_event_id,
+        terminal_event_id=terminal.event_id,
+        end_event_id=stream_end_event_id(terminal.event_id),
+        last_redis_id=f"1-{len(claim.items) + 1}",
+        last_envelope_bytes=canonical_json_bytes(end),
+    )
+
+
+@pytest.mark.asyncio
+async def test_successor_rebuild_builds_candidate_then_marks_exact_ready() -> None:
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _terminal_rebuild_source(
+                conn, tenant=tenant, run=run, attempt=attempt
+            )
+        rebuilds = PostgresV4SuccessorRebuilds(
+            lambda: _connection_factory(dsn, schema_name),
+            claim_token_factory=lambda: "rebuild-token-ready",
+        )
+        client = Redis.from_url(_redis_url(), decode_responses=True)
+        pubsub = client.pubsub()
+        key = stream_key(
+            tenant_scope_value=f"scope_{tenant[2:]}",
+            run_id=run,
+            stream_incarnation=3,
+        )
+        channel = stream_live_channel(
+            tenant_scope_value=f"scope_{tenant[2:]}",
+            run_id=run,
+            stream_incarnation=3,
+        )
+        try:
+            await client.delete(key, f"{key}:state")
+            await pubsub.subscribe(channel)
+            while True:
+                subscription = await pubsub.get_message(
+                    ignore_subscribe_messages=False, timeout=1
+                )
+                if subscription is not None and subscription["type"] == "subscribe":
+                    break
+
+            real_transport = RedisV4SuccessorRebuildTransport(
+                RedisStreamBridge(publish_client=client)
+            )
+            captured_claim = None
+
+            class LockCheckingTransport:
+                async def build(self, claim):
+                    nonlocal captured_claim
+                    captured_claim = claim
+                    async with _connection_factory(dsn, schema_name) as observer:
+                        run_lock = await observer.execute(
+                            """
+                            select id from runs
+                            where tenant_id = %s and id = %s
+                            for update nowait
+                            """,
+                            (claim.tenant_id, claim.run_id),
+                        )
+                        authority_lock = await observer.execute(
+                            """
+                            select run_id from sse_stream_authorities
+                            where tenant_id = %s and run_id = %s
+                            for update nowait
+                            """,
+                            (claim.tenant_id, claim.run_id),
+                        )
+                        rebuild_lock = await observer.execute(
+                            """
+                            select id from sse_stream_rebuilds
+                            where id = %s and tenant_id = %s and run_id = %s
+                            for update nowait
+                            """,
+                            (claim.rebuild_id, claim.tenant_id, claim.run_id),
+                        )
+                        assert await run_lock.fetchone() == {"id": claim.run_id}
+                        assert await authority_lock.fetchone() == {
+                            "run_id": claim.run_id
+                        }
+                        assert await rebuild_lock.fetchone() == {
+                            "id": claim.rebuild_id
+                        }
+                    return await real_transport.build(claim)
+
+            ready = await build_v4_successor_rebuild(
+                rebuilds,
+                LockCheckingTransport(),
+                tenant_id=tenant,
+                run_id=run,
+                attempt_id=attempt,
+                source_incarnation=2,
+                claim_ttl=timedelta(seconds=30),
+            )
+            assert ready is not None
+            assert captured_claim is not None
+            assert ready.stream_key == key
+            assert ready.end_event_id == stream_end_event_id(
+                "evt4_rebuild_succeeded"
+            )
+            assert await pubsub.get_message(
+                ignore_subscribe_messages=True, timeout=0.2
+            ) is None
+
+            redis_rows = await client.xrange(key, min="-", max="+")
+            assert len(redis_rows) == 4
+            assert ready.last_redis_id == redis_rows[-1][0]
+            assert ready.last_envelope_bytes == redis_rows[-1][1]["envelope"].encode()
+            redis_payloads = [
+                json.loads(fields["envelope"]) for _, fields in redis_rows
+            ]
+            assert redis_payloads[0] == json.loads(
+                captured_claim.successor_open_bytes
+            )
+            assert redis_payloads[1] == json.loads(
+                captured_claim.items[0].canonical_envelope_bytes
+            )
+            assert redis_payloads[2] == json.loads(
+                captured_claim.items[1].canonical_envelope_bytes
+            )
+            terminal_event_id = "evt4_rebuild_succeeded"
+            expected_end = build_v4_control(
+                event_id=stream_end_event_id(terminal_event_id),
+                tenant_scope=captured_claim.tenant_scope,
+                run_id=run,
+                attempt_id=attempt,
+                stream_incarnation=3,
+                event_type="stream.end",
+                payload={"terminal_event_id": terminal_event_id},
+                source={
+                    "kind": "terminal_intent",
+                    "terminal_event_id": terminal_event_id,
+                },
+                causation_event_id=terminal_event_id,
+                emitted_at=datetime.fromisoformat(
+                    redis_payloads[2]["emitted_at"]
+                ),
+            )
+            assert redis_payloads[3] == expected_end
+            assert [payload["event_type"] for payload in redis_payloads] == [
+                "stream.open",
+                "message.delta",
+                "run.succeeded",
+                "stream.end",
+            ]
+            assert redis_payloads[2]["payload"]["terminal_event_id"] == terminal_event_id
+
+            state = await client.hgetall(f"{key}:state")
+            assert state == {
+                "phase": "ended",
+                "open_protocol": "v4",
+                "open_event_id": captured_claim.successor_open_event_id,
+                "open_digest": captured_claim.successor_open_digest,
+                "open_redis_id": redis_rows[0][0],
+                "last_event_id": "evt4_rebuild_delta",
+                "last_event_digest": captured_claim.items[0].envelope_digest,
+                "last_event_redis_id": redis_rows[1][0],
+                "terminal_event_id": terminal_event_id,
+                "terminal_digest": captured_claim.items[1].envelope_digest,
+                "terminal_redis_id": redis_rows[2][0],
+                "end_event_id": stream_end_event_id(terminal_event_id),
+                "end_digest": hashlib.sha256(
+                    canonical_json_bytes(expected_end)
+                ).hexdigest(),
+                "end_redis_id": redis_rows[3][0],
+            }
+            async with _connection_factory(dsn, schema_name) as conn:
+                ready_row = await conn.execute(
+                    """
+                    select state, built_through_sequence, item_count
+                    from sse_stream_rebuilds where id = %s
+                    """,
+                    (captured_claim.rebuild_id,),
+                )
+                assert await ready_row.fetchone() == {
+                    "state": "ready",
+                    "built_through_sequence": captured_claim.source_through_sequence,
+                    "item_count": len(captured_claim.items),
+                }
+        finally:
+            await client.delete(key, f"{key}:state")
+            await pubsub.aclose()
+            await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_successor_rebuild_ignores_suppressed_source_row_for_prepare_and_ready() -> None:
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _terminal_rebuild_source(
+                conn, tenant=tenant, run=run, attempt=attempt
+            )
+            await conn.execute(
+                """
+                update run_events
+                set stream_publication_state = 'suppressed'
+                where id = 'evt4_rebuild_delta'
+                """,
+            )
+        rebuilds = PostgresV4SuccessorRebuilds(
+            lambda: _connection_factory(dsn, schema_name),
+            claim_token_factory=lambda: "rebuild-token-suppressed",
+        )
+        claim = await prepare_v4_successor_rebuild(
+            rebuilds,
+            tenant_id=tenant,
+            run_id=run,
+            attempt_id=attempt,
+            source_incarnation=2,
+            claim_ttl=timedelta(seconds=30),
+        )
+        assert claim is not None
+        assert [item.event_id for item in claim.items] == ["evt4_rebuild_succeeded"]
+        ready = await rebuilds.mark_ready(
+            claim,
+            receipt=_receipt_for_successor_claim(claim),
+        )
+        assert ready is True
+        async with _connection_factory(dsn, schema_name) as conn:
+            row = await conn.execute(
+                """
+                select state, built_through_sequence
+                from sse_stream_rebuilds where id = %s
+                """,
+                (claim.rebuild_id,),
+            )
+            assert await row.fetchone() == {
+                "state": "ready",
+                "built_through_sequence": claim.source_through_sequence,
+            }
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    (
+        ("stale_token", "readiness_token_invalid"),
+        ("expiry", "readiness_claim_expired"),
+        ("authority", "readiness_stream_authority_changed"),
+        ("high_water", "readiness_source_cursor_changed"),
+        ("persisted_item", "readiness_item_changed"),
+        ("persisted_open", "readiness_open_changed"),
+        ("source_row", "readiness_source_fingerprint_changed"),
+    ),
+)
+async def test_successor_rebuild_readiness_fences_persisted_and_authority_mutations(
+    mutation: str, error: str
+) -> None:
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _terminal_rebuild_source(
+                conn, tenant=tenant, run=run, attempt=attempt
+            )
+        rebuilds = PostgresV4SuccessorRebuilds(
+            lambda: _connection_factory(dsn, schema_name),
+            claim_token_factory=lambda: f"rebuild-token-{mutation}",
+        )
+        claim = await prepare_v4_successor_rebuild(
+            rebuilds,
+            tenant_id=tenant,
+            run_id=run,
+            attempt_id=attempt,
+            source_incarnation=2,
+            claim_ttl=timedelta(seconds=30),
+        )
+        assert claim is not None
+        client = Redis.from_url(_redis_url(), decode_responses=True)
+        key = stream_key(
+            tenant_scope_value=claim.tenant_scope,
+            run_id=claim.run_id,
+            stream_incarnation=claim.successor_incarnation,
+        )
+        try:
+            await client.delete(key, f"{key}:state")
+            receipt = await RedisV4SuccessorRebuildTransport(
+                RedisStreamBridge(publish_client=client)
+            ).build(claim)
+            async with _connection_factory(dsn, schema_name) as conn:
+                if mutation == "stale_token":
+                    await conn.execute(
+                        "update sse_stream_rebuilds set claim_token_digest = %s where id = %s",
+                        (hashlib.sha256(b"other-token").hexdigest(), claim.rebuild_id),
+                    )
+                elif mutation == "expiry":
+                    await conn.execute(
+                        "update sse_stream_rebuilds set claim_expires_at = clock_timestamp() - interval '1 second' where id = %s",
+                        (claim.rebuild_id,),
+                    )
+                elif mutation == "authority":
+                    await conn.execute(
+                        "update sse_stream_authorities set authorization_epoch = authorization_epoch + 1 where tenant_id = %s and run_id = %s",
+                        (tenant, run),
+                    )
+                elif mutation == "high_water":
+                    await conn.execute(
+                        "update run_event_cursors set next_sequence = next_sequence + 1 where tenant_id = %s and run_id = %s",
+                        (tenant, run),
+                    )
+                elif mutation == "persisted_item":
+                    await conn.execute(
+                        "update sse_stream_rebuild_items set envelope_digest = repeat('0', 64) where rebuild_id = %s and sequence = 1",
+                        (claim.rebuild_id,),
+                    )
+                elif mutation == "source_row":
+                    await conn.execute(
+                        """
+                        update run_events
+                        set payload_json = jsonb_set(
+                          payload_json, '{__stream_v4,payload,delta}', '"changed"'::jsonb
+                        )
+                        where id = 'evt4_rebuild_delta'
+                        """
+                    )
+                else:
+                    await conn.execute(
+                        "update sse_stream_rebuilds set successor_open_bytes = '{}' where id = %s",
+                        (claim.rebuild_id,),
+                    )
+            with pytest.raises(V4SuccessorRebuildAuthorityError, match=error):
+                await rebuilds.mark_ready(claim, receipt=receipt)
+        finally:
+            await client.delete(key, f"{key}:state")
+            await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_successor_rebuild_mark_ready_rejects_newer_terminal_attempt():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _terminal_rebuild_source(
+                conn, tenant=tenant, run=run, attempt=attempt
+            )
+        rebuilds = PostgresV4SuccessorRebuilds(
+            lambda: _connection_factory(dsn, schema_name),
+            claim_token_factory=lambda: "rebuild-token-current-attempt",
+        )
+        claim = await prepare_v4_successor_rebuild(
+            rebuilds,
+            tenant_id=tenant,
+            run_id=run,
+            attempt_id=attempt,
+            source_incarnation=2,
+            claim_ttl=timedelta(seconds=30),
+        )
+        assert claim is not None
+        client = Redis.from_url(_redis_url(), decode_responses=True)
+        key = stream_key(
+            tenant_scope_value=claim.tenant_scope,
+            run_id=claim.run_id,
+            stream_incarnation=claim.successor_incarnation,
+        )
+        try:
+            await client.delete(key, f"{key}:state")
+            receipt = await RedisV4SuccessorRebuildTransport(
+                RedisStreamBridge(publish_client=client)
+            ).build(claim)
+            async with _connection_factory(dsn, schema_name) as conn:
+                assert await _advance_to_newer_terminal_attempt(
+                    conn, tenant=tenant, run=run, prior_attempt=attempt
+                ) == "attempt-current"
+            with pytest.raises(
+                V4SuccessorRebuildAuthorityError,
+                match="readiness_terminal_authority_changed",
+            ):
+                await rebuilds.mark_ready(claim, receipt=receipt)
+            async with _connection_factory(dsn, schema_name) as conn:
+                state = await conn.execute(
+                    """
+                    select state, built_through_sequence
+                    from sse_stream_rebuilds where id = %s
+                    """,
+                    (claim.rebuild_id,),
+                )
+                assert await state.fetchone() == {
+                    "state": "building",
+                    "built_through_sequence": 0,
+                }
+        finally:
+            await client.delete(key, f"{key}:state")
+            await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_successor_rebuild_readiness_rolls_back_after_commit_boundary_failure():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _terminal_rebuild_source(
+                conn, tenant=tenant, run=run, attempt=attempt
+            )
+        rebuilds = PostgresV4SuccessorRebuilds(
+            lambda: _connection_factory(dsn, schema_name),
+            claim_token_factory=lambda: "rebuild-token-rollback-ready",
+        )
+        claim = await prepare_v4_successor_rebuild(
+            rebuilds,
+            tenant_id=tenant,
+            run_id=run,
+            attempt_id=attempt,
+            source_incarnation=2,
+            claim_ttl=timedelta(seconds=30),
+        )
+        assert claim is not None
+        client = Redis.from_url(_redis_url(), decode_responses=True)
+        key = stream_key(
+            tenant_scope_value=claim.tenant_scope,
+            run_id=claim.run_id,
+            stream_incarnation=claim.successor_incarnation,
+        )
+        try:
+            await client.delete(key, f"{key}:state")
+            receipt = await RedisV4SuccessorRebuildTransport(
+                RedisStreamBridge(publish_client=client)
+            ).build(claim)
+
+            @asynccontextmanager
+            async def failing_factory():
+                async with _connection_factory(dsn, schema_name) as conn:
+                    yield conn
+                    raise RuntimeError("test_commit_boundary_failure")
+
+            failing_rebuilds = PostgresV4SuccessorRebuilds(failing_factory)
+            with pytest.raises(RuntimeError, match="test_commit_boundary_failure"):
+                await failing_rebuilds.mark_ready(claim, receipt=receipt)
+            async with _connection_factory(dsn, schema_name) as conn:
+                state = await conn.execute(
+                    """
+                    select state, built_through_sequence
+                    from sse_stream_rebuilds where id = %s
+                    """,
+                    (claim.rebuild_id,),
+                )
+                assert await state.fetchone() == {
+                    "state": "building",
+                    "built_through_sequence": 0,
+                }
+        finally:
+            await client.delete(key, f"{key}:state")
+            await client.aclose()
+
+
 @pytest.mark.asyncio
 async def test_successor_rebuild_locks_run_before_stream_authority():
     async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
@@ -1381,6 +1846,279 @@ async def test_successor_rebuild_locks_run_before_stream_authority():
             await blocker.close()
         assert claim is not None
         assert claim.successor_incarnation == 3
+
+
+@pytest.mark.asyncio
+async def test_successor_rebuild_prepare_rechecks_attempt_after_run_lock_contention():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _terminal_rebuild_source(
+                conn, tenant=tenant, run=run, attempt=attempt
+            )
+
+        claim_connected = asyncio.Event()
+        claim_backend_pid: int | None = None
+
+        @asynccontextmanager
+        async def claim_factory():
+            nonlocal claim_backend_pid
+            conn = await psycopg.AsyncConnection.connect(
+                dsn,
+                options=f"-c search_path={schema_name}",
+                row_factory=dict_row,
+            )
+            claim_backend_pid = conn.info.backend_pid
+            claim_connected.set()
+            try:
+                async with conn.transaction():
+                    yield conn
+            finally:
+                await conn.close()
+
+        rebuilds = PostgresV4SuccessorRebuilds(
+            claim_factory,
+            claim_token_factory=lambda: "rebuild-token-prepare-contention",
+        )
+        blocker = await psycopg.AsyncConnection.connect(
+            dsn,
+            options=f"-c search_path={schema_name}",
+            row_factory=dict_row,
+        )
+        claim_task = None
+        try:
+            async with blocker.transaction():
+                await blocker.execute(
+                    "select id from runs where tenant_id = %s and id = %s for update",
+                    (tenant, run),
+                )
+                claim_task = asyncio.create_task(
+                    prepare_v4_successor_rebuild(
+                        rebuilds,
+                        tenant_id=tenant,
+                        run_id=run,
+                        attempt_id=attempt,
+                        source_incarnation=2,
+                        claim_ttl=timedelta(seconds=30),
+                    )
+                )
+                await asyncio.wait_for(claim_connected.wait(), timeout=5)
+                assert claim_backend_pid is not None
+                async with _connection_factory(dsn, schema_name) as observer:
+                    for _ in range(250):
+                        waiting = await observer.execute(
+                            """
+                            select wait_event_type
+                            from pg_stat_activity
+                            where pid = %s
+                            """,
+                            (claim_backend_pid,),
+                        )
+                        row = await waiting.fetchone()
+                        if row is not None and row["wait_event_type"] == "Lock":
+                            break
+                        await asyncio.sleep(0.02)
+                    else:
+                        pytest.fail("successor prepare did not block on the Run lock")
+                assert await _advance_to_newer_terminal_attempt(
+                    blocker, tenant=tenant, run=run, prior_attempt=attempt
+                ) == "attempt-current"
+                await blocker.execute(
+                    """
+                    update runs
+                    set status = 'succeeded',
+                        started_at = coalesce(started_at, clock_timestamp()),
+                        finished_at = clock_timestamp()
+                    where tenant_id = %s and id = %s
+                    """,
+                    (tenant, run),
+                )
+            with pytest.raises(
+                V4SuccessorRebuildAuthorityError, match="terminal_authority_missing"
+            ):
+                await claim_task
+        finally:
+            if claim_task is not None and not claim_task.done():
+                claim_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await claim_task
+            await blocker.close()
+
+
+@pytest.mark.asyncio
+async def test_successor_rebuild_mark_ready_rechecks_attempt_after_run_lock_contention():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _terminal_rebuild_source(
+                conn, tenant=tenant, run=run, attempt=attempt
+            )
+        rebuilds = PostgresV4SuccessorRebuilds(
+            lambda: _connection_factory(dsn, schema_name),
+            claim_token_factory=lambda: "rebuild-token-ready-contention",
+        )
+        claim = await prepare_v4_successor_rebuild(
+            rebuilds,
+            tenant_id=tenant,
+            run_id=run,
+            attempt_id=attempt,
+            source_incarnation=2,
+            claim_ttl=timedelta(seconds=30),
+        )
+        assert claim is not None
+        receipt = _receipt_for_successor_claim(claim)
+        ready_connected = asyncio.Event()
+        ready_backend_pid: int | None = None
+
+        @asynccontextmanager
+        async def ready_factory():
+            nonlocal ready_backend_pid
+            conn = await psycopg.AsyncConnection.connect(
+                dsn,
+                options=f"-c search_path={schema_name}",
+                row_factory=dict_row,
+            )
+            ready_backend_pid = conn.info.backend_pid
+            ready_connected.set()
+            try:
+                async with conn.transaction():
+                    yield conn
+            finally:
+                await conn.close()
+
+        ready_rebuilds = PostgresV4SuccessorRebuilds(ready_factory)
+        blocker = await psycopg.AsyncConnection.connect(
+            dsn,
+            options=f"-c search_path={schema_name}",
+            row_factory=dict_row,
+        )
+        ready_task = None
+        try:
+            async with blocker.transaction():
+                await blocker.execute(
+                    "select id from runs where tenant_id = %s and id = %s for update",
+                    (tenant, run),
+                )
+                ready_task = asyncio.create_task(
+                    ready_rebuilds.mark_ready(claim, receipt=receipt)
+                )
+                await asyncio.wait_for(ready_connected.wait(), timeout=5)
+                assert ready_backend_pid is not None
+                async with _connection_factory(dsn, schema_name) as observer:
+                    for _ in range(250):
+                        waiting = await observer.execute(
+                            """
+                            select wait_event_type
+                            from pg_stat_activity
+                            where pid = %s
+                            """,
+                            (ready_backend_pid,),
+                        )
+                        row = await waiting.fetchone()
+                        if row is not None and row["wait_event_type"] == "Lock":
+                            break
+                        await asyncio.sleep(0.02)
+                    else:
+                        pytest.fail("successor readiness did not block on the Run lock")
+                assert await _advance_to_newer_terminal_attempt(
+                    blocker, tenant=tenant, run=run, prior_attempt=attempt
+                ) == "attempt-current"
+            with pytest.raises(
+                V4SuccessorRebuildAuthorityError,
+                match="readiness_terminal_authority_changed",
+            ):
+                await ready_task
+        finally:
+            if ready_task is not None and not ready_task.done():
+                ready_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await ready_task
+            await blocker.close()
+
+
+@pytest.mark.asyncio
+async def test_successor_rebuild_mark_ready_rejects_expiry_crossing_during_items():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _terminal_rebuild_source(
+                conn, tenant=tenant, run=run, attempt=attempt
+            )
+        rebuilds = PostgresV4SuccessorRebuilds(
+            lambda: _connection_factory(dsn, schema_name),
+            claim_token_factory=lambda: "rebuild-token-expiry-race",
+        )
+        claim = await prepare_v4_successor_rebuild(
+            rebuilds,
+            tenant_id=tenant,
+            run_id=run,
+            attempt_id=attempt,
+            source_incarnation=2,
+            claim_ttl=timedelta(seconds=5),
+        )
+        assert claim is not None
+        receipt = _receipt_for_successor_claim(claim)
+        item_started = asyncio.Event()
+        release_items = asyncio.Event()
+
+        class BlockingConnection:
+            def __init__(self, connection):
+                self._connection = connection
+
+            def __getattr__(self, name):
+                return getattr(self._connection, name)
+
+            async def execute(self, statement, *args, **kwargs):
+                if (
+                    not item_started.is_set()
+                    and "from sse_stream_rebuild_items" in str(statement).lower()
+                ):
+                    item_started.set()
+                    await release_items.wait()
+                return await self._connection.execute(statement, *args, **kwargs)
+
+        @asynccontextmanager
+        async def blocking_factory():
+            async with _connection_factory(dsn, schema_name) as conn:
+                yield BlockingConnection(conn)
+
+        blocked_rebuilds = PostgresV4SuccessorRebuilds(blocking_factory)
+        ready_task = asyncio.create_task(
+            blocked_rebuilds.mark_ready(claim, receipt=receipt)
+        )
+        try:
+            await asyncio.wait_for(item_started.wait(), timeout=5)
+            async with _connection_factory(dsn, schema_name) as observer:
+                expiry_row = await observer.execute(
+                    """
+                    select clock_timestamp() as now, claim_expires_at
+                    from sse_stream_rebuilds where id = %s
+                    """,
+                    (claim.rebuild_id,),
+                )
+                expiry = await expiry_row.fetchone()
+            assert expiry is not None
+            remaining = (
+                expiry["claim_expires_at"] - expiry["now"]
+            ).total_seconds()
+            await asyncio.sleep(max(0.0, remaining) + 0.25)
+            release_items.set()
+            assert await ready_task is False
+        finally:
+            if not ready_task.done():
+                release_items.set()
+                ready_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await ready_task
+        async with _connection_factory(dsn, schema_name) as conn:
+            row = await conn.execute(
+                """
+                select state, built_through_sequence
+                from sse_stream_rebuilds where id = %s
+                """,
+                (claim.rebuild_id,),
+            )
+            assert await row.fetchone() == {
+                "state": "building",
+                "built_through_sequence": 0,
+            }
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,6 @@ is never included in a public envelope.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -33,7 +32,6 @@ from app.streaming.api import (
     _RUN_DOMAIN_EVENT_TYPES,
     _immutable_v4_payload,
     _nonempty,
-    _row_for_current_authority,
     _safe_ref,
     _stable_event_id,
     _stable_run_event_id,
@@ -67,21 +65,6 @@ class V4Publication:
     redis_id: str
     envelope: dict[str, object]
 
-
-@dataclass(frozen=True, slots=True)
-class V4Recovery:
-    """Authorized durable rows returned after transport continuity is lost."""
-
-    rows: tuple[Mapping[str, object], ...]
-    transport_cursor: str | None = None
-    transport_cursors: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class _V4RecoveryPage:
-    rows: tuple[Mapping[str, object], ...]
-    last_sequence: int | None
-    exhausted: bool
 
 
 async def append_application_v4_row(
@@ -817,24 +800,6 @@ class V4RedisStreamBridge:
             raise StreamContractError("v4_gap_cursor_changed")
         return envelope, cursor
 
-    async def ensure_open(self, open_payload_bytes: str | bytes) -> str | None:
-        """Re-append the persisted v4 open authority before durable recovery."""
-
-        try:
-            raw = open_payload_bytes.decode("utf-8") if isinstance(open_payload_bytes, bytes) else open_payload_bytes
-            internal = _validate_internal_envelope(json.loads(raw))
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise V4ProjectionError("v4_open_authority_invalid") from exc
-        if internal["event_type"] != "stream.open":
-            raise V4ProjectionError("v4_open_authority_invalid")
-        return await self._bridge.restore_v4_open(
-            tenant_scope_value=str(internal["tenant_scope"]),
-            run_id=str(internal["run_id"]),
-            stream_incarnation=int(internal["stream_incarnation"]),
-            event_id=str(internal["event_id"]),
-            envelope_bytes=canonical_json_bytes(internal),
-        )
-
     def _decode(
         self,
         row: tuple[object, Mapping[str, object]],
@@ -984,209 +949,10 @@ class V4RedisStreamBridge:
         )
 
 
-async def _recover_v4_page(
-    conn: Any,
-    *,
-    tenant_id: str,
-    run_id: str,
-    authority: StreamAuthority,
-    after_sequence: int,
-    limit: int,
-) -> _V4RecoveryPage:
-    result = await conn.execute(
-        """
-        select id, tenant_id, run_id, sequence, event_type, visible_to_user,
-               payload_json, stream_publication_state, created_at
-        from run_events
-        where tenant_id = %s and run_id = %s and sequence > %s
-          and visible_to_user = true
-          and stream_publication_state = 'published'
-        order by sequence asc
-        limit %s
-        """,
-        (tenant_id, run_id, after_sequence, limit),
-    )
-    raw_rows = tuple(await result.fetchall())
-    last_sequence = after_sequence
-    for row in raw_rows:
-        sequence = row.get("sequence")
-        if (
-            isinstance(sequence, bool)
-            or not isinstance(sequence, int)
-            or sequence <= last_sequence
-        ):
-            raise V4ProjectionError("v4_recovery_sequence_not_advancing")
-        last_sequence = sequence
-    rows: list[Mapping[str, object]] = []
-    for row in raw_rows:
-        rebound = _row_for_current_authority(row, authority=authority)
-        if rebound is not None:
-            rows.append(rebound)
-    return _V4RecoveryPage(
-        tuple(rows),
-        last_sequence if raw_rows else None,
-        len(raw_rows) < limit,
-    )
-
-
-async def recover_v4_rows(
-    conn: Any,
-    *,
-    tenant_id: str,
-    run_id: str,
-    authority: StreamAuthority,
-    after_sequence: int = 0,
-    limit: int = 128,
-) -> V4Recovery:
-    """Return authorized PG rows after a gap; no Redis cursor is invented."""
-
-    if authority.tenant_id != tenant_id or authority.run_id != run_id:
-        raise V4ProjectionError("v4_recovery_authority_scope_mismatch")
-    if isinstance(after_sequence, bool) or not isinstance(after_sequence, int) or after_sequence < 0:
-        raise ValueError("v4_recovery_sequence_invalid")
-    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 256:
-        raise ValueError("v4_recovery_limit_invalid")
-    page = await _recover_v4_page(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        authority=authority,
-        after_sequence=after_sequence,
-        limit=limit,
-    )
-    return V4Recovery(page.rows)
-
-
-async def _recover_all_v4_rows(
-    conn: Any,
-    *,
-    tenant_id: str,
-    run_id: str,
-    authority: StreamAuthority,
-) -> tuple[Mapping[str, object], ...]:
-    """Read every published row from sequence zero for a stream rebuild."""
-
-    rows: list[Mapping[str, object]] = []
-    after_sequence = 0
-    while True:
-        page = await _recover_v4_page(
-            conn,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            authority=authority,
-            after_sequence=after_sequence,
-            limit=256,
-        )
-        rows.extend(page.rows)
-        if page.exhausted:
-            return tuple(rows)
-        if page.last_sequence is None or page.last_sequence <= after_sequence:
-            raise V4ProjectionError("v4_recovery_sequence_not_advancing")
-        after_sequence = page.last_sequence
-
-
-async def recover_v4_and_resume(
-    conn: Any,
-    *,
-    bridge: V4RedisStreamBridge,
-    tenant_id: str,
-    run_id: str,
-    authority: StreamAuthority,
-    after_sequence: int = 0,
-    limit: int = 128,
-) -> V4Recovery:
-    """Rebuild a missing v4 stream fully, then return the requested window."""
-
-    if isinstance(after_sequence, bool) or not isinstance(after_sequence, int) or after_sequence < 0:
-        raise ValueError("v4_recovery_sequence_invalid")
-    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 256:
-        raise ValueError("v4_recovery_limit_invalid")
-    open_payload_bytes = authority.open_payload_bytes
-    if not isinstance(open_payload_bytes, (str, bytes)) or not open_payload_bytes:
-        raise V4ProjectionError("v4_open_authority_invalid")
-    restored = False
-    if isinstance(bridge, V4RedisStreamBridge):
-        try:
-            raw_open = (
-                open_payload_bytes.decode("utf-8")
-                if isinstance(open_payload_bytes, bytes)
-                else open_payload_bytes
-            )
-            open_internal = _validate_internal_envelope(json.loads(raw_open))
-            if (
-                raw_open != canonical_json_bytes(open_internal).decode()
-                or hashlib.sha256(raw_open.encode("utf-8")).hexdigest()
-                != authority.open_payload_digest
-                or open_internal["event_type"] != "stream.open"
-                or open_internal["event_id"] != authority.open_event_id
-                or open_internal["tenant_scope"] != authority.tenant_scope
-                or open_internal["run_id"] != authority.run_id
-                or open_internal["attempt_id"] != authority.attempt_id
-                or open_internal["stream_incarnation"] != authority.stream_incarnation
-                or open_internal["payload"]
-                != {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"}
-                or open_internal["source"]
-                != {"kind": "stream_authority", "authority_id": authority.open_event_id}
-            ):
-                raise ValueError("v4_open_authority_mismatch")
-        except Exception as exc:
-            raise V4ProjectionError("v4_open_authority_invalid") from exc
-        restored = await bridge.ensure_open(open_payload_bytes) is not None
-    elif hasattr(bridge, "ensure_open"):
-        # Non-production fakes may exercise the same restore/rebuild protocol.
-        restored = await bridge.ensure_open(open_payload_bytes) is not None
-
-    if restored:
-        source_rows = await _recover_all_v4_rows(
-            conn,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            authority=authority,
-        )
-        requested_rows = tuple(
-            row
-            for row in source_rows
-            if isinstance(row.get("sequence"), int)
-            and not isinstance(row.get("sequence"), bool)
-            and row["sequence"] > after_sequence
-        )[:limit]
-    else:
-        recovery = await recover_v4_rows(
-            conn,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            authority=authority,
-            after_sequence=after_sequence,
-            limit=limit,
-        )
-        source_rows = recovery.rows
-        requested_rows = source_rows
-    requested_ids = {str(row.get("id")) for row in requested_rows}
-    projected: list[Mapping[str, object]] = []
-    transport_cursors: list[str] = []
-    all_transport_cursors: list[str] = []
-    for row in source_rows:
-        internal = project_public_v4(row, authority=authority)
-        if internal is None:
-            continue
-        transport_cursor = await bridge.append(internal)
-        all_transport_cursors.append(transport_cursor)
-        public = project_public_envelope_v4(internal)
-        if public is not None and str(row.get("id")) in requested_ids:
-            projected.append(public)
-            transport_cursors.append(transport_cursor)
-    return V4Recovery(
-        tuple(projected),
-        all_transport_cursors[-1] if all_transport_cursors else None,
-        tuple(transport_cursors),
-    )
-
-
 __all__ = [
     "V4CallbackItem",
     "V4ProjectionError",
     "V4Publication",
-    "V4Recovery",
     "V4RedisStreamBridge",
     "V4StreamEntry",
     "append_application_v4_row",
@@ -1204,8 +970,6 @@ __all__ = [
     "opaque_message_id",
     "project_public_envelope_v4",
     "project_public_v4",
-    "recover_v4_and_resume",
-    "recover_v4_rows",
     "stream_end_event_id",
     "strip_internal_envelope",
 ]

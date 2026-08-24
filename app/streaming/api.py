@@ -12,9 +12,13 @@ from app.streaming.application.durable_v4 import (
     publish_claimed_v4_events,
 )
 from app.streaming.application.recovery_v4 import (
+    V4ReadySuccessorRebuild,
     V4SuccessorRebuildClaim,
     V4SuccessorRebuildItem,
+    V4SuccessorRebuildReceipt,
+    V4SuccessorRebuildTransport,
     V4SuccessorRebuilds,
+    build_v4_successor_rebuild,
     prepare_v4_successor_rebuild,
 )
 from app.streaming.application.live_fanout import (
@@ -85,6 +89,7 @@ __all__ = [
     "LiveSubscriptionClosed",
     "V4CallbackItem",
     "V4ProjectionError",
+    "V4ReadySuccessorRebuild",
     "V4PublicationClaim",
     "V4PublicationClaims",
     "V4PublicationTransport",
@@ -92,8 +97,11 @@ __all__ = [
     "V4StreamEntry",
     "V4SuccessorRebuildClaim",
     "V4SuccessorRebuildItem",
+    "V4SuccessorRebuildReceipt",
+    "V4SuccessorRebuildTransport",
     "V4SuccessorRebuilds",
     "build_public_v4_control",
+    "build_v4_successor_rebuild",
     "build_v4_control",
     "callback_item_to_v4",
     "opaque_message_id",

@@ -119,26 +119,9 @@ elseif request_protocol == 'v4' and ARGV[5] ~= 'stream_open' and ARGV[5] ~= 'ter
   redis.call('HSET',KEYS[2],'last_event_id',ARGV[2],'last_event_digest',ARGV[6],'last_event_redis_id',id)
 end
 redis.call('PEXPIRE',KEYS[1],ARGV[4]);redis.call('PEXPIRE',KEYS[2],ARGV[4])
-redis.call('PUBLISH',KEYS[3],cjson.encode({redis_id=id,envelope=ARGV[3]}))
-return id
-""".strip()
-
-_RESTORE_V4_OPEN_LUA = """
-local phase=redis.call('HGET',KEYS[2],'phase')
-if redis.call('XLEN',KEYS[1]) ~= 0 then return '0' end
-if phase and redis.call('HGET',KEYS[2],'open_protocol') ~= 'v4' then
-  return redis.error_reply('stream_restore_protocol_conflict')
+if ARGV[9] ~= 'no_live' then
+  redis.call('PUBLISH',KEYS[3],cjson.encode({redis_id=id,envelope=ARGV[3]}))
 end
-if phase
-   and (redis.call('HGET',KEYS[2],'open_event_id') ~= ARGV[2]
-     or redis.call('HGET',KEYS[2],'open_digest') ~= ARGV[5]) then
-  return redis.error_reply('stream_restore_authority_conflict')
-end
-local id=redis.call('XADD',KEYS[1],'MAXLEN','~',ARGV[1],'*','envelope',ARGV[3])
-redis.call('HSET',KEYS[2],'phase','open','open_event_id',ARGV[2],'open_digest',ARGV[5],'open_redis_id',id,'open_protocol','v4')
-redis.call('HDEL',KEYS[2],'terminal_event_id','terminal_digest','terminal_redis_id','end_event_id','end_digest','end_redis_id','last_event_id','last_event_digest','last_event_redis_id')
-redis.call('PEXPIRE',KEYS[1],ARGV[4]);redis.call('PEXPIRE',KEYS[2],ARGV[4])
-redis.call('PUBLISH',KEYS[3],cjson.encode({redis_id=id,envelope=ARGV[3]}))
 return id
 """.strip()
 
@@ -148,9 +131,6 @@ _SCRIPT_CONTRACT_ERRORS = frozenset(
         "stream_event_receipt_conflict",
         "stream_open_conflict",
         "stream_protocol_conflict",
-        "stream_restore_authority_conflict",
-        "stream_restore_not_missing",
-        "stream_restore_protocol_conflict",
         "stream_terminal_closed",
         "stream_terminal_conflict",
     }
@@ -199,6 +179,16 @@ async def publish_committed_stream_event(
     return True
 
 
+@dataclass(frozen=True, slots=True)
+class RedisV4CandidateInspection:
+    """Narrow same-owner readback for one reserved v4 candidate."""
+
+    stream_exists: bool
+    state_exists: bool
+    rows: tuple[tuple[object, Mapping[object, object]], ...]
+    state: Mapping[object, object]
+
+
 class RedisStreamBridge:
     def __init__(self, *, publish_client: Any | None = None) -> None:
         settings = get_settings() if publish_client is None else None
@@ -219,6 +209,35 @@ class RedisStreamBridge:
         if self._owns_publish_client:
             await self._publish_client.aclose()
 
+    async def inspect_v4_candidate(
+        self,
+        *,
+        tenant_scope_value: str,
+        run_id: str,
+        stream_incarnation: int,
+    ) -> RedisV4CandidateInspection:
+        """Read one v4 candidate through the bridge's owned Redis client."""
+
+        key = stream_key(
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            stream_incarnation=stream_incarnation,
+        )
+        state_key = f"{key}:state"
+        try:
+            stream_exists = bool(await self._publish_client.exists(key))
+            state_exists = bool(await self._publish_client.exists(state_key))
+            rows = tuple(await self._publish_client.xrange(key, min="-", max="+"))
+            state = dict(await self._publish_client.hgetall(state_key))
+        except Exception as exc:
+            raise StreamTransportUnavailable("stream_candidate_inspection_unavailable") from exc
+        return RedisV4CandidateInspection(
+            stream_exists=stream_exists,
+            state_exists=state_exists,
+            rows=rows,
+            state=state,
+        )
+
     async def append_canonical(
         self,
         *,
@@ -230,10 +249,13 @@ class RedisStreamBridge:
         envelope_bytes: bytes,
         terminal_event_id: str = "",
         protocol: str = "v4",
+        publish_live: bool = True,
     ) -> str:
         """Append a validated canonical envelope through the frozen Lua authority."""
         if protocol not in {"v3", "v4"}:
             raise StreamContractError("stream_protocol_invalid")
+        if not isinstance(publish_live, bool):
+            raise StreamContractError("stream_live_mode_invalid")
 
         key = stream_key(
             tenant_scope_value=tenant_scope_value,
@@ -252,7 +274,7 @@ class RedisStreamBridge:
         }.get(event_type, "terminal" if terminal else event_type)
         ttl = SSE_STREAM_TERMINAL_TTL_MS if terminal else SSE_STREAM_ACTIVE_IDLE_TTL_MS
         try:
-            redis_id = await self._publish_client.eval(
+            args: list[object] = [
                 _APPEND_WITH_TTL_LUA,
                 3,
                 key,
@@ -266,7 +288,10 @@ class RedisStreamBridge:
                 _sha256(envelope_bytes),
                 terminal_event_id,
                 protocol,
-            )
+            ]
+            if not publish_live:
+                args.append("no_live")
+            redis_id = await self._publish_client.eval(*args)
             return redis_id.decode() if isinstance(redis_id, bytes) else str(redis_id)
         except ResponseError as exc:
             reason = next((value for value in _SCRIPT_CONTRACT_ERRORS if value in str(exc)), None)
@@ -323,52 +348,6 @@ class RedisStreamBridge:
             raise StreamTransportUnavailable("stream_append_unavailable") from exc
         except Exception as exc:
             raise StreamTransportUnavailable("stream_append_unavailable") from exc
-
-    async def restore_v4_open(
-        self,
-        *,
-        tenant_scope_value: str,
-        run_id: str,
-        stream_incarnation: int,
-        event_id: str,
-        envelope_bytes: bytes,
-    ) -> str | None:
-        """Restore only a missing v4 stream through its dedicated Lua owner."""
-
-        key = stream_key(
-            tenant_scope_value=tenant_scope_value,
-            run_id=run_id,
-            stream_incarnation=stream_incarnation,
-        )
-        live_channel = stream_live_channel(
-            tenant_scope_value=tenant_scope_value,
-            run_id=run_id,
-            stream_incarnation=stream_incarnation,
-        )
-        try:
-            redis_id = await self._publish_client.eval(
-                _RESTORE_V4_OPEN_LUA,
-                3,
-                key,
-                f"{key}:state",
-                live_channel,
-                SSE_STREAM_MAXLEN,
-                event_id,
-                envelope_bytes.decode("utf-8"),
-                SSE_STREAM_ACTIVE_IDLE_TTL_MS,
-                _sha256(envelope_bytes),
-            )
-            redis_id = redis_id.decode() if isinstance(redis_id, bytes) else str(redis_id)
-            return None if redis_id == "0" else redis_id
-        except ResponseError as exc:
-            reason = next((value for value in _SCRIPT_CONTRACT_ERRORS if value in str(exc)), None)
-            if reason is not None:
-                raise StreamContractError(reason) from exc
-            raise StreamTransportUnavailable("stream_restore_unavailable") from exc
-        except Exception as exc:
-            if isinstance(exc, StreamContractError | StreamTransportUnavailable):
-                raise
-            raise StreamTransportUnavailable("stream_restore_unavailable") from exc
 
     async def retained_bounds(
         self, *, tenant_scope_value: str, run_id: str, stream_incarnation: int

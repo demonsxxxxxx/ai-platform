@@ -75,31 +75,7 @@ from app.streaming.redis import (
     mark_terminal_intent_published,
     publish_terminal_intent,
 )
-from app.streaming.v4 import V4Recovery, V4RedisStreamBridge, recover_v4_and_resume
 from app.tool_permission_projection import tool_permission_public_event_payload
-
-async def _recover_v4_attach_gap(
-    conn: Any,
-    *,
-    bridge: Any,
-    tenant_id: str,
-    run_id: str,
-    authority: Any,
-    after_sequence: int,
-    limit: int = 128,
-) -> V4Recovery:
-    """Call-ready WP5 seam for authorized gap/trim/incarnation recovery."""
-
-    v4_bridge = bridge if isinstance(bridge, V4RedisStreamBridge) else V4RedisStreamBridge(bridge)
-    return await recover_v4_and_resume(
-        conn,
-        bridge=v4_bridge,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        authority=authority,
-        after_sequence=after_sequence,
-        limit=limit,
-    )
 
 
 router = APIRouter()

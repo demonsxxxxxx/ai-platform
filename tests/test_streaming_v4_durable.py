@@ -15,8 +15,11 @@ from app.streaming.application.durable_v4 import (
 )
 
 from app.streaming.application.recovery_v4 import (
+    V4ReadySuccessorRebuild,
     V4SuccessorRebuildClaim,
     V4SuccessorRebuildItem,
+    V4SuccessorRebuildReceipt,
+    build_v4_successor_rebuild,
 )
 from app.streaming.api import (
     build_v4_control,
@@ -25,6 +28,8 @@ from app.streaming.api import (
     project_public_v4,
     project_public_v4_successor,
     successor_stream_open_event_id,
+    stream_end_event_id,
+    stream_key,
 )
 from app.streaming.authority import RunCursor
 from app.streaming.postgres import EventReceipt
@@ -36,7 +41,6 @@ from app.streaming.infrastructure.postgres_v4 import (
 )
 from app.streaming.v4 import (
     V4RedisStreamBridge,
-    recover_v4_and_resume,
     list_pending_v4_rows,
 )
 
@@ -526,36 +530,6 @@ async def test_v4_application_releases_claim_on_unexpected_transport_error() -> 
 
 
 @pytest.mark.asyncio
-async def test_v4_route_recovery_keeps_pg_gap_and_redis_resume_in_one_seam(monkeypatch):
-    from app.routes import lambchat_compat
-    expected = lambchat_compat.V4Recovery(({"id": "evt4_gap"},), "12-0")
-    calls = []
-
-    async def recover(conn, **kwargs):
-        calls.append((conn, kwargs))
-        return expected
-
-    monkeypatch.setattr(lambchat_compat, "recover_v4_and_resume", recover)
-    bridge = object()
-    result = await lambchat_compat._recover_v4_attach_gap(
-        "conn",
-        bridge=bridge,
-        tenant_id="tenant-a",
-        run_id="run-a",
-        authority=_authority(),
-        after_sequence=7,
-        limit=16,
-    )
-    assert result == expected
-    assert calls[0][0] == "conn"
-    assert calls[0][1]["tenant_id"] == "tenant-a"
-    assert calls[0][1]["after_sequence"] == 7
-    assert isinstance(calls[0][1]["bridge"], lambchat_compat.V4RedisStreamBridge)
-
-
-
-
-@pytest.mark.asyncio
 async def test_v4_redis_publication_transport_decodes_claimed_canonical_bytes() -> None:
     from app.streaming import worker_projection
     from app.streaming.redis import StreamTransportUnavailable
@@ -581,50 +555,6 @@ async def test_v4_redis_publication_transport_decodes_claimed_canonical_bytes() 
             claim.canonical_envelope_bytes
         )
     assert exc_info.value.error_code == "StreamTransportUnavailable"
-
-
-@pytest.mark.asyncio
-async def test_recovery_returns_public_rows_with_one_transport_cursor_per_frame():
-    rows = (
-        _row({"delta": "first"}, id="evt4_first", sequence=1),
-        _row({"delta": "second"}, id="evt4_second", sequence=2),
-    )
-
-    class Result:
-        async def fetchall(self):
-            return rows
-
-    class Connection:
-        async def execute(self, _statement, _params):
-            return Result()
-
-    class Bridge:
-        def __init__(self):
-            self.cursors = iter(("13-0", "13-1"))
-
-        async def append(self, envelope):
-            assert envelope["schema"] == "ai-platform.stream-event.v4"
-            return next(self.cursors)
-
-    recovery = await recover_v4_and_resume(
-        Connection(),
-        bridge=Bridge(),
-        tenant_id="tenant-a",
-        run_id="run-a",
-        authority=_authority(),
-        after_sequence=0,
-        limit=2,
-    )
-
-    assert [row["event_id"] for row in recovery.rows] == ["evt4_first", "evt4_second"]
-    assert recovery.transport_cursors == ("13-0", "13-1")
-    assert recovery.transport_cursor == "13-1"
-    for row in recovery.rows:
-        assert row["schema"] == "ai-platform.public-run-stream-event.v4"
-        assert "tenant_scope" not in row
-        assert "attempt_id" not in row
-        assert "projection_version" not in row
-        assert "source" not in row
 
 
 @pytest.mark.parametrize("message_id", [None, "safe-message"])
@@ -728,6 +658,94 @@ def _row(payload: dict[str, object], **overrides: object) -> dict[str, object]:
     }
     row.update(overrides)
     return row
+
+
+def _successor_claim_with_terminal() -> V4SuccessorRebuildClaim:
+    authority = _authority()
+    rows = (
+        _row({"delta": "hello"}, sequence=7, id="evt4_delta"),
+        _row(
+            {"terminal_event_id": "evt4_terminal", "hydrate_required": True},
+            sequence=8,
+            id="evt4_terminal",
+            event_type="run.succeeded",
+        ),
+    )
+    items = []
+    for source_row in rows:
+        envelope = project_public_v4_successor(
+            source_row,
+            source_authority=authority,
+            successor_incarnation=3,
+            successor_authorization_epoch=5,
+        )
+        assert envelope is not None
+        envelope_bytes = canonical_json_bytes(envelope)
+        items.append(
+            V4SuccessorRebuildItem(
+                event_id=source_row["id"],
+                sequence=source_row["sequence"],
+                event_type=source_row["event_type"],
+                canonical_envelope_bytes=envelope_bytes,
+                envelope_digest=hashlib.sha256(envelope_bytes).hexdigest(),
+            )
+        )
+    open_event_id = successor_stream_open_event_id(
+        tenant_scope="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        stream_incarnation=3,
+    )
+    opening = build_v4_control(
+        event_id=open_event_id,
+        tenant_scope="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        stream_incarnation=3,
+        event_type="stream.open",
+        payload={"design_id": "ai-platform.redis-streams-sse-event-channel.v4"},
+        source={"kind": "stream_authority", "authority_id": open_event_id},
+        emitted_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    open_bytes = canonical_json_bytes(opening)
+    return V4SuccessorRebuildClaim(
+        rebuild_id="srb_test",
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        tenant_scope="tenant-a",
+        source_incarnation=2,
+        source_authorization_epoch=4,
+        successor_incarnation=3,
+        successor_authorization_epoch=5,
+        source_authority_fingerprint="a" * 64,
+        source_cursor_sequence=8,
+        source_through_sequence=8,
+        successor_open_event_id=open_event_id,
+        successor_open_bytes=open_bytes,
+        successor_open_digest=hashlib.sha256(open_bytes).hexdigest(),
+        items=tuple(items),
+        claim_token="claim-test",
+        claim_expires_at=datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc),
+    )
+
+
+def _successor_end_bytes(claim: V4SuccessorRebuildClaim) -> bytes:
+    terminal = json.loads(claim.items[-1].canonical_envelope_bytes)
+    return canonical_json_bytes(
+        build_v4_control(
+            event_id=stream_end_event_id(claim.items[-1].event_id),
+            tenant_scope=claim.tenant_scope,
+            run_id=claim.run_id,
+            attempt_id=claim.attempt_id,
+            stream_incarnation=claim.successor_incarnation,
+            event_type="stream.end",
+            payload={"terminal_event_id": claim.items[-1].event_id},
+            source={"kind": "terminal_intent", "terminal_event_id": claim.items[-1].event_id},
+            causation_event_id=claim.items[-1].event_id,
+            emitted_at=terminal["emitted_at"],
+        )
+    )
 
 
 def test_successor_rebuild_claim_binds_exact_canonical_snapshot() -> None:
@@ -849,6 +867,204 @@ def test_successor_rebuild_claim_binds_exact_canonical_snapshot() -> None:
             successor_open_bytes=wrong_open_bytes,
             successor_open_digest=hashlib.sha256(wrong_open_bytes).hexdigest(),
         )
+
+
+@pytest.mark.asyncio
+async def test_successor_rebuild_application_orders_commit_transport_and_ready_cas() -> None:
+    claim = _successor_claim_with_terminal()
+    calls: list[str] = []
+
+    class Rebuilds:
+        async def prepare(self, **_kwargs):
+            calls.append("prepare")
+            return claim
+
+        async def mark_ready(self, _claim, *, receipt):
+            calls.append("mark_ready")
+            assert receipt.entry_count == len(claim.items) + 2
+            return True
+
+    from app.streaming.domain.public_events_v4 import stream_end_event_id
+
+    class Transport:
+        async def build(self, _claim):
+            calls.append("transport")
+            terminal_id = claim.items[-1].event_id
+            return V4SuccessorRebuildReceipt(
+                stream_key=stream_key(
+                    tenant_scope_value=claim.tenant_scope,
+                    run_id=claim.run_id,
+                    stream_incarnation=claim.successor_incarnation,
+                ),
+                stream_incarnation=claim.successor_incarnation,
+                entry_count=len(claim.items) + 2,
+                open_event_id=claim.successor_open_event_id,
+                terminal_event_id=terminal_id,
+                end_event_id=stream_end_event_id(terminal_id),
+                last_redis_id="1-3",
+                last_envelope_bytes=_successor_end_bytes(claim),
+            )
+    ready = await build_v4_successor_rebuild(
+        Rebuilds(),
+        Transport(),
+        tenant_id=claim.tenant_id,
+        run_id=claim.run_id,
+        attempt_id=claim.attempt_id,
+        source_incarnation=claim.source_incarnation,
+        claim_ttl=timedelta(seconds=30),
+    )
+    assert isinstance(ready, V4ReadySuccessorRebuild)
+    assert ready.last_envelope_bytes == _successor_end_bytes(claim)
+    assert calls == ["prepare", "transport", "mark_ready"]
+    assert "claim-test" not in repr(ready)
+    with pytest.raises(ValueError, match="claim_token_invalid"):
+        replace(ready, claim_token="")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field",
+    (
+        "stream_key",
+        "stream_incarnation",
+        "entry_count",
+        "open_event_id",
+        "end_event_id",
+        "terminal_event_id",
+        "last_envelope_bytes",
+    ),
+)
+async def test_successor_rebuild_application_binds_every_receipt_field(field: str) -> None:
+    claim = _successor_claim_with_terminal()
+    terminal_id = claim.items[-1].event_id
+    receipt = V4SuccessorRebuildReceipt(
+        stream_key=stream_key(
+            tenant_scope_value=claim.tenant_scope,
+            run_id=claim.run_id,
+            stream_incarnation=claim.successor_incarnation,
+        ),
+        stream_incarnation=claim.successor_incarnation,
+        entry_count=len(claim.items) + 2,
+        open_event_id=claim.successor_open_event_id,
+        terminal_event_id=terminal_id,
+        end_event_id=stream_end_event_id(terminal_id),
+        last_redis_id="1-3",
+        last_envelope_bytes=_successor_end_bytes(claim),
+    )
+    wrong_values = {
+        "stream_key": "wrong-key",
+        "stream_incarnation": claim.successor_incarnation + 1,
+        "entry_count": receipt.entry_count + 1,
+        "open_event_id": "wrong-open",
+        "end_event_id": "wrong-end",
+        "terminal_event_id": "wrong-terminal",
+        "last_envelope_bytes": claim.items[0].canonical_envelope_bytes,
+    }
+    bad_receipt = replace(receipt, **{field: wrong_values[field]})
+
+    class Rebuilds:
+        async def prepare(self, **_kwargs):
+            return claim
+
+        async def mark_ready(self, *_args, **_kwargs):
+            raise AssertionError("mark_ready received a mismatched receipt")
+
+    class Transport:
+        async def build(self, _claim):
+            return bad_receipt
+
+    with pytest.raises(ValueError, match="receipt_mismatch"):
+        await build_v4_successor_rebuild(
+            Rebuilds(),
+            Transport(),
+            tenant_id=claim.tenant_id,
+            run_id=claim.run_id,
+            attempt_id=claim.attempt_id,
+            source_incarnation=claim.source_incarnation,
+            claim_ttl=timedelta(seconds=30),
+        )
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ("transport", "receipt", "cas"))
+async def test_successor_rebuild_application_never_returns_ready_after_failure(
+    failure: str,
+) -> None:
+    claim = _successor_claim_with_terminal()
+    calls: list[str] = []
+
+    class Rebuilds:
+        async def prepare(self, **_kwargs):
+            calls.append("prepare")
+            return claim
+
+        async def mark_ready(self, _claim, *, receipt):
+            calls.append("mark_ready")
+            if failure == "cas":
+                return False
+            return True
+
+    class Transport:
+        async def build(self, _claim):
+            calls.append("transport")
+            if failure == "transport":
+                raise RuntimeError("transport failed")
+            terminal_id = claim.items[-1].event_id
+            from app.streaming.domain.public_events_v4 import stream_end_event_id
+
+            receipt = V4SuccessorRebuildReceipt(
+                stream_key=stream_key(
+                    tenant_scope_value=claim.tenant_scope,
+                    run_id=claim.run_id,
+                    stream_incarnation=claim.successor_incarnation,
+                ),
+                stream_incarnation=claim.successor_incarnation,
+                entry_count=len(claim.items) + 2,
+                open_event_id=claim.successor_open_event_id,
+                terminal_event_id=terminal_id,
+                end_event_id=stream_end_event_id(terminal_id),
+                last_redis_id="1-3",
+                last_envelope_bytes=_successor_end_bytes(claim),
+            )
+            return replace(receipt, terminal_event_id="wrong") if failure == "receipt" else receipt
+
+    if failure == "transport":
+        with pytest.raises(RuntimeError, match="transport failed"):
+            await build_v4_successor_rebuild(
+                Rebuilds(),
+                Transport(),
+                tenant_id=claim.tenant_id,
+                run_id=claim.run_id,
+                attempt_id=claim.attempt_id,
+                source_incarnation=claim.source_incarnation,
+                claim_ttl=timedelta(seconds=30),
+            )
+    elif failure == "receipt":
+        with pytest.raises(ValueError, match="receipt_mismatch"):
+            await build_v4_successor_rebuild(
+                Rebuilds(),
+                Transport(),
+                tenant_id=claim.tenant_id,
+                run_id=claim.run_id,
+                attempt_id=claim.attempt_id,
+                source_incarnation=claim.source_incarnation,
+                claim_ttl=timedelta(seconds=30),
+            )
+    else:
+        result = await build_v4_successor_rebuild(
+            Rebuilds(),
+            Transport(),
+            tenant_id=claim.tenant_id,
+            run_id=claim.run_id,
+            attempt_id=claim.attempt_id,
+            source_incarnation=claim.source_incarnation,
+            claim_ttl=timedelta(seconds=30),
+        )
+        assert result is None
+    assert (
+        "mark_ready" not in calls
+        if failure in {"transport", "receipt"}
+        else calls[-1] == "mark_ready"
+    )
 
 
 def test_publication_claim_keeps_only_validated_canonical_envelope_bytes() -> None:
