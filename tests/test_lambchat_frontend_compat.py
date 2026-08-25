@@ -517,7 +517,24 @@ async def test_lambchat_agent_repository_exposes_only_canonical_agents():
     assert params == ("default",)
 
 
-def test_frontend_bootstrap_endpoints_match_retained_contracts():
+def test_frontend_bootstrap_endpoints_match_retained_contracts(monkeypatch):
+    model_catalog = AsyncMock(
+        return_value={
+            "models": [
+                {
+                    "id": "model-a",
+                    "value": "upstream/model-a",
+                    "label": "Model A",
+                    "provider": "compatible",
+                }
+            ],
+            "count": 1,
+            "enabled_count": 1,
+            "default_model_id": "model-a",
+        }
+    )
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.lambchat_compat.list_public_models", model_catalog)
     client = TestClient(create_app())
 
     expectations = {
@@ -550,6 +567,8 @@ def test_frontend_bootstrap_endpoints_match_retained_contracts():
                 assert isinstance(payload[key], dict), path
             else:
                 assert payload[key] == value, path
+
+    model_catalog.assert_awaited_once()
 
 
 def test_upload_config_exposes_canonical_byte_contract_with_legacy_aliases():
