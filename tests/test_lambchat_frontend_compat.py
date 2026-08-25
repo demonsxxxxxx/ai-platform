@@ -650,7 +650,7 @@ def test_lambchat_model_catalog_comes_from_settings(monkeypatch):
         },
     )()
     monkeypatch.setattr(
-        "app.execution.infrastructure.model_legacy_catalog.get_settings",
+        "app.bootstrap.model_services.get_settings",
         lambda: current_settings,
     )
     monkeypatch.setattr(
@@ -1054,7 +1054,7 @@ def test_lambchat_terminal_answer_identifier_replacement_keeps_private_text_gate
 
 
 
-def test_lambchat_active_history_replays_versioned_deltas_once_in_sequence(monkeypatch):
+def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
     async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
         return {"id": session_id}
 
@@ -1136,10 +1136,10 @@ def test_lambchat_active_history_replays_versioned_deltas_once_in_sequence(monke
 
     assert response.status_code == 200
     events = response.json()["events"]
-    assert [event["event_type"] for event in events] == ["message:chunk", "message:chunk"]
-    assert [event["sequence"] for event in events] == [7, 8]
-    assert [event["payload"]["event_id"] for event in events] == ["evt-delta-7", "evt-delta-8"]
-    assert "".join(event["payload"]["content"] for event in events) == "partial answer"
+    assert [event["event_type"] for event in events] == ["message:chunk"]
+    assert [event["sequence"] for event in events] == [7]
+    assert [event["payload"]["event_id"] for event in events] == ["evt-delta-7"]
+    assert [event["payload"]["content"] for event in events] == ["partial "]
 
 
 
