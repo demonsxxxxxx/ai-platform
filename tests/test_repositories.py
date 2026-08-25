@@ -37,7 +37,7 @@ from app.platform.postgres.sandbox_leases import (
     record_sandbox_executor_terminal,
 )
 from app.streaming import redis as streaming_redis
-from app.streaming import v4 as streaming_v4
+from app.streaming.infrastructure import v4 as streaming_v4
 from app.repositories import (
     RepositoryConflictError,
     RepositoryNotFoundError,

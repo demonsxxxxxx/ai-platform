@@ -17,7 +17,7 @@ from app.streaming.redis import (
     StreamEnvelope,
     StreamTransportUnavailable,
 )
-from app.streaming.v4 import V4RedisStreamBridge
+from app.streaming.infrastructure.v4 import V4RedisStreamBridge
 
 
 REDIS_URL_ENV = "AI_PLATFORM_SSE_REDIS_TEST_URL"

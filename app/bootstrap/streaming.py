@@ -21,7 +21,7 @@ from app.streaming.infrastructure.worker_v4 import (
     RedisV4PublicationTransport,
     RedisV4StreamAuthorityLookup,
 )
-from app.streaming.v4 import V4RedisStreamBridge
+from app.streaming.infrastructure.v4 import V4RedisStreamBridge
 
 
 @dataclass(slots=True)

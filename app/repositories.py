@@ -6080,7 +6080,7 @@ async def progress_run_tool_permission_terminalization(
         conn, tenant_id=tenant_id, run_id=run_id, status=target_status
     )
     if intent is not None:
-        from app.streaming.v4 import append_run_terminal_v4_row
+        from app.streaming.infrastructure.v4 import append_run_terminal_v4_row
 
         await append_run_terminal_v4_row(
             conn,
@@ -9719,7 +9719,7 @@ async def complete_run(
         conn, tenant_id=tenant_id, run_id=run_id, status="succeeded"
     )
     if intent is not None:
-        from app.streaming.v4 import append_run_terminal_v4_row
+        from app.streaming.infrastructure.v4 import append_run_terminal_v4_row
 
         await append_run_terminal_v4_row(
             conn,

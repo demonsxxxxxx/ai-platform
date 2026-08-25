@@ -81,7 +81,7 @@ from app.runtime.sandbox.executor_client import (
     normalize_executor_reported_failure,
 )
 from app.settings import get_settings
-from app.streaming.application.worker_publication_v4 import (
+from app.streaming.api import (
     WorkerV4Capabilities,
     admit_v4_stream,
     finalize_parent_and_publish,

@@ -38,7 +38,7 @@ from app.streaming.api import (
     successor_stream_open_event_id,
 )
 from app.streaming.redis import RedisStreamBridge, StreamAuthority, StreamTransportUnavailable
-from app.streaming.v4 import (
+from app.streaming.infrastructure.v4 import (
     V4CallbackItem,
     V4ProjectionError,
     V4RedisStreamBridge,

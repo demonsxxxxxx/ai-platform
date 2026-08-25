@@ -1,6 +1,9 @@
 """Public in-process contracts owned by the Runs bounded context."""
 
 from app.runs.application.cancellation import (
+    CancelRequestAuthority as CancelRequestAuthority,
+)
+from app.runs.application.cancellation import (
     CancelRequestResult as CancelRequestResult,
 )
 from app.runs.application.cancellation import (

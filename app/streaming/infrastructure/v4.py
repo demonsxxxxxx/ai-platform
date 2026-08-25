@@ -17,11 +17,13 @@ from redis.exceptions import ResponseError
 
 from app.runs.api import CHAT_PUBLIC_PROJECTION_VERSION, public_terminal_projection
 from app.streaming import postgres
-from app.streaming.api import (
-    ResumeDecision,
-    StreamCursor,
-    StreamGap,
+from app.streaming.application.callback_events_v4 import (
     V4CallbackItem,
+    callback_item_to_v4,
+)
+from app.streaming.domain.live import redis_id_tuple as _redis_id_tuple
+from app.streaming.domain.live import stream_key
+from app.streaming.domain.public_events_v4 import (
     V4_METADATA_KEY,
     V4_METADATA_VERSION,
     V4_PUBLIC_STAGE,
@@ -39,16 +41,18 @@ from app.streaming.api import (
     _validate_payload,
     build_public_v4_control,
     build_v4_control,
-    callback_item_to_v4,
-    canonical_json_bytes,
     opaque_message_id,
     project_public_envelope_v4,
     project_public_v4,
-    redis_id_tuple as _redis_id_tuple,
     stream_end_event_id,
-    stream_key,
     strip_internal_envelope,
     validate_internal_envelope_v4 as _validate_internal_envelope,
+)
+from app.streaming.domain.transport import (
+    ResumeDecision,
+    StreamCursor,
+    StreamGap,
+    canonical_json_bytes,
 )
 from app.streaming.redis import (
     RedisStreamBridge,

@@ -10,6 +10,7 @@ from app.streaming.application.durable_v4 import (
     V4PublicationTransport,
     V4PublicationTransportUnavailable,
     publish_claimed_v4_events,
+    publish_due_v4_events,
 )
 from app.streaming.application.recovery_v4 import (
     V4ReadySuccessorRebuild,
@@ -29,6 +30,15 @@ from app.streaming.application.live_fanout import (
     LiveSubscription,
     LiveSubscriptionClosed,
     RunStreamHub,
+)
+from app.streaming.application.worker_publication_v4 import (
+    WorkerV4Capabilities,
+    admit_v4_stream,
+    finalize_parent_and_publish,
+    persist_and_publish_worker_event,
+    publish_pending_admissions,
+    publish_pending_run_terminal,
+    publish_pending_v4_events,
 )
 from app.streaming.domain.live import (
     REDIS_ID_PATTERN,
@@ -78,6 +88,7 @@ from app.streaming.domain.transport import (
     StreamGap,
     canonical_json_bytes,
 )
+from app.streaming.infrastructure.v4 import append_callback_v4_rows
 
 
 __all__ = [
@@ -105,7 +116,10 @@ __all__ = [
     "V4SuccessorRebuildReceipt",
     "V4SuccessorRebuildTransport",
     "V4SuccessorRebuilds",
+    "WorkerV4Capabilities",
     "activate_v4_successor_rebuild",
+    "admit_v4_stream",
+    "append_callback_v4_rows",
     "build_public_v4_control",
     "build_v4_successor_rebuild",
     "build_v4_control",
@@ -115,6 +129,12 @@ __all__ = [
     "project_public_v4",
     "project_public_v4_successor",
     "publish_claimed_v4_events",
+    "publish_due_v4_events",
+    "publish_pending_admissions",
+    "publish_pending_run_terminal",
+    "publish_pending_v4_events",
+    "finalize_parent_and_publish",
+    "persist_and_publish_worker_event",
     "prepare_v4_successor_rebuild",
     "recover_v4_missing_terminal_stream",
     "stream_end_event_id",

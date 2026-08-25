@@ -6,7 +6,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Protocol
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -58,6 +58,8 @@ from app.streaming.api import (
     LiveSubscriptionClosed,
     V4StreamEntry,
     live_redis_id_is_after,
+    project_public_envelope_v4,
+    recover_v4_missing_terminal_stream,
     stream_live_channel,
 )
 from app.streaming.authority import RunCursor, event_page
@@ -70,10 +72,20 @@ from app.streaming.redis import (
     close_sse_authority_lease,
     get_stream_authority,
 )
-from app.streaming.v4 import V4RedisStreamBridge
-from app.streaming.application.recovery_v4 import recover_v4_missing_terminal_stream
-from app.streaming.domain.public_events_v4 import project_public_envelope_v4
 from app.tool_permission_projection import tool_permission_public_event_payload
+
+
+class _V4ReplayBridge(Protocol):
+    async def replay_page(
+        self,
+        *,
+        tenant_scope_value: str,
+        run_id: str,
+        attempt_id: str,
+        stream_incarnation: int,
+        after_redis_id: str,
+        through_redis_id: str,
+    ) -> tuple[V4StreamEntry, ...]: ...
 
 
 router = APIRouter()
@@ -1531,7 +1543,7 @@ async def chat_status(
 
 
 async def _restore_chat_stream_projection(
-    bridge: V4RedisStreamBridge,
+    bridge: _V4ReplayBridge,
     *,
     run: dict[str, Any],
     tenant_scope_value: str,

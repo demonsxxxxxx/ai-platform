@@ -52,7 +52,7 @@ from app.streaming.infrastructure.postgres_v4 import (
     PostgresV4PublicationClaims,
     V4PublicationAuthorityError,
 )
-from app.streaming.v4 import (
+from app.streaming.infrastructure.v4 import (
     V4RedisStreamBridge,
     list_pending_v4_rows,
 )
@@ -60,8 +60,9 @@ from app.streaming.v4 import (
 
 def test_callback_v4_values_have_one_application_owner():
     from app.routes import runtime_callbacks
-    from app.streaming import api, v4
+    from app.streaming import api
     from app.streaming.application import callback_events_v4
+    from app.streaming.infrastructure import v4
 
     assert api.V4CallbackItem is callback_events_v4.V4CallbackItem
     assert v4.V4CallbackItem is callback_events_v4.V4CallbackItem
@@ -117,7 +118,7 @@ def _callback_conn():
 
 @pytest.mark.asyncio
 async def test_callback_v4_rows_are_atomic_and_idempotent_per_batch_item(monkeypatch):
-    from app.streaming import v4
+    from app.streaming.infrastructure import v4
 
     conn = _callback_conn()
     append_calls = []
@@ -252,7 +253,7 @@ async def test_callback_v4_rows_are_atomic_and_idempotent_per_batch_item(monkeyp
     ],
 )
 async def test_callback_v4_existing_row_rejects_each_immutable_callback_fact(field, value, monkeypatch):
-    from app.streaming import v4
+    from app.streaming.infrastructure import v4
 
     conn = _callback_conn()
     append_calls = []
@@ -324,7 +325,7 @@ async def test_callback_v4_existing_row_rejects_each_immutable_callback_fact(fie
 async def test_callback_v4_rows_keep_batch_attempt_lease_and_authority_fences(
     field, value, error
 ):
-    from app.streaming import v4
+    from app.streaming.infrastructure import v4
 
     conn = _callback_conn()
     item = v4.V4CallbackItem(
@@ -1527,7 +1528,7 @@ async def test_v4_bridge_uses_existing_atomic_append_boundary() -> None:
 @pytest.mark.asyncio
 async def test_run_v4_terminal_row_reuses_terminal_intent_and_has_no_live_lease(monkeypatch):
     from dataclasses import replace
-    from app.streaming import v4
+    from app.streaming.infrastructure import v4
 
     conn = _callback_conn()
     captured: list[str] = []
@@ -1582,7 +1583,7 @@ async def test_run_v4_terminal_row_reuses_terminal_intent_and_has_no_live_lease(
 @pytest.mark.asyncio
 async def test_run_v4_terminal_row_rejects_a_second_terminal_identity(monkeypatch):
     from dataclasses import replace
-    from app.streaming import v4
+    from app.streaming.infrastructure import v4
 
     async def authority(*_args, **_kwargs):
         return replace(_authority(), state="terminal")

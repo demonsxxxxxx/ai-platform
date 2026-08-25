@@ -18,7 +18,7 @@ from app.streaming.api import (
 )
 from app.streaming import api as streaming_api
 from app.streaming import redis as stream_redis
-from app.streaming import v4 as streaming_v4
+from app.streaming.infrastructure import v4 as streaming_v4
 from app.streaming.domain import public_events_v4
 from app.streaming.infrastructure.redis_live import RedisLiveFanoutSource
 from app.streaming.infrastructure.redis_v4_rebuild import RedisV4SuccessorRebuildTransport
@@ -37,7 +37,7 @@ from app.streaming.redis import (
     StreamTransportUnavailable,
     create_or_get_stream_admission_v4,
 )
-from app.streaming.v4 import V4RedisStreamBridge
+from app.streaming.infrastructure.v4 import V4RedisStreamBridge
 from tests.test_streaming_v4_postgres_integration import (
     _connection_factory as _pg_connection_factory,
     _insert_v4_row as _pg_insert_v4_row,

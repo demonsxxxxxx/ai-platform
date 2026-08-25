@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from app.runs.application.cancellation import CancelRequestAuthority
-from app.streaming import v4 as _v4
+from app.runs.api import CancelRequestAuthority
+from app.streaming.infrastructure import v4 as _v4
 from app.streaming.redis import create_or_get_stream_admission_v4, tenant_scope
 
 

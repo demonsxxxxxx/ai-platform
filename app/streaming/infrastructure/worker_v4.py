@@ -25,7 +25,7 @@ from app.streaming.redis import (
     get_stream_authority,
     tenant_scope,
 )
-from app.streaming.v4 import V4RedisStreamBridge
+from app.streaming.infrastructure.v4 import V4RedisStreamBridge
 
 
 TransactionFactory = Callable[[], AbstractAsyncContextManager[Any]]

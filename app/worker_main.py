@@ -40,9 +40,9 @@ from app.schema_migrations import require_schema_current
 from app.settings import get_settings
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
 from app.worker import WorkerOutcome, parse_leased_queue_envelope, process_run_payload
-from app.streaming.application.durable_v4 import publish_due_v4_events
-from app.streaming.application.worker_publication_v4 import (
+from app.streaming.api import (
     WorkerV4Capabilities,
+    publish_due_v4_events,
     publish_pending_admissions,
     publish_pending_run_terminal,
 )
