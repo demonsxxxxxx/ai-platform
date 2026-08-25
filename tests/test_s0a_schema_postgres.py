@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from contextlib import asynccontextmanager
@@ -10,6 +11,12 @@ from psycopg.rows import dict_row
 import pytest
 
 from app import repositories
+from app.platform.postgres.errors import RepositoryConflictError
+from app.runs.domain.execution_spec import (
+    EXECUTION_SPEC_SCHEMA_VERSION,
+    compile_execution_spec,
+)
+from app.runs.infrastructure.postgres import create_run_attempt, transition_run_attempt
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
@@ -24,6 +31,41 @@ def _postgres_dsn() -> str:
 
 async def _set_search_path(conn: psycopg.AsyncConnection, schema_name: str) -> None:
     await conn.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+
+
+def _execution_spec():
+    return compile_execution_spec(
+        {
+            "schema_version": EXECUTION_SPEC_SCHEMA_VERSION,
+            "run_payload_schema_version": "ai-platform.run-payload.v1",
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "agent_id": "agent-a",
+            "execution_kind": "skill",
+            "skill_id": "skill-a",
+            "file_ids": [],
+            "input": {"message": "hello"},
+            "executor_type": "fake",
+            "trace_id": "trace-a",
+            "skill_version": "version-a",
+            "release_decision": {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "selected_version": "version-a",
+            },
+            "skill_manifests": [
+                {"skill_id": "skill-a", "content_hash": "version-a"}
+            ],
+            "context_snapshot_id": "context-a",
+            "context_snapshot": {"context_snapshot_id": "context-a"},
+            "context_pack": {},
+            "model_id": "model-a",
+            "model_value": "model-a",
+            "agent_profile": {},
+        }
+    )
 
 
 @pytest.mark.asyncio
@@ -112,6 +154,258 @@ async def test_s0a_schema_workspace_scope_and_runtime_handle_apply_idempotently(
                 insert into runs(
                   id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id, status
                 ) values ('run-wrong', 'tenant-a', 'workspace-b', 'session-a', 'user-a', 'agent-a', 'skill-a', 'queued')
+                """
+            )
+
+        await conn.execute(
+            """
+            insert into runs(
+              id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id, status
+            ) values (
+              'run-a', 'tenant-a', 'workspace-a', 'session-a', 'user-a',
+              'agent-a', 'skill-a', 'queued'
+            )
+            """
+        )
+        execution_spec = _execution_spec()
+        canonical_json = execution_spec.canonical_json.decode("utf-8")
+        spec_sql_params = (
+            canonical_json,
+            canonical_json,
+            execution_spec.spec_sha256,
+        )
+        created_attempt = await create_run_attempt(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            ordinal=1,
+            owner_kind="queue_worker",
+            owner_id="worker-a",
+            queue_attempt_id="queue-attempt-a",
+            execution_spec=execution_spec,
+        )
+        assert created_attempt["status"] == "created"
+        queued_attempt = await transition_run_attempt(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            expected_status="created",
+            requested_status="queued",
+            expected_owner_kind="queue_worker",
+            expected_owner_id="worker-a",
+            expected_owner_generation=1,
+            queue_message_id="queue-message-a",
+        )
+        assert queued_attempt["owner_generation"] == 2
+        claimed_attempt = await transition_run_attempt(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            expected_status="queued",
+            requested_status="claimed",
+            expected_owner_kind="queue_worker",
+            expected_owner_id="worker-a",
+            expected_owner_generation=2,
+        )
+        assert claimed_attempt["owner_generation"] == 3
+        await conn.execute(
+            "update runs set status = 'succeeded', finished_at = now() where id = 'run-a'"
+        )
+        with pytest.raises(
+            RepositoryConflictError,
+            match="run_attempt_transition_conflict",
+        ):
+            await transition_run_attempt(
+                conn,
+                tenant_id="tenant-a",
+                run_id="run-a",
+                attempt_id="attempt-a",
+                expected_status="claimed",
+                requested_status="failed",
+                expected_owner_kind="queue_worker",
+                expected_owner_id="worker-a",
+                expected_owner_generation=3,
+                terminal_reason="legacy_terminal_conflict",
+            )
+        conflict_cursor = await conn.execute(
+            """
+            select runs.status as run_status, run_attempts.status as attempt_status
+            from runs
+            join run_attempts on run_attempts.run_id = runs.id
+            where runs.tenant_id = 'tenant-a' and runs.id = 'run-a'
+            """
+        )
+        assert await conflict_cursor.fetchone() == {
+            "run_status": "succeeded",
+            "attempt_status": "claimed",
+        }
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await conn.execute(
+                """
+                insert into run_attempts(
+                  id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
+                  queue_attempt_id, execution_spec_schema_version,
+                  execution_spec_json, execution_spec_canonical_json,
+                  execution_spec_sha256
+                ) values (
+                  'attempt-wrong-parent', 'tenant-a', 'run-a', 2, 'created',
+                  'queue_worker', 'worker-parent', 'queue-attempt-parent',
+                  'ai-platform.execution-spec.v1', %s::jsonb, %s, %s
+                )
+                """,
+                spec_sql_params,
+            )
+        await conn.execute(
+            "update runs set status = 'queued', finished_at = null where id = 'run-a'"
+        )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await conn.execute(
+                """
+                insert into run_attempts(
+                  id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
+                  queue_attempt_id, execution_spec_schema_version,
+                  execution_spec_json, execution_spec_canonical_json,
+                  execution_spec_sha256, finished_at, terminal_reason
+                ) values (
+                  'attempt-terminal', 'tenant-a', 'run-a', 2, 'failed',
+                  'queue_worker', 'worker-terminal', 'queue-attempt-terminal',
+                  'ai-platform.execution-spec.v1', %s::jsonb, %s, %s,
+                  now(), 'bypassed_state_machine'
+                )
+                """,
+                spec_sql_params,
+            )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await conn.execute(
+                """
+                insert into run_attempts(
+                  id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
+                  queue_attempt_id, execution_spec_schema_version,
+                  execution_spec_json, execution_spec_canonical_json,
+                  execution_spec_sha256
+                ) values (
+                  'attempt-digest-drift', 'tenant-a', 'run-a', 2, 'created',
+                  'queue_worker', 'worker-digest', 'queue-attempt-digest',
+                  'ai-platform.execution-spec.v1', %s::jsonb, %s, %s
+                )
+                """,
+                (canonical_json, canonical_json, "0" * 64),
+            )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await conn.execute(
+                """
+                insert into run_attempts(
+                  id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
+                  queue_attempt_id, execution_spec_schema_version,
+                  execution_spec_json, execution_spec_canonical_json,
+                  execution_spec_sha256
+                ) values (
+                  'attempt-json-drift', 'tenant-a', 'run-a', 2, 'created',
+                  'queue_worker', 'worker-json', 'queue-attempt-json',
+                  'ai-platform.execution-spec.v1', %s::jsonb, %s, %s
+                )
+                """,
+                (
+                    canonical_json,
+                    "{}",
+                    hashlib.sha256(b"{}").hexdigest(),
+                ),
+            )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await conn.execute(
+                """
+                insert into run_attempts(
+                  id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
+                  queue_attempt_id, execution_spec_schema_version,
+                  execution_spec_json, execution_spec_canonical_json,
+                  execution_spec_sha256
+                ) values (
+                  'attempt-empty-owner', 'tenant-a', 'run-a', 2, 'created',
+                  'queue_worker', '', 'queue-attempt-empty',
+                  'ai-platform.execution-spec.v1', %s::jsonb, %s, %s
+                )
+                """,
+                spec_sql_params,
+            )
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            await conn.execute(
+                """
+                insert into run_attempts(
+                  id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
+                  queue_attempt_id, execution_spec_schema_version,
+                  execution_spec_json, execution_spec_canonical_json,
+                  execution_spec_sha256
+                ) values (
+                  'attempt-b', 'tenant-a', 'run-a', 2, 'created', 'queue_worker',
+                  'worker-b', 'queue-attempt-b', 'ai-platform.execution-spec.v1',
+                  %s::jsonb, %s, %s
+                )
+                """,
+                spec_sql_params,
+            )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await conn.execute(
+                """
+            update run_attempts
+            set status = 'expired', owner_generation = 4
+            where tenant_id = 'tenant-a' and id = 'attempt-a'
+                """
+            )
+        await conn.execute(
+            """
+            update run_attempts
+            set status = 'expired',
+                owner_kind = 'reconciler',
+                owner_id = 'reconciler-a',
+                owner_generation = 4
+            where tenant_id = 'tenant-a' and id = 'attempt-a'
+            """
+        )
+        projected_cursor = await conn.execute(
+            "select status from runs where tenant_id = 'tenant-a' and id = 'run-a'"
+        )
+        assert (await projected_cursor.fetchone())["status"] == "running"
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await conn.execute(
+                """
+                update run_attempts
+                set status = 'succeeded',
+                    owner_generation = 5,
+                    finished_at = now()
+                where tenant_id = 'tenant-a' and id = 'attempt-a'
+                """
+            )
+        with pytest.raises(
+            psycopg.errors.CheckViolation,
+            match="run_attempt_owner_generation_invalid",
+        ):
+            await conn.execute(
+                """
+                update run_attempts
+                set status = 'failed', owner_generation = 4, finished_at = now()
+                where tenant_id = 'tenant-a' and id = 'attempt-a'
+                """
+            )
+        await conn.execute(
+            """
+            update run_attempts
+            set status = 'failed', owner_generation = 5, finished_at = now()
+            where tenant_id = 'tenant-a' and id = 'attempt-a'
+            """
+        )
+        projected_cursor = await conn.execute(
+            "select status from runs where tenant_id = 'tenant-a' and id = 'run-a'"
+        )
+        assert (await projected_cursor.fetchone())["status"] == "failed"
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await conn.execute(
+                """
+                update run_attempts
+                set error_code = 'late_rewrite'
+                where tenant_id = 'tenant-a' and id = 'attempt-a'
                 """
             )
 

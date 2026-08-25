@@ -21,6 +21,7 @@ def test_schema_declares_platform_fact_tables():
         "memory_records",
         "run_context_snapshots",
         "runs",
+        "run_attempts",
         "run_events",
         "run_tool_permission_requests",
         "sandbox_leases",
@@ -175,6 +176,40 @@ def test_schema_declares_run_copy_and_cancel_columns():
     assert "copied_from_run_id text" in schema
     assert "cancel_requested_at timestamptz" in schema
     assert "cancel_requested_by text" in schema
+
+
+def test_schema_declares_attempt_identity_state_and_fences():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "create table if not exists run_attempts" in schema
+    assert "constraint fk_run_attempts_run foreign key (tenant_id, run_id)" in schema
+    assert "constraint chk_run_attempts_status" in schema
+    assert "constraint chk_run_attempts_required_identity" in schema
+    assert "constraint chk_run_attempts_spec_json" in schema
+    assert "execution_spec_canonical_json text not null" in schema
+    assert "constraint chk_run_attempts_spec_canonical_json" in schema
+    assert "constraint chk_run_attempts_spec_sha256" in schema
+    assert "sha256(convert_to(execution_spec_canonical_json, 'UTF8'))" in schema
+    assert "constraint chk_run_attempts_terminal_time" in schema
+    assert "unique (tenant_id, run_id, ordinal)" in schema
+    assert "unique (tenant_id, run_id, queue_attempt_id)" in schema
+    assert "create unique index if not exists uq_run_attempts_one_open" in schema
+    assert "create or replace function ai_platform_guard_run_attempt_transition()" in schema
+    assert "create trigger trg_run_attempt_transition_guard" in schema
+    assert "before insert or update on run_attempts" in schema
+    assert "run_attempt_initial_state_invalid" in schema
+    assert "run_attempt_parent_state_invalid" in schema
+    assert "run_attempt_parent_transition_conflict" in schema
+    assert "workspace_id = new.execution_spec_json->>'workspace_id'" in schema
+    assert "skill_id is not distinct from nullif(" in schema
+    assert "set status = projected_run_status" in schema
+    assert "run_attempt_owner_generation_invalid" in schema
+    assert "run_attempt_expiry_reconciler_required" in schema
+    assert "run_attempt_terminal_immutable" in schema
+    assert (
+        "'created', 'queued', 'claimed', 'running', 'cancel_requested', 'expired'"
+        in schema
+    )
 
 
 def test_schema_declares_artifact_retention_columns():

@@ -15,13 +15,14 @@ from typing import Any
 from app.db import SCHEMA_PATH, close_pool, connect, transaction
 
 
-TARGET_SCHEMA_VERSION = "2026.08.21.1"
+TARGET_SCHEMA_VERSION = "2026.08.23.1"
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
     "schema_migrations",
     "schema_index_migrations",
     "runs",
+    "run_attempts",
     "run_skill_materializations",
     "run_events",
     "messages",
@@ -45,6 +46,25 @@ CRITICAL_COLUMNS = (
     ("runs", "authz_policy_version", "int4", True),
     ("runs", "authority_source", "text", True),
     ("runs", "authority_checked_at", "timestamptz", False),
+    ("run_attempts", "ordinal", "int4", True),
+    ("run_attempts", "status", "text", True),
+    ("run_attempts", "owner_kind", "text", True),
+    ("run_attempts", "owner_id", "text", True),
+    ("run_attempts", "owner_generation", "int8", True),
+    ("run_attempts", "queue_attempt_id", "text", True),
+    ("run_attempts", "execution_spec_schema_version", "text", True),
+    ("run_attempts", "execution_spec_json", "jsonb", True),
+    ("run_attempts", "execution_spec_canonical_json", "text", True),
+    ("run_attempts", "execution_spec_sha256", "text", True),
+    ("run_attempts", "queue_message_id", "text", False),
+    ("run_attempts", "lease_expires_at", "timestamptz", False),
+    ("run_attempts", "last_heartbeat_at", "timestamptz", False),
+    ("run_attempts", "started_at", "timestamptz", False),
+    ("run_attempts", "finished_at", "timestamptz", False),
+    ("run_attempts", "terminal_reason", "text", True),
+    ("run_attempts", "error_code", "text", False),
+    ("run_attempts", "created_at", "timestamptz", True),
+    ("run_attempts", "updated_at", "timestamptz", True),
     ("run_skill_materializations", "materialization_sha256", "text", True),
     ("run_skill_materializations", "manifest_json", "jsonb", True),
     ("messages", "content", "text", True),
@@ -94,6 +114,18 @@ CRITICAL_CONSTRAINTS = (
     ("runs", "fk_runs_workspace_scope"),
     ("runs", "fk_runs_session_scope"),
     ("runs", "chk_runs_execution_skill_identity"),
+    ("run_attempts", "fk_run_attempts_run"),
+    ("run_attempts", "chk_run_attempts_ordinal"),
+    ("run_attempts", "chk_run_attempts_owner_generation"),
+    ("run_attempts", "chk_run_attempts_status"),
+    ("run_attempts", "chk_run_attempts_owner_kind"),
+    ("run_attempts", "chk_run_attempts_required_identity"),
+    ("run_attempts", "chk_run_attempts_spec_json"),
+    ("run_attempts", "chk_run_attempts_spec_canonical_json"),
+    ("run_attempts", "chk_run_attempts_spec_sha256"),
+    ("run_attempts", "chk_run_attempts_terminal_time"),
+    ("run_attempts", "run_attempts_tenant_id_run_id_ordinal_key"),
+    ("run_attempts", "run_attempts_tenant_id_run_id_queue_attempt_id_key"),
     ("files", "chk_files_lifecycle_state"),
     ("artifacts", "chk_artifacts_lifecycle_state"),
     ("object_deletion_outbox", "chk_object_deletion_outbox_state"),
@@ -106,6 +138,12 @@ CRITICAL_CONSTRAINTS = (
     ("mcp_tools", "mcp_tools_endpoint_not_persisted"),
 )
 CRITICAL_TRIGGERS = (
+    (
+        "run_attempts",
+        "trg_run_attempt_transition_guard",
+        "ai_platform_guard_run_attempt_transition",
+        23,
+    ),
     (
         "agent_profile_revisions",
         "trg_agent_profile_legacy_insert_compatibility",
@@ -131,6 +169,94 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "mcp_tools_endpoint_not_persisted",
         "c",
         "CHECK (endpoint = ''::text)",
+    ),
+    (
+        "run_attempts",
+        "fk_run_attempts_run",
+        "f",
+        "FOREIGN KEY (tenant_id, run_id) REFERENCES runs(tenant_id, id)",
+    ),
+    (
+        "run_attempts",
+        "chk_run_attempts_ordinal",
+        "c",
+        "CHECK (ordinal > 0)",
+    ),
+    (
+        "run_attempts",
+        "chk_run_attempts_owner_generation",
+        "c",
+        "CHECK (owner_generation > 0)",
+    ),
+    (
+        "run_attempts",
+        "chk_run_attempts_status",
+        "c",
+        "CHECK (status = ANY (ARRAY["
+        "'created'::text, 'queued'::text, 'claimed'::text, 'running'::text, "
+        "'cancel_requested'::text, 'expired'::text, 'succeeded'::text, "
+        "'failed'::text, 'cancelled'::text]))",
+    ),
+    (
+        "run_attempts",
+        "chk_run_attempts_owner_kind",
+        "c",
+        "CHECK (owner_kind = ANY (ARRAY["
+        "'queue_worker'::text, 'reconciler'::text, 'operator'::text]))",
+    ),
+    (
+        "run_attempts",
+        "chk_run_attempts_spec_sha256",
+        "c",
+        "CHECK (execution_spec_sha256 ~ '^[0-9a-f]{64}$'::text "
+        "AND execution_spec_sha256 = encode("
+        "sha256(convert_to(execution_spec_canonical_json, 'UTF8'::name)), "
+        "'hex'::text))",
+    ),
+    (
+        "run_attempts",
+        "chk_run_attempts_required_identity",
+        "c",
+        "CHECK (id <> ''::text AND owner_id <> ''::text "
+        "AND queue_attempt_id <> ''::text "
+        "AND execution_spec_schema_version <> ''::text "
+        "AND (queue_message_id IS NULL OR queue_message_id <> ''::text))",
+    ),
+    (
+        "run_attempts",
+        "chk_run_attempts_spec_json",
+        "c",
+        "CHECK (jsonb_typeof(execution_spec_json) = 'object'::text "
+        "AND (execution_spec_json ->> 'schema_version'::text) "
+        "= execution_spec_schema_version)",
+    ),
+    (
+        "run_attempts",
+        "chk_run_attempts_spec_canonical_json",
+        "c",
+        "CHECK (execution_spec_canonical_json <> ''::text "
+        "AND execution_spec_canonical_json::jsonb = execution_spec_json)",
+    ),
+    (
+        "run_attempts",
+        "chk_run_attempts_terminal_time",
+        "c",
+        "CHECK ((status = ANY (ARRAY['succeeded'::text, 'failed'::text, "
+        "'cancelled'::text])) AND finished_at IS NOT NULL "
+        "OR NOT (status = ANY (ARRAY['succeeded'::text, 'failed'::text, "
+        "'cancelled'::text])) AND finished_at IS NULL)",
+    ),
+    (
+        "run_attempts",
+        "run_attempts_tenant_id_run_id_ordinal_key",
+        "u",
+        "UNIQUE (tenant_id, run_id, ordinal)",
+    ),
+    (
+        "run_attempts",
+        "run_attempts_tenant_id_run_id_queue_attempt_id_key",
+        "u",
+        "UNIQUE (tenant_id, run_id, queue_attempt_id)",
     ),
     (
         "files",
@@ -207,6 +333,20 @@ class ConcurrentIndexMigration:
     @property
     def checksum_sha256(self) -> str:
         return hashlib.sha256(self.sql.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class StaticIndexDefinition:
+    """Exact catalog contract for an index installed by the core schema."""
+
+    name: str
+    table_name: str
+    column_names: tuple[str, ...]
+    descending: tuple[bool, ...]
+    predicate_expression: str = ""
+    unique: bool = False
+    access_method: str = "btree"
+    opclass_names: tuple[str, ...] = ()
 
 
 CONCURRENT_INDEX_MIGRATIONS = (
@@ -355,10 +495,46 @@ CONCURRENT_INDEX_MIGRATIONS = (
         "and executor_reconciliation_status = any array['waiting_terminal', 'retry', 'claimed']",
     ),
 )
+STATIC_INDEX_DEFINITIONS = (
+    StaticIndexDefinition(
+        "uq_run_events_tenant_run_sequence",
+        "run_events",
+        ("tenant_id", "run_id", "sequence"),
+        (False, False, False),
+        unique=True,
+    ),
+    StaticIndexDefinition(
+        "idx_sandbox_leases_attempt",
+        "sandbox_leases",
+        ("tenant_id", "run_id", "attempt_id", "status"),
+        (False, False, False, False),
+    ),
+    StaticIndexDefinition(
+        "uq_run_attempts_one_open",
+        "run_attempts",
+        ("tenant_id", "run_id"),
+        (False, False),
+        "status = any array['created', 'queued', 'claimed', 'running', "
+        "'cancel_requested', 'expired']",
+        unique=True,
+    ),
+    StaticIndexDefinition(
+        "idx_run_attempts_run_created",
+        "run_attempts",
+        ("tenant_id", "run_id", "ordinal"),
+        (False, False, True),
+    ),
+    StaticIndexDefinition(
+        "idx_run_attempts_lease_reconcile",
+        "run_attempts",
+        ("lease_expires_at", "tenant_id", "run_id", "id"),
+        (False, False, False, False),
+        "status = any array['claimed', 'running', 'cancel_requested', 'expired']",
+    ),
+)
 CRITICAL_INDEXES = (
     *((migration.name, migration.unique) for migration in CONCURRENT_INDEX_MIGRATIONS),
-    ("uq_run_events_tenant_run_sequence", True),
-    ("idx_sandbox_leases_attempt", False),
+    *((definition.name, definition.unique) for definition in STATIC_INDEX_DEFINITIONS),
 )
 
 
@@ -449,7 +625,10 @@ async def _acquire_coordinator_lock(conn: Any) -> None:
         await asyncio.sleep(0.05)
 
 
-async def _index_is_ready(conn: Any, migration: ConcurrentIndexMigration) -> bool:
+async def _index_is_ready(
+    conn: Any,
+    migration: ConcurrentIndexMigration | StaticIndexDefinition,
+) -> bool:
     cursor = await conn.execute(
         """
         select coalesce(indexes.indisvalid and indexes.indisready, false) as ready,
@@ -850,6 +1029,9 @@ async def schema_status(conn: Any) -> dict[str, object]:
     concurrent_index_definitions_current = all(
         [await _index_is_ready(conn, migration) for migration in CONCURRENT_INDEX_MIGRATIONS]
     )
+    static_index_definitions_current = all(
+        [await _index_is_ready(conn, definition) for definition in STATIC_INDEX_DEFINITIONS]
+    )
     contracts_current = all(
         (
             relations_current,
@@ -859,6 +1041,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
             triggers_current,
             indexes_current,
             concurrent_index_definitions_current,
+            static_index_definitions_current,
         )
     )
     ready = (
@@ -880,6 +1063,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
         "triggers_current": triggers_current,
         "indexes_current": indexes_current,
         "concurrent_index_definitions_current": concurrent_index_definitions_current,
+        "static_index_definitions_current": static_index_definitions_current,
     }
 
 

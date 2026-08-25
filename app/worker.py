@@ -65,6 +65,7 @@ from app.executors.base import (
     ExecutorResult,
     RunExecutionOwner,
     RunPayload,
+    project_execution_spec_to_run_payload,
 )
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
@@ -84,7 +85,7 @@ from app.principal_authority import (
 )
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
 from app.redis_client import get_redis_client
-from app.runs.api import RunTerminalizationProgress
+from app.runs.api import RunTerminalizationProgress, compile_execution_spec_for_dispatch
 from app.required_tool_contract import (
     RequiredCapabilityDecision,
     builtin_capability_subjects,
@@ -1657,6 +1658,53 @@ async def _append_worker_capability_denial_evidence(
     )
 
 
+async def _fail_worker_pre_dispatch_error(
+    conn,
+    *,
+    payload: QueueRunPayload,
+    run_identity: dict[str, str],
+    error_code: str,
+    error_message: str,
+    event_stage: str,
+    event_payload: dict[str, Any],
+    is_multi_agent_child: bool | None = None,
+) -> _WorkerTerminalAfterTransaction:
+    terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
+        conn,
+        payload=payload,
+        tenant_id=run_identity["tenant_id"],
+        run_id=run_identity["run_id"],
+        error_code=error_code,
+        error_message=error_message,
+        is_multi_agent_child=is_multi_agent_child,
+    )
+    if not terminal_written:
+        return _WorkerTerminalAfterTransaction(
+            WorkerOutcome(
+                "skipped",
+                run_identity["run_id"],
+                "stale_terminal_state",
+                "Run already reached a terminal state",
+            ),
+            payload,
+            None,
+        )
+    await repositories.append_event(
+        conn,
+        tenant_id=run_identity["tenant_id"],
+        run_id=run_identity["run_id"],
+        event_type="error",
+        stage=event_stage,
+        message=error_message,
+        payload=event_payload,
+    )
+    return _WorkerTerminalAfterTransaction(
+        WorkerOutcome("failed", run_identity["run_id"], error_code, error_message),
+        payload,
+        reconciled_parent,
+    )
+
+
 async def _fail_locked_run_snapshot(
     conn,
     *,
@@ -2054,45 +2102,18 @@ async def process_run_payload(
             run_identity = _locked_run_identity(payload, locked)
             mismatch_fields = _identity_mismatch_fields(payload, run_identity)
             if mismatch_fields:
-                error_code = "queue_payload_identity_mismatch"
-                error_message = "Queue payload identity does not match run record"
-                terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
+                terminal_after_transaction = await _fail_worker_pre_dispatch_error(
                     conn,
                     payload=payload,
-                    tenant_id=run_identity["tenant_id"],
-                    run_id=run_identity["run_id"],
-                    error_code=error_code,
-                    error_message=error_message,
-                )
-                if not terminal_written:
-                    terminal_after_transaction = _WorkerTerminalAfterTransaction(
-                        WorkerOutcome(
-                            "skipped",
-                            run_identity["run_id"],
-                            "stale_terminal_state",
-                            "Run already reached a terminal state",
-                        ),
-                        payload,
-                        None,
-                    )
-                    return terminal_after_transaction.outcome
-                await repositories.append_event(
-                    conn,
-                    tenant_id=run_identity["tenant_id"],
-                    run_id=run_identity["run_id"],
-                    event_type="error",
-                    stage="worker",
-                    message=error_message,
-                    payload={
+                    run_identity=run_identity,
+                    error_code="queue_payload_identity_mismatch",
+                    error_message="Queue payload identity does not match run record",
+                    event_stage="worker",
+                    event_payload={
                         "visible_to_user": False,
                         "severity": "error",
                         "mismatch_fields": mismatch_fields,
                     },
-                )
-                terminal_after_transaction = _WorkerTerminalAfterTransaction(
-                    WorkerOutcome("failed", run_identity["run_id"], error_code, error_message),
-                    payload,
-                    reconciled_parent,
                 )
                 return terminal_after_transaction.outcome
             trace_id = _locked_run_trace_id(payload, locked)
@@ -2291,44 +2312,49 @@ async def process_run_payload(
                 return terminal_after_transaction.outcome
             context_ref = await _ensure_worker_context_snapshot(conn, payload, trace_id=trace_id, run_identity=run_identity)
             if context_ref is None:
-                error_code = "context_snapshot_unavailable"
-                error_message = "Run context snapshot is unavailable"
-                terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
+                terminal_after_transaction = await _fail_worker_pre_dispatch_error(
                     conn,
                     payload=payload,
-                    tenant_id=run_identity["tenant_id"],
-                    run_id=run_identity["run_id"],
-                    error_code=error_code,
-                    error_message=error_message,
-                )
-                if not terminal_written:
-                    terminal_after_transaction = _WorkerTerminalAfterTransaction(
-                        WorkerOutcome(
-                            "skipped",
-                            run_identity["run_id"],
-                            "stale_terminal_state",
-                            "Run already reached a terminal state",
-                        ),
-                        payload,
-                        None,
-                    )
-                    return terminal_after_transaction.outcome
-                await repositories.append_event(
-                    conn,
-                    tenant_id=run_identity["tenant_id"],
-                    run_id=run_identity["run_id"],
-                    event_type="error",
-                    stage="context",
-                    message=error_message,
-                    payload={
+                    run_identity=run_identity,
+                    error_code="context_snapshot_unavailable",
+                    error_message="Run context snapshot is unavailable",
+                    event_stage="context",
+                    event_payload={
                         "visible_to_user": False,
-                        "error_code": error_code,
+                        "error_code": "context_snapshot_unavailable",
                     },
                 )
-                terminal_after_transaction = _WorkerTerminalAfterTransaction(
-                    WorkerOutcome("failed", run_identity["run_id"], error_code, error_message),
-                    payload,
-                    reconciled_parent,
+                return terminal_after_transaction.outcome
+            try:
+                execution_spec = compile_execution_spec_for_dispatch(
+                    run_identity=run_identity,
+                    queue_payload=payload,
+                    trace_id=trace_id,
+                    context_snapshot_id=str(context_ref["context_snapshot_id"]),
+                    context_snapshot=context_ref["context_snapshot"],
+                    context_pack={
+                        **executor_context_pack_from_snapshot(context_ref["context_snapshot"]),
+                        "conversation_context": context_ref["conversation_context"],
+                    },
+                )
+                run_payload = project_execution_spec_to_run_payload(
+                    execution_spec,
+                    attempt_id=attempt_id,
+                )
+            except ValueError:
+                terminal_after_transaction = await _fail_worker_pre_dispatch_error(
+                    conn,
+                    payload=payload,
+                    run_identity=run_identity,
+                    error_code="execution_spec_invalid",
+                    error_message="Execution specification is invalid",
+                    event_stage="worker",
+                    event_payload={
+                        "visible_to_user": False,
+                        "severity": "error",
+                        "error_code": "execution_spec_invalid",
+                    },
+                    is_multi_agent_child=_locked_run_is_multi_agent_child(locked),
                 )
                 return terminal_after_transaction.outcome
             if reconciliation is None and not _ordinary_run_uses_runtime_sandbox(
@@ -2366,33 +2392,6 @@ async def process_run_payload(
                     terminal_after_transaction.outcome,
                 )
 
-    run_payload = RunPayload(
-        tenant_id=run_identity["tenant_id"],
-        workspace_id=run_identity["workspace_id"],
-        user_id=run_identity["user_id"],
-        session_id=run_identity["session_id"],
-        run_id=run_identity["run_id"],
-        attempt_id=attempt_id,
-        agent_id=run_identity["agent_id"],
-        execution_kind=run_identity["execution_kind"],
-        skill_id=payload.skill_id,
-        file_ids=payload.file_ids,
-        input=payload.input,
-        trace_id=trace_id,
-        skill_version=payload.skill_version or "",
-        release_decision=payload.release_decision,
-        skill_manifests=payload.skill_manifests,
-        context_snapshot_id=str(context_ref["context_snapshot_id"]),
-        context_snapshot=context_ref["context_snapshot"],
-        context_pack={
-            **executor_context_pack_from_snapshot(context_ref["context_snapshot"]),
-            "conversation_context": context_ref["conversation_context"],
-        },
-        model_id=payload.model_id or "",
-        model_value=payload.model_value or "",
-        agent_profile=payload.agent_profile or {},
-        schema_version=payload.schema_version,
-    )
     stream_publisher = RunStreamPublisher(
         run_payload.tenant_id,
         run_payload.run_id,

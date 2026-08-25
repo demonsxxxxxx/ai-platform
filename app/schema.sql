@@ -549,6 +549,221 @@ create index if not exists idx_runs_session_created on runs(session_id, created_
 create index if not exists idx_runs_status on runs(status);
 create unique index if not exists uq_runs_tenant_id on runs(tenant_id, id);
 
+create table if not exists run_attempts (
+  id text primary key,
+  tenant_id text not null,
+  run_id text not null,
+  ordinal integer not null,
+  status text not null,
+  owner_kind text not null,
+  owner_id text not null,
+  owner_generation bigint not null default 1,
+  queue_message_id text,
+  queue_attempt_id text not null,
+  execution_spec_schema_version text not null,
+  execution_spec_json jsonb not null,
+  execution_spec_canonical_json text not null,
+  execution_spec_sha256 text not null,
+  lease_expires_at timestamptz,
+  last_heartbeat_at timestamptz,
+  started_at timestamptz,
+  finished_at timestamptz,
+  terminal_reason text not null default '',
+  error_code text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint fk_run_attempts_run foreign key (tenant_id, run_id)
+    references runs(tenant_id, id),
+  constraint chk_run_attempts_ordinal check (ordinal > 0),
+  constraint chk_run_attempts_owner_generation check (owner_generation > 0),
+  constraint chk_run_attempts_status check (
+    status in (
+      'created', 'queued', 'claimed', 'running', 'cancel_requested', 'expired',
+      'succeeded', 'failed', 'cancelled'
+    )
+  ),
+  constraint chk_run_attempts_owner_kind check (
+    owner_kind in ('queue_worker', 'reconciler', 'operator')
+  ),
+  constraint chk_run_attempts_required_identity check (
+    id <> ''
+    and owner_id <> ''
+    and queue_attempt_id <> ''
+    and execution_spec_schema_version <> ''
+    and (queue_message_id is null or queue_message_id <> '')
+  ),
+  constraint chk_run_attempts_spec_json check (
+    jsonb_typeof(execution_spec_json) = 'object'
+    and execution_spec_json->>'schema_version' = execution_spec_schema_version
+  ),
+  constraint chk_run_attempts_spec_canonical_json check (
+    execution_spec_canonical_json <> ''
+    and execution_spec_canonical_json::jsonb = execution_spec_json
+  ),
+  constraint chk_run_attempts_spec_sha256 check (
+    execution_spec_sha256 ~ '^[0-9a-f]{64}$'
+    and execution_spec_sha256 = encode(
+      sha256(convert_to(execution_spec_canonical_json, 'UTF8')),
+      'hex'
+    )
+  ),
+  constraint chk_run_attempts_terminal_time check (
+    (
+      status in ('succeeded', 'failed', 'cancelled')
+      and finished_at is not null
+    ) or (
+      status not in ('succeeded', 'failed', 'cancelled')
+      and finished_at is null
+    )
+  ),
+  unique (tenant_id, run_id, ordinal),
+  unique (tenant_id, run_id, queue_attempt_id)
+);
+
+create unique index if not exists uq_run_attempts_one_open
+  on run_attempts(tenant_id, run_id)
+  where status in (
+    'created', 'queued', 'claimed', 'running', 'cancel_requested', 'expired'
+  );
+create index if not exists idx_run_attempts_run_created
+  on run_attempts(tenant_id, run_id, ordinal desc);
+create index if not exists idx_run_attempts_lease_reconcile
+  on run_attempts(lease_expires_at asc, tenant_id, run_id, id)
+  where status in ('claimed', 'running', 'cancel_requested', 'expired');
+
+create or replace function ai_platform_guard_run_attempt_transition()
+returns trigger
+language plpgsql
+as $$
+declare
+  projected_run_status text;
+begin
+  if tg_op = 'INSERT' then
+    if new.status <> 'created'
+       or new.owner_generation <> 1
+       or new.queue_message_id is not null
+       or new.lease_expires_at is not null
+       or new.last_heartbeat_at is not null
+       or new.started_at is not null
+       or new.finished_at is not null
+       or new.terminal_reason <> ''
+       or new.error_code is not null then
+      raise exception 'run_attempt_initial_state_invalid' using errcode = '23514';
+    end if;
+    perform 1
+    from runs
+    where tenant_id = new.tenant_id
+      and id = new.run_id
+      and status = 'queued'
+      and new.execution_spec_json->>'tenant_id' = new.tenant_id
+      and new.execution_spec_json->>'run_id' = new.run_id
+      and workspace_id = new.execution_spec_json->>'workspace_id'
+      and user_id = new.execution_spec_json->>'user_id'
+      and session_id = new.execution_spec_json->>'session_id'
+      and agent_id = new.execution_spec_json->>'agent_id'
+      and execution_kind = new.execution_spec_json->>'execution_kind'
+      and skill_id is not distinct from nullif(
+        new.execution_spec_json->>'skill_id',
+        ''
+      )
+    for update;
+    if not found then
+      raise exception 'run_attempt_parent_state_invalid' using errcode = '23514';
+    end if;
+    return new;
+  end if;
+  if old.status in ('succeeded', 'failed', 'cancelled')
+     and new is distinct from old then
+    raise exception 'run_attempt_terminal_immutable' using errcode = '23514';
+  end if;
+  if new.id is distinct from old.id
+     or new.tenant_id is distinct from old.tenant_id
+     or new.run_id is distinct from old.run_id
+     or new.ordinal is distinct from old.ordinal
+     or new.queue_attempt_id is distinct from old.queue_attempt_id
+     or new.execution_spec_schema_version is distinct from old.execution_spec_schema_version
+     or new.execution_spec_json is distinct from old.execution_spec_json
+     or new.execution_spec_canonical_json is distinct from old.execution_spec_canonical_json
+     or new.execution_spec_sha256 is distinct from old.execution_spec_sha256
+     or new.created_at is distinct from old.created_at then
+    raise exception 'run_attempt_identity_immutable' using errcode = '23514';
+  end if;
+  if new.queue_message_id is distinct from old.queue_message_id
+     and not (
+       old.status = 'created'
+       and new.status = 'queued'
+       and old.queue_message_id is null
+       and new.queue_message_id is not null
+     ) then
+    raise exception 'run_attempt_queue_identity_immutable' using errcode = '23514';
+  end if;
+  if new.status is not distinct from old.status then
+    if new.owner_generation is distinct from old.owner_generation
+       or new.owner_kind is distinct from old.owner_kind
+       or new.owner_id is distinct from old.owner_id then
+      raise exception 'run_attempt_owner_transition_invalid' using errcode = '23514';
+    end if;
+    return new;
+  end if;
+  if new.owner_generation is distinct from old.owner_generation + 1 then
+    raise exception 'run_attempt_owner_generation_invalid' using errcode = '23514';
+  end if;
+  if new.status = 'expired' and new.owner_kind <> 'reconciler' then
+    raise exception 'run_attempt_expiry_reconciler_required' using errcode = '23514';
+  end if;
+  if not (
+    (old.status = 'created' and new.status in ('queued', 'cancelled'))
+    or (old.status = 'queued' and new.status in ('claimed', 'cancelled'))
+    or (
+      old.status = 'claimed'
+      and new.status in ('running', 'cancel_requested', 'failed', 'expired')
+    )
+    or (
+      old.status = 'running'
+      and new.status in ('cancel_requested', 'succeeded', 'failed', 'expired')
+    )
+    or (old.status = 'cancel_requested' and new.status = 'cancelled')
+    or (old.status = 'expired' and new.status in ('failed', 'cancelled'))
+  ) then
+    raise exception 'run_attempt_transition_invalid' using errcode = '23514';
+  end if;
+  projected_run_status := case
+    when new.status in ('created', 'queued') then 'queued'
+    when new.status in ('claimed', 'running', 'cancel_requested', 'expired') then 'running'
+    else new.status
+  end;
+  update runs
+  set status = projected_run_status,
+      started_at = case
+        when projected_run_status = 'running' then coalesce(started_at, now())
+        else started_at
+      end,
+      finished_at = case
+        when projected_run_status in ('succeeded', 'failed', 'cancelled')
+          then coalesce(finished_at, now())
+        else finished_at
+      end
+  where tenant_id = new.tenant_id
+    and id = new.run_id
+    and (
+      (projected_run_status = 'queued' and status = 'queued')
+      or (projected_run_status = 'running' and status in ('queued', 'running'))
+      or (
+        projected_run_status in ('succeeded', 'failed', 'cancelled')
+        and status in ('queued', 'running', projected_run_status)
+      )
+    );
+  if not found then
+    raise exception 'run_attempt_parent_transition_conflict' using errcode = '23514';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists trg_run_attempt_transition_guard on run_attempts;
+create trigger trg_run_attempt_transition_guard
+before insert or update on run_attempts
+for each row execute function ai_platform_guard_run_attempt_transition();
+
 alter table runs add column if not exists trace_id text not null default '';
 alter table runs add column if not exists execution_kind text not null default 'skill';
 do $$
