@@ -169,16 +169,27 @@ async def persist_and_publish_worker_event(
 async def finalize_parent_and_publish(
     transaction_factory: TransactionFactory,
     capabilities: WorkerV4Capabilities,
-    finalize_parent: Callable[[TransactionFactory, Any, Any], Awaitable[None]],
+    finalize_parent: Callable[[TransactionFactory, Any, Any], Awaitable[Any]],
     payload: Any,
     reconciled_parent: Any,
 ) -> None:
-    await finalize_parent(transaction_factory, payload, reconciled_parent)
+    finalized_parent = await finalize_parent(transaction_factory, payload, reconciled_parent)
     await publish_pending_run_terminal(
         capabilities,
         tenant_id=payload.tenant_id,
         run_id=payload.run_id,
     )
+    parent_run_id = (
+        finalized_parent.get("parent_run_id")
+        if isinstance(finalized_parent, dict)
+        else getattr(finalized_parent, "parent_run_id", None)
+    )
+    if isinstance(parent_run_id, str) and parent_run_id and parent_run_id != payload.run_id:
+        await publish_pending_run_terminal(
+            capabilities,
+            tenant_id=payload.tenant_id,
+            run_id=parent_run_id,
+        )
 
 
 async def publish_pending_run_terminal(

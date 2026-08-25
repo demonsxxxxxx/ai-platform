@@ -162,12 +162,6 @@ async def admin_run_cancel(
             )
         except V4PublicationTransportUnavailable as exc:
             logger.warning("Cancellation v4 admission deferred", extra={"run_id": cancellation.run_id, "error": exc.error_code})
-
-        await publish_pending_run_terminal(
-            runtime.worker_capabilities,
-            tenant_id=principal.tenant_id,
-            run_id=cancellation.run_id,
-        )
     result = cancellation.as_route_result() if cancellation is not None else None
     if result is not None:
         initial_progress = result.pop("_permission_terminalization_progress", None)
@@ -195,6 +189,12 @@ async def admin_run_cancel(
             run_id=run_id,
             progress=progress,
             transaction_factory=transaction,
+        )
+    if cancellation is not None and cancellation.attempt_id:
+        await publish_pending_run_terminal(
+            runtime.worker_capabilities,
+            tenant_id=principal.tenant_id,
+            run_id=cancellation.run_id,
         )
     if result is None:
         raise HTTPException(status_code=404, detail="active_run_not_found")

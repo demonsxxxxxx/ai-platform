@@ -2641,6 +2641,88 @@ test("replay gap preserves partial output until an active run reaches terminal h
   assert.equal(context.currentRunIdRef.current, "run-1");
 });
 
+test("fresh no-cursor gap enters durable recovery without committing its cursor", async () => {
+  let hydrateCalls = 0;
+  const connectionStates: string[] = [];
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: "assistant-1" },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    statusRetryCountRef: { current: 0 },
+    replayGapRecoveryRef: { current: null },
+    messagesRef: { current: [] as Message[] },
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: null, runId: null, sequence: null },
+    },
+    acceptedStreamCursorRef: {
+      current: { sessionId: null, runId: null, eventId: null, streamIncarnation: null },
+    },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: (status: string) => connectionStates.push(status),
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    hydrateTerminalRun: async () => {
+      hydrateCalls += 1;
+    },
+  } satisfies SSEConnectionContext;
+
+  await connectToSSE(
+    "session-1",
+    "run-1",
+    "assistant-1",
+    context,
+    false,
+    async (_input, init) => {
+      await init.onopen?.(new Response(null, { status: 200 }));
+      init.onmessage?.(
+        v4Frame({
+          cursor: "run-1:1:0-0",
+          runId: "run-1",
+          eventType: "stream.gap",
+          eventId: "gap-1",
+          payload: {
+            reason: "retained_history_unavailable",
+            recovery: "reload_durable_state",
+            requested_event_id: null,
+            requested_stream_incarnation: null,
+            current_stream_incarnation: 1,
+            earliest_available_event_id: null,
+            latest_available_event_id: null,
+          },
+        }) as never,
+      );
+    },
+    {
+      replayGapDependencies: {
+        getStatus: async () => ({
+          session_id: "session-1",
+          run_id: "run-1",
+          status: "succeeded",
+        }),
+      },
+    },
+  );
+
+  assert.equal(hydrateCalls, 1);
+  assert.deepEqual(context.acceptedStreamCursorRef.current, {
+    sessionId: null,
+    runId: null,
+    eventId: null,
+    streamIncarnation: null,
+  });
+  assert.deepEqual(connectionStates, ["connecting", "connected", "recovering_gap"]);
+});
+
+
 test("does not mutate shared state when a stale owner receives a replay gap", async () => {
   const states: string[] = [];
   const context = {

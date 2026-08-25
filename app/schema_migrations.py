@@ -1024,8 +1024,8 @@ async def rollback_v4_successor_rebuild_migration(conn: Any) -> None:
     await conn.execute("drop table if exists sse_stream_rebuild_items")
     await conn.execute("drop table if exists sse_stream_rebuilds")
     await conn.execute(
-        "delete from schema_migrations where version = %s",
-        (V4_SUCCESSOR_REBUILD_SCHEMA_VERSION,),
+        "delete from schema_migrations where version in (%s, %s)",
+        (V4_SUCCESSOR_REBUILD_SCHEMA_VERSION, TARGET_SCHEMA_VERSION),
     )
 
 
@@ -1042,8 +1042,8 @@ async def rollback_v4_publication_migration(conn: Any) -> None:
         ),
     )
     await conn.execute(
-        "delete from schema_migrations where version = %s",
-        (V4_PUBLICATION_SCHEMA_VERSION,),
+        "delete from schema_migrations where version in (%s, %s)",
+        (V4_PUBLICATION_SCHEMA_VERSION, TARGET_SCHEMA_VERSION),
     )
     await conn.execute(
         "alter table run_events drop constraint if exists chk_run_events_stream_publication_claim"

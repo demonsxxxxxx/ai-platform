@@ -851,6 +851,7 @@ async def test_v4_successor_rollback_removes_only_dormant_snapshot_tables():
     ]
     assert conn.statements[3][1] == (
         schema_migrations.V4_SUCCESSOR_REBUILD_SCHEMA_VERSION,
+        schema_migrations.TARGET_SCHEMA_VERSION,
     )
     assert all("run_events" not in statement for statement, _ in conn.statements)
     assert all("sse_stream_authorities" not in statement for statement, _ in conn.statements)

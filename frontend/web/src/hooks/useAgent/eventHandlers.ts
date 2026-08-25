@@ -211,18 +211,37 @@ function isStrictV4Binding(
   );
 }
 
-function isCurrentV4Owner(
+function isCurrentV4GapOwner(
   ctx: EventHandlerContext,
   binding: V4StreamEventBinding,
+  event: V4PublicEvent,
 ): boolean {
+  if (
+    ctx.sessionIdRef.current !== binding.sessionId ||
+    ctx.currentRunIdRef.current !== binding.runId ||
+    ctx.streamVersionRef.current !== binding.streamVersion
+  ) {
+    return false;
+  }
   const acceptedCursor = ctx.acceptedStreamCursorRef?.current;
-  return (
-    ctx.sessionIdRef.current === binding.sessionId &&
-    ctx.currentRunIdRef.current === binding.runId &&
-    ctx.streamVersionRef.current === binding.streamVersion &&
-    acceptedCursor?.sessionId === binding.sessionId &&
+  if (!acceptedCursor) return false;
+  if (
+    acceptedCursor.sessionId === binding.sessionId &&
     acceptedCursor.runId === binding.runId &&
     acceptedCursor.streamIncarnation === binding.streamIncarnation
+  ) {
+    return true;
+  }
+  const cursorIsUnbound =
+    acceptedCursor.eventId === null &&
+    acceptedCursor.streamIncarnation == null &&
+    ((acceptedCursor.sessionId === null && acceptedCursor.runId === null) ||
+      (acceptedCursor.sessionId === binding.sessionId &&
+        acceptedCursor.runId === binding.runId));
+  return (
+    cursorIsUnbound &&
+    event.event.payload.requested_event_id === null &&
+    event.event.payload.requested_stream_incarnation === null
   );
 }
 
@@ -509,7 +528,7 @@ export function handlePublicRunStreamFrameV4({
   const event = adaptPublicRunStreamEventV4(frame, adapterBinding);
   if (!event) return false;
   if (event.eventType === "stream.gap") {
-    if (!isCurrentV4Owner(ctx, binding)) return false;
+    if (!isCurrentV4GapOwner(ctx, binding, event)) return false;
     onGap?.(event);
     return false;
   }
