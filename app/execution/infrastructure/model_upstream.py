@@ -11,7 +11,7 @@ from typing import Iterator, Mapping
 
 from app.validation import assert_upstream_model_id
 
-from .security import ValidatedEndpoint, tls_context, validate_endpoint
+from .model_security import ValidatedEndpoint, tls_context, validate_endpoint
 
 
 @dataclass(frozen=True)
@@ -234,3 +234,9 @@ def parse_model_ids(response: UpstreamResponse) -> list[str]:
     if not values:
         raise ModelUpstreamError("model_connection_catalog_empty")
     return values
+
+
+class ModelUpstreamAdapter:
+    request = staticmethod(request_upstream)
+    parse_model_ids = staticmethod(parse_model_ids)
+    open_stream = staticmethod(open_upstream_stream)

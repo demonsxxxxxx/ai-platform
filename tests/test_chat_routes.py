@@ -14,7 +14,7 @@ from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.capability_distribution import CapabilityAuthorizationDenial
 from app.main import create_app
-from app.model_management.repository import RunModelSelection
+from app.execution.api import RunModelSelection
 from app.models import (
     ChatSessionRequest,
     ChatStreamRequest,
@@ -58,7 +58,14 @@ def legacy_model_control_plane_stub(monkeypatch):
     async def no_managed_model(_conn, **_kwargs):
         return None
 
-    monkeypatch.setattr("app.routes.chat.resolve_run_model", no_managed_model)
+    async def no_model_binding(_conn, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.execution.infrastructure.model_management.resolve_run_model",
+        no_managed_model,
+    )
+    monkeypatch.setattr("app.routes.chat.bind_run_model", no_model_binding)
 
 
 @pytest.fixture
@@ -2225,9 +2232,13 @@ async def test_list_messages_returns_stable_bounded_cursor(monkeypatch):
 async def test_chat_stream_capability_distribution_creates_run_with_auth_snapshot(monkeypatch):
     calls = []
 
-    def fake_resolve_model_selection(model_id, _settings, **kwargs):
-        assert model_id == "deepseek-v4-pro"
-        return {"id": model_id, "value": model_id}
+    async def fake_resolve_chat_model_selection(_conn, *, selection):
+        assert selection == {"id": "deepseek-v4-pro"}
+        return RunModelSelection(
+            model_id="deepseek-v4-pro",
+            model_value="deepseek-v4-pro",
+            connection_revision=None,
+        )
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         return {
@@ -2320,8 +2331,8 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.chat.resolve_model_selection",
-        fake_resolve_model_selection,
+        "app.routes.chat.resolve_chat_model_selection",
+        fake_resolve_chat_model_selection,
     )
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr(
@@ -2731,7 +2742,10 @@ async def test_chat_stream_rejects_unavailable_model_id_before_side_effects(monk
         raise ValueError("model_id_not_available")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.resolve_run_model", reject_model)
+    monkeypatch.setattr(
+        "app.execution.infrastructure.model_management.resolve_run_model",
+        reject_model,
+    )
     monkeypatch.setattr("app.routes.chat.repositories.create_session", fail_side_effect)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_side_effect)
     monkeypatch.setattr("app.routes.chat.repositories.append_message", fail_side_effect)
@@ -2804,6 +2818,7 @@ def test_chat_stream_request_rejects_structured_model_id(raw_model_id):
 @pytest.mark.asyncio
 async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(monkeypatch):
     calls = []
+    connections = {}
     current_settings = type(
         "S",
         (),
@@ -2828,8 +2843,13 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
         return "ses_model"
 
     async def fake_create_run(conn, **kwargs):
+        connections["create_run"] = conn
         calls.append(("create_run", kwargs))
         return "run_model"
+
+    async def fake_bind_run_model(conn, **kwargs):
+        connections["bind_run_model"] = conn
+        calls.append(("bind_run_model", kwargs))
 
     async def fake_append_message(conn, **kwargs):
         return "msg_model"
@@ -2857,13 +2877,17 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
         )
 
     monkeypatch.setattr("app.routes.chat.get_settings", lambda: current_settings)
-    monkeypatch.setattr("app.routes.chat.resolve_run_model", fake_resolve_run_model)
+    monkeypatch.setattr(
+        "app.execution.infrastructure.model_management.resolve_run_model",
+        fake_resolve_run_model,
+    )
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr("app.routes.chat.repositories.ensure_user", fake_ensure_user)
     monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
+    monkeypatch.setattr("app.routes.chat.bind_run_model", fake_bind_run_model)
     monkeypatch.setattr("app.routes.chat.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", fake_bind_files_to_run)
     monkeypatch.setattr("app.routes.chat.repositories.append_event", fake_append_event)
@@ -2878,10 +2902,19 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
     )
 
     create_run = next(item[1] for item in calls if item[0] == "create_run")
+    bind_run = next(item[1] for item in calls if item[0] == "bind_run_model")
     create_run_input = create_run["input_json"]
     queue_payload = next(item[1] for item in calls if item[0] == "queue_payload")
     assert response.run_id == "run_model"
-    assert create_run["model_gateway_revision"] == 7
+    assert "model_gateway_revision" not in create_run
+    assert bind_run == {
+        "tenant_id": "tenant-a",
+        "run_id": "run_model",
+        "model_id": "pro-tier",
+        "model_value": "openai/gpt-5",
+        "connection_revision": 7,
+    }
+    assert connections["create_run"] is connections["bind_run_model"]
     assert create_run_input["model_id"] == "pro-tier"
     assert create_run_input["model_value"] == "openai/gpt-5"
     assert queue_payload["model_id"] == "pro-tier"

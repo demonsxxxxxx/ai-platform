@@ -132,6 +132,22 @@ def test_execution_spec_allows_safe_token_accounting_fields():
     assert spec.to_mapping()["input"]["token_budget"] == 1000
 
 
+def test_execution_spec_preserves_raw_upstream_model_identity():
+    spec = compile_execution_spec(_spec_payload(model_value="openai/gpt-5"))
+
+    assert spec.to_mapping()["model_id"] == "model-a"
+    assert spec.to_mapping()["model_value"] == "openai/gpt-5"
+
+
+@pytest.mark.parametrize("model_value", [" openai/gpt-5", "openai/gpt-5\n", "x" * 513])
+def test_execution_spec_rejects_unsafe_upstream_model_identity(model_value):
+    with pytest.raises(
+        ExecutionSpecError,
+        match="execution_spec_model_value_invalid",
+    ):
+        compile_execution_spec(_spec_payload(model_value=model_value))
+
+
 def test_execution_spec_accepts_skillless_harness_without_skill_authority():
     spec = compile_execution_spec(
         _spec_payload(

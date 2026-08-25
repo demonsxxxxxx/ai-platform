@@ -2071,6 +2071,9 @@ def locked_run_from_payload(payload):
         "agent_id": validated["agent_id"],
         "execution_kind": validated["execution_kind"],
         "skill_id": validated["skill_id"],
+        "model_id": validated.get("model_id"),
+        "model_value": validated.get("model_value"),
+        "model_gateway_revision": validated.get("model_gateway_revision"),
         "trace_id": f"trace_{validated['run_id']}",
         "principal_roles": [],
         "principal_department_id": "",
@@ -2223,6 +2226,8 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         file_ids=[],
         input={"message": "hello"},
         executor_type="claude-agent-worker",
+        model_id="governed-model",
+        model_value="openai/gpt-5",
         skill_version=None,
         release_decision={},
         skill_manifests=[],
@@ -2243,6 +2248,8 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
     elif pin_change == "session_hash":
         locked_run["session_admitted_agent_profile_hash"] = "b" * 64
 
+    authorized_profile = worker_module.parse_leased_queue_envelope(raw).payload.agent_profile
+
     class CaptureAdapter:
         async def submit_run(self, payload, event_sink=None):
             calls.append(("adapter", payload))
@@ -2262,10 +2269,22 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         calls.append(("event", kwargs))
         return "evt-a"
 
+    async def reauthorize(*_args, **_kwargs):
+        return types.SimpleNamespace(
+            private_execution_input=authorized_profile,
+            skill={"skill_id": "general-chat"},
+            model={"id": "obsolete-profile-model", "value": "obsolete-profile-model"},
+            mcp_tool_ids=(),
+        )
+
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr(
+        "app.worker.reauthorize_bound_profile_for_worker_dispatch",
+        reauthorize,
+    )
 
     outcome = await process_run_payload(
         raw,
@@ -2273,9 +2292,11 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
     )
 
     if pin_change is None:
-        assert outcome.status == "succeeded"
+        assert outcome.status == "succeeded", (outcome, calls)
         assert outcome.error_code is None
         adapter_payload = next(call[1] for call in calls if call[0] == "adapter")
+        assert adapter_payload.model_id == raw["model_id"]
+        assert adapter_payload.model_value == raw["model_value"]
         assert adapter_payload.agent_profile == {
             "agent_id": "agt_support",
             "revision": 7,
@@ -2298,7 +2319,6 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         ("revoked", "profile_not_authorized", "agent_profile", "agent_profile_authority"),
         ("instructions", "profile_snapshot_invalid", "agent_profile", "agent_profile_authority"),
         ("required_skill", "profile_snapshot_invalid", "agent_profile", "agent_profile_authority"),
-        ("model", "profile_snapshot_invalid", "agent_profile", "agent_profile_authority"),
         ("mcp", "profile_snapshot_invalid", "agent_profile", "agent_profile_authority"),
         (
             "principal",
@@ -2371,8 +2391,6 @@ async def test_worker_reauthorizes_pinned_profile_before_adapter(
             authorized["instructions"] = "Current immutable instruction."
         elif authority_change == "required_skill":
             authorized["required_skill_version"] = "version-b"
-        elif authority_change == "model":
-            model = {"id": "model-b", "value": "model-b"}
         elif authority_change == "mcp":
             mcp_tool_ids = ("tool-b",)
         return types.SimpleNamespace(

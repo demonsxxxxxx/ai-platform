@@ -22,6 +22,7 @@ from app.models import (
     RunControlResponse,
     RunResponse,
 )
+from app.runs.api import inherit_run_model
 from app.product_events import initial_run_event_specs
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.control_plane_contracts import (
@@ -1142,6 +1143,12 @@ async def copy_run(
                 run_id=run_id,
             )
             if copied is not None:
+                await inherit_run_model(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    source_run_id=run_id,
+                    child_run_id=str(copied["run_id"]),
+                )
                 queue_payload = await prepare_copied_run_for_queue(
                     conn,
                     copied=copied,
@@ -1347,6 +1354,12 @@ async def _mutate_run_control_child(
                     run_id=run_id,
                 )
                 if copied is not None:
+                    await inherit_run_model(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        source_run_id=run_id,
+                        child_run_id=str(copied["run_id"]),
+                    )
                     queue_payload = await prepare_copied_run_for_queue(
                         conn,
                         copied=copied,

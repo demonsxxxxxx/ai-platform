@@ -32,6 +32,12 @@ from app.runs.domain.execution_spec import ExecutionSpecError as ExecutionSpecEr
 from app.runs.domain.execution_spec import (
     compile_execution_spec as compile_execution_spec,
 )
+from app.runs.application.model_snapshot import (
+    bind_run_model as bind_run_model,
+)
+from app.runs.application.model_snapshot import (
+    inherit_run_model as inherit_run_model,
+)
 
 from app.runs.domain.terminalization import (
     RunTerminalizationProgress as RunTerminalizationProgress,

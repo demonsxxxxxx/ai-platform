@@ -24,9 +24,7 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.db import transaction
-from app.model_catalog import build_model_catalog
-from app.model_management.repository import list_public_models
-from app.platform.model_upstream import fetch_upstream_openai_models
+from app.execution.api import list_public_models
 from app.models import LoginRequest, SessionRenameRequest
 from app.projection_redaction import (
     capability_id_from_skill,
@@ -1133,31 +1131,17 @@ async def available_models(
     _principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     async with transaction() as conn:
-        governed_catalog = await list_public_models(conn)
-    if governed_catalog is not None:
-        return governed_catalog
-    settings = get_settings()
-    upstream_models = await fetch_upstream_openai_models(settings)
-    if upstream_models:
-        model_ids = {str(model["id"]) for model in upstream_models}
-        runtime_default = str(
-            getattr(settings, "default_model_id", "") or ""
-        ).strip()
-        if runtime_default not in model_ids:
-            runtime_default = str(upstream_models[0]["id"])
-        return {
-            "models": upstream_models,
-            "count": len(upstream_models),
-            "enabled_count": len(upstream_models),
-            "default_model_id": runtime_default,
-        }
-    return build_model_catalog(settings)
+        return await list_public_models(conn)
 
 
 @router.get("/agent/models/")
 async def model_configs() -> dict[str, object]:
-    catalog = build_model_catalog(get_settings())
-    models = [{**model, "enabled": True, "order": index} for index, model in enumerate(catalog["models"], start=1)]
+    async with transaction() as conn:
+        catalog = await list_public_models(conn)
+    models = [
+        {**model, "enabled": True, "order": index}
+        for index, model in enumerate(catalog["models"], start=1)
+    ]
     return {**catalog, "models": models}
 
 

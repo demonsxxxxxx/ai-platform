@@ -129,3 +129,8 @@ def _decode_encryption_key(encoded_key: str) -> bytes:
     if len(key) != 32:
         raise ModelConnectionSecurityError("model_connection_encryption_key_invalid")
     return key
+
+
+class ModelEndpointSecurityAdapter:
+    validate = staticmethod(validate_endpoint)
+    fingerprint = staticmethod(api_key_fingerprint)

@@ -11,29 +11,43 @@ import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from app.model_management import client, routes as model_routes
-from app.model_management.client import (
-    ModelUpstreamError,
-    UpstreamResponse,
-    open_upstream_stream,
-    parse_model_ids,
-)
-from app.model_management.repository import (
+from app.execution.api import RunModelSelection
+from app.execution.application import model_selection
+from app.execution.application.model_control_plane import ModelControlPlaneService
+from app.execution.infrastructure import model_legacy_catalog, model_upstream as client
+from app.execution.infrastructure.model_management import (
     activate_connection_and_sync,
     get_run_connection,
     platform_model_id,
     resolve_run_model,
 )
-from app.model_management.security import (
+from app.execution.infrastructure.model_security import (
     ModelConnectionSecurityError,
     decrypt_api_key,
     encrypt_api_key,
     validate_endpoint,
 )
+from app.execution.infrastructure.model_upstream import (
+    ModelUpstreamError,
+    UpstreamResponse,
+    open_upstream_stream,
+    parse_model_ids,
+)
+from app.execution.transport import model_management as model_routes
+from app.runs.infrastructure.postgres import bind_run_model, inherit_run_model
 
 
 def _key() -> str:
     return base64.urlsafe_b64encode(b"k" * 32).decode("ascii")
+
+
+def test_model_transport_maps_missing_write_only_key_to_validation_error() -> None:
+    error = model_routes._translate_control_plane_error(
+        ValueError("model_connection_api_key_required")
+    )
+
+    assert error.status_code == 422
+    assert error.detail == "model_connection_api_key_required"
 
 
 def test_model_api_key_encryption_is_revision_bound_and_never_plaintext() -> None:
@@ -142,6 +156,149 @@ class _Cursor:
 
     async def fetchall(self):
         return self._rows
+
+
+class _RunModelMutationConnection:
+    def __init__(self, rows):
+        self.rows = iter(rows)
+        self.calls = []
+
+    async def execute(self, sql, params=None):
+        self.calls.append((sql, params))
+        return _Cursor(row=next(self.rows))
+
+
+@pytest.mark.asyncio
+async def test_bind_run_model_persists_execution_admitted_snapshot_on_exact_run() -> None:
+    conn = _RunModelMutationConnection([{"id": "run-child"}])
+
+    await bind_run_model(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-child",
+        model_id="model-public",
+        model_value="openai/gpt-5",
+        connection_revision=7,
+    )
+
+    sql, params = conn.calls[0]
+    assert "status = 'queued'" in sql
+    assert "model_id is null" in sql
+    assert "returning id" in sql
+    assert params == (
+        "model-public",
+        "openai/gpt-5",
+        7,
+        "tenant-a",
+        "run-child",
+    )
+
+
+@pytest.mark.asyncio
+async def test_bind_run_model_accepts_legacy_snapshot_without_gateway_revision() -> None:
+    conn = _RunModelMutationConnection([{"id": "run-child"}])
+
+    await bind_run_model(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-child",
+        model_id="legacy-default",
+        model_value="legacy-default",
+        connection_revision=None,
+    )
+
+    assert conn.calls[0][1] == (
+        "legacy-default",
+        "legacy-default",
+        None,
+        "tenant-a",
+        "run-child",
+    )
+
+
+@pytest.mark.asyncio
+async def test_bind_run_model_fails_when_run_snapshot_update_does_not_match() -> None:
+    conn = _RunModelMutationConnection([None])
+
+    with pytest.raises(ValueError, match="run_model_binding_invalid"):
+        await bind_run_model(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-child",
+            model_id="model-public",
+            model_value="openai/gpt-5",
+            connection_revision=7,
+        )
+
+
+@pytest.mark.asyncio
+async def test_inherit_run_model_requires_exact_copy_relation_and_updates_child() -> None:
+    conn = _RunModelMutationConnection(
+        [
+            {
+                "model_id": "model-public",
+                "model_value": "openai/gpt-5",
+                "model_gateway_revision": 7,
+            },
+            {
+                "status": "queued",
+                "copied_from_run_id": "run-source",
+                "model_id": None,
+                "model_value": None,
+                "model_gateway_revision": None,
+            },
+            {"id": "run-child"},
+        ]
+    )
+
+    await inherit_run_model(
+        conn,
+        tenant_id="tenant-a",
+        source_run_id="run-source",
+        child_run_id="run-child",
+    )
+
+    assert "for update" in conn.calls[0][0].lower()
+    assert "copied_from_run_id" in conn.calls[1][0]
+    update_sql, update_params = conn.calls[2]
+    assert "returning id" in update_sql
+    assert update_params == (
+        "model-public",
+        "openai/gpt-5",
+        7,
+        "tenant-a",
+        "run-child",
+    )
+
+
+@pytest.mark.asyncio
+async def test_inherit_run_model_rejects_child_from_a_different_source() -> None:
+    conn = _RunModelMutationConnection(
+        [
+            {
+                "model_id": "model-public",
+                "model_value": "openai/gpt-5",
+                "model_gateway_revision": 7,
+            },
+            {
+                "status": "queued",
+                "copied_from_run_id": "run-other",
+                "model_id": None,
+                "model_value": None,
+                "model_gateway_revision": None,
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="run_model_child_source_mismatch"):
+        await inherit_run_model(
+            conn,
+            tenant_id="tenant-a",
+            source_run_id="run-source",
+            child_run_id="run-child",
+        )
+
+    assert len(conn.calls) == 2
 
 
 class _ActivationConnection:
@@ -311,8 +468,9 @@ async def test_run_model_resolution_uses_enabled_available_catalog_and_pins_revi
     assert selection.model_id == "mdl_public"
     assert selection.model_value == "openai/gpt-5"
     assert selection.connection_revision == 9
-    assert len(conn.calls) == 1
-    model_query, params = conn.calls[0]
+    assert len(conn.calls) == 2
+    assert "pg_advisory_xact_lock" in conn.calls[0][0]
+    model_query, params = conn.calls[1]
     assert "catalog.enabled = true" in model_query
     assert "catalog.upstream_available = true" in model_query
     assert "catalog.last_seen_revision = active_gateway.revision" in model_query
@@ -323,7 +481,40 @@ async def test_run_model_resolution_uses_enabled_available_catalog_and_pins_revi
 async def test_run_model_resolution_preserves_legacy_path_until_control_plane_is_active() -> None:
     conn = _ResolveConnection(row=None)
     assert await resolve_run_model(conn, model_id="legacy", model_value="legacy") is None
-    assert len(conn.calls) == 1
+    assert len(conn.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_chat_model_resolution_uses_environment_default_until_control_plane_is_active(monkeypatch) -> None:
+    settings = SimpleNamespace(
+        model_catalog_json="",
+        llm_gateway_provider="",
+        claude_agent_model="legacy-default",
+        anthropic_model="",
+        openai_model="",
+        default_model_id="",
+    )
+    monkeypatch.setattr(model_legacy_catalog, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        model_legacy_catalog,
+        "upstream_model_cache_snapshot",
+        lambda: ([], None),
+    )
+
+    conn = _ResolveConnection(row=None)
+    selection = await model_selection.resolve_chat_model_selection(
+        conn,
+        selection=None,
+        resolve_governed_model=resolve_run_model,
+        resolve_legacy_model=model_legacy_catalog.LegacyModelCatalogAdapter(),
+    )
+
+    assert "pg_advisory_xact_lock" in conn.calls[0][0]
+    assert selection == RunModelSelection(
+        model_id="legacy-default",
+        model_value="legacy-default",
+        connection_revision=None,
+    )
 
 
 @pytest.mark.asyncio
@@ -333,7 +524,7 @@ async def test_run_model_resolution_rejects_active_but_unavailable_catalog_entry
     with pytest.raises(ValueError, match="model_id_not_available"):
         await resolve_run_model(conn, model_id="missing", model_value="missing")
 
-    assert len(conn.calls) == 1
+    assert len(conn.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -566,18 +757,19 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
         },
         receive,
     )
-    monkeypatch.setattr(model_routes, "transaction", fake_transaction)
-    monkeypatch.setattr(model_routes, "get_run_connection", fake_run_connection)
-    monkeypatch.setattr(
-        model_routes,
-        "get_settings",
-        lambda: SimpleNamespace(
+    service = ModelControlPlaneService(
+        transaction_factory=fake_transaction,
+        settings_provider=lambda: SimpleNamespace(
             model_proxy_internal_token="internal-token",
             model_connection_encryption_key=_key(),
             model_connection_allowed_internal_hosts="",
         ),
+        repository=SimpleNamespace(run_connection=fake_run_connection),
+        legacy_catalog=SimpleNamespace(),
+        security=SimpleNamespace(),
+        upstream=SimpleNamespace(open_stream=fake_open_stream),
     )
-    monkeypatch.setattr(model_routes, "open_upstream_stream", fake_open_stream)
+    monkeypatch.setattr(model_routes, "configured_model_control_plane", lambda: service)
 
     response = await model_routes.proxy_model_request(
         "openai",
@@ -611,12 +803,6 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
 async def test_internal_runtime_proxy_bounds_streamed_request_before_database(monkeypatch) -> None:
     database_accessed = False
 
-    @asynccontextmanager
-    async def fake_transaction():
-        nonlocal database_accessed
-        database_accessed = True
-        yield object()
-
     chunks = iter(
         [
             {"type": "http.request", "body": b"x" * (1024 * 1024), "more_body": True},
@@ -639,11 +825,17 @@ async def test_internal_runtime_proxy_bounds_streamed_request_before_database(mo
         },
         receive,
     )
-    monkeypatch.setattr(model_routes, "transaction", fake_transaction)
+
+    class ForbiddenService:
+        async def proxy(self, **_kwargs):
+            nonlocal database_accessed
+            database_accessed = True
+            raise AssertionError("oversized request reached application service")
+
     monkeypatch.setattr(
         model_routes,
-        "get_settings",
-        lambda: SimpleNamespace(model_proxy_internal_token="internal-token"),
+        "configured_model_control_plane",
+        lambda: ForbiddenService(),
     )
 
     with pytest.raises(HTTPException) as raised:

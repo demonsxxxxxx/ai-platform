@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import re
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -629,15 +630,19 @@ def test_lambchat_model_catalog_comes_from_settings(monkeypatch):
             ),
         },
     )()
-    async def no_governed_catalog(_conn):
-        return None
-
-    monkeypatch.setattr("app.routes.lambchat_compat.get_settings", lambda: current_settings)
-    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.list_public_models",
-        no_governed_catalog,
+        "app.execution.infrastructure.model_legacy_catalog.get_settings",
+        lambda: current_settings,
     )
+    monkeypatch.setattr(
+        "app.execution.infrastructure.model_legacy_catalog.fetch_upstream_openai_models",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "app.execution.infrastructure.model_management.list_public_models",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     client = TestClient(create_app())
 
@@ -670,19 +675,19 @@ def test_lambchat_governed_model_catalog_preempts_legacy_upstream_and_preserves_
         "default_model_id": "mdl_public",
     }
 
-    async def fake_list_public_models(_conn):
-        return governed
-
-    async def forbidden_legacy_fetch(_settings):
-        raise AssertionError("legacy discovery must not run after control-plane activation")
+    forbidden_legacy_fetch = AsyncMock(
+        side_effect=AssertionError(
+            "legacy discovery must not run after control-plane activation"
+        )
+    )
 
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.list_public_models",
-        fake_list_public_models,
+        "app.execution.infrastructure.model_management.list_public_models",
+        AsyncMock(return_value=governed),
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.fetch_upstream_openai_models",
+        "app.execution.infrastructure.model_legacy_catalog.fetch_upstream_openai_models",
         forbidden_legacy_fetch,
     )
     monkeypatch.setattr("app.auth.get_settings", auth_settings)

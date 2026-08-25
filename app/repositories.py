@@ -3739,9 +3739,6 @@ async def create_run(
     run_id: str | None = None,
     admitted_agent_profile_revision: int | None = None,
     admitted_agent_profile_hash: str | None = None,
-    model_id: str | None = None,
-    model_value: str | None = None,
-    model_gateway_revision: int | None = None,
 ) -> str:
     _require_json_size(
         input_json, max_bytes=RUN_INPUT_MAX_BYTES, code="run_input_too_large"
@@ -3775,12 +3772,11 @@ async def create_run(
           principal_roles, principal_department_id, auth_source,
           authz_policy_version, authority_source, authority_checked_at,
           admitted_agent_profile_revision, admitted_agent_profile_hash,
-          model_id, model_value, model_gateway_revision,
           status, input_json, queued_at,
           session_generation,
           input_token_count, output_token_count, total_token_count, estimated_cost_minor
         )
-        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, 0, 0, 0, 0
+        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, 0, 0, 0, 0
         from sessions
         where sessions.tenant_id = %s
           and sessions.workspace_id = %s
@@ -3809,9 +3805,6 @@ async def create_run(
             authority_checked_at or None,
             admitted_agent_profile_revision,
             admitted_agent_profile_hash,
-            model_id,
-            model_value,
-            model_gateway_revision,
             dumps_json(input_json),
             session_generation,
             tenant_id,
@@ -9169,10 +9162,9 @@ async def copy_run_as_new_task(
           principal_roles, principal_department_id, auth_source,
           authz_policy_version, authority_source, authority_checked_at,
           admitted_agent_profile_revision, admitted_agent_profile_hash,
-          model_id, model_value, model_gateway_revision,
           status, input_json, queued_at, copied_from_run_id, session_generation
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s, %s)
         """,
         (
             new_run_id,
@@ -9194,9 +9186,6 @@ async def copy_run_as_new_task(
             inherited_authority_checked_at,
             admitted_profile_revision,
             admitted_profile_hash,
-            source.get("model_id"),
-            source.get("model_value"),
-            source.get("model_gateway_revision"),
             dumps_json(copied_input_json),
             run_id,
             session_generation,

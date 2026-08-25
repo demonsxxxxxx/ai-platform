@@ -106,10 +106,14 @@ expose concrete infrastructure adapters.
 | `sandbox` | Sandbox Runtime lifecycle, attempt binding, callback-batch receipt, provider port, staging/recovery fences | provider SDK state as business truth, run admission |
 
 Admin and Workbench views are projections of the owning contexts. They MUST NOT
-become a second write authority or a generic `admin` domain. Model-selection
-policy belongs to `execution`; provider credentials remain configuration at the
-trusted adapter boundary. General Harness chat and specialized Skills remain
-separate identities under
+become a second write authority or a generic `admin` domain. Compatible-endpoint
+connection revisions, the shared model catalog, model-selection policy, and the
+bounded upstream proxy belong to `execution`; encrypted provider credentials and
+network/security clients remain Execution infrastructure adapters assembled by
+`bootstrap`. `runs` alone writes the immutable admitted model ID, upstream value,
+and connection revision snapshot, including Copy/Retry/Resume inheritance, through
+its public application API on the caller's existing transaction. General Harness
+chat and specialized Skills remain separate identities under
 [`../adr/0005-harness-chat-is-not-a-skill.md`](../adr/0005-harness-chat-is-not-a-skill.md).
 The Agent Apps application, persistence, transaction, composition, and
 compatibility target is defined by

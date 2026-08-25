@@ -1495,9 +1495,12 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
 
     from app import repositories
     from app.agent_apps import AgentProfileAdmission, AgentProfileAuthority
-    from app.model_management.repository import RunModelSelection
+    from app.execution.api import RunModelSelection
+    from app.main import create_app
     from app.models import AgentConversationIdentity, ChatStreamRequest, SelectedAgentProfileRequest
     from app.routes.chat import chat_stream
+
+    create_app()
 
     @asynccontextmanager
     async def transaction():
@@ -1598,7 +1601,7 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
 
     monkeypatch.setattr("app.routes.chat.transaction", transaction)
     monkeypatch.setattr(
-        "app.routes.chat.resolve_run_model",
+        "app.execution.infrastructure.model_management.resolve_run_model",
         AsyncMock(
             return_value=RunModelSelection(
                 model_id="model-a",

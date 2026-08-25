@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.bootstrap.model_services import configure_model_services
 from app.bootstrap.streaming import build_run_stream_runtime
 from app.db import close_pool
 from app.redis_client import close_redis_client
@@ -30,7 +31,7 @@ from app.routes.sandbox_leases import router as sandbox_leases_router
 from app.routes.skills_marketplace import router as skills_marketplace_router
 from app.routes.tool_permissions import router as tool_permissions_router
 from app.routes.workbench_projections import router as workbench_projections_router
-from app.model_management import router as model_management_router
+from app.execution.transport import router as model_management_router
 from app.settings import get_settings
 
 
@@ -60,6 +61,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    configure_model_services()
     app = FastAPI(title="AI Platform API", version="0.1.0", lifespan=lifespan)
     settings = get_settings()
     app.add_middleware(

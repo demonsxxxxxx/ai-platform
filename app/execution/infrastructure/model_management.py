@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
-import hashlib
-import re
 from dataclasses import dataclass
 from typing import Any
 
 from psycopg import AsyncConnection
 
-from .security import decrypt_api_key, encrypt_api_key
+from app.execution.application.model_selection import RunModelSelection
+from app.execution.domain.model_catalog import (
+    admin_model_projection,
+    discovered_model_mapping,
+    normalize_catalog_patch,
+    platform_model_id as platform_model_id,
+    public_model_projection,
+)
+
+from .model_security import decrypt_api_key, encrypt_api_key
 
 
-_SAFE_PLATFORM_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
-_GENERATED_PLATFORM_ID_PREFIX = "mdl_"
 _CONNECTION_LOCK_KEY = 749_120_009
 
 
@@ -23,23 +28,6 @@ class ActiveConnection:
     base_url: str
     api_key: str
     key_fingerprint: str
-
-
-@dataclass(frozen=True)
-class RunModelSelection:
-    model_id: str
-    model_value: str
-    connection_revision: int | None
-
-
-def platform_model_id(upstream_model_id: str) -> str:
-    if (
-        _SAFE_PLATFORM_ID.fullmatch(upstream_model_id)
-        and not upstream_model_id.startswith(_GENERATED_PLATFORM_ID_PREFIX)
-    ):
-        return upstream_model_id
-    digest = hashlib.sha256(upstream_model_id.encode("utf-8")).hexdigest()[:32]
-    return f"mdl_{digest}"
 
 
 async def get_connection_projection(conn: AsyncConnection) -> dict[str, Any]:
@@ -130,12 +118,7 @@ async def activate_connection_and_sync(
     row = await cursor.fetchone()
     revision = int(row["revision"])
     encrypted = encrypt_api_key(api_key, revision=revision, encoded_key=encryption_key)
-    discovered_ids = [platform_model_id(value) for value in upstream_model_ids]
-    discovered_by_platform_id: dict[str, str] = {}
-    for platform_id, upstream_value in zip(discovered_ids, upstream_model_ids, strict=True):
-        previous_value = discovered_by_platform_id.setdefault(platform_id, upstream_value)
-        if previous_value != upstream_value:
-            raise ValueError("model_catalog_identity_collision")
+    discovered_by_platform_id = discovered_model_mapping(upstream_model_ids)
     cursor = await conn.execute(
         """
         select model_id, upstream_model_id
@@ -164,7 +147,6 @@ async def activate_connection_and_sync(
         """,
         (revision, base_url, encrypted, key_fingerprint, actor_user_id),
     )
-    discovered_ids = [platform_model_id(value) for value in upstream_model_ids]
     await conn.execute(
         "update model_catalog_entries set upstream_available = false where upstream_available = true"
     )
@@ -214,7 +196,7 @@ async def list_admin_models(conn: AsyncConnection) -> list[dict[str, Any]]:
         order by display_order, model_id
         """
     )
-    return [_admin_model_projection(row) for row in await cursor.fetchall()]
+    return [admin_model_projection(row) for row in await cursor.fetchall()]
 
 
 async def list_public_models(conn: AsyncConnection) -> dict[str, Any] | None:
@@ -231,25 +213,7 @@ async def list_public_models(conn: AsyncConnection) -> dict[str, Any] | None:
         order by is_default desc, display_order, model_id
         """
     )
-    rows = await cursor.fetchall()
-    models = [
-        {
-            "id": str(row["model_id"]),
-            "value": str(row["upstream_model_id"]),
-            "label": str(row["display_name"]),
-            "provider": str(row["provider"]),
-            "description": "",
-            "profile": {},
-        }
-        for row in rows
-    ]
-    default = next((model["id"] for model, row in zip(models, rows, strict=True) if row["is_default"]), None)
-    return {
-        "models": models,
-        "count": len(models),
-        "enabled_count": len(models),
-        "default_model_id": default,
-    }
+    return public_model_projection(await cursor.fetchall())
 
 
 async def update_catalog_entry(
@@ -267,27 +231,24 @@ async def update_catalog_entry(
     row = await cursor.fetchone()
     if row is None:
         return None
-    next_name = str(row["display_name"]) if display_name is None else display_name.strip()
-    if not next_name or len(next_name) > 160 or any(ord(char) < 32 for char in next_name):
-        raise ValueError("model_display_name_invalid")
-    next_enabled = bool(row["enabled"]) if enabled is None else enabled
-    next_default = bool(row["is_default"]) if is_default is None else is_default
-    if next_default and (not next_enabled or not bool(row["upstream_available"])):
-        raise ValueError("model_default_must_be_available")
-    if next_default:
+    patch = normalize_catalog_patch(
+        row,
+        display_name=display_name,
+        enabled=enabled,
+        is_default=is_default,
+    )
+    if patch.is_default:
         await conn.execute("update model_catalog_entries set is_default = false where is_default = true")
-    if not next_enabled:
-        next_default = False
     await conn.execute(
         """
         update model_catalog_entries
         set display_name = %s, enabled = %s, is_default = %s
         where model_id = %s
         """,
-        (next_name, next_enabled, next_default, model_id),
+        (patch.display_name, patch.enabled, patch.is_default, model_id),
     )
     cursor = await conn.execute("select * from model_catalog_entries where model_id = %s", (model_id,))
-    return _admin_model_projection(await cursor.fetchone())
+    return admin_model_projection(await cursor.fetchone())
 
 
 async def resolve_run_model(
@@ -296,6 +257,7 @@ async def resolve_run_model(
     model_id: str | None,
     model_value: str | None,
 ) -> RunModelSelection | None:
+    await conn.execute("select pg_advisory_xact_lock(%s)", (_CONNECTION_LOCK_KEY,))
     cursor = await conn.execute(
         """
         with active_gateway as (
@@ -334,6 +296,36 @@ async def resolve_run_model(
     )
 
 
+class PostgresModelManagementRepository:
+    async def connection_projection(self, conn: AsyncConnection) -> dict[str, Any]:
+        return await get_connection_projection(conn)
+
+    async def active_connection(self, conn: AsyncConnection, **kwargs: Any) -> ActiveConnection | None:
+        return await get_active_connection(conn, **kwargs)
+
+    async def run_connection(self, conn: AsyncConnection, **kwargs: Any) -> ActiveConnection | None:
+        return await get_run_connection(conn, **kwargs)
+
+    async def admin_models(self, conn: AsyncConnection) -> list[dict[str, Any]]:
+        return await list_admin_models(conn)
+
+    async def public_models(self, conn: AsyncConnection) -> dict[str, Any] | None:
+        return await list_public_models(conn)
+
+    async def activate_and_sync(self, conn: AsyncConnection, **kwargs: Any) -> Any:
+        return await activate_connection_and_sync(conn, **kwargs)
+
+    async def update_catalog(self, conn: AsyncConnection, **kwargs: Any) -> Any:
+        return await update_catalog_entry(conn, **kwargs)
+
+    async def resolve_run_model(
+        self,
+        conn: AsyncConnection,
+        **kwargs: Any,
+    ) -> RunModelSelection | None:
+        return await resolve_run_model(conn, **kwargs)
+
+
 def _connection_from_row(row: dict[str, Any], *, encryption_key: str) -> ActiveConnection:
     revision = int(row["revision"])
     return ActiveConnection(
@@ -346,18 +338,3 @@ def _connection_from_row(row: dict[str, Any], *, encryption_key: str) -> ActiveC
         ),
         key_fingerprint=str(row["key_fingerprint"]),
     )
-
-
-def _admin_model_projection(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": str(row["model_id"]),
-        "value": str(row["upstream_model_id"]),
-        "label": str(row["display_name"]),
-        "provider": str(row["provider"]),
-        "enabled": bool(row["enabled"]),
-        "available": bool(row["upstream_available"]),
-        "is_default": bool(row["is_default"]),
-        "order": int(row["display_order"]),
-        "last_seen_revision": int(row["last_seen_revision"]),
-        "last_seen_at": row["last_seen_at"].isoformat(),
-    }

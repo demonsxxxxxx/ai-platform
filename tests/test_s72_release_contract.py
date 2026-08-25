@@ -11,8 +11,8 @@ import subprocess
 import pytest
 import yaml
 
-from app.model_management import client as model_client
-from app.model_management import routes as model_routes
+from app.execution.application import model_control_plane
+from app.execution.infrastructure import model_upstream as model_client
 from app.runtime.sandbox import container_provider as runtime_provider
 from tools import s72_release_contract as contract
 
@@ -823,7 +823,7 @@ def test_s72_model_proxy_paths_assemble_to_standard_upstream_routes(
     assert internal_path == "/api/ai/internal/model-proxy/" + provider + "/" + expected_upstream_path
     upstream_path = internal_path.removeprefix(internal_prefix)
     assert upstream_path == expected_upstream_path
-    assert upstream_path in model_routes._ALLOWED_RUNTIME_PATHS[provider]
+    assert upstream_path in model_control_plane._ALLOWED_RUNTIME_PATHS[provider]
     assert f"/{upstream_path}" in model_client._PROXY_PATHS[provider]
 
 
