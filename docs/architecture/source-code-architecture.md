@@ -110,7 +110,9 @@ become a second write authority or a generic `admin` domain. Compatible-endpoint
 connection revisions, the shared model catalog, model-selection policy, and the
 bounded upstream proxy belong to `execution`; encrypted provider credentials and
 network/security clients remain Execution infrastructure adapters assembled by
-`bootstrap`. `runs` alone writes the immutable admitted model ID, upstream value,
+`bootstrap`. Bootstrap also supplies the deployment-backed legacy catalog and
+authentication callbacks, so Execution adapters and transport do not import legacy
+root modules. `runs` alone writes the immutable admitted model ID, upstream value,
 and connection revision snapshot, including Copy/Retry/Resume inheritance, through
 its public application API on the caller's existing transaction. General Harness
 chat and specialized Skills remain separate identities under

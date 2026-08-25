@@ -9,7 +9,7 @@ import ssl
 from dataclasses import dataclass
 from typing import Iterator, Mapping
 
-from app.validation import assert_upstream_model_id
+from app.execution.domain.model_catalog import validate_upstream_model_id
 
 from .model_security import ValidatedEndpoint, tls_context, validate_endpoint
 
@@ -226,7 +226,7 @@ def parse_model_ids(response: UpstreamResponse) -> list[str]:
         if not isinstance(value, str):
             raise ModelUpstreamError("model_connection_catalog_invalid")
         try:
-            assert_upstream_model_id(value)
+            validate_upstream_model_id(value)
         except ValueError as exc:
             raise ModelUpstreamError("model_connection_catalog_invalid") from exc
         if value not in values:

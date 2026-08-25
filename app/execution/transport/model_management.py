@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.execution.application.model_control_plane import configured_model_control_plane
 
 
-router = APIRouter()
+PrincipalDependency = Callable[..., Any]
+AdminPredicate = Callable[[Any], bool]
 
 class ModelConnectionRequest(BaseModel):
     base_url: str = Field(min_length=1, max_length=2048)
@@ -25,8 +26,8 @@ class ModelCatalogEntryPatch(BaseModel):
     is_default: bool | None = None
 
 
-def _require_admin(principal: AuthPrincipal) -> None:
-    if not is_ai_admin(principal):
+def _require_admin(principal: Any, *, is_admin: AdminPredicate) -> None:
+    if not is_admin(principal):
         raise HTTPException(status_code=403, detail="model_admin_required")
 
 
@@ -52,20 +53,22 @@ def _translate_control_plane_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=502, detail=code or "model_connection_unavailable")
 
 
-@router.get("/admin/models")
 async def admin_models(
-    principal: AuthPrincipal = Depends(require_principal),
+    principal: Any,
+    *,
+    is_admin: AdminPredicate,
 ) -> dict[str, Any]:
-    _require_admin(principal)
+    _require_admin(principal, is_admin=is_admin)
     return await configured_model_control_plane().admin_projection()
 
 
-@router.put("/admin/models/connection")
 async def configure_model_connection(
     payload: ModelConnectionRequest,
-    principal: AuthPrincipal = Depends(require_principal),
+    principal: Any,
+    *,
+    is_admin: AdminPredicate,
 ) -> dict[str, Any]:
-    _require_admin(principal)
+    _require_admin(principal, is_admin=is_admin)
     try:
         return await configured_model_control_plane().configure_connection(
             base_url=payload.base_url,
@@ -76,11 +79,12 @@ async def configure_model_connection(
         raise _translate_control_plane_error(exc) from exc
 
 
-@router.post("/admin/models/sync")
 async def sync_model_catalog(
-    principal: AuthPrincipal = Depends(require_principal),
+    principal: Any,
+    *,
+    is_admin: AdminPredicate,
 ) -> dict[str, Any]:
-    _require_admin(principal)
+    _require_admin(principal, is_admin=is_admin)
     try:
         return await configured_model_control_plane().sync(
             actor_user_id=principal.user_id,
@@ -89,13 +93,14 @@ async def sync_model_catalog(
         raise _translate_control_plane_error(exc) from exc
 
 
-@router.patch("/admin/models/{model_id}")
 async def patch_model_catalog_entry(
     model_id: str,
     payload: ModelCatalogEntryPatch,
-    principal: AuthPrincipal = Depends(require_principal),
+    principal: Any,
+    *,
+    is_admin: AdminPredicate,
 ) -> dict[str, Any]:
-    _require_admin(principal)
+    _require_admin(principal, is_admin=is_admin)
     try:
         model = await configured_model_control_plane().patch_catalog(
             model_id=model_id,
@@ -110,11 +115,6 @@ async def patch_model_catalog_entry(
         raise _translate_control_plane_error(exc) from exc
 
 
-@router.api_route(
-    "/internal/model-proxy/{provider}/{upstream_path:path}",
-    methods=["POST"],
-    include_in_schema=False,
-)
 async def proxy_model_request(
     provider: str,
     upstream_path: str,
@@ -154,3 +154,55 @@ async def proxy_model_request(
         media_type=upstream.content_type.split(";", 1)[0],
         headers={"cache-control": "no-store"},
     )
+
+
+def build_model_management_router(
+    *,
+    principal_dependency: PrincipalDependency,
+    is_admin: AdminPredicate,
+) -> APIRouter:
+    router = APIRouter()
+
+    @router.get("/admin/models")
+    async def admin_models_endpoint(
+        principal: Any = Depends(principal_dependency),
+    ) -> dict[str, Any]:
+        return await admin_models(principal, is_admin=is_admin)
+
+    @router.put("/admin/models/connection")
+    async def configure_model_connection_endpoint(
+        payload: ModelConnectionRequest,
+        principal: Any = Depends(principal_dependency),
+    ) -> dict[str, Any]:
+        return await configure_model_connection(
+            payload,
+            principal,
+            is_admin=is_admin,
+        )
+
+    @router.post("/admin/models/sync")
+    async def sync_model_catalog_endpoint(
+        principal: Any = Depends(principal_dependency),
+    ) -> dict[str, Any]:
+        return await sync_model_catalog(principal, is_admin=is_admin)
+
+    @router.patch("/admin/models/{model_id}")
+    async def patch_model_catalog_entry_endpoint(
+        model_id: str,
+        payload: ModelCatalogEntryPatch,
+        principal: Any = Depends(principal_dependency),
+    ) -> dict[str, Any]:
+        return await patch_model_catalog_entry(
+            model_id,
+            payload,
+            principal,
+            is_admin=is_admin,
+        )
+
+    router.add_api_route(
+        "/internal/model-proxy/{provider}/{upstream_path:path}",
+        proxy_model_request,
+        methods=["POST"],
+        include_in_schema=False,
+    )
+    return router

@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 
 _SAFE_PLATFORM_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _GENERATED_PLATFORM_ID_PREFIX = "mdl_"
+_MAX_UPSTREAM_MODEL_ID_BYTES = 512
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,17 @@ class CatalogPatch:
     display_name: str
     enabled: bool
     is_default: bool
+
+
+def validate_upstream_model_id(value: str) -> str:
+    if (
+        not value
+        or value != value.strip()
+        or len(value.encode("utf-8")) > _MAX_UPSTREAM_MODEL_ID_BYTES
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
+        raise ValueError("upstream model ID contains unsupported characters")
+    return value
 
 
 def platform_model_id(upstream_model_id: str) -> str:

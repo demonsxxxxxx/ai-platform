@@ -1,5 +1,5 @@
-"""Platform-owned model connection and governed shared catalog."""
+"""Transport factory for model administration and the internal proxy."""
 
-from .model_management import router
+from .model_management import build_model_management_router
 
-__all__ = ["router"]
+__all__ = ["build_model_management_router"]

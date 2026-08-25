@@ -2,18 +2,30 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 from app.execution.application.model_selection import RunModelSelection
-from app.model_catalog import build_model_catalog, resolve_model_selection
 from app.platform.model_upstream import (
     fetch_upstream_openai_models,
     upstream_model_cache_snapshot,
 )
-from app.settings import get_settings
 
 
 class LegacyModelCatalogAdapter:
+    def __init__(
+        self,
+        *,
+        settings_provider: Callable[[], Any],
+        build_catalog: Callable[[Any], dict[str, object]],
+        resolve_selection: Callable[..., dict[str, str]],
+    ) -> None:
+        self._settings_provider = settings_provider
+        self._build_catalog = build_catalog
+        self._resolve_selection = resolve_selection
+
     async def public_models(self) -> dict[str, object]:
-        settings = get_settings()
+        settings = self._settings_provider()
         upstream_models = await fetch_upstream_openai_models(settings)
         if upstream_models:
             model_ids = {str(model["id"]) for model in upstream_models}
@@ -26,14 +38,14 @@ class LegacyModelCatalogAdapter:
                 "enabled_count": len(upstream_models),
                 "default_model_id": runtime_default,
             }
-        return build_model_catalog(settings)
+        return self._build_catalog(settings)
 
     def resolve(self, selection: dict[str, str] | None) -> RunModelSelection:
         model_id = selection.get("id") if selection else None
-        settings = get_settings()
+        settings = self._settings_provider()
         if selection is None:
             try:
-                model_id = str(build_model_catalog(settings)["default_model_id"])
+                model_id = str(self._build_catalog(settings)["default_model_id"])
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError("model_id_not_available") from exc
         if model_id is None:
@@ -43,7 +55,7 @@ class LegacyModelCatalogAdapter:
             upstream_models, _ = upstream_model_cache_snapshot()
             if upstream_models:
                 upstream_ids = {str(model["id"]) for model in upstream_models}
-            legacy = resolve_model_selection(
+            legacy = self._resolve_selection(
                 model_id,
                 settings,
                 upstream_ids=upstream_ids,

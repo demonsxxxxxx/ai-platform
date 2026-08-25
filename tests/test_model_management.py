@@ -8,7 +8,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from app.execution.api import RunModelSelection
@@ -34,6 +35,7 @@ from app.execution.infrastructure.model_upstream import (
     parse_model_ids,
 )
 from app.execution.transport import model_management as model_routes
+from app.model_catalog import build_model_catalog, resolve_model_selection
 from app.runs.infrastructure.postgres import bind_run_model, inherit_run_model
 
 
@@ -48,6 +50,42 @@ def test_model_transport_maps_missing_write_only_key_to_validation_error() -> No
 
     assert error.status_code == 422
     assert error.detail == "model_connection_api_key_required"
+
+
+def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) -> None:
+    principal = SimpleNamespace(user_id="admin-user")
+    authorized = {"value": True}
+
+    async def require_principal() -> SimpleNamespace:
+        return principal
+
+    class _Service:
+        async def admin_projection(self) -> dict[str, object]:
+            return {"connection": None, "models": []}
+
+    monkeypatch.setattr(
+        model_routes,
+        "configured_model_control_plane",
+        lambda: _Service(),
+    )
+    app = FastAPI()
+    app.include_router(
+        model_routes.build_model_management_router(
+            principal_dependency=require_principal,
+            is_admin=lambda candidate: authorized["value"] and candidate is principal,
+        ),
+        prefix="/api/ai",
+    )
+
+    with TestClient(app) as client:
+        accepted = client.get("/api/ai/admin/models")
+        authorized["value"] = False
+        denied = client.get("/api/ai/admin/models")
+
+    assert accepted.status_code == 200
+    assert accepted.json() == {"connection": None, "models": []}
+    assert denied.status_code == 403
+    assert denied.json() == {"detail": "model_admin_required"}
 
 
 def test_model_api_key_encryption_is_revision_bound_and_never_plaintext() -> None:
@@ -494,11 +532,15 @@ async def test_chat_model_resolution_uses_environment_default_until_control_plan
         openai_model="",
         default_model_id="",
     )
-    monkeypatch.setattr(model_legacy_catalog, "get_settings", lambda: settings)
     monkeypatch.setattr(
         model_legacy_catalog,
         "upstream_model_cache_snapshot",
         lambda: ([], None),
+    )
+    legacy_catalog = model_legacy_catalog.LegacyModelCatalogAdapter(
+        settings_provider=lambda: settings,
+        build_catalog=build_model_catalog,
+        resolve_selection=resolve_model_selection,
     )
 
     conn = _ResolveConnection(row=None)
@@ -506,7 +548,7 @@ async def test_chat_model_resolution_uses_environment_default_until_control_plan
         conn,
         selection=None,
         resolve_governed_model=resolve_run_model,
-        resolve_legacy_model=model_legacy_catalog.LegacyModelCatalogAdapter(),
+        resolve_legacy_model=legacy_catalog,
     )
 
     assert "pg_advisory_xact_lock" in conn.calls[0][0]

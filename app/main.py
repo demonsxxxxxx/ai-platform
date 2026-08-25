@@ -4,7 +4,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.bootstrap.model_services import configure_model_services
+from app.bootstrap.model_services import (
+    build_model_management_router,
+    configure_model_services,
+)
 from app.bootstrap.streaming import build_run_stream_runtime
 from app.db import close_pool
 from app.redis_client import close_redis_client
@@ -31,7 +34,6 @@ from app.routes.sandbox_leases import router as sandbox_leases_router
 from app.routes.skills_marketplace import router as skills_marketplace_router
 from app.routes.tool_permissions import router as tool_permissions_router
 from app.routes.workbench_projections import router as workbench_projections_router
-from app.execution.transport import router as model_management_router
 from app.settings import get_settings
 
 
@@ -86,7 +88,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_runs_router, prefix="/api/ai")
     app.include_router(admin_skills_router, prefix="/api/ai")
     app.include_router(admin_tool_policies_router, prefix="/api/ai")
-    app.include_router(model_management_router, prefix="/api/ai")
+    app.include_router(build_model_management_router(), prefix="/api/ai")
     app.include_router(capability_distributions_router, prefix="/api")
     app.include_router(skills_marketplace_router, prefix="/api")
     app.include_router(browser_runtime_config_router, prefix="/api")
