@@ -132,6 +132,19 @@ async def test_admission_confirmation_promotes_a_frozen_terminal_intent():
 
 
 @pytest.mark.asyncio
+async def test_admission_confirmation_is_idempotent_after_terminal_promotion():
+    terminal = control._authority(authority_row(state="terminal"))
+    conn = ScriptedConnection([authority_row(state="terminal")])
+
+    confirmed = await control.confirm_stream_admission(conn, authority=terminal)
+
+    statement = " ".join(conn.calls[0][0].split()).lower()
+    assert "when state = 'terminal' then 'terminal'" in statement
+    assert "state in ('admission_pending','confirmed','terminal')" in statement
+    assert confirmed.state == "terminal"
+
+
+@pytest.mark.asyncio
 async def test_stream_admission_rejects_a_different_attempt_instead_of_creating_parallel_authority():
     conn = ScriptedConnection([authority_row()])
     with pytest.raises(

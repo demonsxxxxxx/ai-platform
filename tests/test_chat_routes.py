@@ -105,6 +105,17 @@ def chat_submission_client(monkeypatch):
         "app.auth.get_settings",
         lambda: Settings(frontend_poc_auth_enabled=True),
     )
+    monkeypatch.setattr(
+        "app.main.build_run_stream_runtime",
+        lambda _transaction: SimpleNamespace(
+            worker_capabilities=_TEST_V4_CAPABILITIES,
+            aclose=AsyncMock(),
+        ),
+    )
+    monkeypatch.setattr(
+        "app.main.build_run_cancellation_use_case",
+        object,
+    )
     with TestClient(create_app(), raise_server_exceptions=False) as client:
         yield client
 

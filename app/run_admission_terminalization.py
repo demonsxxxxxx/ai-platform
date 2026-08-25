@@ -39,14 +39,15 @@ async def terminalize_enqueue_failure_with_v4(
         run_id=run_id,
         trace_id=trace_id,
     )
-    if progress.did_transition:
-        terminal_row = await v4_capabilities.event_persistence.append_terminal_row(
-            conn,
-            tenant_id=tenant_id,
-            run_id=run_id,
-        )
-        if terminal_row is None:
-            raise RuntimeError("enqueue_failure_v4_terminal_row_missing")
+    if not progress.did_transition:
+        raise RuntimeError("enqueue_failure_terminal_transition_missing")
+    terminal_row = await v4_capabilities.event_persistence.append_terminal_row(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+    )
+    if terminal_row is None:
+        raise RuntimeError("enqueue_failure_v4_terminal_row_missing")
     return progress
 
 

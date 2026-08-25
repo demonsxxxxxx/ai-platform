@@ -66,6 +66,7 @@ async def _submit_dedicated_agent_run(
     agent_id: str,
     session_id: str,
     request: AgentAppRunRequest,
+    http_request: HttpRequest,
     principal: AuthPrincipal,
 ) -> ChatStreamResponse:
     """Restore session scope, then delegate to the sole Chat admission/streaming chain."""
@@ -94,7 +95,12 @@ async def _submit_dedicated_agent_run(
     # preserving one admission, Run, Queue, SSE, and artifact authority.
     from app.routes.chat import chat_stream
 
-    return await chat_stream(canonical_request, agent_id=agent_id, principal=principal)
+    return await chat_stream(
+        canonical_request,
+        http_request,
+        agent_id=agent_id,
+        principal=principal,
+    )
 
 
 @router.get("/agent-apps", include_in_schema=False)
@@ -193,6 +199,7 @@ async def submit_agent_app_run(
         agent_id=safe_agent_id,
         session_id=safe_session_id,
         request=request,
+        http_request=http_request,
         principal=principal,
     )
 
@@ -346,6 +353,7 @@ async def run_agent_profile_test(
             file_ids=request.file_ids,
             user_timezone=request.user_timezone,
         ),
+        http_request=http_request,
         principal=principal,
     )
     return AgentProfileTrialRunResponse.model_validate(

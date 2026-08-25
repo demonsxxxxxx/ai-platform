@@ -76,60 +76,46 @@ def test_callback_v4_values_have_one_application_owner():
 @pytest.mark.asyncio
 async def test_pending_admission_locks_run_before_stream_authority(monkeypatch):
     calls: list[str] = []
-    envelope = build_v4_control(
-        event_id="open-a",
-        tenant_scope="scope-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        stream_incarnation=1,
-        event_type="stream.open",
-        payload={"design_id": "ai-platform.redis-streams-sse-event-channel.v4"},
-        source={"kind": "stream_authority", "authority_id": "open-a"},
-    )
-    payload = canonical_json_bytes(envelope)
-    authority = StreamAuthority(
-        tenant_id="tenant-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        tenant_scope="scope-a",
-        stream_incarnation=1,
-        state="admission_pending",
-        open_event_id="open-a",
-        open_payload_bytes=payload.decode(),
-        open_payload_digest=hashlib.sha256(payload).hexdigest(),
-        authorization_epoch=1,
-        revocation_state="active",
-    )
 
     class Cursor:
+        def __init__(self, row):
+            self._row = row
+
         async def fetchone(self):
-            return {"id": "run-a"}
+            return self._row
 
     class Transaction:
         async def execute(self, statement, params):
-            assert "from runs" in statement.lower()
-            assert "for update" in statement.lower()
-            assert params == ("tenant-a", "run-a")
-            calls.append("run_lock")
-            return Cursor()
-
-    async def create_authority(transaction, **kwargs):
-        assert isinstance(transaction, Transaction)
-        assert kwargs == {
-            "tenant_id": "tenant-a",
-            "run_id": "run-a",
-            "attempt_id": "attempt-a",
-            "tenant_scope": "scope-a",
-        }
-        calls.append("stream_authority")
-        return authority
+            normalized = " ".join(statement.split()).lower()
+            if "from runs" in normalized:
+                assert "for update" in normalized
+                assert params == ("tenant-a", "run-a")
+                calls.append("run_lock")
+                return Cursor({"id": "run-a", "status": "queued"})
+            if normalized.startswith("select * from sse_stream_authorities"):
+                assert "for update" in normalized
+                assert params == ("tenant-a", "run-a")
+                calls.append("stream_authority_lock")
+                return Cursor(None)
+            assert normalized.startswith("insert into sse_stream_authorities")
+            calls.append("stream_authority_insert")
+            return Cursor(
+                {
+                    "tenant_id": params[0],
+                    "run_id": params[1],
+                    "attempt_id": params[2],
+                    "tenant_scope": params[5],
+                    "stream_incarnation": params[6],
+                    "state": "admission_pending",
+                    "open_event_id": params[7],
+                    "open_payload_bytes": params[8],
+                    "open_payload_digest": params[9],
+                    "authorization_epoch": 1,
+                    "revocation_state": "active",
+                }
+            )
 
     monkeypatch.setattr(worker_v4, "tenant_scope", lambda *_args, **_kwargs: "scope-a")
-    monkeypatch.setattr(
-        worker_v4,
-        "create_or_get_stream_admission_v4",
-        create_authority,
-    )
     adapter = worker_v4.PostgresV4PendingAdmissions(
         object(),
         authority_secret="test-v4-authority-secret",
@@ -142,8 +128,8 @@ async def test_pending_admission_locks_run_before_stream_authority(monkeypatch):
         attempt_id="attempt-a",
     )
 
-    assert pending.open_event_id == "open-a"
-    assert calls == ["run_lock", "stream_authority"]
+    assert pending.open_event_id
+    assert calls == ["run_lock", "stream_authority_lock", "stream_authority_insert"]
 
 
 @pytest.mark.asyncio

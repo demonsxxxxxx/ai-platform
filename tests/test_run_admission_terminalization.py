@@ -278,3 +278,41 @@ async def test_enqueue_failure_rejects_missing_v4_terminal_row(monkeypatch):
             run_id="run-a",
             trace_id="trace-run-a",
         )
+
+
+@pytest.mark.asyncio
+async def test_enqueue_failure_rejects_a_non_winning_transition(monkeypatch):
+    terminal_row_called = False
+
+    async def mark_enqueue_failed(_conn, **_kwargs):
+        return terminalization.RunTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=False,
+        )
+
+    class PendingAdmissions:
+        async def prepare_pending_authority_in_transaction(self, *_args, **_kwargs):
+            return object()
+
+    class EventPersistence:
+        async def append_terminal_row(self, *_args, **_kwargs):
+            nonlocal terminal_row_called
+            terminal_row_called = True
+            return "unexpected-row"
+
+    monkeypatch.setattr(repositories, "mark_run_enqueue_failed", mark_enqueue_failed)
+
+    with pytest.raises(RuntimeError, match="enqueue_failure_terminal_transition_missing"):
+        await terminalization.terminalize_enqueue_failure_with_v4(
+            SimpleNamespace(
+                pending_admissions=PendingAdmissions(),
+                event_persistence=EventPersistence(),
+            ),
+            object(),
+            tenant_id="tenant-a",
+            user_id="user-a",
+            run_id="run-a",
+            trace_id="trace-run-a",
+        )
+    assert terminal_row_called is False

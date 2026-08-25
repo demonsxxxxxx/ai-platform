@@ -809,6 +809,7 @@ async def confirm_stream_admission(
     result = await conn.execute(
         """update sse_stream_authorities
            set state = case
+                 when state = 'terminal' then 'terminal'
                  when exists (
                    select 1
                    from sse_terminal_publication_intents as intent
@@ -823,7 +824,7 @@ async def confirm_stream_admission(
                updated_at=clock_timestamp()
            where tenant_id=%s and run_id=%s and attempt_id=%s
              and stream_incarnation=%s
-             and state in ('admission_pending','confirmed')
+             and state in ('admission_pending','confirmed','terminal')
              and open_event_id=%s and open_payload_digest=%s
            returning *""",
         (
