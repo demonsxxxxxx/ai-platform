@@ -211,7 +211,7 @@ async def test_base_schema_ledger_advances_to_terminal_reconciliation_schema():
 
 
 @pytest.mark.asyncio
-async def test_pending_admission_schema_advances_to_successor_activation_schema():
+async def test_pending_admission_schema_advances_to_current_schema():
     state = SharedMigrationState()
     predecessor_checksum = "9f80933b643ad71c23f416e8ad2a52b3890efba83ec16e990a66979662b93d20"
     state.ledger[schema_migrations.V4_PENDING_ADMISSION_SCHEMA_VERSION] = (
@@ -228,13 +228,36 @@ async def test_pending_admission_schema_advances_to_successor_activation_schema(
     assert state.ledger[schema_migrations.V4_PENDING_ADMISSION_SCHEMA_VERSION] == (
         predecessor_checksum
     )
+    assert state.ledger[schema_migrations.TARGET_SCHEMA_VERSION] == (
+        schema_migrations.schema_checksum()
+    )
+
+
+@pytest.mark.asyncio
+async def test_successor_activation_schema_advances_to_concurrent_due_index_schema():
+    state = SharedMigrationState()
+    predecessor_checksum = "d474b751d6fb6bff75cbbb8f3c482cb42f38ac462c116313baeccfc2c247fef7"
+    state.ledger[schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION] = (
+        predecessor_checksum
+    )
+
+    result = await schema_migrations.apply_migrations(
+        transaction_factory=transaction_factory(state),
+        index_connection_factory=index_connection_factory(state),
+    )
+
+    assert result["status"] == "applied"
+    assert state.schema_execute_count == 1
     assert state.ledger[schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION] == (
+        predecessor_checksum
+    )
+    assert state.ledger[schema_migrations.TARGET_SCHEMA_VERSION] == (
         schema_migrations.schema_checksum()
     )
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.27.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.27.2"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -884,6 +907,7 @@ async def test_v4_successor_rollback_removes_only_dormant_snapshot_tables():
     ]
     assert conn.statements[3][1] == (
         schema_migrations.V4_SUCCESSOR_REBUILD_SCHEMA_VERSION,
+        schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION,
         schema_migrations.TARGET_SCHEMA_VERSION,
     )
     assert all("run_events" not in statement for statement, _ in conn.statements)

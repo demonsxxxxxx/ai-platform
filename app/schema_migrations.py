@@ -19,7 +19,8 @@ V4_PUBLICATION_SCHEMA_VERSION = "2026.08.24.1"
 V4_SUCCESSOR_REBUILD_SCHEMA_VERSION = "2026.08.25.1"
 V4_PENDING_ADMISSION_SCHEMA_VERSION = "2026.08.26.2"
 V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION = "2026.08.27.1"
-TARGET_SCHEMA_VERSION = V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION
+V4_CONCURRENT_DUE_INDEX_SCHEMA_VERSION = "2026.08.27.2"
+TARGET_SCHEMA_VERSION = V4_CONCURRENT_DUE_INDEX_SCHEMA_VERSION
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
@@ -1039,8 +1040,12 @@ async def rollback_v4_successor_rebuild_migration(conn: Any) -> None:
     await conn.execute("drop table if exists sse_stream_rebuild_items")
     await conn.execute("drop table if exists sse_stream_rebuilds")
     await conn.execute(
-        "delete from schema_migrations where version in (%s, %s)",
-        (V4_SUCCESSOR_REBUILD_SCHEMA_VERSION, TARGET_SCHEMA_VERSION),
+        "delete from schema_migrations where version in (%s, %s, %s)",
+        (
+            V4_SUCCESSOR_REBUILD_SCHEMA_VERSION,
+            V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION,
+            TARGET_SCHEMA_VERSION,
+        ),
     )
 
 

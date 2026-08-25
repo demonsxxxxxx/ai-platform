@@ -139,6 +139,16 @@ async def test_real_postgres_upgrade_restores_v4_publication_schema_and_confirma
         )
         await admin.execute(Path("app/schema.sql").read_text(encoding="utf-8"))
         await admin.execute(
+            """
+            insert into schema_migrations(version, checksum_sha256)
+            values (%s, %s)
+            """,
+            (
+                schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION,
+                "d474b751d6fb6bff75cbbb8f3c482cb42f38ac462c116313baeccfc2c247fef7",
+            ),
+        )
+        await admin.execute(
             "insert into users(id, tenant_id, display_name) values ('v4-user', 'default', 'V4')"
         )
         await admin.execute(
@@ -210,6 +220,19 @@ async def test_real_postgres_upgrade_restores_v4_publication_schema_and_confirma
         )
 
         assert result["status"] == "applied"
+        ledger_rows = await admin.execute(
+            "select version, checksum_sha256 from schema_migrations order by version"
+        )
+        assert await ledger_rows.fetchall() == [
+            {
+                "version": schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION,
+                "checksum_sha256": "d474b751d6fb6bff75cbbb8f3c482cb42f38ac462c116313baeccfc2c247fef7",
+            },
+            {
+                "version": schema_migrations.TARGET_SCHEMA_VERSION,
+                "checksum_sha256": schema_migrations.schema_checksum(),
+            },
+        ]
         columns = await admin.execute(
             """
             select column_name
