@@ -3924,13 +3924,27 @@ def _run_gateway_bash_contract(script: pathlib.Path, root: pathlib.Path, body: s
     executable = str(bash) if bash.exists() else shutil.which("bash")
     if not executable:
         pytest.skip("Git Bash is required for executable deployment contracts")
-    return subprocess.run(
-        [executable, "-c", textwrap.dedent(body), "gateway-contract", str(script), str(root)],
-        text=True,
-        capture_output=True,
-        timeout=90,
-        check=False,
-    )
+    workspace_tmp = pathlib.Path(__file__).resolve().parents[1] / ".pytest-tmp"
+    short_root = workspace_tmp / f"gw-{os.getpid()}-{hashlib.sha256(str(root).encode()).hexdigest()[:8]}"
+    short_root.mkdir(parents=True)
+    try:
+        return subprocess.run(
+            [
+                executable,
+                "-c",
+                textwrap.dedent(body),
+                "gateway-contract",
+                str(script),
+                str(short_root),
+                sys.executable,
+            ],
+            text=True,
+            capture_output=True,
+            timeout=90,
+            check=False,
+        )
+    finally:
+        shutil.rmtree(short_root, ignore_errors=True)
 
 
 def test_installer_accepts_only_standard_sticky_or_nonwritable_lock_parent_modes(tmp_path) -> None:
@@ -3961,7 +3975,9 @@ def test_installer_rejects_unresolved_or_malformed_egress_policy(tmp_path) -> No
         tmp_path,
         r'''
         set -eu
-        SCRIPT=$1; ROOT=$2
+        SCRIPT=$(cygpath -u "$1"); ROOT=$(cygpath -u "$2")
+        PYTHON_EXE=$(cygpath -u "$3")
+        python3() { "$PYTHON_EXE" "$@"; }
         eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
         cp "${SCRIPT%/*}/egress-policy.v1.example.json" "$ROOT/policy.json"
         ! require_resolved_egress_policy_at "$ROOT/policy.json"
