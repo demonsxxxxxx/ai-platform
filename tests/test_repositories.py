@@ -36,7 +36,6 @@ from app.platform.postgres.sandbox_leases import (
     record_sandbox_executor_heartbeat,
     record_sandbox_executor_terminal,
 )
-from app.streaming import redis as streaming_redis
 from app.streaming.infrastructure import v4 as streaming_v4
 from app.repositories import (
     RepositoryConflictError,
@@ -84,8 +83,14 @@ async def _record_noop_event(*_args, **_kwargs):
 
 
 class _CancellationEventWriter:
+    async def prepare_pending_authority(self, _conn, **_kwargs):
+        return None
+
     async def append_cancel_requested(self, conn, **kwargs):
         await streaming_v4.append_run_cancel_requested_v4_row(conn, **kwargs)
+
+    async def append_terminal(self, _conn, **_kwargs):
+        return None
 
 
 async def _request_owner_cancel(conn, *, tenant_id, user_id, run_id):
@@ -169,14 +174,6 @@ def test_repository_facade_binds_skill_persistence_to_one_canonical_module():
         assert getattr(repositories, name) is getattr(skill_persistence, name)
 
     assert repositories.RepositoryAuthorizationError is PlatformRepositoryAuthorizationError
-
-
-@pytest.fixture(autouse=True)
-def _isolate_legacy_repository_fakes_from_sse_terminal_extension(monkeypatch):
-    async def no_terminal_intent(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr(streaming_redis, "ensure_run_terminal_intent", no_terminal_intent)
 
 
 def test_chat_submission_fingerprint_is_canonical_and_scope_bound():
@@ -8488,6 +8485,8 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
 
         async def execute(self, sql, _params):
             normalized = " ".join(sql.split())
+            if normalized.startswith("select id from run_attempts"):
+                return SingleRowCursor({"id": "attempt-a"})
             if normalized.startswith("with eligible_run as"):
                 self.attempt += 1
                 return SingleRowCursor(
@@ -9051,6 +9050,8 @@ async def test_cancel_request_response_reports_actual_conflicting_terminal_statu
     class Connection:
         async def execute(self, sql, _params):
             normalized = " ".join(sql.split())
+            if normalized.startswith("select id from run_attempts"):
+                return SingleRowCursor({"id": "attempt-a"})
             assert normalized.startswith("with eligible_run as")
             row = {
                 "id": "run-a",

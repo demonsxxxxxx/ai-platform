@@ -66,6 +66,9 @@ class _EventWriter:
     async def prepare_pending_authority(self, conn, *, tenant_id, authority):
         self._order.append("v4.admission_pending")
 
+    async def append_terminal(self, conn, *, tenant_id, run_id):
+        self._order.append("v4.run.terminal")
+
     async def append_cancel_requested(self, conn, *, tenant_id, run_id, source, trace_ref):
         self._order.append("v4.run.cancel_requested")
         self.sources.append(source)
@@ -133,6 +136,7 @@ async def test_cancel_request_commits_authoritative_order_and_source(role, expec
         "v4.admission_pending",
         "v4.run.cancel_requested",
         "v4.run.cancelled",
+        "v4.run.terminal",
         "audit",
         "transaction.commit",
     ]
@@ -160,6 +164,7 @@ async def test_repeat_request_skips_duplicate_v4_but_progresses_pending_terminal
         "legacy.cancel_requested",
         "v4.admission_pending",
         "v4.run.cancelled",
+        "v4.run.terminal",
         "audit",
         "transaction.commit",
     ]

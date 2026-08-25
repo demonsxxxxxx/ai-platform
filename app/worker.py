@@ -40,7 +40,7 @@ from app.control_plane_contracts import (
     sanitize_public_text,
     standard_trace_id,
 )
-from app.db import transaction as _db_transaction
+from app.db import transaction
 from app.execution.api import (
     WorkerRunCancelled, restored_sandbox_run_payload as _restored_run_payload,
     submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
@@ -2159,7 +2159,7 @@ async def process_run_payload(
     transaction_factory: Any | None = None,
     v4_capabilities: WorkerV4Capabilities,
 ) -> WorkerOutcome:
-    transaction = transaction_factory if transaction_factory is not None else _db_transaction
+    transaction_factory = transaction_factory if transaction_factory is not None else transaction
     try:
         envelope = parse_leased_queue_envelope(raw)
     except InvalidLeasedQueueEnvelope as exc:
@@ -2195,11 +2195,11 @@ async def process_run_payload(
     try:
         current_principal = await _resolve_current_principal_before_dispatch(
             payload,
-            transaction_factory=transaction,
+            transaction_factory=transaction_factory,
             run_loader=repositories.get_run,
             principal_resolver=resolve_current_principal,
         )
-        async with transaction() as conn:
+        async with transaction_factory() as conn:
             locked = (
                 await repositories.get_run(
                     conn,
@@ -2586,7 +2586,7 @@ async def process_run_payload(
                 attempt_id=attempt_id,
             )
             await _finalize_multi_agent_parent_after_child_commit(
-                transaction, terminal_after_transaction.payload,
+                transaction_factory, terminal_after_transaction.payload,
                 terminal_after_transaction.reconciled_parent,
             )
             await publish_pending_run_terminal(
@@ -2632,7 +2632,7 @@ async def process_run_payload(
         if runtime_sandbox_lease is None or runtime_sandbox_lease_released:
             return
         try:
-            async with transaction() as conn:
+            async with transaction_factory() as conn:
                 await release_runtime_sandbox_lease(conn, reason="run_terminal_interrupted")
         except Exception:  # noqa: BLE001 - interruption cleanup is best effort.
             return
@@ -2653,7 +2653,7 @@ async def process_run_payload(
             )
 
             async def cancel_requested() -> bool:
-                async with transaction() as conn:
+                async with transaction_factory() as conn:
                     return await repositories.is_cancel_requested(
                         conn,
                         tenant_id=run_payload.tenant_id,
@@ -2721,7 +2721,7 @@ async def process_run_payload(
             )
     except WorkerRunCancelled:
         reconciled_parent = None
-        async with transaction() as conn:
+        async with transaction_factory() as conn:
             cancel_result = {"message": "任务已取消"}
             terminal_written = await cancel_run_with_v4(
                 conn,
@@ -2744,7 +2744,7 @@ async def process_run_payload(
                 result_json=cancel_result,
             )
             await release_runtime_sandbox_lease(conn, reason="run_cancelled")
-        await finalize_parent_and_publish(transaction, v4_capabilities, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
+        await finalize_parent_and_publish(transaction_factory, v4_capabilities, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
         return WorkerOutcome("cancelled", payload.run_id)
     except Exception as exc:  # noqa: BLE001 - worker boundary terminalizes all failures.
         reconciled_parent = None
@@ -2752,7 +2752,7 @@ async def process_run_payload(
         outcome_after_exception = WorkerOutcome(
             "failed", payload.run_id, failure_code, failure_message
         )
-        async with transaction() as conn:
+        async with transaction_factory() as conn:
             await v4_capabilities.pending_admissions.prepare_pending_authority_in_transaction(
                 conn,
                 tenant_id=payload.tenant_id,
@@ -2816,7 +2816,7 @@ async def process_run_payload(
                         },
                     )
                     await release_runtime_sandbox_lease(conn, reason="run_failed")
-        await finalize_parent_and_publish(transaction, v4_capabilities, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
+        await finalize_parent_and_publish(transaction_factory, v4_capabilities, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
         return outcome_after_exception
 
     observability = _executor_observability(result.executor_payload, latency_ms=latency_ms)
@@ -2887,7 +2887,7 @@ async def process_run_payload(
         result_payload["capability_state"] = agent_capability_state.public_projection()
     reconciled_parent = None
     try:
-        async with transaction() as conn:
+        async with transaction_factory() as conn:
             locked_run = await repositories.get_run(
                 conn,
                 tenant_id=payload.tenant_id,
@@ -3240,7 +3240,7 @@ async def process_run_payload(
                         await release_runtime_sandbox_lease(conn, reason="run_failed")
                         terminal_outcome = WorkerOutcome("failed", payload.run_id, reported_error_code, reported_error_message)
     except _WorkerSuccessCommitBlocked:
-        async with transaction() as conn:
+        async with transaction_factory() as conn:
             blocked_reason = await repositories.classify_success_commit_block(
                 conn,
                 tenant_id=payload.tenant_id,
@@ -3326,7 +3326,7 @@ async def process_run_payload(
             tenant_id=payload.tenant_id,
             run_id=payload.run_id,
             capabilities=v4_capabilities,
-            transaction_factory=transaction,
+            transaction_factory=transaction_factory,
         )
         if (
             terminalization_progress is not None
@@ -3337,7 +3337,7 @@ async def process_run_payload(
                 tenant_id=payload.tenant_id,
                 run_id=payload.run_id,
                 progress=terminalization_progress,
-                transaction_factory=transaction,
+                transaction_factory=transaction_factory,
             )
         if terminalization_progress and terminalization_progress.get("completed") is True:
             final_status = str(terminalization_progress.get("status") or "")
@@ -3348,7 +3348,7 @@ async def process_run_payload(
                     terminal_outcome.error_code if final_status == "failed" else None,
                     terminal_outcome.error_message if final_status == "failed" else None,
                 )
-    await finalize_parent_and_publish(transaction, v4_capabilities, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
+    await finalize_parent_and_publish(transaction_factory, v4_capabilities, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
     return terminal_outcome
 
 

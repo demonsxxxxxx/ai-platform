@@ -691,6 +691,13 @@ class PostgresRunCancellationPersistence:
         newly_requested = bool(row.get("cancel_requested_newly"))
         if newly_requested:
             await self._append_event(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                trace_id=row.get("trace_id"),
+                event_type="cancel_requested",
+                stage="control",
+                message="已请求取消",
                 payload={
                     "visible_to_user": True,
                     "severity": "warning",
@@ -781,6 +788,13 @@ class PostgresRunCancellationPersistence:
         newly_requested = bool(row.get("cancel_requested_newly"))
         if newly_requested:
             await self._append_event(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                trace_id=row.get("trace_id"),
+                event_type="cancel_requested",
+                stage="control",
+                message="管理员已请求取消",
                 payload={
                     "visible_to_user": True,
                     "severity": "warning",

@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -109,31 +110,44 @@ async def test_retired_admission_terminalization_emits_one_hidden_fact_after_del
         audits.append(kwargs)
         return "aud-terminal"
 
-    async def ensure_run_terminal_intent(_conn, **_kwargs):
-        return None
+    terminal_intents: list[tuple[str, str, str]] = []
+
+    async def ensure_terminal_intent(_conn, *, tenant_id, run_id, status):
+        terminal_intents.append((tenant_id, run_id, status))
+        return SimpleNamespace(terminal_event_id="evt-terminal")
 
     monkeypatch.setattr(repositories, "append_event", append_event)
     monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
     monkeypatch.setattr(
         "app.streaming.redis.ensure_run_terminal_intent",
-        ensure_run_terminal_intent,
+        ensure_terminal_intent,
     )
+    terminal_rows: list[tuple[str, str]] = []
+
+    class EventPersistence:
+        async def append_terminal_row(self, _conn, *, tenant_id, run_id):
+            terminal_rows.append((tenant_id, run_id))
+            return None
+
+    v4_capabilities = SimpleNamespace(event_persistence=EventPersistence())
     conn = DelayedPermissionDrainConnection()
 
     first = await terminalization.terminalize_retired_platform_multi_agent_run(
         conn,
         tenant_id="tenant-a",
         run_id="run-retired",
+        v4_capabilities=v4_capabilities,
     )
     assert first.completed is False
     assert conn.reason == "retired_platform_multi_agent_control"
     assert len(conn.remaining) == 1
     assert not [event for event in events if event["event_type"] == "run_failed"]
 
-    second = await repositories.progress_run_tool_permission_terminalization(
+    second = await terminalization.terminalize_retired_platform_multi_agent_run(
         conn,
         tenant_id="tenant-a",
         run_id="run-retired",
+        v4_capabilities=v4_capabilities,
     )
     assert second.completed is True and second.did_transition is True
     assert len([event for event in events if event["event_type"] == "run_failed"]) == 1
@@ -144,13 +158,17 @@ async def test_retired_admission_terminalization_emits_one_hidden_fact_after_del
         conn,
         tenant_id="tenant-a",
         run_id="run-retired",
+        v4_capabilities=v4_capabilities,
     )
-    await repositories.progress_run_tool_permission_terminalization(
+    await terminalization.terminalize_retired_platform_multi_agent_run(
         conn,
         tenant_id="tenant-a",
         run_id="run-retired",
+        v4_capabilities=v4_capabilities,
     )
     assert (len(events), len(audits)) == first_terminal_fact_counts
+    assert terminal_intents == [("tenant-a", "run-retired", "failed")]
+    assert terminal_rows == [("tenant-a", "run-retired")]
 
     run_events = [event for event in events if event["event_type"] == "run_failed"]
     run_audits = [audit for audit in audits if audit["target_type"] == "run"]

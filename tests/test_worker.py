@@ -128,6 +128,9 @@ class _FakeWorkerV4Authority:
 
 
 class _FakeWorkerV4Persistence:
+    async def append_terminal_row(self, _conn, *, tenant_id, run_id):
+        return None
+
     async def persist_event_and_check_cancel(
         self,
         *,
@@ -2967,7 +2970,7 @@ async def test_worker_fails_and_terminalizes_when_a_pending_permission_would_byp
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message))
-        return True
+        return RunTerminalizationProgress(True, "failed", True)
 
     async def complete_run(conn, **kwargs):
         raise AssertionError("a pending permission must prevent complete_run")
@@ -3041,7 +3044,7 @@ async def test_worker_enforces_declared_required_artifact_types(
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message))
-        return True
+        return RunTerminalizationProgress(True, "failed", True)
 
     async def complete_run(conn, **kwargs):
         calls.append(("complete", kwargs["run_id"]))
@@ -3309,7 +3312,7 @@ async def test_worker_rolls_back_success_visible_writes_when_a_permission_arrive
 
     async def fail_run(conn, **kwargs):
         conn.pending_writes.append(("fail", kwargs["error_code"]))
-        return True
+        return RunTerminalizationProgress(True, "failed", True)
 
     async def classify_success_commit_block(conn, *, tenant_id, run_id):
         return "tool_permission_pending"
@@ -3922,7 +3925,7 @@ async def test_worker_does_not_append_failure_terminal_events_when_run_is_alread
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code))
-        return False
+        return RunTerminalizationProgress(False, None, False)
 
     async def release_sandbox_lease(conn, **kwargs):
         calls.append(("release", kwargs["reason"]))
@@ -4206,7 +4209,7 @@ async def test_worker_does_not_append_cancel_terminal_event_when_cancel_update_i
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", run_id, result_json))
-        return False
+        return RunTerminalizationProgress(False, None, False)
 
     async def fail_run(conn, **kwargs):
         raise AssertionError("accepted cancel must not be overwritten by executor_failure")
@@ -4978,7 +4981,7 @@ async def test_worker_fails_missing_physical_context_snapshot_before_adapter(mon
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs["error_code"], kwargs["error_message"]))
-        return True
+        return RunTerminalizationProgress(True, "failed", True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -5722,7 +5725,7 @@ async def test_worker_fails_invalid_physical_context_binding_before_adapter(monk
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs["error_code"]))
-        return True
+        return RunTerminalizationProgress(True, "failed", True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)

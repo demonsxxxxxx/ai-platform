@@ -174,7 +174,11 @@ async def fail_run_with_v4(
         error_code=error_code,
         error_message=error_message,
         result_json=result_json,
-        terminal_reason=terminal_reason,
+        **(
+            {"terminal_reason": terminal_reason}
+            if terminal_reason != "run_failed"
+            else {}
+        ),
     )
     await append_run_terminal_v4_row(
         capabilities,
@@ -219,9 +223,6 @@ async def complete_run_with_v4(
     tenant_id: str,
     run_id: str,
     result_json: dict[str, Any],
-    final_answer: str,
-    terminal_message_id: str,
-    tool_permission_request_ids: list[str] | None = None,
 ) -> bool:
     from app import repositories
 
@@ -230,9 +231,6 @@ async def complete_run_with_v4(
         tenant_id=tenant_id,
         run_id=run_id,
         result_json=result_json,
-        final_answer=final_answer,
-        terminal_message_id=terminal_message_id,
-        tool_permission_request_ids=tool_permission_request_ids,
     )
     await append_run_terminal_v4_row(
         capabilities,
