@@ -12,6 +12,55 @@ else:
 
 ROOT = Path(__file__).resolve().parents[1]
 
+V4_PUBLICATION_CALLS = frozenset(
+    {
+        "admit_v4_stream",
+        "finalize_parent_and_publish",
+        "persist_and_publish_worker_event",
+        "publish_claimed_v4_events",
+        "publish_due_v4_events",
+        "publish_pending_admissions",
+        "publish_pending_run_terminal",
+        "publish_pending_v4_admissions",
+        "publish_pending_v4_events",
+    }
+)
+V4_PUBLICATION_OWNER_MANIFEST = frozenset(
+    {
+        ("app/executor_reconciler.py", "_terminalize_reconciliation_failure"),
+        ("app/routes/admin_runs.py", "admin_run_cancel"),
+        ("app/routes/runs.py", "cancel_run"),
+        ("app/routes/runtime_callbacks.py", "record_executor_callback"),
+        ("app/streaming/application/durable_v4.py", "publish_claimed_v4_events"),
+        ("app/streaming/application/durable_v4.py", "publish_due_v4_events"),
+        ("app/streaming/application/durable_v4.py", "publish_pending_v4_admissions"),
+        ("app/streaming/application/worker_publication_v4.py", "admit_v4_stream"),
+        (
+            "app/streaming/application/worker_publication_v4.py",
+            "finalize_parent_and_publish",
+        ),
+        (
+            "app/streaming/application/worker_publication_v4.py",
+            "persist_and_publish_worker_event",
+        ),
+        (
+            "app/streaming/application/worker_publication_v4.py",
+            "publish_pending_admissions",
+        ),
+        (
+            "app/streaming/application/worker_publication_v4.py",
+            "publish_pending_run_terminal",
+        ),
+        (
+            "app/streaming/application/worker_publication_v4.py",
+            "publish_pending_v4_events",
+        ),
+        ("app/worker.py", "process_run_payload"),
+        ("app/worker_main.py", "_terminalize_escaped_process_exception"),
+        ("app/worker_main.py", "run_worker_maintenance"),
+    }
+)
+
 
 def _function(path: str, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
     tree = ast.parse((ROOT / path).read_text())
@@ -124,18 +173,53 @@ def _nested_function(
     return matches[0]
 
 
+def _is_v4_publication_call(name: str) -> bool:
+    parts = name.split(".")
+    return parts[-1] in V4_PUBLICATION_CALLS or (
+        len(parts) >= 2
+        and parts[-1] == "publish"
+        and parts[-2] in {"transport", "publication_transport"}
+    )
+
+
+def _publication_owner_functions(
+    root: Path,
+) -> dict[tuple[str, str], ast.FunctionDef | ast.AsyncFunctionDef]:
+    owners: dict[tuple[str, str], ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    for path in sorted((root / "app").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        candidates: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]] = []
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                candidates.append((node.name, node))
+            elif isinstance(node, ast.ClassDef):
+                candidates.extend(
+                    (f"{node.name}.{method.name}", method)
+                    for method in node.body
+                    if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+                )
+        relative_path = path.relative_to(root).as_posix()
+        for owner_name, node in candidates:
+            if any(_is_v4_publication_call(name) for name, _ in _all_calls(node)):
+                owners[(relative_path, owner_name)] = node
+    return owners
+
+
+def _publication_owner_manifest_failures(
+    owners: dict[tuple[str, str], ast.FunctionDef | ast.AsyncFunctionDef],
+) -> list[str]:
+    actual = set(owners)
+    return [
+        f"v4_publication_owner_manifest:unlisted:{path}:{name}"
+        for path, name in sorted(actual - V4_PUBLICATION_OWNER_MANIFEST)
+    ] + [
+        f"v4_publication_owner_manifest:stale:{path}:{name}"
+        for path, name in sorted(V4_PUBLICATION_OWNER_MANIFEST - actual)
+    ]
+
+
 def _redis_append_inside_transaction(node: ast.AST) -> list[int]:
     bridge_names = {"bridge", "stream_bridge"}
-    application_publication_calls = {
-        "admit_v4_stream",
-        "finalize_parent_and_publish",
-        "persist_and_publish_worker_event",
-        "publish_claimed_v4_events",
-        "publish_pending_admissions",
-        "publish_pending_run_terminal",
-        "publish_pending_v4_admissions",
-        "publish_pending_v4_events",
-    }
     for candidate in ast.walk(node):
         if not isinstance(candidate, (ast.Assign, ast.AnnAssign)):
             continue
@@ -182,10 +266,7 @@ def _redis_append_inside_transaction(node: ast.AST) -> list[int]:
                 and parts[-1]
                 in {"open", "publish_committed_event"}
             )
-            active_v4_publication_call = (
-                parts[-1] in application_publication_calls
-                or name.endswith(".publication_transport.publish")
-            )
+            active_v4_publication_call = _is_v4_publication_call(name)
             if direct_bridge_append or publisher_redis_call or active_v4_publication_call:
                 failures.append(call.lineno)
     return failures
@@ -509,34 +590,16 @@ def check() -> list[str]:
     worker = _function("app/worker.py", "process_run_payload")
     failures.extend(_worker_admission_failures(worker))
 
-    callback = _function("app/routes/runtime_callbacks.py", "record_executor_callback")
-    for line in _redis_append_inside_transaction(callback):
-        failures.append(
-            f"runtime_callbacks.py:{line}:redis_append_inside_pg_transaction"
-        )
-    for line in _redis_append_inside_transaction(worker):
-        failures.append(f"worker.py:{line}:redis_append_inside_pg_transaction")
-
-    for publication_function_name in ("admit_v4_stream", "publish_pending_v4_events"):
-        publication_function = _function(
-            "app/streaming/application/worker_publication_v4.py",
-            publication_function_name,
-        )
-        for line in _redis_append_inside_transaction(publication_function):
+    publication_owners = _publication_owner_functions(ROOT)
+    failures.extend(_publication_owner_manifest_failures(publication_owners))
+    for (path, owner_name), owner in sorted(publication_owners.items()):
+        for line in _redis_append_inside_transaction(owner):
             failures.append(
-                f"worker_publication_v4.py:{line}:redis_append_inside_pg_transaction"
+                f"{path}:{owner_name}:{line}:redis_append_inside_pg_transaction"
             )
 
     event_sink = _nested_function(worker, "event_sink")
     event_sink_calls = _calls(event_sink)
-    producer = _function(
-        "app/streaming/application/worker_publication_v4.py",
-        "persist_and_publish_worker_event",
-    )
-    for line in _redis_append_inside_transaction(producer):
-        failures.append(
-            f"worker_publication_v4.py:{line}:redis_append_inside_pg_transaction"
-        )
     sink_handoff = _unique_call_line(
         event_sink_calls,
         qualified_name="persist_and_publish_worker_event",

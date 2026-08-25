@@ -159,13 +159,46 @@ async def producer(transaction_factory):
 def test_checker_detects_active_v4_transport_inside_transaction():
     node = ast.parse(
         """
-async def admit(transaction):
+async def publish_claimed(transaction, transport):
     async with transaction():
-        await capabilities.publication_transport.publish(payload)
+        await transport.publish(payload)
 """
     ).body[0]
 
     assert cutover._redis_append_inside_transaction(node) == [4]
+
+
+def test_checker_publication_owner_manifest_matches_all_production_callers():
+    owners = cutover._publication_owner_functions(cutover.ROOT)
+
+    assert frozenset(owners) == cutover.V4_PUBLICATION_OWNER_MANIFEST
+    assert cutover._publication_owner_manifest_failures(owners) == []
+
+
+def test_checker_rejects_an_unlisted_publication_owner(tmp_path):
+    app_root = tmp_path / "app"
+    app_root.mkdir()
+    (app_root / "new_owner.py").write_text(
+        """
+async def unsafe_new_owner(transaction, transport):
+    async with transaction():
+        await transport.publish(payload)
+""",
+        encoding="utf-8",
+    )
+
+    owners = cutover._publication_owner_functions(tmp_path)
+
+    assert cutover._publication_owner_manifest_failures(owners) == [
+        "v4_publication_owner_manifest:unlisted:app/new_owner.py:unsafe_new_owner",
+        *[
+            f"v4_publication_owner_manifest:stale:{path}:{name}"
+            for path, name in sorted(cutover.V4_PUBLICATION_OWNER_MANIFEST)
+        ],
+    ]
+    assert cutover._redis_append_inside_transaction(
+        owners[("app/new_owner.py", "unsafe_new_owner")]
+    ) == [4]
 
 
 def test_checker_detects_active_v4_application_publisher_inside_transaction():
