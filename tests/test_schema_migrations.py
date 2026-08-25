@@ -765,7 +765,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "fcc2742b4bd0885e53f9aa2fe92620fd3ebc0ceaaa739bff2549f13a6ae1622a"
+        "9bd4a01cc1db6cdbe445a4a1b4258bfd3513ca34ca6a6381d98ba97006ed2de2"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "
@@ -840,13 +840,12 @@ def test_v4_successor_rebuild_schema_is_additive_and_claim_fenced():
     assert static_indexes["uq_sse_stream_rebuild_item_event"].unique is True
 
 
-def test_schema_upgrade_adds_v4_columns_before_indexes_and_repairs_confirmation_history():
+def test_schema_upgrade_delegates_v4_index_and_repairs_confirmation_history():
     schema = schema_migrations.schema_sql()
-    add_publication_state = schema.index(
-        "alter table run_events add column if not exists stream_publication_state text;"
-    )
-    create_due_index = schema.index(
-        "create index if not exists idx_run_events_v4_due_scope"
+    due_index = next(
+        migration
+        for migration in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
+        if migration.name == "idx_run_events_v4_due_scope"
     )
     repair_confirmation = schema.index(
         "update sse_stream_authorities\nset admission_confirmed_at = coalesce("
@@ -855,7 +854,11 @@ def test_schema_upgrade_adds_v4_columns_before_indexes_and_repairs_confirmation_
         "add constraint chk_sse_stream_authority_pending_confirmation"
     )
 
-    assert add_publication_state < create_due_index
+    assert "create index if not exists idx_run_events_v4_due_scope" not in schema
+    assert due_index.sql.startswith(
+        "create index concurrently if not exists idx_run_events_v4_due_scope"
+    )
+    assert due_index.column_names == ("tenant_id", "run_id", "sequence")
     assert repair_confirmation < add_confirmation_constraint
 
 

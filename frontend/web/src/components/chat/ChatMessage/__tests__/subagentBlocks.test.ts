@@ -4,6 +4,7 @@ import {
   buildSubagentPanelState,
   createSubagentPartRenderEntries,
   createSubagentPartRenderKeys,
+  shouldShowSubagentPanelLoading,
 } from "../SubagentBlocks.tsx";
 
 test("subagent panel subtitle shows only the start time", () => {
@@ -94,4 +95,7 @@ test("nested subagents render inline once while panel entries retain source inde
   );
   assert.equal(panel.some(({ part }) => part.type === "subagent"), false);
   assert.equal(nested.every(({ part }) => part.type === "subagent"), true);
+  assert.equal(shouldShowSubagentPanelLoading(true, panel.length), false);
+  assert.equal(shouldShowSubagentPanelLoading(true, 0), true);
+  assert.equal(shouldShowSubagentPanelLoading(false, 0), false);
 });

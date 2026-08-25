@@ -136,6 +136,14 @@ export function createSubagentPartRenderEntries(
     );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- exercised by panel-state coverage.
+export function shouldShowSubagentPanelLoading(
+  isPending: boolean | undefined,
+  panelEntryCount: number,
+): boolean {
+  return isPending === true && panelEntryCount === 0;
+}
+
 // eslint-disable-next-line react-refresh/only-export-components
 export function openSubagentPanelByAgentId(agentId: string): boolean {
   const data = subagentPanelStore.get(agentId);
@@ -304,7 +312,10 @@ function SubagentPanelContent({ agentId }: { agentId: string }) {
             </div>
           </div>
         )}
-        {data.isPending && !data.parts?.length && (
+        {shouldShowSubagentPanelLoading(
+          data.isPending,
+          panelPartEntries.length,
+        ) && (
           <div className="flex items-center gap-2 text-stone-500 dark:text-stone-400">
             <LoadingSpinner size="sm" />
             <span className="text-sm">{t("chat.message.executing")}</span>

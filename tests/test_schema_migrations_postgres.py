@@ -181,7 +181,7 @@ async def test_real_postgres_upgrade_restores_v4_publication_schema_and_confirma
         await admin.execute(
             "update sse_stream_authorities set admission_confirmed_at = null where run_id = 'v4-run'"
         )
-        await admin.execute("drop index idx_run_events_v4_due_scope")
+        await admin.execute("drop index if exists idx_run_events_v4_due_scope")
         await admin.execute(
             "alter table run_events drop constraint chk_run_events_stream_publication_claim"
         )

@@ -2171,12 +2171,6 @@ alter table run_events add column if not exists stream_publication_last_error te
 alter table run_events add column if not exists stream_publication_claim_token text;
 alter table run_events add column if not exists stream_publication_claim_expires_at timestamptz;
 
-create index if not exists idx_run_events_v4_due_scope
-  on run_events(tenant_id, run_id, sequence)
-  where visible_to_user = true
-    and payload_json ? '__stream_v4'
-    and stream_publication_state = 'pending';
-
 do $$
 begin
   if not exists (

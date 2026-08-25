@@ -558,6 +558,18 @@ CONCURRENT_INDEX_MIGRATIONS = (
         "and payload_json ? '__stream_v4'",
     ),
     ConcurrentIndexMigration(
+        "idx_run_events_v4_due_scope",
+        "create index concurrently if not exists idx_run_events_v4_due_scope "
+        "on run_events(tenant_id, run_id, sequence asc) "
+        "where visible_to_user = true and payload_json ? '__stream_v4' "
+        "and stream_publication_state = 'pending'",
+        "run_events",
+        ("tenant_id", "run_id", "sequence"),
+        (False, False, False),
+        "visible_to_user = true and payload_json ? '__stream_v4' "
+        "and stream_publication_state = 'pending'",
+    ),
+    ConcurrentIndexMigration(
         "idx_messages_tenant_session_created",
         "create index concurrently if not exists idx_messages_tenant_session_created "
         "on messages(tenant_id, session_id, created_at asc, id asc)",
@@ -709,14 +721,6 @@ STATIC_INDEX_DEFINITIONS = (
         ("tenant_id", "run_id", "sequence"),
         (False, False, False),
         unique=True,
-    ),
-    StaticIndexDefinition(
-        "idx_run_events_v4_due_scope",
-        "run_events",
-        ("tenant_id", "run_id", "sequence"),
-        (False, False, False),
-        "visible_to_user = true and payload_json ? '__stream_v4' "
-        "and stream_publication_state = 'pending'",
     ),
     StaticIndexDefinition(
         "idx_sandbox_leases_attempt",
