@@ -85,9 +85,175 @@ async def test_real_postgres_concurrent_migrations_use_one_global_lock_and_ledge
             }
         ]
         async with factory() as conn:
-            assert (await schema_migrations.schema_status(conn))["ready"] is True
+            status = await schema_migrations.schema_status(conn)
+            definition_mismatches = []
+            if not status["constraint_definitions_current"]:
+                for relation_name, constraint_name, constraint_type, definition in (
+                    schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS
+                ):
+                    cursor = await conn.execute(
+                        """
+                        select constraints.contype::text as constraint_type,
+                               pg_get_constraintdef(constraints.oid, true) as definition
+                        from pg_constraint constraints
+                        where constraints.conrelid = to_regclass(%s)
+                          and constraints.conname = %s
+                        """,
+                        (relation_name, constraint_name),
+                    )
+                    row = await cursor.fetchone()
+                    if (
+                        row is None
+                        or row["constraint_type"] != constraint_type
+                        or "".join(str(row["definition"]).lower().split())
+                        != "".join(definition.lower().split())
+                    ):
+                        definition_mismatches.append(
+                            {
+                                "name": constraint_name,
+                                "actual": None if row is None else row["definition"],
+                            }
+                        )
+            assert status["ready"] is True, "\n".join(
+                f"{item['name']}: {item['actual']}"
+                for item in definition_mismatches
+            )
     finally:
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_upgrade_restores_v4_publication_schema_and_confirmation_history():
+    dsn = _postgres_dsn()
+    schema_name = f"schema_v4_upgrade_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(
+        dsn,
+        autocommit=True,
+        row_factory=dict_row,
+    )
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await admin.execute(
+            sql.SQL("set search_path to {}").format(sql.Identifier(schema_name))
+        )
+        await admin.execute(Path("app/schema.sql").read_text(encoding="utf-8"))
+        await admin.execute(
+            "insert into users(id, tenant_id, display_name) values ('v4-user', 'default', 'V4')"
+        )
+        await admin.execute(
+            "insert into agents(id, tenant_id, name, agent_type) values ('v4-agent', 'default', 'V4', 'chat')"
+        )
+        await admin.execute(
+            "insert into skills(id, name, version, executor_type) values ('v4-skill', 'V4', '1', 'fake')"
+        )
+        await admin.execute(
+            """
+            insert into sessions(id, tenant_id, workspace_id, user_id, agent_id, title, status)
+            values ('v4-session', 'default', 'default', 'v4-user', 'v4-agent', 'V4', 'archived')
+            """
+        )
+        await admin.execute(
+            """
+            insert into runs(
+              id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id, status
+            ) values (
+              'v4-run', 'default', 'default', 'v4-session', 'v4-user',
+              'v4-agent', 'v4-skill', 'running'
+            )
+            """
+        )
+        await admin.execute(
+            """
+            insert into sse_stream_authorities(
+              tenant_id, run_id, attempt_id, design_id, projection_version,
+              tenant_scope, stream_incarnation, state, open_event_id,
+              open_payload_bytes, open_payload_digest, admission_confirmed_at
+            ) values (
+              'default', 'v4-run', 'v4-attempt', 'v4', 'public-stream-v4',
+              'scope-v4', 1, 'confirmed', 'open-v4', '{}', repeat('a', 64), now()
+            )
+            """
+        )
+        await admin.execute(
+            "alter table sse_stream_authorities drop constraint chk_sse_stream_authority_pending_confirmation"
+        )
+        await admin.execute(
+            "update sse_stream_authorities set admission_confirmed_at = null where run_id = 'v4-run'"
+        )
+        await admin.execute("drop index idx_run_events_v4_due_scope")
+        await admin.execute(
+            "alter table run_events drop constraint chk_run_events_stream_publication_claim"
+        )
+        await admin.execute(
+            "alter table run_events drop constraint chk_run_events_stream_publication_state"
+        )
+        for column_name in (
+            "stream_publication_state",
+            "stream_publication_attempts",
+            "stream_publication_next_attempt_at",
+            "stream_publication_redis_id",
+            "stream_publication_last_error",
+            "stream_publication_claim_token",
+            "stream_publication_claim_expires_at",
+        ):
+            await admin.execute(
+                sql.SQL("alter table run_events drop column {}").format(
+                    sql.Identifier(column_name)
+                )
+            )
+
+        factory = _transaction_factory(dsn, schema_name)
+        result = await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=_index_connection_factory(dsn, schema_name),
+        )
+
+        assert result["status"] == "applied"
+        columns = await admin.execute(
+            """
+            select column_name
+            from information_schema.columns
+            where table_schema = current_schema()
+              and table_name = 'run_events'
+              and column_name like 'stream_publication_%'
+            order by column_name
+            """
+        )
+        assert {row["column_name"] for row in await columns.fetchall()} == {
+            "stream_publication_attempts",
+            "stream_publication_claim_expires_at",
+            "stream_publication_claim_token",
+            "stream_publication_last_error",
+            "stream_publication_next_attempt_at",
+            "stream_publication_redis_id",
+            "stream_publication_state",
+        }
+        index_row = await (
+            await admin.execute(
+                "select to_regclass('idx_run_events_v4_due_scope') is not null as present"
+            )
+        ).fetchone()
+        assert index_row == {"present": True}
+        authority_row = await (
+            await admin.execute(
+                "select admission_confirmed_at is not null as repaired from sse_stream_authorities where run_id = 'v4-run'"
+            )
+        ).fetchone()
+        assert authority_row == {"repaired": True}
+        async with factory() as conn:
+            status = await schema_migrations.schema_status(conn)
+            assert status["ready"] is True, {
+                key: value
+                for key, value in status.items()
+                if key.endswith("_current") and value is not True
+            }
+    finally:
+        await admin.execute(
+            sql.SQL("drop schema if exists {} cascade").format(
+                sql.Identifier(schema_name)
+            )
+        )
         await admin.close()
 
 

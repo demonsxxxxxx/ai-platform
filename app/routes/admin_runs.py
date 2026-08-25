@@ -162,6 +162,12 @@ async def admin_run_cancel(
             )
         except V4PublicationTransportUnavailable as exc:
             logger.warning("Cancellation v4 admission deferred", extra={"run_id": cancellation.run_id, "error": exc.error_code})
+        except Exception as exc:  # noqa: BLE001 - cancellation cleanup must outlive publication faults
+            logger.warning(
+                "Cancellation v4 admission deferred",
+                extra={"run_id": cancellation.run_id, "error": type(exc).__name__},
+                exc_info=True,
+            )
     result = cancellation.as_route_result() if cancellation is not None else None
     if result is not None:
         initial_progress = result.pop("_permission_terminalization_progress", None)
@@ -192,11 +198,18 @@ async def admin_run_cancel(
             transaction_factory=transaction,
         )
     if cancellation is not None and cancellation.attempt_id:
-        await publish_pending_run_terminal(
-            runtime.worker_capabilities,
-            tenant_id=principal.tenant_id,
-            run_id=cancellation.run_id,
-        )
+        try:
+            await publish_pending_run_terminal(
+                runtime.worker_capabilities,
+                tenant_id=principal.tenant_id,
+                run_id=cancellation.run_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - durable publication retries after cleanup
+            logger.warning(
+                "Cancellation v4 terminal publication deferred",
+                extra={"run_id": cancellation.run_id, "error": type(exc).__name__},
+                exc_info=True,
+            )
     if result is None:
         raise HTTPException(status_code=404, detail="active_run_not_found")
     queue_cleanup_failures = await _remove_cancelled_queue_payloads(

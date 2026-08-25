@@ -2152,13 +2152,6 @@ create table if not exists run_events (
       or (stream_publication_claim_token is not null and stream_publication_claim_expires_at is not null))
 );
 
-create index if not exists idx_run_events_v4_due_scope
-  on run_events(tenant_id, run_id, sequence)
-  where visible_to_user = true
-    and payload_json ? '__stream_v4'
-    and stream_publication_state = 'pending';
-
-
 alter table run_events add column if not exists trace_id text not null default '';
 alter table run_events add column if not exists schema_version text not null default 'ai-platform.event-envelope.v1';
 alter table run_events add column if not exists sequence bigint not null default 0;
@@ -2177,6 +2170,12 @@ alter table run_events add column if not exists stream_publication_redis_id text
 alter table run_events add column if not exists stream_publication_last_error text;
 alter table run_events add column if not exists stream_publication_claim_token text;
 alter table run_events add column if not exists stream_publication_claim_expires_at timestamptz;
+
+create index if not exists idx_run_events_v4_due_scope
+  on run_events(tenant_id, run_id, sequence)
+  where visible_to_user = true
+    and payload_json ? '__stream_v4'
+    and stream_publication_state = 'pending';
 
 do $$
 begin
@@ -2284,6 +2283,21 @@ create unique index if not exists uq_sse_stream_authority_attempt_incarnation
 create index if not exists idx_sse_stream_authority_pending
   on sse_stream_authorities(state, updated_at, tenant_id, run_id)
   where state = 'admission_pending';
+
+update sse_stream_authorities
+set admission_confirmed_at = coalesce(
+  admission_confirmed_at,
+  admission_created_at,
+  updated_at,
+  clock_timestamp()
+)
+where state <> 'admission_pending'
+  and admission_confirmed_at is null;
+
+update sse_stream_authorities
+set admission_confirmed_at = null
+where state = 'admission_pending'
+  and admission_confirmed_at is not null;
 
 do $$
 begin

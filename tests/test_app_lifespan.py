@@ -17,6 +17,7 @@ def test_create_app_owns_one_run_stream_runtime_and_closes_dependencies(monkeypa
             calls.append("run_stream_runtime")
 
     runtime = Runtime()
+    cancellation_use_case = object.__new__(RunCancellationUseCase)
 
     async def fake_close_redis_client():
         calls.append("redis_client")
@@ -24,7 +25,8 @@ def test_create_app_owns_one_run_stream_runtime_and_closes_dependencies(monkeypa
     async def fake_close_pool():
         calls.append("close_pool")
 
-    monkeypatch.setattr(main, "build_run_stream_runtime", lambda: runtime)
+    monkeypatch.setattr(main, "build_run_stream_runtime", lambda _transaction: runtime)
+    monkeypatch.setattr(main, "build_run_cancellation_use_case", lambda: cancellation_use_case)
     monkeypatch.setattr(main, "close_redis_client", fake_close_redis_client)
     monkeypatch.setattr(main, "close_pool", fake_close_pool)
 

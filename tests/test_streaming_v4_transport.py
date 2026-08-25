@@ -100,6 +100,8 @@ class CandidateFakeRedis:
         self.add_extra_state_after_end = False
         self.mutation: str | None = None
         self._mutated = False
+        self.fail_eval_at: int | None = None
+        self.deleted_keys: list[tuple[object, ...]] = []
 
     async def exists(self, key: object) -> int:
         key_text = str(key)
@@ -108,6 +110,8 @@ class CandidateFakeRedis:
         return int(bool(self.rows))
 
     async def eval(self, *args: object) -> str:
+        if self.fail_eval_at == len(self.rows):
+            raise RuntimeError("candidate append failed")
         self.calls.append(args)
         redis_id = f"1-{len(self.rows)}"
         event_id = str(args[6])
@@ -175,6 +179,14 @@ class CandidateFakeRedis:
 
     async def hgetall(self, _key: object):
         return {**self.state, **self.extra_state}
+
+    async def delete(self, *keys: object) -> int:
+        self.deleted_keys.append(keys)
+        removed = int(bool(self.rows)) + int(bool(self.state or self.extra_state))
+        self.rows.clear()
+        self.state.clear()
+        self.extra_state.clear()
+        return removed
 
 
 class Result:
@@ -429,6 +441,9 @@ async def test_v4_successor_transport_rejects_extra_candidate_state() -> None:
     )
     with pytest.raises(StreamTransportUnavailable, match="state_mismatch"):
         await transport.build(_successor_claim_with_terminal())
+    assert client.rows == []
+    assert client.state == {}
+    assert len(client.deleted_keys) == 1
 
 
 @pytest.mark.asyncio
@@ -451,6 +466,25 @@ async def test_v4_successor_transport_rejects_row_and_receipt_mismatches(
     )
     with pytest.raises(StreamTransportUnavailable, match=error):
         await transport.build(_successor_claim_with_terminal())
+    assert client.rows == []
+    assert client.state == {}
+    assert len(client.deleted_keys) == 1
+
+
+@pytest.mark.asyncio
+async def test_v4_successor_transport_discards_partial_candidate_after_append_failure() -> None:
+    client = CandidateFakeRedis()
+    client.fail_eval_at = 1
+    transport = RedisV4SuccessorRebuildTransport(
+        RedisStreamBridge(publish_client=client)
+    )
+
+    with pytest.raises(StreamTransportUnavailable, match="stream_append_unavailable"):
+        await transport.build(_successor_claim_with_terminal())
+
+    assert client.rows == []
+    assert client.state == {}
+    assert len(client.deleted_keys) == 1
 
 
 @pytest.mark.asyncio

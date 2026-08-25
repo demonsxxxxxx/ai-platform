@@ -93,10 +93,26 @@ class _CancellationEventWriter:
         return None
 
 
+class _RunAttemptCursor:
+    async def fetchone(self):
+        return {"id": "attempt-a"}
+
+
+class _CancellationTestConnection:
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def execute(self, sql, params):
+        normalized = " ".join(sql.split())
+        if normalized.startswith("select id from run_attempts"):
+            return _RunAttemptCursor()
+        return await self._conn.execute(sql, params)
+
+
 async def _request_owner_cancel(conn, *, tenant_id, user_id, run_id):
     @asynccontextmanager
     async def transaction_factory():
-        yield conn
+        yield _CancellationTestConnection(conn)
 
     use_case = RunCancellationUseCase(
         transaction_factory=transaction_factory,
@@ -119,7 +135,7 @@ async def _request_owner_cancel(conn, *, tenant_id, user_id, run_id):
 async def _request_admin_cancel(conn, *, tenant_id, admin_user_id, run_id):
     @asynccontextmanager
     async def transaction_factory():
-        yield conn
+        yield _CancellationTestConnection(conn)
 
     use_case = RunCancellationUseCase(
         transaction_factory=transaction_factory,
@@ -431,6 +447,8 @@ class RecordingConnection:
             return SingleRowCursor({"next_run_generation": 1})
         if "select clock_timestamp() as authority_now" in normalized:
             return SingleRowCursor({"authority_now": datetime(2026, 7, 16, tzinfo=timezone.utc)})
+        if normalized.startswith("select * from sse_stream_authorities"):
+            return SingleRowCursor(None)
         return FakeCursor()
 
 
@@ -4994,6 +5012,8 @@ async def test_cancel_run_closes_non_terminal_run_steps(monkeypatch):
         async def execute(self, sql, params):
             normalized = " ".join(sql.split())
             self.calls.append((normalized, params))
+            if normalized.startswith("select * from sse_stream_authorities"):
+                return SingleRowCursor(None)
             if "set permission_terminalization_target" in normalized:
                 return SingleRowCursor(
                     {
@@ -5052,6 +5072,8 @@ async def test_fail_run_closes_non_terminal_run_steps_without_leaving_stale_prog
         async def execute(self, sql, params):
             normalized = " ".join(sql.split())
             self.calls.append((normalized, params))
+            if normalized.startswith("select * from sse_stream_authorities"):
+                return SingleRowCursor(None)
             if "set permission_terminalization_target" in normalized:
                 return SingleRowCursor(
                     {
@@ -8717,6 +8739,8 @@ async def test_terminalization_progresses_in_bounded_crash_retry_batches_without
             normalized = " ".join(sql.split())
             normalized_lower = normalized.lower()
             self.sql.append((normalized, params))
+            if normalized_lower.startswith("select * from sse_stream_authorities"):
+                return SingleRowCursor(None)
             if normalized_lower.startswith("select id, trace_id, status, permission_terminalization_target"):
                 return SingleRowCursor(
                     {
@@ -8878,6 +8902,8 @@ async def test_soft_cancel_51_row_drain_upgrades_to_one_cancelled_terminal_resul
         async def execute(self, sql, params):
             normalized = " ".join(sql.split())
             lowered = normalized.lower()
+            if lowered.startswith("select * from sse_stream_authorities"):
+                return SingleRowCursor(None)
             if "set permission_terminalization_target = case" in lowered:
                 assert "permission_terminalization_target = 'cancel_requested'" in lowered
                 requested = params[0]
@@ -10000,14 +10026,16 @@ async def test_sandbox_lease_release_fence_serializes_with_postgres_insert():
                   provider text not null,
                   status text not null default 'active',
                   browser_enabled boolean not null default false,
-                  resource_limits_json jsonb not null default '{}'::jsonb,
-                  user_visible_payload_json jsonb not null default '{}'::jsonb,
-                  lease_payload_json jsonb not null default '{}'::jsonb,
+                  resource_limits_json jsonb not null default '{{}}'::jsonb,
+                  user_visible_payload_json jsonb not null default '{{}}'::jsonb,
+                  lease_payload_json jsonb not null default '{{}}'::jsonb,
                   runtime_container_id text,
                   runtime_container_name text,
                   runtime_executor_url text,
                   runtime_workspace_container_path text,
                   runtime_handle_verified_at timestamptz,
+                  executor_terminal_json jsonb,
+                  executor_reconciliation_status text not null default 'waiting_terminal',
                   heartbeat_at timestamptz,
                   expires_at timestamptz,
                   released_at timestamptz,
@@ -13514,6 +13542,8 @@ async def test_complete_run_consumes_valid_allow_for_run_before_its_final_pendin
         async def execute(self, sql, params):
             normalized = " ".join(sql.split())
             self.calls.append((normalized, params))
+            if normalized.startswith("select * from sse_stream_authorities"):
+                return Cursor(None)
             if normalized.startswith("select id from runs"):
                 return Cursor({"id": "run-a"})
             if "select clock_timestamp() as authority_now" in normalized:
@@ -13611,6 +13641,8 @@ async def test_complete_run_uses_one_locked_db_time_and_consumes_exact_valid_run
         async def execute(self, sql, params):
             normalized = " ".join(sql.split())
             self.calls.append((normalized, params))
+            if normalized.startswith("select * from sse_stream_authorities"):
+                return Cursor(None)
             if normalized.startswith("select id from runs") and "for update" in normalized:
                 return Cursor({"id": "run-a"})
             if "select clock_timestamp() as authority_now" in normalized:

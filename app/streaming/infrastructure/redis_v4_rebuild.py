@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Mapping
 
 from app.streaming import redis as stream_redis
@@ -24,6 +25,7 @@ from app.streaming.domain.transport import canonical_json_bytes
 _TERMINAL_EVENT_TYPES = frozenset(
     {"run.succeeded", "run.failed", "run.cancelled"}
 )
+logger = logging.getLogger(__name__)
 
 
 class RedisV4SuccessorRebuildTransport:
@@ -96,16 +98,16 @@ class RedisV4SuccessorRebuildTransport:
             run_id=claim.run_id,
             stream_incarnation=claim.successor_incarnation,
         )
-        try:
-            initial = await self._bridge.inspect_v4_candidate(
-                tenant_scope_value=claim.tenant_scope,
-                run_id=claim.run_id,
-                stream_incarnation=claim.successor_incarnation,
+        initial = await self._bridge.inspect_v4_candidate(
+            tenant_scope_value=claim.tenant_scope,
+            run_id=claim.run_id,
+            stream_incarnation=claim.successor_incarnation,
+        )
+        if initial.stream_exists or initial.state_exists:
+            raise stream_redis.StreamContractError(
+                "v4_rebuild_candidate_preexisting"
             )
-            if initial.stream_exists or initial.state_exists:
-                raise stream_redis.StreamContractError(
-                    "v4_rebuild_candidate_preexisting"
-                )
+        try:
             redis_ids: list[str] = []
             redis_ids.append(
                 await self._append(
@@ -151,10 +153,13 @@ class RedisV4SuccessorRebuildTransport:
                 end_event_id=str(end["event_id"]),
             )
         except stream_redis.StreamContractError:
+            await self._discard_failed_candidate(claim)
             raise
         except stream_redis.StreamTransportUnavailable:
+            await self._discard_failed_candidate(claim)
             raise
         except Exception as exc:
+            await self._discard_failed_candidate(claim)
             raise stream_redis.StreamTransportUnavailable(
                 "v4_rebuild_candidate_unavailable"
             ) from exc
@@ -182,6 +187,22 @@ class RedisV4SuccessorRebuildTransport:
                 last_envelope_digest=hashlib.sha256(end_bytes).hexdigest(),
             ),
         )
+
+    async def _discard_failed_candidate(
+        self, claim: V4SuccessorRebuildClaim
+    ) -> None:
+        try:
+            await self._bridge.discard_v4_candidate(
+                tenant_scope_value=claim.tenant_scope,
+                run_id=claim.run_id,
+                stream_incarnation=claim.successor_incarnation,
+            )
+        except Exception:  # noqa: BLE001 - preserve the original build failure
+            logger.warning(
+                "Failed to discard incomplete v4 successor candidate",
+                extra={"run_id": claim.run_id},
+                exc_info=True,
+            )
 
     async def _append(
         self,

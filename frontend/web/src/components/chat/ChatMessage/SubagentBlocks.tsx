@@ -122,6 +122,20 @@ export function createSubagentPartRenderKeys(
   return createMessagePartRenderKeys(createSubagentAnchorOwnerId(agentId), parts);
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- exercised by subagent reconciliation coverage.
+export function createSubagentPartRenderEntries(
+  agentId: string,
+  parts: MessagePart[],
+  target: "panel" | "nested",
+) {
+  const keys = createSubagentPartRenderKeys(agentId, parts);
+  return parts
+    .map((part, index) => ({ part, index, key: keys[index] }))
+    .filter(({ part }) =>
+      target === "nested" ? part.type === "subagent" : part.type !== "subagent",
+    );
+}
+
 // eslint-disable-next-line react-refresh/only-export-components
 export function openSubagentPanelByAgentId(agentId: string): boolean {
   const data = subagentPanelStore.get(agentId);
@@ -219,9 +233,11 @@ function SubagentPanelContent({ agentId }: { agentId: string }) {
     data.artifactDownloadScope,
     agentId,
   );
-  const partKeys = data.parts
-    ? createSubagentPartRenderKeys(agentId, data.parts)
-    : [];
+  const panelPartEntries = createSubagentPartRenderEntries(
+    agentId,
+    data.parts || [],
+    "panel",
+  );
 
   const effectiveStatus =
     data.status ||
@@ -247,16 +263,16 @@ function SubagentPanelContent({ agentId }: { agentId: string }) {
             </div>
           </div>
         )}
-        {data.parts && data.parts.length > 0 && (
+        {panelPartEntries.length > 0 && (
           <div className="space-y-2 pl-3 border-l-2 border-stone-200 dark:border-stone-700">
-            {data.parts.map((part, index) => (
+            {panelPartEntries.map(({ part, index, key }, entryIndex) => (
               <MessagePartRenderer
-                key={partKeys[index]}
+                key={key}
                 part={part}
                 messageId={createSubagentAnchorOwnerId(agentId)}
                 partIndex={index}
                 isStreaming={data.isPending}
-                isLast={index === data.parts!.length - 1}
+                isLast={entryIndex === panelPartEntries.length - 1}
                 artifactDownloadScope={nestedArtifactDownloadScope}
               />
             ))}
@@ -431,12 +447,10 @@ export function SubagentBlock({
     durationMs: duration_ms,
     progressPercent: progress_percent,
   });
-  const inlineNestedParts = (parts || []).filter(
-    (part) => part.type === "subagent",
-  );
-  const inlineNestedKeys = createSubagentPartRenderKeys(
+  const inlineNestedEntries = createSubagentPartRenderEntries(
     agent_id,
-    inlineNestedParts,
+    parts || [],
+    "nested",
   );
   const inlineNestedArtifactScope = createSubagentArtifactDownloadScope(
     artifactDownloadScope,
@@ -638,16 +652,16 @@ export function SubagentBlock({
           </div>
         </div>
       </button>
-      {inlineNestedParts.length > 0 && (
+      {inlineNestedEntries.length > 0 && (
         <div data-subagent-children className="ml-4 border-l-2 border-stone-200/60 pl-2 dark:border-stone-700/50">
-          {inlineNestedParts.map((part, index) => (
+          {inlineNestedEntries.map(({ part, index, key }, entryIndex) => (
             <MessagePartRenderer
-              key={inlineNestedKeys[index]}
+              key={key}
               part={part}
               messageId={createSubagentAnchorOwnerId(agent_id)}
               partIndex={index}
               isStreaming={isPending}
-              isLast={index === inlineNestedParts.length - 1}
+              isLast={entryIndex === inlineNestedEntries.length - 1}
               artifactDownloadScope={inlineNestedArtifactScope}
             />
           ))}

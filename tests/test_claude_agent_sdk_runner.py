@@ -1359,6 +1359,37 @@ async def test_local_sdk_bash_remains_unavailable(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("hook_input", [None, [], "invalid"])
+async def test_sdk_pretool_denies_non_mapping_hook_input_without_crashing(
+    monkeypatch, tmp_path, hook_input
+):
+    captured = {}
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(
+            captured,
+            hook_invocations=[("PreToolUse", hook_input, None)],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="reject malformed tool input",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="worker_local_legacy",
+    )
+
+    pretool_output = captured["hook_results"][0][1]["hookSpecificOutput"]
+    assert pretool_output["permissionDecision"] == "deny"
+    assert result.used_sdk is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("capability_kind", ["skill", "mcp"])
 @pytest.mark.parametrize("callback_outcome", ["missing", "false", "exception"])
 async def test_sdk_pretool_denies_when_invocation_evidence_is_not_acknowledged(

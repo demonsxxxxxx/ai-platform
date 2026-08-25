@@ -1610,8 +1610,10 @@ async def run_claude_agent_sdk(
         return PermissionResultAllow()
 
     async def enforce_side_effect_tool_policy(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
+        hook_input_is_mapping = isinstance(hook_input, dict)
+        hook_input = hook_input if hook_input_is_mapping else {}
         tool_name = ""
-        if not isinstance(hook_input, dict):
+        if not hook_input_is_mapping:
             decision = evaluate_tool_policy(tool={})
         else:
             tool_name = str(hook_input.get("tool_name") or "")
@@ -1628,7 +1630,7 @@ async def run_claude_agent_sdk(
             "permissionDecision": decision.outcome,
             "permissionDecisionReason": decision.reason,
         }
-        if decision.allowed and isinstance(hook_input, dict):
+        if decision.allowed:
             tool_name = str(hook_input.get("tool_name") or "")
             identity = adapter_identity(tool_name)
             subject = internal_context_subjects.get(identity) or authorized_subjects.get(identity)
@@ -2145,7 +2147,17 @@ async def run_claude_agent_sdk(
             capability_evidence=list(capability_evidence),
         )
 
-    consume_task = asyncio.create_task(consume())
+    consume_cancellation: asyncio.CancelledError | None = None
+
+    async def consume_with_cancellation_identity() -> ClaudeAgentSdkRunResult:
+        nonlocal consume_cancellation
+        try:
+            return await consume()
+        except asyncio.CancelledError as exc:
+            consume_cancellation = exc
+            raise
+
+    consume_task = asyncio.create_task(consume_with_cancellation_identity())
     try:
         return await asyncio.wait_for(asyncio.shield(consume_task), timeout=timeout_seconds)
     except asyncio.CancelledError:
@@ -2157,6 +2169,8 @@ async def run_claude_agent_sdk(
             pass
         except Exception:  # noqa: BLE001
             pass
+        if consume_cancellation is not None and type(consume_cancellation) is not asyncio.CancelledError:
+            raise consume_cancellation
         raise
     except TimeoutError:
         seal_agent_candidates("timeout")

@@ -238,6 +238,25 @@ class RedisStreamBridge:
             state=state,
         )
 
+    async def discard_v4_candidate(
+        self,
+        *,
+        tenant_scope_value: str,
+        run_id: str,
+        stream_incarnation: int,
+    ) -> None:
+        """Remove both keys owned by an incomplete dormant v4 candidate."""
+
+        key = stream_key(
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            stream_incarnation=stream_incarnation,
+        )
+        try:
+            await self._publish_client.delete(key, f"{key}:state")
+        except Exception as exc:
+            raise StreamTransportUnavailable("stream_candidate_discard_unavailable") from exc
+
     async def append_canonical(
         self,
         *,

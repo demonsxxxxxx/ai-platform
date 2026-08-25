@@ -40,14 +40,33 @@ class _RouteCancellationAdapter:
 
 
 class _NoOpCancellationEventWriter:
+    async def prepare_pending_authority(self, conn, **kwargs):
+        return None
+
     async def append_cancel_requested(self, conn, **kwargs):
         return None
+
+
+class _RunAttemptCursor:
+    async def fetchone(self):
+        return {"id": "attempt-a"}
+
+
+class _CancellationTestConnection:
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def execute(self, sql, params):
+        normalized = " ".join(sql.split())
+        if normalized.startswith("select id from run_attempts"):
+            return _RunAttemptCursor()
+        return await self._conn.execute(sql, params)
 
 
 async def _request_owner_cancel(conn, *, tenant_id, user_id, run_id):
     @asynccontextmanager
     async def transaction_factory():
-        yield conn
+        yield _CancellationTestConnection(conn)
 
     use_case = RunCancellationUseCase(
         transaction_factory=transaction_factory,
@@ -70,7 +89,7 @@ async def _request_owner_cancel(conn, *, tenant_id, user_id, run_id):
 async def _request_admin_cancel(conn, *, tenant_id, admin_user_id, run_id):
     @asynccontextmanager
     async def transaction_factory():
-        yield conn
+        yield _CancellationTestConnection(conn)
 
     use_case = RunCancellationUseCase(
         transaction_factory=transaction_factory,
@@ -100,6 +119,22 @@ def _install_route_cancellation_adapter(monkeypatch):
     monkeypatch.setattr(repository_module, "_test_admin_cancel", missing_cancel, raising=False)
     monkeypatch.setattr("app.routes.runs._require_run_cancellation_use_case", lambda _request: adapter)
     monkeypatch.setattr("app.routes.admin_runs._require_run_cancellation_use_case", lambda _request: adapter)
+
+
+@pytest.fixture(autouse=True)
+def _install_test_run_stream_runtime(monkeypatch):
+    original_create_app = create_app
+
+    def create_app_with_runtime():
+        app = original_create_app()
+        app.state.run_stream_runtime = type(
+            "TestRunStreamRuntime",
+            (),
+            {"worker_capabilities": object()},
+        )()
+        return app
+
+    monkeypatch.setattr(f"{__name__}.create_app", create_app_with_runtime)
 
 
 @pytest.fixture(autouse=True)
@@ -5863,6 +5898,98 @@ def test_cancel_routes_publish_only_after_drain_can_create_terminal_row(
     assert response.status_code == 200
     assert response.json()["status"] == "cancelled"
     assert calls == ["admit", "drain", "reconcile", "publish"]
+
+
+@pytest.mark.parametrize(
+    ("module_path", "path", "is_admin"),
+    [
+        ("app.routes.runs", "/api/ai/runs/run_active/cancel", False),
+        ("app.routes.admin_runs", "/api/ai/admin/runs/run_active/cancel", True),
+    ],
+    ids=["owner", "admin"],
+)
+@pytest.mark.parametrize("failure_phase", ["admit", "publish"])
+def test_cancel_routes_complete_queue_cleanup_when_v4_publication_raises(
+    monkeypatch,
+    module_path,
+    path,
+    is_admin,
+    failure_phase,
+):
+    calls: list[str] = []
+
+    class Cancellation:
+        run_id = "run_active"
+        attempt_id = "attempt-a"
+
+        @staticmethod
+        def as_route_result():
+            return {"run_id": "run_active", "status": "cancel_requested"}
+
+    class UseCase:
+        async def request_owner_cancel(self, **_kwargs):
+            return Cancellation()
+
+        async def request_admin_cancel(self, **_kwargs):
+            return Cancellation()
+
+    async def admit(*_args, **_kwargs):
+        calls.append("admit")
+        if failure_phase == "admit":
+            raise RuntimeError("admission failed")
+
+    async def drain(**_kwargs):
+        calls.append("drain")
+        return RunTerminalizationProgress(True, "cancelled", True, True)
+
+    async def reconcile(**_kwargs):
+        calls.append("reconcile")
+
+    async def publish(*_args, **_kwargs):
+        calls.append("publish")
+        if failure_phase == "publish":
+            raise RuntimeError("publication failed")
+        return True
+
+    async def remove_queued_run(**_kwargs):
+        calls.append("queue_cleanup")
+        return 0
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr(
+        f"{module_path}._require_run_cancellation_use_case",
+        lambda _request: UseCase(),
+    )
+    monkeypatch.setattr(f"{module_path}.admit_v4_stream", admit)
+    monkeypatch.setattr(
+        f"{module_path}.drain_run_tool_permission_terminalization",
+        drain,
+    )
+    monkeypatch.setattr(
+        f"{module_path}.reconcile_terminalized_permission_run",
+        reconcile,
+    )
+    monkeypatch.setattr(f"{module_path}.publish_pending_run_terminal", publish)
+    monkeypatch.setattr(
+        f"{module_path}.remove_queued_run",
+        remove_queued_run,
+        raising=False,
+    )
+
+    app = create_app()
+    app.state.run_stream_runtime = type(
+        "Runtime",
+        (),
+        {"worker_capabilities": object()},
+    )()
+    response = TestClient(app).post(
+        path,
+        headers=admin_headers() if is_admin else headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancelled"
+    assert calls[-1] == "queue_cleanup"
 
 
 

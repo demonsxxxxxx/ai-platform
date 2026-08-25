@@ -79,6 +79,27 @@ BACKEND_TEST_SHARDS = {
         "tests/test_app_lifespan.py",
         "tests/test_runtime_launch_script.py",
     ),
+    "run-control-contracts": (
+        "tests/test_admin_run_detail.py",
+        "tests/test_chat_selected_skill_routing.py",
+        "tests/test_claude_agent_events.py",
+        "tests/test_executor_reconciler.py",
+        "tests/test_issue_511_session_context_gen2.py",
+        "tests/test_platform_multi_agent_retirement.py",
+        "tests/test_routes.py",
+        "tests/test_run_admission_terminalization.py",
+        "tests/test_run_cancellation_use_case.py",
+        "tests/test_run_control_routes.py",
+        "tests/test_run_persistence.py",
+        "tests/test_run_projection.py",
+        "tests/test_sse_v3_contract_generation.py",
+        "tests/test_sse_v4_contract_generation.py",
+        "tests/test_streaming_contracts.py",
+    ),
+    "schema-migrations": (
+        "tests/test_schema_migrations.py",
+        "tests/test_schema_migrations_postgres.py",
+    ),
     "v4-durable-streaming": (
         "tests/test_streaming_v4_durable.py",
         "tests/test_streaming_v4_postgres_integration.py",
@@ -186,6 +207,8 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
             "redis:7.4-alpine",
             "redis://localhost:6379/15",
         ),
+        "run-control-contracts": ("", ""),
+        "schema-migrations": ("", ""),
         "v4-durable-streaming": (
             "redis:7.4-alpine",
             "redis://127.0.0.1:6379/15",
@@ -196,7 +219,15 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     }
     assert actual_postgres == {
         "sandbox-runtime": ("", ""),
-        "repository-worker-streaming": ("", ""),
+        "repository-worker-streaming": (
+            "postgres:16-alpine",
+            "postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform",
+        ),
+        "run-control-contracts": ("", ""),
+        "schema-migrations": (
+            "postgres:16-alpine",
+            "postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform",
+        ),
         "v4-durable-streaming": (
             "postgres:16-alpine",
             "postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform",
@@ -206,7 +237,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
         "release-governance-authority": ("", ""),
     }
     all_selectors = [selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors]
-    assert len(all_selectors) == len(set(all_selectors)) == 45
+    assert len(all_selectors) == len(set(all_selectors)) == 62
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job
@@ -225,7 +256,11 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert "--tb=short" in pytest_step
     assert "-o faulthandler_timeout=120" in pytest_step
     assert '--junitxml ".pytest-tmp/${{ matrix.shard }}.xml"' in pytest_step
-    assert 'if [ "${{ matrix.shard }}" = "v4-durable-streaming" ]' in pytest_step
+    assert (
+        'if [[ "${{ matrix.shard }}" =~ '
+        '^(repository-worker-streaming|run-control-contracts|schema-migrations|v4-durable-streaming)$ ]]'
+        in pytest_step
+    )
     assert "tools/require_zero_junit_skips.py" in pytest_step
     assert '--basetemp ".pytest-tmp/${{ matrix.shard }}"' in pytest_step
     assert "--collect-only" not in pytest_step

@@ -132,7 +132,7 @@ async def test_real_redis_replay_rejects_deleted_predecessor_instead_of_skipping
         second = await bridge.append(
             _envelope(event_id="evt4_replay_successor", seq=2)
         )
-        await client.xdel(key, first.redis_id)
+        await client.xdel(key, first)
 
         with pytest.raises(
             StreamContractError,
@@ -143,8 +143,8 @@ async def test_real_redis_replay_rejects_deleted_predecessor_instead_of_skipping
                 run_id="run-v4-evidence",
                 attempt_id="attempt-v4-evidence",
                 stream_incarnation=3,
-                after_redis_id=first.redis_id,
-                through_redis_id=second.redis_id,
+                after_redis_id=first,
+                through_redis_id=second,
             )
     finally:
         await client.delete(key, state_key)

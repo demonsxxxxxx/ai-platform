@@ -17,12 +17,16 @@ from redis.asyncio import Redis
 
 from app import repositories, schema_migrations
 from app.bootstrap import run_lifecycle
-from app.repositories import complete_run
 from app.run_admission_terminalization import terminalize_enqueue_failure_with_v4
 from app.runs.infrastructure.postgres import load_current_terminal_event_fact
 from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
 from app.routes import runtime_callbacks
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent
+from app.tool_permission_lifecycle import (
+    cancel_run_with_v4,
+    complete_run_with_v4,
+    fail_run_with_v4,
+)
 from app.streaming.application.recovery_v4 import V4SuccessorRebuildReceipt
 from app.streaming.application.worker_publication_v4 import (
     WorkerV4Capabilities,
@@ -103,14 +107,104 @@ def _redis_url() -> str:
     return value
 
 
+def _callback_capabilities(dsn: str, schema_name: str) -> WorkerV4Capabilities:
+    def factory():
+        return _connection_factory(dsn, schema_name)
+
+    return WorkerV4Capabilities(
+        authority=object(),
+        pending_admissions=object(),
+        event_persistence=PostgresWorkerEventPersistence(
+            factory,
+            append_event=repositories.append_event,
+            is_cancel_requested=repositories.is_cancel_requested,
+            load_terminal_event_fact=load_current_terminal_event_fact,
+        ),
+        publication_claims=object(),
+        publication_transport=object(),
+    )
+
+
 def _production_cancellation_use_case(conn):
     @asynccontextmanager
     async def transaction_factory():
         async with conn.transaction():
             yield conn
 
-    with patch.object(run_lifecycle, "transaction", transaction_factory):
+    settings = type(
+        "CancellationSettings",
+        (),
+        {"ai_session_secret": "test-v4-authority-secret"},
+    )()
+    with (
+        patch.object(run_lifecycle, "transaction", transaction_factory),
+        patch.object(run_lifecycle, "get_settings", return_value=settings),
+    ):
         return run_lifecycle.build_run_cancellation_use_case()
+
+
+async def _clear_seeded_stream_authority_for_cancellation(
+    conn, *, tenant_id: str, run_id: str, attempt_id: str
+) -> None:
+    await conn.execute(
+        "delete from sse_stream_authorities where tenant_id = %s and run_id = %s",
+        (tenant_id, run_id),
+    )
+    run_cursor = await conn.execute(
+        """
+        select workspace_id, user_id, session_id, agent_id, skill_id, execution_kind
+        from runs where tenant_id = %s and id = %s
+        """,
+        (tenant_id, run_id),
+    )
+    run_values = await run_cursor.fetchone()
+    assert run_values is not None
+    spec_json = json.dumps(
+        {
+            "schema_version": "ai-platform.execution-spec.v1",
+            "tenant_id": tenant_id,
+            "run_id": run_id,
+            **run_values,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    await conn.execute(
+        """
+        update runs
+        set status = 'queued', started_at = null, finished_at = null
+        where tenant_id = %s and id = %s
+        """,
+        (tenant_id, run_id),
+    )
+    await conn.execute(
+        """
+        insert into run_attempts(
+          id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
+          queue_attempt_id, execution_spec_schema_version, execution_spec_json,
+          execution_spec_canonical_json, execution_spec_sha256
+        ) values (%s, %s, %s, 1, 'created', 'queue_worker', 'worker-cancel',
+                  %s, 'ai-platform.execution-spec.v1', %s::jsonb, %s, %s)
+        """,
+        (
+            attempt_id,
+            tenant_id,
+            run_id,
+            f"queue_{attempt_id}",
+            spec_json,
+            spec_json,
+            hashlib.sha256(spec_json.encode("utf-8")).hexdigest(),
+        ),
+    )
+    await conn.execute(
+        """
+        update run_attempts
+        set status = 'queued', owner_generation = owner_generation + 1,
+            queue_message_id = 'message-cancel'
+        where tenant_id = %s and id = %s
+        """,
+        (tenant_id, attempt_id),
+    )
 
 
 async def _request_owner_cancel(
@@ -228,9 +322,10 @@ async def _seed_run(conn: psycopg.AsyncConnection, suffix: str) -> tuple[str, st
           tenant_id, run_id, attempt_id, design_id, projection_version,
           tenant_scope, stream_incarnation, state, open_event_id,
           open_payload_bytes, open_payload_digest, authorization_epoch,
-          revocation_state
+          revocation_state, admission_confirmed_at
         ) values (%s, %s, %s, 'ai-platform.redis-streams-sse-event-channel.v4',
-                  'public-stream-v4', %s, 2, 'confirmed', %s, %s, %s, 4, 'active')
+                  'public-stream-v4', %s, 2, 'confirmed', %s, %s, %s, 4, 'active',
+                  clock_timestamp())
         """,
         (
             tenant,
@@ -960,7 +1055,7 @@ async def test_real_callback_handler_rolls_back_receipt_and_v4_rows_together(mon
         async with _connection_factory(dsn, schema_name) as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "update sandbox_leases set lease_payload_json = jsonb_build_object('attempt_id', %s) where id = 'lease'",
+                    "update sandbox_leases set lease_payload_json = jsonb_build_object('attempt_id', %s::text) where id = 'lease'",
                     (attempt,),
                 )
 
@@ -1000,7 +1095,10 @@ async def test_real_callback_handler_rolls_back_receipt_and_v4_rows_together(mon
         )
 
         with pytest.raises(HTTPException) as exc_info:
-            await runtime_callbacks.record_executor_callback(callback)
+            await runtime_callbacks.record_executor_callback(
+                callback,
+                capabilities=_callback_capabilities(dsn, schema_name),
+            )
 
         assert exc_info.value.detail == "sandbox_runtime_attempt_inactive"
         assert lease_checks == 2
@@ -1045,7 +1143,11 @@ async def test_real_callback_handler_duplicate_reuses_published_v4_row(monkeypat
                 lambda: _connection_factory(dsn, schema_name),
             )
 
-            first = await runtime_callbacks.record_executor_callback(callback)
+            capabilities = _callback_capabilities(dsn, schema_name)
+            first = await runtime_callbacks.record_executor_callback(
+                callback,
+                capabilities=capabilities,
+            )
             async with _connection_factory(dsn, schema_name) as conn:
                 first_row_cursor = await conn.execute(
                     """
@@ -1066,7 +1168,10 @@ async def test_real_callback_handler_duplicate_reuses_published_v4_row(monkeypat
             assert first_row["stream_publication_state"] == "pending"
             assert first_row["stream_publication_attempts"] == 0
 
-            second = await runtime_callbacks.record_executor_callback(callback)
+            second = await runtime_callbacks.record_executor_callback(
+                callback,
+                capabilities=capabilities,
+            )
             async with _connection_factory(dsn, schema_name) as conn:
                 row_cursor = await conn.execute(
                     """
@@ -1177,7 +1282,10 @@ async def test_real_callback_handler_commits_pending_row_before_redis_outage(mon
             lambda: _connection_factory(dsn, schema_name),
         )
 
-        result = await runtime_callbacks.record_executor_callback(callback)
+        result = await runtime_callbacks.record_executor_callback(
+            callback,
+            capabilities=_callback_capabilities(dsn, schema_name),
+        )
         claims = PostgresV4PublicationClaims(
             lambda: _connection_factory(dsn, schema_name)
         )
@@ -3188,8 +3296,9 @@ async def test_complete_run_writes_one_v4_terminal_row_with_existing_intent_iden
     async with _schema() as (_dsn_value, schema_name, ids):
         tenant, run, _attempt = ids
         async with _connection_factory(_dsn(), schema_name) as conn:
-            assert await complete_run(
+            assert await complete_run_with_v4(
                 conn,
+                capabilities=_callback_capabilities(_dsn_value, schema_name),
                 tenant_id=tenant,
                 run_id=run,
                 result_json={"message": "done"},
@@ -3224,16 +3333,18 @@ async def test_failed_and_cancelled_run_producers_are_exact_once_and_conflict_cl
         tenant, run, attempt = ids
         async with _connection_factory(_dsn(), schema_name) as conn:
             if status == "failed":
-                progress = await repositories.fail_run(
+                progress = await fail_run_with_v4(
                     conn,
+                    capabilities=_callback_capabilities(_dsn_value, schema_name),
                     tenant_id=tenant,
                     run_id=run,
                     error_code="executor_private_exception",
                     error_message="private path C:/tenant/secret",
                 )
             else:
-                progress = await repositories.cancel_run(
+                progress = await cancel_run_with_v4(
                     conn,
+                    capabilities=_callback_capabilities(_dsn_value, schema_name),
                     tenant_id=tenant,
                     run_id=run,
                 )
@@ -3301,10 +3412,16 @@ async def test_failed_and_cancelled_run_producers_are_exact_once_and_conflict_cl
 @pytest.mark.asyncio
 async def test_production_cancel_composition_preserves_owner_fences_order_and_retry():
     async with _schema() as (_dsn_value, schema_name, ids):
-        tenant, run, _attempt = ids
+        tenant, run, attempt = ids
         suffix = tenant[2:]
         user = f"u_{suffix}"
         async with _connection_factory(_dsn(), schema_name) as conn:
+            await _clear_seeded_stream_authority_for_cancellation(
+                conn,
+                tenant_id=tenant,
+                run_id=run,
+                attempt_id=attempt,
+            )
             use_case = _production_cancellation_use_case(conn)
             assert await _request_owner_cancel(
                 use_case,
@@ -3389,7 +3506,6 @@ async def test_production_cancel_composition_preserves_owner_fences_order_and_re
             )
             rows = await cursor.fetchall()
             assert [row["event_type"] for row in rows] == [
-                "run_cancel_requested",
                 "run.cancel_requested",
                 "run_cancelled",
                 "run.cancelled",
@@ -3397,7 +3513,7 @@ async def test_production_cancel_composition_preserves_owner_fences_order_and_re
             assert [row["sequence"] for row in rows] == sorted(
                 row["sequence"] for row in rows
             )
-            assert rows[1]["payload_json"]["source"] == "user"
+            assert rows[0]["payload_json"]["source"] == "user"
 
             audit_cursor = await conn.execute(
                 """
@@ -3425,9 +3541,15 @@ async def test_production_cancel_composition_preserves_owner_fences_order_and_re
 @pytest.mark.asyncio
 async def test_production_cancel_composition_preserves_admin_self_cancel_facts():
     async with _schema() as (_dsn_value, schema_name, ids):
-        tenant, run, _attempt = ids
+        tenant, run, attempt = ids
         user = f"u_{tenant[2:]}"
         async with _connection_factory(_dsn(), schema_name) as conn:
+            await _clear_seeded_stream_authority_for_cancellation(
+                conn,
+                tenant_id=tenant,
+                run_id=run,
+                attempt_id=attempt,
+            )
             use_case = _production_cancellation_use_case(conn)
             result = await _request_admin_cancel(
                 use_case,
@@ -3456,6 +3578,7 @@ async def test_production_cancel_composition_preserves_admin_self_cancel_facts()
                 select user_id, action, target_id, payload_json
                 from audit_logs
                 where tenant_id = %s and target_id = %s
+                  and action = 'admin.run.cancel'
                 """,
                 (tenant, run),
             )
@@ -3475,9 +3598,15 @@ async def test_production_cancel_composition_preserves_admin_self_cancel_facts()
 @pytest.mark.asyncio
 async def test_production_cancel_composition_rolls_back_run_events_and_audit():
     async with _schema() as (_dsn_value, schema_name, ids):
-        tenant, run, _attempt = ids
+        tenant, run, attempt = ids
         user = f"u_{tenant[2:]}"
         async with _connection_factory(_dsn(), schema_name) as conn:
+            await _clear_seeded_stream_authority_for_cancellation(
+                conn,
+                tenant_id=tenant,
+                run_id=run,
+                attempt_id=attempt,
+            )
             real_append_audit_log = run_lifecycle.repositories.append_audit_log
 
             async def fail_after_audit_write(*args, **kwargs):
@@ -3507,7 +3636,7 @@ async def test_production_cancel_composition_rolls_back_run_events_and_audit():
             )
             run_row = await run_cursor.fetchone()
             assert run_row == {
-                "status": "running",
+                "status": "queued",
                 "cancel_requested_at": None,
                 "permission_terminalization_target": None,
             }

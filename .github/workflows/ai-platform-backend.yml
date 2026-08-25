@@ -164,8 +164,8 @@ jobs:
               tests/test_sandbox_runtime_evidence_script.py
               tests/test_contract.py
           - shard: repository-worker-streaming
-            postgres_image: ""
-            postgres_url: ""
+            postgres_image: postgres:16-alpine
+            postgres_url: postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform
             redis_image: redis:7.4-alpine
             redis_url: redis://localhost:6379/15
             test_files: >-
@@ -181,6 +181,35 @@ jobs:
               tests/test_lambchat_sse_v21.py
               tests/test_app_lifespan.py
               tests/test_runtime_launch_script.py
+          - shard: run-control-contracts
+            postgres_image: ""
+            postgres_url: ""
+            redis_image: ""
+            redis_url: ""
+            test_files: >-
+              tests/test_admin_run_detail.py
+              tests/test_chat_selected_skill_routing.py
+              tests/test_claude_agent_events.py
+              tests/test_executor_reconciler.py
+              tests/test_issue_511_session_context_gen2.py
+              tests/test_platform_multi_agent_retirement.py
+              tests/test_routes.py
+              tests/test_run_admission_terminalization.py
+              tests/test_run_cancellation_use_case.py
+              tests/test_run_control_routes.py
+              tests/test_run_persistence.py
+              tests/test_run_projection.py
+              tests/test_sse_v3_contract_generation.py
+              tests/test_sse_v4_contract_generation.py
+              tests/test_streaming_contracts.py
+          - shard: schema-migrations
+            postgres_image: postgres:16-alpine
+            postgres_url: postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform
+            redis_image: ""
+            redis_url: ""
+            test_files: >-
+              tests/test_schema_migrations.py
+              tests/test_schema_migrations_postgres.py
           - shard: v4-durable-streaming
             postgres_image: postgres:16-alpine
             postgres_url: postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform
@@ -264,7 +293,7 @@ jobs:
               -o faulthandler_timeout=120 \
               --junitxml ".pytest-tmp/${{ matrix.shard }}.xml" \
               --basetemp ".pytest-tmp/${{ matrix.shard }}"
-          if [ "${{ matrix.shard }}" = "v4-durable-streaming" ]; then
+          if [[ "${{ matrix.shard }}" =~ ^(repository-worker-streaming|run-control-contracts|schema-migrations|v4-durable-streaming)$ ]]; then
             uv run --locked --extra test python tools/require_zero_junit_skips.py \
               ".pytest-tmp/${{ matrix.shard }}.xml"
           fi

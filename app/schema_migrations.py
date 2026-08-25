@@ -294,7 +294,7 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "c",
         "CHECK ((status = ANY (ARRAY['succeeded'::text, 'failed'::text, "
         "'cancelled'::text])) AND finished_at IS NOT NULL "
-        "OR NOT (status = ANY (ARRAY['succeeded'::text, 'failed'::text, "
+        "OR (status <> ALL (ARRAY['succeeded'::text, 'failed'::text, "
         "'cancelled'::text])) AND finished_at IS NULL)",
     ),
     (
@@ -324,6 +324,20 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "stream_publication_claim_expires_at IS NULL OR "
         "stream_publication_claim_token IS NOT NULL AND "
         "stream_publication_claim_expires_at IS NOT NULL)",
+    ),
+    (
+        "sse_stream_authorities",
+        "chk_sse_stream_authority_open_format",
+        "c",
+        "CHECK (open_event_id <> ''::text AND open_payload_bytes <> ''::text "
+        "AND open_payload_digest ~ '^[0-9a-f]{64}$'::text)",
+    ),
+    (
+        "sse_stream_authorities",
+        "chk_sse_stream_authority_pending_confirmation",
+        "c",
+        "CHECK (state = 'admission_pending'::text AND admission_confirmed_at IS NULL "
+        "OR state <> 'admission_pending'::text AND admission_confirmed_at IS NOT NULL)",
     ),
     (
         "sse_stream_rebuilds",
@@ -371,27 +385,24 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "sse_stream_rebuilds",
         "chk_sse_stream_rebuild_receipt",
         "c",
-        "CHECK (((receipt_entry_count IS NULL) AND "
-        "(receipt_open_event_id IS NULL) AND (receipt_terminal_event_id IS NULL) "
-        "AND (receipt_end_event_id IS NULL) AND (receipt_last_redis_id IS NULL) "
-        "AND (receipt_last_envelope_bytes IS NULL) "
-        "AND (receipt_last_envelope_digest IS NULL) AND (receipt_digest IS NULL)) "
-        "OR ((receipt_entry_count IS NOT NULL) "
-        "AND (receipt_entry_count = (item_count + 2)) "
-        "AND (receipt_open_event_id IS NOT NULL) "
-        "AND (receipt_open_event_id <> ''::text) "
-        "AND (receipt_terminal_event_id IS NOT NULL) "
-        "AND (receipt_terminal_event_id <> ''::text) "
-        "AND (receipt_end_event_id IS NOT NULL) "
-        "AND (receipt_end_event_id <> ''::text) "
-        "AND (receipt_last_redis_id IS NOT NULL) "
-        "AND (receipt_last_redis_id ~ '^[0-9]+-[0-9]+$'::text) "
-        "AND (receipt_last_envelope_bytes IS NOT NULL) "
-        "AND (receipt_last_envelope_bytes <> ''::text) "
-        "AND (receipt_last_envelope_digest IS NOT NULL) "
-        "AND (receipt_last_envelope_digest ~ '^[0-9a-f]{64}$'::text) "
-        "AND (receipt_digest IS NOT NULL) "
-        "AND (receipt_digest ~ '^[0-9a-f]{64}$'::text)))",
+        "CHECK (receipt_entry_count IS NULL AND receipt_open_event_id IS NULL "
+        "AND receipt_terminal_event_id IS NULL AND receipt_end_event_id IS NULL "
+        "AND receipt_last_redis_id IS NULL AND receipt_last_envelope_bytes IS NULL "
+        "AND receipt_last_envelope_digest IS NULL AND receipt_digest IS NULL "
+        "OR receipt_entry_count IS NOT NULL "
+        "AND receipt_entry_count = (item_count + 2) "
+        "AND receipt_open_event_id IS NOT NULL AND receipt_open_event_id <> ''::text "
+        "AND receipt_terminal_event_id IS NOT NULL "
+        "AND receipt_terminal_event_id <> ''::text "
+        "AND receipt_end_event_id IS NOT NULL AND receipt_end_event_id <> ''::text "
+        "AND receipt_last_redis_id IS NOT NULL "
+        "AND receipt_last_redis_id ~ '^[0-9]+-[0-9]+$'::text "
+        "AND receipt_last_envelope_bytes IS NOT NULL "
+        "AND receipt_last_envelope_bytes <> ''::text "
+        "AND receipt_last_envelope_digest IS NOT NULL "
+        "AND receipt_last_envelope_digest ~ '^[0-9a-f]{64}$'::text "
+        "AND receipt_digest IS NOT NULL "
+        "AND receipt_digest ~ '^[0-9a-f]{64}$'::text)",
     ),
     (
         "sse_stream_rebuilds",

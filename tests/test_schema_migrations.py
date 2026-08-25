@@ -466,7 +466,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "c",
             "CHECK ((status = ANY (ARRAY['succeeded'::text, 'failed'::text, "
             "'cancelled'::text])) AND finished_at IS NOT NULL "
-            "OR NOT (status = ANY (ARRAY['succeeded'::text, 'failed'::text, "
+            "OR (status <> ALL (ARRAY['succeeded'::text, 'failed'::text, "
             "'cancelled'::text])) AND finished_at IS NULL)",
         ),
         (
@@ -496,6 +496,20 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "stream_publication_claim_expires_at IS NULL OR "
             "stream_publication_claim_token IS NOT NULL AND "
             "stream_publication_claim_expires_at IS NOT NULL)",
+        ),
+        (
+            "sse_stream_authorities",
+            "chk_sse_stream_authority_open_format",
+            "c",
+            "CHECK (open_event_id <> ''::text AND open_payload_bytes <> ''::text "
+            "AND open_payload_digest ~ '^[0-9a-f]{64}$'::text)",
+        ),
+        (
+            "sse_stream_authorities",
+            "chk_sse_stream_authority_pending_confirmation",
+            "c",
+            "CHECK (state = 'admission_pending'::text AND admission_confirmed_at IS NULL "
+            "OR state <> 'admission_pending'::text AND admission_confirmed_at IS NOT NULL)",
         ),
         (
             "sse_stream_rebuilds",
@@ -543,27 +557,24 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "sse_stream_rebuilds",
             "chk_sse_stream_rebuild_receipt",
             "c",
-            "CHECK (((receipt_entry_count IS NULL) AND "
-            "(receipt_open_event_id IS NULL) AND (receipt_terminal_event_id IS NULL) "
-            "AND (receipt_end_event_id IS NULL) AND (receipt_last_redis_id IS NULL) "
-            "AND (receipt_last_envelope_bytes IS NULL) "
-            "AND (receipt_last_envelope_digest IS NULL) AND (receipt_digest IS NULL)) "
-            "OR ((receipt_entry_count IS NOT NULL) "
-            "AND (receipt_entry_count = (item_count + 2)) "
-            "AND (receipt_open_event_id IS NOT NULL) "
-            "AND (receipt_open_event_id <> ''::text) "
-            "AND (receipt_terminal_event_id IS NOT NULL) "
-            "AND (receipt_terminal_event_id <> ''::text) "
-            "AND (receipt_end_event_id IS NOT NULL) "
-            "AND (receipt_end_event_id <> ''::text) "
-            "AND (receipt_last_redis_id IS NOT NULL) "
-            "AND (receipt_last_redis_id ~ '^[0-9]+-[0-9]+$'::text) "
-            "AND (receipt_last_envelope_bytes IS NOT NULL) "
-            "AND (receipt_last_envelope_bytes <> ''::text) "
-            "AND (receipt_last_envelope_digest IS NOT NULL) "
-            "AND (receipt_last_envelope_digest ~ '^[0-9a-f]{64}$'::text) "
-            "AND (receipt_digest IS NOT NULL) "
-            "AND (receipt_digest ~ '^[0-9a-f]{64}$'::text)))",
+            "CHECK (receipt_entry_count IS NULL AND receipt_open_event_id IS NULL "
+            "AND receipt_terminal_event_id IS NULL AND receipt_end_event_id IS NULL "
+            "AND receipt_last_redis_id IS NULL AND receipt_last_envelope_bytes IS NULL "
+            "AND receipt_last_envelope_digest IS NULL AND receipt_digest IS NULL "
+            "OR receipt_entry_count IS NOT NULL "
+            "AND receipt_entry_count = (item_count + 2) "
+            "AND receipt_open_event_id IS NOT NULL AND receipt_open_event_id <> ''::text "
+            "AND receipt_terminal_event_id IS NOT NULL "
+            "AND receipt_terminal_event_id <> ''::text "
+            "AND receipt_end_event_id IS NOT NULL AND receipt_end_event_id <> ''::text "
+            "AND receipt_last_redis_id IS NOT NULL "
+            "AND receipt_last_redis_id ~ '^[0-9]+-[0-9]+$'::text "
+            "AND receipt_last_envelope_bytes IS NOT NULL "
+            "AND receipt_last_envelope_bytes <> ''::text "
+            "AND receipt_last_envelope_digest IS NOT NULL "
+            "AND receipt_last_envelope_digest ~ '^[0-9a-f]{64}$'::text "
+            "AND receipt_digest IS NOT NULL "
+            "AND receipt_digest ~ '^[0-9a-f]{64}$'::text)",
         ),
         (
             "sse_stream_rebuilds",
@@ -754,7 +765,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "d474b751d6fb6bff75cbbb8f3c482cb42f38ac462c116313baeccfc2c247fef7"
+        "fcc2742b4bd0885e53f9aa2fe92620fd3ebc0ceaaa739bff2549f13a6ae1622a"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "
@@ -827,6 +838,25 @@ def test_v4_successor_rebuild_schema_is_additive_and_claim_fenced():
         "state = any array['building', 'ready']"
     )
     assert static_indexes["uq_sse_stream_rebuild_item_event"].unique is True
+
+
+def test_schema_upgrade_adds_v4_columns_before_indexes_and_repairs_confirmation_history():
+    schema = schema_migrations.schema_sql()
+    add_publication_state = schema.index(
+        "alter table run_events add column if not exists stream_publication_state text;"
+    )
+    create_due_index = schema.index(
+        "create index if not exists idx_run_events_v4_due_scope"
+    )
+    repair_confirmation = schema.index(
+        "update sse_stream_authorities\nset admission_confirmed_at = coalesce("
+    )
+    add_confirmation_constraint = schema.index(
+        "add constraint chk_sse_stream_authority_pending_confirmation"
+    )
+
+    assert add_publication_state < create_due_index
+    assert repair_confirmation < add_confirmation_constraint
 
 
 @pytest.mark.asyncio

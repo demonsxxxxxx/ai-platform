@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -9,6 +10,8 @@ from app.runs.api import RunTerminalizationProgress
 class _RouteCancellationReceipt:
     def __init__(self, value):
         self._value = value
+        self.run_id = value.get("run_id")
+        self.attempt_id = value.get("attempt_id")
 
     def as_route_result(self):
         return dict(self._value)
@@ -41,6 +44,22 @@ def _install_admin_cancel(monkeypatch, handler):
         "app.routes.admin_runs.drain_run_tool_permission_terminalization",
         no_terminal_progress,
     )
+
+
+@pytest.fixture(autouse=True)
+def _install_test_run_stream_runtime(monkeypatch):
+    original_create_app = create_app
+
+    def create_app_with_runtime():
+        app = original_create_app()
+        app.state.run_stream_runtime = type(
+            "TestRunStreamRuntime",
+            (),
+            {"worker_capabilities": object()},
+        )()
+        return app
+
+    monkeypatch.setattr(f"{__name__}.create_app", create_app_with_runtime)
 
 
 def auth_settings():
