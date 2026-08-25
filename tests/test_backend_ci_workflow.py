@@ -1115,7 +1115,7 @@ def test_backend_image_job_builds_only_affected_pull_request_candidates_and_chec
     assert "import app.main, claude_agent_sdk" in image_job
     assert "http://127.0.0.1:18020/api/ai/health" in image_job
     assert "python - <<'PY'" not in startup_step
-    assert "secrets.token_urlsafe(32)" in startup_step
+    assert "os.urandom(32)" in startup_step
     assert '--env AI_SESSION_SECRET="$session_secret"' in startup_step
     assert 'BACKEND_HEALTH_FILE="$RUNNER_TEMP/backend-health.json" python -c' in startup_step
     assert "backend_container_state=" in startup_step

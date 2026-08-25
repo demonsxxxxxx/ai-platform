@@ -494,7 +494,7 @@ jobs:
           }
           cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
           trap cleanup EXIT
-          session_secret="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+          session_secret="$(python -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
           if ! docker run --detach --name "$container" \
             --env AI_SESSION_SECRET="$session_secret" \
             --publish 127.0.0.1:18020:8020 \
