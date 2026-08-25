@@ -7,6 +7,12 @@ import pytest
 from app import schema_migrations
 
 
+# Exact 2026.08.27.1 ledger checksum at the remote PR predecessor 829acfcd.
+REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM = (
+    "d474b751d6fb6bff75cbbb8f3c482cb42f38ac462c116313baeccfc2c247fef7"
+)
+
+
 class FakeCursor:
     def __init__(self, row):
         self.row = row
@@ -236,9 +242,8 @@ async def test_pending_admission_schema_advances_to_current_schema():
 @pytest.mark.asyncio
 async def test_successor_activation_schema_advances_to_concurrent_due_index_schema():
     state = SharedMigrationState()
-    predecessor_checksum = "d474b751d6fb6bff75cbbb8f3c482cb42f38ac462c116313baeccfc2c247fef7"
     state.ledger[schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION] = (
-        predecessor_checksum
+        REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM
     )
 
     result = await schema_migrations.apply_migrations(
@@ -249,7 +254,7 @@ async def test_successor_activation_schema_advances_to_concurrent_due_index_sche
     assert result["status"] == "applied"
     assert state.schema_execute_count == 1
     assert state.ledger[schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION] == (
-        predecessor_checksum
+        REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM
     )
     assert state.ledger[schema_migrations.TARGET_SCHEMA_VERSION] == (
         schema_migrations.schema_checksum()

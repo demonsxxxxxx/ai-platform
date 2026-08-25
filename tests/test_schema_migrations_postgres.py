@@ -13,6 +13,10 @@ from app import schema_migrations
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
+# Exact 2026.08.27.1 ledger checksum at the remote PR predecessor 829acfcd.
+REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM = (
+    "d474b751d6fb6bff75cbbb8f3c482cb42f38ac462c116313baeccfc2c247fef7"
+)
 
 
 def _postgres_dsn() -> str:
@@ -145,7 +149,7 @@ async def test_real_postgres_upgrade_restores_v4_publication_schema_and_confirma
             """,
             (
                 schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION,
-                "d474b751d6fb6bff75cbbb8f3c482cb42f38ac462c116313baeccfc2c247fef7",
+                REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM,
             ),
         )
         await admin.execute(
@@ -226,7 +230,7 @@ async def test_real_postgres_upgrade_restores_v4_publication_schema_and_confirma
         assert await ledger_rows.fetchall() == [
             {
                 "version": schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION,
-                "checksum_sha256": "d474b751d6fb6bff75cbbb8f3c482cb42f38ac462c116313baeccfc2c247fef7",
+                "checksum_sha256": REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM,
             },
             {
                 "version": schema_migrations.TARGET_SCHEMA_VERSION,
