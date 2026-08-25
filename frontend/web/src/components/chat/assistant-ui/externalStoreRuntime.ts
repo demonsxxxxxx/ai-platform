@@ -90,7 +90,13 @@ export function toAssistantUiMessage(message: Message): ThreadMessageLike {
     role: message.role,
     content: content.length ? content : message.content,
     createdAt: message.timestamp,
-    status: message.isStreaming ? { type: "running" } : { type: "complete", reason: "stop" },
+    ...(message.role === "assistant"
+      ? {
+          status: message.isStreaming
+            ? { type: "running" as const }
+            : { type: "complete" as const, reason: "stop" as const },
+        }
+      : {}),
     metadata: {
       custom: {
         runId: message.runId,

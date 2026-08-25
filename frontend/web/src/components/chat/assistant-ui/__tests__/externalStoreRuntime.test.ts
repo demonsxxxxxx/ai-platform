@@ -17,6 +17,25 @@ test("assistant-ui composer delegates only text content to the existing send own
   );
 });
 
+test("external message conversion keeps assistant-only status off user messages", () => {
+  const user = toAssistantUiMessage({
+    id: "message-user",
+    role: "user",
+    content: "hello",
+    timestamp: new Date("2026-01-01T00:00:00Z"),
+  });
+  const assistant = toAssistantUiMessage({
+    id: "message-assistant",
+    role: "assistant",
+    content: "hello",
+    timestamp: new Date("2026-01-01T00:00:00Z"),
+  });
+
+  assert.equal("status" in user, false);
+  assert.deepEqual(assistant.status, { type: "complete", reason: "stop" });
+});
+
+
 test("external message conversion preserves authorized public tool identity without raw results", () => {
   const converted = toAssistantUiMessage({
     id: "message-1",
