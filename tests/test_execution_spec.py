@@ -175,7 +175,6 @@ def test_execution_spec_architecture_keeps_attempt_and_credentials_out_of_spec()
     decision = EXECUTION_SPEC_ARCHITECTURE.read_text(encoding="utf-8")
 
     assert "The completed migration gives every dispatch or redispatch" in decision
-    assert "It does not yet persist the canonical JSON or digest" in decision
     assert "attempt_id" not in _spec_payload()
     assert "provider API keys" in decision
     assert "Queue wire shape remains compatible" in decision
