@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+import hashlib
 import os
 from pathlib import Path
 import uuid
@@ -17,6 +18,53 @@ POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
 REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM = (
     "d474b751d6fb6bff75cbbb8f3c482cb42f38ac462c116313baeccfc2c247fef7"
 )
+REMOTE_DUE_INDEX_SQL = """create index if not exists idx_run_events_v4_due_scope
+  on run_events(tenant_id, run_id, sequence)
+  where visible_to_user = true
+    and payload_json ? '__stream_v4'
+    and stream_publication_state = 'pending';
+
+
+"""
+CONFIRMATION_HISTORY_REPAIR_SQL = """update sse_stream_authorities
+set admission_confirmed_at = coalesce(
+  admission_confirmed_at,
+  admission_created_at,
+  updated_at,
+  clock_timestamp()
+)
+where state <> 'admission_pending'
+  and admission_confirmed_at is null;
+
+update sse_stream_authorities
+set admission_confirmed_at = null
+where state = 'admission_pending'
+  and admission_confirmed_at is not null;
+
+"""
+
+
+def _remote_successor_activation_schema_sql() -> str:
+    current_sql = Path("app/schema.sql").read_text(encoding="utf-8")
+    trace_column_sql = (
+        "alter table run_events add column if not exists trace_id text not null default '';"
+    )
+    assert current_sql.count(trace_column_sql) == 1
+    assert current_sql.count(CONFIRMATION_HISTORY_REPAIR_SQL) == 1
+    remote_sql = current_sql.replace(
+        trace_column_sql,
+        REMOTE_DUE_INDEX_SQL + trace_column_sql,
+    ).replace(CONFIRMATION_HISTORY_REPAIR_SQL, "")
+    remote_index_contract = "\n".join(
+        f"{migration.name}:{migration.checksum_sha256}"
+        for migration in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
+        if migration.name != "idx_run_events_v4_due_scope"
+    )
+    remote_checksum = hashlib.sha256(
+        f"{remote_sql}\n-- concurrent-index-contract\n{remote_index_contract}".encode()
+    ).hexdigest()
+    assert remote_checksum == REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM
+    return remote_sql
 
 
 def _postgres_dsn() -> str:
@@ -141,7 +189,7 @@ async def test_real_postgres_upgrade_restores_v4_publication_schema_and_confirma
         await admin.execute(
             sql.SQL("set search_path to {}").format(sql.Identifier(schema_name))
         )
-        await admin.execute(Path("app/schema.sql").read_text(encoding="utf-8"))
+        await admin.execute(_remote_successor_activation_schema_sql())
         await admin.execute(
             """
             insert into schema_migrations(version, checksum_sha256)
@@ -195,27 +243,6 @@ async def test_real_postgres_upgrade_restores_v4_publication_schema_and_confirma
         await admin.execute(
             "update sse_stream_authorities set admission_confirmed_at = null where run_id = 'v4-run'"
         )
-        await admin.execute("drop index if exists idx_run_events_v4_due_scope")
-        await admin.execute(
-            "alter table run_events drop constraint chk_run_events_stream_publication_claim"
-        )
-        await admin.execute(
-            "alter table run_events drop constraint chk_run_events_stream_publication_state"
-        )
-        for column_name in (
-            "stream_publication_state",
-            "stream_publication_attempts",
-            "stream_publication_next_attempt_at",
-            "stream_publication_redis_id",
-            "stream_publication_last_error",
-            "stream_publication_claim_token",
-            "stream_publication_claim_expires_at",
-        ):
-            await admin.execute(
-                sql.SQL("alter table run_events drop column {}").format(
-                    sql.Identifier(column_name)
-                )
-            )
 
         factory = _transaction_factory(dsn, schema_name)
         result = await schema_migrations.apply_migrations(

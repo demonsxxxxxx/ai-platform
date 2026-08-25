@@ -891,7 +891,7 @@ def test_schema_upgrade_delegates_v4_index_and_repairs_confirmation_history():
 
 
 @pytest.mark.asyncio
-async def test_v4_successor_rollback_removes_only_dormant_snapshot_tables():
+async def test_v4_successor_rollback_removes_dormant_snapshots_and_due_index_state():
     class FakeResult:
         async def fetchone(self):
             return None
@@ -910,12 +910,22 @@ async def test_v4_successor_rollback_removes_only_dormant_snapshot_tables():
         "drop table if exists sse_stream_rebuild_items",
         "drop table if exists sse_stream_rebuilds",
     ]
-    assert conn.statements[3][1] == (
+    assert conn.statements[3] == (
+        "drop index if exists idx_run_events_v4_due_scope",
+        None,
+    )
+    assert conn.statements[4] == (
+        "delete from schema_index_migrations where index_name = %s",
+        ("idx_run_events_v4_due_scope",),
+    )
+    assert conn.statements[5][1] == (
         schema_migrations.V4_SUCCESSOR_REBUILD_SCHEMA_VERSION,
         schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION,
         schema_migrations.TARGET_SCHEMA_VERSION,
     )
-    assert all("run_events" not in statement for statement, _ in conn.statements)
+    assert all("delete from run_events" not in statement for statement, _ in conn.statements)
+    assert all("alter table run_events" not in statement for statement, _ in conn.statements)
+    assert all("drop table if exists run_events" not in statement for statement, _ in conn.statements)
     assert all("sse_stream_authorities" not in statement for statement, _ in conn.statements)
 
 
@@ -959,6 +969,7 @@ async def test_v4_rollback_removes_only_publication_bookkeeping():
     assert conn.event_facts == [{"id": "evt4_fact", "sequence": 9}]
     assert any("drop index if exists idx_run_events_stream_publication_claim" in item for item in conn.statements)
     assert any("drop index if exists idx_run_events_stream_publication_retry" in item for item in conn.statements)
+    assert any("drop index if exists idx_run_events_v4_due_scope" in item for item in conn.statements)
     assert any("delete from schema_index_migrations" in item for item in conn.statements)
     assert any("delete from schema_migrations" in item for item in conn.statements)
     assert any("drop constraint if exists chk_run_events_stream_publication_claim" in item for item in conn.statements)

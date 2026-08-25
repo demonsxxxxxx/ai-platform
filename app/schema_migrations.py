@@ -1039,6 +1039,11 @@ async def rollback_v4_successor_rebuild_migration(conn: Any) -> None:
         raise SchemaMigrationError("v4_successor_rebuild_rollback_cutover_exists")
     await conn.execute("drop table if exists sse_stream_rebuild_items")
     await conn.execute("drop table if exists sse_stream_rebuilds")
+    await conn.execute("drop index if exists idx_run_events_v4_due_scope")
+    await conn.execute(
+        "delete from schema_index_migrations where index_name = %s",
+        ("idx_run_events_v4_due_scope",),
+    )
     await conn.execute(
         "delete from schema_migrations where version in (%s, %s, %s)",
         (
@@ -1054,11 +1059,13 @@ async def rollback_v4_publication_migration(conn: Any) -> None:
 
     await conn.execute("drop index if exists idx_run_events_stream_publication_claim")
     await conn.execute("drop index if exists idx_run_events_stream_publication_retry")
+    await conn.execute("drop index if exists idx_run_events_v4_due_scope")
     await conn.execute(
-        "delete from schema_index_migrations where index_name in (%s, %s)",
+        "delete from schema_index_migrations where index_name in (%s, %s, %s)",
         (
             "idx_run_events_stream_publication_claim",
             "idx_run_events_stream_publication_retry",
+            "idx_run_events_v4_due_scope",
         ),
     )
     await conn.execute(
