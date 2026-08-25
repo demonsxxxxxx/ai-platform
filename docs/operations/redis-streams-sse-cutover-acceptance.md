@@ -98,10 +98,12 @@ It rejects:
 - missing required no-buffer/no-transform gateway configuration.
 
 The checker is one source gate, not the complete release evidence collector.
-Required workflow tests separately execute schema security fixtures, generated
-contract tests, real Redis/PostgreSQL behavior, frontend projection tests, and
-image provenance. Checker tests use structural fixtures and execute the checker;
-a test that only searches for one string does not satisfy this gate.
+The required workflow separately executes its selected schema-contract, real
+Redis/PostgreSQL, frontend projection, and image-provenance owners; the checker
+itself owns generated-artifact drift. Standalone owning tests not selected by a
+required job remain useful repository evidence but are not represented here as
+executed release evidence. Checker tests use structural fixtures and execute the
+checker; a test that only searches for one string does not satisfy this gate.
 
 ## SSE application and Nginx contract
 

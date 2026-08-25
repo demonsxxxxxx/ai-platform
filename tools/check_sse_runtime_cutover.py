@@ -126,6 +126,16 @@ def _nested_function(
 
 def _redis_append_inside_transaction(node: ast.AST) -> list[int]:
     bridge_names = {"bridge", "stream_bridge"}
+    application_publication_calls = {
+        "admit_v4_stream",
+        "finalize_parent_and_publish",
+        "persist_and_publish_worker_event",
+        "publish_claimed_v4_events",
+        "publish_pending_admissions",
+        "publish_pending_run_terminal",
+        "publish_pending_v4_admissions",
+        "publish_pending_v4_events",
+    }
     for candidate in ast.walk(node):
         if not isinstance(candidate, (ast.Assign, ast.AnnAssign)):
             continue
@@ -172,7 +182,11 @@ def _redis_append_inside_transaction(node: ast.AST) -> list[int]:
                 and parts[-1]
                 in {"open", "publish_committed_event"}
             )
-            if direct_bridge_append or publisher_redis_call:
+            active_v4_publication_call = (
+                parts[-1] in application_publication_calls
+                or name.endswith(".publication_transport.publish")
+            )
+            if direct_bridge_append or publisher_redis_call or active_v4_publication_call:
                 failures.append(call.lineno)
     return failures
 
@@ -337,10 +351,11 @@ def _typescript_call_arguments(source: str, callee: str) -> list[str]:
 
 
 def _nginx_sse_contract_failures(source: str) -> list[str]:
+    uncommented = "\n".join(line.split("#", 1)[0] for line in source.splitlines())
     marker = "location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/stream$ {"
-    if marker not in source:
+    if marker not in uncommented:
         return ["nginx.conf.template:sse_location_missing"]
-    block = source.split(marker, 1)[1].split("\n    }", 1)[0]
+    block = uncommented.split(marker, 1)[1].split("\n    }", 1)[0]
     required = (
         'proxy_set_header Connection "";',
         'proxy_set_header Accept-Encoding "";',
@@ -373,20 +388,40 @@ def _retired_v3_runtime_failures(sources: dict[str, str]) -> list[str]:
     ]
 
 
+def _is_awaited_call_statement(statement: ast.stmt, qualified_name: str) -> bool:
+    return (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Await)
+        and isinstance(statement.value.value, ast.Call)
+        and _dotted_name(statement.value.value.func) == qualified_name
+    )
+
+
 def _worker_admission_failures(worker: ast.AST) -> list[str]:
-    calls = _calls(worker)
-    admission_lines = [
-        line for name, line in calls if name == "admit_v4_stream"
-    ]
     dispatch_line = _unique_call_line(
-        calls,
+        _calls(worker),
         qualified_name="_submit_run_until_cancelled",
     )
-    if dispatch_line is None or not any(
-        line < dispatch_line for line in admission_lines
-    ):
+    if dispatch_line is None:
         return ["worker.py:v4_admission_not_before_sdk_dispatch"]
-    return []
+    for candidate in ast.walk(worker):
+        for _, value in ast.iter_fields(candidate):
+            if not isinstance(value, list) or not all(
+                isinstance(statement, ast.stmt) for statement in value
+            ):
+                continue
+            for dispatch_index, statement in enumerate(value):
+                if (
+                    "_submit_run_until_cancelled",
+                    dispatch_line,
+                ) not in _calls(statement):
+                    continue
+                if any(
+                    _is_awaited_call_statement(prior, "admit_v4_stream")
+                    for prior in value[:dispatch_index]
+                ):
+                    return []
+    return ["worker.py:v4_admission_not_before_sdk_dispatch"]
 
 
 def _frontend_cursor_commit_failures(frontend: str) -> list[str]:
@@ -481,6 +516,16 @@ def check() -> list[str]:
         )
     for line in _redis_append_inside_transaction(worker):
         failures.append(f"worker.py:{line}:redis_append_inside_pg_transaction")
+
+    for publication_function_name in ("admit_v4_stream", "publish_pending_v4_events"):
+        publication_function = _function(
+            "app/streaming/application/worker_publication_v4.py",
+            publication_function_name,
+        )
+        for line in _redis_append_inside_transaction(publication_function):
+            failures.append(
+                f"worker_publication_v4.py:{line}:redis_append_inside_pg_transaction"
+            )
 
     event_sink = _nested_function(worker, "event_sink")
     event_sink_calls = _calls(event_sink)

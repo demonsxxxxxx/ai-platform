@@ -156,6 +156,30 @@ async def producer(transaction_factory):
     assert cutover._redis_append_inside_transaction(node) == [4]
 
 
+def test_checker_detects_active_v4_transport_inside_transaction():
+    node = ast.parse(
+        """
+async def admit(transaction):
+    async with transaction():
+        await capabilities.publication_transport.publish(payload)
+"""
+    ).body[0]
+
+    assert cutover._redis_append_inside_transaction(node) == [4]
+
+
+def test_checker_detects_active_v4_application_publisher_inside_transaction():
+    node = ast.parse(
+        """
+async def callback(transaction):
+    async with transaction():
+        await publish_pending_v4_events(capabilities)
+"""
+    ).body[0]
+
+    assert cutover._redis_append_inside_transaction(node) == [4]
+
+
 def test_checker_requires_dedicated_sse_nginx_contract():
     source = """
 location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/stream$ {
@@ -168,6 +192,26 @@ location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/stream$ {
     assert any("Accept-Encoding" in failure for failure in failures)
     assert any("proxy_buffering off" in failure for failure in failures)
     assert any("proxy_cache off" in failure for failure in failures)
+
+
+def test_checker_rejects_commented_sse_nginx_contract():
+    source = """
+# location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/stream$ {
+#     proxy_set_header Connection "";
+#     proxy_set_header Accept-Encoding "";
+#     proxy_buffering off;
+#     proxy_request_buffering off;
+#     proxy_cache off;
+#     gzip off;
+#     add_header Cache-Control "no-cache, no-transform" always;
+#     proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT};
+#     proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT};
+# }
+"""
+
+    assert cutover._nginx_sse_contract_failures(source) == [
+        "nginx.conf.template:sse_location_missing"
+    ]
 
 
 def test_checker_rejects_the_retired_run_id_path_sse_location():
@@ -205,6 +249,22 @@ async def process_run_payload():
     ).body[0]
 
     assert cutover._worker_admission_failures(worker) == []
+
+
+def test_worker_admission_guard_rejects_terminal_only_admission_before_dispatch():
+    worker = ast.parse(
+        """
+async def process_run_payload():
+    if terminal_before_dispatch:
+        await admit_v4_stream()
+        return
+    await _submit_run_until_cancelled()
+"""
+    ).body[0]
+
+    assert cutover._worker_admission_failures(worker) == [
+        "worker.py:v4_admission_not_before_sdk_dispatch"
+    ]
 
 
 def test_worker_admission_guard_rejects_only_postdispatch_admission():
