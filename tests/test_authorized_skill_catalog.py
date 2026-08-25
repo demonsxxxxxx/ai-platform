@@ -363,6 +363,47 @@ async def test_catalog_fails_closed_when_agent_skill_set_exceeds_catalog_bound(m
 
 
 @pytest.mark.asyncio
+async def test_catalog_materializes_manifest_above_legacy_file_limit(monkeypatch):
+    row = _skill_row("large-skill")
+    files = {"SKILL.md": base64.b64decode(row["source"]["files"][0]["content_base64"])}
+    files.update(
+        {
+            f"references/file-{index}.txt": b"x"
+            for index in range(512)
+        }
+    )
+    row["source"]["files"] = [
+        {
+            "relative_path": relative_path,
+            "content_base64": base64.b64encode(content).decode("ascii"),
+            "size_bytes": len(content),
+        }
+        for relative_path, content in files.items()
+    ]
+    row["version"] = _content_hash(files)
+    row["expected_version"] = row["version"]
+
+    resolution, _ = await _resolve(
+        monkeypatch,
+        rows=[row],
+        distributions=[_distribution("large-skill")],
+        binding=_binding(selected_skill_id="large-skill"),
+        pinned_manifests=[_manifest_from_row(row)],
+        skill_set=[{"skill_id": "large-skill", "expected_version": row["version"]}],
+    )
+
+    assert len(row["source"]["files"]) == 513
+    assert resolution.snapshot.materialized_skill_ids == ("large-skill",)
+    assert [manifest["skill_id"] for manifest in resolution.manifests] == [
+        "large-skill"
+    ]
+    materialized_manifest = resolution.manifests[0]
+    materialized_files = materialized_manifest["files"]
+    assert len(materialized_files) == 513
+    assert {file["relative_path"] for file in materialized_files} == set(files)
+
+
+@pytest.mark.asyncio
 async def test_runtime_catalog_rejects_identity_swap_and_manifest_set_expansion(monkeypatch):
     rows = [
         _skill_row(
