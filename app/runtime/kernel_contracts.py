@@ -39,6 +39,31 @@ SUPPORTED_AGENT_EVENT_TYPES = {
     "run_failed",
     "run_completed",
     "run_cancelled",
+    "message.started",
+    "message.delta",
+    "message.completed",
+    "thinking.started",
+    "thinking.completed",
+    "model.completed",
+    "tool.started",
+    "tool.completed",
+    "tool.failed",
+    "tool.denied",
+    "subagent.started",
+    "subagent.progress",
+    "subagent.completed",
+    "subagent.failed",
+    "subagent.cancelled",
+    "artifact.created",
+    "artifact.ready",
+    "artifact.failed",
+    "policy.checking",
+    "policy.allowed",
+    "policy.denied",
+    "run.cancel_requested",
+    "run.succeeded",
+    "run.cancelled",
+    "run.failed",
 }
 
 
@@ -100,6 +125,10 @@ class AgentEvent(BaseModel):
     message: str = ""
     payload: dict[str, Any] = Field(default_factory=dict)
     admin_only: bool = False
+    event_id: str | None = None
+    run_id: str | None = None
+    message_id: str | None = None
+    causation_event_id: str | None = None
 
     @field_validator("type")
     @classmethod

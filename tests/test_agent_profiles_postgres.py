@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import uuid
 
 import psycopg
@@ -17,6 +18,13 @@ from app import agent_conversation_repository, repositories
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_AGENT_PROFILE_TEST_DSN"
 POSTGRES_CONCURRENCY_TIMEOUT_SECONDS = 5
+_TEST_CHAT_STREAM_REQUEST = SimpleNamespace(
+    app=SimpleNamespace(
+        state=SimpleNamespace(
+            run_stream_runtime=SimpleNamespace(worker_capabilities=object()),
+        ),
+    ),
+)
 REQUIRED_SCHEMA_SQL = """
 create table tenants (
   id text primary key,
@@ -1392,6 +1400,7 @@ async def test_postgres_chat_persistence_is_committed_before_profile_queue_dispa
                     ),
                     submission_id=submission_id,
                 ),
+                http_request=_TEST_CHAT_STREAM_REQUEST,
                 principal=user,
             )
         )
@@ -1557,6 +1566,7 @@ async def test_postgres_profile_queue_dispatch_is_not_emitted_after_producer_rol
                         expected_revision=1,
                     ),
                 ),
+                http_request=_TEST_CHAT_STREAM_REQUEST,
                 principal=AuthPrincipal(
                     user_id="user-profile-chat",
                     display_name="Profile Chat user",

@@ -170,6 +170,7 @@ export interface EventData {
   output_tokens?: number;
   total_tokens?: number;
   duration?: number;
+  duration_ms?: number;
   timestamp?: string;
   cache_creation_tokens?: number;
   cache_read_tokens?: number;
@@ -196,6 +197,10 @@ export interface EventData {
   files_count?: number;
   // Public terminal and transport status fields
   status?: string;
+  trace_ref?: string | null;
+  causation_event_id?: string | null;
+  evidence_refs?: string[];
+  artifact_refs?: string[];
   // Versioned public Chat projection fields
   projection_version?: string;
   projection_kind?: string;
@@ -220,7 +225,17 @@ export interface EventData {
   artifact_public_id?: string | null;
   presentation_kind?: string;
   safe_label?: string;
-  // ai-platform artifact_card fields
+  // v4 public Render Contract fields
+  operation_id?: string;
+  subagent_id?: string;
+  category?: string;
+  display_name?: string;
+  input_summary?: string;
+  result_summary?: string;
+  failure_category?: string;
+  denial_code?: string;
+  current_category?: string;
+  progress_percent?: number;
   artifact_id?: string;
   artifact_type?: string;
   label?: string;
@@ -436,9 +451,9 @@ export function isSequencedPublicChatEvent(
     (PUBLIC_EXECUTION_EVENT_TYPES.has(eventType as PublicExecutionEventType)
       ? isPublicExecutionEvent(eventType, data)
       : eventType === "run_event" ||
-      (eventType === "message:chunk" &&
-        isAssistantTextProjection(data) &&
-        data.projection_kind === "assistant_delta"))
+        eventType === "artifact_card" ||
+        (eventType === "message:chunk" &&
+          isAssistantTextProjection(data)))
   );
 }
 

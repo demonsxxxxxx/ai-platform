@@ -489,6 +489,7 @@ export function ChatAppContent({
     stopGeneration,
     clearMessages,
     loadHistory,
+    reconnectSSE,
     runControlLifecycle,
   } = useAgent({
     onApprovalRequired: (approval) => {
@@ -1399,6 +1400,10 @@ export function ChatAppContent({
             canRetryPendingSubmission={canRetryPendingSubmission}
             onRetryPendingSubmission={retryPendingSubmission}
             onStopGeneration={stopGeneration}
+            onReconnect={reconnectSSE}
+            onLoadHistory={() =>
+              sessionId ? loadHistory(sessionId) : Promise.resolve(null)
+            }
             attachments={pageDragAttachments}
             onAttachmentsChange={setPageDragAttachments}
             externalNavigationToken={externalNavigationToken}

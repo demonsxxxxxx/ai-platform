@@ -1,4 +1,4 @@
-# Redis Streams SSE v3 Cutover and Acceptance
+# Redis Streams SSE v4 Cutover and Acceptance
 
 Status: normative release and evidence contract; no deployment is authorized by
 this document
@@ -16,59 +16,63 @@ External Acceptance. The application release procedure remains exclusively owned
 
 One issue and Draft PR may contain reviewable commits in this order:
 
-1. **Documentation:** ADR 0009, authority index, wire protocol, execution
-   control, and this operations contract.
-2. **Dormant generated protocol:** the single JSON Schema, checked-in generated
-   Python/TypeScript artifacts, drift check, and cross-language fixtures. These
-   commits cannot change the active v2.1 manifest.
-3. **Dormant live fan-out foundation:** Redis append-plus-publish Lua, shared
-   process feed, bounded local subscribers, and subscribe-before-replay state
-   machine. These commits cannot be selected by production routes.
-4. **Release-atomic v3 cutover:** producer/envelope/key prefix, Chat SSE reader,
-   terminal publication, generated frontend reducer/controller, and removal of
-   the v2.1 per-browser `XREAD` and legacy approval/event paths.
+1. **Documentation and protocol:** ADR 0012, authority index, v4 wire,
+   execution control, generated schema/types, and this operations contract.
+2. **Durable event ownership:** canonical v4 envelopes, transaction-scoped
+   stream admission, PostgreSQL publication claims, and transaction-external
+   Redis publication with receipt-fenced disposition.
+3. **Successor recovery:** PostgreSQL snapshot/claim, inactive Redis candidate
+   construction, source-fingerprint and persisted-receipt verification, and
+   token-fenced readiness without changing active authority.
+4. **Release-atomic v4 cutover:** atomic successor activation, producer and
+   cancellation publication, indexed retry maintenance, SSE route/replay, and
+   frontend v4 connection/reducer ownership.
 5. **Tests and gates:** focused fault injection, schema drift, negative cutover
-   checker, CI, release guard, and External Acceptance harness updates.
+   checker, required CI service matrices, release guard, and External
+   Acceptance harness updates.
 
 This is commit ordering, not permission to deploy intermediate images. Dormant
 foundation must be behaviorally unreachable from production admission.
 
 ## Release-atomic rule
 
-The release-atomic v3 cutover is accepted only as a complete set. CI and the
-release authority must reject any candidate where exactly one of these old/new
+The release-atomic v4 cutover is accepted only as a complete set. CI and the
+release authority reject any candidate where exactly one of these old/new
 behaviors remains:
 
-- the Chat stream still allocates a blocking `XREAD` connection per browser,
-  subscribes after replay, or can silently drop a local live notification;
-- Redis `XADD`, TTL refresh, and `PUBLISH` are not one checked Lua operation;
-- a process creates more than one Redis live subscription for the same active
-  Run stream or keeps an unbounded browser queue;
-- generated Python/TypeScript artifacts differ from the one v3 JSON Schema;
-- SDK/executor assistant deltas can still enter PostgreSQL;
-- the Chat stream still reads PostgreSQL events, sleeps/polls, or emits a
-  PostgreSQL sequence cursor;
-- Redis producer/reader/terminal schema, public event schema, key prefix, or
-  projection versions disagree;
-- frontend can invent a transport ID, omit the accepted Redis cursor, advance
-  it before reducer commit, seed live reconnect from PostgreSQL status/history,
-  or retain legacy runtime approval/reasoning stream handlers;
-- a configuration or feature flag can choose v2.1/v3 live stacks;
-- terminal/end can publish before the frozen PostgreSQL intent commits;
-- API, worker, executor, or frontend artifacts have different accepted design
-  IDs or cutover manifest versions.
+- producer admission can commit a public or terminal event before the same
+  transaction prepares stream authority;
+- pending public rows, including cancellation and retry-delayed rows, lack one
+  production-owned durable drain path;
+- Redis publication holds PostgreSQL locks or accepts a blank, malformed, or
+  mismatched receipt as success;
+- missing terminal history reconstructs the active incarnation, or successor
+  activation does not re-lock the Run/current Attempt and compare claim token,
+  expiry, source fingerprint, item count, and persisted Redis receipt;
+- the Chat stream emits anything other than strict v4 public events and
+  controls with the accepted Redis cursor, or replay and live paths use
+  different projection rules;
+- frontend can invent a transport ID, advance a cursor before reducer or
+  terminal-hydration acceptance, disconnect on a valid semantic duplicate, or
+  let `stream.end` become a second terminal authority;
+- active production code imports the legacy v3 frontend adapter or a selectable
+  v3/v4 runtime flag remains;
+- generated Python/TypeScript artifacts differ from the one v4 JSON Schema;
+- terminal/`stream.end` can publish before the frozen PostgreSQL intent commits;
+- API, worker, executor, frontend, workflow, checker, or release documentation
+  disagrees on the active v4 design and projection versions.
 
-The release build contains a single cutover manifest/version consumed by API,
-worker, executor, and frontend build provenance. `tools/pre_push_readiness.py`,
-the dedicated negative checker, CI, and release preparation verify the complete
-set. Intermediate main commits may exist only when production admission is
-provably dormant and the release tool rejects their manifest.
+Release preparation verifies the exact source SHA, immutable API/worker and
+frontend image digests, generated v4 protocol artifacts, required workflow
+results, and configuration fingerprint. `tools/pre_push_readiness.py`, the
+dedicated negative checker, CI, and release preparation own those separate
+facts. Intermediate main commits may exist only when production admission is
+provably dormant and release verification rejects incomplete evidence.
 
-Rollback is an immutable prior image with backward-compatible schema. The
-current image contains no hidden legacy runtime flag. Active v2.1 runs must
-drain, safely pause, or terminalize; pending v2.1 publication intent remains
-owned by a v2.1 recovery image and blocks an older image from pretending to
-resume its cursor.
+Rollback is an immutable prior reviewed image. The current image contains no
+hidden legacy runtime flag. Active v4 work must drain, safely pause, or
+terminalize before rollback; a prior image must never reinterpret v4 durable
+rows, receipts, successor claims, or cursors as an older protocol.
 
 ## Negative cutover checker
 
@@ -79,28 +83,27 @@ It rejects:
 
 - `chat_session_stream` calling PostgreSQL event-list/page/fold helpers,
   `asyncio.sleep`, a blocking Redis `XREAD`, or a status/history live fallback;
-- worker or runtime callback `assistant_delta` routing to PostgreSQL append
-  functions;
-- semantic producer publication before its safe PostgreSQL row commits, Redis
-  calls inside direct or nested transaction helpers, or missing exact
-  row-derived identity/sequence/time wiring;
-- PostgreSQL sequence/cursor serialization as an SSE ID;
-- `XREADGROUP`, per-browser blocking `XREAD`, subscribe-after-replay, in-process
-  replay, unbounded local subscriber queues, or selectable legacy/shadow
-  backends;
-- public raw command/tool/reasoning/path/credential/approval event types;
+- worker or runtime callback `assistant_delta` routing to a second publisher;
+- Redis publication from callback, worker, or nested transaction helpers;
+- missing transaction-scoped v4 admission before SDK dispatch or missing the
+  single committed-event publication handoff;
+- per-browser blocking Redis reads or retired v2.1 stream markers;
 - Redis append without atomic `XADD` plus TTL refresh plus `PUBLISH`;
-- handwritten backend/frontend v3 envelope fields or event enums outside the
-  generated artifacts and strict event-specific security projector;
-- mismatched stream schema/public schema/projection/cutover manifest constants;
+- generated Python or TypeScript v4 artifacts that differ from the one v4 JSON
+  Schema;
 - frontend event-ID UUID fallback, accepted cursor mutation before successful
-  reducer commit, reconnect without `Last-Event-ID`, or PostgreSQL
-  sequence/status/history entering the live cursor/fold;
-- missing required no-buffer/no-transform gateway configuration;
-- an incomplete v3 cutover manifest that release tooling could package.
+  reducer commit, reconnect without `Last-Event-ID`, or an active v3 adapter,
+  selector, or fallback in the production connection path;
+- runtime approval events entering the public frontend handler; and
+- missing required no-buffer/no-transform gateway configuration.
 
-Checker tests must use structural fixtures and execute the checker. A test that
-only searches for one string does not satisfy this gate.
+The checker is one source gate, not the complete release evidence collector.
+The required workflow separately executes its selected schema-contract, real
+Redis/PostgreSQL, frontend projection, and image-provenance owners; the checker
+itself owns generated-artifact drift. Standalone owning tests not selected by a
+required job remain useful repository evidence but are not represented here as
+executed release evidence. Checker tests use structural fixtures and execute the
+checker; a test that only searches for one string does not satisfy this gate.
 
 ## SSE application and Nginx contract
 
@@ -166,15 +169,15 @@ pytest for bounded suites. Required affected gates include:
   pushed candidate.
 
 CI must run the backend streaming/callback suites and frontend SSE suites for
-changes to their production paths. It must build the complete cutover manifest
-and run the full negative checker before an image is release eligible.
+changes to their production paths. It must verify generated v4 protocol
+artifacts and run the full negative checker before an image is release eligible.
 
 ## External Acceptance
 
 The following evidence cannot be claimed from local mocks, source inspection, or
-ordinary CI. It requires exact source SHA, image digests, cutover manifest,
-configuration fingerprint, Redis/PostgreSQL versions, API/worker replica counts,
-Nginx config, and browser build:
+ordinary CI. It requires exact source SHA, image digests, configuration
+fingerprint, Redis/PostgreSQL versions, API/worker replica counts, Nginx config,
+and browser build:
 
 - real Redis plus PostgreSQL with at least two API readers and the intended
   worker/executor topology;

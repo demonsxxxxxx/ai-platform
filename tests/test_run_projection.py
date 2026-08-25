@@ -5,15 +5,37 @@ from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
 from app.context.api import CONTEXT_FILE_ERROR_CODES
+from app.projection_redaction import required_tool_public_detail
 from app.run_projection import (
+    CHAT_PUBLIC_PROJECTION_VERSION,
+    PUBLIC_TERMINAL_DETAIL_MESSAGES,
+    PUBLIC_TERMINAL_ERROR_CODE_ALIASES,
     PublicChatAnswerStreamProjector,
     artifact_card,
+    normalize_run_status,
     progress_for_status,
     public_chat_answer_text,
     public_chat_terminal_projection,
+    public_terminal_detail,
     public_terminal_projection,
     run_event_response,
     run_step_response,
+)
+from app.runs.api import (
+    CHAT_PUBLIC_PROJECTION_VERSION as API_CHAT_PUBLIC_PROJECTION_VERSION,
+    PUBLIC_TERMINAL_DETAIL_MESSAGES as API_PUBLIC_TERMINAL_DETAIL_MESSAGES,
+    PUBLIC_TERMINAL_ERROR_CODE_ALIASES as API_PUBLIC_TERMINAL_ERROR_CODE_ALIASES,
+    normalize_run_status as API_NORMALIZE_RUN_STATUS,
+    public_terminal_detail as API_PUBLIC_TERMINAL_DETAIL,
+    public_terminal_projection as API_PUBLIC_TERMINAL_PROJECTION,
+)
+from app.runs.domain.public_terminal import (
+    CHAT_PUBLIC_PROJECTION_VERSION as DOMAIN_CHAT_PUBLIC_PROJECTION_VERSION,
+    PUBLIC_TERMINAL_DETAIL_MESSAGES as DOMAIN_PUBLIC_TERMINAL_DETAIL_MESSAGES,
+    PUBLIC_TERMINAL_ERROR_CODE_ALIASES as DOMAIN_PUBLIC_TERMINAL_ERROR_CODE_ALIASES,
+    normalize_run_status as DOMAIN_NORMALIZE_RUN_STATUS,
+    public_terminal_detail as DOMAIN_PUBLIC_TERMINAL_DETAIL,
+    public_terminal_projection as DOMAIN_PUBLIC_TERMINAL_PROJECTION,
 )
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.kernel_contracts import AgentEvent
@@ -253,6 +275,47 @@ def test_required_capability_terminal_projection_is_stable_for_users_and_admins(
     assert admin["detail_code"] == "required_capability_unavailable"
     assert ordinary["message"] == admin["message"]
     assert "Bash" not in str(ordinary)
+
+
+def test_terminal_projection_has_one_runs_owner_and_preserves_fences():
+    assert normalize_run_status is API_NORMALIZE_RUN_STATUS is DOMAIN_NORMALIZE_RUN_STATUS
+    assert (
+        PUBLIC_TERMINAL_DETAIL_MESSAGES
+        is API_PUBLIC_TERMINAL_DETAIL_MESSAGES
+        is DOMAIN_PUBLIC_TERMINAL_DETAIL_MESSAGES
+    )
+    assert (
+        PUBLIC_TERMINAL_ERROR_CODE_ALIASES
+        is API_PUBLIC_TERMINAL_ERROR_CODE_ALIASES
+        is DOMAIN_PUBLIC_TERMINAL_ERROR_CODE_ALIASES
+    )
+    assert (
+        CHAT_PUBLIC_PROJECTION_VERSION
+        is API_CHAT_PUBLIC_PROJECTION_VERSION
+        is DOMAIN_CHAT_PUBLIC_PROJECTION_VERSION
+    )
+    assert public_terminal_projection is API_PUBLIC_TERMINAL_PROJECTION is DOMAIN_PUBLIC_TERMINAL_PROJECTION
+    assert public_terminal_detail is API_PUBLIC_TERMINAL_DETAIL is DOMAIN_PUBLIC_TERMINAL_DETAIL
+
+    required = public_terminal_projection("failed", "required_tool_unavailable")
+    assert required["message"] == "任务所需执行能力当前不可用。请调整请求或联系管理员。"
+    assert required["message"] == required_tool_public_detail("unavailable")["message"]
+
+    unknown = public_terminal_projection("failed", "executor_private_exception")
+    assert unknown["detail_code"] == "run_failed"
+    assert unknown["error_code"] == "run_failed"
+    assert "executor_private_exception" not in str(unknown)
+
+    cancelled = public_terminal_projection("canceled", "executor_private_exception")
+    assert cancelled == {
+        "detail_kind": "cancelled",
+        "detail_code": "run_cancelled",
+        "message": "任务已取消。取消前已产生的公开内容仍会保留。",
+        "error_code": None,
+        "result": {"message": "任务已取消。取消前已产生的公开内容仍会保留。"},
+        "event_payload": {},
+    }
+    assert public_terminal_projection("running") is None
 
 
 def test_terminal_reconciliation_failure_uses_fixed_public_projection():

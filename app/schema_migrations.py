@@ -15,7 +15,12 @@ from typing import Any
 from app.db import SCHEMA_PATH, close_pool, connect, transaction
 
 
-TARGET_SCHEMA_VERSION = "2026.08.23.1"
+V4_PUBLICATION_SCHEMA_VERSION = "2026.08.24.1"
+V4_SUCCESSOR_REBUILD_SCHEMA_VERSION = "2026.08.25.1"
+V4_PENDING_ADMISSION_SCHEMA_VERSION = "2026.08.26.2"
+V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION = "2026.08.27.1"
+V4_CONCURRENT_DUE_INDEX_SCHEMA_VERSION = "2026.08.27.2"
+TARGET_SCHEMA_VERSION = V4_CONCURRENT_DUE_INDEX_SCHEMA_VERSION
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
@@ -25,6 +30,8 @@ CRITICAL_RELATIONS = (
     "run_attempts",
     "run_skill_materializations",
     "run_events",
+    "sse_stream_authorities",
+    "sse_stream_rebuild_items",
     "messages",
     "files",
     "artifacts",
@@ -80,6 +87,54 @@ CRITICAL_COLUMNS = (
     ("object_deletion_outbox", "dead_letter_at", "timestamptz", False),
     ("object_deletion_outbox", "reconcile_required", "bool", True),
     ("audit_logs", "payload_json", "jsonb", True),
+    ("run_events", "stream_publication_state", "text", False),
+    ("run_events", "stream_publication_attempts", "int4", False),
+    ("run_events", "stream_publication_next_attempt_at", "timestamptz", False),
+    ("run_events", "stream_publication_redis_id", "text", False),
+    ("run_events", "stream_publication_last_error", "text", False),
+    ("run_events", "stream_publication_claim_token", "text", False),
+    ("run_events", "stream_publication_claim_expires_at", "timestamptz", False),
+    ("sse_stream_authorities", "attempt_id", "text", True),
+    ("sse_stream_authorities", "design_id", "text", True),
+    ("sse_stream_authorities", "projection_version", "text", True),
+    ("sse_stream_authorities", "tenant_scope", "text", True),
+    ("sse_stream_authorities", "stream_incarnation", "int8", True),
+    ("sse_stream_authorities", "state", "text", True),
+    ("sse_stream_authorities", "open_event_id", "text", True),
+    ("sse_stream_authorities", "open_payload_bytes", "text", True),
+    ("sse_stream_authorities", "open_payload_digest", "text", True),
+    ("sse_stream_authorities", "authorization_epoch", "int8", True),
+    ("sse_stream_authorities", "revocation_state", "text", True),
+    ("sse_stream_authorities", "admission_created_at", "timestamptz", True),
+    ("sse_stream_authorities", "admission_confirmed_at", "timestamptz", False),
+    ("sse_stream_authorities", "updated_at", "timestamptz", True),
+    ("sse_stream_rebuilds", "attempt_id", "text", True),
+    ("sse_stream_rebuilds", "source_incarnation", "int8", True),
+    ("sse_stream_rebuilds", "source_authorization_epoch", "int8", True),
+    ("sse_stream_rebuilds", "origin_incarnation", "int8", True),
+    ("sse_stream_rebuilds", "origin_authorization_epoch", "int8", True),
+    ("sse_stream_rebuilds", "successor_incarnation", "int8", True),
+    ("sse_stream_rebuilds", "successor_authorization_epoch", "int8", True),
+    ("sse_stream_rebuilds", "source_authority_fingerprint", "text", True),
+    ("sse_stream_rebuilds", "source_cursor_sequence", "int8", True),
+    ("sse_stream_rebuilds", "source_through_sequence", "int8", True),
+    ("sse_stream_rebuilds", "successor_open_bytes", "text", True),
+    ("sse_stream_rebuilds", "claim_token_digest", "text", True),
+    ("sse_stream_rebuilds", "claim_expires_at", "timestamptz", True),
+    ("sse_stream_rebuilds", "state", "text", True),
+    ("sse_stream_rebuilds", "item_count", "int4", True),
+    ("sse_stream_rebuilds", "receipt_entry_count", "int4", False),
+    ("sse_stream_rebuilds", "receipt_open_event_id", "text", False),
+    ("sse_stream_rebuilds", "receipt_terminal_event_id", "text", False),
+    ("sse_stream_rebuilds", "receipt_end_event_id", "text", False),
+    ("sse_stream_rebuilds", "receipt_last_redis_id", "text", False),
+    ("sse_stream_rebuilds", "receipt_last_envelope_bytes", "text", False),
+    ("sse_stream_rebuilds", "receipt_last_envelope_digest", "text", False),
+    ("sse_stream_rebuilds", "receipt_digest", "text", False),
+    ("sse_stream_rebuild_items", "sequence", "int8", True),
+    ("sse_stream_rebuild_items", "canonical_envelope_bytes", "text", True),
+    ("sse_stream_rebuild_items", "envelope_digest", "text", True),
+    ("sse_stream_rebuild_items", "redis_id", "text", False),
     ("sandbox_leases", "attempt_id", "text", False),
     ("sandbox_leases", "runtime_container_id", "text", False),
     ("sandbox_leases", "runtime_container_name", "text", False),
@@ -121,6 +176,22 @@ CRITICAL_CONSTRAINTS = (
     ("run_attempts", "chk_run_attempts_terminal_time"),
     ("run_attempts", "run_attempts_tenant_id_run_id_ordinal_key"),
     ("run_attempts", "run_attempts_tenant_id_run_id_queue_attempt_id_key"),
+    ("run_events", "chk_run_events_stream_publication_state"),
+    ("run_events", "chk_run_events_stream_publication_claim"),
+    ("sse_stream_authorities", "chk_sse_stream_authority_open_format"),
+    ("sse_stream_authorities", "chk_sse_stream_authority_pending_confirmation"),
+    ("sse_stream_rebuilds", "chk_sse_stream_rebuild_identity"),
+    ("sse_stream_rebuilds", "chk_sse_stream_rebuild_authority"),
+    ("sse_stream_rebuilds", "chk_sse_stream_rebuild_origin"),
+    ("sse_stream_rebuilds", "chk_sse_stream_rebuild_progress"),
+    ("sse_stream_rebuilds", "chk_sse_stream_rebuild_state"),
+    ("sse_stream_rebuilds", "chk_sse_stream_rebuild_receipt"),
+    ("sse_stream_rebuilds", "fk_sse_stream_rebuild_authority"),
+    ("sse_stream_rebuild_items", "sse_stream_rebuild_items_pkey"),
+    ("sse_stream_rebuild_items", "chk_sse_stream_rebuild_item"),
+    ("sse_stream_rebuild_items", "chk_sse_stream_rebuild_item_redis_id"),
+    ("sse_stream_rebuild_items", "fk_sse_stream_rebuild_item_operation"),
+    ("sse_stream_rebuild_items", "uq_sse_stream_rebuild_item_event"),
     ("files", "chk_files_lifecycle_state"),
     ("artifacts", "chk_artifacts_lifecycle_state"),
     ("object_deletion_outbox", "chk_object_deletion_outbox_state"),
@@ -224,7 +295,7 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "c",
         "CHECK ((status = ANY (ARRAY['succeeded'::text, 'failed'::text, "
         "'cancelled'::text])) AND finished_at IS NOT NULL "
-        "OR NOT (status = ANY (ARRAY['succeeded'::text, 'failed'::text, "
+        "OR (status <> ALL (ARRAY['succeeded'::text, 'failed'::text, "
         "'cancelled'::text])) AND finished_at IS NULL)",
     ),
     (
@@ -238,6 +309,140 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "run_attempts_tenant_id_run_id_queue_attempt_id_key",
         "u",
         "UNIQUE (tenant_id, run_id, queue_attempt_id)",
+    ),
+    (
+        "run_events",
+        "chk_run_events_stream_publication_state",
+        "c",
+        "CHECK (stream_publication_state IS NULL OR (stream_publication_state = ANY (ARRAY["
+        "'pending'::text, 'published'::text, 'suppressed'::text])))",
+    ),
+    (
+        "run_events",
+        "chk_run_events_stream_publication_claim",
+        "c",
+        "CHECK (stream_publication_claim_token IS NULL AND "
+        "stream_publication_claim_expires_at IS NULL OR "
+        "stream_publication_claim_token IS NOT NULL AND "
+        "stream_publication_claim_expires_at IS NOT NULL)",
+    ),
+    (
+        "sse_stream_authorities",
+        "chk_sse_stream_authority_open_format",
+        "c",
+        "CHECK (open_event_id <> ''::text AND open_payload_bytes <> ''::text "
+        "AND open_payload_digest ~ '^[0-9a-f]{64}$'::text)",
+    ),
+    (
+        "sse_stream_authorities",
+        "chk_sse_stream_authority_pending_confirmation",
+        "c",
+        "CHECK (state = 'admission_pending'::text AND admission_confirmed_at IS NULL "
+        "OR state <> 'admission_pending'::text AND admission_confirmed_at IS NOT NULL)",
+    ),
+    (
+        "sse_stream_rebuilds",
+        "chk_sse_stream_rebuild_identity",
+        "c",
+        "CHECK (id <> ''::text AND attempt_id <> ''::text "
+        "AND successor_open_event_id <> ''::text AND successor_open_bytes <> ''::text "
+        "AND source_authority_fingerprint ~ '^[0-9a-f]{64}$'::text "
+        "AND successor_open_digest ~ '^[0-9a-f]{64}$'::text "
+        "AND claim_token_digest ~ '^[0-9a-f]{64}$'::text)",
+    ),
+    (
+        "sse_stream_rebuilds",
+        "chk_sse_stream_rebuild_authority",
+        "c",
+        "CHECK (source_incarnation > 0 AND successor_incarnation > source_incarnation "
+        "AND source_authorization_epoch > 0 "
+        "AND successor_authorization_epoch > source_authorization_epoch)",
+    ),
+    (
+        "sse_stream_rebuilds",
+        "chk_sse_stream_rebuild_origin",
+        "c",
+        "CHECK (origin_incarnation > 0 AND origin_incarnation <= source_incarnation "
+        "AND origin_authorization_epoch > 0 "
+        "AND origin_authorization_epoch <= source_authorization_epoch)",
+    ),
+    (
+        "sse_stream_rebuilds",
+        "chk_sse_stream_rebuild_progress",
+        "c",
+        "CHECK (source_cursor_sequence >= source_through_sequence "
+        "AND source_through_sequence > 0 AND item_count > 0 "
+        "AND built_through_sequence >= 0 "
+        "AND built_through_sequence <= source_through_sequence)",
+    ),
+    (
+        "sse_stream_rebuilds",
+        "chk_sse_stream_rebuild_state",
+        "c",
+        "CHECK (state = ANY (ARRAY['building'::text, 'ready'::text, "
+        "'cutover'::text, 'aborted'::text, 'expired'::text]))",
+    ),
+    (
+        "sse_stream_rebuilds",
+        "chk_sse_stream_rebuild_receipt",
+        "c",
+        "CHECK (receipt_entry_count IS NULL AND receipt_open_event_id IS NULL "
+        "AND receipt_terminal_event_id IS NULL AND receipt_end_event_id IS NULL "
+        "AND receipt_last_redis_id IS NULL AND receipt_last_envelope_bytes IS NULL "
+        "AND receipt_last_envelope_digest IS NULL AND receipt_digest IS NULL "
+        "OR receipt_entry_count IS NOT NULL "
+        "AND receipt_entry_count = (item_count + 2) "
+        "AND receipt_open_event_id IS NOT NULL AND receipt_open_event_id <> ''::text "
+        "AND receipt_terminal_event_id IS NOT NULL "
+        "AND receipt_terminal_event_id <> ''::text "
+        "AND receipt_end_event_id IS NOT NULL AND receipt_end_event_id <> ''::text "
+        "AND receipt_last_redis_id IS NOT NULL "
+        "AND receipt_last_redis_id ~ '^[0-9]+-[0-9]+$'::text "
+        "AND receipt_last_envelope_bytes IS NOT NULL "
+        "AND receipt_last_envelope_bytes <> ''::text "
+        "AND receipt_last_envelope_digest IS NOT NULL "
+        "AND receipt_last_envelope_digest ~ '^[0-9a-f]{64}$'::text "
+        "AND receipt_digest IS NOT NULL "
+        "AND receipt_digest ~ '^[0-9a-f]{64}$'::text)",
+    ),
+    (
+        "sse_stream_rebuilds",
+        "fk_sse_stream_rebuild_authority",
+        "f",
+        "FOREIGN KEY (tenant_id, run_id) "
+        "REFERENCES sse_stream_authorities(tenant_id, run_id)",
+    ),
+    (
+        "sse_stream_rebuild_items",
+        "sse_stream_rebuild_items_pkey",
+        "p",
+        "PRIMARY KEY (rebuild_id, sequence)",
+    ),
+    (
+        "sse_stream_rebuild_items",
+        "chk_sse_stream_rebuild_item",
+        "c",
+        "CHECK (sequence > 0 AND event_id <> ''::text AND event_type <> ''::text "
+        "AND canonical_envelope_bytes <> ''::text "
+        "AND envelope_digest ~ '^[0-9a-f]{64}$'::text)",
+    ),
+    (
+        "sse_stream_rebuild_items",
+        "chk_sse_stream_rebuild_item_redis_id",
+        "c",
+        "CHECK (redis_id IS NULL OR redis_id ~ '^[0-9]+-[0-9]+$'::text)",
+    ),
+    (
+        "sse_stream_rebuild_items",
+        "fk_sse_stream_rebuild_item_operation",
+        "f",
+        "FOREIGN KEY (rebuild_id) REFERENCES sse_stream_rebuilds(id)",
+    ),
+    (
+        "sse_stream_rebuild_items",
+        "uq_sse_stream_rebuild_item_event",
+        "u",
+        "UNIQUE (rebuild_id, event_id)",
     ),
     (
         "files",
@@ -331,6 +536,40 @@ class StaticIndexDefinition:
 
 
 CONCURRENT_INDEX_MIGRATIONS = (
+    ConcurrentIndexMigration(
+        "idx_run_events_stream_publication_retry",
+        "create index concurrently if not exists idx_run_events_stream_publication_retry "
+        "on run_events(stream_publication_next_attempt_at asc, created_at asc, id asc) "
+        "where visible_to_user = true and stream_publication_state = 'pending'",
+        "run_events",
+        ("stream_publication_next_attempt_at", "created_at", "id"),
+        (False, False, False),
+        "visible_to_user = true and stream_publication_state = 'pending'",
+    ),
+    ConcurrentIndexMigration(
+        "idx_run_events_stream_publication_claim",
+        "create index concurrently if not exists idx_run_events_stream_publication_claim "
+        "on run_events(tenant_id, run_id, sequence asc, id asc) "
+        "where visible_to_user = true and stream_publication_state = 'pending' "
+        "and payload_json ? '__stream_v4'",
+        "run_events",
+        ("tenant_id", "run_id", "sequence", "id"),
+        (False, False, False, False),
+        "visible_to_user = true and stream_publication_state = 'pending' "
+        "and payload_json ? '__stream_v4'",
+    ),
+    ConcurrentIndexMigration(
+        "idx_run_events_v4_due_scope",
+        "create index concurrently if not exists idx_run_events_v4_due_scope "
+        "on run_events(tenant_id, run_id, sequence asc) "
+        "where visible_to_user = true and payload_json ? '__stream_v4' "
+        "and stream_publication_state = 'pending'",
+        "run_events",
+        ("tenant_id", "run_id", "sequence"),
+        (False, False, False),
+        "visible_to_user = true and payload_json ? '__stream_v4' "
+        "and stream_publication_state = 'pending'",
+    ),
     ConcurrentIndexMigration(
         "idx_messages_tenant_session_created",
         "create index concurrently if not exists idx_messages_tenant_session_created "
@@ -489,6 +728,42 @@ STATIC_INDEX_DEFINITIONS = (
         "sandbox_leases",
         ("tenant_id", "run_id", "attempt_id", "status"),
         (False, False, False, False),
+    ),
+    StaticIndexDefinition(
+        "idx_sse_stream_authority_pending",
+        "sse_stream_authorities",
+        ("state", "updated_at", "tenant_id", "run_id"),
+        (False, False, False, False),
+        "state = 'admission_pending'",
+    ),
+    StaticIndexDefinition(
+        "uq_sse_stream_rebuild_successor",
+        "sse_stream_rebuilds",
+        ("tenant_id", "run_id", "successor_incarnation"),
+        (False, False, False),
+        unique=True,
+    ),
+    StaticIndexDefinition(
+        "uq_sse_stream_rebuild_active",
+        "sse_stream_rebuilds",
+        ("tenant_id", "run_id"),
+        (False, False),
+        "state = any array['building', 'ready']",
+        unique=True,
+    ),
+    StaticIndexDefinition(
+        "idx_sse_stream_rebuild_claim_expiry",
+        "sse_stream_rebuilds",
+        ("state", "claim_expires_at", "tenant_id", "run_id"),
+        (False, False, False, False),
+        "state = any array['building', 'ready']",
+    ),
+    StaticIndexDefinition(
+        "uq_sse_stream_rebuild_item_event",
+        "sse_stream_rebuild_items",
+        ("rebuild_id", "event_id"),
+        (False, False),
+        unique=True,
     ),
     StaticIndexDefinition(
         "uq_run_attempts_one_open",
@@ -752,6 +1027,69 @@ async def _apply_concurrent_indexes(conn: Any) -> bool:
     if await cleanup.fetchone() is not None:
         applied = True
     return applied
+
+
+async def rollback_v4_successor_rebuild_migration(conn: Any) -> None:
+    """Remove dormant successor snapshots, but never activated lineage."""
+
+    activated = await conn.execute(
+        "select 1 from sse_stream_rebuilds where state = 'cutover' limit 1"
+    )
+    if await activated.fetchone() is not None:
+        raise SchemaMigrationError("v4_successor_rebuild_rollback_cutover_exists")
+    await conn.execute("drop table if exists sse_stream_rebuild_items")
+    await conn.execute("drop table if exists sse_stream_rebuilds")
+    await conn.execute("drop index if exists idx_run_events_v4_due_scope")
+    await conn.execute(
+        "delete from schema_index_migrations where index_name = %s",
+        ("idx_run_events_v4_due_scope",),
+    )
+    await conn.execute(
+        "delete from schema_migrations where version in (%s, %s, %s)",
+        (
+            V4_SUCCESSOR_REBUILD_SCHEMA_VERSION,
+            V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION,
+            TARGET_SCHEMA_VERSION,
+        ),
+    )
+
+
+async def rollback_v4_publication_migration(conn: Any) -> None:
+    """Remove only additive publication bookkeeping; event facts stay intact."""
+
+    await conn.execute("drop index if exists idx_run_events_stream_publication_claim")
+    await conn.execute("drop index if exists idx_run_events_stream_publication_retry")
+    await conn.execute("drop index if exists idx_run_events_v4_due_scope")
+    await conn.execute(
+        "delete from schema_index_migrations where index_name in (%s, %s, %s)",
+        (
+            "idx_run_events_stream_publication_claim",
+            "idx_run_events_stream_publication_retry",
+            "idx_run_events_v4_due_scope",
+        ),
+    )
+    await conn.execute(
+        "delete from schema_migrations where version in (%s, %s)",
+        (V4_PUBLICATION_SCHEMA_VERSION, TARGET_SCHEMA_VERSION),
+    )
+    await conn.execute(
+        "alter table run_events drop constraint if exists chk_run_events_stream_publication_claim"
+    )
+    await conn.execute(
+        "alter table run_events drop constraint if exists chk_run_events_stream_publication_state"
+    )
+    await conn.execute(
+        """
+        alter table run_events
+          drop column if exists stream_publication_claim_token,
+          drop column if exists stream_publication_claim_expires_at,
+          drop column if exists stream_publication_state,
+          drop column if exists stream_publication_attempts,
+          drop column if exists stream_publication_next_attempt_at,
+          drop column if exists stream_publication_redis_id,
+          drop column if exists stream_publication_last_error
+        """
+    )
 
 
 async def apply_migrations(

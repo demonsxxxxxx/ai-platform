@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Protocol
 
 from psycopg import AsyncConnection
 
 from app.platform.postgres.errors import RepositoryConflictError
+from app.runs.application.cancellation import (
+    CancelRequestAuthority,
+    CancelRequestResult,
+)
 from app.runs.domain.attempt_lifecycle import (
     RUN_ATTEMPT_OWNER_KINDS,
     TERMINAL_RUN_ATTEMPT_STATUSES,
     decide_run_attempt_transition,
 )
 from app.runs.domain.execution_spec import ExecutionSpec
+from app.runs.domain.terminalization import (
+    RunTerminalEventFact,
+    RunTerminalizationProgress,
+)
 
 
 def _dumps_json(value: dict[str, Any]) -> str:
@@ -26,6 +34,43 @@ def _validated_attempt_owner(*, owner_kind: str, owner_id: str) -> tuple[str, st
     if not isinstance(owner_id, str) or not owner_id.strip():
         raise ValueError("run_attempt_owner_id_invalid")
     return owner_kind, owner_id.strip()
+
+
+async def load_current_terminal_event_fact(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+) -> RunTerminalEventFact | None:
+    """Lock and return the current terminal Run fact.
+
+    Active SSE attempt identity remains owned by the Streaming authority. The
+    additive ``run_attempts`` foundation is not a worker lifecycle authority
+    until its separately governed dual-write cutover.
+    """
+
+    cursor = await conn.execute(
+        """
+        select status, error_code, trace_id
+        from runs
+        where tenant_id = %s
+          and id = %s
+          and status in ('succeeded', 'failed', 'cancelled')
+        for update
+        """,
+        (tenant_id, run_id),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return None
+    status = str(row.get("status") or "")
+    error_code = str(row.get("error_code") or "") or None
+    return RunTerminalEventFact(
+        status=status,
+        terminal_reason=error_code or ("run_cancelled" if status == "cancelled" else status),
+        error_code=error_code,
+        trace_ref=str(row.get("trace_id") or "") or None,
+    )
 
 
 async def create_run_attempt(
@@ -511,3 +556,306 @@ async def _stage_run_tool_permission_terminalization(
         ),
     )
     return await cursor.fetchone()
+
+
+class _AppendRunEvent(Protocol):
+    async def __call__(
+        self,
+        conn: AsyncConnection,
+        *,
+        tenant_id: str,
+        run_id: str,
+        trace_id: str | None,
+        event_type: str,
+        stage: str,
+        message: str,
+        payload: dict[str, Any],
+    ) -> str: ...
+
+
+class _AppendAuditLog(Protocol):
+    async def __call__(
+        self,
+        conn: AsyncConnection,
+        *,
+        tenant_id: str,
+        user_id: str,
+        action: str,
+        target_type: str,
+        target_id: str,
+        trace_id: str | None,
+        payload_json: dict[str, Any],
+    ) -> str: ...
+
+
+class _ListActiveSandboxLeases(Protocol):
+    async def __call__(
+        self,
+        conn: AsyncConnection,
+        *,
+        tenant_id: str,
+        run_id: str,
+    ) -> list[dict[str, Any]]: ...
+
+
+class PostgresRunCancellationPersistence:
+    def __init__(
+        self,
+        *,
+        append_event: _AppendRunEvent,
+        append_audit_log: _AppendAuditLog,
+        list_active_sandbox_leases: _ListActiveSandboxLeases,
+    ) -> None:
+        self._append_event = append_event
+        self._append_audit_log = append_audit_log
+        self._list_active_sandbox_leases = list_active_sandbox_leases
+
+    async def begin_owner_request(
+        self,
+        conn: AsyncConnection,
+        *,
+        tenant_id: str,
+        run_id: str,
+        owner_user_id: str,
+    ) -> CancelRequestAuthority | None:
+        cursor = await conn.execute(
+            """
+            with eligible_run as (
+              select id, tenant_id, status, trace_id,
+                     cancel_requested_at is null as cancel_requested_newly
+              from runs
+              where tenant_id = %s
+                and id = %s
+                and user_id = %s
+                and (
+                  status in ('queued', 'running')
+                  or (
+                    status = 'cancelled'
+                    and exists (
+                      select 1
+                      from sandbox_leases
+                      where sandbox_leases.tenant_id = runs.tenant_id
+                        and sandbox_leases.run_id = runs.id
+                        and sandbox_leases.status = 'active'
+                    )
+                  )
+                )
+              for update
+            )
+            update runs
+            set
+              cancel_requested_at = coalesce(cancel_requested_at, now()),
+              cancel_requested_by = coalesce(cancel_requested_by, %s)
+            from eligible_run
+            where runs.tenant_id = eligible_run.tenant_id
+              and runs.id = eligible_run.id
+            returning runs.id, runs.status, eligible_run.trace_id,
+                      eligible_run.cancel_requested_newly
+            """,
+            (tenant_id, run_id, owner_user_id, owner_user_id),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        attempt_cursor = await conn.execute(
+            """
+            select id
+            from run_attempts
+            where tenant_id = %s and run_id = %s
+            order by ordinal desc
+            limit 1
+            for update
+            """,
+            (tenant_id, run_id),
+        )
+        attempt_row = await attempt_cursor.fetchone()
+        if not attempt_row or not attempt_row.get("id"):
+            raise RepositoryConflictError("run_attempt_missing")
+        attempt_id = str(attempt_row["id"])
+        newly_requested = bool(row.get("cancel_requested_newly"))
+        if newly_requested:
+            await self._append_event(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                trace_id=row.get("trace_id"),
+                event_type="cancel_requested",
+                stage="control",
+                message="已请求取消",
+                payload={
+                    "visible_to_user": True,
+                    "severity": "warning",
+                    "requested_by": owner_user_id,
+                },
+            )
+        target_status = "cancelled" if row["status"] == "queued" else "cancel_requested"
+        await _stage_run_tool_permission_terminalization(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            target_status=target_status,
+            terminal_reason="run_cancel_requested",
+        )
+        return CancelRequestAuthority(
+            run_id=run_id,
+            prior_status=str(row["status"]),
+            trace_ref=str(row.get("trace_id") or "") or None,
+            target_user_id=owner_user_id,
+            actor_user_id=owner_user_id,
+            requested_by_role="owner",
+            source="user",
+            newly_requested=newly_requested,
+            attempt_id=attempt_id,
+        )
+
+    async def begin_admin_request(
+        self,
+        conn: AsyncConnection,
+        *,
+        tenant_id: str,
+        run_id: str,
+        admin_user_id: str,
+    ) -> CancelRequestAuthority | None:
+        cursor = await conn.execute(
+            """
+            with eligible_run as (
+              select id, tenant_id, status, user_id, trace_id,
+                     cancel_requested_at is null as cancel_requested_newly
+              from runs
+              where tenant_id = %s
+                and id = %s
+                and (
+                  status in ('queued', 'running')
+                  or (
+                    status = 'cancelled'
+                    and exists (
+                      select 1
+                      from sandbox_leases
+                      where sandbox_leases.tenant_id = runs.tenant_id
+                        and sandbox_leases.run_id = runs.id
+                        and sandbox_leases.status = 'active'
+                    )
+                  )
+                )
+              for update
+            )
+            update runs
+            set
+              cancel_requested_at = coalesce(cancel_requested_at, now()),
+              cancel_requested_by = coalesce(cancel_requested_by, %s)
+            from eligible_run
+            where runs.tenant_id = eligible_run.tenant_id
+              and runs.id = eligible_run.id
+            returning runs.id, runs.status, eligible_run.user_id, eligible_run.trace_id,
+                      eligible_run.cancel_requested_newly
+            """,
+            (tenant_id, run_id, admin_user_id),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        attempt_cursor = await conn.execute(
+            """
+            select id
+            from run_attempts
+            where tenant_id = %s and run_id = %s
+            order by ordinal desc
+            limit 1
+            for update
+            """,
+            (tenant_id, run_id),
+        )
+        attempt_row = await attempt_cursor.fetchone()
+        if not attempt_row or not attempt_row.get("id"):
+            raise RepositoryConflictError("run_attempt_missing")
+        attempt_id = str(attempt_row["id"])
+        newly_requested = bool(row.get("cancel_requested_newly"))
+        if newly_requested:
+            await self._append_event(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                trace_id=row.get("trace_id"),
+                event_type="cancel_requested",
+                stage="control",
+                message="管理员已请求取消",
+                payload={
+                    "visible_to_user": True,
+                    "severity": "warning",
+                    "requested_by": admin_user_id,
+                    "requested_by_role": "admin",
+                    "target_user_id": row.get("user_id"),
+                },
+            )
+        target_status = "cancelled" if row["status"] == "queued" else "cancel_requested"
+        await _stage_run_tool_permission_terminalization(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            target_status=target_status,
+            terminal_reason="run_cancel_requested",
+        )
+        return CancelRequestAuthority(
+            run_id=run_id,
+            prior_status=str(row["status"]),
+            trace_ref=str(row.get("trace_id") or "") or None,
+            target_user_id=str(row["user_id"]),
+            actor_user_id=admin_user_id,
+            requested_by_role="admin",
+            source="system",
+            newly_requested=newly_requested,
+            attempt_id=attempt_id,
+        )
+
+    async def finish_request(
+        self,
+        conn: AsyncConnection,
+        *,
+        tenant_id: str,
+        authority: CancelRequestAuthority,
+        progress: RunTerminalizationProgress | None,
+    ) -> CancelRequestResult:
+        active_leases = await self._list_active_sandbox_leases(
+            conn,
+            tenant_id=tenant_id,
+            run_id=authority.run_id,
+        )
+        status = (
+            progress.status
+            if progress is not None and progress.is_terminal()
+            else "cancelled"
+            if authority.prior_status == "cancelled"
+            else "cancel_requested"
+        )
+        if authority.requested_by_role == "admin":
+            action = "admin.run.cancel"
+            payload_json = {
+                "run_id": authority.run_id,
+                "target_user_id": authority.target_user_id,
+                "result_status": status,
+            }
+        else:
+            action = "run.cancel"
+            payload_json = {
+                "run_id": authority.run_id,
+                "result_status": status,
+                "requested_by_role": "owner",
+            }
+        await self._append_audit_log(
+            conn,
+            tenant_id=tenant_id,
+            user_id=authority.actor_user_id,
+            action=action,
+            target_type="run",
+            target_id=authority.run_id,
+            trace_id=authority.trace_ref,
+            payload_json=payload_json,
+        )
+        return CancelRequestResult(
+            run_id=authority.run_id,
+            status=status,
+            trace_ref=authority.trace_ref,
+            active_sandbox_leases=tuple(active_leases),
+            initial_terminalization_progress=progress,
+            attempt_id=authority.attempt_id,
+        )

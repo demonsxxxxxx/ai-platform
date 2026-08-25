@@ -4,8 +4,62 @@ import re
 import sys
 from pathlib import Path
 
+if __package__:
+    from tools import generate_sse_v4_contracts
+else:
+    import generate_sse_v4_contracts
+
 
 ROOT = Path(__file__).resolve().parents[1]
+
+V4_PUBLICATION_CALLS = frozenset(
+    {
+        "admit_v4_stream",
+        "finalize_parent_and_publish",
+        "persist_and_publish_worker_event",
+        "publish_claimed_v4_events",
+        "publish_due_v4_events",
+        "publish_pending_admissions",
+        "publish_pending_run_terminal",
+        "publish_pending_v4_admissions",
+        "publish_pending_v4_events",
+    }
+)
+V4_PUBLICATION_OWNER_MANIFEST = frozenset(
+    {
+        ("app/executor_reconciler.py", "_terminalize_reconciliation_failure"),
+        ("app/routes/admin_runs.py", "admin_run_cancel"),
+        ("app/routes/runs.py", "cancel_run"),
+        ("app/routes/runtime_callbacks.py", "record_executor_callback"),
+        ("app/streaming/application/durable_v4.py", "publish_claimed_v4_events"),
+        ("app/streaming/application/durable_v4.py", "publish_due_v4_events"),
+        ("app/streaming/application/durable_v4.py", "publish_pending_v4_admissions"),
+        ("app/streaming/application/worker_publication_v4.py", "admit_v4_stream"),
+        (
+            "app/streaming/application/worker_publication_v4.py",
+            "finalize_parent_and_publish",
+        ),
+        (
+            "app/streaming/application/worker_publication_v4.py",
+            "persist_and_publish_worker_event",
+        ),
+        (
+            "app/streaming/application/worker_publication_v4.py",
+            "publish_pending_admissions",
+        ),
+        (
+            "app/streaming/application/worker_publication_v4.py",
+            "publish_pending_run_terminal",
+        ),
+        (
+            "app/streaming/application/worker_publication_v4.py",
+            "publish_pending_v4_events",
+        ),
+        ("app/worker.py", "process_run_payload"),
+        ("app/worker_main.py", "_terminalize_escaped_process_exception"),
+        ("app/worker_main.py", "run_worker_maintenance"),
+    }
+)
 
 
 def _function(path: str, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
@@ -119,6 +173,51 @@ def _nested_function(
     return matches[0]
 
 
+def _is_v4_publication_call(name: str) -> bool:
+    parts = name.split(".")
+    return parts[-1] in V4_PUBLICATION_CALLS or (
+        len(parts) >= 2
+        and parts[-1] == "publish"
+        and parts[-2] in {"transport", "publication_transport"}
+    )
+
+
+def _publication_owner_functions(
+    root: Path,
+) -> dict[tuple[str, str], ast.FunctionDef | ast.AsyncFunctionDef]:
+    owners: dict[tuple[str, str], ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    for path in sorted((root / "app").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        candidates: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]] = []
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                candidates.append((node.name, node))
+            elif isinstance(node, ast.ClassDef):
+                candidates.extend(
+                    (f"{node.name}.{method.name}", method)
+                    for method in node.body
+                    if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+                )
+        relative_path = path.relative_to(root).as_posix()
+        for owner_name, node in candidates:
+            if any(_is_v4_publication_call(name) for name, _ in _all_calls(node)):
+                owners[(relative_path, owner_name)] = node
+    return owners
+
+
+def _publication_owner_manifest_failures(
+    owners: dict[tuple[str, str], ast.FunctionDef | ast.AsyncFunctionDef],
+) -> list[str]:
+    actual = set(owners)
+    return [
+        f"v4_publication_owner_manifest:unlisted:{path}:{name}"
+        for path, name in sorted(actual - V4_PUBLICATION_OWNER_MANIFEST)
+    ] + [
+        f"v4_publication_owner_manifest:stale:{path}:{name}"
+        for path, name in sorted(V4_PUBLICATION_OWNER_MANIFEST - actual)
+    ]
+
+
 def _redis_append_inside_transaction(node: ast.AST) -> list[int]:
     bridge_names = {"bridge", "stream_bridge"}
     for candidate in ast.walk(node):
@@ -167,7 +266,8 @@ def _redis_append_inside_transaction(node: ast.AST) -> list[int]:
                 and parts[-1]
                 in {"open", "publish_committed_event"}
             )
-            if direct_bridge_append or publisher_redis_call:
+            active_v4_publication_call = _is_v4_publication_call(name)
+            if direct_bridge_append or publisher_redis_call or active_v4_publication_call:
                 failures.append(call.lineno)
     return failures
 
@@ -213,7 +313,13 @@ def _assistant_delta_ownership_failures(
         failures.append("worker direct assistant-delta publisher exists")
     if "raise WorkerDirectAssistantDeltaError" not in worker_source:
         failures.append("worker assistant-delta ingress does not fail closed")
-    if "canonical_assistant_delta_event" not in callback_source or "await bridge.append(" not in callback_source:
+    if not (
+        "append_callback_v4_rows" in callback_source
+        or (
+            "canonical_assistant_delta_event" in callback_source
+            and "await bridge.append(" in callback_source
+        )
+    ):
         failures.append("runtime callback is not the declared assistant-delta ingress")
     forbidden_executor_dependencies = (
         "RedisStreamBridge",
@@ -326,10 +432,11 @@ def _typescript_call_arguments(source: str, callee: str) -> list[str]:
 
 
 def _nginx_sse_contract_failures(source: str) -> list[str]:
+    uncommented = "\n".join(line.split("#", 1)[0] for line in source.splitlines())
     marker = "location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/stream$ {"
-    if marker not in source:
+    if marker not in uncommented:
         return ["nginx.conf.template:sse_location_missing"]
-    block = source.split(marker, 1)[1].split("\n    }", 1)[0]
+    block = uncommented.split(marker, 1)[1].split("\n    }", 1)[0]
     required = (
         'proxy_set_header Connection "";',
         'proxy_set_header Accept-Encoding "";',
@@ -348,25 +455,99 @@ def _nginx_sse_contract_failures(source: str) -> list[str]:
     ]
 
 
+def _retired_v3_runtime_failures(sources: dict[str, str]) -> list[str]:
+    retired_markers = (
+        "publicRunStreamV3",
+        "enable_sse_v3",
+        "ENABLE_SSE_V3",
+    )
+    return [
+        f"{path}:retired_v3_runtime_marker:{marker}"
+        for path, source in sources.items()
+        for marker in retired_markers
+        if marker in source
+    ]
+
+
+def _is_awaited_call_statement(statement: ast.stmt, qualified_name: str) -> bool:
+    return (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Await)
+        and isinstance(statement.value.value, ast.Call)
+        and _dotted_name(statement.value.value.func) == qualified_name
+    )
+
+
+def _worker_admission_failures(worker: ast.AST) -> list[str]:
+    dispatch_line = _unique_call_line(
+        _calls(worker),
+        qualified_name="_submit_run_until_cancelled",
+    )
+    if dispatch_line is None:
+        return ["worker.py:v4_admission_not_before_sdk_dispatch"]
+    for candidate in ast.walk(worker):
+        for _, value in ast.iter_fields(candidate):
+            if not isinstance(value, list) or not all(
+                isinstance(statement, ast.stmt) for statement in value
+            ):
+                continue
+            for dispatch_index, statement in enumerate(value):
+                if (
+                    "_submit_run_until_cancelled",
+                    dispatch_line,
+                ) not in _calls(statement):
+                    continue
+                if any(
+                    _is_awaited_call_statement(prior, "admit_v4_stream")
+                    for prior in value[:dispatch_index]
+                ):
+                    return []
+    return ["worker.py:v4_admission_not_before_sdk_dispatch"]
+
+
+def _frontend_cursor_commit_failures(frontend: str) -> list[str]:
+    connect = _typescript_function_body(frontend, "export async function connectToSSE")
+    handle_calls = _typescript_call_arguments(
+        connect,
+        "handlePublicRunStreamFrameV4",
+    )
+    commit = _typescript_function_body(
+        connect,
+        "const commitAcceptedStreamEvent",
+    )
+    transport_commit = _typescript_function_body(
+        connect,
+        "const commitTransportCursor",
+    )
+    cursor_assignment = "ctx.acceptedStreamCursorRef.current ="
+    if (
+        len(handle_calls) != 1
+        or "onCommitted: commitAcceptedStreamEvent" not in handle_calls[0]
+        or "commitTransportCursor(semanticApplied)" not in commit
+        or transport_commit.count(cursor_assignment) != 1
+        or connect.count(cursor_assignment) != 1
+    ):
+        return ["sseConnection.ts:cursor_not_bound_to_reducer_commit"]
+    return []
+
+
 def check() -> list[str]:
-    failures: list[str] = []
+    failures = [
+        f"public_run_stream_v4:{failure}"
+        for failure in generate_sse_v4_contracts.generate(check=True)
+    ]
     chat_stream = _function("app/routes/lambchat_compat.py", "chat_session_stream")
     for name, line in _all_calls(chat_stream):
         final_name = name.rsplit(".", 1)[-1]
         if final_name in {"list_run_events", "event_page", "sleep", "read", "xread"}:
             failures.append(f"lambchat_compat.py:{line}:retired_live_call:{final_name}")
-    chat_calls = _calls(chat_stream)
-    live_order = [
-        _unique_call_line(chat_calls, qualified_name=name)
-        for name in (
-            "runtime.hub.subscribe",
-            "bridge.resolve_resume",
-            "bridge.retained_bounds",
-        )
-    ]
+    chat_source = (ROOT / "app/routes/lambchat_compat.py").read_text(encoding="utf-8")
+    subscribe_position = chat_source.find("await runtime.hub.subscribe")
+    replay_position = chat_source.find("await bridge.resolve_resume")
     if (
-        any(line is None for line in live_order)
-        or live_order != sorted(live_order)  # type: ignore[arg-type]
+        subscribe_position < 0
+        or replay_position < 0
+        or subscribe_position > replay_position
     ):
         failures.append("lambchat_compat.py:subscribe_before_replay_unproven")
 
@@ -407,106 +588,23 @@ def check() -> list[str]:
     )
 
     worker = _function("app/worker.py", "process_run_payload")
-    worker_calls = _calls(worker)
-    required = {
-        "prepare": "stream_publisher.prepare",
-        "open": "stream_publisher.open",
-        "confirm": "stream_publisher.confirm",
-        "dispatch": "_submit_run_until_cancelled",
-    }
-    positions = {
-        label: _unique_call_line(worker_calls, qualified_name=qualified_name)
-        for label, qualified_name in required.items()
-    }
-    ordered = [positions[label] for label in ("prepare", "open", "confirm", "dispatch")]
-    prepare_calls = {
-        name
-        for name, _ in _calls(
-            _method("app/streaming/redis.py", "RunStreamPublisher", "prepare")
-        )
-    }
-    confirm_calls = {
-        name
-        for name, _ in _calls(
-            _method("app/streaming/redis.py", "RunStreamPublisher", "confirm")
-        )
-    }
-    if (
-        any(line is None for line in ordered)
-        or ordered != sorted(ordered)  # type: ignore[arg-type]
-        or "create_or_get_stream_admission" not in prepare_calls
-        or "confirm_stream_admission" not in confirm_calls
-    ):
-        failures.append("worker.py:sse_admission_not_before_sdk_dispatch")
+    failures.extend(_worker_admission_failures(worker))
 
-    callback = _function("app/routes/runtime_callbacks.py", "record_executor_callback")
-    for line in _redis_append_inside_transaction(callback):
-        failures.append(
-            f"runtime_callbacks.py:{line}:redis_append_inside_pg_transaction"
-        )
-    for line in _redis_append_inside_transaction(worker):
-        failures.append(f"worker.py:{line}:redis_append_inside_pg_transaction")
+    publication_owners = _publication_owner_functions(ROOT)
+    failures.extend(_publication_owner_manifest_failures(publication_owners))
+    for (path, owner_name), owner in sorted(publication_owners.items()):
+        for line in _redis_append_inside_transaction(owner):
+            failures.append(
+                f"{path}:{owner_name}:{line}:redis_append_inside_pg_transaction"
+            )
 
     event_sink = _nested_function(worker, "event_sink")
     event_sink_calls = _calls(event_sink)
-    producer = _function(
-        "app/streaming/worker_projection.py",
-        "persist_and_publish_worker_event",
-    )
-    publisher = _function(
-        "app/streaming/worker_projection.py",
-        "publish_committed_run_event",
-    )
-    for line in _redis_append_inside_transaction(producer):
-        failures.append(
-            f"worker_projection.py:{line}:redis_append_inside_pg_transaction"
-        )
-    producer_calls = _calls(producer)
-    publisher_calls = _calls(publisher)
-    producer_positions = {
-        "persist": _unique_call_line(
-            producer_calls,
-            qualified_name="repositories.append_event",
-        ),
-        "cancel": _unique_call_line(
-            producer_calls,
-            qualified_name="repositories.is_cancel_requested",
-        ),
-        "handoff": _unique_call_line(
-            producer_calls,
-            qualified_name="publish_committed_run_event",
-        ),
-    }
-    publisher_positions = {
-        "run": _unique_call_line(
-            publisher_calls,
-            qualified_name="repositories.get_run_identity",
-        ),
-        "refresh": _unique_call_line(
-            publisher_calls,
-            qualified_name="stream_publisher.refresh",
-        ),
-        "publish": _unique_call_line(
-            publisher_calls,
-            qualified_name="stream_publisher.publish_committed_event",
-        ),
-    }
     sink_handoff = _unique_call_line(
         event_sink_calls,
         qualified_name="persist_and_publish_worker_event",
     )
-    producer_order = [
-        producer_positions[label] for label in ("persist", "cancel", "handoff")
-    ]
-    publisher_order = [
-        publisher_positions[label] for label in ("run", "refresh", "publish")
-    ]
-    if (
-        sink_handoff is None
-        or any(line is None for line in producer_order + publisher_order)
-        or producer_order != sorted(producer_order)  # type: ignore[arg-type]
-        or publisher_order != sorted(publisher_order)  # type: ignore[arg-type]
-    ):
+    if sink_handoff is None:
         failures.append("worker.py:committed_semantic_producer_unwired")
 
     frontend = _strip_typescript_comments(
@@ -521,18 +619,22 @@ def check() -> list[str]:
             failures.append(f"sseConnection.ts:retired_live_cursor:{retired}")
     if connect.count('headers["Last-Event-ID"] = acceptedCursor.eventId') != 1:
         failures.append("sseConnection.ts:last_event_id_not_from_accepted_cursor")
-    commit = _typescript_function_body(connect, "const commitAcceptedStreamEvent")
-    handle_calls = _typescript_call_arguments(connect, "handleStreamEvent")
-    cursor_assignment = "ctx.acceptedStreamCursorRef.current ="
-    if (
-        len(handle_calls) != 1
-        or not re.search(r",\s*commitAcceptedStreamEvent\s*,?\s*$", handle_calls[0])
-        or commit.count(cursor_assignment) != 1
-        or connect.count(cursor_assignment) != 1
-    ):
-        failures.append("sseConnection.ts:cursor_not_bound_to_reducer_commit")
-    if connect.count("adaptPublicRunStreamEventV3(") != 1:
-        failures.append("sseConnection.ts:v3_generated_adapter_not_unique")
+    failures.extend(_frontend_cursor_commit_failures(frontend))
+    if connect.count("handlePublicRunStreamFrameV4(") != 1:
+        failures.append("sseConnection.ts:v4_handler_not_unique")
+    active_frontend_paths = (
+        "frontend/web/src/hooks/useAgent/sseConnection.ts",
+        "frontend/web/src/hooks/useAgent/eventHandlers.ts",
+        "frontend/web/src/hooks/useAgent.ts",
+    )
+    failures.extend(
+        _retired_v3_runtime_failures(
+            {
+                path: (ROOT / path).read_text(encoding="utf-8")
+                for path in active_frontend_paths
+            }
+        )
+    )
     event_handlers = (
         ROOT / "frontend/web/src/hooks/useAgent/eventHandlers.ts"
     ).read_text(encoding="utf-8")
@@ -552,5 +654,5 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 if __name__ == "__main__":
     _parse_args(sys.argv[1:])
     errors = check()
-    print("\n".join(errors) if errors else "SSE v3 cutover check passed")
+    print("\n".join(errors) if errors else "SSE v4 cutover check passed")
     sys.exit(bool(errors))
