@@ -241,8 +241,8 @@ async def test_enqueue_failure_prepares_authority_then_terminal_row_on_same_conn
 
     assert progress.did_transition is True
     assert calls == [
-        ("transition", conn),
         ("authority", conn),
+        ("transition", conn),
         ("terminal_row", conn),
     ]
 

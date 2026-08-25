@@ -271,13 +271,13 @@ async def test_run_enqueue_compensation_uses_the_durable_failed_transition(monke
     )
 
     assert calls == [
+        {"authority_prepared": True},
         {
             "tenant_id": "tenant-a",
             "user_id": "user-a",
             "run_id": "run-a",
             "trace_id": "trace-run-a",
         },
-        {"authority_prepared": True},
     ]
 
 
@@ -392,8 +392,8 @@ async def test_copied_run_enqueue_failures_commit_compensation_after_creation(
         [
             [("run_created", "run-enqueue-failure")],
             [
-                ("run_failed", "run-enqueue-failure"),
                 ("authority", "run-enqueue-failure"),
+                ("run_failed", "run-enqueue-failure"),
                 ("terminal_row", "run-enqueue-failure"),
             ],
         ]

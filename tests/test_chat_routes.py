@@ -1688,8 +1688,8 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
 
     assert exc_info.value.status_code == 503
     assert committed == [
-        ("run", "run-durable"),
         ("authority", "run-durable"),
+        ("run", "run-durable"),
         ("terminal_row", "run-durable"),
         ("submission", "enqueue_failed"),
     ]
@@ -1698,8 +1698,8 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
         (
             "commit",
             [
-                ("run", "run-durable"),
                 ("authority", "run-durable"),
+                ("run", "run-durable"),
                 ("terminal_row", "run-durable"),
                 ("submission", "enqueue_failed"),
             ],

@@ -170,6 +170,12 @@ class PostgresV4PendingAdmissions(V4PendingAdmissionPort):
         run_id: str,
         attempt_id: str,
     ) -> V4PendingAdmission:
+        run_cursor = await transaction.execute(
+            "select id from runs where tenant_id = %s and id = %s for update",
+            (tenant_id, run_id),
+        )
+        if await run_cursor.fetchone() is None:
+            raise RuntimeError("v4_pending_admission_run_missing")
         scope = tenant_scope(tenant_id, secret=self._authority_secret)
         authority = await create_or_get_stream_admission_v4(
             transaction,

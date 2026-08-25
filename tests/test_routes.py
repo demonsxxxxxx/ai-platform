@@ -3935,8 +3935,8 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
     assert len(committed) == 2
     assert committed[0] and committed[0][0][0] == "run_created"
     assert committed[1] == [
-        ("run_failed", committed[0][0][1]),
         ("authority", committed[0][0][1]),
+        ("run_failed", committed[0][0][1]),
         ("terminal_row", committed[0][0][1]),
     ]
 

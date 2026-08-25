@@ -26,6 +26,12 @@ async def terminalize_enqueue_failure_with_v4(
 ) -> RunTerminalizationProgress:
     """Compensate deterministic queue rejection with its durable v4 terminal row."""
 
+    await v4_capabilities.pending_admissions.prepare_pending_authority_in_transaction(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        attempt_id=f"enqueue_failure_{run_id}",
+    )
     progress = await repositories.mark_run_enqueue_failed(
         conn,
         tenant_id=tenant_id,
@@ -34,12 +40,6 @@ async def terminalize_enqueue_failure_with_v4(
         trace_id=trace_id,
     )
     if progress.did_transition:
-        await v4_capabilities.pending_admissions.prepare_pending_authority_in_transaction(
-            conn,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            attempt_id=f"enqueue_failure_{run_id}",
-        )
         terminal_row = await v4_capabilities.event_persistence.append_terminal_row(
             conn,
             tenant_id=tenant_id,
