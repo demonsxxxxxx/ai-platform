@@ -8,6 +8,9 @@ Parent contract: [`source-code-architecture.md`](source-code-architecture.md)
 
 Runtime authority: [`runtime-authorities.md`](runtime-authorities.md)
 
+Execution specification and attempt authority:
+[`execution-spec-and-attempt-lifecycle.md`](execution-spec-and-attempt-lifecycle.md)
+
 ## 1. Decision
 
 Run terminalization is one Runs application capability. It is not a generic

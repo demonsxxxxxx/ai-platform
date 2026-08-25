@@ -169,7 +169,10 @@ class FakeSchemaStatusConnection:
         if "from pg_index indexes" in normalized:
             migration = next(
                 item
-                for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
+                for item in (
+                    *schema_migrations.CONCURRENT_INDEX_MIGRATIONS,
+                    *schema_migrations.STATIC_INDEX_DEFINITIONS,
+                )
                 if item.name == params[0]
             )
             return FakeCursor(
@@ -292,11 +295,25 @@ async def test_schema_status_uses_exact_model_index_relation_keys_and_predicates
 
 
 @pytest.mark.asyncio
-async def test_base_schema_ledger_advances_to_terminal_reconciliation_schema():
+@pytest.mark.parametrize(
+    ("installed_version", "installed_checksum"),
+    (
+        (
+            "2026.08.21.1",
+            "f4972e68f15ed1c3663cd3696bb2471e4503fbe23753617a6556887bc5075415",
+        ),
+        (
+            "2026.08.23.1",
+            "135136be8faf2adef0bf917354561919d10795ff4b155bfa449aa0aefe8acd13",
+        ),
+    ),
+)
+async def test_prior_schema_ledgers_advance_to_model_control_plane_schema(
+    installed_version: str,
+    installed_checksum: str,
+) -> None:
     state = SharedMigrationState()
-    state.ledger["2026.08.21.1"] = (
-        "f4972e68f15ed1c3663cd3696bb2471e4503fbe23753617a6556887bc5075415"
-    )
+    state.ledger[installed_version] = installed_checksum
 
     result = await schema_migrations.apply_migrations(
         transaction_factory=transaction_factory(state),
@@ -305,9 +322,7 @@ async def test_base_schema_ledger_advances_to_terminal_reconciliation_schema():
 
     assert result["status"] == "applied"
     assert state.schema_execute_count == 1
-    assert state.ledger["2026.08.21.1"] == (
-        "f4972e68f15ed1c3663cd3696bb2471e4503fbe23753617a6556887bc5075415"
-    )
+    assert state.ledger[installed_version] == installed_checksum
     assert state.ledger[schema_migrations.TARGET_SCHEMA_VERSION] == (
         schema_migrations.schema_checksum()
     )
@@ -321,6 +336,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "runs",
         "model_gateway_revisions",
         "model_catalog_entries",
+        "run_attempts",
         "run_skill_materializations",
         "run_events",
         "messages",
@@ -421,6 +437,54 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "chk_runs_execution_skill_identity",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert (
+        "run_attempts",
+        "execution_spec_sha256",
+        "text",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "run_attempts",
+        "execution_spec_canonical_json",
+        "text",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "run_attempts",
+        "chk_run_attempts_status",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "run_attempts",
+        "chk_run_attempts_required_identity",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "run_attempts",
+        "chk_run_attempts_spec_canonical_json",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "run_attempts",
+        "chk_run_attempts_terminal_time",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "run_attempts",
+        "run_attempts_tenant_id_run_id_ordinal_key",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "run_attempts",
+        "run_attempts_tenant_id_run_id_queue_attempt_id_key",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "run_attempts",
+        "lease_expires_at",
+        "timestamptz",
+        False,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "run_attempts",
+        "terminal_reason",
+        "text",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
         "object_deletion_outbox",
         "chk_object_deletion_outbox_state",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
@@ -450,6 +514,12 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert schema_migrations.CRITICAL_TRIGGERS == (
         (
+            "run_attempts",
+            "trg_run_attempt_transition_guard",
+            "ai_platform_guard_run_attempt_transition",
+            23,
+        ),
+        (
             "agent_profile_revisions",
             "trg_agent_profile_legacy_insert_compatibility",
             "agent_profile_legacy_insert_compatibility",
@@ -468,6 +538,94 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert all(item[4].endswith("end ") for item in trigger_contract)
     assert all("\n" in item[4] for item in trigger_contract)
     assert schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS == (
+        (
+            "run_attempts",
+            "fk_run_attempts_run",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id) REFERENCES runs(tenant_id, id)",
+        ),
+        (
+            "run_attempts",
+            "chk_run_attempts_ordinal",
+            "c",
+            "CHECK (ordinal > 0)",
+        ),
+        (
+            "run_attempts",
+            "chk_run_attempts_owner_generation",
+            "c",
+            "CHECK (owner_generation > 0)",
+        ),
+        (
+            "run_attempts",
+            "chk_run_attempts_status",
+            "c",
+            "CHECK (status = ANY (ARRAY["
+            "'created'::text, 'queued'::text, 'claimed'::text, 'running'::text, "
+            "'cancel_requested'::text, 'expired'::text, 'succeeded'::text, "
+            "'failed'::text, 'cancelled'::text]))",
+        ),
+        (
+            "run_attempts",
+            "chk_run_attempts_owner_kind",
+            "c",
+            "CHECK (owner_kind = ANY (ARRAY["
+            "'queue_worker'::text, 'reconciler'::text, 'operator'::text]))",
+        ),
+        (
+            "run_attempts",
+            "chk_run_attempts_spec_sha256",
+            "c",
+            "CHECK (execution_spec_sha256 ~ '^[0-9a-f]{64}$'::text "
+            "AND execution_spec_sha256 = encode("
+            "sha256(convert_to(execution_spec_canonical_json, 'UTF8'::name)), "
+            "'hex'::text))",
+        ),
+        (
+            "run_attempts",
+            "chk_run_attempts_required_identity",
+            "c",
+            "CHECK (id <> ''::text AND owner_id <> ''::text "
+            "AND queue_attempt_id <> ''::text "
+            "AND execution_spec_schema_version <> ''::text "
+            "AND (queue_message_id IS NULL OR queue_message_id <> ''::text))",
+        ),
+        (
+            "run_attempts",
+            "chk_run_attempts_spec_json",
+            "c",
+            "CHECK (jsonb_typeof(execution_spec_json) = 'object'::text "
+            "AND (execution_spec_json ->> 'schema_version'::text) "
+            "= execution_spec_schema_version)",
+        ),
+        (
+            "run_attempts",
+            "chk_run_attempts_spec_canonical_json",
+            "c",
+            "CHECK (execution_spec_canonical_json <> ''::text "
+            "AND execution_spec_canonical_json::jsonb = execution_spec_json)",
+        ),
+        (
+            "run_attempts",
+            "chk_run_attempts_terminal_time",
+            "c",
+            "CHECK ((status = ANY (ARRAY['succeeded'::text, 'failed'::text, "
+            "'cancelled'::text])) AND finished_at IS NOT NULL "
+            "OR NOT (status = ANY (ARRAY['succeeded'::text, 'failed'::text, "
+            "'cancelled'::text])) AND finished_at IS NULL)",
+        ),
+        (
+            "run_attempts",
+            "run_attempts_tenant_id_run_id_ordinal_key",
+            "u",
+            "UNIQUE (tenant_id, run_id, ordinal)",
+        ),
+        (
+            "run_attempts",
+            "run_attempts_tenant_id_run_id_queue_attempt_id_key",
+            "u",
+            "UNIQUE (tenant_id, run_id, queue_attempt_id)",
+        ),
         (
             "files",
             "chk_files_lifecycle_state",
@@ -548,6 +706,27 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "idx_sandbox_leases_attempt",
         False,
     ) in schema_migrations.CRITICAL_INDEXES
+    assert ("uq_run_attempts_one_open", True) in schema_migrations.CRITICAL_INDEXES
+    static_indexes = {
+        definition.name: definition
+        for definition in schema_migrations.STATIC_INDEX_DEFINITIONS
+    }
+    assert static_indexes["uq_run_attempts_one_open"].column_names == (
+        "tenant_id",
+        "run_id",
+    )
+    assert static_indexes["uq_run_attempts_one_open"].predicate_expression == (
+        "status = any array['created', 'queued', 'claimed', 'running', "
+        "'cancel_requested', 'expired']"
+    )
+    assert static_indexes["idx_run_attempts_run_created"].descending == (
+        False,
+        False,
+        True,
+    )
+    assert static_indexes["idx_run_attempts_lease_reconcile"].predicate_expression == (
+        "status = any array['claimed', 'running', 'cancel_requested', 'expired']"
+    )
     migrations = {item.name: item for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS}
     assert migrations["idx_object_deletion_outbox_claim"].predicate_expression == (
         "state = 'pending' or state = 'processing' or state = 'failed' "
@@ -578,11 +757,26 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     }
 
 
+def test_every_critical_run_attempt_constraint_has_an_exact_definition():
+    critical = {
+        constraint_name
+        for relation_name, constraint_name in schema_migrations.CRITICAL_CONSTRAINTS
+        if relation_name == "run_attempts"
+    }
+    defined = {
+        constraint_name
+        for relation_name, constraint_name, _, _ in schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS
+        if relation_name == "run_attempts"
+    }
+
+    assert defined == critical
+
+
 def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "05e6c12fe5bb39d1819fb813f3c3ac21b8321cf1dbfe555f95a376b422389325"
+        "eed1dfdbb88914283a1647116a446899c11c0d4a9072610a3553ae379b770f9b"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "
