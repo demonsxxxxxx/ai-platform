@@ -139,6 +139,13 @@ def test_execution_spec_preserves_raw_upstream_model_identity():
     assert spec.to_mapping()["model_value"] == "openai/gpt-5"
 
 
+def test_execution_spec_preserves_legacy_empty_model_identity():
+    spec = compile_execution_spec(_spec_payload(model_id="", model_value=""))
+
+    assert spec.to_mapping()["model_id"] == ""
+    assert spec.to_mapping()["model_value"] == ""
+
+
 @pytest.mark.parametrize("model_value", [" openai/gpt-5", "openai/gpt-5\n", "x" * 513])
 def test_execution_spec_rejects_unsafe_upstream_model_identity(model_value):
     with pytest.raises(

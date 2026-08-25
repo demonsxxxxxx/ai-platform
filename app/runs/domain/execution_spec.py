@@ -347,11 +347,9 @@ def _normalize_execution_spec(payload: Mapping[str, Any]) -> dict[str, Any]:
     normalized["context_snapshot_id"] = context_snapshot_id
 
     model_id = _optional_string(payload, "model_id")
-    if model_id:
-        normalized["model_id"] = _safe_id(model_id, "model_id")
+    normalized["model_id"] = _safe_id(model_id, "model_id") if model_id else model_id
     model_value = _optional_string(payload, "model_value")
-    if model_value:
-        normalized["model_value"] = _upstream_model_id(model_value)
+    normalized["model_value"] = _upstream_model_id(model_value) if model_value else model_value
 
     if execution_kind == _RUN_EXECUTION_KIND_HARNESS_CHAT:
         if run_payload_schema_version != _RUN_PAYLOAD_SCHEMA_VERSION_V2:
