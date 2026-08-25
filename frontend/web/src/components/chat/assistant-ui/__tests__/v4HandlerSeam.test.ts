@@ -476,10 +476,10 @@ test("v4 handler delegates stream gaps to the existing recovery owner", () => {
     emitted_at: "2026-01-01T00:00:00Z",
     payload: {
       reason: "stream_missing",
-      requested_event_id: "run-1:1:0-1",
+      requested_event_id: "0-1",
       requested_stream_incarnation: 1,
-      earliest_available_event_id: "run-1:1:0-2",
-      latest_available_event_id: "run-1:1:0-3",
+      earliest_available_event_id: "0-2",
+      latest_available_event_id: "0-3",
       current_stream_incarnation: 1,
       recovery: "reload_durable_state",
     },
@@ -489,7 +489,7 @@ test("v4 handler delegates stream gaps to the existing recovery owner", () => {
     sessionIdRef: { current: "session-1" },
     currentRunIdRef: { current: "run-1" },
     streamVersionRef: { current: 0 },
-    acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: null, streamIncarnation: 1 } },
+    acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: "run-1:1:0-1", streamIncarnation: 1 } },
   } as EventHandlerContext;
   const accepted = handlePublicRunStreamFrameV4({
     frame: { eventHeader: "stream.gap", transportCursor: "run-1:1:4-0", generation: 3, value: frameValue },

@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   PUBLIC_RUN_STREAM_SCHEMA,
   STREAM_DESIGN_ID,
-} from "../../../generated/publicRunStreamV3.ts";
+} from "../../../generated/publicRunStreamV4.ts";
 import type { UseAgentOptions, UseAgentReturn } from "../types.ts";
 import { ApiRequestError } from "../../../services/api/fetch.ts";
 import type {
@@ -430,7 +430,7 @@ function controlledPublicRunLifecycle(
   runId: string,
   status: "succeeded" | "failed" | "cancelled" = "cancelled",
   preceding: Array<{
-    eventType: "assistant_text_delta" | "semantic_stage";
+    eventType: "message.started" | "message.delta";
     payload: Record<string, unknown>;
   }> = [],
 ) {
@@ -441,27 +441,38 @@ function controlledPublicRunLifecycle(
     new ReadableStream({
       start(controller) {
         const streamOpen = {
-          schema: PUBLIC_RUN_STREAM_SCHEMA,
+          schema: "ai-platform.public-run-stream-control.v4",
           event_id: `stream-open-${runId}`,
           run_id: runId,
+          message_id: null,
+          seq: null,
+          event_type: "stream.open",
           stream_incarnation: streamIncarnation,
+          replayable: true,
+          trace_ref: null,
+          causation_event_id: null,
           emitted_at: "2026-08-21T00:00:00Z",
-          event_type: "stream_open",
           payload: { design_id: STREAM_DESIGN_ID },
         };
         controller.enqueue(
           encoder.encode(
-            `id: ${runId}:${streamIncarnation}:1-0\nevent: stream_open\ndata: ${JSON.stringify(streamOpen)}\n\n`,
+            `id: ${runId}:${streamIncarnation}:1-0\nevent: stream.open\ndata: ${JSON.stringify(streamOpen)}\n\n`,
           ),
         );
         preceding.forEach((frame, index) => {
+          const sequence = index + 1;
           const event = {
             schema: PUBLIC_RUN_STREAM_SCHEMA,
             event_id: `preceding-${runId}-${index}`,
             run_id: runId,
-            stream_incarnation: streamIncarnation,
-            emitted_at: `2026-08-21T00:00:00.${String(index + 1).padStart(3, "0")}Z`,
+            message_id: `message-${runId}`,
+            seq: sequence,
             event_type: frame.eventType,
+            stream_incarnation: streamIncarnation,
+            replayable: true,
+            trace_ref: null,
+            causation_event_id: null,
+            emitted_at: `2026-08-21T00:00:00.${String(sequence).padStart(3, "0")}Z`,
             payload: frame.payload,
           };
           controller.enqueue(
@@ -471,33 +482,66 @@ function controlledPublicRunLifecycle(
           );
         });
         finish = () => {
+          const terminalEventType =
+            status === "succeeded"
+              ? "run.succeeded"
+              : status === "cancelled"
+                ? "run.cancelled"
+                : "run.failed";
+          const terminalEventId = `terminal-${runId}`;
+          const terminalPayload =
+            status === "failed"
+              ? {
+                  terminal_event_id: terminalEventId,
+                  hydrate_required: true,
+                  projection_version: "ai-platform.chat-public-projection.v1",
+                  code: "run_failed",
+                  default_message: "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
+                  detail: null,
+                }
+              : status === "cancelled"
+                ? {
+                    terminal_event_id: terminalEventId,
+                    hydrate_required: true,
+                    reason_code: "user_cancelled",
+                  }
+                : {
+                    terminal_event_id: terminalEventId,
+                    hydrate_required: true,
+                  };
+          const terminalSequence = preceding.length + 1;
           const terminal = {
             schema: PUBLIC_RUN_STREAM_SCHEMA,
-            event_id: `terminal-${runId}`,
+            event_id: terminalEventId,
             run_id: runId,
+            message_id: null,
+            seq: terminalSequence,
+            event_type: terminalEventType,
             stream_incarnation: streamIncarnation,
+            replayable: true,
+            trace_ref: null,
+            causation_event_id: null,
             emitted_at: "2026-08-21T00:00:01Z",
-            event_type: "terminal",
-            payload: {
-              event_id: `terminal-${runId}`,
-              hydrate_required: true,
-              status,
-            },
+            payload: terminalPayload,
           };
           const end = {
-            schema: PUBLIC_RUN_STREAM_SCHEMA,
+            schema: "ai-platform.public-run-stream-control.v4",
             event_id: `end-${runId}`,
             run_id: runId,
+            message_id: null,
+            seq: null,
+            event_type: "stream.end",
             stream_incarnation: streamIncarnation,
+            replayable: true,
+            trace_ref: null,
+            causation_event_id: terminalEventId,
             emitted_at: "2026-08-21T00:00:02Z",
-            event_type: "end",
-            payload: { terminal_event_id: terminal.event_id },
+            payload: { terminal_event_id: terminalEventId },
           };
-          const terminalSequence = preceding.length + 2;
           controller.enqueue(
             encoder.encode(
-              `id: ${runId}:${streamIncarnation}:${terminalSequence}-0\nevent: terminal\ndata: ${JSON.stringify(terminal)}\n\n` +
-                `id: ${runId}:${streamIncarnation}:${terminalSequence + 1}-0\nevent: end\ndata: ${JSON.stringify(end)}\n\n`,
+              `id: ${runId}:${streamIncarnation}:${preceding.length + 2}-0\nevent: ${terminalEventType}\ndata: ${JSON.stringify(terminal)}\n\n` +
+                `id: ${runId}:${streamIncarnation}:${preceding.length + 3}-0\nevent: stream.end\ndata: ${JSON.stringify(end)}\n\n`,
             ),
           );
           controller.close();
@@ -521,7 +565,7 @@ function completedPublicRunResponse(
   runId: string,
   status: "succeeded" | "failed" | "cancelled",
   preceding: Array<{
-    eventType: "assistant_text_delta" | "semantic_stage";
+    eventType: "message.started" | "message.delta";
     payload: Record<string, unknown>;
   }> = [],
 ) {
@@ -530,7 +574,7 @@ function completedPublicRunResponse(
   return stream.response;
 }
 
-test("queued submit clears chat-queue when the current SSE v3 stream opens", async () => {
+test("queued submit clears chat-queue when the current SSE v4 stream opens", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const toast = (await import("react-hot-toast")).default;
@@ -3658,7 +3702,8 @@ test("useAgent retains final answer and artifact frames that precede a succeeded
   }) as typeof animationWindow.requestAnimationFrame;
   animationWindow.cancelAnimationFrame = (() => {}) as typeof animationWindow.cancelAnimationFrame;
   const lifecycle = controlledPublicRunLifecycle("run-final-success", "succeeded", [
-    { eventType: "assistant_text_delta", payload: { delta: "最终答复" } },
+    { eventType: "message.started", payload: {} },
+    { eventType: "message.delta", payload: { delta: "最终答复" } },
   ]);
   dom.window.fetch = async () => lifecycle.response;
   sessionApi.markRead = async () => {};

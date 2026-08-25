@@ -1602,10 +1602,10 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
       emitted_at: "2026-01-01T00:00:00Z",
       payload: {
         reason: "stream_missing",
-        requested_event_id: "run-authority:3:0-1",
+        requested_event_id: "0-1",
         requested_stream_incarnation: 3,
-        earliest_available_event_id: "run-authority:3:0-2",
-        latest_available_event_id: "run-authority:3:0-3",
+        earliest_available_event_id: "0-2",
+        latest_available_event_id: "0-3",
         current_stream_incarnation: 3,
         recovery: "reload_durable_state",
       },
@@ -1614,7 +1614,7 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
   ctx.acceptedStreamCursorRef!.current = {
     sessionId: "session-1",
     runId: "run-authority",
-    eventId: null,
+    eventId: "run-authority:3:0-1",
     streamIncarnation: 3,
   };
   let gapCalls = 0;
@@ -1665,6 +1665,31 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
     onGap,
   }), false);
   assert.equal(gapCalls, 1);
+  for (const requested of [
+    { eventId: "9-0", incarnation: 3 },
+    { eventId: null, incarnation: null },
+  ] as const) {
+    assert.equal(handlePublicRunStreamFrameV4({
+      frame: {
+        ...frame,
+        value: {
+          ...frame.value,
+          payload: {
+            ...frame.value.payload,
+            requested_event_id: requested.eventId,
+            requested_stream_incarnation: requested.incarnation,
+          },
+        },
+      },
+      adapterBinding,
+      messageId: "assistant-authority",
+      ctx,
+      binding,
+      currentGeneration: 4,
+      onGap,
+    }), false);
+    assert.equal(gapCalls, 1);
+  }
   assert.equal(handlePublicRunStreamFrameV4({
     frame,
     adapterBinding,

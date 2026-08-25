@@ -7,6 +7,18 @@ def test_release_atomic_cutover_has_no_pg_live_reader_or_predispatch_sdk():
     assert cutover.check() == []
 
 
+def test_release_atomic_cutover_rejects_generated_v4_contract_drift(monkeypatch):
+    monkeypatch.setattr(
+        cutover.generate_sse_v4_contracts,
+        "generate",
+        lambda *, check: ["generated/publicRunStreamV4.ts differs"] if check else [],
+    )
+
+    assert "public_run_stream_v4:generated/publicRunStreamV4.ts differs" in (
+        cutover.check()
+    )
+
+
 def test_release_atomic_cutover_rejects_optional_v3_runtime_markers():
     assert cutover._retired_v3_runtime_failures(
         {"sseConnection.ts": 'import { connect } from "./publicRunStreamV3";'}

@@ -4,6 +4,11 @@ import re
 import sys
 from pathlib import Path
 
+if __package__:
+    from tools import generate_sse_v4_contracts
+else:
+    import generate_sse_v4_contracts
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -411,7 +416,10 @@ def _frontend_cursor_commit_failures(frontend: str) -> list[str]:
 
 
 def check() -> list[str]:
-    failures: list[str] = []
+    failures = [
+        f"public_run_stream_v4:{failure}"
+        for failure in generate_sse_v4_contracts.generate(check=True)
+    ]
     chat_stream = _function("app/routes/lambchat_compat.py", "chat_session_stream")
     for name, line in _all_calls(chat_stream):
         final_name = name.rsplit(".", 1)[-1]

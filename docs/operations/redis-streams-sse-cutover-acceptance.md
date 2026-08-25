@@ -62,11 +62,12 @@ behaviors remains:
 - API, worker, executor, frontend, workflow, checker, or release documentation
   disagrees on the active v4 design and projection versions.
 
-The release build contains a single cutover manifest/version consumed by API,
-worker, executor, and frontend build provenance. `tools/pre_push_readiness.py`,
-the dedicated negative checker, CI, and release preparation verify the complete
-set. Intermediate main commits may exist only when production admission is
-provably dormant and the release tool rejects their manifest.
+Release preparation verifies the exact source SHA, immutable API/worker and
+frontend image digests, generated v4 protocol artifacts, required workflow
+results, and configuration fingerprint. `tools/pre_push_readiness.py`, the
+dedicated negative checker, CI, and release preparation own those separate
+facts. Intermediate main commits may exist only when production admission is
+provably dormant and release verification rejects incomplete evidence.
 
 Rollback is an immutable prior reviewed image. The current image contains no
 hidden legacy runtime flag. Active v4 work must drain, safely pause, or
@@ -82,28 +83,25 @@ It rejects:
 
 - `chat_session_stream` calling PostgreSQL event-list/page/fold helpers,
   `asyncio.sleep`, a blocking Redis `XREAD`, or a status/history live fallback;
-- worker or runtime callback `assistant_delta` routing to PostgreSQL append
-  functions;
-- semantic producer publication before its safe PostgreSQL row commits, Redis
-  calls inside direct or nested transaction helpers, or missing exact
-  row-derived identity/sequence/time wiring;
-- PostgreSQL sequence/cursor serialization as an SSE ID;
-- `XREADGROUP`, per-browser blocking `XREAD`, subscribe-after-replay, in-process
-  replay, unbounded local subscriber queues, or selectable legacy/shadow
-  backends;
-- public raw command/tool/reasoning/path/credential/approval event types;
+- worker or runtime callback `assistant_delta` routing to a second publisher;
+- Redis publication from callback, worker, or nested transaction helpers;
+- missing transaction-scoped v4 admission before SDK dispatch or missing the
+  single committed-event publication handoff;
+- per-browser blocking Redis reads or retired v2.1 stream markers;
 - Redis append without atomic `XADD` plus TTL refresh plus `PUBLISH`;
-- handwritten backend/frontend v4 envelope fields or event enums outside the
-  generated artifacts and strict event-specific security projector;
-- mismatched stream schema/public schema/projection/cutover manifest constants;
+- generated Python or TypeScript v4 artifacts that differ from the one v4 JSON
+  Schema;
 - frontend event-ID UUID fallback, accepted cursor mutation before successful
-  reducer commit, reconnect without `Last-Event-ID`, or PostgreSQL
-  sequence/status/history entering the live cursor/fold;
-- missing required no-buffer/no-transform gateway configuration;
-- an incomplete v4 cutover manifest that release tooling could package.
+  reducer commit, reconnect without `Last-Event-ID`, or an active v3 adapter,
+  selector, or fallback in the production connection path;
+- runtime approval events entering the public frontend handler; and
+- missing required no-buffer/no-transform gateway configuration.
 
-Checker tests must use structural fixtures and execute the checker. A test that
-only searches for one string does not satisfy this gate.
+The checker is one source gate, not the complete release evidence collector.
+Required workflow tests separately execute schema security fixtures, generated
+contract tests, real Redis/PostgreSQL behavior, frontend projection tests, and
+image provenance. Checker tests use structural fixtures and execute the checker;
+a test that only searches for one string does not satisfy this gate.
 
 ## SSE application and Nginx contract
 
@@ -169,15 +167,15 @@ pytest for bounded suites. Required affected gates include:
   pushed candidate.
 
 CI must run the backend streaming/callback suites and frontend SSE suites for
-changes to their production paths. It must build the complete cutover manifest
-and run the full negative checker before an image is release eligible.
+changes to their production paths. It must verify generated v4 protocol
+artifacts and run the full negative checker before an image is release eligible.
 
 ## External Acceptance
 
 The following evidence cannot be claimed from local mocks, source inspection, or
-ordinary CI. It requires exact source SHA, image digests, cutover manifest,
-configuration fingerprint, Redis/PostgreSQL versions, API/worker replica counts,
-Nginx config, and browser build:
+ordinary CI. It requires exact source SHA, image digests, configuration
+fingerprint, Redis/PostgreSQL versions, API/worker replica counts, Nginx config,
+and browser build:
 
 - real Redis plus PostgreSQL with at least two API readers and the intended
   worker/executor topology;

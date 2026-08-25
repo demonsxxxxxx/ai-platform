@@ -230,7 +230,15 @@ function isCurrentV4GapOwner(
     acceptedCursor.runId === binding.runId &&
     acceptedCursor.streamIncarnation === binding.streamIncarnation
   ) {
-    return true;
+    const requestedEventId = event.event.payload.requested_event_id;
+    const requestedIncarnation =
+      event.event.payload.requested_stream_incarnation;
+    return (
+      requestedEventId !== null &&
+      requestedIncarnation === binding.streamIncarnation &&
+      acceptedCursor.eventId ===
+        `${binding.runId}:${requestedIncarnation}:${requestedEventId}`
+    );
   }
   const cursorIsUnbound =
     acceptedCursor.eventId === null &&
