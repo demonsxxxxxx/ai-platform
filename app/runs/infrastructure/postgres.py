@@ -42,50 +42,34 @@ async def load_current_terminal_event_fact(
     tenant_id: str,
     run_id: str,
 ) -> RunTerminalEventFact | None:
-    """Lock Run before current Attempt and return terminal projection facts."""
+    """Lock and return the current terminal Run fact.
 
-    run_cursor = await conn.execute(
+    Active SSE attempt identity remains owned by the Streaming authority. The
+    additive ``run_attempts`` foundation is not a worker lifecycle authority
+    until its separately governed dual-write cutover.
+    """
+
+    cursor = await conn.execute(
         """
-        select status, trace_id
+        select status, error_code, trace_id
         from runs
-        where tenant_id = %s and id = %s
+        where tenant_id = %s
+          and id = %s
+          and status in ('succeeded', 'failed', 'cancelled')
         for update
         """,
         (tenant_id, run_id),
     )
-    run = await run_cursor.fetchone()
-    if run is None or str(run.get("status") or "") not in TERMINAL_RUN_ATTEMPT_STATUSES:
+    row = await cursor.fetchone()
+    if row is None:
         return None
-    attempt_cursor = await conn.execute(
-        """
-        select id, status, terminal_reason, error_code
-        from run_attempts
-        where tenant_id = %s
-          and run_id = %s
-          and ordinal = (
-            select max(current_attempt.ordinal)
-            from run_attempts as current_attempt
-            where current_attempt.tenant_id = %s
-              and current_attempt.run_id = %s
-          )
-        for update
-        """,
-        (tenant_id, run_id, tenant_id, run_id),
-    )
-    attempt = await attempt_cursor.fetchone()
-    status = str(run.get("status") or "")
-    if attempt is None or str(attempt.get("status") or "") != status:
-        raise RepositoryConflictError("run_terminal_attempt_conflict")
+    status = str(row.get("status") or "")
+    error_code = str(row.get("error_code") or "") or None
     return RunTerminalEventFact(
-        attempt_id=str(attempt["id"]),
         status=status,
-        terminal_reason=str(attempt.get("terminal_reason") or "run_terminalized"),
-        error_code=(
-            str(attempt["error_code"])
-            if attempt.get("error_code") is not None
-            else None
-        ),
-        trace_ref=str(run["trace_id"]) if run.get("trace_id") is not None else None,
+        terminal_reason=error_code or ("run_cancelled" if status == "cancelled" else status),
+        error_code=error_code,
+        trace_ref=str(row.get("trace_id") or "") or None,
     )
 
 

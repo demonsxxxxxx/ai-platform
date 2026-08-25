@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from app import repositories
 from app.auth import AuthPrincipal
-from app.main import create_app
+from app.main import create_app as create_production_app
 from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
 from app.routes import lambchat_compat
 from app.runtime.sandbox.callback_tokens import (
@@ -18,6 +18,24 @@ from app.runtime.sandbox.contracts import (
     ExecutorCallbackEvent,
     ExecutorToolPermissionRequest,
 )
+from app.streaming.infrastructure import v4 as streaming_v4
+
+
+class CallbackEventPersistence:
+    async def append_callback_rows(self, conn, **kwargs):
+        return await streaming_v4.append_callback_v4_rows(conn, **kwargs)
+
+
+def callback_event_capabilities():
+    return SimpleNamespace(event_persistence=CallbackEventPersistence())
+
+
+def create_app():
+    app = create_production_app()
+    app.state.run_stream_runtime = SimpleNamespace(
+        worker_capabilities=callback_event_capabilities()
+    )
+    return app
 
 
 def derived_callback_token(secret: str, token_id: str = "cbt:run-a:attempt-a") -> str:
@@ -322,7 +340,7 @@ def test_executor_callback_rejects_valid_foreign_run_token_pair(monkeypatch):
 
     from app.routes import runtime_callbacks
 
-    async def fail_record_executor_callback(callback):
+    async def fail_record_executor_callback(callback, *, capabilities):
         raise AssertionError("foreign run token must be rejected before recording")
 
     monkeypatch.setattr(runtime_callbacks, "record_executor_callback", fail_record_executor_callback)
@@ -479,7 +497,7 @@ def test_executor_callback_rejects_when_token_not_configured(monkeypatch):
 
     from app.routes import runtime_callbacks
 
-    async def fail_record_executor_callback(callback):
+    async def fail_record_executor_callback(callback, *, capabilities):
         raise AssertionError("callback must fail closed when token is not configured")
 
     monkeypatch.setattr(runtime_callbacks, "record_executor_callback", fail_record_executor_callback)
@@ -504,7 +522,7 @@ def test_executor_callback_accepts_valid_event_and_records_callback(monkeypatch)
     except ModuleNotFoundError:
         runtime_callbacks = None
     else:
-        async def fake_record_executor_callback(callback):
+        async def fake_record_executor_callback(callback, *, capabilities):
             recorded.append(callback)
             return {"accepted": True, "event_count": 1}
 
@@ -1101,7 +1119,11 @@ def test_executor_callback_uses_adapter_events_and_durable_rows(monkeypatch):
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", fake_append_batch)
-    monkeypatch.setattr(runtime_callbacks, "append_callback_v4_rows", fake_append_v4_rows)
+    monkeypatch.setattr(
+        streaming_v4,
+        "append_callback_v4_rows",
+        fake_append_v4_rows,
+    )
     monkeypatch.setattr(runtime_callbacks, "get_stream_authority", fake_get_authority)
     patch_active_attempt(monkeypatch, runtime_callbacks)
 
@@ -1320,7 +1342,11 @@ def test_executor_callback_uses_real_adapter_lifecycle_and_excludes_platform_eve
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", append_batch)
-    monkeypatch.setattr(runtime_callbacks, "append_callback_v4_rows", append_v4)
+    monkeypatch.setattr(
+        streaming_v4,
+        "append_callback_v4_rows",
+        append_v4,
+    )
     monkeypatch.setattr(runtime_callbacks, "get_stream_authority", get_authority)
     patch_active_attempt(monkeypatch, runtime_callbacks)
 
@@ -1422,11 +1448,16 @@ async def test_record_executor_callback_rolls_back_receipt_and_v4_rows_after_fin
         list_current_leases,
     )
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", append_batch)
-    monkeypatch.setattr(runtime_callbacks, "append_callback_v4_rows", append_v4)
     monkeypatch.setattr(runtime_callbacks, "get_stream_authority", get_authority)
 
+    capabilities = SimpleNamespace(
+        event_persistence=SimpleNamespace(append_callback_rows=append_v4)
+    )
     with pytest.raises(HTTPException) as exc_info:
-        await runtime_callbacks.record_executor_callback(callback)
+        await runtime_callbacks.record_executor_callback(
+            callback,
+            capabilities=capabilities,
+        )
 
     assert exc_info.value.detail == "sandbox_runtime_attempt_inactive"
     assert state["lease_calls"] == 2
@@ -1510,10 +1541,15 @@ async def test_record_executor_callback_enforces_v4_batch_authority_attempt_and_
         list_current_leases,
     )
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", unexpected_append)
-    monkeypatch.setattr(runtime_callbacks, "append_callback_v4_rows", unexpected_append)
     monkeypatch.setattr(runtime_callbacks, "get_stream_authority", get_authority)
 
+    capabilities = SimpleNamespace(
+        event_persistence=SimpleNamespace(append_callback_rows=unexpected_append)
+    )
     with pytest.raises(HTTPException) as exc_info:
-        await runtime_callbacks.record_executor_callback(callback)
+        await runtime_callbacks.record_executor_callback(
+            callback,
+            capabilities=capabilities,
+        )
 
     assert exc_info.value.detail == expected_detail

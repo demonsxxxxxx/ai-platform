@@ -15,6 +15,41 @@ from app.run_admission_policy import (
 )
 
 
+async def terminalize_enqueue_failure_with_v4(
+    v4_capabilities: WorkerV4Capabilities,
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str | None,
+    run_id: str,
+    trace_id: str,
+) -> RunTerminalizationProgress:
+    """Compensate deterministic queue rejection with its durable v4 terminal row."""
+
+    progress = await repositories.mark_run_enqueue_failed(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        run_id=run_id,
+        trace_id=trace_id,
+    )
+    if progress.did_transition:
+        await v4_capabilities.pending_admissions.prepare_pending_authority_in_transaction(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=f"enqueue_failure_{run_id}",
+        )
+        terminal_row = await v4_capabilities.event_persistence.append_terminal_row(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+        )
+        if terminal_row is None:
+            raise RuntimeError("enqueue_failure_v4_terminal_row_missing")
+    return progress
+
+
 async def terminalize_retired_platform_multi_agent_run(
     conn: AsyncConnection,
     *,

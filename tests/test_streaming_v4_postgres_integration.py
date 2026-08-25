@@ -18,6 +18,8 @@ from redis.asyncio import Redis
 from app import repositories, schema_migrations
 from app.bootstrap import run_lifecycle
 from app.repositories import complete_run
+from app.run_admission_terminalization import terminalize_enqueue_failure_with_v4
+from app.runs.infrastructure.postgres import load_current_terminal_event_fact
 from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
 from app.routes import runtime_callbacks
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent
@@ -59,6 +61,7 @@ from app.streaming.infrastructure.postgres_v4 import (
 from app.streaming.infrastructure.redis_v4_rebuild import RedisV4SuccessorRebuildTransport
 from app.streaming.infrastructure.worker_v4 import (
     PostgresV4PendingAdmissions,
+    PostgresWorkerEventPersistence,
     RedisV4PublicationTransport,
 )
 
@@ -637,6 +640,119 @@ async def _publish_claimed(
         claim_ttl=claim_ttl,
         retry_delay=timedelta(seconds=5),
     )
+
+
+@pytest.mark.asyncio
+async def test_enqueue_failure_creates_authority_and_terminal_row_atomically():
+    async with _schema() as (dsn, schema_name, (tenant, run, _attempt)):
+        def factory():
+            return _connection_factory(dsn, schema_name)
+
+        user_id = f"u_{tenant[2:]}"
+        admissions = PostgresV4PendingAdmissions(
+            factory,
+            authority_secret="test-v4-authority-secret",
+        )
+
+        async with factory() as conn:
+            await conn.execute(
+                "update runs set status = 'queued', completed_at = null, error_code = null, error_message = null where tenant_id = %s and id = %s",
+                (tenant, run),
+            )
+            await conn.execute(
+                "delete from run_events where tenant_id = %s and run_id = %s",
+                (tenant, run),
+            )
+            await conn.execute(
+                "delete from sse_stream_authorities where tenant_id = %s and run_id = %s",
+                (tenant, run),
+            )
+
+        class MissingTerminalRow:
+            async def append_terminal_row(self, *_args, **_kwargs):
+                return None
+
+        rollback_capabilities = WorkerV4Capabilities(
+            authority=object(),
+            pending_admissions=admissions,
+            event_persistence=MissingTerminalRow(),
+            publication_claims=object(),
+            publication_transport=object(),
+        )
+        with pytest.raises(RuntimeError, match="enqueue_failure_v4_terminal_row_missing"):
+            async with factory() as conn:
+                await terminalize_enqueue_failure_with_v4(
+                    rollback_capabilities,
+                    conn,
+                    tenant_id=tenant,
+                    user_id=user_id,
+                    run_id=run,
+                    trace_id=f"trace_{run}",
+                )
+
+        async with factory() as conn:
+            run_row = await (
+                await conn.execute(
+                    "select status from runs where tenant_id = %s and id = %s",
+                    (tenant, run),
+                )
+            ).fetchone()
+            authority_row = await (
+                await conn.execute(
+                    "select 1 from sse_stream_authorities where tenant_id = %s and run_id = %s",
+                    (tenant, run),
+                )
+            ).fetchone()
+        assert run_row == {"status": "queued"}
+        assert authority_row is None
+
+        event_persistence = PostgresWorkerEventPersistence(
+            factory,
+            append_event=repositories.append_event,
+            is_cancel_requested=repositories.is_cancel_requested,
+            load_terminal_event_fact=load_current_terminal_event_fact,
+        )
+        capabilities = WorkerV4Capabilities(
+            authority=object(),
+            pending_admissions=admissions,
+            event_persistence=event_persistence,
+            publication_claims=object(),
+            publication_transport=object(),
+        )
+        async with factory() as conn:
+            progress = await terminalize_enqueue_failure_with_v4(
+                capabilities,
+                conn,
+                tenant_id=tenant,
+                user_id=user_id,
+                run_id=run,
+                trace_id=f"trace_{run}",
+            )
+        assert progress.did_transition is True
+
+        async with factory() as conn:
+            committed = await (
+                await conn.execute(
+                    """
+                    select r.status, a.attempt_id, a.state,
+                           count(e.id) filter (where e.event_type = 'run.failed') as terminal_rows
+                    from runs r
+                    join sse_stream_authorities a
+                      on a.tenant_id = r.tenant_id and a.run_id = r.id
+                    left join run_events e
+                      on e.tenant_id = r.tenant_id and e.run_id = r.id
+                    where r.tenant_id = %s and r.id = %s
+                    group by r.status, a.attempt_id, a.state
+                    """,
+                    (tenant, run),
+                )
+            ).fetchone()
+        assert committed == {
+            "status": "failed",
+            "attempt_id": f"enqueue_failure_{run}",
+            "state": "admission_pending",
+            "terminal_rows": 1,
+        }
 
 
 @pytest.mark.asyncio

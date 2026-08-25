@@ -80,7 +80,10 @@ from app.run_admission_policy import (
     contains_persisted_platform_multi_agent_control,
     contains_platform_multi_agent_control,
 )
-from app.run_admission_terminalization import terminalize_retired_platform_multi_agent_run
+from app.run_admission_terminalization import (
+    terminalize_enqueue_failure_with_v4,
+    terminalize_retired_platform_multi_agent_run,
+)
 from app.run_control_readiness import run_control_readiness_snapshot
 from app.runs.api import RunCancellationUseCase
 from app.streaming.api import (
@@ -618,13 +621,13 @@ async def _compensate_enqueue_failure(
     *,
     principal: AuthPrincipal,
     run_id: str,
+    v4_capabilities: WorkerV4Capabilities,
     trace_id: str | None = None,
 ) -> None:
     """Leave a committed run in a truthful terminal state when queue admission fails."""
 
     async with transaction() as conn:
-        await repositories.mark_run_enqueue_failed(
-            conn,
+        await terminalize_enqueue_failure_with_v4(v4_capabilities, conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
             run_id=run_id,
@@ -837,6 +840,7 @@ def resolve_run_selector(request: CreateRunRequest, principal: AuthPrincipal) ->
 @router.post("/runs", response_model=CreateRunResponse)
 async def create_run(
     request: CreateRunRequest,
+    http_request: Request,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> CreateRunResponse:
     _validate_principal_user_id_for_route(principal)
@@ -1134,7 +1138,11 @@ async def create_run(
     try:
         await enqueue_run(queue_payload)
     except Exception as exc:
-        await _compensate_enqueue_failure(principal=principal, run_id=run_id)
+        await _compensate_enqueue_failure(
+            principal=principal,
+            run_id=run_id,
+            v4_capabilities=http_request.app.state.run_stream_runtime.worker_capabilities,
+        )
         raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
     return CreateRunResponse(run_id=run_id, session_id=session_id, status="queued")
 
@@ -1142,6 +1150,7 @@ async def create_run(
 @router.post("/runs/{run_id}/copy", response_model=RunControlResponse)
 async def copy_run(
     run_id: str,
+    request: Request,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlResponse:
     _validate_principal_user_id_for_route(principal)
@@ -1206,7 +1215,11 @@ async def copy_run(
         await _audit_wrapped_capability_denial(principal, exc, source="copy_run")
         raise
     except Exception as exc:
-        await _compensate_enqueue_failure(principal=principal, run_id=str(copied["run_id"]))
+        await _compensate_enqueue_failure(
+            principal=principal,
+            run_id=str(copied["run_id"]),
+            v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
+        )
         raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
     return RunControlResponse(
         run_id=copied["run_id"],

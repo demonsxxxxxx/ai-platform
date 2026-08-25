@@ -11,9 +11,8 @@ TERMINAL_RUN_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
 
 @dataclass(frozen=True, slots=True)
 class RunTerminalEventFact:
-    """Current terminal Attempt facts required by durable public projection."""
+    """Current Run facts required by durable public terminal projection."""
 
-    attempt_id: str
     status: str
     terminal_reason: str
     error_code: str | None

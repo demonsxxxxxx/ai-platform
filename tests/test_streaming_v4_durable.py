@@ -8,6 +8,7 @@ import json
 
 import pytest
 
+from app.runs.api import RunTerminalEventFact
 from app.streaming.application.durable_v4 import (
     V4PublicationClaim,
     V4PublicationTransportUnavailable,
@@ -48,6 +49,7 @@ from app.streaming.authority import RunCursor
 from app.streaming.postgres import EventReceipt
 from app.streaming.redis import StreamAuthority
 from app.streaming.domain.transport import canonical_json_bytes
+from app.streaming.infrastructure import run_v4_events
 from app.streaming.infrastructure.postgres_v4 import (
     PostgresV4PublicationClaims,
     V4PublicationAuthorityError,
@@ -69,6 +71,66 @@ def test_callback_v4_values_have_one_application_owner():
     assert api.callback_item_to_v4 is callback_events_v4.callback_item_to_v4
     assert v4.callback_item_to_v4 is callback_events_v4.callback_item_to_v4
     assert runtime_callbacks.callback_item_to_v4 is callback_events_v4.callback_item_to_v4
+
+
+@pytest.mark.asyncio
+async def test_terminal_row_uses_streaming_intent_attempt_identity(monkeypatch):
+    calls: list[tuple[str, object]] = []
+    conn = object()
+    terminal_event_id = f"sev_{'a' * 64}"
+
+    async def load_terminal_fact(observed_conn, *, tenant_id, run_id):
+        assert observed_conn is conn
+        assert (tenant_id, run_id) == ("tenant-a", "run-a")
+        calls.append(("run_fact", observed_conn))
+        return RunTerminalEventFact(
+            status="failed",
+            terminal_reason="queue_enqueue_failed",
+            error_code="queue_enqueue_failed",
+            trace_ref="trace-run-a",
+        )
+
+    async def ensure_terminal_intent(observed_conn, *, tenant_id, run_id, status):
+        assert observed_conn is conn
+        assert (tenant_id, run_id, status) == ("tenant-a", "run-a", "failed")
+        calls.append(("stream_intent", observed_conn))
+        return type(
+            "Intent",
+            (),
+            {"attempt_id": "attempt-active", "terminal_event_id": terminal_event_id},
+        )()
+
+    async def append_terminal_row(observed_conn, **kwargs):
+        assert observed_conn is conn
+        assert kwargs["attempt_id"] == "attempt-active"
+        assert kwargs["terminal_event_id"] == terminal_event_id
+        calls.append(("terminal_row", observed_conn))
+        return "row-a"
+
+    monkeypatch.setattr(
+        run_v4_events,
+        "ensure_run_terminal_intent",
+        ensure_terminal_intent,
+    )
+    monkeypatch.setattr(
+        run_v4_events._v4,
+        "append_run_terminal_v4_row",
+        append_terminal_row,
+    )
+
+    row_id = await run_v4_events.append_current_run_terminal_v4_row(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        load_terminal_event_fact=load_terminal_fact,
+    )
+
+    assert row_id == "row-a"
+    assert calls == [
+        ("run_fact", conn),
+        ("stream_intent", conn),
+        ("terminal_row", conn),
+    ]
 
 
 def _callback_conn():

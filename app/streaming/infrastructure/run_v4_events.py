@@ -35,24 +35,21 @@ async def append_current_run_terminal_v4_row(
     )
     if intent is None:
         return None
-    if intent.attempt_id != fact.attempt_id:
-        raise RuntimeError("v4_terminal_attempt_fenced")
-    terminal_reason_code = (
-        "timeout"
-        if "timeout" in fact.terminal_reason.lower()
-        else "policy_cancelled"
-        if "policy" in fact.terminal_reason.lower()
-        else "user_cancelled"
-    )
     return await _v4.append_run_terminal_v4_row(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
-        attempt_id=fact.attempt_id,
+        attempt_id=intent.attempt_id,
         status=fact.status,
         terminal_event_id=intent.terminal_event_id,
         error_code=fact.error_code,
-        reason_code=terminal_reason_code,
+        reason_code=(
+            "timeout"
+            if "timeout" in fact.terminal_reason.lower()
+            else "policy_cancelled"
+            if "policy" in fact.terminal_reason.lower()
+            else "user_cancelled"
+        ),
         trace_ref=fact.trace_ref,
     )
 
