@@ -1647,13 +1647,28 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
     async def finalize(conn, **kwargs):
         conn.pending.append(("submission", kwargs["state"]))
 
+    class PendingAdmissions:
+        async def prepare_pending_authority_in_transaction(
+            self, conn, *, tenant_id, run_id, attempt_id
+        ):
+            assert (tenant_id, run_id, attempt_id) == (
+                "tenant-a",
+                "run-durable",
+                "enqueue_failure_run-durable",
+            )
+            conn.pending.append(("authority", run_id))
+            return object()
+
     class EventPersistence:
         async def append_terminal_row(self, conn, *, tenant_id, run_id):
             assert (tenant_id, run_id) == ("tenant-a", "run-durable")
             conn.pending.append(("terminal_row", run_id))
             return "row-durable"
 
-    capabilities = SimpleNamespace(event_persistence=EventPersistence())
+    capabilities = SimpleNamespace(
+        pending_admissions=PendingAdmissions(),
+        event_persistence=EventPersistence(),
+    )
 
     monkeypatch.setattr("app.routes.chat.transaction", transaction_with_rollback_tracking)
     monkeypatch.setattr(repository_module, "get_chat_submission", get_submission, raising=False)
@@ -1674,6 +1689,7 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
     assert exc_info.value.status_code == 503
     assert committed == [
         ("run", "run-durable"),
+        ("authority", "run-durable"),
         ("terminal_row", "run-durable"),
         ("submission", "enqueue_failed"),
     ]
@@ -1683,6 +1699,7 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
             "commit",
             [
                 ("run", "run-durable"),
+                ("authority", "run-durable"),
                 ("terminal_row", "run-durable"),
                 ("submission", "enqueue_failed"),
             ],

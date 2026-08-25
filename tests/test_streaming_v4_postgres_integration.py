@@ -656,7 +656,7 @@ async def test_enqueue_failure_creates_authority_and_terminal_row_atomically():
 
         async with factory() as conn:
             await conn.execute(
-                "update runs set status = 'queued', completed_at = null, error_code = null, error_message = null where tenant_id = %s and id = %s",
+                "update runs set status = 'queued', finished_at = null, error_code = null, error_message = null where tenant_id = %s and id = %s",
                 (tenant, run),
             )
             await conn.execute(
@@ -735,12 +735,17 @@ async def test_enqueue_failure_creates_authority_and_terminal_row_atomically():
                 await conn.execute(
                     """
                     select r.status, a.attempt_id, a.state,
-                           count(e.id) filter (where e.event_type = 'run.failed') as terminal_rows
+                           count(distinct e.id) filter (
+                             where e.event_type = 'run.failed'
+                           ) as terminal_rows,
+                           count(distinct intent.id) as terminal_intents
                     from runs r
                     join sse_stream_authorities a
                       on a.tenant_id = r.tenant_id and a.run_id = r.id
                     left join run_events e
                       on e.tenant_id = r.tenant_id and e.run_id = r.id
+                    left join sse_terminal_publication_intents intent
+                      on intent.tenant_id = r.tenant_id and intent.run_id = r.id
                     where r.tenant_id = %s and r.id = %s
                     group by r.status, a.attempt_id, a.state
                     """,
@@ -752,7 +757,73 @@ async def test_enqueue_failure_creates_authority_and_terminal_row_atomically():
             "attempt_id": f"enqueue_failure_{run}",
             "state": "admission_pending",
             "terminal_rows": 1,
+            "terminal_intents": 1,
         }
+
+        pending = await admissions.list_pending_admissions(limit=1)
+        assert len(pending) == 1
+        admission = pending[0]
+        client = Redis.from_url(_redis_url(), decode_responses=True)
+        key = stream_key(
+            tenant_scope_value=admission.tenant_scope,
+            run_id=run,
+            stream_incarnation=admission.stream_incarnation,
+        )
+        state_key = f"{key}:state"
+        await client.delete(key, state_key)
+        try:
+            bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+            claims = PostgresV4PublicationClaims(factory)
+            transport = RedisV4PublicationTransport(bridge)
+            publication_capabilities = WorkerV4Capabilities(
+                authority=object(),
+                pending_admissions=admissions,
+                event_persistence=event_persistence,
+                publication_claims=claims,
+                publication_transport=transport,
+            )
+            assert await publish_pending_admissions(
+                publication_capabilities,
+                limit=1,
+            ) == 1
+            assert await publish_claimed_v4_events(
+                claims,
+                transport,
+                tenant_id=tenant,
+                run_id=run,
+                attempt_id=admission.attempt_id,
+                stream_incarnation=admission.stream_incarnation,
+                limit=1,
+                claim_ttl=timedelta(seconds=30),
+                retry_delay=timedelta(seconds=5),
+            ) == 1
+            redis_rows = await client.xrange(key, min="-", max="+")
+            assert [
+                json.loads(fields["envelope"])["event_type"]
+                for _, fields in redis_rows
+            ] == ["stream.open", "run.failed", "stream.end"]
+
+            async with factory() as conn:
+                published = await (
+                    await conn.execute(
+                        """
+                        select a.state, e.stream_publication_state
+                        from sse_stream_authorities a
+                        join run_events e
+                          on e.tenant_id = a.tenant_id and e.run_id = a.run_id
+                        where a.tenant_id = %s and a.run_id = %s
+                          and e.event_type = 'run.failed'
+                        """,
+                        (tenant, run),
+                    )
+                ).fetchone()
+            assert published == {
+                "state": "terminal",
+                "stream_publication_state": "published",
+            }
+        finally:
+            await client.delete(key, state_key)
+            await client.aclose()
 
 
 @pytest.mark.asyncio

@@ -84,6 +84,54 @@ async def test_stream_admission_freezes_open_envelope_before_confirmation():
 
 
 @pytest.mark.asyncio
+async def test_pending_terminal_intent_preserves_open_admission_order(monkeypatch):
+    authority = control._authority(authority_row())
+    intent = control.freeze_terminal_intent(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        tenant_scope="scope-a",
+        stream_incarnation=1,
+        status="failed",
+    )
+
+    async def get_authority(*_args, **_kwargs):
+        return authority
+
+    async def persist_intent(*_args, **_kwargs):
+        return intent
+
+    monkeypatch.setattr(control, "get_stream_authority", get_authority)
+    monkeypatch.setattr(control, "persist_terminal_intent", persist_intent)
+    conn = ScriptedConnection([])
+
+    assert await control.ensure_run_terminal_intent(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        status="failed",
+    ) is intent
+
+    statement = " ".join(conn.calls[0][0].split()).lower()
+    assert "when state = 'admission_pending' then 'admission_pending'" in statement
+    assert "else 'terminal'" in statement
+
+
+@pytest.mark.asyncio
+async def test_admission_confirmation_promotes_a_frozen_terminal_intent():
+    authority = control._authority(authority_row())
+    conn = ScriptedConnection([authority_row(state="terminal")])
+
+    confirmed = await control.confirm_stream_admission(conn, authority=authority)
+
+    statement = " ".join(conn.calls[0][0].split()).lower()
+    assert "from sse_terminal_publication_intents as intent" in statement
+    assert "then 'terminal'" in statement
+    assert "else 'confirmed'" in statement
+    assert confirmed.state == "terminal"
+
+
+@pytest.mark.asyncio
 async def test_stream_admission_rejects_a_different_attempt_instead_of_creating_parallel_authority():
     conn = ScriptedConnection([authority_row()])
     with pytest.raises(

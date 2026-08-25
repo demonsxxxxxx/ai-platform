@@ -807,7 +807,25 @@ async def confirm_stream_admission(
     conn: AsyncConnection[dict[str, object]], *, authority: StreamAuthority
 ) -> StreamAuthority:
     result = await conn.execute(
-        """update sse_stream_authorities set state='confirmed',admission_confirmed_at=clock_timestamp(),updated_at=clock_timestamp() where tenant_id=%s and run_id=%s and attempt_id=%s and stream_incarnation=%s and state in ('admission_pending','confirmed') and open_event_id=%s and open_payload_digest=%s returning *""",
+        """update sse_stream_authorities
+           set state = case
+                 when exists (
+                   select 1
+                   from sse_terminal_publication_intents as intent
+                   where intent.tenant_id = sse_stream_authorities.tenant_id
+                     and intent.run_id = sse_stream_authorities.run_id
+                     and intent.attempt_id = sse_stream_authorities.attempt_id
+                     and intent.stream_incarnation = sse_stream_authorities.stream_incarnation
+                 ) then 'terminal'
+                 else 'confirmed'
+               end,
+               admission_confirmed_at=clock_timestamp(),
+               updated_at=clock_timestamp()
+           where tenant_id=%s and run_id=%s and attempt_id=%s
+             and stream_incarnation=%s
+             and state in ('admission_pending','confirmed')
+             and open_event_id=%s and open_payload_digest=%s
+           returning *""",
         (
             authority.tenant_id,
             authority.run_id,
@@ -1026,7 +1044,13 @@ async def ensure_run_terminal_intent(
         ),
     )
     await conn.execute(
-        "update sse_stream_authorities set state='terminal',updated_at=clock_timestamp() where tenant_id=%s and run_id=%s and attempt_id=%s",
+        """update sse_stream_authorities
+           set state = case
+                 when state = 'admission_pending' then 'admission_pending'
+                 else 'terminal'
+               end,
+               updated_at=clock_timestamp()
+           where tenant_id=%s and run_id=%s and attempt_id=%s""",
         (tenant_id, run_id, authority.attempt_id),
     )
     return intent

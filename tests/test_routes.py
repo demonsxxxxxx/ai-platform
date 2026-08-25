@@ -3882,6 +3882,15 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
             did_transition=True,
         )
 
+    class PendingAdmissions:
+        async def prepare_pending_authority_in_transaction(
+            self, conn, *, tenant_id, run_id, attempt_id
+        ):
+            assert tenant_id == "tenant-a"
+            assert attempt_id == f"enqueue_failure_{run_id}"
+            conn.pending.append(("authority", str(run_id)))
+            return object()
+
     class EventPersistence:
         async def append_terminal_row(self, conn, *, tenant_id, run_id):
             assert tenant_id == "tenant-a"
@@ -3893,6 +3902,7 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
             state=SimpleNamespace(
                 run_stream_runtime=SimpleNamespace(
                     worker_capabilities=SimpleNamespace(
+                        pending_admissions=PendingAdmissions(),
                         event_persistence=EventPersistence(),
                     )
                 )
@@ -3926,6 +3936,7 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
     assert committed[0] and committed[0][0][0] == "run_created"
     assert committed[1] == [
         ("run_failed", committed[0][0][1]),
+        ("authority", committed[0][0][1]),
         ("terminal_row", committed[0][0][1]),
     ]
 
