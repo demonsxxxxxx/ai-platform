@@ -6076,29 +6076,9 @@ async def progress_run_tool_permission_terminalization(
         target_type="run", target_id=run_id, trace_id=staged.get("trace_id"), payload_json=audit_payload,
     )
     from app.streaming.redis import ensure_run_terminal_intent
-    intent = await ensure_run_terminal_intent(
+    await ensure_run_terminal_intent(
         conn, tenant_id=tenant_id, run_id=run_id, status=target_status
     )
-    if intent is not None:
-        from app.streaming.infrastructure.v4 import append_run_terminal_v4_row
-
-        await append_run_terminal_v4_row(
-            conn,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            attempt_id=intent.attempt_id,
-            status=target_status,
-            terminal_event_id=intent.terminal_event_id,
-            error_code=staged.get("permission_terminalization_error_code"),
-            reason_code=(
-                "timeout"
-                if "timeout" in terminal_reason.lower()
-                else "policy_cancelled"
-                if "policy" in terminal_reason.lower()
-                else "user_cancelled"
-            ),
-            trace_ref=staged.get("trace_id"),
-        )
     return runs_api.RunTerminalizationProgress(completed=True, status=target_status, did_transition=True, needs_reconcile=True)
 
 
@@ -9715,20 +9695,7 @@ async def complete_run(
         if consumed_ids != set(valid_allow_for_run_ids):
             raise RepositoryConflictError("allow_for_run_consumption_mismatch")
     from app.streaming.redis import ensure_run_terminal_intent
-    intent = await ensure_run_terminal_intent(
-        conn, tenant_id=tenant_id, run_id=run_id, status="succeeded"
-    )
-    if intent is not None:
-        from app.streaming.infrastructure.v4 import append_run_terminal_v4_row
-
-        await append_run_terminal_v4_row(
-            conn,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            attempt_id=intent.attempt_id,
-            status="succeeded",
-            terminal_event_id=intent.terminal_event_id,
-        )
+    await ensure_run_terminal_intent(conn, tenant_id=tenant_id, run_id=run_id, status="succeeded")
     return True
 
 

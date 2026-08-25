@@ -61,6 +61,9 @@ from app.runs.domain.public_terminal import (
 )
 
 from app.runs.domain.terminalization import (
+    RunTerminalEventFact as RunTerminalEventFact,
+)
+from app.runs.domain.terminalization import (
     RunTerminalizationProgress as RunTerminalizationProgress,
 )
 from app.runs.domain.terminalization import (

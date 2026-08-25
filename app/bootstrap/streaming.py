@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from app import repositories
+from app.runs.infrastructure.postgres import load_current_terminal_event_fact
 from app.settings import get_settings
 from app.streaming.application.live_fanout import RunStreamHub
 from app.streaming.application.worker_publication_v4 import WorkerV4Capabilities
@@ -44,7 +46,12 @@ def build_worker_v4_capabilities(
     return WorkerV4Capabilities(
         authority=RedisV4StreamAuthorityLookup(transaction_factory),
         pending_admissions=pending_admissions,
-        event_persistence=PostgresWorkerEventPersistence(transaction_factory),
+        event_persistence=PostgresWorkerEventPersistence(
+            transaction_factory,
+            append_event=repositories.append_event,
+            is_cancel_requested=repositories.is_cancel_requested,
+            load_terminal_event_fact=load_current_terminal_event_fact,
+        ),
         publication_claims=PostgresV4PublicationClaims(transaction_factory),
         publication_transport=RedisV4PublicationTransport(bridge),
     )

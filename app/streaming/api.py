@@ -34,6 +34,8 @@ from app.streaming.application.live_fanout import (
 from app.streaming.application.worker_publication_v4 import (
     WorkerV4Capabilities,
     admit_v4_stream,
+    append_callback_v4_rows,
+    append_run_terminal_v4_row,
     finalize_parent_and_publish,
     persist_and_publish_worker_event,
     publish_pending_admissions,
@@ -88,7 +90,6 @@ from app.streaming.domain.transport import (
     StreamGap,
     canonical_json_bytes,
 )
-from app.streaming.infrastructure.v4 import append_callback_v4_rows
 
 
 __all__ = [
@@ -120,6 +121,7 @@ __all__ = [
     "activate_v4_successor_rebuild",
     "admit_v4_stream",
     "append_callback_v4_rows",
+    "append_run_terminal_v4_row",
     "build_public_v4_control",
     "build_v4_successor_rebuild",
     "build_v4_control",

@@ -18,7 +18,10 @@ from app.runs.domain.attempt_lifecycle import (
     decide_run_attempt_transition,
 )
 from app.runs.domain.execution_spec import ExecutionSpec
-from app.runs.domain.terminalization import RunTerminalizationProgress
+from app.runs.domain.terminalization import (
+    RunTerminalEventFact,
+    RunTerminalizationProgress,
+)
 
 
 def _dumps_json(value: dict[str, Any]) -> str:
@@ -31,6 +34,59 @@ def _validated_attempt_owner(*, owner_kind: str, owner_id: str) -> tuple[str, st
     if not isinstance(owner_id, str) or not owner_id.strip():
         raise ValueError("run_attempt_owner_id_invalid")
     return owner_kind, owner_id.strip()
+
+
+async def load_current_terminal_event_fact(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+) -> RunTerminalEventFact | None:
+    """Lock Run before current Attempt and return terminal projection facts."""
+
+    run_cursor = await conn.execute(
+        """
+        select status, trace_id
+        from runs
+        where tenant_id = %s and id = %s
+        for update
+        """,
+        (tenant_id, run_id),
+    )
+    run = await run_cursor.fetchone()
+    if run is None or str(run.get("status") or "") not in TERMINAL_RUN_ATTEMPT_STATUSES:
+        return None
+    attempt_cursor = await conn.execute(
+        """
+        select id, status, terminal_reason, error_code
+        from run_attempts
+        where tenant_id = %s
+          and run_id = %s
+          and ordinal = (
+            select max(current_attempt.ordinal)
+            from run_attempts as current_attempt
+            where current_attempt.tenant_id = %s
+              and current_attempt.run_id = %s
+          )
+        for update
+        """,
+        (tenant_id, run_id, tenant_id, run_id),
+    )
+    attempt = await attempt_cursor.fetchone()
+    status = str(run.get("status") or "")
+    if attempt is None or str(attempt.get("status") or "") != status:
+        raise RepositoryConflictError("run_terminal_attempt_conflict")
+    return RunTerminalEventFact(
+        attempt_id=str(attempt["id"]),
+        status=status,
+        terminal_reason=str(attempt.get("terminal_reason") or "run_terminalized"),
+        error_code=(
+            str(attempt["error_code"])
+            if attempt.get("error_code") is not None
+            else None
+        ),
+        trace_ref=str(run["trace_id"]) if run.get("trace_id") is not None else None,
+    )
 
 
 async def create_run_attempt(

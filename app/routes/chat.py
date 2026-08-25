@@ -94,6 +94,7 @@ from app.run_admission_policy import (
     contains_platform_multi_agent_control,
 )
 from app.run_admission_terminalization import terminalize_retired_platform_multi_agent_run
+from app.streaming.api import WorkerV4Capabilities
 from app.settings import get_settings
 from app.skills.lifecycle import is_user_runnable_status
 from app.skills.pinning import (
@@ -538,6 +539,7 @@ async def _admit_chat_submission(
     *,
     principal: AuthPrincipal,
     submission_id: str,
+    v4_capabilities: WorkerV4Capabilities,
 ) -> ChatSubmissionResponse:
     """Admit one already-persisted run without replaying chat creation work."""
 
@@ -589,6 +591,7 @@ async def _admit_chat_submission(
                     conn,
                     tenant_id=principal.tenant_id,
                     run_id=run_id,
+                    v4_capabilities=v4_capabilities,
                 )
             await repositories.finalize_chat_submission(
                 conn,
@@ -1370,6 +1373,7 @@ async def list_messages(
 @router.post("/chat/stream", response_model=ChatStreamResponse)
 async def chat_stream(
     request: ChatStreamRequest,
+    http_request: Request,
     agent_id: str | None = Query(None),
     principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
 ) -> ChatStreamResponse:
@@ -2522,7 +2526,11 @@ async def chat_stream(
     if submission_id is not None:
         try:
             admitted = _require_chat_submission_admitted(
-                await _admit_chat_submission(principal=principal, submission_id=submission_id)
+                await _admit_chat_submission(
+                principal=principal,
+                submission_id=submission_id,
+                v4_capabilities=http_request.app.state.run_stream_runtime.worker_capabilities,
+            )
             )
         except HTTPException:
             raise
@@ -2598,6 +2606,7 @@ async def get_chat_submission(
 
 async def retry_chat_submission_admission(
     submission_id: UUID,
+    request: Request,
     response: Response,
     principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
 ) -> ChatSubmissionResponse | ChatSubmissionPreLedgerAbsenceResponse:
@@ -2612,7 +2621,11 @@ async def retry_chat_submission_admission(
         if isinstance(resolved, ChatSubmissionPreLedgerAbsenceResponse):
             return resolved
         return _require_chat_submission_admitted(
-            await _admit_chat_submission(principal=principal, submission_id=str(submission_id))
+            await _admit_chat_submission(
+            principal=principal,
+            submission_id=str(submission_id),
+            v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
+        )
         )
     except HTTPException as exc:
         headers = {**(exc.headers or {}), "Cache-Control": _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL}

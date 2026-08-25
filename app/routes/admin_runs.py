@@ -146,13 +146,13 @@ async def admin_run_cancel(
         run_id = assert_safe_id(run_id, "run_id")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    runtime = request.app.state.run_stream_runtime
     cancellation = await _require_run_cancellation_use_case(request).request_admin_cancel(
         tenant_id=principal.tenant_id,
         admin_user_id=principal.user_id,
         run_id=run_id,
     )
     if cancellation is not None and cancellation.attempt_id:
-        runtime = request.app.state.run_stream_runtime
         try:
             await admit_v4_stream(
                 runtime.worker_capabilities,
@@ -175,6 +175,7 @@ async def admin_run_cancel(
         progress = await drain_run_tool_permission_terminalization(
             tenant_id=principal.tenant_id,
             run_id=run_id,
+            capabilities=runtime.worker_capabilities,
             transaction_factory=transaction,
         )
         if progress is not None and progress.is_terminal():

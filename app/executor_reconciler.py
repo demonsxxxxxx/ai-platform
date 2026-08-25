@@ -33,6 +33,7 @@ from app.runtime.sandbox.providers.opensandbox.startup import (
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.tool_permission_lifecycle import (
     drain_run_tool_permission_terminalization,
+    fail_run_with_v4,
     reconcile_terminalized_permission_run,
 )
 from app.worker import (
@@ -282,8 +283,9 @@ async def _terminalize_reconciliation_failure(
         if run is None:
             return
         if str(run.get("status") or "") not in _TERMINAL_RUN_STATUSES:
-            progress = await repositories.fail_run(
+            progress = await fail_run_with_v4(
                 conn,
+                capabilities=v4_capabilities,
                 tenant_id=tenant_id,
                 run_id=run_id,
                 error_code="terminal_reconciliation_failed",
@@ -296,6 +298,7 @@ async def _terminalize_reconciliation_failure(
         progress = await drain_run_tool_permission_terminalization(
             tenant_id=tenant_id,
             run_id=run_id,
+            capabilities=v4_capabilities,
             transaction_factory=transaction,
         )
     if progress is not None and progress.did_transition and progress.needs_reconcile:

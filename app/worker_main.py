@@ -38,7 +38,12 @@ from app.routes.sandbox_runtime_cleanup import (
 )
 from app.schema_migrations import require_schema_current
 from app.settings import get_settings
-from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
+from app.tool_permission_lifecycle import (
+    cancel_run_with_v4,
+    drain_run_tool_permission_terminalization,
+    fail_run_with_v4,
+    reconcile_terminalized_permission_run,
+)
 from app.worker import WorkerOutcome, parse_leased_queue_envelope, process_run_payload
 from app.streaming.api import (
     WorkerV4Capabilities,
@@ -255,6 +260,8 @@ async def cleanup_expired_memory_records_for_worker(settings: object | None = No
 
 async def progress_pending_tool_permission_terminalizations_for_worker(
     settings: object | None = None,
+    *,
+    v4_capabilities: WorkerV4Capabilities,
 ) -> list[dict[str, object]]:
     """Use worker maintenance as the durable, bounded owner of staged permission drains."""
 
@@ -272,6 +279,7 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
         outcome = await drain_run_tool_permission_terminalization(
             tenant_id=tenant_id,
             run_id=run_id,
+            capabilities=v4_capabilities,
             transaction_factory=transaction,
             max_batches=4,
         )
@@ -325,6 +333,8 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
 
 async def reconcile_stale_runs_for_worker(
     settings: object | None = None,
+    *,
+    v4_capabilities: WorkerV4Capabilities,
 ) -> list[dict[str, object]]:
     """Recover a bounded batch while one atomic queue fence excludes new owners."""
 
@@ -412,6 +422,7 @@ async def reconcile_stale_runs_for_worker(
                     outcome = await drain_run_tool_permission_terminalization(
                         tenant_id=tenant_id,
                         run_id=run_id,
+                        capabilities=v4_capabilities,
                         transaction_factory=fenced_transaction,
                         max_batches=4,
                     )
@@ -462,15 +473,23 @@ async def run_worker_maintenance(
     v4_capabilities: WorkerV4Capabilities | None = None,
 ) -> None:
     settings = settings or get_settings()
+    if v4_capabilities is None:
+        raise RuntimeError("worker_v4_capabilities_unavailable")
     phases = {
         "sandbox_cleanup": cleanup_expired_sandbox_leases,
         "memory_cleanup": lambda: cleanup_expired_memory_records_for_worker(settings),
         "data_retention": lambda: run_data_retention_maintenance(settings),
-        "tool_permission_terminalization": lambda: progress_pending_tool_permission_terminalizations_for_worker(settings),
+        "tool_permission_terminalization": lambda: progress_pending_tool_permission_terminalizations_for_worker(
+            settings,
+            v4_capabilities=v4_capabilities,
+        ),
         "queue_reclaim": lambda: queue.reclaim_expired_leases(
             visibility_timeout_seconds=int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900))
         ),
-        "stale_run_reconciliation": lambda: reconcile_stale_runs_for_worker(settings),
+        "stale_run_reconciliation": lambda: reconcile_stale_runs_for_worker(
+            settings,
+            v4_capabilities=v4_capabilities,
+        ),
     }
     if v4_capabilities is not None:
         async def drain_due_v4_publication() -> int:
@@ -593,15 +612,17 @@ async def _terminalize_escaped_process_exception(
             locked_run.get("permission_terminalization_target") or ""
         ) in {"cancel_requested", "cancelled"}
         if cancel_requested:
-            progress = await repositories.cancel_run(
+            progress = await cancel_run_with_v4(
                 conn,
+                capabilities=v4_capabilities,
                 tenant_id=payload.tenant_id,
                 run_id=run_id,
                 result_json={"message": "任务已取消"},
             )
         else:
-            progress = await repositories.fail_run(
+            progress = await fail_run_with_v4(
                 conn,
+                capabilities=v4_capabilities,
                 tenant_id=payload.tenant_id,
                 run_id=run_id,
                 error_code=error_code,
@@ -613,6 +634,7 @@ async def _terminalize_escaped_process_exception(
         progress = await drain_run_tool_permission_terminalization(
             tenant_id=payload.tenant_id,
             run_id=run_id,
+            capabilities=v4_capabilities,
             transaction_factory=transaction,
             max_batches=4,
         )

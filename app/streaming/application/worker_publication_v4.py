@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Protocol
 
+from app.streaming.application.callback_events_v4 import V4CallbackItem
 from app.streaming.application.durable_v4 import (
     V4PendingAdmission,
     V4PendingAdmissionPort,
@@ -34,6 +35,27 @@ class V4StreamAuthorityLookup(Protocol):
 
 
 class WorkerEventPersistence(Protocol):
+    async def append_terminal_row(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_id: str,
+    ) -> Any | None: ...
+
+    async def append_callback_rows(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_id: str,
+        attempt_id: str,
+        batch_id: str,
+        items: tuple[V4CallbackItem, ...],
+        authority: Any,
+        execution_lease_id: str,
+    ) -> tuple[Any, ...]: ...
+
     async def persist_event_and_check_cancel(
         self,
         *,
@@ -56,6 +78,51 @@ class WorkerV4Capabilities:
     event_persistence: WorkerEventPersistence
     publication_claims: V4PublicationClaims
     publication_transport: V4PublicationTransport
+
+
+async def append_run_terminal_v4_row(
+    capabilities: WorkerV4Capabilities,
+    conn: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    did_transition: bool,
+) -> Any | None:
+    """Append one terminal row only for the transition owned by this transaction."""
+
+    if not did_transition:
+        return None
+    return await capabilities.event_persistence.append_terminal_row(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+    )
+
+
+async def append_callback_v4_rows(
+    capabilities: WorkerV4Capabilities,
+    conn: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    batch_id: str,
+    items: tuple[V4CallbackItem, ...],
+    authority: Any,
+    execution_lease_id: str,
+) -> tuple[Any, ...]:
+    """Append callback rows through the explicitly composed worker port."""
+
+    return await capabilities.event_persistence.append_callback_rows(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        batch_id=batch_id,
+        items=items,
+        authority=authority,
+        execution_lease_id=execution_lease_id,
+    )
 
 
 async def admit_v4_stream(

@@ -183,6 +183,7 @@ async def record_executor_callback(
             if v4_items:
                 try:
                     await append_callback_v4_rows(
+                        capabilities,
                         conn,
                         tenant_id=tenant_id,
                         run_id=callback.run_id,

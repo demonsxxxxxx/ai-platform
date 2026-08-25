@@ -85,6 +85,7 @@ from app.run_control_readiness import run_control_readiness_snapshot
 from app.runs.api import RunCancellationUseCase
 from app.streaming.api import (
     V4PublicationTransportUnavailable,
+    WorkerV4Capabilities,
     admit_v4_stream,
     publish_pending_run_terminal,
 )
@@ -1304,6 +1305,7 @@ async def _mutate_run_control_child(
     action: Literal["retry", "resume"],
     operation_id: UUID4,
     principal: AuthPrincipal,
+    v4_capabilities: WorkerV4Capabilities,
 ) -> RunControlMutationResponse:
     normalized_operation_id = str(operation_id)
     created = False
@@ -1340,6 +1342,7 @@ async def _mutate_run_control_child(
                         conn,
                         tenant_id=principal.tenant_id,
                         run_id=child_run_id,
+                        v4_capabilities=v4_capabilities,
                     )
             if copied is None:
                 await enforce_user_active_run_limit(
@@ -1444,6 +1447,7 @@ async def _mutate_run_control_child(
 @router.post("/runs/{run_id}/retry", response_model=RunControlMutationResponse)
 async def retry_run(
     run_id: str,
+    request: Request,
     operation_id: UUID4 | None = None,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlMutationResponse:
@@ -1455,12 +1459,14 @@ async def retry_run(
         action="retry",
         operation_id=operation_id or uuid4(),
         principal=principal,
+        v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
     )
 
 
 @router.post("/runs/{run_id}/resume", response_model=RunControlMutationResponse)
 async def resume_run(
     run_id: str,
+    request: Request,
     operation_id: UUID4 | None = None,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlMutationResponse:
@@ -1472,6 +1478,7 @@ async def resume_run(
         action="resume",
         operation_id=operation_id or uuid4(),
         principal=principal,
+        v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
     )
 
 
@@ -1651,13 +1658,13 @@ async def cancel_run(
     request: Request,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlResponse:
+    runtime = request.app.state.run_stream_runtime
     cancellation = await _require_run_cancellation_use_case(request).request_owner_cancel(
         tenant_id=principal.tenant_id,
         owner_user_id=principal.user_id,
         run_id=run_id,
     )
     if cancellation is not None and cancellation.attempt_id:
-        runtime = request.app.state.run_stream_runtime
         try:
             await admit_v4_stream(
                 runtime.worker_capabilities,
@@ -1680,6 +1687,7 @@ async def cancel_run(
         progress = await drain_run_tool_permission_terminalization(
             tenant_id=principal.tenant_id,
             run_id=run_id,
+            capabilities=runtime.worker_capabilities,
             transaction_factory=transaction,
         )
         if progress is not None and progress.is_terminal():

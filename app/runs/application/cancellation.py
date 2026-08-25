@@ -83,6 +83,14 @@ class RunCancellationEventWriter(Protocol):
         authority: CancelRequestAuthority,
     ) -> None: ...
 
+    async def append_terminal(
+        self,
+        conn: object,
+        *,
+        tenant_id: str,
+        run_id: str,
+    ) -> None: ...
+
     async def append_cancel_requested(
         self,
         conn: object,
@@ -185,6 +193,12 @@ class RunCancellationUseCase:
             tenant_id=tenant_id,
             run_id=authority.run_id,
         )
+        if progress is not None and progress.did_transition:
+            await self._event_writer.append_terminal(
+                conn,
+                tenant_id=tenant_id,
+                run_id=authority.run_id,
+            )
         return await self._persistence.finish_request(
             conn,
             tenant_id=tenant_id,

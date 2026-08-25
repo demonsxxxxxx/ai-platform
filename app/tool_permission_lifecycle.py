@@ -7,6 +7,7 @@ from time import monotonic as system_monotonic
 from typing import Any, Callable
 
 from app.runs.api import RunTerminalizationProgress
+from app.streaming.api import WorkerV4Capabilities, append_run_terminal_v4_row
 
 
 TOOL_PERMISSION_REQUEST_TTL_SECONDS = 900.0
@@ -126,24 +127,141 @@ def tool_permission_budget(normal_execution_timeout_seconds: float = 120.0) -> T
     )
 
 
+async def progress_run_terminalization_with_v4(
+    conn: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    capabilities: WorkerV4Capabilities,
+) -> RunTerminalizationProgress | None:
+    """Progress one locked Run and append its terminal v4 row transactionally."""
+
+    from app import repositories
+
+    progress = await repositories.progress_run_tool_permission_terminalization(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+    )
+    if progress is not None:
+        await append_run_terminal_v4_row(
+            capabilities,
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            did_transition=progress.did_transition,
+        )
+    return progress
+
+
+async def fail_run_with_v4(
+    conn: Any,
+    *,
+    capabilities: WorkerV4Capabilities,
+    tenant_id: str,
+    run_id: str,
+    error_code: str,
+    error_message: str,
+    result_json: dict[str, Any] | None = None,
+    terminal_reason: str = "run_failed",
+) -> RunTerminalizationProgress:
+    from app import repositories
+
+    progress = await repositories.fail_run(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        error_code=error_code,
+        error_message=error_message,
+        result_json=result_json,
+        terminal_reason=terminal_reason,
+    )
+    await append_run_terminal_v4_row(
+        capabilities,
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        did_transition=progress.did_transition,
+    )
+    return progress
+
+
+async def cancel_run_with_v4(
+    conn: Any,
+    *,
+    capabilities: WorkerV4Capabilities,
+    tenant_id: str,
+    run_id: str,
+    result_json: dict[str, Any] | None = None,
+) -> RunTerminalizationProgress:
+    from app import repositories
+
+    progress = await repositories.cancel_run(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        result_json=result_json,
+    )
+    await append_run_terminal_v4_row(
+        capabilities,
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        did_transition=progress.did_transition,
+    )
+    return progress
+
+
+async def complete_run_with_v4(
+    conn: Any,
+    *,
+    capabilities: WorkerV4Capabilities,
+    tenant_id: str,
+    run_id: str,
+    result_json: dict[str, Any],
+    final_answer: str,
+    terminal_message_id: str,
+    tool_permission_request_ids: list[str] | None = None,
+) -> bool:
+    from app import repositories
+
+    completed = await repositories.complete_run(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        result_json=result_json,
+        final_answer=final_answer,
+        terminal_message_id=terminal_message_id,
+        tool_permission_request_ids=tool_permission_request_ids,
+    )
+    await append_run_terminal_v4_row(
+        capabilities,
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        did_transition=completed,
+    )
+    return completed
+
+
 async def drain_run_tool_permission_terminalization(
     *,
     tenant_id: str,
     run_id: str,
     transaction_factory: Callable[[], Any],
+    capabilities: WorkerV4Capabilities,
     max_batches: int = 4,
 ) -> RunTerminalizationProgress | None:
     """Commit a bounded number of durable terminalization batches for one exact run."""
 
-    from app import repositories
-
     result: RunTerminalizationProgress | None = None
     for _ in range(max(1, int(max_batches))):
         async with transaction_factory() as conn:
-            result = await repositories.progress_run_tool_permission_terminalization(
+            result = await progress_run_terminalization_with_v4(
                 conn,
                 tenant_id=tenant_id,
                 run_id=run_id,
+                capabilities=capabilities,
             )
         if result is None or result.completed or result.status is None:
             return result

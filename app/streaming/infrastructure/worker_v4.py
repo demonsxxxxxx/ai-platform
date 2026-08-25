@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import Any
 
-from app import repositories
+from app.streaming.application.callback_events_v4 import V4CallbackItem
 from app.streaming.application.durable_v4 import (
     V4PendingAdmission,
     V4PendingAdmissionPort,
@@ -25,6 +25,8 @@ from app.streaming.redis import (
     get_stream_authority,
     tenant_scope,
 )
+from app.streaming.infrastructure import v4 as _v4
+from app.streaming.infrastructure.run_v4_events import append_current_run_terminal_v4_row
 from app.streaming.infrastructure.v4 import V4RedisStreamBridge
 
 
@@ -34,8 +36,55 @@ TransactionFactory = Callable[[], AbstractAsyncContextManager[Any]]
 class PostgresWorkerEventPersistence(WorkerEventPersistence):
     """Persist worker events and cancellation state behind the worker boundary."""
 
-    def __init__(self, transaction_factory: TransactionFactory) -> None:
+    def __init__(
+        self,
+        transaction_factory: TransactionFactory,
+        *,
+        append_event: Callable[..., Awaitable[Any]],
+        is_cancel_requested: Callable[..., Awaitable[bool]],
+        load_terminal_event_fact: Callable[..., Awaitable[Any]],
+    ) -> None:
         self._transaction_factory = transaction_factory
+        self._append_event = append_event
+        self._is_cancel_requested = is_cancel_requested
+        self._load_terminal_event_fact = load_terminal_event_fact
+
+    async def append_terminal_row(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_id: str,
+    ) -> Any | None:
+        return await append_current_run_terminal_v4_row(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            load_terminal_event_fact=self._load_terminal_event_fact,
+        )
+
+    async def append_callback_rows(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_id: str,
+        attempt_id: str,
+        batch_id: str,
+        items: Sequence[V4CallbackItem],
+        authority: Any,
+        execution_lease_id: str,
+    ) -> tuple[Any, ...]:
+        return await _v4.append_callback_v4_rows(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            batch_id=batch_id,
+            items=items,
+            authority=authority,
+            execution_lease_id=execution_lease_id,
+        )
 
     async def persist_event_and_check_cancel(
         self,
@@ -53,7 +102,7 @@ class PostgresWorkerEventPersistence(WorkerEventPersistence):
                 merged = {"visible_to_user": True, "severity": "info"}
                 if payload:
                     merged.update(payload)
-                await repositories.append_event(
+                await self._append_event(
                     conn,
                     tenant_id=run_payload.tenant_id,
                     run_id=run_payload.run_id,
@@ -70,7 +119,7 @@ class PostgresWorkerEventPersistence(WorkerEventPersistence):
                     message=message,
                     payload=payload,
                 )
-            return await repositories.is_cancel_requested(
+            return await self._is_cancel_requested(
                 conn,
                 tenant_id=run_payload.tenant_id,
                 run_id=run_payload.run_id,

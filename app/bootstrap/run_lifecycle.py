@@ -10,7 +10,10 @@ from app.runs.application.cancellation import (
     RunCancellationUseCase,
     RunTerminalizationProgressor,
 )
-from app.runs.infrastructure.postgres import PostgresRunCancellationPersistence
+from app.runs.infrastructure.postgres import (
+    PostgresRunCancellationPersistence,
+    load_current_terminal_event_fact,
+)
 from app.settings import get_settings
 from app.streaming.infrastructure.run_v4_events import PostgresRunCancellationEventWriter
 
@@ -25,6 +28,7 @@ def build_run_cancellation_use_case() -> RunCancellationUseCase:
         ),
         event_writer=PostgresRunCancellationEventWriter(
             authority_secret=get_settings().ai_session_secret,
+            load_terminal_event_fact=load_current_terminal_event_fact,
         ),
         progress_terminalization=cast(
             RunTerminalizationProgressor,
