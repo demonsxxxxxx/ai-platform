@@ -134,6 +134,59 @@ class FakeIndexConnection:
             self.locked = False
 
 
+class FakeSchemaStatusConnection:
+    def __init__(
+        self,
+        *,
+        missing_relation: str | None = None,
+        constraint_definitions_current: bool = True,
+        model_index_definitions_current: bool = True,
+    ):
+        self.missing_relation = missing_relation
+        self.constraint_definitions_current = constraint_definitions_current
+        self.model_index_definitions_current = model_index_definitions_current
+        self.calls = []
+
+    async def execute(self, statement, params=None):
+        normalized = " ".join(str(statement).split()).lower()
+        self.calls.append((normalized, params))
+        if "from jsonb_array_elements_text" in normalized:
+            return FakeCursor({"current": self.missing_relation is None})
+        if "attributes.attname is not null" in normalized:
+            return FakeCursor({"current": True})
+        if "constraints.contype::text = expected.constraint_type" in normalized:
+            return FakeCursor({"current": self.constraint_definitions_current})
+        if "expected.relation_name" in normalized and "expected.column_names" in normalized:
+            return FakeCursor({"current": self.model_index_definitions_current})
+        if "constraints.oid is not null and constraints.convalidated" in normalized:
+            return FakeCursor({"current": True})
+        if "triggers.oid is not null" in normalized:
+            return FakeCursor({"current": True})
+        if "from jsonb_to_recordset" in normalized and "indexes.indexrelid is not null" in normalized:
+            return FakeCursor({"current": True})
+        if normalized.startswith("with expected_indexes"):
+            return FakeCursor({"ledger_current": True, "index_ledger_current": True})
+        if "from pg_index indexes" in normalized:
+            migration = next(
+                item
+                for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
+                if item.name == params[0]
+            )
+            return FakeCursor(
+                {
+                    "ready": True,
+                    "is_unique": migration.unique,
+                    "table_name": migration.table_name,
+                    "access_method": migration.access_method,
+                    "column_names": list(migration.column_names),
+                    "descending": list(migration.descending),
+                    "opclass_names": list(migration.opclass_names),
+                    "predicate": migration.predicate_expression,
+                }
+            )
+        raise AssertionError(normalized)
+
+
 def index_connection_factory(state):
     async def factory():
         return FakeIndexConnection(state)
@@ -175,7 +228,57 @@ async def test_concurrent_migrations_serialize_and_apply_schema_once():
 
 
 @pytest.mark.asyncio
-async def test_migration_checksum_mismatch_fails_closed_without_schema_execution():
+@pytest.mark.parametrize("missing_relation", ["model_gateway_revisions", "model_catalog_entries"])
+async def test_schema_status_is_not_ready_when_model_control_plane_relation_is_missing(
+    missing_relation: str,
+) -> None:
+    status = await schema_migrations.schema_status(
+        FakeSchemaStatusConnection(missing_relation=missing_relation)
+    )
+
+    assert status["ready"] is False
+    assert status["relations_current"] is False
+    assert status["contracts_current"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fault",
+    ["constraint_definitions_current", "model_index_definitions_current"],
+)
+async def test_schema_status_rejects_noncanonical_model_control_contracts(fault: str) -> None:
+    status = await schema_migrations.schema_status(
+        FakeSchemaStatusConnection(**{fault: False})
+    )
+
+    assert status["ready"] is False
+    assert status["contracts_current"] is False
+    assert status[fault] is False
+
+
+@pytest.mark.asyncio
+async def test_schema_status_uses_exact_model_index_relation_keys_and_predicates() -> None:
+    status = await schema_migrations.schema_status(FakeSchemaStatusConnection())
+
+    assert status["model_index_definitions_current"] is True
+    assert schema_migrations.CRITICAL_INDEX_DEFINITIONS == (
+        (
+            "uq_model_gateway_active",
+            "model_gateway_revisions",
+            ("active",),
+            "active = true",
+            True,
+        ),
+        (
+            "uq_model_catalog_default",
+            "model_catalog_entries",
+            ("is_default",),
+            "is_default = true",
+            True,
+        ),
+    )
+
+
     state = SharedMigrationState()
     state.ledger[schema_migrations.TARGET_SCHEMA_VERSION] = "0" * 64
 
@@ -191,7 +294,7 @@ async def test_migration_checksum_mismatch_fails_closed_without_schema_execution
 @pytest.mark.asyncio
 async def test_base_schema_ledger_advances_to_terminal_reconciliation_schema():
     state = SharedMigrationState()
-    state.ledger["2026.08.18.1"] = (
+    state.ledger["2026.08.21.1"] = (
         "f4972e68f15ed1c3663cd3696bb2471e4503fbe23753617a6556887bc5075415"
     )
 
@@ -202,7 +305,7 @@ async def test_base_schema_ledger_advances_to_terminal_reconciliation_schema():
 
     assert result["status"] == "applied"
     assert state.schema_execute_count == 1
-    assert state.ledger["2026.08.18.1"] == (
+    assert state.ledger["2026.08.21.1"] == (
         "f4972e68f15ed1c3663cd3696bb2471e4503fbe23753617a6556887bc5075415"
     )
     assert state.ledger[schema_migrations.TARGET_SCHEMA_VERSION] == (
@@ -211,11 +314,13 @@ async def test_base_schema_ledger_advances_to_terminal_reconciliation_schema():
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.21.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.24.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
         "runs",
+        "model_gateway_revisions",
+        "model_catalog_entries",
         "run_skill_materializations",
         "run_events",
         "messages",
@@ -249,6 +354,64 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "jsonb",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "runs",
+        "model_id",
+        "text",
+        False,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "runs",
+        "model_value",
+        "text",
+        False,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "runs",
+        "model_gateway_revision",
+        "int8",
+        False,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    for column in (
+        ("revision", "int8"),
+        ("base_url", "text"),
+        ("api_key_ciphertext", "bytea"),
+        ("key_fingerprint", "text"),
+        ("active", "bool"),
+        ("created_by", "text"),
+        ("created_at", "timestamptz"),
+    ):
+        assert ("model_gateway_revisions", *column, True) in schema_migrations.CRITICAL_COLUMNS
+    for column in (
+        ("model_id", "text"),
+        ("upstream_model_id", "text"),
+        ("display_name", "text"),
+        ("provider", "text"),
+        ("enabled", "bool"),
+        ("upstream_available", "bool"),
+        ("is_default", "bool"),
+        ("display_order", "int4"),
+        ("first_seen_revision", "int8"),
+        ("last_seen_revision", "int8"),
+        ("first_seen_at", "timestamptz"),
+        ("last_seen_at", "timestamptz"),
+    ):
+        assert ("model_catalog_entries", *column, True) in schema_migrations.CRITICAL_COLUMNS
+    for constraint in (
+        ("runs", "fk_runs_model_gateway_revision"),
+        ("model_gateway_revisions", "chk_model_gateway_revision_positive"),
+        ("model_gateway_revisions", "chk_model_gateway_base_url"),
+        ("model_gateway_revisions", "chk_model_gateway_key_fingerprint"),
+        ("model_catalog_entries", "model_catalog_entries_first_seen_revision_fkey"),
+        ("model_catalog_entries", "model_catalog_entries_last_seen_revision_fkey"),
+        ("model_catalog_entries", "chk_model_catalog_id"),
+        ("model_catalog_entries", "chk_model_catalog_upstream_id"),
+        ("model_catalog_entries", "chk_model_catalog_display_name"),
+        ("model_catalog_entries", "chk_model_catalog_default_enabled"),
+    ):
+        assert constraint in schema_migrations.CRITICAL_CONSTRAINTS
+    assert ("uq_model_gateway_active", True) in schema_migrations.CRITICAL_INDEXES
+    assert ("uq_model_catalog_default", True) in schema_migrations.CRITICAL_INDEXES
     assert (
         "sessions",
         "chk_sessions_title_source",
@@ -419,7 +582,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "22a763e6fa2bbb8f3effa31aeec243c7ae5512e392c812f6b09c47f28112065d"
+        "05e6c12fe5bb39d1819fb813f3c3ac21b8321cf1dbfe555f95a376b422389325"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

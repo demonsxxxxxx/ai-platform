@@ -789,7 +789,10 @@ export function ChatAppContent({
     ? {
         disabledSkills: [],
         selectedMcpToolIds: undefined,
-        agentOptions: {},
+        agentOptions: {
+          ...(currentModelValue ? { model: currentModelValue } : {}),
+          ...(currentModelId ? { model_id: currentModelId } : {}),
+        },
       }
       : {
         ...sessionConfig,
@@ -1251,7 +1254,7 @@ export function ChatAppContent({
       onNewSession={handleNewSessionWithReset}
       allowNewSessionAction={agentWorkspace !== undefined}
       newSessionActionLabel={agentWorkspace ? "开始新任务" : undefined}
-      availableModels={agentConversationControlsLocked ? null : filteredModels}
+      availableModels={filteredModels}
       currentModelId={currentModelId}
       onSelectModel={handleSelectModel}
       sessionId={sessionId}
@@ -1387,9 +1390,7 @@ export function ChatAppContent({
               agentConversationControlsLocked ? {} : agentOptionValues
             }
             onToggleAgentOption={handleToggleAgentOption}
-            availableModels={
-              agentConversationControlsLocked ? [] : filteredModels ?? []
-            }
+            availableModels={filteredModels ?? []}
             currentModelId={currentModelId}
             onSelectModel={handleSelectModel}
             approvals={approvals}

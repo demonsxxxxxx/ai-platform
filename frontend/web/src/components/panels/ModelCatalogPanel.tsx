@@ -16,6 +16,7 @@ import { resolveGroupAvailability } from "../governance/groupAvailability";
 import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { modelPublicApi, type ModelOption } from "../../services/api/modelPublic";
+import { ModelAdminControl } from "./ModelAdminControl";
 import { useAuth } from "../../hooks/useAuth";
 import { Permission } from "../../types";
 
@@ -159,7 +160,7 @@ export function ModelCatalogPanel() {
           title={t("models.catalogUnavailable", "模型目录暂不可用")}
           description={t(
             "models.catalogUnavailableDescription",
-            "公开模型投影没有返回可用数据。聊天页会继续使用已缓存或默认模型，管理写操作保持关闭。",
+            "模型目录暂时无法读取。目录恢复前，新的模型选择会 fail closed。",
           )}
         />
       </div>
@@ -178,13 +179,15 @@ export function ModelCatalogPanel() {
         title={t("models.title", "模型")}
         subtitle={t(
           "models.subtitle",
-          "查看当前工作台可用模型，管理写操作按治理策略保持关闭。",
+          "查看平台公共模型；管理员可配置兼容地址、同步目录并控制启用状态。",
         )}
         icon={<DatabaseZap size={20} className="text-theme-text-secondary" />}
         searchValue={searchQuery}
         onSearchChange={setSearchQuery}
         searchPlaceholder={t("models.searchPlaceholder", "搜索模型、供应商或能力")}
       />
+
+      <ModelAdminControl canManage={canAdminModels} />
 
       <div className={workbenchSurface.catalog.summaryGrid}>
         <section className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3`}>
@@ -244,7 +247,7 @@ export function ModelCatalogPanel() {
               <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
                 {t(
                   "models.adminGovernanceDescription",
-                  "新增、排序、密钥和网关配置只在具备 model:admin 权限的治理入口开放。",
+                  "连接、密钥和模型启停只在具备 model:admin 权限的治理入口开放。",
                 )}
               </p>
             </div>
@@ -275,7 +278,7 @@ export function ModelCatalogPanel() {
             <p className={`mt-2 max-w-md text-center ${workbenchSurface.catalog.body}`}>
               {t(
                 "models.emptyDescription",
-                "模型目录来自公开投影。若这里为空，聊天页会 fail-closed 到默认模型配置，并保留管理写操作锁定。",
+                "当前没有已启用且上游可用的模型。请管理员同步目录并启用至少一个模型。",
               )}
             </p>
           </div>

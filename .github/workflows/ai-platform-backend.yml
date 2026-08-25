@@ -164,6 +164,16 @@ jobs:
               tests/test_lambchat_sse_v21.py
               tests/test_app_lifespan.py
               tests/test_runtime_launch_script.py
+          - shard: model-control-plane
+            redis_image: ""
+            redis_url: ""
+            test_files: >-
+              tests/test_model_management.py
+              tests/test_opensandbox_gateway.py
+              tests/test_opensandbox_model_route_credentials.py
+              tests/test_lambchat_frontend_compat.py::test_lambchat_model_catalog_comes_from_settings
+              tests/test_lambchat_frontend_compat.py::test_lambchat_governed_model_catalog_preempts_legacy_upstream_and_preserves_raw_ids
+              tests/test_schema.py::test_schema_adds_versioned_model_gateway_and_non_deleting_shared_catalog
           - shard: release-governance-policy
             redis_image: ""
             redis_url: ""

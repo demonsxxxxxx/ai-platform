@@ -613,11 +613,12 @@ def test_env_example_inventory_covers_exact_base_and_opensandbox_required_keys()
     )
     reviewed_colocation_required = {
         "AI_PLATFORM_FRONTEND_IMAGE",
-        "AI_PLATFORM_MODEL_UPSTREAM",
         "AI_PLATFORM_SOURCE_COMMIT",
         "CLAUDE_AGENT_ALLOWED_TOOLS",
         "CLAUDE_AGENT_DISALLOWED_TOOLS",
         "CLAUDE_AGENT_PERMISSION_MODE",
+        "MODEL_CONNECTION_ENCRYPTION_KEY",
+        "MODEL_PROXY_INTERNAL_TOKEN",
         "OPENSANDBOX_API_KEY",
         "OPENSANDBOX_DOMAIN",
         "OPENSANDBOX_EXECUTOR_IMAGE",

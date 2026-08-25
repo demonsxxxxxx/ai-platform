@@ -403,10 +403,8 @@ function catalog(
         description: "检索授权支持知识。",
       },
     ],
-    models: [{ id: "model-id", value: "platform/model", label: "平台模型" }],
     skillsResolved: true,
     mcpToolsResolved: true,
-    modelsResolved: true,
     effectivePermissionsKnown: true,
     isLoading: false,
     error: null,
@@ -470,9 +468,7 @@ test("mounted workbench hydrates, refreshes, and creates only an explicit local 
     assert.ok(instructionsInput);
     assert.equal((reactProps(descriptionInput) as unknown as { value: string }).value, "处理授权支持请求。");
     assert.equal((reactProps(instructionsInput) as unknown as { value: string }).value, "仅回答公司支持范围内的问题。");
-    const modelSelect = container.querySelector('[aria-label="专家模型"]');
-    assert.ok(modelSelect);
-    assert.equal((reactProps(modelSelect) as unknown as { value: string }).value, "model-id");
+    assert.equal(container.querySelector('[aria-label="专家模型"]'), null);
     assert.match(container.textContent, /support-skill/);
     assert.match(container.textContent, /support-skill2026\.07\.28/);
     assert.match(container.textContent, /支持知识检索/);
@@ -701,10 +697,8 @@ test("mounted unresolved catalogs preserve server pins without stale or empty cl
     const unresolved = catalog({
       skills: [],
       tools: [],
-      models: [],
       skillsResolved: false,
       mcpToolsResolved: false,
-      modelsResolved: false,
       effectivePermissionsKnown: false,
       isLoading: true,
     });
@@ -716,19 +710,17 @@ test("mounted unresolved catalogs preserve server pins without stale or empty cl
       await flush();
     });
 
-    assert.match(container.textContent, /已保留服务端模型 model-id/);
     assert.match(container.textContent, /support-skill2026\.07\.28/);
     assert.match(container.textContent, /已保留服务端工具身份/);
     assert.doesNotMatch(container.textContent, /当前不可用|没有这一精确版本|需要明确移除/);
 
     await React.act(async () => {
       root.render(React.createElement(AgentBuilderWorkbench, {
-        catalog: catalog({ skills: [], tools: [], models: [] }),
+        catalog: catalog({ skills: [], tools: [] }),
         canManageProfiles: true,
       }));
       await Promise.resolve();
     });
-    assert.match(container.textContent, /所选模型已不在当前目录|当前不可用/);
     assert.match(container.textContent, /当前授权目录中不可用/);
     assert.match(container.textContent, /需要明确移除/);
     const saveButton = findButton(container, "保存草稿");

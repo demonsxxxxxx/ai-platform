@@ -1495,6 +1495,7 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
 
     from app import repositories
     from app.agent_apps import AgentProfileAdmission, AgentProfileAuthority
+    from app.model_management.repository import RunModelSelection
     from app.models import AgentConversationIdentity, ChatStreamRequest, SelectedAgentProfileRequest
     from app.routes.chat import chat_stream
 
@@ -1596,6 +1597,16 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
         )
 
     monkeypatch.setattr("app.routes.chat.transaction", transaction)
+    monkeypatch.setattr(
+        "app.routes.chat.resolve_run_model",
+        AsyncMock(
+            return_value=RunModelSelection(
+                model_id="model-a",
+                model_value="model-a",
+                connection_revision=None,
+            )
+        ),
+    )
     monkeypatch.setattr(repositories, "get_chat_submission", AsyncMock(return_value=None))
     monkeypatch.setattr(repositories, "ensure_submission_principal", noop)
     monkeypatch.setattr(repositories, "get_authorized_session", owned_session)
@@ -1839,8 +1850,8 @@ async def test_profile_authority_accepts_the_exact_canonical_frontend_transport_
         "message": "continue with the published Agent",
         "agent_options": {
             "enable_thinking": "off",
-            "model": "model-a",
-            "model_id": "model-a",
+            "model": "user-model-b",
+            "model_id": "user-model-b",
         },
         "disabled_skills": [],
         "selected_mcp_tool_ids": [],
@@ -2022,15 +2033,12 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
     [
         ({"agent_id": "general-agent"}, None),
         ({"skill_id": "general-chat"}, None),
-        ({"modelId": "model-b"}, None),
         ({"disabled_skills": ["other-skill"]}, None),
         ({"enabled_skills": ["other-skill"]}, None),
         ({"disabled_mcp_tools": ["other-tool"]}, None),
         ({"selected_mcp_tool_ids": ["other-tool"]}, None),
         ({"agent_options": {"temperature": 0.2}}, None),
         ({"agent_options": {"enable_thinking": "high"}}, None),
-        ({"agent_options": {"model_id": "model-b"}}, None),
-        ({"agent_options": {"model": "model-b", "model_id": "model-a"}}, None),
         (
             {
                 "selected_skill": {
@@ -2041,7 +2049,6 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
             None,
         ),
         ({"confirmed_capability_id": "general_chat"}, None),
-        ({"input": {"model": "model-b"}}, None),
         ({"input": {"multi_agent_steps": [{"skillIds": ["other-skill"]}]}}, None),
         ({"input": {"multi_agent_steps": [{"tools": [{"mcpToolIds": ["other-tool"]}]}]}}, None),
         ({"input": {"multiAgentSteps": [{"mcpServerIds": ["other-server"]}]}}, None),
@@ -2063,18 +2070,14 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
     ids=[
         "top-level-agent",
         "raw-skill-selector",
-        "top-level-model-alias",
         "nonempty-disabled-skill-selector",
         "enabled-skill-selector",
         "disabled-mcp-selector",
         "selected-mcp-selector",
         "unsupported-agent-option",
         "nondefault-thinking-option",
-        "mismatched-model-selector",
-        "mismatched-model-value",
         "selected-skill-selector",
         "confirmed-capability",
-        "nested-model",
         "nested-step-skill-alias",
         "nested-tool-mcp-alias",
         "nested-mcp-server-alias",

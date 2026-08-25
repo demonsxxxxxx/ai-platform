@@ -7,6 +7,7 @@ import inspect
 import json
 import os
 import pathlib
+import queue
 import shutil
 import socket
 import ssl
@@ -1740,6 +1741,15 @@ def test_pinned_https_connect_uses_approved_ip_without_dns(monkeypatch) -> None:
         def settimeout(self, _timeout: float) -> None:
             return None
 
+        def connect(self, address) -> None:
+            connected.append((address, 0.5))
+
+        def shutdown(self, _how: int) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
     class FakeTlsSocket(FakeSocket):
         def do_handshake(self) -> None:
             return None
@@ -1756,11 +1766,7 @@ def test_pinned_https_connect_uses_approved_ip_without_dns(monkeypatch) -> None:
         "getaddrinfo",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("DNS must not be consulted")),
     )
-    monkeypatch.setattr(
-        gateway_adapters.socket,
-        "create_connection",
-        lambda address, timeout: connected.append((address, timeout)) or FakeSocket(),
-    )
+    monkeypatch.setattr(gateway_adapters.socket, "socket", lambda *_args, **_kwargs: FakeSocket())
     connection = gateway_adapters._PinnedHTTPSConnection(
         "models.internal.example",
         443,
@@ -1772,6 +1778,84 @@ def test_pinned_https_connect_uses_approved_ip_without_dns(monkeypatch) -> None:
     connection.connect()
     assert connected and connected[0][0] == ("10.56.1.20", 443)
     assert 0 < connected[0][1] <= 0.5
+
+
+def test_pinned_https_connect_cancellation_closes_connecting_socket_before_request(monkeypatch) -> None:
+    request_name = "a" * 32 + ".json"
+    cancellation_marker = threading.Event()
+    connect_started = threading.Event()
+    connecting_socket_closed = threading.Event()
+    transmitted: list[bytes] = []
+    errors: list[BaseException] = []
+
+    class BlockingSocket:
+        def settimeout(self, _timeout: float) -> None:
+            return None
+
+        def connect(self, _address) -> None:
+            connect_started.set()
+            if not connecting_socket_closed.wait(2):
+                raise AssertionError("cancellation did not close the connecting socket")
+            raise OSError("connect interrupted")
+
+        def sendall(self, data: bytes) -> None:
+            transmitted.append(data)
+
+        def shutdown(self, _how: int) -> None:
+            connecting_socket_closed.set()
+
+        def close(self) -> None:
+            connecting_socket_closed.set()
+
+    monkeypatch.setattr(gateway_adapters.socket, "socket", lambda *_args, **_kwargs: BlockingSocket())
+    connection = gateway_adapters._PinnedHTTPSConnection(
+        "models.internal.example",
+        443,
+        ("10.56.1.20",),
+        MonotonicDeadline.after(2),
+        _test_tls_context(),
+    )
+    cancelled = threading.Event()
+    connection.set_cancellation_event(cancelled)
+    broker = MailboxBroker(SimpleNamespace(), SimpleNamespace(targets={}), 1.0, 1024)
+    observed_names: list[str] = []
+    broker._cancellation_present = lambda _fd, name: observed_names.append(name) or cancellation_marker.is_set()
+    stop = threading.Event()
+    watcher = threading.Thread(
+        target=broker._watch_cancellation,
+        args=(7, request_name, stop, cancelled, connection),
+    )
+    connector = threading.Thread(
+        target=lambda: errors.append(
+            _request_error(connection, "POST", "/v1/chat/completions", b"payload")
+        ),
+    )
+    watcher.start()
+    connector.start()
+    try:
+        assert connect_started.wait(2)
+        cancellation_marker.set()
+        assert connecting_socket_closed.wait(1)
+        connector.join(timeout=2)
+        assert not connector.is_alive()
+        assert cancelled.is_set()
+        assert request_name in observed_names
+        assert transmitted == []
+        assert connection.sock is None
+        assert errors and isinstance(errors[0], OSError)
+    finally:
+        stop.set()
+        watcher.join(timeout=2)
+        connector.join(timeout=2)
+        connection.close()
+
+
+def _request_error(connection, method: str, path: str, body: bytes) -> BaseException:
+    try:
+        connection.request(method, path, body=body, headers={"content-length": str(len(body))})
+    except BaseException as exc:
+        return exc
+    raise AssertionError("request unexpectedly transmitted")
 
 
 def test_helper_deadline_interrupts_trickled_response(monkeypatch) -> None:
@@ -2352,7 +2436,6 @@ def test_mailbox_forwards_callback_token_only_to_callback_and_context_targets(mo
         1.0,
         1024,
         upstream_tls_context=_test_tls_context(),
-        provider_credentials={"openai": "host-openai-secret", "anthropic": "host-anthropic-secret"},
     )
 
     def forward(path: str, request_id: str) -> dict[str, str]:
@@ -2405,14 +2488,432 @@ def test_mailbox_forwards_callback_token_only_to_callback_and_context_targets(mo
     assert context_headers["x-ai-platform-callback-token"] == "attempt-bound-token"
     assert "x-ai-platform-callback-token" not in model_headers
     assert "x-ai-platform-callback-token" not in anthropic_headers
-    assert model_headers["authorization"] == "Bearer host-openai-secret"
+    assert model_headers["authorization"] == "Bearer model-proxy-internal"
+    assert model_headers["x-ai-platform-run-id"] == str(record.scope["run_id"])
+    assert model_headers["x-ai-platform-attempt-id"] == str(record.scope["attempt_id"])
     assert "x-api-key" not in model_headers
-    assert anthropic_headers["x-api-key"] == "host-anthropic-secret"
+    assert anthropic_headers["x-api-key"] == "model-proxy-internal"
+    assert anthropic_headers["x-ai-platform-run-id"] == str(record.scope["run_id"])
+    assert anthropic_headers["x-ai-platform-attempt-id"] == str(record.scope["attempt_id"])
     assert "authorization" not in anthropic_headers
     assert "sandbox-forged-secret" not in repr(captured)
     assert "sandbox-forged-key" not in repr(captured)
     assert captured[-1][0] == "/anthropic/v1/messages"
     assert json.loads(captured_bodies[-2])["stream"] is True
+
+
+def test_mailbox_model_stream_publishes_chunks_before_upstream_finishes() -> None:
+    broker = MailboxBroker(SimpleNamespace(), SimpleNamespace(), 1.0, 1024)
+    frames: queue.Queue[bytes] = queue.Queue()
+    release = threading.Event()
+    first_chunk = threading.Event()
+    errors: list[BaseException] = []
+    producer = None
+
+    def write(_descriptor, data):
+        frames.put(bytes(data))
+        return len(data)
+
+    class FakeResponse:
+        status = 200
+        reads = 0
+
+        @staticmethod
+        def getheaders():
+            return [("content-type", "text/plain")]
+
+        def read(self, _limit):
+            if self.reads == 0:
+                self.reads += 1
+                return b"first"
+            if self.reads == 1:
+                self.reads += 1
+                assert release.wait(2)
+                return b"second"
+            return b""
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
+    monkeypatch.setattr(gateway_adapters.os, "open", lambda *_args, **_kwargs: 9)
+    monkeypatch.setattr(gateway_adapters.os, "write", write)
+    monkeypatch.setattr(gateway_adapters.os, "fsync", lambda _descriptor: None)
+    monkeypatch.setattr(gateway_adapters.os, "fchmod", lambda _descriptor, _mode: None)
+    monkeypatch.setattr(gateway_adapters.os, "replace", lambda *_args, **_kwargs: None)
+    try:
+        stream = broker._start_stream_response(8, "1" * 32 + ".json")
+
+        def produce() -> None:
+            try:
+                broker._stream_upstream_response(stream, FakeResponse())
+            except BaseException as exc:
+                errors.append(exc)
+
+        producer = threading.Thread(target=produce)
+        producer.start()
+        observed = []
+        while True:
+            frame = json.loads(frames.get(timeout=2).decode("utf-8"))
+            observed.append(frame)
+            if frame["kind"] == "chunk":
+                first_chunk.set()
+                break
+        assert first_chunk.is_set()
+        assert observed[-1]["body"] == base64.b64encode(b"first").decode("ascii")
+        assert not release.is_set()
+        release.set()
+        while observed[-1]["kind"] != "end":
+            observed.append(json.loads(frames.get(timeout=2).decode("utf-8")))
+        producer.join(timeout=2)
+        assert not producer.is_alive()
+        assert errors == []
+        assert [frame["body"] for frame in observed if frame["kind"] == "chunk"] == [
+            base64.b64encode(b"first").decode("ascii"),
+            base64.b64encode(b"second").decode("ascii"),
+        ]
+        assert observed[-1] == {"kind": "end", "ok": True, "sequence": 2, "version": 1}
+    finally:
+        release.set()
+        if producer is not None:
+            producer.join(timeout=2)
+        monkeypatch.undo()
+
+
+def test_mailbox_complete_response_uses_exact_lf_framing(monkeypatch) -> None:
+    writes: list[bytes] = []
+    response = {
+        "status": 429,
+        "headers": {"content-type": "application/json"},
+        "body": base64.b64encode(b'{"error":"busy"}').decode("ascii"),
+    }
+    expected = gateway_adapters._json_text(
+        {"version": 1, "kind": "complete", **response}
+    ).encode("utf-8") + b"\n"
+    monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
+    monkeypatch.setattr(gateway_adapters.os, "open", lambda *_args, **_kwargs: 8)
+    monkeypatch.setattr(gateway_adapters.os, "write", lambda _fd, data: writes.append(bytes(data)) or len(data))
+    monkeypatch.setattr(gateway_adapters.os, "fsync", lambda _fd: None)
+    monkeypatch.setattr(gateway_adapters.os, "fchmod", lambda _fd, _mode: None)
+    monkeypatch.setattr(gateway_adapters.os, "close", lambda _fd: None)
+    monkeypatch.setattr(gateway_adapters.os, "replace", lambda *_args, **_kwargs: None)
+
+    MailboxBroker._write_model_complete_response(
+        MailboxBroker(SimpleNamespace(), SimpleNamespace(), 1.0, 1024),
+        7,
+        "1" * 32 + ".json",
+        response,
+    )
+
+    assert writes == [expected]
+    assert not writes[0].endswith(b"\\\\n")
+
+
+def test_mailbox_stream_response_fchmods_exact_mode_before_publish(monkeypatch) -> None:
+    modes: list[int] = []
+    monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
+    monkeypatch.setattr(gateway_adapters.os, "open", lambda *_args, **_kwargs: 8)
+    monkeypatch.setattr(gateway_adapters.os, "fchmod", lambda _fd, mode: modes.append(mode))
+    monkeypatch.setattr(gateway_adapters.os, "fsync", lambda _fd: None)
+    monkeypatch.setattr(gateway_adapters.os, "replace", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(gateway_adapters.os, "close", lambda _fd: None)
+
+    MailboxBroker(SimpleNamespace(), SimpleNamespace(), 1.0, 1024)._start_stream_response(
+        7, "2" * 32 + ".json"
+    )
+
+    assert modes == [0o444]
+
+
+def test_mailbox_stream_terminal_frame_is_linearized_under_success_failure_race(monkeypatch) -> None:
+    broker = MailboxBroker(SimpleNamespace(), SimpleNamespace(), 1.0, 1024)
+    stream = {"descriptor": 8, "artifact_size": 0, "sequence": 0, "body_bytes": 0, "header_written": False}
+    frames: list[dict[str, object]] = []
+    release = threading.Barrier(2)
+    monkeypatch.setattr(
+        gateway_adapters.os,
+        "write",
+        lambda _fd, data: frames.append(json.loads(data.decode("utf-8"))) or len(data),
+    )
+    monkeypatch.setattr(gateway_adapters.os, "fsync", lambda _fd: None)
+
+    def finish_success() -> None:
+        release.wait()
+        broker._finish_stream_success(stream, None)
+
+    def finish_failure() -> None:
+        release.wait()
+        broker._mark_stream_failure(stream, GatewayError(502, "broker_upstream_unavailable"))
+
+    threads = [threading.Thread(target=finish_success), threading.Thread(target=finish_failure)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+    assert all(not thread.is_alive() for thread in threads)
+    terminal = [frame for frame in frames if frame.get("kind") == "end"]
+    assert len(terminal) == 1
+    assert stream["terminal"] is True
+
+
+def test_mailbox_snapshot_rejects_excess_irrelevant_entries_before_processing(monkeypatch) -> None:
+    broker = MailboxBroker(SimpleNamespace(), SimpleNamespace(), 1.0, 1024)
+    record = SimpleNamespace(workspace_host_path="/data/opensandbox/workspaces/one")
+    entries = [SimpleNamespace(name=f"irrelevant-{index}") for index in range(broker.DIRECTORY_SCAN_LIMIT + 1)]
+
+    class DirectoryEntries:
+        def __iter__(self):
+            return iter(entries)
+
+        @staticmethod
+        def close():
+            return None
+
+    broker._open_record_mailbox = lambda _record: (1, 2, 3, 4, 5)
+    broker._close_mailbox = lambda _descriptors: None
+    broker._prune_claims = lambda _fd: None
+    broker._prune_cancellations = lambda _fd, deadline=None: None
+    broker._prune_responses = lambda _fd: None
+    monkeypatch.setattr(gateway_adapters, "_revalidate_workspace_fd", lambda *_args: None)
+    monkeypatch.setattr(gateway_adapters.os, "scandir", lambda _fd: DirectoryEntries())
+
+    with pytest.raises(gateway_adapters.MailboxScanLimitExceeded):
+        broker._snapshot_record(record, time.time())
+
+
+@pytest.mark.skipif(os.name != "posix", reason="mailbox dirfd cleanup bounds require POSIX")
+@pytest.mark.parametrize(
+    ("method_name", "directory_name", "name_for_index", "limit"),
+    (
+        (
+            "_prune_claims",
+            "claims",
+            lambda index: f"{index:032x}.json.{index + 100:032x}.claim",
+            MailboxBroker.CLAIM_DIRECTORY_SCAN_LIMIT,
+        ),
+        (
+            "_prune_responses",
+            "responses",
+            lambda index: f"{index:032x}.json",
+            MailboxBroker.RESPONSE_DIRECTORY_SCAN_LIMIT,
+        ),
+    ),
+)
+def test_mailbox_cleanup_pruning_caps_real_directory_enumeration(
+    tmp_path,
+    monkeypatch,
+    method_name,
+    directory_name,
+    name_for_index,
+    limit,
+) -> None:
+    directory = tmp_path / directory_name
+    directory.mkdir()
+    for index in range(limit + 2):
+        (directory / name_for_index(index)).write_bytes(b"")
+    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    real_scandir = gateway_adapters.os.scandir
+    observed = 0
+
+    class CountingScan:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            nonlocal observed
+            entry = next(self.inner)
+            observed += 1
+            return entry
+
+        def close(self):
+            self.inner.close()
+
+    monkeypatch.setattr(gateway_adapters.os, "scandir", lambda _fd: CountingScan(real_scandir(directory_fd)))
+    try:
+        with pytest.raises(gateway_adapters.MailboxScanLimitExceeded):
+            getattr(MailboxBroker, method_name)(directory_fd, deadline=None)
+        assert observed == limit + 1
+    finally:
+        os.close(directory_fd)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="mailbox dirfd cleanup deadlines require POSIX")
+@pytest.mark.parametrize(
+    ("method_name", "directory_name", "name_for_index"),
+    (
+        ("_prune_claims", "claims", lambda index: f"{index:032x}.json.{index + 100:032x}.claim"),
+        ("_prune_responses", "responses", lambda index: f"{index:032x}.json"),
+    ),
+)
+def test_mailbox_cleanup_pruning_honors_poll_deadline_before_next_entry(
+    tmp_path,
+    monkeypatch,
+    method_name,
+    directory_name,
+    name_for_index,
+) -> None:
+    directory = tmp_path / directory_name
+    directory.mkdir()
+    for index in range(8):
+        (directory / name_for_index(index)).write_bytes(b"")
+    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    real_scandir = gateway_adapters.os.scandir
+    observed = 0
+
+    class CountingScan:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            nonlocal observed
+            entry = next(self.inner)
+            observed += 1
+            return entry
+
+        def close(self):
+            self.inner.close()
+
+    class Deadline:
+        calls = 0
+
+        def remaining(self):
+            self.calls += 1
+            if self.calls >= 3:
+                raise DeadlineExceeded("test deadline")
+            return 1.0
+
+    monkeypatch.setattr(gateway_adapters.os, "scandir", lambda _fd: CountingScan(real_scandir(directory_fd)))
+    deadline = Deadline()
+    try:
+        with pytest.raises(DeadlineExceeded):
+            getattr(MailboxBroker, method_name)(directory_fd, deadline=deadline)
+        assert observed == 2
+        assert deadline.calls == 3
+    finally:
+        os.close(directory_fd)
+
+
+def test_mailbox_cancellation_closes_blocked_upstream_without_ok_end(monkeypatch) -> None:
+    request_name = "a" * 32 + ".json"
+    raw_body = json.dumps({"model": "deepseek-v4-flash", "stream": True}).encode("utf-8")
+    raw = json.dumps(
+        {
+            "version": 1,
+            "method": "POST",
+            "path": "/model/openai/chat/completions",
+            "headers": {"content-type": "application/json"},
+            "body": base64.b64encode(raw_body).decode("ascii"),
+            "created_at_unix_seconds": time.time(),
+            "timeout_seconds": 3600.0,
+        }
+    ).encode("utf-8")
+    evidence = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o640,
+        st_uid=1000,
+        st_gid=4321,
+        st_size=len(raw),
+        st_dev=1,
+        st_ino=2,
+        st_mtime_ns=3,
+        st_ctime_ns=4,
+    )
+    request_chunks = iter((raw, b""))
+    frames: list[dict[str, object]] = []
+    cancellation_requested = threading.Event()
+    request_started = threading.Event()
+    upstream_closed = threading.Event()
+    errors: list[BaseException] = []
+
+    class FakeConnection:
+        sock = None
+
+        def request(self, *_args, **_kwargs):
+            request_started.set()
+            if not upstream_closed.wait(2):
+                raise AssertionError("cancellation did not close upstream")
+            raise OSError("cancelled connection")
+
+        def close(self):
+            upstream_closed.set()
+
+    broker = MailboxBroker(
+        SimpleNamespace(),
+        SimpleNamespace(
+            targets={
+                "callback": (BRIDGE_ORIGIN, ("10.42.0.12",)),
+                "openai": (BRIDGE_ORIGIN + "/openai/v1", ("10.42.0.12",)),
+                "anthropic": (BRIDGE_ORIGIN + "/anthropic", ("10.42.0.12",)),
+            }
+        ),
+        1.0,
+        1024,
+        dispatch_timeout_seconds=3600.0,
+    )
+    record = SimpleNamespace(scope={"run_id": "run-one", "attempt_id": "attempt-one"})
+    broker._upstream_connection = lambda *_args: FakeConnection()
+    broker._cancellation_present = lambda *_args: cancellation_requested.is_set()
+    monkeypatch.setattr(gateway_adapters, "authorize_model_request", lambda *_args, **_kwargs: ("authorization", "Bearer model-proxy-internal"))
+    monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
+    monkeypatch.setattr(gateway_adapters.os, "getgid", lambda: 4321, raising=False)
+    monkeypatch.setattr(gateway_adapters.os, "open", lambda _name, flags, *_args, **_kwargs: 8 if flags & os.O_WRONLY else 7)
+    monkeypatch.setattr(gateway_adapters.os, "fstat", lambda descriptor: evidence if descriptor == 7 else SimpleNamespace())
+    monkeypatch.setattr(gateway_adapters.os, "read", lambda *_args: next(request_chunks))
+    monkeypatch.setattr(gateway_adapters.os, "write", lambda _descriptor, data: frames.append(json.loads(data.decode("utf-8"))) or len(data))
+    monkeypatch.setattr(gateway_adapters.os, "fsync", lambda _descriptor: None)
+    monkeypatch.setattr(gateway_adapters.os, "fchmod", lambda _descriptor, _mode: None)
+    monkeypatch.setattr(gateway_adapters.os, "replace", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(gateway_adapters.os, "close", lambda _descriptor: None)
+
+    def process() -> None:
+        broker._active_request_fd = 9
+        try:
+            broker._process(6, request_name, record=record, response_fd=5)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            broker._active_request_fd = None
+
+    worker = threading.Thread(target=process)
+    worker.start()
+    assert request_started.wait(2)
+    cancellation_requested.set()
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert upstream_closed.is_set()
+    assert len(errors) == 1 and isinstance(errors[0], GatewayError)
+    assert errors[0].code == "broker_request_cancelled"
+    assert frames and frames[-1]["kind"] == "end" and frames[-1]["ok"] is False
+    assert not any(frame.get("kind") == "end" and frame.get("ok") is True for frame in frames)
+
+
+def test_mailbox_stream_overflow_marks_failure_without_success_end(monkeypatch) -> None:
+    broker = MailboxBroker(SimpleNamespace(), SimpleNamespace(), 1.0, 1)
+    stream = {"descriptor": 8, "artifact_size": 0, "sequence": 0, "body_bytes": 0, "header_written": False}
+    frames: list[dict[str, object]] = []
+
+    class OversizedResponse:
+        status = 200
+
+        @staticmethod
+        def getheaders():
+            return [("content-type", "text/plain")]
+
+        @staticmethod
+        def read(_limit):
+            return b"too-large"
+
+    monkeypatch.setattr(gateway_adapters.os, "write", lambda _descriptor, data: frames.append(json.loads(data.decode("utf-8"))) or len(data))
+    monkeypatch.setattr(gateway_adapters.os, "fsync", lambda _descriptor: None)
+    with pytest.raises(GatewayError) as raised:
+        broker._stream_upstream_response(stream, OversizedResponse())
+    broker._mark_stream_failure(stream, raised.value)
+    assert raised.value.code == "broker_response_too_large"
+    assert frames[-1] == {"kind": "end", "ok": False, "sequence": 0, "version": 1}
+    assert not any(frame.get("kind") == "end" and frame.get("ok") is True for frame in frames)
 
 
 def test_mailbox_model_and_callback_use_distinct_absolute_budgets_and_request_only_shortens(monkeypatch) -> None:
@@ -2485,7 +2986,6 @@ def test_mailbox_model_and_callback_use_distinct_absolute_budgets_and_request_on
         1024,
         dispatch_timeout_seconds=3600.0,
         upstream_tls_context=_test_tls_context(),
-        provider_credentials={"openai": "host-openai-secret", "anthropic": "host-anthropic-secret"},
     )
 
     def process(path: str, requested_timeout: float, request_id: str) -> None:
@@ -2590,6 +3090,7 @@ def test_mailbox_per_sandbox_backlog_caps_fail_closed_without_outbound(monkeypat
     broker._open_record_mailbox = lambda _record: (1, 2, 3, 4, 5)
     broker._close_mailbox = lambda _descriptors: None
     broker._claim_request = lambda _request_fd, _claim_fd, entry: entry
+    broker._request_is_model = lambda *_args: True
     broker._prune_claims = lambda _claim_fd: None
     broker._request_identity_matches = lambda *_: True
     broker._unlink_request_if_identity = lambda *_: True
@@ -2599,6 +3100,7 @@ def test_mailbox_per_sandbox_backlog_caps_fail_closed_without_outbound(monkeypat
 
     assert broker.poll_once() == 1
     assert [response["status"] for response in responses] == [429]
+    assert all(response["kind"] == "complete" for response in responses)
     assert ("mailbox-broker", "broker_backlog_exceeded") in denials
 
 
@@ -2621,6 +3123,7 @@ def test_mailbox_global_backlog_cap_fails_closed_for_every_sandbox(monkeypatch) 
     broker._open_record_mailbox = lambda _record: (1, 2, 3, 4, 5)
     broker._close_mailbox = lambda _descriptors: None
     broker._claim_request = lambda _request_fd, _claim_fd, entry: entry
+    broker._request_is_model = lambda *_args: True
     broker._prune_claims = lambda _claim_fd: None
     broker._request_identity_matches = lambda *_: True
     broker._unlink_request_if_identity = lambda *_: True
@@ -2645,7 +3148,15 @@ def test_mailbox_expired_requests_are_reclaimed_with_bounded_identity_delete(mon
     broker._prune_claims = lambda _claim_fd: None
     broker._prune_responses = lambda _fd: None
     monkeypatch.setattr(gateway_adapters, "_revalidate_workspace_fd", lambda *_: None)
-    monkeypatch.setattr(gateway_adapters.os, "listdir", lambda _fd: names)
+    class Entries:
+        def __iter__(self):
+            return iter(SimpleNamespace(name=name) for name in names)
+
+        @staticmethod
+        def close():
+            return None
+
+    monkeypatch.setattr(gateway_adapters.os, "scandir", lambda _fd: Entries())
     monkeypatch.setattr(
         gateway_adapters.os,
         "stat",
@@ -2787,11 +3298,11 @@ def test_broker_loop_isolates_iteration_exception_and_continues() -> None:
     assert calls == 2 and not thread.is_alive()
 
 
-def test_capability_only_mode_does_not_load_model_credentials_or_start_broker(monkeypatch) -> None:
+def test_capability_only_mode_does_not_load_broker_policy_or_start_broker(monkeypatch) -> None:
     def unexpected(*_args, **_kwargs):
         raise AssertionError("capability-only mode touched the model broker")
 
-    monkeypatch.setattr(gateway_server, "_model_provider_credentials", unexpected)
+    monkeypatch.setattr(gateway_server, "_load_broker_policy", unexpected)
     monkeypatch.setattr(gateway_server, "_load_broker_policy", unexpected)
     monkeypatch.setattr(gateway_server, "_load_upstream_tls_context", unexpected)
     monkeypatch.setattr(gateway_server, "MailboxBroker", unexpected)
@@ -2807,8 +3318,12 @@ def test_capability_only_mode_does_not_load_model_credentials_or_start_broker(mo
     assert runtime is None
 
 
-def test_gateway_broker_defaults_enabled_and_requires_model_credentials() -> None:
-    with pytest.raises(ValueError, match="OPENSANDBOX_GATEWAY_OPENAI_API_KEY_FILE"):
+def test_gateway_broker_defaults_enabled_without_provider_credentials(monkeypatch) -> None:
+    def policy_reached(*_args, **_kwargs):
+        raise RuntimeError("policy reached")
+
+    monkeypatch.setattr(gateway_server, "_load_broker_policy", policy_reached)
+    with pytest.raises(RuntimeError, match="policy reached"):
         gateway_server._start_broker_runtime(
             loopback_gateway_config(),
             SimpleNamespace(),
@@ -2867,9 +3382,413 @@ def test_relay_timeout_removes_pending_request_on_real_posix(tmp_path) -> None:
                 response += chunk
         assert b"504 Gateway Timeout" in response
         assert not list(requests.glob("[0-9a-f]*.json"))
+        cancellations = list(requests.glob("[0-9a-f]*.cancel"))
+        assert len(cancellations) == 1
+        cancellation = cancellations[0].stat()
+        assert cancellation.st_uid == 1000 and cancellation.st_gid == 0
+        assert stat.S_IMODE(cancellation.st_mode) == 0o600 and cancellation.st_size == 0
     finally:
         process.terminate()
         process.wait(timeout=2)
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() != 0,
+    reason="real relay owner/mode and complete-error protocol require a root-capable POSIX release gate",
+)
+def test_relay_model_complete_error_frame_is_prompt(tmp_path) -> None:
+    mailbox = tmp_path / "mailbox"
+    requests = mailbox / "requests"
+    responses = mailbox / "responses"
+    requests.mkdir(parents=True)
+    responses.mkdir()
+    os.chmod(mailbox, 0o711)
+    os.chown(mailbox, 0, 0)
+    os.chmod(requests, 0o2770)
+    os.chown(requests, 1000, 0)
+    os.chmod(responses, 0o755)
+    os.chown(responses, 0, 0)
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    process = subprocess.Popen(
+        [sys.executable, "-c", RELAY_SOURCE, str(mailbox), "0", "0", "0.1", "2", str(port)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    client = None
+    response_fd = None
+    request_name = None
+    try:
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                client = socket.create_connection(("127.0.0.1", port), timeout=0.2)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.02)
+        body = json.dumps({"model": "deepseek-v4-flash", "stream": True}).encode("utf-8")
+        client.sendall(
+            b"POST /model/openai/chat/completions HTTP/1.1\r\n"
+            b"Host: localhost\r\n"
+            b"Content-Type: application/json\r\n"
+            + f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+            + body
+        )
+        deadline = time.monotonic() + 2
+        while request_name is None:
+            candidates = [item for item in requests.iterdir() if item.name.endswith(".json")]
+            if candidates:
+                request_name = candidates[0].name
+                os.chown(requests / request_name, 1000, 0)
+                os.chmod(requests / request_name, 0o640)
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError("relay did not publish a request")
+            time.sleep(0.01)
+        response_fd = os.open(responses, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        error_body = json.dumps({"error": {"code": "broker_backlog_exceeded"}}, separators=(",", ":")).encode("utf-8")
+        started = time.monotonic()
+        MailboxBroker._write_model_complete_response(
+            MailboxBroker(SimpleNamespace(), SimpleNamespace(), 1.0, 1024),
+            response_fd,
+            request_name,
+            {
+                "status": 429,
+                "headers": {"content-type": "application/json"},
+                "body": base64.b64encode(error_body).decode("ascii"),
+            },
+        )
+        client.settimeout(1)
+        received = bytearray()
+        while b"\r\n\r\n" not in received:
+            received.extend(client.recv(4096))
+        header_end = received.index(b"\r\n\r\n") + 4
+        headers = bytes(received[:header_end]).lower()
+        length = int(next(line.split(b":", 1)[1] for line in headers.split(b"\r\n") if line.startswith(b"content-length:")))
+        while len(received) < header_end + length:
+            received.extend(client.recv(4096))
+        assert b"HTTP/1.1 429" in received[:header_end]
+        assert bytes(received[header_end:header_end + length]) == error_body
+        assert time.monotonic() - started < 1
+        assert not list(requests.glob("*.cancel"))
+    finally:
+        if response_fd is not None:
+            os.close(response_fd)
+        if client is not None:
+            client.close()
+        if process.poll() is None:
+            process.terminate()
+        process.wait(timeout=2)
+        if request_name is not None:
+            for path in (requests / request_name, responses / request_name):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() != 0,
+    reason="real relay owner/mode and streaming delivery require a root-capable POSIX release gate",
+)
+def test_relay_streams_first_model_chunk_before_upstream_finishes(tmp_path) -> None:
+    mailbox = tmp_path / "mailbox"
+    requests = mailbox / "requests"
+    responses = mailbox / "responses"
+    requests.mkdir(parents=True)
+    responses.mkdir()
+    os.chmod(mailbox, 0o711)
+    os.chown(mailbox, 0, 0)
+    os.chmod(requests, 0o2770)
+    os.chown(requests, 1000, 0)
+    os.chmod(responses, 0o755)
+    os.chown(responses, 0, 0)
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    process = subprocess.Popen(
+        [sys.executable, "-c", RELAY_SOURCE, str(mailbox), "0", "0", "0.2", "5", str(port)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    client = None
+    request_name = None
+    worker = None
+    request_fd = response_fd = None
+    release = threading.Event()
+    errors: list[BaseException] = []
+
+    class FakeResponse:
+        status = 200
+        reads = 0
+
+        @staticmethod
+        def getheaders():
+            return [("content-type", "text/plain")]
+
+        def read(self, _limit):
+            if self.reads == 0:
+                self.reads += 1
+                return b"first"
+            if self.reads == 1:
+                self.reads += 1
+                assert release.wait(3)
+                return b"second"
+            return b""
+
+    class FakeConnection:
+        sock = None
+
+        def request(self, *_args, **_kwargs):
+            return None
+
+        @staticmethod
+        def getresponse():
+            return FakeResponse()
+
+        @staticmethod
+        def close():
+            return None
+
+    try:
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                client = socket.create_connection(("127.0.0.1", port), timeout=0.2)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.02)
+        body = json.dumps({"model": "deepseek-v4-flash", "stream": True}).encode("utf-8")
+        client.sendall(
+            b"POST /model/openai/chat/completions HTTP/1.1\r\n"
+            b"Host: localhost\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Authorization: Bearer sandbox-value\r\n"
+            + f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+            + body
+        )
+        deadline = time.monotonic() + 2
+        while request_name is None:
+            candidates = [item for item in requests.iterdir() if item.name.endswith(".json")]
+            if candidates:
+                request_name = candidates[0].name
+                os.chown(requests / request_name, 1000, 0)
+                os.chmod(requests / request_name, 0o640)
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError("relay did not publish a request")
+            time.sleep(0.01)
+
+        app, _, _, store = application()
+        sandbox_id = decoded(call(app, "POST", "/v1/sandboxes", create_payload(gateway_config(), "streaming")))["id"]
+        record = store.get(sandbox_id)
+        assert record is not None
+        broker = MailboxBroker(
+            store,
+            SimpleNamespace(
+                targets={
+                    "callback": (BRIDGE_ORIGIN, ("10.42.0.12",)),
+                    "openai": (BRIDGE_ORIGIN + "/openai/v1", ("10.42.0.12",)),
+                    "anthropic": (BRIDGE_ORIGIN + "/anthropic", ("10.42.0.12",)),
+                }
+            ),
+            1.0,
+            1024,
+            dispatch_timeout_seconds=5.0,
+        )
+        broker._upstream_connection = lambda *_args: FakeConnection()
+
+        def process_request() -> None:
+            nonlocal request_fd, response_fd
+            try:
+                request_fd = os.open(requests, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                response_fd = os.open(responses, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                broker._process(request_fd, request_name, record=record, response_fd=response_fd)
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                if response_fd is not None:
+                    os.close(response_fd)
+                if request_fd is not None:
+                    os.close(request_fd)
+
+        worker = threading.Thread(target=process_request)
+        worker.start()
+        received = bytearray()
+        client.settimeout(2)
+        while b"\r\n\r\n" not in received:
+            received.extend(client.recv(4096))
+        header_end = received.index(b"\r\n\r\n") + 4
+        assert b"transfer-encoding: chunked" in bytes(received[:header_end]).lower()
+        while b"\r\n" not in received[header_end:]:
+            received.extend(client.recv(4096))
+        line_end = received.index(b"\r\n", header_end)
+        chunk_size = int(received[header_end:line_end], 16)
+        body_start = line_end + 2
+        while len(received) < body_start + chunk_size + 2:
+            received.extend(client.recv(4096))
+        assert bytes(received[body_start:body_start + chunk_size]) == b"first"
+        assert not release.is_set()
+        request_id = MailboxBroker._request_id_from_name(request_name)
+        assert request_id is not None
+        cancel_path = requests / f"{request_id}.cancel"
+        closed_at = time.monotonic()
+        client.shutdown(socket.SHUT_RDWR)
+        client.close()
+        client = None
+        deadline = closed_at + 1
+        while not cancel_path.exists():
+            if time.monotonic() >= deadline:
+                raise AssertionError("relay did not publish cancellation while waiting for next stream frame")
+            time.sleep(0.01)
+        assert time.monotonic() - closed_at < 1
+        assert list(requests.glob("*.cancel")) == [cancel_path]
+        release.set()
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        assert errors == []
+    finally:
+        release.set()
+        if client is not None:
+            client.close()
+        if process.poll() is None:
+            process.terminate()
+        process.wait(timeout=2)
+        if worker is not None:
+            worker.join(timeout=2)
+        if request_name is not None:
+            request_id = MailboxBroker._request_id_from_name(request_name)
+            for path in (
+                requests / request_name,
+                requests / f"{request_id}.cancel" if request_id is not None else requests / "unused.cancel",
+                responses / request_name,
+            ):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() != 0,
+    reason="real relay owner/mode and client-disconnect cancellation require a root-capable POSIX release gate",
+)
+def test_relay_client_disconnect_publishes_bound_cancellation_promptly(tmp_path) -> None:
+    os.chmod(tmp_path, 0o755)
+    mailbox = tmp_path / "mailbox"
+    requests = mailbox / "requests"
+    responses = mailbox / "responses"
+    requests.mkdir(parents=True)
+    responses.mkdir()
+    os.chmod(mailbox, 0o711)
+    os.chown(mailbox, 0, 0)
+    os.chmod(requests, 0o2770)
+    os.chown(requests, 1000, 0)
+    os.chmod(responses, 0o755)
+    os.chown(responses, 0, 0)
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    process = subprocess.Popen(
+        [sys.executable, "-c", RELAY_SOURCE, str(mailbox), "0", "0", "0.2", "5", str(port)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        user=1000,
+        group=0,
+    )
+    client = None
+    request_name = None
+    try:
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                client = socket.create_connection(("127.0.0.1", port), timeout=0.2)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.02)
+
+        body = json.dumps({"model": "deepseek-v4-flash", "stream": True}).encode("utf-8")
+        client.sendall(
+            b"POST /model/openai/chat/completions HTTP/1.1\r\n"
+            b"Host: localhost\r\n"
+            b"Content-Type: application/json\r\n"
+            + f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+            + body
+        )
+        deadline = time.monotonic() + 2
+        while request_name is None:
+            candidates = [
+                item
+                for item in requests.iterdir()
+                if MailboxBroker._request_id_from_name(item.name) is not None
+            ]
+            if candidates:
+                assert len(candidates) == 1
+                request_name = candidates[0].name
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError("relay did not publish a request")
+            time.sleep(0.01)
+
+        request_path = requests / request_name
+        request_id = MailboxBroker._request_id_from_name(request_name)
+        assert request_id is not None
+        request_evidence = request_path.stat()
+        assert request_evidence.st_uid == 1000 and request_evidence.st_gid == 0
+        assert stat.S_IMODE(request_evidence.st_mode) == 0o640
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        assert request["path"] == "/model/openai/chat/completions"
+        cancel_path = requests / f"{request_id}.cancel"
+        assert cancel_path.name == request_name.removesuffix(".json") + ".cancel"
+        assert not cancel_path.exists()
+        assert not (responses / request_name).exists()
+
+        closed_at = time.monotonic()
+        client.shutdown(socket.SHUT_RDWR)
+        client.close()
+        client = None
+
+        deadline = closed_at + 1
+        while not cancel_path.exists():
+            if time.monotonic() >= deadline:
+                raise AssertionError("relay did not publish cancellation after client disconnect")
+            time.sleep(0.01)
+        elapsed = time.monotonic() - closed_at
+        assert elapsed < 1
+        cancellations = list(requests.glob("*.cancel"))
+        assert cancellations == [cancel_path]
+        cancellation = cancel_path.stat()
+        assert cancellation.st_uid == 1000 and cancellation.st_gid == 0
+        assert stat.S_ISREG(cancellation.st_mode)
+        assert stat.S_IMODE(cancellation.st_mode) == 0o600
+        assert cancellation.st_size == 0
+        assert not (responses / request_name).exists()
+    finally:
+        if client is not None:
+            client.close()
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2)
+        if request_name is not None:
+            for path in (requests / request_name, requests / f"{request_name.removesuffix('.json')}.cancel"):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX dirfd/mode enforcement requires the s72 execution environment")

@@ -79,6 +79,14 @@ BACKEND_TEST_SHARDS = {
         "tests/test_app_lifespan.py",
         "tests/test_runtime_launch_script.py",
     ),
+    "model-control-plane": (
+        "tests/test_model_management.py",
+        "tests/test_opensandbox_gateway.py",
+        "tests/test_opensandbox_model_route_credentials.py",
+        "tests/test_lambchat_frontend_compat.py::test_lambchat_model_catalog_comes_from_settings",
+        "tests/test_lambchat_frontend_compat.py::test_lambchat_governed_model_catalog_preempts_legacy_upstream_and_preserves_raw_ids",
+        "tests/test_schema.py::test_schema_adds_versioned_model_gateway_and_non_deleting_shared_catalog",
+    ),
     "release-governance-policy": (
         "tests/test_architecture_governance.py",
         "tests/test_backend_ci_workflow.py",
@@ -176,12 +184,13 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
             "redis:7.4-alpine",
             "redis://localhost:6379/15",
         ),
+        "model-control-plane": ("", ""),
         "release-governance-policy": ("", ""),
         "release-governance-readiness": ("", ""),
         "release-governance-authority": ("", ""),
     }
     all_selectors = [selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors]
-    assert len(all_selectors) == len(set(all_selectors)) == 41
+    assert len(all_selectors) == len(set(all_selectors)) == 47
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert '"6379:6379"' in tests_job
     assert '--health-cmd "redis-cli ping"' in tests_job

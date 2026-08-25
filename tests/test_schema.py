@@ -83,6 +83,36 @@ def test_schema_declares_per_tenant_capability_distribution_backfill_completion_
     assert "completed_at timestamptz" in schema
 
 
+def test_schema_adds_versioned_model_gateway_and_non_deleting_shared_catalog():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "create table if not exists model_gateway_revisions" in schema
+    assert "api_key_ciphertext bytea not null" in schema
+    assert "api_key text" not in schema
+    assert "create unique index if not exists uq_model_gateway_active" in schema
+    assert "create table if not exists model_catalog_entries" in schema
+    assert "model_id text" in schema
+    assert "model_value text" in schema
+    assert "model_gateway_revision bigint" in schema
+    assert "upstream_model_id text not null unique" in schema
+    assert "upstream_available boolean not null default true" in schema
+    assert "first_seen_revision bigint not null references model_gateway_revisions(revision)" in schema
+    assert "last_seen_revision bigint not null references model_gateway_revisions(revision)" in schema
+    assert "create unique index if not exists uq_model_catalog_default" in schema
+    assert "chk_model_gateway_revision_positive" in schema
+    assert "chk_model_gateway_base_url" in schema
+    assert "chk_model_gateway_key_fingerprint" in schema
+    assert "chk_model_catalog_id" in schema
+    assert "chk_model_catalog_upstream_id" in schema
+    assert "chk_model_catalog_display_name" in schema
+    assert "chk_model_catalog_default_enabled" in schema
+    assert "alter table runs add column if not exists model_gateway_revision bigint;" in schema
+    assert "fk_runs_model_gateway_revision" in schema
+    catalog_start = schema.index("create table if not exists model_catalog_entries")
+    catalog_end = schema.index("create index", catalog_start)
+    assert "on delete cascade" not in schema[catalog_start:catalog_end]
+
+
 def test_schema_declares_principal_department_auth_snapshot():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 

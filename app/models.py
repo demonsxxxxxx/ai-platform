@@ -33,6 +33,7 @@ from app.validation import (
     MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
     assert_safe_id,
     assert_safe_principal_user_id,
+    assert_upstream_model_id,
 )
 
 
@@ -238,7 +239,7 @@ class AgentProfileDraftRequest(BaseModel):
     expected_outputs: list[str] = Field(default_factory=list, max_length=16)
     permissions_and_data_access_notice: str = Field(default="", max_length=4_000)
     instructions: str = Field(min_length=1, max_length=MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
-    model_id: str
+    model_id: str = "platform-selected"
     skill_set: list[SelectedSkillRequest] = Field(default_factory=list, max_length=32)
     selected_skill: SelectedSkillRequest | None = None
     mcp_tool_ids: list[str] = Field(default_factory=list)
@@ -964,7 +965,7 @@ class QueueRunPayload(BaseModel):
     @field_validator("model_value")
     @classmethod
     def validate_optional_model_value(cls, value: str | None):
-        return assert_safe_id(value, "model_value") if value else value
+        return assert_upstream_model_id(value) if value else value
 
     @field_validator("file_ids")
     @classmethod
@@ -1206,18 +1207,9 @@ class ChatStreamRequest(BaseModel):
             "mcpserverid",
             "mcpserverids",
             "mcpservers",
-            "model",
-            "modelid",
-            "modelids",
-            "modelvalue",
-            "models",
             "multiagentsteps",
             "selectedmcptoolid",
             "selectedmcptoolids",
-            "selectedmodel",
-            "selectedmodelid",
-            "selectedmodelids",
-            "selectedmodelvalue",
             "selectedcapability",
             "selectedcapabilityid",
             "selectedskill",
@@ -1327,7 +1319,7 @@ class ChatStreamRequest(BaseModel):
         return request
 
     def profile_capability_selector_paths(self) -> tuple[str, ...]:
-        """Return the complete submitted model, Skill, Agent, and tool selector surface."""
+        """Return the complete submitted Skill, Agent, instruction, and tool selector surface."""
 
         paths = set(self._submitted_profile_capability_selector_paths)
         dynamic = {

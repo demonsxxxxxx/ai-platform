@@ -30,6 +30,7 @@ from app.routes.sandbox_leases import router as sandbox_leases_router
 from app.routes.skills_marketplace import router as skills_marketplace_router
 from app.routes.tool_permissions import router as tool_permissions_router
 from app.routes.workbench_projections import router as workbench_projections_router
+from app.model_management import router as model_management_router
 from app.settings import get_settings
 
 
@@ -83,6 +84,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_runs_router, prefix="/api/ai")
     app.include_router(admin_skills_router, prefix="/api/ai")
     app.include_router(admin_tool_policies_router, prefix="/api/ai")
+    app.include_router(model_management_router, prefix="/api/ai")
     app.include_router(capability_distributions_router, prefix="/api")
     app.include_router(skills_marketplace_router, prefix="/api")
     app.include_router(browser_runtime_config_router, prefix="/api")

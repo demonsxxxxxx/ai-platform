@@ -49,6 +49,7 @@ from app.intent_router import (
     route_intent,
 )
 from app.model_catalog import resolve_model_selection
+from app.model_management.repository import resolve_run_model
 from app.platform.model_upstream import upstream_model_cache_snapshot
 from app.models import (
     CapabilitySuggestionResponse,
@@ -1046,9 +1047,39 @@ def _has_legacy_client_mcp_selector(value: object) -> bool:
 def _requested_model_selection(request: ChatStreamRequest) -> dict[str, str] | None:
     agent_options = request.agent_options if isinstance(request.agent_options, dict) else {}
     raw_model_id = agent_options.get("model_id")
-    if raw_model_id is None:
+    raw_model_value = agent_options.get("model")
+    if raw_model_id is None and raw_model_value is None:
         return None
-    if not isinstance(raw_model_id, str):
+    if (
+        raw_model_id is not None
+        and (
+            not isinstance(raw_model_id, str)
+            or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", raw_model_id)
+        )
+    ):
+        raise HTTPException(status_code=400, detail="model_id_not_available")
+    if (
+        raw_model_value is not None
+        and (
+            not isinstance(raw_model_value, str)
+            or not raw_model_value
+            or raw_model_value != raw_model_value.strip()
+            or len(raw_model_value.encode("utf-8")) > 512
+            or any(ord(char) < 32 or ord(char) == 127 for char in raw_model_value)
+        )
+    ):
+        raise HTTPException(status_code=400, detail="model_id_not_available")
+    return {
+        **({"id": raw_model_id} if raw_model_id is not None else {}),
+        **({"value": raw_model_value} if raw_model_value is not None else {}),
+    }
+
+
+def _legacy_model_selection(selection: dict[str, str] | None) -> dict[str, str] | None:
+    if selection is None:
+        return None
+    raw_model_id = selection.get("id")
+    if raw_model_id is None:
         raise HTTPException(status_code=400, detail="model_id_not_available")
     try:
         upstream_ids = None
@@ -1486,8 +1517,9 @@ async def chat_stream(
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=exc.status_code, code=code) from exc
         raise
-    requested_model_id = requested_model_selection["id"] if requested_model_selection is not None else None
-    requested_model_value = requested_model_selection["value"] if requested_model_selection is not None else None
+    requested_model_id = requested_model_selection.get("id") if requested_model_selection else None
+    requested_model_value = requested_model_selection.get("value") if requested_model_selection else None
+    model_gateway_revision: int | None = None
     requested_file_ids = _file_ids_from_request(request)
     if allowed and _has_legacy_client_mcp_selector(request.input):
         code = "selected_mcp_tool_ids_required"
@@ -1739,9 +1771,25 @@ async def chat_stream(
                     expected_version=str(admitted_agent_profile.skill["skill_version"]),
                 )
                 selected_mcp_tool_ids_for_execution = list(admitted_agent_profile.mcp_tool_ids)
-                requested_model_id = admitted_agent_profile.model["id"]
-                requested_model_value = admitted_agent_profile.model["value"]
                 run_input["mcp_tool_ids"] = list(admitted_agent_profile.mcp_tool_ids)
+
+            try:
+                governed_model = await resolve_run_model(
+                    conn,
+                    model_id=requested_model_id,
+                    model_value=requested_model_value,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="model_id_not_available") from exc
+            if governed_model is not None:
+                requested_model_id = governed_model.model_id
+                requested_model_value = governed_model.model_value
+                model_gateway_revision = governed_model.connection_revision
+            else:
+                legacy_model = _legacy_model_selection(requested_model_selection)
+                if legacy_model is not None:
+                    requested_model_id = legacy_model["id"]
+                    requested_model_value = legacy_model["value"]
 
             if (
                 request.session_id
@@ -2245,6 +2293,9 @@ async def chat_stream(
                 "authz_policy_version": principal.authz_policy_version,
                 "authority_source": principal.authority_source or principal.source,
                 "authority_checked_at": principal.authority_checked_at or None,
+                "model_id": requested_model_id,
+                "model_value": requested_model_value,
+                "model_gateway_revision": model_gateway_revision,
             }
             if admitted_agent_profile is not None:
                 run_create_kwargs.update(

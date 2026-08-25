@@ -2155,7 +2155,7 @@ async def test_copy_retry_resume_legacy_general_chat_upgrades_child_to_skillless
     )
     assert "execution_kind, skill_id" in insert_sql
     assert insert_params[6:8] == ("harness_chat", None)
-    persisted_input = json.loads(insert_params[19])
+    persisted_input = json.loads(insert_params[22])
     assert persisted_input["schema_version"] == "ai-platform.run-payload.v2"
     assert persisted_input["skill_manifests"] == []
 

@@ -630,20 +630,13 @@ def test_selected_profile_rejects_client_owned_capability_selectors():
         raise AssertionError("client-owned Skill selection must be rejected")
 
 
-def test_selected_profile_rejects_both_legacy_and_canonical_model_selectors():
+def test_selected_profile_accepts_user_owned_model_selectors():
     for selector in ({"model": "legacy-model"}, {"model_id": "catalog-model"}):
         request = ChatStreamRequest(
             message="Help me",
-            selected_agent_profile=SelectedAgentProfileRequest(
-                agent_id="agt_support",
-                expected_revision=4,
-            ),
             agent_options=selector,
         )
-        with pytest.raises(HTTPException) as caught:
-            reject_profile_selector_conflicts(request)
-        assert caught.value.status_code == 400
-        assert caught.value.detail == "agent_profile_selector_conflict"
+        reject_profile_selector_conflicts(request, active=True)
 
 
 def test_selected_profile_is_an_optimistic_revision_lock():

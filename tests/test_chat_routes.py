@@ -14,6 +14,7 @@ from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.capability_distribution import CapabilityAuthorizationDenial
 from app.main import create_app
+from app.model_management.repository import RunModelSelection
 from app.models import (
     ChatSessionRequest,
     ChatStreamRequest,
@@ -50,6 +51,14 @@ _ORIGINAL_GET_LATEST_AUTHORIZED_SESSION_RUN_INPUT = (
 @asynccontextmanager
 async def fake_transaction():
     yield object()
+
+
+@pytest.fixture(autouse=True)
+def legacy_model_control_plane_stub(monkeypatch):
+    async def no_managed_model(_conn, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.routes.chat.resolve_run_model", no_managed_model)
 
 
 @pytest.fixture
@@ -2718,6 +2727,11 @@ async def test_chat_stream_rejects_unavailable_model_id_before_side_effects(monk
         calls.append((args, kwargs))
         raise AssertionError("invalid model_id must be rejected before side effects")
 
+    async def reject_model(*_args, **_kwargs):
+        raise ValueError("model_id_not_available")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.resolve_run_model", reject_model)
     monkeypatch.setattr("app.routes.chat.repositories.create_session", fail_side_effect)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_side_effect)
     monkeypatch.setattr("app.routes.chat.repositories.append_message", fail_side_effect)
@@ -2788,14 +2802,14 @@ def test_chat_stream_request_rejects_structured_model_id(raw_model_id):
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_maps_catalog_model_id_to_runtime_model_value(monkeypatch):
+async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(monkeypatch):
     calls = []
     current_settings = type(
         "S",
         (),
         {
-            "model_catalog_json": '[{"id":"pro-tier","value":"deepseek-v4-pro","label":"Pro tier"}]',
-            "default_model_id": "pro-tier",
+            "model_catalog_json": '[{"id":"legacy","value":"legacy"}]',
+            "default_model_id": "legacy",
             "claude_agent_model": "",
             "anthropic_model": "",
             "openai_model": "",
@@ -2814,7 +2828,7 @@ async def test_chat_stream_maps_catalog_model_id_to_runtime_model_value(monkeypa
         return "ses_model"
 
     async def fake_create_run(conn, **kwargs):
-        calls.append(("create_run_input", kwargs["input_json"]))
+        calls.append(("create_run", kwargs))
         return "run_model"
 
     async def fake_append_message(conn, **kwargs):
@@ -2833,7 +2847,17 @@ async def test_chat_stream_maps_catalog_model_id_to_runtime_model_value(monkeypa
     async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
         return [snapshot_manifest(skill_id)]
 
+    async def fake_resolve_run_model(conn, *, model_id, model_value):
+        assert model_id == "pro-tier"
+        assert model_value == "openai/gpt-5"
+        return RunModelSelection(
+            model_id="pro-tier",
+            model_value="openai/gpt-5",
+            connection_revision=7,
+        )
+
     monkeypatch.setattr("app.routes.chat.get_settings", lambda: current_settings)
+    monkeypatch.setattr("app.routes.chat.resolve_run_model", fake_resolve_run_model)
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
@@ -2846,17 +2870,22 @@ async def test_chat_stream_maps_catalog_model_id_to_runtime_model_value(monkeypa
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     response = await chat_stream(
-        ChatStreamRequest(message="hello", agent_options={"model_id": "pro-tier"}),
+        ChatStreamRequest(
+            message="hello",
+            agent_options={"model_id": "pro-tier", "model": "openai/gpt-5"},
+        ),
         principal=principal(),
     )
 
-    create_run_input = next(item[1] for item in calls if item[0] == "create_run_input")
+    create_run = next(item[1] for item in calls if item[0] == "create_run")
+    create_run_input = create_run["input_json"]
     queue_payload = next(item[1] for item in calls if item[0] == "queue_payload")
     assert response.run_id == "run_model"
+    assert create_run["model_gateway_revision"] == 7
     assert create_run_input["model_id"] == "pro-tier"
-    assert create_run_input["model_value"] == "deepseek-v4-pro"
+    assert create_run_input["model_value"] == "openai/gpt-5"
     assert queue_payload["model_id"] == "pro-tier"
-    assert queue_payload["model_value"] == "deepseek-v4-pro"
+    assert queue_payload["model_value"] == "openai/gpt-5"
 
 
 

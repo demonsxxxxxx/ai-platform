@@ -25,6 +25,7 @@ from app.control_plane_contracts import (
 )
 from app.db import transaction
 from app.model_catalog import build_model_catalog
+from app.model_management.repository import list_public_models
 from app.platform.model_upstream import fetch_upstream_openai_models
 from app.models import LoginRequest, SessionRenameRequest
 from app.projection_redaction import (
@@ -1128,7 +1129,13 @@ async def update_profile_metadata(
 
 
 @router.get("/agent/models/available")
-async def available_models() -> dict[str, object]:
+async def available_models(
+    _principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    async with transaction() as conn:
+        governed_catalog = await list_public_models(conn)
+    if governed_catalog is not None:
+        return governed_catalog
     settings = get_settings()
     upstream_models = await fetch_upstream_openai_models(settings)
     if upstream_models:

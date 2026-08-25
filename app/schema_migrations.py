@@ -15,13 +15,15 @@ from typing import Any
 from app.db import SCHEMA_PATH, close_pool, connect, transaction
 
 
-TARGET_SCHEMA_VERSION = "2026.08.21.1"
+TARGET_SCHEMA_VERSION = "2026.08.24.1"
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
     "schema_migrations",
     "schema_index_migrations",
     "runs",
+    "model_gateway_revisions",
+    "model_catalog_entries",
     "run_skill_materializations",
     "run_events",
     "messages",
@@ -42,6 +44,28 @@ CRITICAL_COLUMNS = (
     ("runs", "authz_policy_version", "int4", True),
     ("runs", "authority_source", "text", True),
     ("runs", "authority_checked_at", "timestamptz", False),
+    ("runs", "model_id", "text", False),
+    ("runs", "model_value", "text", False),
+    ("runs", "model_gateway_revision", "int8", False),
+    ("model_gateway_revisions", "revision", "int8", True),
+    ("model_gateway_revisions", "base_url", "text", True),
+    ("model_gateway_revisions", "api_key_ciphertext", "bytea", True),
+    ("model_gateway_revisions", "key_fingerprint", "text", True),
+    ("model_gateway_revisions", "active", "bool", True),
+    ("model_gateway_revisions", "created_by", "text", True),
+    ("model_gateway_revisions", "created_at", "timestamptz", True),
+    ("model_catalog_entries", "model_id", "text", True),
+    ("model_catalog_entries", "upstream_model_id", "text", True),
+    ("model_catalog_entries", "display_name", "text", True),
+    ("model_catalog_entries", "provider", "text", True),
+    ("model_catalog_entries", "enabled", "bool", True),
+    ("model_catalog_entries", "upstream_available", "bool", True),
+    ("model_catalog_entries", "is_default", "bool", True),
+    ("model_catalog_entries", "display_order", "int4", True),
+    ("model_catalog_entries", "first_seen_revision", "int8", True),
+    ("model_catalog_entries", "last_seen_revision", "int8", True),
+    ("model_catalog_entries", "first_seen_at", "timestamptz", True),
+    ("model_catalog_entries", "last_seen_at", "timestamptz", True),
     ("run_skill_materializations", "materialization_sha256", "text", True),
     ("run_skill_materializations", "manifest_json", "jsonb", True),
     ("messages", "content", "text", True),
@@ -85,6 +109,16 @@ CRITICAL_COLUMNS = (
     ("sandbox_leases", "executor_reconciled_at", "timestamptz", False),
 )
 CRITICAL_CONSTRAINTS = (
+    ("runs", "fk_runs_model_gateway_revision"),
+    ("model_gateway_revisions", "chk_model_gateway_revision_positive"),
+    ("model_gateway_revisions", "chk_model_gateway_base_url"),
+    ("model_gateway_revisions", "chk_model_gateway_key_fingerprint"),
+    ("model_catalog_entries", "model_catalog_entries_first_seen_revision_fkey"),
+    ("model_catalog_entries", "model_catalog_entries_last_seen_revision_fkey"),
+    ("model_catalog_entries", "chk_model_catalog_id"),
+    ("model_catalog_entries", "chk_model_catalog_upstream_id"),
+    ("model_catalog_entries", "chk_model_catalog_display_name"),
+    ("model_catalog_entries", "chk_model_catalog_default_enabled"),
     ("sessions", "chk_sessions_title_source"),
     ("runs", "fk_runs_workspace_scope"),
     ("runs", "fk_runs_session_scope"),
@@ -112,6 +146,70 @@ CRITICAL_TRIGGERS = (
         5,
     ),
 )
+MODEL_CRITICAL_CONSTRAINT_DEFINITIONS = (
+    (
+        "runs",
+        "fk_runs_model_gateway_revision",
+        "f",
+        "FOREIGN KEY (model_gateway_revision) REFERENCES model_gateway_revisions(revision)",
+    ),
+    (
+        "model_gateway_revisions",
+        "chk_model_gateway_revision_positive",
+        "c",
+        "CHECK (revision > 0)",
+    ),
+    (
+        "model_gateway_revisions",
+        "chk_model_gateway_base_url",
+        "c",
+        "CHECK (length(base_url) >= 1 AND length(base_url) <= 2048)",
+    ),
+    (
+        "model_gateway_revisions",
+        "chk_model_gateway_key_fingerprint",
+        "c",
+        "CHECK (key_fingerprint ~ '^[0-9a-f]{16}$'::text)",
+    ),
+    (
+        "model_catalog_entries",
+        "model_catalog_entries_first_seen_revision_fkey",
+        "f",
+        "FOREIGN KEY (first_seen_revision) REFERENCES model_gateway_revisions(revision)",
+    ),
+    (
+        "model_catalog_entries",
+        "model_catalog_entries_last_seen_revision_fkey",
+        "f",
+        "FOREIGN KEY (last_seen_revision) REFERENCES model_gateway_revisions(revision)",
+    ),
+    (
+        "model_catalog_entries",
+        "chk_model_catalog_id",
+        "c",
+        "CHECK (model_id ~ '^[A-Za-z0-9_.:-]{1,128}$'::text)",
+    ),
+    (
+        "model_catalog_entries",
+        "chk_model_catalog_upstream_id",
+        "c",
+        "CHECK (length(upstream_model_id) >= 1 AND length(upstream_model_id) <= 512 "
+        "AND upstream_model_id = btrim(upstream_model_id))",
+    ),
+    (
+        "model_catalog_entries",
+        "chk_model_catalog_display_name",
+        "c",
+        "CHECK (length(display_name) >= 1 AND length(display_name) <= 160)",
+    ),
+    (
+        "model_catalog_entries",
+        "chk_model_catalog_default_enabled",
+        "c",
+        "CHECK (NOT is_default OR enabled)",
+    ),
+)
+
 CRITICAL_CONSTRAINT_DEFINITIONS = (
     (
         "files",
@@ -336,10 +434,31 @@ CONCURRENT_INDEX_MIGRATIONS = (
         "and executor_reconciliation_status = any array['waiting_terminal', 'retry', 'claimed']",
     ),
 )
+
 CRITICAL_INDEXES = (
+    ("uq_model_gateway_active", True),
+    ("uq_model_catalog_default", True),
     *((migration.name, migration.unique) for migration in CONCURRENT_INDEX_MIGRATIONS),
     ("uq_run_events_tenant_run_sequence", True),
     ("idx_sandbox_leases_attempt", False),
+)
+
+
+CRITICAL_INDEX_DEFINITIONS = (
+    (
+        "uq_model_gateway_active",
+        "model_gateway_revisions",
+        ("active",),
+        "active = true",
+        True,
+    ),
+    (
+        "uq_model_catalog_default",
+        "model_catalog_entries",
+        ("is_default",),
+        "is_default = true",
+        True,
+    ),
 )
 
 
@@ -695,8 +814,47 @@ async def schema_status(conn: Any) -> dict[str, object]:
         """,
         (
             _json_contract(
-                CRITICAL_CONSTRAINT_DEFINITIONS,
+                MODEL_CRITICAL_CONSTRAINT_DEFINITIONS + CRITICAL_CONSTRAINT_DEFINITIONS,
                 ("relation_name", "constraint_name", "constraint_type", "definition"),
+            ),
+        ),
+    )
+    model_index_definition_cursor = await conn.execute(
+        """
+        select coalesce(bool_and(
+          indexes.indexrelid is not null
+          and indexes.indisvalid
+          and indexes.indisready
+          and indexes.indisunique = expected.is_unique
+          and relations.relname = expected.relation_name
+          and array(
+            select attributes.attname
+            from unnest(indexes.indkey::smallint[]) with ordinality keys(attnum, position)
+            join pg_attribute attributes
+              on attributes.attrelid = indexes.indrelid
+             and attributes.attnum = keys.attnum
+            where keys.position <= indexes.indnkeyatts
+            order by keys.position
+          ) = expected.column_names
+          and regexp_replace(
+            lower(coalesce(pg_get_expr(indexes.indpred, indexes.indrelid), '')),
+            '[[:space:]()]', '', 'g'
+          ) = regexp_replace(lower(expected.predicate), '[[:space:]()]', '', 'g')
+        ), false) as current
+        from jsonb_to_recordset(%s::jsonb) as expected(
+          index_name text,
+          relation_name text,
+          column_names text[],
+          predicate text,
+          is_unique boolean
+        )
+        left join pg_index indexes on indexes.indexrelid = to_regclass(expected.index_name)
+        left join pg_class relations on relations.oid = indexes.indrelid
+        """,
+        (
+            _json_contract(
+                CRITICAL_INDEX_DEFINITIONS,
+                ("index_name", "relation_name", "column_names", "predicate", "is_unique"),
             ),
         ),
     )
@@ -811,6 +969,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
     column_row = await column_cursor.fetchone() or {}
     constraint_row = await constraint_cursor.fetchone() or {}
     constraint_definition_row = await constraint_definition_cursor.fetchone() or {}
+    model_index_definition_row = await model_index_definition_cursor.fetchone() or {}
     trigger_row = await trigger_cursor.fetchone() or {}
     index_row = await index_cursor.fetchone() or {}
     ledger_row = await ledger_cursor.fetchone() or {}
@@ -818,6 +977,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
     columns_current = bool(column_row.get("current"))
     constraints_current = bool(constraint_row.get("current"))
     constraint_definitions_current = bool(constraint_definition_row.get("current"))
+    model_index_definitions_current = bool(model_index_definition_row.get("current"))
     triggers_current = bool(trigger_row.get("current"))
     indexes_current = bool(index_row.get("current"))
     concurrent_index_definitions_current = all(
@@ -829,6 +989,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
             columns_current,
             constraints_current,
             constraint_definitions_current,
+            model_index_definitions_current,
             triggers_current,
             indexes_current,
             concurrent_index_definitions_current,
@@ -850,6 +1011,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
         "columns_current": columns_current,
         "constraints_current": constraints_current,
         "constraint_definitions_current": constraint_definitions_current,
+        "model_index_definitions_current": model_index_definitions_current,
         "triggers_current": triggers_current,
         "indexes_current": indexes_current,
         "concurrent_index_definitions_current": concurrent_index_definitions_current,

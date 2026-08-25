@@ -13,6 +13,17 @@ def assert_safe_id(value: str, field_name: str) -> str:
     return value
 
 
+def assert_upstream_model_id(value: str, field_name: str = "model_value") -> str:
+    if (
+        not value
+        or value != value.strip()
+        or len(value.encode("utf-8")) > 512
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
+        raise ValueError(f"{field_name} contains unsupported characters")
+    return value
+
+
 def assert_safe_principal_user_id(value: str, field_name: str = "user_id") -> str:
     if not SAFE_PRINCIPAL_USER_ID_PATTERN.fullmatch(value) or ".." in value:
         raise ValueError(f"{field_name} contains unsupported characters")

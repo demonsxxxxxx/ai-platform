@@ -7,7 +7,7 @@ from __future__ import annotations
 # read from HTTP and written to the scoped workspace; it is never interpolated
 # into a command.  The host broker chooses every remote destination.
 RELAY_SOURCE = r'''
-import base64, http.server, json, math, os, secrets, stat, sys, threading, time
+import base64, http.server, json, math, os, secrets, select, socket, stat, sys, threading, time
 
 ROOT, BROKER_UID, BROKER_GID = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 REQUEST_WAIT_SECONDS = float(sys.argv[4]) if len(sys.argv) > 4 else 5.0
@@ -19,6 +19,30 @@ else:
 ROOT_FD = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
 REQ_FD = os.open("requests", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=ROOT_FD)
 RESP_FD = os.open("responses", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=ROOT_FD)
+STREAM_ARTIFACT_MAX_BYTES = 16 * 1024 * 1024
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
+
+def publish_cancellation(request_id):
+    if len(request_id) != 32 or any(char not in "0123456789abcdef" for char in request_id):
+        return
+    descriptor = None
+    try:
+        descriptor = os.open(
+            request_id + ".cancel",
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=REQ_FD,
+        )
+        os.fchmod(descriptor, 0o600)
+        os.fsync(descriptor)
+    except FileExistsError:
+        pass
+    except OSError:
+        pass
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 def require_dir(fd, uid, gid, mode):
     value = os.fstat(fd)
@@ -40,7 +64,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def log_message(self, *_):
         pass
+    def _client_disconnected(self):
+        try:
+            readable, _, _ = select.select([self.connection], [], [], 0)
+            if not readable:
+                return False
+            flags = socket.MSG_PEEK | getattr(socket, "MSG_DONTWAIT", 0)
+            return self.connection.recv(1, flags) == b""
+        except (BlockingIOError, InterruptedError):
+            return False
+        except (OSError, ValueError):
+            return True
+    def _cancel_if_disconnected(self, request_id):
+        if request_id is not None and self._client_disconnected():
+            publish_cancellation(request_id)
+            raise RuntimeError("client disconnected")
     def _run(self):
+        request_id = None
+        request_published = False
+        completed = False
+        response_started = False
         try:
             created_at_unix_seconds = time.time()
             created_at_monotonic = time.monotonic()
@@ -80,14 +123,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             finally:
                 os.close(descriptor)
             os.replace(temporary, name, src_dir_fd=REQ_FD, dst_dir_fd=REQ_FD)
+            request_published = True
             response_fd = None
+            response_started = False
             while time.monotonic() < deadline:
+                self._cancel_if_disconnected(request_id)
                 try:
                     response_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=RESP_FD)
                     break
                 except FileNotFoundError:
                     time.sleep(.02)
             if response_fd is None:
+                publish_cancellation(request_id)
                 try:
                     os.unlink(name, dir_fd=REQ_FD)
                 except FileNotFoundError:
@@ -98,32 +145,171 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     raise TimeoutError("relay deadline exhausted")
                 self.connection.settimeout(max(.001, deadline - time.monotonic()))
                 evidence = os.fstat(response_fd)
-                if not stat.S_ISREG(evidence.st_mode) or evidence.st_uid != BROKER_UID or evidence.st_gid != BROKER_GID or stat.S_IMODE(evidence.st_mode) != 0o444 or evidence.st_size > 8388608:
+                if not stat.S_ISREG(evidence.st_mode) or evidence.st_uid != BROKER_UID or evidence.st_gid != BROKER_GID or stat.S_IMODE(evidence.st_mode) != 0o444:
                     raise RuntimeError("invalid broker response")
-                raw = b""
-                while len(raw) <= 8388608:
-                    chunk = os.read(response_fd, 65536)
-                    if not chunk: break
-                    raw += chunk
-                after = os.fstat(response_fd)
-                if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) != (evidence.st_dev, evidence.st_ino, evidence.st_size, evidence.st_mtime_ns, evidence.st_ctime_ns):
-                    raise RuntimeError("broker response changed")
+                if evidence.st_size > STREAM_ARTIFACT_MAX_BYTES:
+                    raise RuntimeError("invalid broker response")
+                model_route = clean_path == "/model/openai" or clean_path.startswith("/model/openai/") or clean_path == "/model/anthropic" or clean_path.startswith("/model/anthropic/")
+                if model_route:
+                    stream_size = evidence.st_size
+                    stream_identity = (evidence.st_dev, evidence.st_ino)
+                    stream_buffer = b""
+
+                    def validate_stream_file():
+                        nonlocal stream_size
+                        current = os.fstat(response_fd)
+                        if (
+                            not stat.S_ISREG(current.st_mode)
+                            or current.st_uid != BROKER_UID
+                            or current.st_gid != BROKER_GID
+                            or stat.S_IMODE(current.st_mode) != 0o444
+                            or (current.st_dev, current.st_ino) != stream_identity
+                            or current.st_size < stream_size
+                            or current.st_size > STREAM_ARTIFACT_MAX_BYTES
+                        ):
+                            raise RuntimeError("broker response changed")
+                        stream_size = current.st_size
+
+                    def next_stream_line():
+                        nonlocal stream_buffer
+                        while True:
+                            self._cancel_if_disconnected(request_id)
+                            marker = stream_buffer.find(b"\n")
+                            if marker >= 0:
+                                validate_stream_file()
+                                line, stream_buffer = stream_buffer[:marker], stream_buffer[marker + 1:]
+                                if not line or len(line) > STREAM_ARTIFACT_MAX_BYTES:
+                                    raise RuntimeError("invalid broker stream")
+                                return line
+                            if len(stream_buffer) > STREAM_ARTIFACT_MAX_BYTES:
+                                raise RuntimeError("invalid broker stream")
+                            validate_stream_file()
+                            chunk = os.read(response_fd, 65536)
+                            if chunk:
+                                stream_buffer += chunk
+                                continue
+                            if time.monotonic() >= deadline:
+                                raise TimeoutError("relay stream deadline exhausted")
+                            time.sleep(.01)
+
+                    first = json.loads(next_stream_line().decode("utf-8"))
+                    if isinstance(first, dict) and first.get("kind") == "complete":
+                        if (
+                            set(first) != {"version", "kind", "status", "headers", "body"}
+                            or first["version"] != 1
+                            or type(first["status"]) is not int
+                            or not 200 <= first["status"] <= 599
+                            or not isinstance(first["headers"], dict)
+                            or not isinstance(first["body"], str)
+                        ):
+                            raise RuntimeError("invalid broker complete response")
+                        data = base64.b64decode(first["body"], validate=True)
+                        if len(data) > MAX_RESPONSE_BYTES:
+                            raise RuntimeError("broker response too large")
+                        self.send_response(first["status"])
+                        for key, item in first["headers"].items():
+                            if str(key).lower() in ("content-type", "cache-control"):
+                                self.send_header(str(key), str(item))
+                        self.send_header("content-length", str(len(data)))
+                        self.end_headers()
+                        response_started = True
+                        self.wfile.write(data)
+                        self.wfile.flush()
+                        completed = True
+                        return
+                    header = first
+                    if (
+                        not isinstance(header, dict)
+                        or set(header) != {"version", "kind", "status", "headers"}
+                        or header["version"] != 1
+                        or header["kind"] != "headers"
+                        or type(header["status"]) is not int
+                        or not 200 <= header["status"] <= 599
+                        or not isinstance(header["headers"], dict)
+                    ):
+                        raise RuntimeError("invalid broker stream header")
+                    self.send_response(header["status"])
+                    for key, item in header["headers"].items():
+                        if str(key).lower() in ("content-type", "cache-control"):
+                            self.send_header(str(key), str(item))
+                    no_body = header["status"] in (204, 304)
+                    if no_body:
+                        self.send_header("content-length", "0")
+                    else:
+                        self.send_header("transfer-encoding", "chunked")
+                    self.end_headers()
+                    response_started = True
+                    expected_sequence = 0
+                    total_body = 0
+                    while True:
+                        frame = json.loads(next_stream_line().decode("utf-8"))
+                        if not isinstance(frame, dict) or frame.get("version") != 1 or not isinstance(frame.get("kind"), str):
+                            raise RuntimeError("invalid broker stream frame")
+                        if frame["kind"] == "chunk":
+                            if set(frame) != {"version", "kind", "sequence", "body"} or type(frame["sequence"]) is not int or frame["sequence"] != expected_sequence:
+                                raise RuntimeError("invalid broker stream sequence")
+                            data = base64.b64decode(frame["body"], validate=True)
+                            total_body += len(data)
+                            if total_body > MAX_RESPONSE_BYTES:
+                                raise RuntimeError("broker response too large")
+                            if no_body and data:
+                                raise RuntimeError("invalid broker response body")
+                            if not no_body:
+                                self.wfile.write((f"{len(data):X}\r\n").encode("ascii"))
+                                self.wfile.write(data)
+                                self.wfile.write(b"\r\n")
+                                self.wfile.flush()
+                            expected_sequence += 1
+                        elif frame["kind"] == "end":
+                            if set(frame) != {"version", "kind", "sequence", "ok"} or type(frame["sequence"]) is not int or frame["sequence"] != expected_sequence or type(frame["ok"]) is not bool:
+                                raise RuntimeError("invalid broker stream end")
+                            if not frame["ok"]:
+                                self.close_connection = True
+                                completed = True
+                                return
+                            if no_body:
+                                completed = True
+                                return
+                            self.wfile.write(b"0\r\n\r\n")
+                            self.wfile.flush()
+                            completed = True
+                            return
+                        else:
+                            raise RuntimeError("invalid broker stream frame")
+                else:
+                    if evidence.st_size > 8388608:
+                        raise RuntimeError("invalid broker response")
+                    raw = b""
+                    while len(raw) <= 8388608:
+                        chunk = os.read(response_fd, 65536)
+                        if not chunk: break
+                        raw += chunk
+                    after = os.fstat(response_fd)
+                    if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) != (evidence.st_dev, evidence.st_ino, evidence.st_size, evidence.st_mtime_ns, evidence.st_ctime_ns):
+                        raise RuntimeError("broker response changed")
+                    response = json.loads(raw.decode("utf-8"))
+                    data = base64.b64decode(response["body"], validate=True)
+                    self.send_response(int(response["status"]))
+                    for key, item in response.get("headers", {}).items():
+                        if key.lower() in ("content-type", "cache-control"):
+                            self.send_header(key, str(item))
+                    self.send_header("content-length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    completed = True
             finally:
                 os.close(response_fd)
-            response = json.loads(raw.decode("utf-8"))
-            data = base64.b64decode(response["body"], validate=True)
-            self.send_response(int(response["status"]))
-            for key, item in response.get("headers", {}).items():
-                if key.lower() in ("content-type", "cache-control"):
-                    self.send_header(key, str(item))
-            self.send_header("content-length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError, RuntimeError):
-            try:
-                self.send_error(502)
-            except OSError:
-                pass
+            if response_started:
+                self.close_connection = True
+            else:
+                try:
+                    self.send_error(502)
+                except OSError:
+                    pass
+        finally:
+            if request_published and not completed and request_id is not None:
+                publish_cancellation(request_id)
     do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = _run
 
 class BoundedServer(http.server.ThreadingHTTPServer):
