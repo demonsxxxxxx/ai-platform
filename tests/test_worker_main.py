@@ -1824,9 +1824,9 @@ async def test_escaped_terminalization_rejects_stale_owner_or_fence_before_trans
 
 
 @pytest.mark.asyncio
-async def test_escaped_terminalization_rolls_back_when_fence_changes_after_terminal_write(monkeypatch):
+async def test_escaped_terminalization_keeps_redis_lease_checks_outside_transaction(monkeypatch):
     calls = []
-    statuses = iter(("current", "current", "reconciliation_fenced"))
+    transaction_open = False
     payload = SimpleNamespace(
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -1841,17 +1841,24 @@ async def test_escaped_terminalization_rolls_back_when_fence_changes_after_termi
 
     class Transaction:
         async def __aenter__(self):
+            nonlocal transaction_open
+            transaction_open = True
             calls.append(("tx_enter",))
             return object()
 
         async def __aexit__(self, exc_type, _exc, _tb):
-            calls.append(("tx_rollback", exc_type is worker_main._EscapedTerminalizationOwnershipLost))
+            nonlocal transaction_open
+            calls.append(("tx_exit", exc_type))
+            transaction_open = False
             return False
 
     async def verify(*_args, **_kwargs):
-        return LeaseMutationOutcome(next(statuses))
+        calls.append(("verify", transaction_open))
+        assert not transaction_open
+        return LeaseMutationOutcome("current")
 
     async def get_run(*_args, **_kwargs):
+        calls.append(("run_lock", transaction_open))
         return {
             "id": "run-a",
             "tenant_id": "tenant-a",
@@ -1859,13 +1866,14 @@ async def test_escaped_terminalization_rolls_back_when_fence_changes_after_termi
             "user_id": "user-a",
             "session_id": "session-a",
             "agent_id": "agent-a",
+            "execution_kind": "skill",
             "skill_id": "skill-a",
             "status": "running",
         }
 
     async def fail_run(*_args, **_kwargs):
-        calls.append(("terminal_write",))
-        return RunTerminalizationProgress(True, "failed", True, True)
+        calls.append(("terminal_write", transaction_open))
+        return RunTerminalizationProgress(True, "failed", True, False)
 
     monkeypatch.setattr(
         worker_main,
@@ -1877,15 +1885,21 @@ async def test_escaped_terminalization_rolls_back_when_fence_changes_after_termi
     monkeypatch.setattr(worker_main.repositories, "get_run", get_run)
     monkeypatch.setattr(worker_main.repositories, "fail_run", fail_run)
 
-    with pytest.raises(worker_main._EscapedTerminalizationOwnershipLost):
-        await worker_main._terminalize_escaped_process_exception(
-            message,
-            "worker-a",
-            RuntimeError("boom"),
-            v4_capabilities=_TEST_V4_CAPABILITIES,
-        )
+    outcome = await worker_main._terminalize_escaped_process_exception(
+        message,
+        "worker-a",
+        RuntimeError("boom"),
+        v4_capabilities=_TEST_V4_CAPABILITIES,
+    )
 
-    assert calls == [("tx_enter",), ("terminal_write",), ("tx_rollback", True)]
+    assert outcome.status == "failed"
+    assert calls == [
+        ("verify", False),
+        ("tx_enter",),
+        ("run_lock", True),
+        ("terminal_write", True),
+        ("tx_exit", None),
+    ]
 
 
 @pytest.mark.asyncio

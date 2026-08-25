@@ -543,8 +543,6 @@ async def _terminalize_escaped_process_exception(
     if not (await queue.verify_lease_ownership(message, worker_id=worker_id)).succeeded:
         return _queue_ownership_lost_outcome(run_id)
     async with transaction() as conn:
-        if not (await queue.verify_lease_ownership(message, worker_id=worker_id)).succeeded:
-            return _queue_ownership_lost_outcome(run_id)
         locked_run = await repositories.get_run(
             conn,
             tenant_id=payload.tenant_id,
@@ -579,8 +577,6 @@ async def _terminalize_escaped_process_exception(
             return WorkerOutcome("dead_letter", run_id, error_code, error_message)
         current_status = str(locked_run.get("status") or "")
         if current_status in {"succeeded", "failed", "cancelled"}:
-            if not (await queue.verify_lease_ownership(message, worker_id=worker_id)).succeeded:
-                return _queue_ownership_lost_outcome(run_id)
             return WorkerOutcome(
                 current_status,
                 run_id,
@@ -612,8 +608,6 @@ async def _terminalize_escaped_process_exception(
                 error_message=error_message,
                 result_json={"message": "Worker processing failed unexpectedly."},
             )
-        if not (await queue.verify_lease_ownership(message, worker_id=worker_id)).succeeded:
-            raise _EscapedTerminalizationOwnershipLost(run_id)
 
     if progress is None or not progress.is_terminal():
         progress = await drain_run_tool_permission_terminalization(
@@ -649,10 +643,6 @@ async def _terminalize_escaped_process_exception(
             error_message if terminal_status == "failed" else None,
         )
     return WorkerOutcome("dead_letter", run_id, error_code, error_message)
-
-
-class _EscapedTerminalizationOwnershipLost(RuntimeError):
-    """Abort the SQL transaction when its queue lease proof becomes stale."""
 
 
 def _queue_ownership_lost_outcome(run_id: str | None) -> WorkerOutcome:
@@ -730,8 +720,6 @@ async def run_once(
                     exc,
                     v4_capabilities=v4_capabilities,
                 )
-            except _EscapedTerminalizationOwnershipLost:
-                return _queue_ownership_lost_outcome(message.payload.get("run_id"))
             except Exception:
                 logger.exception(
                     "Worker process exception terminalization failed",
