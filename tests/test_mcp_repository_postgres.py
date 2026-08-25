@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from app.bootstrap.mcp import _McpRuntimeServices
 from app.mcp.infrastructure import postgres as mcp_postgres
 
 
@@ -40,17 +41,53 @@ def test_fresh_schema_and_repository_have_no_gateway_catalog_persistence_path():
 
 
 @pytest.mark.asyncio
-async def test_run_context_reader_returns_only_the_opaque_context_id():
-    conn = _RelayConnection({"mcp_context_id": "mcpctx-run-a"})
+async def test_mcp_distribution_upsert_reuses_platform_lifecycle_authority(monkeypatch):
+    observed = {}
 
-    context_id = await mcp_postgres.get_run_mcp_context_id(
+    async def upsert(conn, **kwargs):
+        observed.update(conn=conn, kwargs=kwargs)
+        return {"capability_id": kwargs["capability_id"], "status": kwargs["status"]}
+
+    monkeypatch.setattr(
+        "app.repositories.upsert_capability_distribution_row",
+        upsert,
+    )
+    result = await _McpRuntimeServices.upsert_distribution(
+        object(),
+        "connection",
+        tenant_id="tenant-a",
+        capability_id="gateway",
+        status="active",
+        visible_to_user=True,
+        scope_mode="allowlist",
+        department_ids=[],
+        allowed_roles=[],
+        metadata_json={},
+        updated_by="admin-a",
+    )
+
+    assert result == {"capability_id": "gateway", "status": "active"}
+    assert observed["conn"] == "connection"
+    assert observed["kwargs"]["capability_kind"] == "mcp_server"
+
+
+@pytest.mark.asyncio
+async def test_run_identity_reader_returns_only_grant_cleanup_identity():
+    conn = _RelayConnection(
+        {"tenant_id": "tenant-a", "user_id": "user-a", "run_id": "run-a"}
+    )
+
+    identity = await mcp_postgres.get_run_mcp_identity(
         conn,
         tenant_id="tenant-a",
         run_id="run-a",
     )
 
-    assert context_id == "mcpctx-run-a"
-    assert conn.sql == "select mcp_context_id from runs where tenant_id = %s and id = %s"
+    assert identity == {"tenant_id": "tenant-a", "user_id": "user-a", "run_id": "run-a"}
+    assert conn.sql == (
+        "select tenant_id, user_id, id as run_id from runs "
+        "where tenant_id = %s and id = %s"
+    )
     assert conn.params == ("tenant-a", "run-a")
 
 

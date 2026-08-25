@@ -21,13 +21,13 @@ from app.control_plane_contracts import sanitize_public_payload, standard_trace_
 from app.db import transaction
 from app.mcp.api import (
     GatewayRevisions,
+    LiveMcpServerResult,
     MCP_CACHE_INVALIDATION_TOKEN_HEADER,
     McpRuntimeContextError,
     create_host_mcp_relay,
     delete_mcp_server_registry,
-    discard_unbound_mcp_runtime_context,
     get_mcp_relay_auth_failure_limiter,
-    get_mcp_runtime_context_manager,
+    get_mcp_run_capability_manager,
     get_live_mcp_catalog,
     list_mcp_server_registry,
     normalize_static_mcp_headers,
@@ -46,10 +46,11 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 MCP_LIFECYCLE_CONTRACT_VERSION = "ai-platform.mcp-lifecycle.v1"
+MCP_CHAT_DISCOVERY_CONCURRENCY = 8
 
 
 LIVE_MCP_CATALOG = get_live_mcp_catalog()
-MCP_RUNTIME_CONTEXT_MANAGER = get_mcp_runtime_context_manager()
+MCP_RUN_CAPABILITY_MANAGER = get_mcp_run_capability_manager()
 MCP_RELAY_AUTH_FAILURE_LIMITER = get_mcp_relay_auth_failure_limiter()
 HostMcpRelay = create_host_mcp_relay
 
@@ -479,17 +480,29 @@ async def _chat_tool_catalog(principal: AuthPrincipal) -> tuple[list[dict[str, A
         jwt = await read_mcp_principal_jwt(principal)
     except McpRuntimeContextError:
         return [], [{"label": server_id, "reason": "authorization_required"} for server_id in server_ids]
-    results = await asyncio.gather(
-        *(
-            LIVE_MCP_CATALOG.list_server_tools(
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
-                server_id=server_id,
-                jwt=jwt,
-            )
-            for server_id in server_ids
-        )
-    )
+    semaphore = asyncio.Semaphore(MCP_CHAT_DISCOVERY_CONCURRENCY)
+
+    async def discover(server_id: str) -> LiveMcpServerResult:
+        async with semaphore:
+            try:
+                return await LIVE_MCP_CATALOG.list_server_tools(
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    server_id=server_id,
+                    jwt=jwt,
+                )
+            except Exception as exc:  # noqa: BLE001 - one server cannot fail the catalog.
+                logger.warning(
+                    "mcp_chat_tool_discovery_failed",
+                    extra={
+                        "tenant_id": principal.tenant_id,
+                        "server_id": server_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                return LiveMcpServerResult(server_id, (), "discovery_failed")
+
+    results = await asyncio.gather(*(discover(server_id) for server_id in server_ids))
     tools = [tool.public_payload() for result in results for tool in result.tools]
     tools.sort(key=lambda item: (str(item["server"]), str(item["label"])))
     unavailable = [
@@ -717,39 +730,6 @@ async def invalidate_mcp_tool_cache(
     }
 
 
-@router.post("/mcp/runtime-contexts")
-@router.post("/ai/mcp/runtime-contexts")
-async def create_mcp_runtime_context(
-    response: Response,
-    principal: AuthPrincipal = Depends(require_principal),
-) -> dict[str, Any]:
-    """Create one opaque MCP-only context from the Principal's stored JWT."""
-
-    try:
-        company_jwt = await read_mcp_principal_jwt(principal)
-        result = await MCP_RUNTIME_CONTEXT_MANAGER.create_context(
-            principal=principal,
-            bearer_jwt=f"Bearer {company_jwt}",
-        )
-    except McpRuntimeContextError as exc:
-        raise _mcp_runtime_http_error(exc) from exc
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Pragma"] = "no-cache"
-    return result
-
-
-@router.delete("/mcp/runtime-contexts/{context_id}", status_code=204)
-@router.delete("/ai/mcp/runtime-contexts/{context_id}", status_code=204)
-async def discard_mcp_runtime_context(
-    context_id: str,
-    principal: AuthPrincipal = Depends(require_principal),
-) -> Response:
-    """Best-effort discard without revealing context existence or ownership."""
-
-    await discard_unbound_mcp_runtime_context(context_id, principal)
-    return Response(status_code=204)
-
-
 @router.post("/mcp/relay/{server_id}", response_model=None)
 @router.post("/ai/mcp/relay/{server_id}", response_model=None)
 async def relay_mcp_jsonrpc(
@@ -772,7 +752,7 @@ async def relay_mcp_jsonrpc(
             source_fingerprint=source_fingerprint,
             capability_fingerprint=capability_fingerprint,
         )
-        relay = HostMcpRelay(context_manager=MCP_RUNTIME_CONTEXT_MANAGER)
+        relay = HostMcpRelay(capability_manager=MCP_RUN_CAPABILITY_MANAGER)
         result = await relay.forward(
             capability_token=capability or "",
             server_id=server_id,
@@ -1017,7 +997,12 @@ async def discover_mcp_tools(
         }
         for tool in result.tools
     ]
-    return {"server_name": safe_name, "tools": tools, "count": len(tools)}
+    return {
+        "server_name": safe_name,
+        "tools": tools,
+        "count": len(tools),
+        "unavailable_reason": result.unavailable_reason,
+    }
 
 
 @router.patch("/mcp/{name}/tools/{tool_name}")

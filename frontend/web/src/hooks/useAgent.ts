@@ -98,10 +98,6 @@ import {
 import { dispatchSessionTitleUpdated } from "../utils/sessionTitleEvents";
 import { ApiRequestError } from "../services/api/fetch";
 import {
-  discardMcpRuntimeContext,
-  prepareMcpRuntimeContext,
-} from "../services/api/mcpRuntime";
-import {
   SELECTED_SKILL_RECOVERABLE_CODES,
   type SelectedSkillRecoverableCode,
 } from "./useSelectedSkillTask";
@@ -2107,19 +2103,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           return { status: "failed" };
         }
 
-        const mcpContextId = await prepareMcpRuntimeContext({
-          selectedMcpToolIds,
-          profileSelected: selectedAgentProfileForRequest !== null,
-        });
         if (
           submissionTokenRef.current !== submissionToken ||
           submissionAuthIncarnationFenceRef.current !== null ||
           authScopeRef.current !== submissionOwner ||
           !isCurrentRequestSession()
         ) {
-          const discardUnusedContext = mcpContextId
-            ? discardMcpRuntimeContext(mcpContextId)
-            : Promise.resolve();
           handoffActivePreAdmissionSubmission({
             expectedToken: submissionToken,
             requireCurrentToken: true,
@@ -2130,7 +2119,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           if (submissionTokenRef.current === submissionToken) {
             isSendingRef.current = false;
           }
-          await discardUnusedContext;
           return { status: "failed" };
         }
         const submitData: ChatStreamResponse = await sessionApi.submitChat(
@@ -2145,7 +2133,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           requestAgentId,
           selectedMcpToolIds,
           selectedAgentProfileForRequest,
-          mcpContextId,
         );
 
         if (!isCurrentRequestSession()) {

@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 import json
 from types import SimpleNamespace
@@ -771,6 +772,74 @@ def test_chat_mcp_catalog_missing_or_expired_jwt_never_uses_catalog_cache(monkey
     assert {item["reason"] for item in payload["unavailable"]} == {"authorization_required"}
 
 
+@pytest.mark.asyncio
+async def test_chat_mcp_catalog_bounds_concurrency_and_isolates_server_failure(monkeypatch):
+    from app.routes import mcp
+
+    server_ids = [f"gateway-{index}" for index in range(10)]
+    active = 0
+    maximum_active = 0
+    release = asyncio.Event()
+    all_started = asyncio.Event()
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def list_servers(_conn, **_kwargs):
+        return [{"name": server_id} for server_id in server_ids]
+
+    async def list_distributions(_conn, **_kwargs):
+        return []
+
+    class Catalog:
+        async def list_server_tools(self, *, server_id, **_kwargs):
+            nonlocal active, maximum_active
+            active += 1
+            maximum_active = max(maximum_active, active)
+            if active == mcp.MCP_CHAT_DISCOVERY_CONCURRENCY:
+                all_started.set()
+            try:
+                await release.wait()
+                if server_id == "gateway-0":
+                    raise RuntimeError("one server failed")
+                return LiveMcpServerResult(server_id, ())
+            finally:
+                active -= 1
+
+    monkeypatch.setattr(mcp, "transaction", fake_transaction)
+    monkeypatch.setattr(mcp, "list_mcp_server_registry", list_servers)
+    monkeypatch.setattr(mcp.repositories, "list_capability_distribution_rows", list_distributions)
+    monkeypatch.setattr(
+        mcp,
+        "authorized_mcp_registration_entries",
+        lambda **_kwargs: [{"name": server_id} for server_id in server_ids],
+    )
+
+    async def read_jwt(_principal):
+        return "jwt"
+
+    monkeypatch.setattr(mcp, "read_mcp_principal_jwt", read_jwt)
+    monkeypatch.setattr(mcp, "LIVE_MCP_CATALOG", Catalog())
+
+    task = asyncio.create_task(
+        mcp._chat_tool_catalog(
+            mcp.AuthPrincipal(
+                user_id="user-a",
+                display_name="User A",
+                tenant_id="tenant-a",
+            )
+        )
+    )
+    await asyncio.wait_for(all_started.wait(), timeout=1)
+    assert maximum_active == mcp.MCP_CHAT_DISCOVERY_CONCURRENCY
+    release.set()
+    tools, unavailable = await task
+
+    assert tools == []
+    assert unavailable == [{"label": "gateway-0", "reason": "discovery_failed"}]
+
+
 def test_explicit_catalog_sync_route_is_removed(monkeypatch):
     calls = install_mcp_route_fakes(monkeypatch)
     client = TestClient(create_app())
@@ -842,6 +911,7 @@ def test_mcp_read_contract_bounds_ordinary_catalog_and_keeps_tool_discovery(monk
             }
         ],
         "count": 1,
+        "unavailable_reason": None,
     }
     assert calls[0][1]["tenant_id"] == "default"
 
@@ -1399,40 +1469,18 @@ def test_mcp_lifecycle_rejects_blank_roles_before_repository_writes(monkeypatch,
     )
 
 
-def test_runtime_context_discard_requires_principal_and_is_opaque(monkeypatch):
-    from app.routes import mcp as mcp_routes
-
+def test_runtime_context_creation_and_discard_routes_are_removed(monkeypatch):
     install_mcp_route_fakes(monkeypatch)
-    calls = []
-
-    async def discard(context_id, principal):
-        calls.append((context_id, principal.user_id, principal.tenant_id))
-
-    monkeypatch.setattr(
-        mcp_routes,
-        "discard_unbound_mcp_runtime_context",
-        discard,
-    )
     client = TestClient(create_app())
 
-    unauthorized = client.delete("/api/ai/mcp/runtime-contexts/mcpctx-owned")
-    owned = client.delete(
-        "/api/ai/mcp/runtime-contexts/mcpctx-owned",
-        headers=headers(),
+    assert client.post("/api/ai/mcp/runtime-contexts", headers=headers()).status_code == 404
+    assert (
+        client.delete(
+            "/api/ai/mcp/runtime-contexts/mcpctx-owned",
+            headers=headers(),
+        ).status_code
+        == 404
     )
-    missing = client.delete(
-        "/api/ai/mcp/runtime-contexts/mcpctx-missing",
-        headers=headers(),
-    )
-
-    assert unauthorized.status_code == 401
-    assert owned.status_code == 204
-    assert missing.status_code == 204
-    assert owned.content == missing.content == b""
-    assert calls == [
-        ("mcpctx-owned", "ordinary", "default"),
-        ("mcpctx-missing", "ordinary", "default"),
-    ]
 
 
 def test_mcp_lifecycle_validation_errors_do_not_echo_secret_inputs(monkeypatch):

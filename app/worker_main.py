@@ -29,9 +29,8 @@ from app.control_plane_contracts import (
 from app.data_retention import run_data_retention_maintenance
 from app.db import transaction
 from app.mcp.api import (
-    invalidate_committed_terminal_run_mcp_context,
-    invalidate_terminal_mcp_runtime_context,
-    persisted_mcp_context_id,
+    release_committed_terminal_mcp_run_grant,
+    release_terminal_mcp_run_grant,
 )
 from app.executors.registry import AdapterRegistry
 from app.executor_reconciler import run_executor_terminal_reconciler
@@ -275,7 +274,7 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
             max_batches=4,
         )
         if outcome is not None and outcome.completed and outcome.is_terminal():
-            await invalidate_committed_terminal_run_mcp_context(
+            await release_committed_terminal_mcp_run_grant(
                 tenant_id=tenant_id,
                 run_id=run_id,
                 status=outcome.status,
@@ -305,7 +304,7 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
         run_id = str(candidate.get("run_id") or "")
         if not tenant_id or not run_id:
             continue
-        await invalidate_committed_terminal_run_mcp_context(
+        await release_committed_terminal_mcp_run_grant(
             tenant_id=tenant_id,
             run_id=run_id,
             status=candidate.get("status"),
@@ -454,7 +453,7 @@ async def reconcile_stale_runs_for_worker(
                             {"tenant_id": tenant_id, "run_id": run_id, "status": "fence_renewal_failed", "did_transition": False}
                         )
                         continue
-                    await invalidate_committed_terminal_run_mcp_context(
+                    await release_committed_terminal_mcp_run_grant(
                         tenant_id=tenant_id,
                         run_id=run_id,
                         status=outcome.status,
@@ -523,7 +522,6 @@ async def _terminalize_escaped_process_exception(
     error_message = sanitize_public_text(str(exc)) or "Worker processing failed unexpectedly."
     progress = None
     committed_terminal_outcome: WorkerOutcome | None = None
-    terminal_mcp_context_id: str | None = None
     if not (await queue.verify_lease_ownership(message, worker_id=worker_id)).succeeded:
         return _queue_ownership_lost_outcome(run_id)
     async with transaction() as conn:
@@ -537,7 +535,6 @@ async def _terminalize_escaped_process_exception(
         )
         if locked_run is None:
             return WorkerOutcome("dead_letter", run_id, error_code, error_message)
-        terminal_mcp_context_id = persisted_mcp_context_id(locked_run)
         locked_identity = {
             "tenant_id": str(locked_run.get("tenant_id") or ""),
             "workspace_id": str(locked_run.get("workspace_id") or ""),
@@ -596,8 +593,10 @@ async def _terminalize_escaped_process_exception(
                 raise _EscapedTerminalizationOwnershipLost(run_id)
 
     if committed_terminal_outcome is not None:
-        await invalidate_terminal_mcp_runtime_context(
-            terminal_mcp_context_id,
+        await release_terminal_mcp_run_grant(
+            tenant_id=payload.tenant_id,
+            user_id=payload.user_id,
+            run_id=payload.run_id,
             status=committed_terminal_outcome.status,
         )
         return committed_terminal_outcome
@@ -624,8 +623,10 @@ async def _terminalize_escaped_process_exception(
             )
     if progress is not None and progress.is_terminal():
         terminal_status = str(progress.status)
-        await invalidate_terminal_mcp_runtime_context(
-            terminal_mcp_context_id,
+        await release_terminal_mcp_run_grant(
+            tenant_id=payload.tenant_id,
+            user_id=payload.user_id,
+            run_id=payload.run_id,
             status=terminal_status,
         )
         return WorkerOutcome(

@@ -157,45 +157,6 @@ async def delete_mcp_server_registry(
     return _server_projection(dict(row))
 
 
-async def upsert_mcp_distribution(conn: Any, **values: Any) -> dict[str, Any]:
-    cursor = await conn.execute(
-        """
-        insert into tenant_capability_distributions(
-          id, tenant_id, capability_kind, capability_id, status, visible_to_user,
-          scope_mode, department_ids, allowed_roles, metadata_json, updated_by, updated_at
-        )
-        values (%s, %s, 'mcp_server', %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, now())
-        on conflict (tenant_id, capability_kind, capability_id) do update
-        set status = excluded.status,
-            visible_to_user = excluded.visible_to_user,
-            scope_mode = excluded.scope_mode,
-            department_ids = excluded.department_ids,
-            allowed_roles = excluded.allowed_roles,
-            metadata_json = excluded.metadata_json,
-            updated_by = excluded.updated_by,
-            updated_at = now()
-        returning id, tenant_id, capability_kind, capability_id, status, visible_to_user,
-          scope_mode, department_ids, allowed_roles, metadata_json, updated_by, created_at, updated_at
-        """,
-        (
-            f"capdist-{uuid.uuid4().hex}",
-            values["tenant_id"],
-            values["capability_id"],
-            values["status"],
-            values["visible_to_user"],
-            values["scope_mode"],
-            values["department_ids"],
-            json.dumps(values["allowed_roles"], ensure_ascii=False),
-            json.dumps(values["metadata_json"], ensure_ascii=False),
-            values["updated_by"],
-        ),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        raise RepositoryConflictError("capability_distribution_conflict")
-    return dict(row)
-
-
 async def toggle_mcp_distribution(
     conn: Any,
     *,
@@ -295,46 +256,26 @@ async def get_mcp_relay_target(
     return {**dict(row), "active_tool_names": []}
 
 
-async def bind_run_mcp_context(
+async def get_run_mcp_identity(
     conn: Any,
     *,
     tenant_id: str,
     run_id: str,
-    mcp_context_id: str,
-) -> None:
-    """Persist only the opaque context ID after admission has bound it to a Run."""
-
-    await conn.execute(
-        """
-        update runs
-        set mcp_context_id = %s,
-            input_json = jsonb_set(
-              coalesce(input_json, '{}'::jsonb),
-              '{mcp_context_id}',
-              to_jsonb(%s::text),
-              true
-            )
-        where tenant_id = %s and id = %s
-        """,
-        (mcp_context_id, mcp_context_id, tenant_id, run_id),
-    )
-
-
-async def get_run_mcp_context_id(
-    conn: Any,
-    *,
-    tenant_id: str,
-    run_id: str,
-) -> str | None:
-    """Read only the opaque context ID for one exact Run."""
+) -> dict[str, str] | None:
+    """Read the authoritative identity needed to retire a Run grant."""
 
     cursor = await conn.execute(
-        "select mcp_context_id from runs where tenant_id = %s and id = %s",
+        "select tenant_id, user_id, id as run_id from runs where tenant_id = %s and id = %s",
         (tenant_id, run_id),
     )
     row = await cursor.fetchone()
-    context_id = row.get("mcp_context_id") if row is not None else None
-    return str(context_id) if isinstance(context_id, str) and context_id else None
+    if row is None:
+        return None
+    return {
+        "tenant_id": str(row["tenant_id"]),
+        "user_id": str(row["user_id"]),
+        "run_id": str(row["run_id"]),
+    }
 
 
 class PostgresMcpRelayTargetReader:

@@ -22,7 +22,7 @@ class _McpRuntimeServices:
             redis_provider=get_redis_client,
             relay_target_reader=target_reader,
         )
-        self.context_manager = mcp_runtime.get_mcp_runtime_context_manager()
+        self.capability_manager = mcp_runtime.get_mcp_run_capability_manager()
         self.live_catalog = LiveMcpCatalogService(
             redis_provider=get_redis_client,
             target_resolver=mcp_runtime.resolve_registered_mcp_target,
@@ -39,9 +39,10 @@ class _McpRuntimeServices:
             service_token=str(get_settings().mcp_gateway_service_token),
         )
 
-    def create_host_relay(self, *, context_manager: Any | None = None) -> Any:
+    def create_host_relay(self, *, capability_manager: Any | None = None) -> Any:
         return mcp_runtime.HostMcpRelay(
-            context_manager=context_manager or self.context_manager,
+            capability_manager=capability_manager or self.capability_manager,
+            principal_jwt_store=self.principal_jwt_store,
         )
 
     def seal_server_credentials(self, **kwargs: Any) -> str:
@@ -56,11 +57,8 @@ class _McpRuntimeServices:
     async def record_server_credential(self, conn: Any, **kwargs: Any) -> None:
         await mcp_postgres.record_mcp_server_credential(conn, **kwargs)
 
-    async def bind_run_context(self, conn: Any, **kwargs: Any) -> None:
-        await mcp_postgres.bind_run_mcp_context(conn, **kwargs)
-
-    async def get_run_context_id(self, conn: Any, **kwargs: Any) -> str | None:
-        return await mcp_postgres.get_run_mcp_context_id(conn, **kwargs)
+    async def get_run_identity(self, conn: Any, **kwargs: Any) -> dict[str, str] | None:
+        return await mcp_postgres.get_run_mcp_identity(conn, **kwargs)
 
     async def list_server_registry(self, conn: Any, **kwargs: Any) -> list[dict[str, Any]]:
         return await mcp_postgres.list_mcp_server_registry(conn, **kwargs)
@@ -75,7 +73,13 @@ class _McpRuntimeServices:
         return await mcp_postgres.delete_mcp_server_registry(conn, **kwargs)
 
     async def upsert_distribution(self, conn: Any, **kwargs: Any) -> dict[str, Any]:
-        return await mcp_postgres.upsert_mcp_distribution(conn, **kwargs)
+        from app import repositories
+
+        return await repositories.upsert_capability_distribution_row(
+            conn,
+            capability_kind="mcp_server",
+            **kwargs,
+        )
 
     async def toggle_distribution(self, conn: Any, **kwargs: Any) -> dict[str, Any]:
         return await mcp_postgres.toggle_mcp_distribution(conn, **kwargs)

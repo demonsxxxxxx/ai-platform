@@ -227,7 +227,11 @@ async def test_base_schema_ledger_advances_to_terminal_reconciliation_schema():
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.23.1"
+    schema = " ".join(schema_migrations.schema_sql().split()).lower()
+
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.25.1"
+    assert "mcp_context_id text" not in schema
+    assert "drop column if exists mcp_context_id" not in schema
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -273,12 +277,6 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "sessions",
         "chk_sessions_title_source",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
-    assert (
-        "runs",
-        "mcp_context_id",
-        "text",
-        False,
-    ) in schema_migrations.CRITICAL_COLUMNS
     assert (
         "mcp_server_credentials",
         "credential_envelope",
@@ -653,7 +651,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "e44a0bf9d29f3de007be177e9b507457270a2eefa01e15c5576f8011ec79b2b4"
+        "41cb483fe7401ca41e787f302f113d653613d8c15d1d88482e86deeea3fb7680"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

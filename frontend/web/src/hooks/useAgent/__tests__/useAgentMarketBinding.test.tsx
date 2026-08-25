@@ -4,7 +4,6 @@ import test from "node:test";
 import type { UseAgentReturn } from "../types.ts";
 import { ApiRequestError } from "../../../services/api/fetch.ts";
 import { Permission } from "../../../types/auth.ts";
-import { installSuccessfulMcpRuntimeContext } from "./mcpRuntimeTestHarness.ts";
 
 type Listener = (event: { type: string; [key: string]: unknown }) => void;
 
@@ -309,9 +308,6 @@ test("useAgent forwards only an explicit Agent profile without inheriting it", a
   } as const;
 
   const harness = await loadHarness();
-  const mcpRuntime = installSuccessfulMcpRuntimeContext(
-    "mcpctx-explicit-profile",
-  );
   const submissions: unknown[][] = [];
   sessionApi.markRead = async () => {};
   sessionApi.submitChat = (async (...args) => {
@@ -339,7 +335,6 @@ test("useAgent forwards only an explicit Agent profile without inheriting it", a
 
     assert.equal(firstOutcome?.status, "accepted");
     assert.deepEqual(submissions[0]?.[10], selectedAgentProfile);
-    assert.equal(submissions[0]?.[11], "mcpctx-explicit-profile-1");
 
     let secondOutcome: { status: string } | undefined;
     await harness.act(async () => {
@@ -350,15 +345,9 @@ test("useAgent forwards only an explicit Agent profile without inheriting it", a
     assert.equal(secondOutcome?.status, "accepted");
     assert.equal(submissions.length, 2);
     assert.equal(submissions[1]?.[10], null);
-    assert.equal(submissions[1]?.[11], undefined);
-    assert.deepEqual(mcpRuntime.contextIds, ["mcpctx-explicit-profile-1"]);
   } finally {
     try {
-      try {
-        await harness.cleanup();
-      } finally {
-        mcpRuntime.restore();
-      }
+      await harness.cleanup();
     } finally {
       sessionApi.submitChat = originalSubmitChat;
       sessionApi.markRead = originalMarkRead;
@@ -408,9 +397,6 @@ test("a recovered Agent Conversation owns every exact selector and fails closed"
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
   const harness = await loadHarness();
-  const mcpRuntime = installSuccessfulMcpRuntimeContext(
-    "mcpctx-bound-profile",
-  );
   const submissions: unknown[][] = [];
   sessionApi.markRead = async () => {};
   let authoritativeMode: "current" | "agent-mismatch" | "rejected" = "current";
@@ -508,8 +494,8 @@ test("a recovered Agent Conversation owns every exact selector and fails closed"
       });
     }
     assert.deepEqual(
-      submissions.slice(0, 2).map((submission) => submission[11]),
-      ["mcpctx-bound-profile-1", "mcpctx-bound-profile-2"],
+      submissions.slice(0, 2).map((submission) => submission.length),
+      [11, 11],
     );
 
     await harness.act(async () => {
@@ -537,11 +523,7 @@ test("a recovered Agent Conversation owns every exact selector and fails closed"
     assert.deepEqual(submissions[2]?.[2], { model_id: "generic-model" });
     assert.deepEqual(submissions[2]?.[4], []);
     assert.equal(submissions[2]?.[10], null);
-    assert.equal(submissions[2]?.[11], undefined);
-    assert.deepEqual(mcpRuntime.contextIds, [
-      "mcpctx-bound-profile-1",
-      "mcpctx-bound-profile-2",
-    ]);
+    assert.equal(submissions[2]?.length, 11);
 
     authoritativeMode = "agent-mismatch";
     await harness.act(async () => {
@@ -560,11 +542,7 @@ test("a recovered Agent Conversation owns every exact selector and fails closed"
     assert.equal(submissions.length, 3);
   } finally {
     try {
-      try {
-        await harness.cleanup();
-      } finally {
-        mcpRuntime.restore();
-      }
+      await harness.cleanup();
     } finally {
       sessionApi.submitChat = originalSubmitChat;
       sessionApi.markRead = originalMarkRead;

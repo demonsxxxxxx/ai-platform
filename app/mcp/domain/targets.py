@@ -53,3 +53,20 @@ def mcp_targets_from_policy_subjects(
             continue
         targets.setdefault(server_id, []).append(tool_name)
     return normalize_mcp_targets(targets)
+
+
+def mcp_targets_from_reconciliation_snapshot(
+    value: object,
+) -> dict[str, tuple[str, ...]]:
+    """Read only canonical MCP subjects from a persisted v1/v2 Run snapshot."""
+
+    if not isinstance(value, dict):
+        return {}
+    execution_payload = value.get("execution_payload")
+    persisted_payload = execution_payload if isinstance(execution_payload, dict) else value
+    run_input = persisted_payload.get("input")
+    if not isinstance(run_input, dict):
+        return {}
+    return mcp_targets_from_policy_subjects(
+        run_input.get("_runtime_tool_policy_subjects")
+    )
