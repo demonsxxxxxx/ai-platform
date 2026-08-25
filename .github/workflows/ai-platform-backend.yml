@@ -494,7 +494,11 @@ jobs:
           }
           cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
           trap cleanup EXIT
-          if ! docker run --detach --name "$container" --publish 127.0.0.1:18020:8020 "$image"; then
+          session_secret="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+          if ! docker run --detach --name "$container" \
+            --env AI_SESSION_SECRET="$session_secret" \
+            --publish 127.0.0.1:18020:8020 \
+            "$image"; then
             emit_bounded_container_diagnostic
             exit 1
           fi
