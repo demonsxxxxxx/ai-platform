@@ -1,6 +1,6 @@
 # ADR 0012: Recoverable Agent-Kernel Event Stream v4
 
-Status: accepted; WP1 protocol contract
+Status: accepted; active v4 wire and runtime contract
 
 Date: 2026-08-17
 
@@ -29,13 +29,12 @@ SSE v4 uses one strict, generated protocol authority at
 library Python `TypedDict` definitions for the internal and public contracts
 and TypeScript types for public application and transport-control events.
 
-WP1 is an additive contract on this unpushed feature branch. Existing active v3
-schema, generator, generated Python module, generated TypeScript module, and
-tests remain in place for current consumers. This temporary source coexistence
-does not authorize runtime negotiation, feature-flag selection, dual
-publication, or a released v3/v4 stack. WP5 performs the release-atomic
-consumer cutover and is the only work package authorized to delete the now-
-unreferenced active v3 artifacts.
+The release-atomic B3 cutover makes v4 the only production wire. Producers,
+durable publication, successor recovery, the SSE gateway, and the frontend
+consumer are composed against the v4 contract. Runtime negotiation, feature-
+flag selection, dual publication, and same-incarnation reconstruction are not
+supported. Historical v3 source remains only where explicitly retained as a
+compatibility artifact with no active production import path.
 
 Public application events use
 `ai-platform.public-run-stream-event.v4`. Each event requires a stable event
@@ -87,20 +86,20 @@ v2.1 remains unchanged and separately versioned.
 
 ## Consequences
 
-The v4 schema can represent recoverable Agent work while retaining the
-platform's existing durability and authorization boundaries. Generated Python
-and TypeScript contracts cannot silently drift from the schema, and transport
-controls cannot consume application ordering. Runtime producers, persistence,
-Redis publication, reducers, and package cutover remain owned by later work
-packages.
+The v4 schema represents recoverable Agent work while retaining the platform's
+existing durability and authorization boundaries. Generated Python and
+TypeScript contracts cannot silently drift from the schema, and transport
+controls do not consume application ordering. Committed public `run_events`
+are published through claim-token-fenced, transaction-external Redis I/O.
+Missing terminal streams recover by building an inactive successor incarnation,
+verifying its persisted receipt and source fingerprint, and atomically
+activating it under the current Run and Attempt authority.
 
-The v4 hard cutover requires coordinated producer, gateway, frontend, and
-packaging changes. WP1 is source-only and additive; WP5 alone performs the
-authorized hard deletion of active v3 after all consumers, gateway, packaging,
-tests, and documentation are integrated. There is no runtime negotiation or
-concurrent v3/v4 publication. Local WP1 checks prove only schema, generator,
-and fixture behavior; runtime recovery, durable publication, and external
-acceptance remain outside this protocol work package.
+The hard cutover coordinates producer admission, durable draining, successor
+activation, gateway replay/live delivery, frontend reduction, packaging, and
+release checks. There is no runtime negotiation or concurrent v3/v4
+publication. A rollback uses the prior reviewed immutable image and never
+interprets v4 cursors or values as v3.
 
 ## Rollback
 

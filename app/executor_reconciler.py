@@ -36,6 +36,7 @@ from app.tool_permission_lifecycle import (
     reconcile_terminalized_permission_run,
 )
 from app.worker import (
+    WorkerV4Capabilities,
     publish_pending_run_terminal,
     reconcile_executor_terminal_result,
 )
@@ -259,6 +260,7 @@ async def _terminalize_reconciliation_failure(
     *,
     claim_token: str,
     logger: logging.Logger,
+    v4_capabilities: WorkerV4Capabilities,
 ) -> None:
     tenant_id = str(lease_row["tenant_id"])
     run_id = str(lease_row["run_id"])
@@ -310,7 +312,7 @@ async def _terminalize_reconciliation_failure(
                 extra={"run_id": run_id},
             )
     await publish_pending_run_terminal(
-        transaction,
+        v4_capabilities,
         tenant_id=tenant_id,
         run_id=run_id,
     )
@@ -358,11 +360,13 @@ async def _finish_terminal_reconciliation_failure(
     claim_token: str,
     error_code: str,
     logger: logging.Logger,
+    v4_capabilities: WorkerV4Capabilities,
 ) -> None:
     await _terminalize_reconciliation_failure(
         lease_row,
         claim_token=claim_token,
         logger=logger,
+        v4_capabilities=v4_capabilities,
     )
     lease = container_lease_from_persisted_row(lease_row)
     if lease is None:
@@ -587,6 +591,7 @@ async def reconcile_pending_executor_terminals_once(
     *,
     registry: AdapterRegistry | None = None,
     worker_id: str | None = None,
+    v4_capabilities: WorkerV4Capabilities | None = None,
     limit: int = _RECONCILIATION_BATCH_SIZE,
 ) -> int:
     claim_token = uuid.uuid4().hex
@@ -643,6 +648,7 @@ async def reconcile_pending_executor_terminals_once(
                         worker_id=worker_id,
                         claim_token=claim_token,
                         transaction_factory=lambda: _claim_connection_transaction(conn),
+                        v4_capabilities=v4_capabilities,
                     )
                 await _release_reconciled_lease(
                     conn,
@@ -687,6 +693,7 @@ async def reconcile_pending_executor_terminals_once(
                     claim_token=claim_token,
                     error_code=error_code,
                     logger=_logger,
+                    v4_capabilities=v4_capabilities,
                 )
             except asyncio.CancelledError:
                 await _release_claimed_terminal_batch(claimed, claim_token)
@@ -715,12 +722,14 @@ async def run_executor_terminal_reconciler(
     *,
     registry: AdapterRegistry | None = None,
     worker_id: str | None = None,
+    v4_capabilities: WorkerV4Capabilities | None = None,
 ) -> None:
     while not stop_event.is_set():
         try:
             await reconcile_pending_executor_terminals_once(
                 registry=registry,
                 worker_id=worker_id,
+                v4_capabilities=v4_capabilities,
             )
             async with transaction() as conn:
                 await cleanup_failed_sandbox_executor_reconciliation_leases(

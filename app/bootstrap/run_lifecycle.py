@@ -11,6 +11,7 @@ from app.runs.application.cancellation import (
     RunTerminalizationProgressor,
 )
 from app.runs.infrastructure.postgres import PostgresRunCancellationPersistence
+from app.settings import get_settings
 from app.streaming.infrastructure.run_v4_events import PostgresRunCancellationEventWriter
 
 
@@ -22,7 +23,9 @@ def build_run_cancellation_use_case() -> RunCancellationUseCase:
             append_audit_log=repositories.append_audit_log,
             list_active_sandbox_leases=repositories.list_active_sandbox_leases_for_run,
         ),
-        event_writer=PostgresRunCancellationEventWriter(),
+        event_writer=PostgresRunCancellationEventWriter(
+            authority_secret=get_settings().ai_session_secret,
+        ),
         progress_terminalization=cast(
             RunTerminalizationProgressor,
             repositories.progress_run_tool_permission_terminalization,

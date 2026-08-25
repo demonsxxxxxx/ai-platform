@@ -97,7 +97,13 @@ async def append_application_v4_row(
         expected_authority_state = (
             "confirmed" if event_type == "run.cancel_requested" else "terminal"
         )
-        if not is_run_domain or authority.state != expected_authority_state:
+        if not is_run_domain or (
+            authority.state != expected_authority_state
+            and not (
+                authority.state == "admission_pending"
+                and event_type in {"run.cancel_requested", "run.cancelled", "run.succeeded", "run.failed"}
+            )
+        ):
             raise V4ProjectionError("v4_run_authority_scope_mismatch")
     else:
         _nonempty(execution_lease_id, "execution_lease_id")
@@ -746,8 +752,20 @@ class V4RedisStreamBridge:
             stream_incarnation=current_stream_incarnation,
         )
         if bounds is None:
-            raise StreamTransportUnavailable("v4_gap_bounds_unavailable")
-        first, last = bounds
+            if reason != "stream_missing":
+                raise StreamTransportUnavailable("v4_gap_bounds_unavailable")
+            earliest_event_id = None
+            latest_event_id = None
+            cursor = StreamCursor(
+                run_id,
+                current_stream_incarnation,
+                "0-0",
+            ).event_id
+        else:
+            first, last = bounds
+            earliest_event_id = first.cursor.redis_id
+            latest_event_id = last.cursor.redis_id
+            cursor = last.cursor.event_id
         envelope = build_v4_control(
             event_id=event_id,
             tenant_scope=tenant_scope_value,
@@ -761,13 +779,13 @@ class V4RedisStreamBridge:
                 "requested_event_id": requested_redis_id,
                 "requested_stream_incarnation": requested_stream_incarnation,
                 "current_stream_incarnation": current_stream_incarnation,
-                "earliest_available_event_id": first.cursor.redis_id,
-                "latest_available_event_id": last.cursor.redis_id,
+                "earliest_available_event_id": earliest_event_id,
+                "latest_available_event_id": latest_event_id,
             },
             source={"kind": "stream_authority", "authority_id": event_id},
             emitted_at=emitted_at,
         )
-        return envelope, last.cursor.event_id
+        return envelope, cursor
 
     async def publish_gap(self, **kwargs: object) -> tuple[dict[str, object], str]:
         envelope, cursor = await self.build_gap(**kwargs)

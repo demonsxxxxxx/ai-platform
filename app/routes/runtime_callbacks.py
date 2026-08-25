@@ -3,7 +3,7 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, Request, status
 
 from app import repositories
 from app.context_manifest import available_context_retrieval_tools
@@ -32,6 +32,11 @@ from app.runtime.sandbox.executor_signals import (
 )
 from app.settings import get_settings
 from app.streaming.api import callback_item_to_v4
+from app.streaming.application.worker_publication_v4 import (
+    WorkerV4Capabilities,
+    admit_v4_stream,
+    publish_pending_v4_events,
+)
 from app.streaming.redis import get_stream_authority
 from app.streaming.v4 import V4ProjectionError, append_callback_v4_rows
 from app.storage import ObjectStorage
@@ -64,6 +69,8 @@ def _executor_callback_receipt(
 
 async def record_executor_callback(
     callback: ExecutorCallbackEvent,
+    *,
+    capabilities: WorkerV4Capabilities,
 ) -> dict[str, object]:
     """Persist one fenced sandbox observation or terminal result."""
 
@@ -247,6 +254,22 @@ async def record_executor_callback(
             run_id=callback.run_id,
             attempt_id=callback.attempt_id,
         )
+    if v4_items:
+        try:
+            await admit_v4_stream(
+                capabilities,
+                tenant_id=tenant_id,
+                run_id=callback.run_id,
+                attempt_id=callback.attempt_id,
+            )
+            await publish_pending_v4_events(
+                capabilities,
+                tenant_id=tenant_id,
+                run_id=callback.run_id,
+                attempt_id=callback.attempt_id,
+            )
+        except Exception:  # noqa: BLE001 - PostgreSQL remains the callback authority.
+            logger.warning("callback_v4_publication_deferred", exc_info=True)
     if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES and lease_id:
         try:
             await publish_executor_terminal_signal()
@@ -348,6 +371,7 @@ def _require_valid_callback_token(
 
 @router.post("/runtime/callbacks/executor")
 async def executor_callback(
+    request: Request,
     callback: ExecutorCallbackEvent,
     callback_token: str | None = Header(default=None, alias="X-AI-Platform-Callback-Token"),
 ) -> dict[str, object]:
@@ -357,7 +381,11 @@ async def executor_callback(
         run_id=callback.run_id,
         attempt_id=callback.attempt_id,
     )
-    return await record_executor_callback(callback)
+    runtime = request.app.state.run_stream_runtime
+    return await record_executor_callback(
+        callback,
+        capabilities=runtime.worker_capabilities,
+    )
 
 
 @router.post("/runtime/callbacks/context-retrieval")

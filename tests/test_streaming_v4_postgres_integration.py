@@ -22,8 +22,13 @@ from app.platform.public_payload import sanitize_public_payload, sanitize_public
 from app.routes import runtime_callbacks
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent
 from app.streaming.application.recovery_v4 import V4SuccessorRebuildReceipt
+from app.streaming.application.worker_publication_v4 import (
+    WorkerV4Capabilities,
+    publish_pending_admissions,
+)
 from app.streaming.api import (
     build_v4_control,
+    activate_v4_successor_rebuild,
     build_v4_successor_rebuild,
     prepare_v4_successor_rebuild,
     publish_claimed_v4_events,
@@ -46,12 +51,16 @@ from app.streaming.v4 import (
 from app.streaming.domain.transport import canonical_json_bytes
 from app.streaming.infrastructure.postgres_v4 import (
     PostgresV4PublicationClaims,
+    PostgresV4SuccessorActivations,
     PostgresV4SuccessorRebuilds,
     V4PublicationAuthorityError,
     V4SuccessorRebuildAuthorityError,
 )
 from app.streaming.infrastructure.redis_v4_rebuild import RedisV4SuccessorRebuildTransport
-from app.streaming.worker_projection import V4RedisPublicationTransport
+from app.streaming.infrastructure.worker_v4 import (
+    PostgresV4PendingAdmissions,
+    RedisV4PublicationTransport,
+)
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
@@ -619,7 +628,7 @@ async def _publish_claimed(
     )
     return await publish_claimed_v4_events(
         claims,
-        V4RedisPublicationTransport(bridge),
+        RedisV4PublicationTransport(bridge),
         tenant_id=tenant,
         run_id=run,
         attempt_id=attempt,
@@ -628,6 +637,92 @@ async def _publish_claimed(
         claim_ttl=claim_ttl,
         retry_delay=timedelta(seconds=5),
     )
+
+
+@pytest.mark.asyncio
+async def test_pending_admission_rolls_back_then_maintenance_publishes_and_confirms():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        def factory():
+            return _connection_factory(dsn, schema_name)
+
+        admissions = PostgresV4PendingAdmissions(
+            factory,
+            authority_secret="test-v4-authority-secret",
+        )
+        async with factory() as conn:
+            await conn.execute(
+                "delete from sse_stream_authorities where tenant_id = %s and run_id = %s",
+                (tenant, run),
+            )
+
+        with pytest.raises(RuntimeError, match="rollback-after-admission"):
+            async with factory() as conn:
+                await admissions.prepare_pending_authority_in_transaction(
+                    conn,
+                    tenant_id=tenant,
+                    run_id=run,
+                    attempt_id=attempt,
+                )
+                raise RuntimeError("rollback-after-admission")
+
+        async with factory() as conn:
+            absent = await conn.execute(
+                "select 1 from sse_stream_authorities where tenant_id = %s and run_id = %s",
+                (tenant, run),
+            )
+            assert await absent.fetchone() is None
+
+        async with factory() as conn:
+            pending = await admissions.prepare_pending_authority_in_transaction(
+                conn,
+                tenant_id=tenant,
+                run_id=run,
+                attempt_id=attempt,
+            )
+
+        client = Redis.from_url(_redis_url(), decode_responses=True)
+        key = stream_key(
+            tenant_scope_value=pending.tenant_scope,
+            run_id=run,
+            stream_incarnation=pending.stream_incarnation,
+        )
+        state_key = f"{key}:state"
+        await client.delete(key, state_key)
+        try:
+            capabilities = WorkerV4Capabilities(
+                authority=object(),
+                pending_admissions=admissions,
+                event_persistence=object(),
+                publication_claims=object(),
+                publication_transport=RedisV4PublicationTransport(
+                    V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+                ),
+            )
+            assert await publish_pending_admissions(capabilities, limit=1) == 1
+            assert await publish_pending_admissions(capabilities, limit=1) == 0
+            assert await client.xlen(key) == 1
+
+            async with factory() as conn:
+                row = await conn.execute(
+                    """
+                    select state, attempt_id, stream_incarnation, open_event_id,
+                           open_payload_digest
+                    from sse_stream_authorities
+                    where tenant_id = %s and run_id = %s
+                    """,
+                    (tenant, run),
+                )
+                authority = await row.fetchone()
+            assert authority == {
+                "state": "confirmed",
+                "attempt_id": attempt,
+                "stream_incarnation": pending.stream_incarnation,
+                "open_event_id": pending.open_event_id,
+                "open_payload_digest": pending.open_payload_digest,
+            }
+        finally:
+            await client.delete(key, state_key)
+            await client.aclose()
 
 
 @pytest.mark.asyncio
@@ -901,7 +996,7 @@ async def test_real_callback_handler_commits_pending_row_before_redis_outage(mon
         )
         assert await publish_claimed_v4_events(
             claims,
-            V4RedisPublicationTransport(FailingPublisher()),
+            RedisV4PublicationTransport(FailingPublisher()),
             tenant_id=tenant,
             run_id=run,
             attempt_id=attempt,
@@ -1321,6 +1416,9 @@ def _receipt_for_successor_claim(claim):
         terminal_event_id=terminal.event_id,
         end_event_id=stream_end_event_id(terminal.event_id),
         last_redis_id=f"1-{len(claim.items) + 1}",
+        item_redis_ids=tuple(
+            f"1-{index}" for index in range(1, len(claim.items) + 1)
+        ),
         last_envelope_bytes=canonical_json_bytes(end),
     )
 
@@ -1342,6 +1440,11 @@ async def test_successor_rebuild_builds_candidate_then_marks_exact_ready() -> No
             tenant_scope_value=f"scope_{tenant[2:]}",
             run_id=run,
             stream_incarnation=3,
+        )
+        successor_key = stream_key(
+            tenant_scope_value=f"scope_{tenant[2:]}",
+            run_id=run,
+            stream_incarnation=4,
         )
         channel = stream_live_channel(
             tenant_scope_value=f"scope_{tenant[2:]}",
@@ -1495,8 +1598,77 @@ async def test_successor_rebuild_builds_candidate_then_marks_exact_ready() -> No
                     "built_through_sequence": captured_claim.source_through_sequence,
                     "item_count": len(captured_claim.items),
                 }
+
+            activations = PostgresV4SuccessorActivations(
+                lambda: _connection_factory(dsn, schema_name)
+            )
+            first_activation = await activate_v4_successor_rebuild(
+                activations, ready
+            )
+            assert first_activation is not None
+            async with _connection_factory(dsn, schema_name) as conn:
+                authority_row = await conn.execute(
+                    """
+                    select stream_incarnation, authorization_epoch
+                    from sse_stream_authorities
+                    where tenant_id = %s and run_id = %s
+                    """,
+                    (tenant, run),
+                )
+                assert await authority_row.fetchone() == {
+                    "stream_incarnation": 3,
+                    "authorization_epoch": 5,
+                }
+                source_rows = await conn.execute(
+                    """
+                    select id, stream_publication_state,
+                           stream_publication_redis_id
+                    from run_events
+                    where tenant_id = %s and run_id = %s
+                      and id in ('evt4_rebuild_delta', 'evt4_rebuild_succeeded')
+                    order by id
+                    """,
+                    (tenant, run),
+                )
+                disposition = await source_rows.fetchall()
+                assert [row["stream_publication_state"] for row in disposition] == [
+                    "published",
+                    "published",
+                ]
+                assert all(row["stream_publication_redis_id"] for row in disposition)
+
+            second_ready = await build_v4_successor_rebuild(
+                rebuilds,
+                real_transport,
+                tenant_id=tenant,
+                run_id=run,
+                attempt_id=attempt,
+                source_incarnation=3,
+                claim_ttl=timedelta(seconds=30),
+            )
+            assert second_ready is not None
+            assert second_ready.successor_incarnation == 4
+            assert second_ready.origin_incarnation == 2
+            assert second_ready.origin_authorization_epoch == 4
+            second_activation = await activate_v4_successor_rebuild(
+                activations, second_ready
+            )
+            assert second_activation is not None
+            async with _connection_factory(dsn, schema_name) as conn:
+                authority_row = await conn.execute(
+                    """
+                    select stream_incarnation, authorization_epoch
+                    from sse_stream_authorities
+                    where tenant_id = %s and run_id = %s
+                    """,
+                    (tenant, run),
+                )
+                assert await authority_row.fetchone() == {
+                    "stream_incarnation": 4,
+                    "authorization_epoch": 6,
+                }
         finally:
-            await client.delete(key, f"{key}:state")
+            await client.delete(key, f"{key}:state", successor_key, f"{successor_key}:state")
             await pubsub.aclose()
             await client.aclose()
 

@@ -838,6 +838,34 @@ async def test_v4_heartbeat_and_gap_use_real_retained_cursor_bounds() -> None:
 
 
 @pytest.mark.asyncio
+async def test_v4_missing_stream_gap_uses_start_cursor_and_null_bounds() -> None:
+    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=FakeRedis()))
+
+    gap, gap_cursor = await bridge.build_gap(
+        event_id="gap4_missing",
+        tenant_scope_value="scope-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        requested_event_id=None,
+        requested_stream_incarnation=None,
+        current_stream_incarnation=2,
+        reason="stream_missing",
+    )
+
+    assert gap_cursor == "run-a:2:0-0"
+    assert gap["event_type"] == "stream.gap"
+    assert gap["payload"] == {
+        "reason": "stream_missing",
+        "recovery": "reload_durable_state",
+        "requested_event_id": None,
+        "requested_stream_incarnation": None,
+        "current_stream_incarnation": 2,
+        "earliest_available_event_id": None,
+        "latest_available_event_id": None,
+    }
+
+
+@pytest.mark.asyncio
 async def test_existing_v4_authority_requires_canonical_digest_and_identity() -> None:
     payload = _open_payload()
     base = {

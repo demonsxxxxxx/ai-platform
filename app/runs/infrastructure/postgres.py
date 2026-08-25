@@ -617,16 +617,24 @@ class PostgresRunCancellationPersistence:
         row = await cursor.fetchone()
         if not row:
             return None
+        attempt_cursor = await conn.execute(
+            """
+            select id
+            from run_attempts
+            where tenant_id = %s and run_id = %s
+            order by ordinal desc
+            limit 1
+            for update
+            """,
+            (tenant_id, run_id),
+        )
+        attempt_row = await attempt_cursor.fetchone()
+        if not attempt_row or not attempt_row.get("id"):
+            raise RepositoryConflictError("run_attempt_missing")
+        attempt_id = str(attempt_row["id"])
         newly_requested = bool(row.get("cancel_requested_newly"))
         if newly_requested:
             await self._append_event(
-                conn,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                trace_id=row.get("trace_id"),
-                event_type="cancel_requested",
-                stage="control",
-                message="已请求取消",
                 payload={
                     "visible_to_user": True,
                     "severity": "warning",
@@ -650,6 +658,7 @@ class PostgresRunCancellationPersistence:
             requested_by_role="owner",
             source="user",
             newly_requested=newly_requested,
+            attempt_id=attempt_id,
         )
 
     async def begin_admin_request(
@@ -698,16 +707,24 @@ class PostgresRunCancellationPersistence:
         row = await cursor.fetchone()
         if not row:
             return None
+        attempt_cursor = await conn.execute(
+            """
+            select id
+            from run_attempts
+            where tenant_id = %s and run_id = %s
+            order by ordinal desc
+            limit 1
+            for update
+            """,
+            (tenant_id, run_id),
+        )
+        attempt_row = await attempt_cursor.fetchone()
+        if not attempt_row or not attempt_row.get("id"):
+            raise RepositoryConflictError("run_attempt_missing")
+        attempt_id = str(attempt_row["id"])
         newly_requested = bool(row.get("cancel_requested_newly"))
         if newly_requested:
             await self._append_event(
-                conn,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                trace_id=row.get("trace_id"),
-                event_type="cancel_requested",
-                stage="control",
-                message="管理员已请求取消",
                 payload={
                     "visible_to_user": True,
                     "severity": "warning",
@@ -733,6 +750,7 @@ class PostgresRunCancellationPersistence:
             requested_by_role="admin",
             source="system",
             newly_requested=newly_requested,
+            attempt_id=attempt_id,
         )
 
     async def finish_request(
@@ -785,4 +803,5 @@ class PostgresRunCancellationPersistence:
             trace_ref=authority.trace_ref,
             active_sandbox_leases=tuple(active_leases),
             initial_terminalization_progress=progress,
+            attempt_id=authority.attempt_id,
         )

@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -14,11 +15,17 @@ from app.routes.sandbox_runtime_cleanup import (
     stop_sandbox_leases,
 )
 from app.runtime.sandbox.container_provider import create_container_provider
+from app.streaming.application.durable_v4 import V4PublicationTransportUnavailable
+from app.streaming.application.worker_publication_v4 import (
+    admit_v4_stream,
+    publish_pending_run_terminal,
+)
 from app.control_plane_contracts import sanitize_public_text
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
 from app.validation import assert_safe_id
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _require_run_cancellation_use_case(request: Request) -> RunCancellationUseCase:
@@ -144,6 +151,23 @@ async def admin_run_cancel(
         admin_user_id=principal.user_id,
         run_id=run_id,
     )
+    if cancellation is not None and cancellation.attempt_id:
+        runtime = request.app.state.run_stream_runtime
+        try:
+            await admit_v4_stream(
+                runtime.worker_capabilities,
+                tenant_id=principal.tenant_id,
+                run_id=cancellation.run_id,
+                attempt_id=cancellation.attempt_id,
+            )
+        except V4PublicationTransportUnavailable as exc:
+            logger.warning("Cancellation v4 admission deferred", extra={"run_id": cancellation.run_id, "error": exc.error_code})
+
+        await publish_pending_run_terminal(
+            runtime.worker_capabilities,
+            tenant_id=principal.tenant_id,
+            run_id=cancellation.run_id,
+        )
     result = cancellation.as_route_result() if cancellation is not None else None
     if result is not None:
         initial_progress = result.pop("_permission_terminalization_progress", None)

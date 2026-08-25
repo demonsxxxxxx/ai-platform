@@ -1,3 +1,4 @@
+import logging
 import re
 from typing import Any, Literal
 from uuid import uuid4
@@ -82,6 +83,11 @@ from app.run_admission_policy import (
 from app.run_admission_terminalization import terminalize_retired_platform_multi_agent_run
 from app.run_control_readiness import run_control_readiness_snapshot
 from app.runs.api import RunCancellationUseCase
+from app.streaming.application.durable_v4 import V4PublicationTransportUnavailable
+from app.streaming.application.worker_publication_v4 import (
+    admit_v4_stream,
+    publish_pending_run_terminal,
+)
 from app.routes.sandbox_runtime_cleanup import (
     SandboxRuntimeCleanupError,
     release_stopped_sandbox_leases_for_cancel,
@@ -104,6 +110,7 @@ from app.skills.registry import BuiltinSkillRegistry
 from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _require_run_cancellation_use_case(request: Request) -> RunCancellationUseCase:
@@ -1649,6 +1656,23 @@ async def cancel_run(
         owner_user_id=principal.user_id,
         run_id=run_id,
     )
+    if cancellation is not None and cancellation.attempt_id:
+        runtime = request.app.state.run_stream_runtime
+        try:
+            await admit_v4_stream(
+                runtime.worker_capabilities,
+                tenant_id=principal.tenant_id,
+                run_id=cancellation.run_id,
+                attempt_id=cancellation.attempt_id,
+            )
+        except V4PublicationTransportUnavailable as exc:
+            logger.warning("Cancellation v4 admission deferred", extra={"run_id": cancellation.run_id, "error": exc.error_code})
+
+        await publish_pending_run_terminal(
+            runtime.worker_capabilities,
+            tenant_id=principal.tenant_id,
+            run_id=cancellation.run_id,
+        )
     result = cancellation.as_route_result() if cancellation is not None else None
     if result is not None:
         initial_progress = result.pop("_permission_terminalization_progress", None)

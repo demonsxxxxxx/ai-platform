@@ -15,6 +15,7 @@ CancelEventSource = Literal["user", "system"]
 @dataclass(frozen=True, slots=True)
 class CancelRequestAuthority:
     run_id: str
+    attempt_id: str
     prior_status: str
     trace_ref: str | None
     target_user_id: str
@@ -31,6 +32,7 @@ class CancelRequestResult:
     trace_ref: str | None
     active_sandbox_leases: tuple[dict[str, Any], ...]
     initial_terminalization_progress: RunTerminalizationProgress | None
+    attempt_id: str | None = None
 
     def as_route_result(self) -> dict[str, Any]:
         result: dict[str, Any] = {"run_id": self.run_id, "status": self.status}
@@ -73,6 +75,14 @@ class RunCancellationPersistence(Protocol):
 
 
 class RunCancellationEventWriter(Protocol):
+    async def prepare_pending_authority(
+        self,
+        conn: object,
+        *,
+        tenant_id: str,
+        authority: CancelRequestAuthority,
+    ) -> None: ...
+
     async def append_cancel_requested(
         self,
         conn: object,
@@ -157,6 +167,11 @@ class RunCancellationUseCase:
     ) -> CancelRequestResult | None:
         if authority is None:
             return None
+        await self._event_writer.prepare_pending_authority(
+            conn,
+            tenant_id=tenant_id,
+            authority=authority,
+        )
         if authority.newly_requested:
             await self._event_writer.append_cancel_requested(
                 conn,

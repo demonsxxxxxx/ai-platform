@@ -2152,7 +2152,12 @@ create table if not exists run_events (
       or (stream_publication_claim_token is not null and stream_publication_claim_expires_at is not null))
 );
 
-create index if not exists idx_run_events_run_created on run_events(run_id, created_at);
+create index if not exists idx_run_events_v4_due_scope
+  on run_events(tenant_id, run_id, sequence)
+  where visible_to_user = true
+    and payload_json ? '__stream_v4'
+    and stream_publication_state = 'pending';
+
 
 alter table run_events add column if not exists trace_id text not null default '';
 alter table run_events add column if not exists schema_version text not null default 'ai-platform.event-envelope.v1';
@@ -2260,18 +2265,56 @@ create table if not exists sse_stream_authorities (
   design_id text not null, projection_version text not null, tenant_scope text not null,
   stream_incarnation bigint not null check (stream_incarnation > 0), state text not null default 'admission_pending' check (state in ('admission_pending', 'confirmed', 'degraded', 'terminal')),
   open_event_id text not null, open_payload_bytes text not null, open_payload_digest text not null,
+
   authorization_epoch bigint not null default 1 check (authorization_epoch > 0), revocation_state text not null default 'active' check (revocation_state in ('active', 'committed', 'effective')),
   admission_created_at timestamptz not null default clock_timestamp(), admission_confirmed_at timestamptz, degraded_at timestamptz,
   revocation_committed_at timestamptz, revocation_effective_at timestamptz, updated_at timestamptz not null default clock_timestamp(),
+  constraint chk_sse_stream_authority_open_format check (
+    open_event_id <> '' and open_payload_bytes <> '' and open_payload_digest ~ '^[0-9a-f]{64}$'
+  ),
+  constraint chk_sse_stream_authority_pending_confirmation check (
+    (state = 'admission_pending' and admission_confirmed_at is null)
+    or (state <> 'admission_pending' and admission_confirmed_at is not null)
+  ),
   primary key (tenant_id, run_id), foreign key (tenant_id, run_id) references runs(tenant_id, id)
 );
 
 create unique index if not exists uq_sse_stream_authority_attempt_incarnation
   on sse_stream_authorities(tenant_id, run_id, attempt_id, stream_incarnation);
+create index if not exists idx_sse_stream_authority_pending
+  on sse_stream_authorities(state, updated_at, tenant_id, run_id)
+  where state = 'admission_pending';
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'chk_sse_stream_authority_open_format'
+      and conrelid = 'sse_stream_authorities'::regclass
+  ) then
+    alter table sse_stream_authorities
+      add constraint chk_sse_stream_authority_open_format
+      check (open_event_id <> '' and open_payload_bytes <> '' and open_payload_digest ~ '^[0-9a-f]{64}$') not valid;
+  end if;
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'chk_sse_stream_authority_pending_confirmation'
+      and conrelid = 'sse_stream_authorities'::regclass
+  ) then
+    alter table sse_stream_authorities
+      add constraint chk_sse_stream_authority_pending_confirmation
+      check ((state = 'admission_pending' and admission_confirmed_at is null)
+        or (state <> 'admission_pending' and admission_confirmed_at is not null)) not valid;
+  end if;
+end $$;
+
+alter table sse_stream_authorities validate constraint chk_sse_stream_authority_open_format;
+alter table sse_stream_authorities validate constraint chk_sse_stream_authority_pending_confirmation;
 
 create table if not exists sse_stream_rebuilds (
   id text primary key, tenant_id text not null, run_id text not null, attempt_id text not null,
   source_incarnation bigint not null, source_authorization_epoch bigint not null,
+  origin_incarnation bigint not null, origin_authorization_epoch bigint not null,
   successor_incarnation bigint not null, successor_authorization_epoch bigint not null,
   source_authority_fingerprint text not null, source_cursor_sequence bigint not null,
   source_through_sequence bigint not null,
@@ -2280,6 +2323,14 @@ create table if not exists sse_stream_rebuilds (
   state text not null default 'building', claim_token_digest text not null,
   claim_expires_at timestamptz not null, item_count integer not null,
   built_through_sequence bigint not null default 0,
+  receipt_entry_count integer,
+  receipt_open_event_id text,
+  receipt_terminal_event_id text,
+  receipt_end_event_id text,
+  receipt_last_redis_id text,
+  receipt_last_envelope_bytes text,
+  receipt_last_envelope_digest text,
+  receipt_digest text,
   failure_code text,
   created_at timestamptz not null default clock_timestamp(),
   updated_at timestamptz not null default clock_timestamp(),
@@ -2295,6 +2346,11 @@ create table if not exists sse_stream_rebuilds (
     and source_authorization_epoch > 0
     and successor_authorization_epoch > source_authorization_epoch
   ),
+  constraint chk_sse_stream_rebuild_origin check (
+    origin_incarnation > 0 and origin_incarnation <= source_incarnation
+    and origin_authorization_epoch > 0
+    and origin_authorization_epoch <= source_authorization_epoch
+  ),
   constraint chk_sse_stream_rebuild_progress check (
     source_cursor_sequence >= source_through_sequence
     and source_through_sequence > 0 and item_count > 0
@@ -2304,10 +2360,49 @@ create table if not exists sse_stream_rebuilds (
   constraint chk_sse_stream_rebuild_state check (
     state in ('building', 'ready', 'cutover', 'aborted', 'expired')
   ),
+  constraint chk_sse_stream_rebuild_receipt check (
+    (
+      receipt_entry_count is null
+      and receipt_open_event_id is null
+      and receipt_terminal_event_id is null
+      and receipt_end_event_id is null
+      and receipt_last_redis_id is null
+      and receipt_last_envelope_bytes is null
+      and receipt_last_envelope_digest is null
+      and receipt_digest is null
+    )
+    or (
+      receipt_entry_count > 0
+      and receipt_open_event_id <> ''
+      and receipt_terminal_event_id <> ''
+      and receipt_end_event_id <> ''
+      and receipt_last_redis_id ~ '^[0-9]+-[0-9]+$'
+      and receipt_last_envelope_bytes <> ''
+      and receipt_last_envelope_digest ~ '^[0-9a-f]{64}$'
+      and receipt_digest ~ '^[0-9a-f]{64}$'
+    )
+  ),
   constraint fk_sse_stream_rebuild_authority
     foreign key (tenant_id, run_id)
     references sse_stream_authorities(tenant_id, run_id)
 );
+
+alter table sse_stream_rebuilds add column if not exists origin_incarnation bigint;
+alter table sse_stream_rebuilds add column if not exists origin_authorization_epoch bigint;
+update sse_stream_rebuilds
+set origin_incarnation = coalesce(origin_incarnation, source_incarnation),
+    origin_authorization_epoch = coalesce(origin_authorization_epoch, source_authorization_epoch)
+where origin_incarnation is null or origin_authorization_epoch is null;
+alter table sse_stream_rebuilds alter column origin_incarnation set not null;
+alter table sse_stream_rebuilds alter column origin_authorization_epoch set not null;
+alter table sse_stream_rebuilds add column if not exists receipt_entry_count integer;
+alter table sse_stream_rebuilds add column if not exists receipt_open_event_id text;
+alter table sse_stream_rebuilds add column if not exists receipt_terminal_event_id text;
+alter table sse_stream_rebuilds add column if not exists receipt_end_event_id text;
+alter table sse_stream_rebuilds add column if not exists receipt_last_redis_id text;
+alter table sse_stream_rebuilds add column if not exists receipt_last_envelope_bytes text;
+alter table sse_stream_rebuilds add column if not exists receipt_last_envelope_digest text;
+alter table sse_stream_rebuilds add column if not exists receipt_digest text;
 
 create unique index if not exists uq_sse_stream_rebuild_successor
   on sse_stream_rebuilds(tenant_id, run_id, successor_incarnation);
@@ -2321,7 +2416,7 @@ create index if not exists idx_sse_stream_rebuild_claim_expiry
 create table if not exists sse_stream_rebuild_items (
   rebuild_id text not null, sequence bigint not null, event_id text not null,
   event_type text not null, canonical_envelope_bytes text not null,
-  envelope_digest text not null,
+  envelope_digest text not null, redis_id text,
   created_at timestamptz not null default clock_timestamp(),
   primary key (rebuild_id, sequence),
   constraint uq_sse_stream_rebuild_item_event unique (rebuild_id, event_id),
@@ -2330,9 +2425,45 @@ create table if not exists sse_stream_rebuild_items (
     and canonical_envelope_bytes <> ''
     and envelope_digest ~ '^[0-9a-f]{64}$'
   ),
+  constraint chk_sse_stream_rebuild_item_redis_id check (
+    redis_id is null or redis_id ~ '^[0-9]+-[0-9]+$'
+  ),
   constraint fk_sse_stream_rebuild_item_operation
     foreign key (rebuild_id) references sse_stream_rebuilds(id)
 );
+
+alter table sse_stream_rebuild_items add column if not exists redis_id text;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'chk_sse_stream_rebuild_origin'
+      and conrelid = 'sse_stream_rebuilds'::regclass
+  ) then
+    alter table sse_stream_rebuilds
+      add constraint chk_sse_stream_rebuild_origin
+      check (
+        origin_incarnation > 0 and origin_incarnation <= source_incarnation
+        and origin_authorization_epoch > 0
+        and origin_authorization_epoch <= source_authorization_epoch
+      ) not valid;
+  end if;
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'chk_sse_stream_rebuild_item_redis_id'
+      and conrelid = 'sse_stream_rebuild_items'::regclass
+  ) then
+    alter table sse_stream_rebuild_items
+      add constraint chk_sse_stream_rebuild_item_redis_id
+      check (redis_id is null or redis_id ~ '^[0-9]+-[0-9]+$') not valid;
+  end if;
+end $$;
+
+alter table sse_stream_rebuilds
+  validate constraint chk_sse_stream_rebuild_origin;
+alter table sse_stream_rebuild_items
+  validate constraint chk_sse_stream_rebuild_item_redis_id;
 
 create table if not exists sse_authority_leases (
   id text primary key, tenant_id text not null, run_id text not null,

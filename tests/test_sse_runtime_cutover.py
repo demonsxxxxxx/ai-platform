@@ -170,16 +170,53 @@ location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/runs/[A-Za-z0-9_-]+/stream$ {
     ]
 
 
+def test_worker_admission_guard_accepts_multiple_terminal_branches_with_predispatch_admission():
+    worker = ast.parse(
+        """
+async def process_run_payload():
+    if terminal_before_dispatch:
+        await admit_v4_stream()
+        return
+    await admit_v4_stream()
+    await _submit_run_until_cancelled()
+    if terminal_after_dispatch:
+        await admit_v4_stream()
+"""
+    ).body[0]
+
+    assert cutover._worker_admission_failures(worker) == []
+
+
+def test_worker_admission_guard_rejects_only_postdispatch_admission():
+    worker = ast.parse(
+        """
+async def process_run_payload():
+    await _submit_run_until_cancelled()
+    await admit_v4_stream()
+"""
+    ).body[0]
+
+    assert cutover._worker_admission_failures(worker) == [
+        "worker.py:v4_admission_not_before_sdk_dispatch"
+    ]
+
+
 def test_frontend_structure_ignores_noop_markers_outside_the_real_connect_body():
     source = """
-const commitAcceptedStreamEvent = () => {
+const commitTransportCursor = () => {
   fake.acceptedStreamCursorRef.current = null;
 };
 export async function connectToSSE(): Promise<void> {
-  const commitAcceptedStreamEvent = (semanticApplied: boolean) => {
+  const commitTransportCursor = (semanticApplied: boolean) => {
     ctx.acceptedStreamCursorRef.current = accepted;
   };
-  handleStreamEvent(event, commitAcceptedStreamEvent);
+  const commitAcceptedStreamEvent = (semanticApplied: boolean) => {
+    commitTransportCursor(semanticApplied);
+  };
+  handlePublicRunStreamFrameV4({
+    frame,
+    onCommitted: commitAcceptedStreamEvent,
+  });
 }
 """
 
@@ -187,12 +224,36 @@ export async function connectToSSE(): Promise<void> {
         source,
         "export async function connectToSSE",
     )
-    commit = cutover._typescript_function_body(
+    transport_commit = cutover._typescript_function_body(
         connect,
-        "const commitAcceptedStreamEvent",
+        "const commitTransportCursor",
     )
-    calls = cutover._typescript_call_arguments(connect, "handleStreamEvent")
+    calls = cutover._typescript_call_arguments(
+        connect,
+        "handlePublicRunStreamFrameV4",
+    )
 
     assert "fake.acceptedStreamCursorRef" not in connect
-    assert commit.count("ctx.acceptedStreamCursorRef.current =") == 1
-    assert calls == ["event, commitAcceptedStreamEvent"]
+    assert transport_commit.count("ctx.acceptedStreamCursorRef.current =") == 1
+    assert "onCommitted: commitAcceptedStreamEvent" in calls[0]
+    assert cutover._frontend_cursor_commit_failures(source) == []
+
+
+def test_frontend_structure_rejects_cursor_commit_outside_reducer_callback():
+    source = """
+export async function connectToSSE(): Promise<void> {
+  const commitTransportCursor = (semanticApplied: boolean) => {
+    ctx.acceptedStreamCursorRef.current = accepted;
+  };
+  const commitAcceptedStreamEvent = (semanticApplied: boolean) => {};
+  handlePublicRunStreamFrameV4({
+    frame,
+    onCommitted: commitAcceptedStreamEvent,
+  });
+  commitTransportCursor(true);
+}
+"""
+
+    assert cutover._frontend_cursor_commit_failures(source) == [
+        "sseConnection.ts:cursor_not_bound_to_reducer_commit"
+    ]

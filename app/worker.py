@@ -81,13 +81,14 @@ from app.runtime.sandbox.executor_client import (
     normalize_executor_reported_failure,
 )
 from app.settings import get_settings
-from app.streaming.redis import RunStreamPublisher
-from app.streaming.worker_projection import (
+from app.streaming.application.worker_publication_v4 import (
+    WorkerV4Capabilities,
+    admit_v4_stream,
     finalize_parent_and_publish,
     persist_and_publish_worker_event,
-    persist_worker_failure_event,
     publish_pending_run_terminal,
 )
+from app.streaming.worker_projection import persist_worker_failure_event
 from app.skills.catalog import (
     RUNTIME_AUTHORIZED_SKILL_CATALOG_KEY,
     RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY,
@@ -2204,6 +2205,7 @@ async def process_run_payload(
     worker_id: str | None = None,
     reconciliation: _WorkerExecutorReconciliation | None = None,
     transaction_factory: Any | None = None,
+    v4_capabilities: WorkerV4Capabilities,
 ) -> WorkerOutcome:
     transaction = transaction_factory if transaction_factory is not None else globals()["transaction"]
     try:
@@ -2223,6 +2225,8 @@ async def process_run_payload(
             error_message=str(exc),
         )
     payload = envelope.payload
+    if v4_capabilities is None:
+        raise RuntimeError("worker_v4_capabilities_unavailable")
     attempt_id = envelope.attempt_id
     trace_id = standard_trace_id(payload.run_id)
 
@@ -2272,6 +2276,13 @@ async def process_run_payload(
                         "stale_reconciliation_attempt",
                         "Executor reconciliation attempt is stale",
                     )
+            if locked is not None:
+                await v4_capabilities.pending_admissions.prepare_pending_authority_in_transaction(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                    attempt_id=attempt_id,
+                )
             if not locked:
                 existing_run = await repositories.get_run(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
                 if existing_run is None:
@@ -2282,6 +2293,12 @@ async def process_run_payload(
                         "Run no longer exists for leased queue payload",
                     )
                 if str(existing_run.get("status") or "") == "queued":
+                    await v4_capabilities.pending_admissions.prepare_pending_authority_in_transaction(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        attempt_id=attempt_id,
+                    )
                     error_code = "queue_payload_identity_mismatch"
                     error_message = "Queued run identity is invalid"
                     terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
@@ -2599,22 +2616,21 @@ async def process_run_payload(
                 )
     finally:
         if terminal_after_transaction is not None:
+            await admit_v4_stream(
+                v4_capabilities,
+                tenant_id=terminal_after_transaction.payload.tenant_id,
+                run_id=terminal_after_transaction.payload.run_id,
+                attempt_id=attempt_id,
+            )
             await _finalize_multi_agent_parent_after_child_commit(
                 transaction, terminal_after_transaction.payload,
                 terminal_after_transaction.reconciled_parent,
             )
             await publish_pending_run_terminal(
-                transaction,
+                v4_capabilities,
                 tenant_id=terminal_after_transaction.payload.tenant_id,
                 run_id=terminal_after_transaction.payload.run_id,
             )
-
-    stream_publisher = RunStreamPublisher(
-        run_payload.tenant_id,
-        run_payload.run_id,
-        run_payload.attempt_id,
-        get_settings().ai_session_secret,
-    )
 
     async def event_sink(
         *,
@@ -2626,9 +2642,9 @@ async def process_run_payload(
         if event_type == "assistant_delta":
             raise WorkerDirectAssistantDeltaError
         if await persist_and_publish_worker_event(
-            transaction,
-            stream_publisher=stream_publisher,
+            v4_capabilities,
             run_payload=run_payload,
+            attempt_id=attempt_id,
             persist_event=True,
             event_type=event_type,
             stage=stage,
@@ -2666,11 +2682,12 @@ async def process_run_payload(
             started_at = time.monotonic()
             result: ExecutorResult | ExecutorDispatchAccepted = reconciliation.result
         else:
-            async with transaction() as conn:
-                await stream_publisher.prepare(conn)
-            await stream_publisher.open()
-            async with transaction() as conn:
-                await stream_publisher.confirm(conn)
+            await admit_v4_stream(
+                v4_capabilities,
+                tenant_id=run_payload.tenant_id,
+                run_id=run_payload.run_id,
+                attempt_id=run_payload.attempt_id,
+            )
 
             async def cancel_requested() -> bool:
                 async with transaction() as conn:
@@ -2687,7 +2704,6 @@ async def process_run_payload(
                 event_sink=event_sink,
                 cancel_requested=cancel_requested,
             )
-            await stream_publisher.aclose()
         if isinstance(result, ExecutorDispatchAccepted):
             if not result.lease_id:
                 raise ValueError("executor_dispatch_acceptance_lease_missing")
@@ -2741,7 +2757,6 @@ async def process_run_payload(
                 },
             )
     except WorkerRunCancelled:
-        await stream_publisher.aclose()
         reconciled_parent = None
         async with transaction() as conn:
             cancel_result = {"message": "任务已取消"}
@@ -2765,16 +2780,21 @@ async def process_run_payload(
                 result_json=cancel_result,
             )
             await release_runtime_sandbox_lease(conn, reason="run_cancelled")
-        await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
+        await finalize_parent_and_publish(transaction, v4_capabilities, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
         return WorkerOutcome("cancelled", payload.run_id)
     except Exception as exc:  # noqa: BLE001 - worker boundary terminalizes all failures.
-        await stream_publisher.aclose()
         reconciled_parent = None
         failure_code, failure_message = _executor_exception_failure(exc)
         outcome_after_exception = WorkerOutcome(
             "failed", payload.run_id, failure_code, failure_message
         )
         async with transaction() as conn:
+            await v4_capabilities.pending_admissions.prepare_pending_authority_in_transaction(
+                conn,
+                tenant_id=payload.tenant_id,
+                run_id=payload.run_id,
+                attempt_id=attempt_id,
+            )
             if await repositories.is_cancel_requested(conn, tenant_id=payload.tenant_id, run_id=payload.run_id):
                 cancel_result = {"message": "任务已取消"}
                 terminal_written = await repositories.cancel_run(
@@ -2830,7 +2850,7 @@ async def process_run_payload(
                         },
                     )
                     await release_runtime_sandbox_lease(conn, reason="run_failed")
-        await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
+        await finalize_parent_and_publish(transaction, v4_capabilities, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
         return outcome_after_exception
 
     observability = _executor_observability(result.executor_payload, latency_ms=latency_ms)
@@ -3356,7 +3376,7 @@ async def process_run_payload(
                     terminal_outcome.error_code if final_status == "failed" else None,
                     terminal_outcome.error_message if final_status == "failed" else None,
                 )
-    await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
+    await finalize_parent_and_publish(transaction, v4_capabilities, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
     return terminal_outcome
 
 
@@ -3368,6 +3388,7 @@ async def reconcile_executor_terminal_result(
     worker_id: str | None = None,
     claim_token: str,
     transaction_factory: Any | None = None,
+    v4_capabilities: WorkerV4Capabilities,
 ) -> WorkerOutcome:
     context = lease_row.get("executor_reconciliation_context_json")
     if not isinstance(context, dict):
@@ -3412,4 +3433,5 @@ async def reconcile_executor_terminal_result(
         worker_id=worker_id,
         reconciliation=_WorkerExecutorReconciliation(result, lease_row, claim_token),
         transaction_factory=transaction_factory,
+        v4_capabilities=v4_capabilities,
     )

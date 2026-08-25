@@ -10,6 +10,7 @@ from app.streaming import redis as stream_redis
 from app.streaming.application.recovery_v4 import (
     V4SuccessorRebuildClaim,
     V4SuccessorRebuildReceipt,
+    successor_receipt_digest,
 )
 from app.streaming.domain.live import redis_id_tuple, stream_key
 from app.streaming.domain.public_events_v4 import (
@@ -166,7 +167,20 @@ class RedisV4SuccessorRebuildTransport:
             terminal_event_id=terminal_event_id,
             end_event_id=str(end["event_id"]),
             last_redis_id=redis_ids[-1],
+            item_redis_ids=tuple(redis_ids[1:-1]),
             last_envelope_bytes=end_bytes,
+            last_envelope_digest=hashlib.sha256(end_bytes).hexdigest(),
+            receipt_digest=successor_receipt_digest(
+                stream_key=key,
+                stream_incarnation=claim.successor_incarnation,
+                entry_count=entry_count,
+                open_event_id=claim.successor_open_event_id,
+                terminal_event_id=terminal_event_id,
+                end_event_id=str(end["event_id"]),
+                last_redis_id=redis_ids[-1],
+                item_redis_ids=tuple(redis_ids[1:-1]),
+                last_envelope_digest=hashlib.sha256(end_bytes).hexdigest(),
+            ),
         )
 
     async def _append(

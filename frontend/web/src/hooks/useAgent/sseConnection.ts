@@ -11,15 +11,14 @@ import {
 } from "../../services/api/tokenManager";
 import { getRefreshToken } from "../../services/api/token";
 import {
-  isSequencedPublicChatEvent,
-  type EventData,
-  type StreamEvent,
-} from "./types";
-import { handleStreamEvent, type EventHandlerContext } from "./eventHandlers";
+  handlePublicRunStreamFrameV4,
+  type EventHandlerContext,
+} from "./eventHandlers";
 import {
-  adaptPublicRunStreamEventV3,
   comparePublicRunStreamCursors,
-} from "./publicRunStreamV3";
+  type V4AdapterBinding,
+  type V4SseFrame,
+} from "../../components/chat/assistant-ui/publicEventAdapter";
 import { clearAllLoadingStates } from "./messageParts";
 import { collapsePublicExecutionSteps } from "./publicStreamPresentation";
 import {
@@ -201,6 +200,15 @@ class SSEReplayGapError extends Error {
     super("sse_replay_gap");
     this.name = "SSEReplayGapError";
   }
+}
+
+interface PendingV4TerminalHydration {
+  semanticEventId: string;
+  terminalEventId: string;
+  promise: Promise<void>;
+  resolve: () => void;
+  duplicateTerminalCommits: Array<() => void>;
+  pendingEndCommits: Array<() => void>;
 }
 
 function isSSEReplayGapError(error: unknown): error is SSEReplayGapError {
@@ -480,22 +488,6 @@ export function isTerminalSSEEvent(eventType: string, data?: unknown): boolean {
   );
 }
 
-/**
- * An accepted assistant delta or sequenced public semantic event proves new
- * persisted backend progress. Synthetic metadata and terminal snapshots do not.
- */
-function isAcceptedRunProgress(
-  eventType: string,
-  data: Record<string, unknown>,
-  terminal: boolean,
-): boolean {
-  return (
-    !terminal &&
-    (eventType === "message:chunk" ||
-      isSequencedPublicChatEvent(eventType, data as EventData))
-  );
-}
-
 export function getSSECloseAction({
   receivedTerminalEvent,
 }: {
@@ -590,6 +582,7 @@ export async function connectToSSE(
 
   let receivedTerminalEvent = false;
   let receivedNonTerminalApplicationError = false;
+  let pendingTerminalHydration: PendingV4TerminalHydration | null = null;
   let startupRetryCount = 0;
   const startupRetryStartedAt = now();
   let startupDeadlineTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
@@ -610,6 +603,33 @@ export async function connectToSSE(
   });
 
   setConnectionStatus("connecting");
+
+  const finalizeTerminalClose = () => {
+    if (!isCurrentStream()) return;
+    setConnectionStatus("disconnected");
+    isConnectingRef.current = false;
+    ctx.setIsInitializingSandbox(false);
+    ctx.publicStreamPresentation?.flush({
+      sessionId: targetSessionId,
+      runId: targetRunId,
+      assistantMessageId: messageId,
+      streamVersion,
+    });
+    ctx.publicStreamPresentation?.invalidate();
+    ctx.setMessages((prev) =>
+      prev.map((m) =>
+        m.id === messageId
+          ? {
+              ...m,
+              isStreaming: false,
+              parts: collapsePublicExecutionSteps(
+                clearAllLoadingStates(m.parts || []),
+              ),
+            }
+          : m,
+      ),
+    );
+  };
 
   try {
     await Promise.race([
@@ -683,52 +703,101 @@ export async function connectToSSE(
             receivedNonTerminalApplicationError = true;
             throw new Error("sse_event_json_invalid");
           }
-          if (event.event === "gap") {
-            // A trim/missing-continuity gap is not recoverable by reconnecting
-            // with the prior cursor: that would append an unprovable live tail.
-            receivedNonTerminalApplicationError = true;
-            throw new SSEReplayGapError();
-          }
           const eventId = event.id;
           if (!eventId) {
             receivedNonTerminalApplicationError = true;
             throw new Error("sse_event_id_missing");
           }
-          const adapted = adaptPublicRunStreamEventV3({
-            eventHeader: event.event,
-            transportCursor: eventId,
-            value: parsed,
-            targetRunId,
-            targetStreamIncarnation: acceptedStreamIncarnation,
-          });
-          if (!adapted) {
+          const candidateIncarnation =
+            typeof parsed === "object" &&
+            parsed !== null &&
+            !Array.isArray(parsed) &&
+            Number.isSafeInteger(
+              (parsed as { stream_incarnation?: unknown }).stream_incarnation,
+            )
+              ? (parsed as { stream_incarnation: number }).stream_incarnation
+              : null;
+          if (candidateIncarnation === null || candidateIncarnation < 1) {
             receivedNonTerminalApplicationError = true;
             throw new Error("sse_event_contract_invalid");
           }
-          acceptedStreamIncarnation ??= adapted.streamIncarnation;
-          const acceptedCursorBeforeEvent = ctx.acceptedStreamCursorRef?.current;
-          if (
-            acceptedCursorBeforeEvent?.sessionId === targetSessionId &&
-            acceptedCursorBeforeEvent.runId === targetRunId &&
-            acceptedCursorBeforeEvent.eventId
-          ) {
-            const cursorComparison = comparePublicRunStreamCursors(
-              eventId,
-              acceptedCursorBeforeEvent.eventId,
-            );
-            if (cursorComparison === null || cursorComparison <= 0) {
-              return;
-            }
-          }
-          const terminalStatus = terminalRunStatusFromEvent(
-            adapted.event,
-            adapted.data as unknown as Record<string, unknown>,
-          );
-          const streamEvent: StreamEvent = {
-            event: adapted.event,
-            data: JSON.stringify(adapted.data),
+          acceptedStreamIncarnation ??= candidateIncarnation;
+          const frame: V4SseFrame = {
+            eventHeader: event.event || "",
+            transportCursor: eventId,
+            // streamVersion is the captured connection generation. It is kept
+            // in the adapter frame only, never added to the wire envelope.
+            generation: streamVersion,
+            value: parsed,
           };
-          const commitAcceptedStreamEvent = (semanticApplied: boolean) => {
+          const binding = {
+            sessionId: targetSessionId,
+            runId: targetRunId,
+            streamVersion,
+            streamIncarnation: acceptedStreamIncarnation,
+            generation: streamVersion,
+          };
+          const adapterBinding: V4AdapterBinding = {
+            runId: targetRunId,
+            streamIncarnation: acceptedStreamIncarnation,
+            generation: streamVersion,
+          };
+          const eventType =
+            typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+              ? (parsed as { event_type?: unknown }).event_type
+              : null;
+          const semanticEventId =
+            typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+              ? (parsed as { event_id?: unknown }).event_id
+              : null;
+          const payload =
+            typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) &&
+            typeof (parsed as { payload?: unknown }).payload === "object" &&
+            (parsed as { payload?: unknown }).payload !== null &&
+            !Array.isArray((parsed as { payload?: unknown }).payload)
+              ? ((parsed as { payload: Record<string, unknown> }).payload)
+              : null;
+          const terminalEventId =
+            typeof payload?.terminal_event_id === "string"
+              ? payload.terminal_event_id
+              : null;
+          const isRunTerminalEvent =
+            eventType === "run.succeeded" ||
+            eventType === "run.failed" ||
+            eventType === "run.cancelled";
+          const isStreamEndEvent = eventType === "stream.end";
+          const provesRunProgress =
+            typeof eventType === "string" &&
+            !eventType.startsWith("stream.");
+          const pendingBeforeFrame = pendingTerminalHydration;
+          let createdPendingTerminal = false;
+          if (
+            isRunTerminalEvent &&
+            typeof semanticEventId === "string" &&
+            terminalEventId &&
+            ctx.v4TerminalFenceRef &&
+            !pendingTerminalHydration
+          ) {
+            let resolvePending!: () => void;
+            const promise = new Promise<void>((resolve) => {
+              resolvePending = resolve;
+            });
+            pendingTerminalHydration = {
+              semanticEventId,
+              terminalEventId,
+              promise,
+              resolve: resolvePending,
+              duplicateTerminalCommits: [],
+              pendingEndCommits: [],
+            };
+            createdPendingTerminal = true;
+          }
+          let transportCommitted = false;
+          const commitTransportCursor = (semanticApplied: boolean) => {
+            transportCommitted = true;
+            if (isRunTerminalEvent || isStreamEndEvent) {
+              receivedTerminalEvent = true;
+            }
             if (!isCurrentStream()) return;
             const acceptedCursor = ctx.acceptedStreamCursorRef?.current;
             const ownsAcceptedCursor =
@@ -743,14 +812,7 @@ export async function connectToSSE(
               acceptedCursor.eventId &&
               (cursorComparison === null || cursorComparison <= 0)
             ) {
-              if (
-                semanticApplied &&
-                isAcceptedRunProgress(
-                  adapted.event,
-                  adapted.data as unknown as Record<string, unknown>,
-                  Boolean(terminalStatus),
-                )
-              ) {
+              if (semanticApplied && provesRunProgress) {
                 retryCountRef.current = 0;
               }
               return;
@@ -760,37 +822,63 @@ export async function connectToSSE(
                 sessionId: targetSessionId,
                 runId: targetRunId,
                 eventId,
-                streamIncarnation: adapted.streamIncarnation,
+                streamIncarnation: acceptedStreamIncarnation!,
               };
             }
-            if (
-              semanticApplied &&
-              isAcceptedRunProgress(
-                adapted.event,
-                adapted.data as unknown as Record<string, unknown>,
-                Boolean(terminalStatus),
-              )
-            ) {
+            if (semanticApplied && provesRunProgress) {
               retryCountRef.current = 0;
             }
           };
-          const accepted = handleStreamEvent(
-            streamEvent,
+          const commitAcceptedStreamEvent = (semanticApplied: boolean) => {
+            commitTransportCursor(semanticApplied);
+            if (!isRunTerminalEvent || !pendingTerminalHydration) return;
+            const pending = pendingTerminalHydration;
+            for (const commit of pending.duplicateTerminalCommits) commit();
+            for (const commit of pending.pendingEndCommits) commit();
+            if (ctx.v4TerminalFenceRef) ctx.v4TerminalFenceRef.current = null;
+            ctx.v4TerminalEventIdsRef?.current.clear();
+            pendingTerminalHydration = null;
+            pending.resolve();
+          };
+          const accepted = handlePublicRunStreamFrameV4({
+            frame,
+            adapterBinding,
             messageId,
-            eventId,
-            adapted.emittedAt,
             ctx,
-            {
-              sessionId: targetSessionId,
-              runId: targetRunId,
-              streamVersion,
+            binding,
+            currentGeneration: streamVersion,
+            onGap: () => {
+              receivedNonTerminalApplicationError = true;
+              throw new SSEReplayGapError();
             },
-            commitAcceptedStreamEvent,
-          );
-          // A foreign, replayed, stale, or otherwise rejected terminal frame
-          // must not suppress close reconciliation for the current run.
-          if (terminalStatus && accepted) {
-            receivedTerminalEvent = true;
+            onCommitted: commitAcceptedStreamEvent,
+          });
+          if (!accepted) {
+            const matchesPendingTerminal = Boolean(
+              pendingBeforeFrame &&
+                terminalEventId === pendingBeforeFrame.terminalEventId &&
+                semanticEventId === pendingBeforeFrame.semanticEventId,
+            );
+            if (isRunTerminalEvent && matchesPendingTerminal) {
+              pendingBeforeFrame!.duplicateTerminalCommits.push(() =>
+                commitTransportCursor(false),
+              );
+              return;
+            }
+            if (
+              isStreamEndEvent &&
+              pendingBeforeFrame &&
+              terminalEventId === pendingBeforeFrame.terminalEventId
+            ) {
+              pendingBeforeFrame.pendingEndCommits.push(() =>
+                commitTransportCursor(false),
+              );
+              return;
+            }
+            if (createdPendingTerminal) pendingTerminalHydration = null;
+            if (transportCommitted) return;
+            receivedNonTerminalApplicationError = true;
+            throw new Error("sse_event_contract_invalid");
           }
         },
         onerror: (err) => {
@@ -838,32 +926,15 @@ export async function connectToSSE(
           console.log("[SSE] Connection closed");
           const closeAction = getSSECloseAction({ receivedTerminalEvent });
           if (closeAction === "retry") {
+            if (pendingTerminalHydration) {
+              const pending = pendingTerminalHydration;
+              void pending.promise.then(() => finalizeTerminalClose());
+              return;
+            }
             setConnectionStatus("reconnecting");
             throw new Error("SSE closed before terminal event");
           }
-          setConnectionStatus("disconnected");
-          isConnectingRef.current = false;
-          ctx.setIsInitializingSandbox(false);
-          ctx.publicStreamPresentation?.flush({
-            sessionId: targetSessionId,
-            runId: targetRunId,
-            assistantMessageId: messageId,
-            streamVersion,
-          });
-          ctx.publicStreamPresentation?.invalidate();
-          ctx.setMessages((prev) =>
-            prev.map((m) =>
-              m.id === messageId
-                ? {
-                    ...m,
-                    isStreaming: false,
-                    parts: collapsePublicExecutionSteps(
-                      clearAllLoadingStates(m.parts || []),
-                    ),
-                  }
-                : m,
-            ),
-          );
+          finalizeTerminalClose();
         },
       },
     ),

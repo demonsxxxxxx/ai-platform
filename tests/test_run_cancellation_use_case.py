@@ -53,6 +53,7 @@ class _Persistence:
             trace_ref=authority.trace_ref,
             active_sandbox_leases=(),
             initial_terminalization_progress=progress,
+            attempt_id=authority.attempt_id,
         )
 
 
@@ -62,7 +63,10 @@ class _EventWriter:
         self._fail = fail
         self.sources: list[str] = []
 
-    async def append_cancel_requested(self, conn, *, source, **kwargs):
+    async def prepare_pending_authority(self, conn, *, tenant_id, authority):
+        self._order.append("v4.admission_pending")
+
+    async def append_cancel_requested(self, conn, *, tenant_id, run_id, source, trace_ref):
         self._order.append("v4.run.cancel_requested")
         self.sources.append(source)
         if self._fail:
@@ -83,6 +87,7 @@ class _Progressor:
 def _authority(*, role: str = "owner", newly: bool = True, prior_status: str = "queued"):
     return CancelRequestAuthority(
         run_id="run-a",
+        attempt_id="attempt-a",
         prior_status=prior_status,
         trace_ref="trace-a",
         target_user_id="owner-a",
@@ -125,6 +130,7 @@ async def test_cancel_request_commits_authoritative_order_and_source(role, expec
     assert order == [
         "transaction.begin",
         "legacy.cancel_requested",
+        "v4.admission_pending",
         "v4.run.cancel_requested",
         "v4.run.cancelled",
         "audit",
@@ -152,6 +158,7 @@ async def test_repeat_request_skips_duplicate_v4_but_progresses_pending_terminal
     assert order == [
         "transaction.begin",
         "legacy.cancel_requested",
+        "v4.admission_pending",
         "v4.run.cancelled",
         "audit",
         "transaction.commit",
@@ -176,6 +183,7 @@ async def test_v4_failure_rolls_back_before_progress_and_audit():
     assert order == [
         "transaction.begin",
         "legacy.cancel_requested",
+        "v4.admission_pending",
         "v4.run.cancel_requested",
         "transaction.rollback",
     ]

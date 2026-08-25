@@ -20,10 +20,7 @@ import {
   type SSEFetchEventSource,
 } from "../sseConnection.ts";
 import { PublicStreamPresentation } from "../publicStreamPresentation.ts";
-import {
-  PUBLIC_RUN_STREAM_SCHEMA,
-  STREAM_DESIGN_ID,
-} from "../../../generated/publicRunStreamV3.ts";
+import { PUBLIC_RUN_STREAM_SCHEMA } from "../../../generated/publicRunStreamV4.ts";
 import type { Message } from "../../../types";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -140,6 +137,51 @@ function v3Frame({
   };
 }
 
+function v4Frame({
+  cursor,
+  runId,
+  eventType,
+  payload,
+  eventId = cursor,
+  seq = 1,
+  messageId,
+}: {
+  cursor: string;
+  runId: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+  eventId?: string;
+  seq?: number;
+  messageId?: string | null;
+}) {
+  const isControl = eventType.startsWith("stream.");
+  return {
+    id: cursor,
+    event: eventType,
+    data: JSON.stringify({
+      schema: isControl
+        ? "ai-platform.public-run-stream-control.v4"
+        : "ai-platform.public-run-stream-event.v4",
+      event_id: eventId,
+      run_id: runId,
+      message_id: isControl
+        ? null
+        : messageId === undefined && eventType.startsWith("message.")
+          ? "message-1"
+          : (messageId ?? null),
+      seq: isControl ? null : seq,
+      event_type: eventType,
+      stream_incarnation: 1,
+      replayable:
+        eventType !== "stream.heartbeat" && eventType !== "stream.gap",
+      trace_ref: null,
+      causation_event_id: null,
+      emitted_at: "2026-08-09T00:00:00Z",
+      payload,
+    }),
+  };
+}
+
 test("flushes accepted public text before reconnect status can replay-deduplicate it", async () => {
   let messages: Message[] = [
     {
@@ -236,6 +278,9 @@ function createTokenRefreshContext() {
     sessionIdRef: { current: "session-old" },
     currentRunIdRef: { current: "run-old" },
     processedEventIdsRef: { current: new Set<string>() },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: null, runId: null, sequence: null },
+    },
     lastHistoryTimestampRef: { current: null },
     activeSubagentStackRef: { current: [] },
     streamVersionRef: { current: 5 },
@@ -355,6 +400,16 @@ test("retries startup-not-ready inside one SSE owner and persists the accepted c
   context.acceptedStreamCursorRef = {
     current: { sessionId: null, runId: null, eventId: null },
   };
+  context.v4MessageOwnerRef = {
+    current: {
+      sessionId: "session-old",
+      runId: "run-old",
+      streamVersion: 5,
+      streamIncarnation: 1,
+      protocolMessageId: "message-1",
+      reducerMessageId: "assistant-old",
+    },
+  };
   context.onRunTerminal = () => true;
   const ownerHeaders: Array<Record<string, string>> = [];
   let startupAttempts = 0;
@@ -378,25 +433,25 @@ test("retries startup-not-ready inside one SSE owner and persists the accepted c
     startupAttempts += 1;
     await init.onopen?.(new Response(null, { status: 200 }));
     init.onmessage?.(
-      v3Frame({
+      v4Frame({
         cursor: "run-old:1:1-0",
         runId: "run-old",
-        eventType: "assistant_text_delta",
+        eventType: "message.delta",
         eventId: "delta-1",
         payload: { delta: "accepted" },
       }) as never,
     );
     init.onmessage?.(
-      v3Frame({
+      v4Frame({
         cursor: "run-old:1:2-0",
         runId: "run-old",
-        eventType: "terminal",
+        eventType: "run.succeeded",
         eventId: "terminal-1",
         payload: {
-          event_id: "terminal-1",
+          terminal_event_id: "terminal-1",
           hydrate_required: true,
-          status: "succeeded",
         },
+        seq: 2,
       }) as never,
     );
     init.onclose?.();
@@ -1291,6 +1346,7 @@ test("does not let a deferred stale 401 refresh mutate a replacement SSE stream"
 
 test("retries a current 401 once and aborts only its captured stream controller", async () => {
   const { context, connectionStates } = createTokenRefreshContext();
+  context.onRunTerminal = () => true;
   const signals: AbortSignal[] = [];
   let fetchCalls = 0;
   let refreshCalls = 0;
@@ -1323,16 +1379,16 @@ test("retries a current 401 once and aborts only its captured stream controller"
         },
         afterOpen: async (init) => {
           init.onmessage?.(
-            v3Frame({
+            v4Frame({
               cursor: "run-old:1:2-0",
               runId: "run-old",
-              eventType: "terminal",
+              eventType: "run.succeeded",
               eventId: "terminal-after-refresh",
               payload: {
-                event_id: "terminal-after-refresh",
+                terminal_event_id: "terminal-after-refresh",
                 hydrate_required: true,
-                status: "succeeded",
               },
+              seq: 2,
             }) as never,
           );
           await init.onclose?.();
@@ -1433,6 +1489,7 @@ test("flushes a paused accepted answer delta exactly once before a 401 refresh h
     setConnectionStatus: () => undefined,
     setIsInitializingSandbox: () => undefined,
     setSandboxError: () => undefined,
+    onRunTerminal: () => true,
   } satisfies SSEConnectionContext;
 
   await connectToSSE(
@@ -1450,16 +1507,16 @@ test("flushes a paused accepted answer delta exactly once before a 401 refresh h
         },
         afterOpen: async (init) => {
           init.onmessage?.(
-            v3Frame({
+            v4Frame({
               cursor: "run-refresh-flush:1:2-0",
               runId: owner.runId,
-              eventType: "terminal",
+              eventType: "run.succeeded",
               eventId: "terminal-refresh-flush",
               payload: {
-                event_id: "terminal-refresh-flush",
+                terminal_event_id: "terminal-refresh-flush",
                 hydrate_required: true,
-                status: "succeeded",
               },
+              seq: 9,
             }) as never,
           );
           await init.onclose?.();
@@ -2226,15 +2283,13 @@ test("resets reconnect budget only after a unique current-run progress frame", a
       async (_input, init) => {
         await init.onopen?.(new Response(null, { status: 200 }));
         init.onmessage?.(
-          v3Frame({
+          v4Frame({
             cursor: "run-1:1:43-0",
             runId: "run-1",
-            eventType: "semantic_stage",
+            eventType: "run.cancel_requested",
             eventId: "current-progress",
-            payload: {
-              event: "run_event",
-              data: { sequence: 43, event_type: "worker_progress" },
-            },
+            payload: { source: "user" },
+            seq: 43,
           }) as never,
         );
         await init.onclose?.();
@@ -2251,6 +2306,16 @@ test("resets reconnect budget only after a unique current-run progress frame", a
     isConnectingRef: { current: false },
     retryCountRef: { current: MAX_CONSECUTIVE_SSE_RECONNECTS },
     processedEventIdsRef: { current: new Set<string>() },
+    v4MessageOwnerRef: {
+      current: {
+        sessionId: "session-1",
+        runId: "run-1",
+        streamVersion: 0,
+        streamIncarnation: 1,
+        protocolMessageId: "message-1",
+        reducerMessageId: "assistant-1",
+      },
+    },
   } satisfies SSEConnectionContext;
   await assert.rejects(
     connectToSSE(
@@ -2262,12 +2327,13 @@ test("resets reconnect budget only after a unique current-run progress frame", a
       async (_input, init) => {
         await init.onopen?.(new Response(null, { status: 200 }));
         init.onmessage?.(
-          v3Frame({
+          v4Frame({
             cursor: "run-1:1:44-0",
             runId: "run-1",
-            eventType: "assistant_text_delta",
+            eventType: "message.delta",
             eventId: "current-delta",
             payload: { delta: "新进度" },
+            seq: 44,
           }) as never,
         );
         await init.onclose?.();
@@ -2278,7 +2344,7 @@ test("resets reconnect budget only after a unique current-run progress frame", a
   assert.equal(deltaProgressContext.retryCountRef.current, 0);
   assert.equal(
     deltaProgressContext.acceptedRunEventSequenceRef.current.sequence,
-    43,
+    44,
   );
 
   const nonProgressContext = {
@@ -2299,12 +2365,14 @@ test("resets reconnect budget only after a unique current-run progress frame", a
         await init.onopen?.(new Response(null, { status: 200 }));
         init.onmessage?.({ event: "ping", data: "{}" } as never);
         init.onmessage?.(
-          v3Frame({
+          v4Frame({
             cursor: "run-1:1:45-0",
             runId: "run-1",
-            eventType: "stream_open",
+            eventType: "stream.open",
             eventId: "stream-open-current",
-            payload: { design_id: STREAM_DESIGN_ID },
+            payload: {
+              design_id: "ai-platform.redis-streams-sse-event-channel.v4",
+            },
           }) as never,
         );
         await init.onclose?.();
@@ -2316,6 +2384,91 @@ test("resets reconnect budget only after a unique current-run progress frame", a
     nonProgressContext.retryCountRef.current,
     MAX_CONSECUTIVE_SSE_RECONNECTS,
   );
+});
+
+test("holds duplicate terminal transport and immediate stream.end behind hydration acceptance", async () => {
+  let acceptTerminal: (() => void) | undefined;
+  let terminalCalls = 0;
+  const connectionStates: string[] = [];
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: "assistant-1" },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    messagesRef: { current: [] as Message[] },
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: "session-1", runId: "run-1", sequence: null },
+    },
+    acceptedStreamCursorRef: {
+      current: { sessionId: null, runId: null, eventId: null, streamIncarnation: null },
+    },
+    v4TerminalEventIdsRef: { current: new Set<string>() },
+    v4TerminalFenceRef: { current: null },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: (status: string) => connectionStates.push(status),
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunTerminal: (_runId, _status, _messageId, onAccepted) => {
+      terminalCalls += 1;
+      acceptTerminal = onAccepted;
+      return true;
+    },
+  } satisfies SSEConnectionContext;
+
+  await connectToSSE(
+    "session-1",
+    "run-1",
+    "assistant-1",
+    context,
+    false,
+    async (_input, init) => {
+      await init.onopen?.(new Response(null, { status: 200 }));
+      init.onmessage?.(
+        v4Frame({
+          cursor: "run-1:1:1-0",
+          runId: "run-1",
+          eventType: "run.succeeded",
+          eventId: "terminal-event-1",
+          payload: { terminal_event_id: "terminal-1", hydrate_required: true },
+        }) as never,
+      );
+      init.onmessage?.(
+        v4Frame({
+          cursor: "run-1:1:2-0",
+          runId: "run-1",
+          eventType: "run.succeeded",
+          eventId: "terminal-event-1",
+          payload: { terminal_event_id: "terminal-1", hydrate_required: true },
+        }) as never,
+      );
+      init.onmessage?.(
+        v4Frame({
+          cursor: "run-1:1:3-0",
+          runId: "run-1",
+          eventType: "stream.end",
+          eventId: "stream-end-1",
+          payload: { terminal_event_id: "terminal-1" },
+        }) as never,
+      );
+      await init.onclose?.();
+    },
+  );
+
+  assert.equal(terminalCalls, 1);
+  assert.equal(context.acceptedStreamCursorRef.current.eventId, null);
+  assert.deepEqual(connectionStates, ["connecting", "connected"]);
+  acceptTerminal?.();
+  await Promise.resolve();
+  assert.equal(context.acceptedStreamCursorRef.current.eventId, "run-1:1:3-0");
+  assert.equal(connectionStates.at(-1), "disconnected");
 });
 
 test("duplicate semantic Redis entry advances only the transport cursor", async () => {
@@ -2333,7 +2486,7 @@ test("duplicate semantic Redis entry advances only the transport cursor", async 
       current: { sessionId: "session-1", runId: "run-1", sequence: 8 },
     },
     acceptedStreamCursorRef: {
-      current: { sessionId: "session-1", runId: "run-1", eventId: "run-1:1:1-0" },
+      current: { sessionId: "session-1", runId: "run-1", eventId: "run-1:1:1-0", streamIncarnation: 1 },
     },
     lastHistoryTimestampRef: { current: null },
     activeSubagentStackRef: { current: [] },
@@ -2355,15 +2508,13 @@ test("duplicate semantic Redis entry advances only the transport cursor", async 
       async (_input, init) => {
         await init.onopen?.(new Response(null, { status: 200 }));
         init.onmessage?.(
-          v3Frame({
+          v4Frame({
             cursor: "run-1:1:2-0",
             runId: "run-1",
-            eventType: "semantic_stage",
+            eventType: "run.cancel_requested",
             eventId: "semantic-progress-1",
-            payload: {
-              event: "run_event",
-              data: { sequence: 9, event_type: "worker_progress" },
-            },
+            payload: { source: "user" },
+            seq: 9,
           }) as never,
         );
         await init.onclose?.();
@@ -2408,7 +2559,7 @@ test("replay gap preserves partial output until an active run reaches terminal h
       current: { sessionId: "session-1", runId: "run-1", sequence: 8 },
     },
     acceptedStreamCursorRef: {
-      current: { sessionId: "session-1", runId: "run-1", eventId: "run-1:1:1-0" },
+      current: { sessionId: "session-1", runId: "run-1", eventId: "run-1:1:1-0", streamIncarnation: 1 },
     },
     lastHistoryTimestampRef: { current: null },
     activeSubagentStackRef: { current: [] },
@@ -2435,10 +2586,23 @@ test("replay gap preserves partial output until an active run reaches terminal h
     async (_input, init) => {
       capturedInit = init;
       await init.onopen?.(new Response(null, { status: 200 }));
-      init.onmessage?.({
-        event: "gap",
-        data: JSON.stringify({ recovery: "reload_durable_state" }),
-      } as never);
+      init.onmessage?.(
+        v4Frame({
+          cursor: "run-1:1:2-0",
+          runId: "run-1",
+          eventType: "stream.gap",
+          eventId: "gap-1",
+          payload: {
+            reason: "retained_history_unavailable",
+            recovery: "reload_durable_state",
+            requested_event_id: "1-0",
+            requested_stream_incarnation: 1,
+            current_stream_incarnation: 1,
+            earliest_available_event_id: "2-0",
+            latest_available_event_id: "2-0",
+          },
+        }) as never,
+      );
     },
     {
       replayGapDependencies: {

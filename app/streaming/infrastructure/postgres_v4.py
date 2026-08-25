@@ -12,8 +12,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from app.streaming.application.durable_v4 import V4PublicationClaim
+from app.streaming.application.durable_v4 import (
+    V4PublicationClaim,
+    V4PublicationScope,
+)
 from app.streaming.application.recovery_v4 import (
+    V4ReadySuccessorRebuild,
+    V4SuccessorActivation,
     V4SuccessorRebuildClaim,
     V4SuccessorRebuildItem,
     V4SuccessorRebuildReceipt,
@@ -65,6 +70,42 @@ class PostgresV4PublicationClaims:
         self._transaction_factory = transaction_factory
         self._claim_token_factory = claim_token_factory or (lambda: secrets.token_urlsafe(32))
 
+    async def list_due_scopes(self, *, limit: int) -> tuple[V4PublicationScope, ...]:
+        if isinstance(limit, bool) or not 1 <= limit <= 256:
+            raise ValueError("v4_publication_due_limit_invalid")
+        async with self._transaction_factory() as conn:
+            cursor = await conn.execute(
+                """
+                select event.tenant_id,
+                       event.run_id,
+                       event.payload_json -> '__stream_v4' ->> 'attempt_id' as attempt_id,
+                       (event.payload_json -> '__stream_v4' ->> 'stream_incarnation')::bigint
+                         as stream_incarnation
+                from run_events as event
+                where event.visible_to_user = true
+                  and event.payload_json ? '__stream_v4'
+                  and event.stream_publication_state = 'pending'
+                  and (event.stream_publication_next_attempt_at is null
+                       or event.stream_publication_next_attempt_at <= clock_timestamp())
+                  and (event.stream_publication_claim_token is null
+                       or event.stream_publication_claim_expires_at <= clock_timestamp())
+                group by event.tenant_id, event.run_id, attempt_id, stream_incarnation
+                order by min(event.sequence), event.tenant_id, event.run_id
+                limit %s
+                """,
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+        return tuple(
+            V4PublicationScope(
+                tenant_id=_row_text(row, "tenant_id"),
+                run_id=_row_text(row, "run_id"),
+                attempt_id=_row_text(row, "attempt_id"),
+                stream_incarnation=_row_int(row, "stream_incarnation"),
+            )
+            for row in rows
+        )
+
     async def claim_next(
         self,
         *,
@@ -96,6 +137,8 @@ class PostgresV4PublicationClaims:
             authority_row = await authority_cursor.fetchone()
             if authority_row is None:
                 raise V4PublicationAuthorityError("v4_publication_authority_missing")
+            if authority_row.get("state") == "admission_pending":
+                return None
             authority = _stream_authority(authority_row)
             if (
                 authority.attempt_id != attempt_id
@@ -380,6 +423,598 @@ class PostgresV4PublicationClaims:
             return await result.fetchone() is not None
 
 
+class PostgresV4SuccessorActivations:
+    """Commit a ready successor without opening a Redis or source-event path."""
+
+    def __init__(self, transaction_factory: TransactionFactory) -> None:
+        self._transaction_factory = transaction_factory
+
+    async def activate(
+        self, ready: V4ReadySuccessorRebuild
+    ) -> V4SuccessorActivation | None:
+        _ready_activation_scope(ready)
+        try:
+            successor_open_text = ready.successor_open_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise V4SuccessorRebuildAuthorityError(
+                "v4_cutover_successor_open_invalid"
+            ) from exc
+        claim_token_digest = hashlib.sha256(ready.claim_token.encode("utf-8")).hexdigest()
+        async with self._transaction_factory() as conn:
+            if not await _lock_run(conn, tenant_id=ready.tenant_id, run_id=ready.run_id):
+                raise V4SuccessorRebuildAuthorityError("v4_cutover_run_missing")
+            run_cursor = await conn.execute(
+                """
+                select id, tenant_id, status as run_status
+                from runs
+                where tenant_id = %s and id = %s
+                for update
+                """,
+                (ready.tenant_id, ready.run_id),
+            )
+            run_row = await run_cursor.fetchone()
+            if run_row is None:
+                raise V4SuccessorRebuildAuthorityError("v4_cutover_run_missing")
+            run_status = _row_text(run_row, "run_status")
+            if run_status not in {"succeeded", "failed", "cancelled"}:
+                raise V4SuccessorRebuildAuthorityError("v4_cutover_run_not_terminal")
+
+            attempt_cursor = await conn.execute(
+                """
+                select id, status as attempt_status, ordinal
+                from run_attempts
+                where tenant_id = %s and run_id = %s and id = %s
+                  and ordinal = (
+                    select max(current_attempt.ordinal)
+                    from run_attempts as current_attempt
+                    where current_attempt.tenant_id = %s
+                      and current_attempt.run_id = %s
+                  )
+                for update
+                """,
+                (
+                    ready.tenant_id,
+                    ready.run_id,
+                    ready.attempt_id,
+                    ready.tenant_id,
+                    ready.run_id,
+                ),
+            )
+            attempt_row = await attempt_cursor.fetchone()
+            if (
+                attempt_row is None
+                or _row_text(attempt_row, "id") != ready.attempt_id
+                or _row_text(attempt_row, "attempt_status") != run_status
+            ):
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_current_attempt_conflict"
+                )
+
+            authority_cursor = await conn.execute(
+                """
+                select tenant_id, tenant_scope, run_id, attempt_id,
+                       stream_incarnation, authorization_epoch, design_id,
+                       projection_version, state, revocation_state,
+                       open_event_id, open_payload_bytes, open_payload_digest
+                from sse_stream_authorities
+                where tenant_id = %s and run_id = %s
+                for update
+                """,
+                (ready.tenant_id, ready.run_id),
+            )
+            authority_row = await authority_cursor.fetchone()
+            if authority_row is None:
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_authority_missing"
+                )
+            try:
+                authority = _stream_authority(authority_row)
+            except V4PublicationAuthorityError as exc:
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_authority_invalid"
+                ) from exc
+            if (
+                authority.tenant_id != ready.tenant_id
+                or authority.tenant_scope != ready.tenant_scope
+                or authority.run_id != ready.run_id
+                or authority.attempt_id != ready.attempt_id
+                or authority.stream_incarnation != ready.source_incarnation
+                or authority.authorization_epoch != ready.source_authorization_epoch
+                or authority_row.get("state") != "terminal"
+            ):
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_source_authority_changed"
+                )
+            _validated_source_open_digest(authority=authority, row=authority_row)
+
+            cursor_cursor = await conn.execute(
+                """
+                select next_sequence - 1 as source_cursor_sequence
+                from run_event_cursors
+                where tenant_id = %s and run_id = %s
+                for update
+                """,
+                (ready.tenant_id, ready.run_id),
+            )
+            cursor_row = await cursor_cursor.fetchone()
+            if (
+                cursor_row is None
+                or cursor_row.get("source_cursor_sequence")
+                != ready.source_cursor_sequence
+            ):
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_source_cursor_changed"
+                )
+
+            source_rows_cursor = await conn.execute(
+                """
+                select id, tenant_id, run_id, sequence, event_type,
+                       visible_to_user, payload_json,
+                       stream_publication_state, created_at
+                from run_events
+                where tenant_id = %s and run_id = %s
+                  and sequence <= %s
+                  and visible_to_user = true
+                  and payload_json ? '__stream_v4'
+                order by sequence asc, id asc
+                for update
+                """
+                ,
+                (ready.tenant_id, ready.run_id, ready.source_cursor_sequence),
+            )
+            source_rows = tuple(await source_rows_cursor.fetchall())
+            eligible_rows = _eligible_successor_source_rows(
+                source_rows,
+                invalid_state_error="v4_cutover_source_fingerprint_changed",
+            )
+            if len(eligible_rows) != ready.entry_count - 2:
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_source_cardinality_changed"
+                )
+            source_fingerprint = _successor_source_fingerprint(
+                authority=authority,
+                authority_row=authority_row,
+                run_status=run_status,
+                source_cursor_sequence=ready.source_cursor_sequence,
+                source_through_sequence=ready.source_through_sequence,
+                source_open_digest=_validated_source_open_digest(
+                    authority=authority,
+                    row=authority_row,
+                ),
+                source_rows_digest=_successor_source_rows_digest(eligible_rows),
+                origin_incarnation=ready.origin_incarnation,
+                origin_authorization_epoch=ready.origin_authorization_epoch,
+            )
+            if source_fingerprint != ready.source_authority_fingerprint:
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_source_fingerprint_changed"
+                )
+
+            rebuild_cursor = await conn.execute(
+                """
+                select tenant_id, run_id, attempt_id,
+                       source_incarnation, source_authorization_epoch,
+                       origin_incarnation, origin_authorization_epoch,
+                       successor_incarnation, successor_authorization_epoch,
+                       source_authority_fingerprint, source_cursor_sequence,
+                       source_through_sequence, successor_open_event_id,
+                       successor_open_bytes, successor_open_digest, state,
+                       claim_token_digest, claim_expires_at, item_count,
+                       built_through_sequence, receipt_entry_count,
+                       receipt_open_event_id, receipt_terminal_event_id,
+                       receipt_end_event_id, receipt_last_redis_id,
+                       receipt_last_envelope_bytes, receipt_last_envelope_digest,
+                       receipt_digest
+                from sse_stream_rebuilds
+                where id = %s and tenant_id = %s and run_id = %s
+                for update
+                """,
+                (ready.rebuild_id, ready.tenant_id, ready.run_id),
+            )
+            rebuild_row = await rebuild_cursor.fetchone()
+            if rebuild_row is None:
+                raise V4SuccessorRebuildAuthorityError("v4_cutover_rebuild_missing")
+            if rebuild_row.get("state") != "ready":
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_rebuild_not_ready"
+                )
+            if any(
+                (
+                    rebuild_row.get("attempt_id") != ready.attempt_id,
+                    rebuild_row.get("source_incarnation") != ready.source_incarnation,
+                    rebuild_row.get("source_authorization_epoch")
+                    != ready.source_authorization_epoch,
+                    rebuild_row.get("origin_incarnation")
+                    != ready.origin_incarnation,
+                    rebuild_row.get("origin_authorization_epoch")
+                    != ready.origin_authorization_epoch,
+                    rebuild_row.get("successor_incarnation")
+                    != ready.successor_incarnation,
+                    rebuild_row.get("successor_authorization_epoch")
+                    != ready.successor_authorization_epoch,
+                    rebuild_row.get("source_authority_fingerprint")
+                    != ready.source_authority_fingerprint,
+                    rebuild_row.get("source_cursor_sequence")
+                    != ready.source_cursor_sequence,
+                    rebuild_row.get("source_through_sequence")
+                    != ready.source_through_sequence,
+                    rebuild_row.get("successor_open_event_id")
+                    != ready.successor_open_event_id,
+                    rebuild_row.get("successor_open_digest")
+                    != ready.successor_open_digest,
+                    rebuild_row.get("claim_token_digest") != claim_token_digest,
+                    rebuild_row.get("claim_expires_at") != ready.claim_expires_at,
+                    rebuild_row.get("built_through_sequence")
+                    != ready.source_through_sequence,
+                    rebuild_row.get("receipt_entry_count") != ready.entry_count,
+                    rebuild_row.get("receipt_open_event_id") != ready.open_event_id,
+                    rebuild_row.get("receipt_terminal_event_id") != ready.terminal_event_id,
+                    rebuild_row.get("receipt_end_event_id") != ready.end_event_id,
+                    rebuild_row.get("receipt_last_redis_id") != ready.last_redis_id,
+                    rebuild_row.get("receipt_last_envelope_digest") != ready.last_envelope_digest,
+                    rebuild_row.get("receipt_digest") != ready.receipt_digest,
+                )
+            ):
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_ready_claim_changed"
+                )
+            try:
+                persisted_last_bytes = _row_text(
+                    rebuild_row, "receipt_last_envelope_bytes"
+                ).encode("utf-8")
+            except (UnicodeEncodeError, RuntimeError) as exc:
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_receipt_last_envelope_invalid"
+                ) from exc
+            if (
+                persisted_last_bytes != ready.last_envelope_bytes
+                or hashlib.sha256(persisted_last_bytes).hexdigest()
+                != rebuild_row.get("receipt_last_envelope_digest")
+                or hashlib.sha256(persisted_last_bytes).hexdigest()
+                != ready.last_envelope_digest
+            ):
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_receipt_last_envelope_changed"
+                )
+            try:
+                persisted_open = _row_text(
+                    rebuild_row, "successor_open_bytes"
+                ).encode("utf-8")
+            except (UnicodeEncodeError, RuntimeError) as exc:
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_successor_open_invalid"
+                ) from exc
+            if persisted_open != ready.successor_open_bytes:
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_successor_open_changed"
+                )
+            rebuild_items_cursor = await conn.execute(
+                """
+                select sequence, event_id, event_type,
+                       canonical_envelope_bytes, envelope_digest, redis_id
+                from sse_stream_rebuild_items
+                where rebuild_id = %s
+                order by sequence asc
+                for update
+                """,
+                (ready.rebuild_id,),
+            )
+            rebuild_items = tuple(await rebuild_items_cursor.fetchall())
+            if len(rebuild_items) != ready.entry_count - 2:
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_rebuild_cardinality_changed"
+                )
+            expected_incarnation = ready.successor_incarnation
+            expected_epoch = ready.successor_authorization_epoch
+            origin_authority = _StreamAuthority(
+                tenant_id=authority.tenant_id,
+                tenant_scope=authority.tenant_scope,
+                run_id=authority.run_id,
+                attempt_id=authority.attempt_id,
+                stream_incarnation=ready.origin_incarnation,
+                authorization_epoch=ready.origin_authorization_epoch,
+            )
+            seen_sequences: set[int] = set()
+            seen_event_ids: set[str] = set()
+            for item_index, (item, source_row) in enumerate(
+                zip(rebuild_items, eligible_rows, strict=True)
+            ):
+                try:
+                    item_bytes = _row_text(item, "canonical_envelope_bytes").encode("utf-8")
+                    item_envelope = validate_internal_envelope_v4(
+                        json.loads(item_bytes.decode("utf-8"))
+                    )
+                    expected_envelope = project_public_v4_successor(
+                        source_row,
+                        source_authority=origin_authority,
+                        successor_incarnation=expected_incarnation,
+                        successor_authorization_epoch=expected_epoch,
+                    )
+                    expected_bytes = canonical_json_bytes(expected_envelope)
+                except (UnicodeDecodeError, json.JSONDecodeError, RuntimeError, ValueError) as exc:
+                    raise V4SuccessorRebuildAuthorityError(
+                        "v4_cutover_rebuild_item_invalid"
+                    ) from exc
+                sequence = item.get("sequence")
+                event_id = item.get("event_id")
+                if (
+                    sequence != source_row.get("sequence")
+                    or event_id != source_row.get("id")
+                    or item.get("event_type") != source_row.get("event_type")
+                    or sequence in seen_sequences
+                    or event_id in seen_event_ids
+                    or hashlib.sha256(item_bytes).hexdigest() != item.get("envelope_digest")
+                    or item_bytes != expected_bytes
+                    or item_envelope.get("tenant_scope") != ready.tenant_scope
+                    or item_envelope.get("run_id") != ready.run_id
+                    or item_envelope.get("attempt_id") != ready.attempt_id
+                    or item_envelope.get("stream_incarnation") != expected_incarnation
+                    or item.get("redis_id") != ready.item_redis_ids[item_index]
+                ):
+                    raise V4SuccessorRebuildAuthorityError(
+                        "v4_cutover_rebuild_item_changed"
+                    )
+                seen_sequences.add(sequence)
+                seen_event_ids.add(event_id)
+
+            if len(seen_sequences) != len(rebuild_items) or len(seen_event_ids) != len(rebuild_items):
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_rebuild_item_identity_changed"
+                )
+
+            clock_cursor = await conn.execute(
+                "select clock_timestamp() as current_time"
+            )
+            clock_row = await clock_cursor.fetchone()
+            current_time = clock_row.get("current_time") if clock_row else None
+            if (
+                not isinstance(current_time, datetime)
+                or not isinstance(ready.claim_expires_at, datetime)
+                or ready.claim_expires_at <= current_time
+            ):
+                raise V4SuccessorRebuildAuthorityError("v4_cutover_claim_expired")
+
+            terminal_cursor = await conn.execute(
+                """
+                select sequence, event_id, event_type, canonical_envelope_bytes
+                from sse_stream_rebuild_items
+                where rebuild_id = %s
+                order by sequence desc
+                limit 1
+                for update
+                """,
+                (ready.rebuild_id,),
+            )
+            terminal_row = await terminal_cursor.fetchone()
+            if terminal_row is None or terminal_row.get("event_type") not in {
+                "run.succeeded",
+                "run.failed",
+                "run.cancelled",
+            }:
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_terminal_receipt_missing"
+                )
+            try:
+                terminal_bytes = _row_text(
+                    terminal_row, "canonical_envelope_bytes"
+                ).encode("utf-8")
+                terminal = validate_internal_envelope_v4(
+                    json.loads(terminal_bytes.decode("utf-8"))
+                )
+            except (UnicodeDecodeError, json.JSONDecodeError, RuntimeError, ValueError) as exc:
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_terminal_receipt_invalid"
+                ) from exc
+            expected_end = canonical_json_bytes(
+                build_v4_control(
+                    event_id=stream_end_event_id(str(terminal["event_id"])),
+                    tenant_scope=ready.tenant_scope,
+                    run_id=ready.run_id,
+                    attempt_id=ready.attempt_id,
+                    stream_incarnation=ready.successor_incarnation,
+                    event_type="stream.end",
+                    payload={"terminal_event_id": str(terminal["event_id"])},
+                    source={
+                        "kind": "terminal_intent",
+                        "terminal_event_id": str(terminal["event_id"]),
+                    },
+                    causation_event_id=str(terminal["event_id"]),
+                    emitted_at=terminal["emitted_at"],
+                )
+            )
+            if (
+                ready.stream_key
+                != stream_key(
+                    tenant_scope_value=ready.tenant_scope,
+                    run_id=ready.run_id,
+                    stream_incarnation=ready.successor_incarnation,
+                )
+                or ready.end_event_id != stream_end_event_id(str(terminal["event_id"]))
+                or ready.last_envelope_bytes != expected_end
+                or ready.last_redis_id == ""
+                or ready.last_redis_id.split("-", 1)[0].isdigit() is False
+            ):
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_terminal_receipt_changed"
+                )
+            redis_id_tuple(ready.last_redis_id)
+
+            for source_row, item_redis_id in zip(
+                eligible_rows, ready.item_redis_ids, strict=True
+            ):
+                if source_row.get("stream_publication_state") == "published":
+                    continue
+                disposition = await conn.execute(
+                    """
+                    update run_events as event
+                    set stream_publication_state = 'published',
+                        stream_publication_attempts =
+                          coalesce(event.stream_publication_attempts, 0) + 1,
+                        stream_publication_redis_id = %s,
+                        stream_publication_next_attempt_at = null,
+                        stream_publication_last_error = null,
+                        stream_publication_claim_token = null,
+                        stream_publication_claim_expires_at = null,
+                        payload_json = jsonb_set(
+                          jsonb_set(
+                            event.payload_json,
+                            '{__stream_v4,publication_state}',
+                            to_jsonb('published'::text),
+                            true
+                          ),
+                          '{__stream_v4,publication_attempts}',
+                          to_jsonb(coalesce((event.payload_json -> '__stream_v4' ->> 'publication_attempts')::integer, 0) + 1),
+                          true
+                        )
+                    where event.id = %s
+                      and event.tenant_id = %s and event.run_id = %s
+                      and event.sequence = %s
+                      and event.stream_publication_state = 'pending'
+                      and event.payload_json -> '__stream_v4' ->> 'attempt_id' = %s
+                      and event.payload_json -> '__stream_v4' ->> 'stream_incarnation' = %s
+                      and event.payload_json -> '__stream_v4' ->> 'authorization_epoch' = %s
+                    returning event.id
+                    """,
+                    (
+                        item_redis_id,
+                        _row_text(source_row, "id"),
+                        ready.tenant_id,
+                        ready.run_id,
+                        _row_int(source_row, "sequence"),
+                        ready.attempt_id,
+                        str(ready.origin_incarnation),
+                        str(ready.origin_authorization_epoch),
+                    ),
+                )
+                if await disposition.fetchone() is None:
+                    raise V4SuccessorRebuildAuthorityError(
+                        "v4_cutover_source_disposition_changed"
+                    )
+
+            cutover = await conn.execute(
+                """
+                update sse_stream_rebuilds
+                set state = 'cutover', updated_at = clock_timestamp()
+                where id = %s and tenant_id = %s and run_id = %s
+                  and attempt_id = %s and state = 'ready'
+                  and claim_token_digest = %s
+                  and claim_expires_at = %s
+                  and claim_expires_at > clock_timestamp()
+                  and source_incarnation = %s
+                  and source_authorization_epoch = %s
+                  and origin_incarnation = %s
+                  and origin_authorization_epoch = %s
+                  and successor_incarnation = %s
+                  and successor_authorization_epoch = %s
+                  and source_authority_fingerprint = %s
+                  and source_cursor_sequence = %s
+                  and source_through_sequence = %s
+                  and successor_open_event_id = %s
+                  and successor_open_digest = %s
+                  and receipt_entry_count = %s
+                  and receipt_open_event_id = %s
+                  and receipt_terminal_event_id = %s
+                  and receipt_end_event_id = %s
+                  and receipt_last_redis_id = %s
+                  and receipt_last_envelope_bytes = %s
+                  and receipt_last_envelope_digest = %s
+                  and receipt_digest = %s
+                returning id
+                """,
+                (
+                    ready.rebuild_id,
+                    ready.tenant_id,
+                    ready.run_id,
+                    ready.attempt_id,
+                    claim_token_digest,
+                    ready.claim_expires_at,
+                    ready.source_incarnation,
+                    ready.source_authorization_epoch,
+                    ready.origin_incarnation,
+                    ready.origin_authorization_epoch,
+                    ready.successor_incarnation,
+                    ready.successor_authorization_epoch,
+                    ready.source_authority_fingerprint,
+                    ready.source_cursor_sequence,
+                    ready.source_through_sequence,
+                    ready.successor_open_event_id,
+                    ready.successor_open_digest,
+                    ready.entry_count,
+                    ready.open_event_id,
+                    ready.terminal_event_id,
+                    ready.end_event_id,
+                    ready.last_redis_id,
+                    ready.last_envelope_bytes.decode("utf-8"),
+                    ready.last_envelope_digest,
+                    ready.receipt_digest,
+                ),
+            )
+            if await cutover.fetchone() is None:
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_ready_claim_lost"
+                )
+            await conn.execute(
+                """
+                update sse_authority_leases
+                set closed_at = clock_timestamp(),
+                    close_reason = 'stream_cutover',
+                    updated_at = clock_timestamp()
+                where tenant_id = %s and run_id = %s
+                  and authorization_epoch = %s and closed_at is null
+                """,
+                (ready.tenant_id, ready.run_id, ready.source_authorization_epoch),
+            )
+            authority_update = await conn.execute(
+                """
+                update sse_stream_authorities
+                set stream_incarnation = %s,
+                    authorization_epoch = %s,
+                    open_event_id = %s,
+                    open_payload_bytes = %s,
+                    open_payload_digest = %s,
+                    state = 'terminal',
+                    revocation_state = 'active',
+                    updated_at = clock_timestamp()
+                where tenant_id = %s and run_id = %s
+                  and attempt_id = %s
+                  and stream_incarnation = %s
+                  and authorization_epoch = %s
+                  and state = 'terminal'
+                  and revocation_state = 'active'
+                returning tenant_id, run_id
+                """,
+                (
+                    ready.successor_incarnation,
+                    ready.successor_authorization_epoch,
+                    ready.successor_open_event_id,
+                    successor_open_text,
+                    ready.successor_open_digest,
+                    ready.tenant_id,
+                    ready.run_id,
+                    ready.attempt_id,
+                    ready.source_incarnation,
+                    ready.source_authorization_epoch,
+                ),
+            )
+            if await authority_update.fetchone() is None:
+                raise V4SuccessorRebuildAuthorityError(
+                    "v4_cutover_source_authority_lost"
+                )
+        return V4SuccessorActivation(
+            rebuild_id=ready.rebuild_id,
+            tenant_id=ready.tenant_id,
+            run_id=ready.run_id,
+            attempt_id=ready.attempt_id,
+            source_incarnation=ready.source_incarnation,
+            source_authorization_epoch=ready.source_authorization_epoch,
+            successor_incarnation=ready.successor_incarnation,
+            successor_authorization_epoch=ready.successor_authorization_epoch,
+            successor_open_event_id=ready.successor_open_event_id,
+            end_event_id=ready.end_event_id,
+            last_redis_id=ready.last_redis_id,
+        )
+
+
 class V4SuccessorRebuildAuthorityError(ValueError):
     """The requested successor snapshot is not a quiesced current authority."""
 
@@ -527,6 +1162,45 @@ class PostgresV4SuccessorRebuilds:
                     (_row_text(active, "id"),),
                 )
 
+            lineage_cursor = await conn.execute(
+                """
+                select attempt_id, successor_authorization_epoch,
+                       origin_incarnation, origin_authorization_epoch
+                from sse_stream_rebuilds
+                where tenant_id = %s and run_id = %s
+                  and successor_incarnation = %s and state = 'cutover'
+                order by updated_at desc, id desc
+                limit 1
+                for update
+                """,
+                (tenant_id, run_id, authority.stream_incarnation),
+            )
+            lineage = await lineage_cursor.fetchone()
+            if lineage is None:
+                origin_incarnation = authority.stream_incarnation
+                origin_authorization_epoch = authority.authorization_epoch
+            else:
+                if (
+                    lineage.get("attempt_id") != attempt_id
+                    or lineage.get("successor_authorization_epoch")
+                    != authority.authorization_epoch
+                ):
+                    raise V4SuccessorRebuildAuthorityError(
+                        "v4_rebuild_source_lineage_invalid"
+                    )
+                origin_incarnation = _row_int(lineage, "origin_incarnation")
+                origin_authorization_epoch = _row_int(
+                    lineage, "origin_authorization_epoch"
+                )
+            origin_authority = _StreamAuthority(
+                tenant_id=authority.tenant_id,
+                tenant_scope=authority.tenant_scope,
+                run_id=authority.run_id,
+                attempt_id=authority.attempt_id,
+                stream_incarnation=origin_incarnation,
+                authorization_epoch=origin_authorization_epoch,
+            )
+
             incarnation_cursor = await conn.execute(
                 """
                 select greatest(
@@ -611,6 +1285,8 @@ class PostgresV4SuccessorRebuilds:
                 source_through_sequence=source_through_sequence,
                 source_open_digest=source_open_digest,
                 source_rows_digest=source_rows_digest,
+                origin_incarnation=origin_incarnation,
+                origin_authorization_epoch=origin_authorization_epoch,
             )
             open_event_id = successor_stream_open_event_id(
                 tenant_scope=authority.tenant_scope,
@@ -638,7 +1314,7 @@ class PostgresV4SuccessorRebuilds:
             for row in eligible_rows:
                 envelope = project_public_v4_successor(
                     row,
-                    source_authority=authority,
+                    source_authority=origin_authority,
                     successor_incarnation=successor_incarnation,
                     successor_authorization_epoch=successor_epoch,
                 )
@@ -671,6 +1347,7 @@ class PostgresV4SuccessorRebuilds:
                 insert into sse_stream_rebuilds(
                   id, tenant_id, run_id, attempt_id,
                   source_incarnation, source_authorization_epoch,
+                  origin_incarnation, origin_authorization_epoch,
                   successor_incarnation, successor_authorization_epoch,
                   source_authority_fingerprint, source_cursor_sequence,
                   source_through_sequence,
@@ -679,7 +1356,7 @@ class PostgresV4SuccessorRebuilds:
                   claim_expires_at, item_count, built_through_sequence
                 ) values (
                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                  %s, %s, %s, %s, 'building', %s, %s, %s, 0
+                  %s, %s, %s, %s, %s, %s, 'building', %s, %s, %s, 0
                 )
                 """,
                 (
@@ -689,6 +1366,8 @@ class PostgresV4SuccessorRebuilds:
                     attempt_id,
                     source_incarnation,
                     authority.authorization_epoch,
+                    origin_incarnation,
+                    origin_authorization_epoch,
                     successor_incarnation,
                     successor_epoch,
                     source_fingerprint,
@@ -727,6 +1406,8 @@ class PostgresV4SuccessorRebuilds:
                 tenant_scope=authority.tenant_scope,
                 source_incarnation=authority.stream_incarnation,
                 source_authorization_epoch=authority.authorization_epoch,
+                origin_incarnation=origin_incarnation,
+                origin_authorization_epoch=origin_authorization_epoch,
                 successor_incarnation=successor_incarnation,
                 successor_authorization_epoch=successor_epoch,
                 source_authority_fingerprint=source_fingerprint,
@@ -850,6 +1531,7 @@ class PostgresV4SuccessorRebuilds:
                 """
                 select tenant_id, run_id, attempt_id,
                        source_incarnation, source_authorization_epoch,
+                       origin_incarnation, origin_authorization_epoch,
                        successor_incarnation, successor_authorization_epoch,
                        source_authority_fingerprint, source_cursor_sequence,
                        source_through_sequence, successor_open_event_id,
@@ -995,15 +1677,50 @@ class PostgresV4SuccessorRebuilds:
                 source_through_sequence=claim.source_through_sequence,
                 source_open_digest=source_open_digest,
                 source_rows_digest=source_rows_digest,
+                origin_incarnation=claim.origin_incarnation,
+                origin_authorization_epoch=claim.origin_authorization_epoch,
             )
             if source_fingerprint != claim.source_authority_fingerprint:
                 raise V4SuccessorRebuildAuthorityError(
                     "v4_rebuild_readiness_source_fingerprint_changed"
                 )
+            for item, redis_id in zip(
+                claim.items, receipt.item_redis_ids, strict=True
+            ):
+                item_receipt = await conn.execute(
+                    """
+                    update sse_stream_rebuild_items
+                    set redis_id = %s
+                    where rebuild_id = %s and sequence = %s
+                      and event_id = %s and envelope_digest = %s
+                      and redis_id is null
+                    returning event_id
+                    """,
+                    (
+                        redis_id,
+                        claim.rebuild_id,
+                        item.sequence,
+                        item.event_id,
+                        item.envelope_digest,
+                    ),
+                )
+                if await item_receipt.fetchone() is None:
+                    raise V4SuccessorRebuildAuthorityError(
+                        "v4_rebuild_readiness_item_receipt_changed"
+                    )
+
             result = await conn.execute(
                 """
                 update sse_stream_rebuilds
                 set state = 'ready',
+                    receipt_entry_count = %s,
+                    receipt_open_event_id = %s,
+                    receipt_terminal_event_id = %s,
+                    receipt_end_event_id = %s,
+                    receipt_last_redis_id = %s,
+                    receipt_last_envelope_bytes = %s,
+                    receipt_last_envelope_digest = %s,
+                    receipt_digest = %s,
                     built_through_sequence = source_through_sequence,
                     updated_at = clock_timestamp()
                 where id = %s
@@ -1024,6 +1741,14 @@ class PostgresV4SuccessorRebuilds:
                 returning id
                 """,
                 (
+                    receipt.entry_count,
+                    receipt.open_event_id,
+                    receipt.terminal_event_id,
+                    receipt.end_event_id,
+                    receipt.last_redis_id,
+                    receipt.last_envelope_bytes.decode("utf-8"),
+                    receipt.last_envelope_digest,
+                    receipt.receipt_digest,
                     claim.rebuild_id,
                     claim.tenant_id,
                     claim.run_id,
@@ -1042,6 +1767,19 @@ class PostgresV4SuccessorRebuilds:
                 ),
             )
             return await result.fetchone() is not None
+
+def _ready_activation_scope(ready: V4ReadySuccessorRebuild) -> None:
+    if not isinstance(ready, V4ReadySuccessorRebuild):
+        raise TypeError("v4_ready_rebuild_type_invalid")
+    _scope(ready.rebuild_id, ready.tenant_id, ready.run_id, ready.attempt_id)
+    _token(ready.claim_token)
+    _incarnation(ready.source_incarnation)
+    _incarnation(ready.successor_incarnation)
+    if ready.successor_incarnation <= ready.source_incarnation:
+        raise ValueError("v4_cutover_successor_incarnation_invalid")
+    if ready.successor_authorization_epoch <= ready.source_authorization_epoch:
+        raise ValueError("v4_cutover_successor_epoch_invalid")
+
 
 def _successor_claim_scope(claim: V4SuccessorRebuildClaim) -> None:
     if not isinstance(claim, V4SuccessorRebuildClaim):
@@ -1117,6 +1855,8 @@ def _same_successor_claim_row(
             row.get("attempt_id") == claim.attempt_id,
             row.get("source_incarnation") == claim.source_incarnation,
             row.get("source_authorization_epoch") == claim.source_authorization_epoch,
+            row.get("origin_incarnation") == claim.origin_incarnation,
+            row.get("origin_authorization_epoch") == claim.origin_authorization_epoch,
             row.get("successor_incarnation") == claim.successor_incarnation,
             row.get("successor_authorization_epoch") == claim.successor_authorization_epoch,
             row.get("source_authority_fingerprint") == claim.source_authority_fingerprint,
@@ -1173,6 +1913,8 @@ def _successor_source_fingerprint(
     source_through_sequence: int,
     source_open_digest: str,
     source_rows_digest: str,
+    origin_incarnation: int,
+    origin_authorization_epoch: int,
 ) -> str:
     return hashlib.sha256(
         canonical_json_bytes(
@@ -1183,6 +1925,8 @@ def _successor_source_fingerprint(
                 "attempt_id": authority.attempt_id,
                 "stream_incarnation": authority.stream_incarnation,
                 "authorization_epoch": authority.authorization_epoch,
+                "origin_incarnation": origin_incarnation,
+                "origin_authorization_epoch": origin_authorization_epoch,
                 "open_event_id": _row_text(authority_row, "open_event_id"),
                 "open_payload_digest": source_open_digest,
                 "state": "terminal",
@@ -1353,6 +2097,7 @@ __all__ = [
     "DEFAULT_CLAIM_TTL",
     "DEFAULT_RETRY_DELAY",
     "PostgresV4PublicationClaims",
+    "PostgresV4SuccessorActivations",
     "PostgresV4SuccessorRebuilds",
     "V4PublicationAuthorityError",
     "V4SuccessorRebuildAuthorityError",

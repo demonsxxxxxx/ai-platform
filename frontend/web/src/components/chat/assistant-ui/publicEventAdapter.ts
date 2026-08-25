@@ -190,6 +190,38 @@ function parseTransportCursor(value: unknown, runId: string): { incarnation: num
   return { incarnation, redisId };
 }
 
+export function comparePublicRunStreamCursors(
+  left: string,
+  right: string,
+): number | null {
+  const parse = (value: string) => {
+    const redisSeparator = value.lastIndexOf(":");
+    const incarnationSeparator = value.lastIndexOf(":", redisSeparator - 1);
+    if (incarnationSeparator <= 0) return null;
+    const runId = value.slice(0, incarnationSeparator);
+    if (!RUN_ID_PATTERN.test(runId)) return null;
+    const parsed = parseTransportCursor(value, runId);
+    if (!parsed) return null;
+    const [redisMs, redisSequence] = parsed.redisId.split("-").map(BigInt);
+    return { runId, incarnation: parsed.incarnation, redisMs, redisSequence };
+  };
+  const leftParts = parse(left);
+  const rightParts = parse(right);
+  if (
+    !leftParts ||
+    !rightParts ||
+    leftParts.runId !== rightParts.runId ||
+    leftParts.incarnation !== rightParts.incarnation
+  ) {
+    return null;
+  }
+  if (leftParts.redisMs !== rightParts.redisMs) {
+    return leftParts.redisMs < rightParts.redisMs ? -1 : 1;
+  }
+  if (leftParts.redisSequence === rightParts.redisSequence) return 0;
+  return leftParts.redisSequence < rightParts.redisSequence ? -1 : 1;
+}
+
 function isValidTransportCursor(value: unknown, runId: string, incarnation: number): value is string {
   return parseTransportCursor(value, runId)?.incarnation === incarnation;
 }
@@ -221,7 +253,7 @@ function isRfc3339DateTime(value: unknown): value is string {
   return !Number.isNaN(Date.parse(value));
 }
 
-function payloadIsValid(eventType: string, payload: unknown, runId: string, incarnation: number): payload is Record<string, unknown> {
+function payloadIsValid(eventType: string, payload: unknown, _runId: string, incarnation: number): payload is Record<string, unknown> {
   if (!isRecord(payload) || Object.keys(payload).length > 64) return false;
   const allowed = PAYLOAD_KEYS[eventType];
   if (!allowed || !hasOnlyKeys(payload, allowed)) return false;
@@ -252,14 +284,23 @@ function payloadIsValid(eventType: string, payload: unknown, runId: string, inca
   if (eventType === "stream.gap") {
     const requestedIncarnation = payload.requested_stream_incarnation;
     const currentIncarnation = payload.current_stream_incarnation;
-    if (!safeInteger(requestedIncarnation, 1) || currentIncarnation !== incarnation) return false;
-    const requestedCursor = payload.requested_event_id === null
-      ? null
-      : parseTransportCursor(payload.requested_event_id, runId);
-    if (payload.requested_event_id !== null && (!requestedCursor || requestedCursor.incarnation !== requestedIncarnation)) return false;
-    for (const key of ["earliest_available_event_id", "latest_available_event_id"] as const) {
-      const cursor = payload[key] === null ? null : parseTransportCursor(payload[key], runId);
-      if (payload[key] !== null && (!cursor || cursor.incarnation !== currentIncarnation)) return false;
+    if (
+      (requestedIncarnation !== null && !safeInteger(requestedIncarnation, 1)) ||
+      currentIncarnation !== incarnation
+    ) {
+      return false;
+    }
+    for (const key of [
+      "requested_event_id",
+      "earliest_available_event_id",
+      "latest_available_event_id",
+    ] as const) {
+      const redisId = payload[key];
+      if (redisId !== null && (
+        typeof redisId !== "string" || !REDIS_ID_PATTERN.test(redisId)
+      )) {
+        return false;
+      }
     }
   }
   return true;

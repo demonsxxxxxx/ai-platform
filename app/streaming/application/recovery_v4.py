@@ -68,7 +68,10 @@ class V4SuccessorRebuildReceipt:
     terminal_event_id: str
     end_event_id: str
     last_redis_id: str
+    item_redis_ids: tuple[str, ...]
     last_envelope_bytes: bytes
+    last_envelope_digest: str = ""
+    receipt_digest: str = ""
 
     def __post_init__(self) -> None:
         for name in (
@@ -105,13 +108,69 @@ class V4SuccessorRebuildReceipt:
             raise ValueError("v4_rebuild_receipt_last_envelope_bytes_invalid")
         try:
             redis_id_tuple(self.last_redis_id)
+            if (
+                not isinstance(self.item_redis_ids, tuple)
+                or len(self.item_redis_ids) != self.entry_count - 2
+            ):
+                raise ValueError
+            for item_redis_id in self.item_redis_ids:
+                redis_id_tuple(item_redis_id)
         except ValueError as exc:
             raise ValueError("v4_rebuild_receipt_redis_id_invalid") from exc
+        expected_last_digest = hashlib.sha256(self.last_envelope_bytes).hexdigest()
+        if not self.last_envelope_digest:
+            object.__setattr__(self, "last_envelope_digest", expected_last_digest)
+        elif self.last_envelope_digest != expected_last_digest:
+            raise ValueError("v4_rebuild_receipt_last_envelope_digest_invalid")
+        expected_receipt_digest = successor_receipt_digest(
+            stream_key=self.stream_key,
+            stream_incarnation=self.stream_incarnation,
+            entry_count=self.entry_count,
+            open_event_id=self.open_event_id,
+            terminal_event_id=self.terminal_event_id,
+            end_event_id=self.end_event_id,
+            last_redis_id=self.last_redis_id,
+            item_redis_ids=self.item_redis_ids,
+            last_envelope_digest=expected_last_digest,
+        )
+        if not self.receipt_digest:
+            object.__setattr__(self, "receipt_digest", expected_receipt_digest)
+        elif self.receipt_digest != expected_receipt_digest:
+            raise ValueError("v4_rebuild_receipt_digest_invalid")
 
+
+def successor_receipt_digest(
+    *,
+    stream_key: str,
+    stream_incarnation: int,
+    entry_count: int,
+    open_event_id: str,
+    terminal_event_id: str,
+    end_event_id: str,
+    last_redis_id: str,
+    item_redis_ids: tuple[str, ...],
+    last_envelope_digest: str,
+) -> str:
+    return hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "stream_key": stream_key,
+                "stream_incarnation": stream_incarnation,
+                "entry_count": entry_count,
+                "open_event_id": open_event_id,
+                "terminal_event_id": terminal_event_id,
+                "end_event_id": end_event_id,
+                "last_redis_id": last_redis_id,
+                "item_redis_ids": list(item_redis_ids),
+                "last_envelope_digest": last_envelope_digest,
+            }
+        )
+    ).hexdigest()
 
 @dataclass(frozen=True, slots=True)
 class V4ReadySuccessorRebuild:
     """Narrow post-CAS capability; canonical candidate bytes stay private."""
+
 
     rebuild_id: str
     tenant_id: str
@@ -120,15 +179,26 @@ class V4ReadySuccessorRebuild:
     tenant_scope: str
     source_incarnation: int
     source_authorization_epoch: int
+    origin_incarnation: int
+    origin_authorization_epoch: int
     successor_incarnation: int
     successor_authorization_epoch: int
     source_authority_fingerprint: str
     source_cursor_sequence: int
     source_through_sequence: int
+    successor_open_event_id: str
+    successor_open_bytes: bytes = field(repr=False)
+    successor_open_digest: str
     stream_key: str
     end_event_id: str
     last_redis_id: str
+    item_redis_ids: tuple[str, ...]
     last_envelope_bytes: bytes = field(repr=False)
+    last_envelope_digest: str
+    receipt_digest: str
+    entry_count: int
+    open_event_id: str
+    terminal_event_id: str
     claim_expires_at: datetime
     claim_token: str = field(repr=False)
 
@@ -140,25 +210,29 @@ class V4ReadySuccessorRebuild:
             "attempt_id",
             "tenant_scope",
             "source_authority_fingerprint",
+            "successor_open_event_id",
+            "successor_open_digest",
             "stream_key",
             "end_event_id",
             "last_redis_id",
+            "open_event_id",
+            "terminal_event_id",
+            "last_envelope_digest",
+            "receipt_digest",
             "claim_token",
         ):
             value = getattr(self, name)
             if not isinstance(value, str) or not value:
                 raise ValueError(f"v4_ready_rebuild_{name}_invalid")
-        if (
-            len(self.source_authority_fingerprint) != 64
-            or any(
-                character not in "0123456789abcdef"
-                for character in self.source_authority_fingerprint
-            )
-        ):
-            raise ValueError("v4_ready_rebuild_fingerprint_invalid")
+        for name in ("last_envelope_digest", "receipt_digest"):
+            value = getattr(self, name)
+            if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+                raise ValueError(f"v4_ready_rebuild_{name}_invalid")
         for name in (
             "source_incarnation",
             "source_authorization_epoch",
+            "origin_incarnation",
+            "origin_authorization_epoch",
             "successor_incarnation",
             "successor_authorization_epoch",
             "source_cursor_sequence",
@@ -167,20 +241,48 @@ class V4ReadySuccessorRebuild:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"v4_ready_rebuild_{name}_invalid")
+        if self.origin_incarnation > self.source_incarnation:
+            raise ValueError("v4_ready_rebuild_origin_incarnation_invalid")
+        if self.origin_authorization_epoch > self.source_authorization_epoch:
+            raise ValueError("v4_ready_rebuild_origin_epoch_invalid")
         if self.successor_incarnation <= self.source_incarnation:
             raise ValueError("v4_ready_rebuild_incarnation_invalid")
         if self.successor_authorization_epoch <= self.source_authorization_epoch:
             raise ValueError("v4_ready_rebuild_epoch_invalid")
+        if (
+            isinstance(self.entry_count, bool)
+            or not isinstance(self.entry_count, int)
+            or self.entry_count < 3
+        ):
+            raise ValueError("v4_ready_rebuild_entry_count_invalid")
         if self.source_through_sequence > self.source_cursor_sequence:
             raise ValueError("v4_ready_rebuild_source_cursor_invalid")
         if not isinstance(self.claim_expires_at, datetime):
             raise ValueError("v4_ready_rebuild_expiry_invalid")
         if self.claim_expires_at.tzinfo is None or self.claim_expires_at.utcoffset() is None:
             raise ValueError("v4_ready_rebuild_expiry_timezone_invalid")
+        if not isinstance(self.successor_open_bytes, bytes) or not self.successor_open_bytes:
+            raise ValueError("v4_ready_rebuild_open_bytes_invalid")
+        if hashlib.sha256(self.successor_open_bytes).hexdigest() != self.successor_open_digest:
+            raise ValueError("v4_ready_rebuild_open_digest_invalid")
         try:
-            redis_id_tuple(self.last_redis_id)
-        except ValueError as exc:
-            raise ValueError("v4_ready_rebuild_redis_id_invalid") from exc
+            opening = validate_internal_envelope_v4(
+                json.loads(self.successor_open_bytes.decode("utf-8"))
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ValueError("v4_ready_rebuild_open_bytes_invalid") from exc
+        if (
+            canonical_json_bytes(opening) != self.successor_open_bytes
+            or opening["event_type"] != "stream.open"
+            or opening["event_id"] != self.successor_open_event_id
+            or opening["tenant_scope"] != self.tenant_scope
+            or opening["run_id"] != self.run_id
+            or opening["attempt_id"] != self.attempt_id
+            or opening["stream_incarnation"] != self.successor_incarnation
+            or opening["source"]
+            != {"kind": "stream_authority", "authority_id": self.successor_open_event_id}
+        ):
+            raise ValueError("v4_ready_rebuild_open_mismatch")
         if not isinstance(self.last_envelope_bytes, bytes) or not self.last_envelope_bytes:
             raise ValueError("v4_ready_rebuild_last_envelope_bytes_invalid")
         try:
@@ -191,6 +293,57 @@ class V4ReadySuccessorRebuild:
             raise ValueError("v4_ready_rebuild_last_envelope_bytes_invalid") from exc
         if canonical_json_bytes(envelope) != self.last_envelope_bytes:
             raise ValueError("v4_ready_rebuild_last_envelope_bytes_invalid")
+        if hashlib.sha256(self.last_envelope_bytes).hexdigest() != self.last_envelope_digest:
+            raise ValueError("v4_ready_rebuild_last_envelope_digest_invalid")
+        expected_receipt_digest = successor_receipt_digest(
+            stream_key=self.stream_key,
+            stream_incarnation=self.successor_incarnation,
+            entry_count=self.entry_count,
+            open_event_id=self.open_event_id,
+            terminal_event_id=self.terminal_event_id,
+            end_event_id=self.end_event_id,
+            last_redis_id=self.last_redis_id,
+            item_redis_ids=self.item_redis_ids,
+            last_envelope_digest=self.last_envelope_digest,
+        )
+        if (
+            not isinstance(self.item_redis_ids, tuple)
+            or len(self.item_redis_ids) != self.entry_count - 2
+        ):
+            raise ValueError("v4_ready_rebuild_item_receipts_invalid")
+        try:
+            for item_redis_id in self.item_redis_ids:
+                redis_id_tuple(item_redis_id)
+        except ValueError as exc:
+            raise ValueError("v4_ready_rebuild_item_receipts_invalid") from exc
+        if expected_receipt_digest != self.receipt_digest:
+            raise ValueError("v4_ready_rebuild_receipt_digest_invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class V4SuccessorActivation:
+    """Receipt for one PostgreSQL-committed successor authority activation."""
+
+
+    rebuild_id: str
+    tenant_id: str
+    run_id: str
+    attempt_id: str
+    source_incarnation: int
+    source_authorization_epoch: int
+    successor_incarnation: int
+    successor_authorization_epoch: int
+    successor_open_event_id: str
+    end_event_id: str
+    last_redis_id: str
+
+
+class V4SuccessorActivations(Protocol):
+    """Port for the release-atomic ready-to-cutover PostgreSQL transaction."""
+
+    async def activate(
+        self, ready: V4ReadySuccessorRebuild
+    ) -> V4SuccessorActivation | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +358,8 @@ class V4SuccessorRebuildClaim:
     tenant_scope: str
     source_incarnation: int
     source_authorization_epoch: int
+    origin_incarnation: int
+    origin_authorization_epoch: int
     successor_incarnation: int
     successor_authorization_epoch: int
     source_authority_fingerprint: str
@@ -242,6 +397,8 @@ class V4SuccessorRebuildClaim:
         for name in (
             "source_incarnation",
             "source_authorization_epoch",
+            "origin_incarnation",
+            "origin_authorization_epoch",
             "successor_incarnation",
             "successor_authorization_epoch",
             "source_cursor_sequence",
@@ -250,6 +407,10 @@ class V4SuccessorRebuildClaim:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"v4_rebuild_claim_{name}_invalid")
+        if self.origin_incarnation > self.source_incarnation:
+            raise ValueError("v4_rebuild_claim_origin_incarnation_invalid")
+        if self.origin_authorization_epoch > self.source_authorization_epoch:
+            raise ValueError("v4_rebuild_claim_origin_epoch_invalid")
         if self.source_cursor_sequence < self.source_through_sequence:
             raise ValueError("v4_rebuild_claim_source_cursor_invalid")
         if self.successor_incarnation <= self.source_incarnation:
@@ -404,6 +565,7 @@ def _validate_receipt_for_claim(
         receipt.stream_key != expected_key
         or receipt.stream_incarnation != claim.successor_incarnation
         or receipt.entry_count != len(claim.items) + 2
+        or len(receipt.item_redis_ids) != len(claim.items)
         or receipt.open_event_id != claim.successor_open_event_id
         or receipt.terminal_event_id != terminal.event_id
         or receipt.end_event_id != stream_end_event_id(terminal.event_id)
@@ -446,18 +608,84 @@ async def build_v4_successor_rebuild(
         tenant_scope=claim.tenant_scope,
         source_incarnation=claim.source_incarnation,
         source_authorization_epoch=claim.source_authorization_epoch,
+        origin_incarnation=claim.origin_incarnation,
+        origin_authorization_epoch=claim.origin_authorization_epoch,
         successor_incarnation=claim.successor_incarnation,
         successor_authorization_epoch=claim.successor_authorization_epoch,
         source_authority_fingerprint=claim.source_authority_fingerprint,
         source_cursor_sequence=claim.source_cursor_sequence,
         source_through_sequence=claim.source_through_sequence,
+        successor_open_event_id=claim.successor_open_event_id,
+        successor_open_bytes=claim.successor_open_bytes,
+        successor_open_digest=claim.successor_open_digest,
         stream_key=receipt.stream_key,
         end_event_id=receipt.end_event_id,
         last_redis_id=receipt.last_redis_id,
+        item_redis_ids=receipt.item_redis_ids,
         last_envelope_bytes=receipt.last_envelope_bytes,
+        last_envelope_digest=receipt.last_envelope_digest,
+        receipt_digest=receipt.receipt_digest,
+        entry_count=receipt.entry_count,
+        open_event_id=receipt.open_event_id,
+        terminal_event_id=receipt.terminal_event_id,
         claim_expires_at=claim.claim_expires_at,
         claim_token=claim.claim_token,
     )
+
+
+async def activate_v4_successor_rebuild(
+    activations: V4SuccessorActivations,
+    ready: V4ReadySuccessorRebuild,
+) -> V4SuccessorActivation | None:
+    """Commit one ready successor authority through its PostgreSQL owner."""
+
+    if activations is None:
+        raise TypeError("v4_successor_activations_invalid")
+    if not isinstance(ready, V4ReadySuccessorRebuild):
+        raise TypeError("v4_ready_rebuild_invalid")
+    try:
+        envelope = validate_internal_envelope_v4(
+            json.loads(ready.last_envelope_bytes.decode("utf-8"))
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError("v4_ready_rebuild_terminal_receipt_invalid") from exc
+    if (
+        envelope["event_type"] != "stream.end"
+        or envelope["event_id"] != ready.end_event_id
+        or envelope["stream_incarnation"] != ready.successor_incarnation
+        or envelope["tenant_scope"] != ready.tenant_scope
+        or envelope["run_id"] != ready.run_id
+        or envelope["attempt_id"] != ready.attempt_id
+    ):
+        raise ValueError("v4_ready_rebuild_terminal_receipt_invalid")
+    return await activations.activate(ready)
+
+
+async def recover_v4_missing_terminal_stream(
+    rebuilds: V4SuccessorRebuilds,
+    activations: V4SuccessorActivations,
+    transport: V4SuccessorRebuildTransport,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    source_incarnation: int,
+    claim_ttl: timedelta,
+) -> V4SuccessorActivation | None:
+    """Build, mark ready, and activate one terminal successor in order."""
+
+    ready = await build_v4_successor_rebuild(
+        rebuilds,
+        transport,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        source_incarnation=source_incarnation,
+        claim_ttl=claim_ttl,
+    )
+    if ready is None:
+        return None
+    return await activate_v4_successor_rebuild(activations, ready)
 
 
 async def prepare_v4_successor_rebuild(
@@ -498,11 +726,15 @@ async def prepare_v4_successor_rebuild(
 
 __all__ = [
     "V4ReadySuccessorRebuild",
+    "V4SuccessorActivation",
+    "V4SuccessorActivations",
     "V4SuccessorRebuildClaim",
     "V4SuccessorRebuildItem",
     "V4SuccessorRebuildReceipt",
     "V4SuccessorRebuildTransport",
     "V4SuccessorRebuilds",
+    "activate_v4_successor_rebuild",
     "build_v4_successor_rebuild",
     "prepare_v4_successor_rebuild",
+    "recover_v4_missing_terminal_stream",
 ]

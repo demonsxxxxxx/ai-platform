@@ -211,7 +211,7 @@ async def test_base_schema_ledger_advances_to_terminal_reconciliation_schema():
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.25.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.26.2"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -219,7 +219,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "run_attempts",
         "run_skill_materializations",
         "run_events",
-        "sse_stream_rebuilds",
+        "sse_stream_authorities",
         "sse_stream_rebuild_items",
         "messages",
         "files",
@@ -494,6 +494,14 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         ),
         (
             "sse_stream_rebuilds",
+            "chk_sse_stream_rebuild_origin",
+            "c",
+            "CHECK (origin_incarnation > 0 AND origin_incarnation <= source_incarnation "
+            "AND origin_authorization_epoch > 0 "
+            "AND origin_authorization_epoch <= source_authorization_epoch)",
+        ),
+        (
+            "sse_stream_rebuilds",
             "chk_sse_stream_rebuild_progress",
             "c",
             "CHECK (source_cursor_sequence >= source_through_sequence "
@@ -507,6 +515,23 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "c",
             "CHECK (state = ANY (ARRAY['building'::text, 'ready'::text, "
             "'cutover'::text, 'aborted'::text, 'expired'::text]))",
+        ),
+        (
+            "sse_stream_rebuilds",
+            "chk_sse_stream_rebuild_receipt",
+            "c",
+            "CHECK (((receipt_entry_count IS NULL) AND "
+            "(receipt_open_event_id IS NULL) AND (receipt_terminal_event_id IS NULL) "
+            "AND (receipt_end_event_id IS NULL) AND (receipt_last_redis_id IS NULL) "
+            "AND (receipt_last_envelope_bytes IS NULL) "
+            "AND (receipt_last_envelope_digest IS NULL) AND (receipt_digest IS NULL)) "
+            "OR ((receipt_entry_count > 0) AND (receipt_open_event_id <> ''::text) "
+            "AND (receipt_terminal_event_id <> ''::text) "
+            "AND (receipt_end_event_id <> ''::text) "
+            "AND (receipt_last_redis_id ~ '^[0-9]+-[0-9]+$'::text) "
+            "AND (receipt_last_envelope_bytes <> ''::text) "
+            "AND (receipt_last_envelope_digest ~ '^[0-9a-f]{64}$'::text) "
+            "AND (receipt_digest ~ '^[0-9a-f]{64}$'::text)))",
         ),
         (
             "sse_stream_rebuilds",
@@ -528,6 +553,12 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "CHECK (sequence > 0 AND event_id <> ''::text AND event_type <> ''::text "
             "AND canonical_envelope_bytes <> ''::text "
             "AND envelope_digest ~ '^[0-9a-f]{64}$'::text)",
+        ),
+        (
+            "sse_stream_rebuild_items",
+            "chk_sse_stream_rebuild_item_redis_id",
+            "c",
+            "CHECK (redis_id IS NULL OR redis_id ~ '^[0-9]+-[0-9]+$'::text)",
         ),
         (
             "sse_stream_rebuild_items",
@@ -691,7 +722,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "f1e1ab81030cbda514b25c6a81ef726db540abfcbe38e18be93ed72d574e7d4a"
+        "9f80933b643ad71c23f416e8ad2a52b3890efba83ec16e990a66979662b93d20"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

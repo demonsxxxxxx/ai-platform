@@ -32,13 +32,13 @@ import {
   type PublicStreamPresentation,
   type PublicStreamPresentationOwner,
 } from "./publicStreamPresentation";
-import { comparePublicRunStreamCursors } from "./publicRunStreamV3";
 import {
   terminalRunStatusFromEvent,
   type TerminalRunStatus,
 } from "./runLifecycle";
 import {
   adaptPublicRunStreamEventV4,
+  comparePublicRunStreamCursors,
   projectV4EventToLegacyHandler,
   type V4AdapterBinding,
   type V4PublicEvent,
@@ -394,10 +394,11 @@ export function handlePublicRunStreamEventV4(
       event.runId,
       terminalStatus,
       messageId,
-      acceptV4TerminalFence(event, ctx, terminalEventId, () => undefined),
+      acceptV4TerminalFence(event, ctx, terminalEventId, () => {
+        onCommitted?.(false);
+      }),
     );
     if (!accepted) return false;
-    onCommitted?.(false);
     return true;
   }
   if (event.eventType === "stream.end") {

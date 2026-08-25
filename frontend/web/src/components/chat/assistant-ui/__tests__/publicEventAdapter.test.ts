@@ -117,15 +117,15 @@ test("v4 adapter preserves nullable run-level identity and projects safe activit
   assert.match(projected.streamEvent.data, /cancel_requested/);
 });
 
-test("v4 gap cursors require the canonical run/incarnation/Redis-id grammar", () => {
+test("v4 gap payload uses raw Redis IDs while SSE carries the full cursor", () => {
   const raw = frame("stream.gap", {
     reason: "stream_missing",
     recovery: "reload_durable_state",
-    requested_event_id: "run-1:2:4-0",
+    requested_event_id: "4-0",
     requested_stream_incarnation: 2,
     current_stream_incarnation: 2,
-    earliest_available_event_id: "run-1:2:1-0",
-    latest_available_event_id: "run-1:2:9-0",
+    earliest_available_event_id: "1-0",
+    latest_available_event_id: "9-0",
   }).value as Record<string, unknown>;
   const control = {
     eventHeader: "stream.gap",
@@ -142,7 +142,7 @@ test("v4 gap cursors require the canonical run/incarnation/Redis-id grammar", ()
   assert.ok(adaptPublicRunStreamEventV4(control, { runId: "run-1" }));
   assert.equal(
     adaptPublicRunStreamEventV4(
-      { ...control, value: { ...(control.value as Record<string, unknown>), payload: { ...((control.value as Record<string, unknown>).payload as Record<string, unknown>), latest_available_event_id: "4-0" } } },
+      { ...control, value: { ...(control.value as Record<string, unknown>), payload: { ...((control.value as Record<string, unknown>).payload as Record<string, unknown>), latest_available_event_id: "run-1:2:4-0" } } },
       { runId: "run-1" },
     ),
     null,

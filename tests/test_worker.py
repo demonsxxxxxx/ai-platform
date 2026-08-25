@@ -1,6 +1,8 @@
 import asyncio
+import hashlib
 import json
 import types
+from types import SimpleNamespace
 from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -42,14 +44,19 @@ from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.runtime.sandbox.executor_client import SandboxExecutorHttpError
 from app.skills.execution_profiles import resolve_skill_execution_profile
+from app.streaming.application.durable_v4 import V4PendingAdmission
+from app.streaming.application.worker_publication_v4 import WorkerV4Capabilities
+from app.streaming.api import build_v4_control
+from app.streaming.domain.transport import canonical_json_bytes
+
 from app.worker import (
+    process_run_payload as _process_run_payload,
     WorkerOutcome,
     _locked_run_principal,
     _multi_agent_result_summary,
     _payload_from_locked_run,
     _record_run_step_from_event,
     parse_queue_payload,
-    process_run_payload,
 )
 from tests.support.executor_stubs import FailingExecutorStub, SuccessfulExecutorStub
 
@@ -59,25 +66,130 @@ _ORIGINAL_ENSURE_MCP_TOOL_ACTIVE = repository_module.ensure_mcp_tool_active
 _ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS = repository_module.materialize_run_skill_manifests
 
 
-@pytest.fixture(autouse=True)
-def stub_sse_stream_publisher(monkeypatch):
-    class Publisher:
-        def __init__(self, tenant_id, run_id, attempt_id, authority_secret):
-            self.run_id = run_id
+class _FakeWorkerV4Admission:
+    def __init__(self, calls=None):
+        self.calls = calls
 
-        async def prepare(self, conn):
-            return None
+    async def prepare_pending_authority(self, *, tenant_id, run_id, attempt_id):
+        envelope = build_v4_control(
+            event_id=f"open-{run_id}-{attempt_id}",
+            tenant_scope="a" * 64,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            stream_incarnation=1,
+            event_type="stream.open",
+            payload={"design_id": "ai-platform.redis-streams-sse-event-channel.v4"},
+            source={"kind": "stream_authority", "authority_id": f"open-{run_id}-{attempt_id}"},
+        )
+        payload = canonical_json_bytes(envelope)
+        return V4PendingAdmission(
+            tenant_id=tenant_id,
+            tenant_scope="a" * 64,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            stream_incarnation=1,
+            open_event_id=envelope["event_id"],
+            open_payload_bytes=payload,
+            open_payload_digest=hashlib.sha256(payload).hexdigest(),
+        )
 
-        async def open(self):
-            return None
+    async def prepare_pending_authority_in_transaction(
+        self,
+        transaction,
+        *,
+        tenant_id,
+        run_id,
+        attempt_id,
+    ):
+        if self.calls is not None:
+            self.calls.append(("prepare_v4_authority", transaction, tenant_id, run_id, attempt_id))
+        return await self.prepare_pending_authority(
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+        )
 
-        async def confirm(self, conn):
-            return None
+    async def list_pending_admissions(self, *, limit):
+        return ()
 
-        async def aclose(self):
-            return None
+    async def confirm_pending_admission(self, admission, *, redis_id):
+        assert redis_id
+        return SimpleNamespace(
+            tenant_id=admission.tenant_id,
+            run_id=admission.run_id,
+            attempt_id=admission.attempt_id,
+            stream_incarnation=admission.stream_incarnation,
+        )
 
-    monkeypatch.setattr(worker_module, "RunStreamPublisher", Publisher)
+
+class _FakeWorkerV4Authority:
+    async def get(self, *, tenant_id, run_id):
+        return SimpleNamespace(attempt_id="qat-test-attempt", stream_incarnation=1)
+
+
+class _FakeWorkerV4Persistence:
+    async def persist_event_and_check_cancel(
+        self,
+        *,
+        run_payload,
+        persist_event,
+        event_type,
+        stage,
+        message,
+        payload,
+        record_run_step,
+    ):
+        async with worker_module.transaction() as conn:
+            if persist_event:
+                merged = {"visible_to_user": True, "severity": "info"}
+                if payload:
+                    merged.update(payload)
+                await repository_module.append_event(
+                    conn,
+                    tenant_id=run_payload.tenant_id,
+                    run_id=run_payload.run_id,
+                    event_type=event_type,
+                    stage=stage,
+                    message=message,
+                    payload=merged,
+                )
+                await record_run_step(
+                    conn,
+                    tenant_id=run_payload.tenant_id,
+                    run_id=run_payload.run_id,
+                    event_type=event_type,
+                    message=message,
+                    payload=payload,
+                )
+            return await repository_module.is_cancel_requested(
+                conn,
+                tenant_id=run_payload.tenant_id,
+                run_id=run_payload.run_id,
+            )
+
+
+class _FakeWorkerV4Claims:
+    async def claim_next(self, **kwargs):
+        return None
+
+
+class _FakeWorkerV4Transport:
+    async def publish(self, canonical_envelope_bytes):
+        return "0-1"
+
+
+_FAKE_WORKER_V4_CAPABILITIES = WorkerV4Capabilities(
+    authority=_FakeWorkerV4Authority(),
+    pending_admissions=_FakeWorkerV4Admission(),
+    event_persistence=_FakeWorkerV4Persistence(),
+    publication_claims=_FakeWorkerV4Claims(),
+    publication_transport=_FakeWorkerV4Transport(),
+)
+
+
+async def process_run_payload(*args, **kwargs):
+    kwargs.setdefault("v4_capabilities", _FAKE_WORKER_V4_CAPABILITIES)
+    return await _process_run_payload(*args, **kwargs)
 
 
 def test_worker_preserves_only_typed_safe_executor_failures():
@@ -1541,10 +1653,12 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
         worker_id,
         reconciliation,
         transaction_factory,
+        v4_capabilities,
     ):
         del registry, reconciliation
         assert worker_id == "worker-a"
         assert transaction_factory is None
+        assert v4_capabilities is _FAKE_WORKER_V4_CAPABILITIES
         assert raw["_queue_attempt_id"] == "attempt-a"
         queue_payload = QueueRunPayload.model_validate(
             {key: value for key, value in raw.items() if key != "_queue_attempt_id"}
@@ -1591,6 +1705,7 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
         result=result,
         worker_id="worker-a",
         claim_token="claim-a",
+        v4_capabilities=_FAKE_WORKER_V4_CAPABILITIES,
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
@@ -1716,6 +1831,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         worker_id="worker-a",
         claim_token="claim-a",
         transaction_factory=fake_transaction,
+        v4_capabilities=_FAKE_WORKER_V4_CAPABILITIES,
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
@@ -1823,6 +1939,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         registry=AdapterRegistry({"claude-agent-worker": SuccessfulExecutorStub()}),
         worker_id="worker-a",
         claim_token="claim-a",
+        v4_capabilities=_FAKE_WORKER_V4_CAPABILITIES,
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
@@ -2391,21 +2508,32 @@ async def test_worker_reauthorizes_pinned_profile_before_adapter(
         "app.worker.reauthorize_bound_profile_for_worker_dispatch",
         reauthorize,
     )
+    v4_capabilities = _FAKE_WORKER_V4_CAPABILITIES
     if authority_change == "principal":
         async def deny_current_principal(**_kwargs):
             raise PrincipalAuthorityDenied()
 
         monkeypatch.setattr("app.worker.resolve_current_principal", deny_current_principal)
+        v4_capabilities = WorkerV4Capabilities(
+            authority=_FakeWorkerV4Authority(),
+            pending_admissions=_FakeWorkerV4Admission(calls),
+            event_persistence=_FakeWorkerV4Persistence(),
+            publication_claims=_FakeWorkerV4Claims(),
+            publication_transport=_FakeWorkerV4Transport(),
+        )
 
     outcome = await process_run_payload(
         raw,
         AdapterRegistry({"claude-agent-worker": ForbiddenAdapter()}),
+        v4_capabilities=v4_capabilities,
     )
 
     assert outcome.status == "failed"
     assert outcome.error_code == "capability_not_authorized"
     if authority_change == "principal":
         assert not any(item[0] == "reauthorize" for item in calls)
+        call_kinds = [item[0] for item in calls]
+        assert call_kinds.index("prepare_v4_authority") < call_kinds.index("fail")
     else:
         assert calls[0][0] == "reauthorize"
     event = next(item[1] for item in calls if item[0] == "event")
@@ -5727,7 +5855,7 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
             raise AssertionError("scope-invalid queued run must not reach executor")
 
     async def mark_run_running(conn, *, tenant_id, run_id):
-        calls.append(("lock", tenant_id, run_id))
+        calls.append(("lock", conn, tenant_id, run_id))
 
     async def get_run(conn, *, tenant_id, run_id):
         calls.append(("get_run", tenant_id, run_id))
@@ -5762,11 +5890,24 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
     outcome = await process_run_payload(
         base_payload(executor_type="claude-agent-worker"),
         AdapterRegistry({"claude-agent-worker": ForbiddenAdapter()}),
+        v4_capabilities=replace(
+            _FAKE_WORKER_V4_CAPABILITIES,
+            pending_admissions=_FakeWorkerV4Admission(calls),
+        ),
     )
 
     assert outcome.status == "failed"
     assert outcome.error_code == "queue_payload_identity_mismatch"
     assert ("fail", "queue_payload_identity_mismatch", "Queued run identity is invalid") in calls
+    prepare_index = next(
+        index for index, item in enumerate(calls) if item[0] == "prepare_v4_authority"
+    )
+    terminal_event_index = next(
+        index for index, item in enumerate(calls) if item[0] == "event"
+    )
+    lock_index = next(index for index, item in enumerate(calls) if item[0] == "lock")
+    assert prepare_index < terminal_event_index
+    assert calls[prepare_index][1] is calls[lock_index][1]
     assert any(item[0] == "event" and item[1] == "error" for item in calls)
 
 

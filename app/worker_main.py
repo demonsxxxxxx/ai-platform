@@ -12,6 +12,7 @@ import uuid
 
 from app import queue
 from app import repositories
+from app.bootstrap.streaming import build_worker_v4_runtime
 from app.bootstrap.worker_maintenance import (
     close_runtime_clients as _close_runtime_clients,
     maintenance_until_done,
@@ -39,6 +40,12 @@ from app.schema_migrations import require_schema_current
 from app.settings import get_settings
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
 from app.worker import WorkerOutcome, parse_leased_queue_envelope, process_run_payload
+from app.streaming.application.durable_v4 import publish_due_v4_events
+from app.streaming.application.worker_publication_v4 import (
+    WorkerV4Capabilities,
+    publish_pending_admissions,
+    publish_pending_run_terminal,
+)
 
 
 _next_memory_cleanup_at = 0.0
@@ -449,28 +456,60 @@ async def reconcile_stale_runs_for_worker(
     return results
 
 
-async def run_worker_maintenance(settings: object | None = None) -> None:
+async def run_worker_maintenance(
+    settings: object | None = None,
+    *,
+    v4_capabilities: WorkerV4Capabilities | None = None,
+) -> None:
     settings = settings or get_settings()
+    phases = {
+        "sandbox_cleanup": cleanup_expired_sandbox_leases,
+        "memory_cleanup": lambda: cleanup_expired_memory_records_for_worker(settings),
+        "data_retention": lambda: run_data_retention_maintenance(settings),
+        "tool_permission_terminalization": lambda: progress_pending_tool_permission_terminalizations_for_worker(settings),
+        "queue_reclaim": lambda: queue.reclaim_expired_leases(
+            visibility_timeout_seconds=int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900))
+        ),
+        "stale_run_reconciliation": lambda: reconcile_stale_runs_for_worker(settings),
+    }
+    if v4_capabilities is not None:
+        async def drain_due_v4_publication() -> int:
+            scope_limit = max(1, min(int(getattr(settings, "v4_publication_scope_limit", 64)), 256))
+            event_limit = max(1, min(int(getattr(settings, "v4_publication_event_limit", 64)), 256))
+            return await publish_due_v4_events(
+                v4_capabilities.publication_claims,
+                v4_capabilities.publication_transport,
+                scope_limit=scope_limit,
+                event_limit=event_limit,
+            )
+
+        async def drain_pending_v4_admissions() -> int:
+            limit = max(1, min(int(getattr(settings, "v4_pending_admission_limit", 64)), 256))
+            return await publish_pending_admissions(
+                v4_capabilities,
+                limit=limit,
+            )
+
+        phases["v4_pending_admission"] = drain_pending_v4_admissions
+        phases["v4_publication"] = drain_due_v4_publication
     await run_maintenance_phases(
-        {
-            "sandbox_cleanup": cleanup_expired_sandbox_leases,
-            "memory_cleanup": lambda: cleanup_expired_memory_records_for_worker(settings),
-            "data_retention": lambda: run_data_retention_maintenance(settings),
-            "tool_permission_terminalization": lambda: progress_pending_tool_permission_terminalizations_for_worker(settings),
-            "queue_reclaim": lambda: queue.reclaim_expired_leases(
-                visibility_timeout_seconds=int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900))
-            ),
-            "stale_run_reconciliation": lambda: reconcile_stale_runs_for_worker(settings),
-        },
+        phases,
         logger=logger,
     )
 
 
-async def _maintenance_until_done(settings: object, interval_seconds: float) -> None:
+async def _maintenance_until_done(
+    settings: object,
+    interval_seconds: float,
+    v4_capabilities: WorkerV4Capabilities | None = None,
+) -> None:
     await maintenance_until_done(
         settings,
         interval_seconds,
-        run_worker_maintenance,
+        lambda current_settings: run_worker_maintenance(
+            current_settings,
+            v4_capabilities=v4_capabilities,
+        ),
         logger=logger,
     )
 
@@ -479,11 +518,15 @@ async def _terminalize_escaped_process_exception(
     message: queue.QueueMessage,
     worker_id: str,
     exc: Exception,
+    *,
+    v4_capabilities: WorkerV4Capabilities,
 ) -> WorkerOutcome:
     """Converge one valid claimed run after processing escapes its normal terminal path."""
 
     try:
-        payload = parse_leased_queue_envelope(message.payload).payload
+        envelope = parse_leased_queue_envelope(message.payload)
+        payload = envelope.payload
+        attempt_id = envelope.attempt_id
     except Exception:
         raw_run_id = message.payload.get("run_id")
         return WorkerOutcome(
@@ -544,6 +587,12 @@ async def _terminalize_escaped_process_exception(
                 str(locked_run.get("error_code") or "") or None,
                 sanitize_public_text(locked_run.get("error_message")) or None,
             )
+        await v4_capabilities.pending_admissions.prepare_pending_authority_in_transaction(
+            conn,
+            tenant_id=payload.tenant_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+        )
         cancel_requested = bool(locked_run.get("cancel_requested_at")) or str(
             locked_run.get("permission_terminalization_target") or ""
         ) in {"cancel_requested", "cancelled"}
@@ -587,6 +636,11 @@ async def _terminalize_escaped_process_exception(
                 extra={"run_id": run_id},
             )
     if progress is not None and progress.is_terminal():
+        await publish_pending_run_terminal(
+            v4_capabilities,
+            tenant_id=payload.tenant_id,
+            run_id=run_id,
+        )
         terminal_status = str(progress.status)
         return WorkerOutcome(
             terminal_status,
@@ -618,11 +672,12 @@ async def run_once(
     heartbeat_interval_seconds: float = 10.0,
     run_initial_maintenance: bool = True,
     run_background_maintenance: bool = True,
+    v4_capabilities: WorkerV4Capabilities,
 ) -> WorkerOutcome:
     resolved_worker_id = worker_id or default_worker_id()
     settings = get_settings()
     if run_initial_maintenance:
-        await run_worker_maintenance(settings)
+        await run_worker_maintenance(settings, v4_capabilities=v4_capabilities)
     message = await queue.lease_run(
         timeout_seconds=timeout_seconds,
         worker_id=resolved_worker_id,
@@ -645,7 +700,11 @@ async def run_once(
     )
     maintenance_task = (
         asyncio.create_task(
-            _maintenance_until_done(settings, _worker_maintenance_interval_seconds(settings))
+            _maintenance_until_done(
+                settings,
+                _worker_maintenance_interval_seconds(settings),
+                v4_capabilities,
+            )
         )
         if run_background_maintenance
         else None
@@ -653,14 +712,24 @@ async def run_once(
 
     async def process_leased_message() -> WorkerOutcome:
         try:
-            return await process_run_payload(message.payload, registry=registry, worker_id=resolved_worker_id)
+            return await process_run_payload(
+                message.payload,
+                registry=registry,
+                worker_id=resolved_worker_id,
+                v4_capabilities=v4_capabilities,
+            )
         except Exception as exc:
             logger.exception(
                 "Worker payload processing escaped its terminal path",
                 extra={"run_id": message.payload.get("run_id")},
             )
             try:
-                return await _terminalize_escaped_process_exception(message, resolved_worker_id, exc)
+                return await _terminalize_escaped_process_exception(
+                    message,
+                    resolved_worker_id,
+                    exc,
+                    v4_capabilities=v4_capabilities,
+                )
             except _EscapedTerminalizationOwnershipLost:
                 return _queue_ownership_lost_outcome(message.payload.get("run_id"))
             except Exception:
@@ -737,6 +806,7 @@ def _raise_if_background_task_stopped(task: asyncio.Task[None]) -> None:
 
 async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float = 0.5) -> None:
     await require_schema_current()
+    worker_runtime = build_worker_v4_runtime(transaction)
     registry = AdapterRegistry()
     worker_id = default_worker_id()
     reconciler_stop = asyncio.Event()
@@ -745,6 +815,7 @@ async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float =
             reconciler_stop,
             registry=registry,
             worker_id=worker_id,
+            v4_capabilities=worker_runtime.capabilities,
         ),
         name="ai-platform-executor-terminal-reconciler",
     )
@@ -757,7 +828,12 @@ async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float =
             _raise_if_background_task_stopped(reconciler_task)
             _raise_if_background_task_stopped(heartbeat_task)
             try:
-                outcome = await run_once(registry=registry, timeout_seconds=poll_timeout_seconds, worker_id=worker_id)
+                outcome = await run_once(
+                registry=registry,
+                timeout_seconds=poll_timeout_seconds,
+                worker_id=worker_id,
+                v4_capabilities=worker_runtime.capabilities,
+            )
             except Exception:
                 logger.exception("Worker iteration failed")
                 await asyncio.sleep(idle_sleep_seconds)
@@ -772,6 +848,7 @@ async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float =
         for task in (reconciler_task, heartbeat_task):
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        await worker_runtime.aclose()
         await _close_runtime_clients()
 
 
@@ -780,6 +857,7 @@ async def _run_worker_slot(
     worker_id: str,
     poll_timeout_seconds: int,
     idle_sleep_seconds: float,
+    v4_capabilities: WorkerV4Capabilities,
 ) -> None:
     registry = AdapterRegistry()
     while True:
@@ -790,6 +868,7 @@ async def _run_worker_slot(
                 worker_id=worker_id,
                 run_initial_maintenance=False,
                 run_background_maintenance=False,
+                v4_capabilities=v4_capabilities,
             )
         except Exception:
             logger.exception("Worker slot iteration failed")
@@ -813,18 +892,24 @@ async def run_worker_pool(
     await require_schema_current()
     settings = get_settings()
     process_worker_id = f"{socket.gethostname()}:{os.getpid()}"
-    await run_worker_maintenance(settings)
+    worker_runtime = build_worker_v4_runtime(transaction)
+    await run_worker_maintenance(settings, v4_capabilities=worker_runtime.capabilities)
     reconciler_stop = asyncio.Event()
     reconciler_task = asyncio.create_task(
         run_executor_terminal_reconciler(
             reconciler_stop,
             registry=AdapterRegistry(),
             worker_id=process_worker_id,
+            v4_capabilities=worker_runtime.capabilities,
         ),
         name="ai-platform-executor-terminal-reconciler",
     )
     maintenance_task = asyncio.create_task(
-        _maintenance_until_done(settings, _worker_maintenance_interval_seconds(settings)),
+        _maintenance_until_done(
+            settings,
+            _worker_maintenance_interval_seconds(settings),
+            worker_runtime.capabilities,
+        ),
         name="ai-platform-worker-maintenance",
     )
     heartbeat_task = asyncio.create_task(
@@ -837,6 +922,7 @@ async def run_worker_pool(
                 worker_id=default_worker_id(),
                 poll_timeout_seconds=poll_timeout_seconds,
                 idle_sleep_seconds=idle_sleep_seconds,
+                v4_capabilities=worker_runtime.capabilities,
             ),
             name=f"ai-platform-worker-{index + 1}",
         )
@@ -852,13 +938,19 @@ async def run_worker_pool(
         for task in [*tasks, reconciler_task, maintenance_task, heartbeat_task]:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        await worker_runtime.aclose()
         await _close_runtime_clients()
 
 
 async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
+    worker_runtime = build_worker_v4_runtime(transaction)
     try:
-        return await run_once(timeout_seconds=timeout_seconds)
+        return await run_once(
+            timeout_seconds=timeout_seconds,
+            v4_capabilities=worker_runtime.capabilities,
+        )
     finally:
+        await worker_runtime.aclose()
         await _close_runtime_clients()
 
 
