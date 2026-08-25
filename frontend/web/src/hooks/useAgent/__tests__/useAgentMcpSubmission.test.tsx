@@ -35,41 +35,20 @@ async function loadMcpSubmissionHarness() {
 
   function Probe() {
     snapshot = useAgent({
-      getDisabledMcpTools: () => ["inventory.search"],
+      getDisabledMcpTools: () => ["gateway::inventory.search"],
     });
     return null;
   }
 
-  try {
-    await React.act(async () => {
-      root.render(
-        React.createElement(AuthProvider, null, React.createElement(Probe)),
-      );
-    });
-  } catch (error) {
-    authApi.getCurrentUser = originalGetCurrentUser;
-    authApi.bootstrapAuthContext = originalBootstrapAuthContext;
-    throw error;
-  }
+  await React.act(async () => {
+    root.render(React.createElement(AuthProvider, null, React.createElement(Probe)));
+  });
 
   return {
     act: React.act,
     get hook() {
       assert.ok(snapshot, "useAgent hook should be mounted");
       return snapshot;
-    },
-    async dispatchAuthIncarnation(incarnation: string) {
-      const { BROWSER_AUTH_INCARNATION_EVENT } = await import(
-        "../../browserAuthCoordinator.ts"
-      );
-      await React.act(async () => {
-        dom.window.dispatchEvent(
-          new CustomEvent(BROWSER_AUTH_INCARNATION_EVENT, {
-            detail: { incarnation },
-          }) as unknown as { type: string; [key: string]: unknown },
-        );
-        await Promise.resolve();
-      });
     },
     async cleanup() {
       try {
@@ -83,131 +62,34 @@ async function loadMcpSubmissionHarness() {
   };
 }
 
-test("auth changes during MCP context creation prevent chat submission", async () => {
+test("MCP selection submits directly without creating a browser runtime context", async () => {
   const harness = await loadMcpSubmissionHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
   const originalFetch = globalThis.fetch;
-  let resolveContext!: (response: Response) => void;
-  const contextResponse = new Promise<Response>((resolve) => {
-    resolveContext = resolve;
-  });
-  let markContextStarted!: () => void;
-  const contextStarted = new Promise<void>((resolve) => {
-    markContextStarted = resolve;
-  });
-  let resolveDiscard!: (response: Response) => void;
-  const discardResponse = new Promise<Response>((resolve) => {
-    resolveDiscard = resolve;
-  });
-  let markDiscardStarted!: () => void;
-  const discardStarted = new Promise<void>((resolve) => {
-    markDiscardStarted = resolve;
-  });
-  let submissions = 0;
-  let pendingSubmission: Promise<unknown> | null = null;
-  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const submissions: unknown[][] = [];
+  const requests: string[] = [];
 
   try {
-    globalThis.fetch = (async (input, init) => {
-      requests.push({ url: String(input), init });
-      if (init?.method === "DELETE") {
-        markDiscardStarted();
-        return discardResponse;
-      }
-      markContextStarted();
-      return contextResponse;
+    globalThis.fetch = (async (input) => {
+      requests.push(String(input));
+      throw new Error("unexpected_fetch");
     }) as typeof fetch;
-    sessionApi.submitChat = (async () => {
-      submissions += 1;
-      return { status: "needs_confirmation", suggestions: [] };
-    }) as typeof sessionApi.submitChat;
-
-    await harness.act(async () => {
-      pendingSubmission = harness.hook.sendMessage("需要 MCP 的请求");
-      await contextStarted;
-    });
-    await harness.dispatchAuthIncarnation("replacement-incarnation");
-    await harness.act(async () => {
-      resolveContext(
-        new Response(
-          JSON.stringify({
-            mcp_context_id: "mcpctx-stale-owner",
-            expires_at: "2099-01-01T00:00:00Z",
-          }),
-        ),
-      );
-      await discardStarted;
-    });
-
-    assert.equal(harness.hook.isLoading, false);
-    assert.equal(submissions, 0);
-
-    let outcome: unknown;
-    await harness.act(async () => {
-      resolveDiscard(new Response(null, { status: 204 }));
-      outcome = await pendingSubmission;
-    });
-
-    assert.deepEqual(outcome, { status: "failed" });
-    assert.equal(submissions, 0);
-    const mcpRequests = requests.filter((request) =>
-      request.url.startsWith("/api/ai/mcp/runtime-contexts"),
-    );
-    assert.equal(mcpRequests.length, 2);
-    assert.equal(mcpRequests[0]?.init?.method, "POST");
-    assert.equal(
-      new Headers(mcpRequests[0]?.init?.headers).get("JWT-Authorization"),
-      null,
-    );
-    assert.equal(
-      mcpRequests[1]?.url,
-      "/api/ai/mcp/runtime-contexts/mcpctx-stale-owner",
-    );
-    assert.equal(mcpRequests[1]?.init?.method, "DELETE");
-  } finally {
-    sessionApi.submitChat = originalSubmitChat;
-    globalThis.fetch = originalFetch;
-    await harness.cleanup();
-  }
-});
-
-test("expired MCP context remains a backend-owned credential failure", async () => {
-  const harness = await loadMcpSubmissionHarness();
-  const { sessionApi } = await import("../../../services/api/session.ts");
-  const originalSubmitChat = sessionApi.submitChat;
-  const originalFetch = globalThis.fetch;
-  let submissions = 0;
-  const requests: Array<{ url: string; init?: RequestInit }> = [];
-
-  try {
-    globalThis.fetch = (async (input, init) => {
-      requests.push({ url: String(input), init });
-      return new Response(JSON.stringify({ detail: "mcp_context_expired" }), {
-        status: 409,
-      });
-    }) as typeof fetch;
-    sessionApi.submitChat = (async () => {
-      submissions += 1;
+    sessionApi.submitChat = (async (...args) => {
+      submissions.push(args);
       return { status: "needs_confirmation", suggestions: [] };
     }) as typeof sessionApi.submitChat;
 
     let outcome: unknown;
     await harness.act(async () => {
-      outcome = await harness.hook.sendMessage("使用过期 MCP context");
+      outcome = await harness.hook.sendMessage("使用 MCP 工具");
     });
 
-    assert.deepEqual(outcome, { status: "failed" });
-    assert.equal(submissions, 0);
-    const mcpRequests = requests.filter(
-      (request) => request.url === "/api/ai/mcp/runtime-contexts",
-    );
-    assert.equal(mcpRequests.length, 1);
-    assert.equal(mcpRequests[0]?.init?.method, "POST");
-    assert.equal(
-      new Headers(mcpRequests[0]?.init?.headers).get("JWT-Authorization"),
-      null,
-    );
+    assert.deepEqual(outcome, { status: "accepted" });
+    assert.equal(submissions.length, 1);
+    assert.deepEqual(submissions[0]?.[9], ["gateway::inventory.search"]);
+    assert.deepEqual(requests, []);
+    assert.equal(submissions[0]?.length, 11);
   } finally {
     sessionApi.submitChat = originalSubmitChat;
     globalThis.fetch = originalFetch;

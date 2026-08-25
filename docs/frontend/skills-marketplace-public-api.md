@@ -139,18 +139,15 @@ envelopes are encrypted at rest; endpoint details, header names and values,
 commands, and credential values are not returned in API responses or written to
 audit payloads.
 
-Per-Run MCP authorization uses these runtime routes:
-
-- `POST /api/ai/mcp/runtime-contexts`
-- `DELETE /api/ai/mcp/runtime-contexts/{context_id}`
-- `POST /api/ai/mcp/relay/{server_id}`
-
-Context creation accepts the current browser-held JWT only through
-`JWT-Authorization` and returns an opaque, short-lived context ID. The JWT is
-kept out of normal Run, session, and audit projections. Context deletion is
-principal-scoped and idempotent. The relay route is an internal capability
-boundary used by selected MCP servers; browser callers do not receive the
-downstream endpoint, static headers, JWT, or broker capability.
+Per-Run MCP authorization uses the internal
+`POST /api/ai/mcp/relay/{server_id}` route. Company login stores the current
+JWT in encrypted backend storage keyed by tenant and user; the browser does not
+store, submit, or receive an MCP runtime credential. The Worker receives only
+a short-lived capability bound to the Run, attempt, user, and selected MCP
+targets. For every downstream JSON-RPC request, the relay validates that
+capability, reads the user's latest unexpired JWT, and sends it as
+`JWT-Authorization`. Browser callers never receive the downstream endpoint,
+static headers, JWT, or broker capability.
 
 Explicitly fail-closed follow-up routes:
 

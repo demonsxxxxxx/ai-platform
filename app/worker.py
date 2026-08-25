@@ -71,13 +71,12 @@ from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.mcp.api import (
     McpRuntimeContextError,
-    get_mcp_runtime_context_manager,
-    invalidate_mcp_runtime_context,
+    get_mcp_run_capability_manager,
     mcp_targets_from_policy_subjects,
+    mcp_targets_from_reconciliation_snapshot,
     parse_mcp_tool_reference,
-    persisted_mcp_context_id,
-    queue_input_with_mcp_context,
     read_cached_live_mcp_tool,
+    release_terminal_mcp_run_grant,
 )
 from app.principal_authority import (
     CURRENT_PRINCIPAL_DENIAL_REASON,
@@ -223,6 +222,16 @@ class _WorkerExecutorReconciliation:
     claim_token: str
 
 
+def _reconciliation_mcp_grant_may_exist(
+    reconciliation: _WorkerExecutorReconciliation | None,
+) -> bool:
+    if reconciliation is None:
+        return False
+    context = reconciliation.lease_row.get("executor_reconciliation_context_json")
+    run_payload = context.get("run_payload") if isinstance(context, dict) else None
+    return bool(mcp_targets_from_reconciliation_snapshot(run_payload))
+
+
 @dataclass(frozen=True)
 class _WorkerRuntimeSandboxLease:
     lease_id: str
@@ -241,12 +250,20 @@ class _WorkerAdminBypassAudit:
     payload_json: dict[str, Any]
 
 
-async def _invalidate_terminal_mcp_context(
-    context_id: str | None,
+async def _release_terminal_mcp_grant(
+    payload: QueueRunPayload,
     outcome: WorkerOutcome,
+    *,
+    grant_may_exist: bool,
 ) -> None:
-    if outcome.status in {"succeeded", "failed", "cancelled"}:
-        await invalidate_mcp_runtime_context(context_id)
+    if not grant_may_exist:
+        return
+    await release_terminal_mcp_run_grant(
+        tenant_id=payload.tenant_id,
+        user_id=payload.user_id,
+        run_id=payload.run_id,
+        status=outcome.status,
+    )
 
 
 _EXECUTOR_ERROR_REQUEST_ID_RE = re.compile(
@@ -279,7 +296,7 @@ def _executor_exception_failure(exc: Exception) -> tuple[str, str]:
     if isinstance(exc, NativeToolAdmissionError):
         return exc.error_code, "Native tool sandbox admission failed"
     if isinstance(exc.__cause__, McpRuntimeContextError):
-        return exc.__cause__.code, "MCP runtime context is unavailable"
+        return exc.__cause__.code, "MCP runtime capability is unavailable"
     if isinstance(exc, SandboxExecutorHttpError):
         return exc.error_code, exc.public_message
     if isinstance(exc, WorkerDirectAssistantDeltaError):
@@ -1095,10 +1112,6 @@ def _payload_from_locked_run(
     ):
         candidate["skill_id"] = None
     try:
-        candidate["input"] = queue_input_with_mcp_context(
-            candidate["input"],
-            persisted_mcp_context_id(locked_run),
-        )
         return QueueRunPayload.model_validate(candidate)
     except (TypeError, ValueError, ValidationError):
         return None
@@ -2000,13 +2013,16 @@ async def process_run_payload(
     runtime_sandbox_lease: _WorkerRuntimeSandboxLease | None = None
     runtime_sandbox_lease_released = False
     mcp_broker_capability_token = ""
+    reconciliation_mcp_grant_may_exist = False
     runtime_sandbox_execution_detached = False
-    trusted_terminal_mcp_context_id: str | None = None
 
     terminal_after_transaction: _WorkerTerminalAfterTransaction | None = None
     capability_authorization: _WorkerCapabilityAuthorization | None = None
     admin_bypass_audits: tuple[_WorkerAdminBypassAudit, ...] = ()
     try:
+        reconciliation_mcp_grant_may_exist = _reconciliation_mcp_grant_may_exist(
+            reconciliation
+        )
         current_principal = await _resolve_current_principal_before_dispatch(
             payload,
             transaction_factory=transaction,
@@ -2027,7 +2043,6 @@ async def process_run_payload(
                     run_id=payload.run_id,
                 )
             )
-            trusted_terminal_mcp_context_id = persisted_mcp_context_id(locked)
             if reconciliation is not None and locked is not None:
                 if str(locked.get("status") or "") != "running":
                     return WorkerOutcome(
@@ -2387,9 +2402,10 @@ async def process_run_payload(
                     run_id=terminal_after_transaction.payload.run_id,
                 )
             finally:
-                await _invalidate_terminal_mcp_context(
-                    trusted_terminal_mcp_context_id,
+                await _release_terminal_mcp_grant(
+                    payload,
                     terminal_after_transaction.outcome,
+                    grant_may_exist=reconciliation_mcp_grant_may_exist,
                 )
 
     stream_publisher = RunStreamPublisher(
@@ -2445,20 +2461,12 @@ async def process_run_payload(
         mcp_targets = mcp_targets_from_policy_subjects(
             run_payload.input.get("_runtime_tool_policy_subjects")
         )
-        mcp_context_id = payload.input.get("mcp_context_id")
-        if mcp_targets and not mcp_context_id:
-            context_error = McpRuntimeContextError(
-                "mcp_context_required",
-                status_code=409,
-            )
-            raise RuntimeError(context_error.code) from context_error
-        if mcp_context_id:
+        if mcp_targets:
             try:
-                capability = await get_mcp_runtime_context_manager().claim_attempt_lease(
-                    context_id=mcp_context_id,
-                    tenant_id=payload.tenant_id,
-                    user_id=payload.user_id,
-                    run_id=payload.run_id,
+                capability = await get_mcp_run_capability_manager().claim_attempt_lease(
+                    tenant_id=run_payload.tenant_id,
+                    user_id=run_payload.user_id,
+                    run_id=run_payload.run_id,
                     attempt_id=attempt_id,
                     targets=mcp_targets,
                 )
@@ -2583,9 +2591,13 @@ async def process_run_payload(
                 reconciled_parent,
             )
         finally:
-            await _invalidate_terminal_mcp_context(
-                payload.input.get("mcp_context_id"),
+            await _release_terminal_mcp_grant(
+                payload,
                 WorkerOutcome("cancelled", payload.run_id),
+                grant_may_exist=(
+                    bool(mcp_broker_capability_token)
+                    or reconciliation_mcp_grant_may_exist
+                ),
             )
         return WorkerOutcome("cancelled", payload.run_id)
     except Exception as exc:  # noqa: BLE001 - worker boundary terminalizes all failures.
@@ -2659,9 +2671,13 @@ async def process_run_payload(
                 reconciled_parent,
             )
         finally:
-            await _invalidate_terminal_mcp_context(
-                payload.input.get("mcp_context_id"),
+            await _release_terminal_mcp_grant(
+                payload,
                 outcome_after_exception,
+                grant_may_exist=(
+                    bool(mcp_broker_capability_token)
+                    or reconciliation_mcp_grant_may_exist
+                ),
             )
         return outcome_after_exception
 
@@ -3163,7 +3179,7 @@ async def process_run_payload(
     finally:
         await cleanup_runtime_sandbox_lease_after_interruption()
         if mcp_broker_capability_token and not runtime_sandbox_execution_detached:
-            await get_mcp_runtime_context_manager().release_attempt_lease(
+            await get_mcp_run_capability_manager().release_attempt_lease(
                 token=mcp_broker_capability_token,
             )
     if terminal_outcome.status == "skipped":
@@ -3200,9 +3216,13 @@ async def process_run_payload(
             reconciled_parent,
         )
     finally:
-        await _invalidate_terminal_mcp_context(
-            payload.input.get("mcp_context_id"),
+        await _release_terminal_mcp_grant(
+            payload,
             terminal_outcome,
+            grant_may_exist=(
+                bool(mcp_broker_capability_token)
+                or reconciliation_mcp_grant_may_exist
+            ),
         )
     return terminal_outcome
 

@@ -295,46 +295,26 @@ async def get_mcp_relay_target(
     return {**dict(row), "active_tool_names": []}
 
 
-async def bind_run_mcp_context(
+async def get_run_mcp_identity(
     conn: Any,
     *,
     tenant_id: str,
     run_id: str,
-    mcp_context_id: str,
-) -> None:
-    """Persist only the opaque context ID after admission has bound it to a Run."""
-
-    await conn.execute(
-        """
-        update runs
-        set mcp_context_id = %s,
-            input_json = jsonb_set(
-              coalesce(input_json, '{}'::jsonb),
-              '{mcp_context_id}',
-              to_jsonb(%s::text),
-              true
-            )
-        where tenant_id = %s and id = %s
-        """,
-        (mcp_context_id, mcp_context_id, tenant_id, run_id),
-    )
-
-
-async def get_run_mcp_context_id(
-    conn: Any,
-    *,
-    tenant_id: str,
-    run_id: str,
-) -> str | None:
-    """Read only the opaque context ID for one exact Run."""
+) -> dict[str, str] | None:
+    """Read the authoritative identity needed to retire a Run grant."""
 
     cursor = await conn.execute(
-        "select mcp_context_id from runs where tenant_id = %s and id = %s",
+        "select tenant_id, user_id, id as run_id from runs where tenant_id = %s and id = %s",
         (tenant_id, run_id),
     )
     row = await cursor.fetchone()
-    context_id = row.get("mcp_context_id") if row is not None else None
-    return str(context_id) if isinstance(context_id, str) and context_id else None
+    if row is None:
+        return None
+    return {
+        "tenant_id": str(row["tenant_id"]),
+        "user_id": str(row["user_id"]),
+        "run_id": str(row["run_id"]),
+    }
 
 
 class PostgresMcpRelayTargetReader:

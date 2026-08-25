@@ -25,9 +25,8 @@ from app.mcp.api import (
     McpRuntimeContextError,
     create_host_mcp_relay,
     delete_mcp_server_registry,
-    discard_unbound_mcp_runtime_context,
     get_mcp_relay_auth_failure_limiter,
-    get_mcp_runtime_context_manager,
+    get_mcp_run_capability_manager,
     get_live_mcp_catalog,
     list_mcp_server_registry,
     normalize_static_mcp_headers,
@@ -49,7 +48,7 @@ MCP_LIFECYCLE_CONTRACT_VERSION = "ai-platform.mcp-lifecycle.v1"
 
 
 LIVE_MCP_CATALOG = get_live_mcp_catalog()
-MCP_RUNTIME_CONTEXT_MANAGER = get_mcp_runtime_context_manager()
+MCP_RUN_CAPABILITY_MANAGER = get_mcp_run_capability_manager()
 MCP_RELAY_AUTH_FAILURE_LIMITER = get_mcp_relay_auth_failure_limiter()
 HostMcpRelay = create_host_mcp_relay
 
@@ -717,39 +716,6 @@ async def invalidate_mcp_tool_cache(
     }
 
 
-@router.post("/mcp/runtime-contexts")
-@router.post("/ai/mcp/runtime-contexts")
-async def create_mcp_runtime_context(
-    response: Response,
-    principal: AuthPrincipal = Depends(require_principal),
-) -> dict[str, Any]:
-    """Create one opaque MCP-only context from the Principal's stored JWT."""
-
-    try:
-        company_jwt = await read_mcp_principal_jwt(principal)
-        result = await MCP_RUNTIME_CONTEXT_MANAGER.create_context(
-            principal=principal,
-            bearer_jwt=f"Bearer {company_jwt}",
-        )
-    except McpRuntimeContextError as exc:
-        raise _mcp_runtime_http_error(exc) from exc
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Pragma"] = "no-cache"
-    return result
-
-
-@router.delete("/mcp/runtime-contexts/{context_id}", status_code=204)
-@router.delete("/ai/mcp/runtime-contexts/{context_id}", status_code=204)
-async def discard_mcp_runtime_context(
-    context_id: str,
-    principal: AuthPrincipal = Depends(require_principal),
-) -> Response:
-    """Best-effort discard without revealing context existence or ownership."""
-
-    await discard_unbound_mcp_runtime_context(context_id, principal)
-    return Response(status_code=204)
-
-
 @router.post("/mcp/relay/{server_id}", response_model=None)
 @router.post("/ai/mcp/relay/{server_id}", response_model=None)
 async def relay_mcp_jsonrpc(
@@ -772,7 +738,7 @@ async def relay_mcp_jsonrpc(
             source_fingerprint=source_fingerprint,
             capability_fingerprint=capability_fingerprint,
         )
-        relay = HostMcpRelay(context_manager=MCP_RUNTIME_CONTEXT_MANAGER)
+        relay = HostMcpRelay(capability_manager=MCP_RUN_CAPABILITY_MANAGER)
         result = await relay.forward(
             capability_token=capability or "",
             server_id=server_id,

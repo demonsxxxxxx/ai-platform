@@ -231,7 +231,7 @@ test("run-control mutations use the shared cookie-session transport and forward 
   }
 });
 
-test("MCP retry obtains a fresh context and reuses the exact operation id", async () => {
+test("MCP retry uses one server-authorized operation without a browser context", async () => {
   const originalFetch = globalThis.fetch;
   const controller = new AbortController();
   const calls: Array<{
@@ -247,20 +247,6 @@ test("MCP retry obtains a fresh context and reuses the exact operation id", asyn
       signal: init?.signal,
       jwt: new Headers(init?.headers).get("JWT-Authorization"),
     });
-    if (calls.length === 1) {
-      return new Response(
-        JSON.stringify({ detail: "mcp_context_required_for_retry" }),
-        { status: 409 },
-      );
-    }
-    if (calls.length === 2) {
-      return new Response(
-        JSON.stringify({
-          mcp_context_id: "mcpctx-fresh",
-          expires_at: "2026-08-18T12:00:00Z",
-        }),
-      );
-    }
     return new Response(
       JSON.stringify({
         run_id: "run-child",
@@ -277,16 +263,13 @@ test("MCP retry obtains a fresh context and reuses the exact operation id", asyn
     });
 
     assert.equal(result.run_id, "run-child");
-    assert.equal(calls[0]?.url, calls[2]?.url);
-    assert.equal(calls[0]?.body, null);
+    assert.equal(calls.length, 1);
     assert.equal(
-      calls[1]?.url,
-      "/api/ai/mcp/runtime-contexts",
+      calls[0]?.url,
+      "/api/ai/runs/run-parent/retry?operation_id=7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
     );
-    assert.equal(calls[1]?.jwt, null);
-    assert.deepEqual(JSON.parse(calls[2]?.body ?? "{}"), {
-      mcp_context_id: "mcpctx-fresh",
-    });
+    assert.equal(calls[0]?.body, null);
+    assert.equal(calls[0]?.jwt, null);
     assert.ok(calls.every((call) => call.signal === controller.signal));
   } finally {
     globalThis.fetch = originalFetch;
@@ -336,14 +319,12 @@ test("preserves MCP selection tri-state in the structured Chat request", () => {
   assert.deepEqual(selected.selected_mcp_tool_ids, ["tenant-search"]);
 });
 
-test("carries selected platform MCP IDs with only the opaque context id", () => {
+test("carries selected platform MCP references without any credential field", () => {
   const body = buildSubmitChatBody({
     message: "use an MCP tool",
-    mcpContextId: "mcpctx_opaque",
     selectedMcpToolIds: ["inventory-read"],
   });
 
-  assert.equal(body.mcp_context_id, "mcpctx_opaque");
   assert.deepEqual(body.selected_mcp_tool_ids, ["inventory-read"]);
   assert.equal("mcp_gateway_tool_names" in body, false);
   assert.equal("jwt" in body, false);
@@ -487,14 +468,12 @@ test("builds the selector-free Agent App run URL and deduplicated file body", ()
       attachments: [attachment, attachment],
       submissionId: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
       userTimezone: "Asia/Shanghai",
-      mcpContextId: "mcpctx-profile",
     }),
     {
       message: "Review this",
       submission_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
       file_ids: ["file-a"],
       user_timezone: "Asia/Shanghai",
-      mcp_context_id: "mcpctx-profile",
     },
   );
 });
@@ -553,7 +532,6 @@ test("pinned Agent conversations submit only through the dedicated selector-free
       "general-agent",
       ["client-mcp"],
       { agent_id: "agt_support", expected_revision: 7 },
-      "mcpctx-profile",
     );
 
     assert.equal(
@@ -563,7 +541,7 @@ test("pinned Agent conversations submit only through the dedicated selector-free
     assert.equal(calls[0]?.body.message, "Review this");
     assert.equal(calls[0]?.body.submission_id, "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4");
     assert.deepEqual(calls[0]?.body.file_ids, []);
-    assert.equal(calls[0]?.body.mcp_context_id, "mcpctx-profile");
+    assert.equal("mcp_context_id" in calls[0]!.body, false);
     for (const forbidden of [
       "agent_options",
       "selected_agent_profile",

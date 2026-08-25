@@ -6,12 +6,12 @@ from app.mcp.domain.errors import McpRuntimeContextError
 
 
 class McpRuntimeServices(Protocol):
-    context_manager: Any
+    capability_manager: Any
     live_catalog: Any
     principal_jwt_store: Any
     relay_auth_failure_limiter: Any
 
-    def create_host_relay(self, *, context_manager: Any | None = None) -> Any: ...
+    def create_host_relay(self, *, capability_manager: Any | None = None) -> Any: ...
 
     def seal_server_credentials(self, **kwargs: Any) -> str: ...
 
@@ -19,9 +19,7 @@ class McpRuntimeServices(Protocol):
 
     async def record_server_credential(self, conn: Any, **kwargs: Any) -> Any: ...
 
-    async def bind_run_context(self, conn: Any, **kwargs: Any) -> None: ...
-
-    async def get_run_context_id(self, conn: Any, **kwargs: Any) -> str | None: ...
+    async def get_run_identity(self, conn: Any, **kwargs: Any) -> dict[str, str] | None: ...
 
     async def list_server_registry(self, conn: Any, **kwargs: Any) -> list[dict[str, Any]]: ...
 
@@ -50,9 +48,9 @@ def mcp_runtime_services() -> McpRuntimeServices:
     return _services
 
 
-class RuntimeContextManagerProxy:
+class RunCapabilityManagerProxy:
     def __getattr__(self, name: str) -> Any:
-        return getattr(mcp_runtime_services().context_manager, name)
+        return getattr(mcp_runtime_services().capability_manager, name)
 
 
 class RelayAuthFailureLimiterProxy:

@@ -14,8 +14,7 @@ import {
   type AgentConversationSessionProjection,
 } from "../../types/agentProfile";
 import { API_BASE } from "./config";
-import { ApiRequestError, authFetch } from "./fetch";
-import { createMcpRuntimeContext } from "./mcpRuntime";
+import { authFetch } from "./fetch";
 
 export const DEFAULT_CHAT_AGENT_ID = "general-agent";
 
@@ -204,7 +203,6 @@ export function buildSubmitChatBody({
   selectedSkill,
   selectedAgentProfile,
   submissionId,
-  mcpContextId,
 }: {
   message: string;
   sessionId?: string;
@@ -218,7 +216,6 @@ export function buildSubmitChatBody({
   selectedSkill?: SelectedSkillRequest | null;
   selectedAgentProfile?: SelectedAgentProfileRequest | null;
   submissionId?: string;
-  mcpContextId?: string;
 }): Record<string, unknown> {
   const body: Record<string, unknown> = {
     message,
@@ -236,10 +233,6 @@ export function buildSubmitChatBody({
 
   if (submissionId) {
     body.submission_id = submissionId;
-  }
-
-  if (mcpContextId) {
-    body.mcp_context_id = mcpContextId;
   }
 
   if (selectedSkill) {
@@ -346,13 +339,11 @@ export function buildAgentAppRunBody({
   attachments,
   submissionId,
   userTimezone,
-  mcpContextId,
 }: {
   message: string;
   attachments?: MessageAttachment[];
   submissionId: string;
   userTimezone?: string;
-  mcpContextId?: string;
 }): Record<string, unknown> {
   const fileIds = [
     ...new Set(
@@ -366,7 +357,6 @@ export function buildAgentAppRunBody({
     submission_id: submissionId,
     file_ids: fileIds,
     ...(userTimezone ? { user_timezone: userTimezone } : {}),
-    ...(mcpContextId ? { mcp_context_id: mcpContextId } : {}),
   };
 }
 
@@ -374,26 +364,10 @@ async function mutateRunControl(
   url: string,
   options: { signal?: AbortSignal },
 ): Promise<RunControlChildResponse> {
-  try {
-    return await authFetch(url, {
-      method: "POST",
-      signal: options.signal,
-    });
-  } catch (error) {
-    if (
-      !(error instanceof ApiRequestError) ||
-      error.status !== 409 ||
-      error.code !== "mcp_context_required_for_retry"
-    ) {
-      throw error;
-    }
-    const context = await createMcpRuntimeContext({ signal: options.signal });
-    return authFetch(url, {
-      method: "POST",
-      signal: options.signal,
-      body: JSON.stringify({ mcp_context_id: context.mcp_context_id }),
-    });
-  }
+  return authFetch(url, {
+    method: "POST",
+    signal: options.signal,
+  });
 }
 
 export function buildChatSubmissionUrl(submissionId: string): string {
@@ -627,7 +601,6 @@ export const sessionApi = {
     agentId?: string,
     selectedMcpToolIds?: string[],
     selectedAgentProfile?: SelectedAgentProfileRequest | null,
-    mcpContextId?: string,
   ): Promise<ChatStreamResponse> {
     if (sessionId && selectedAgentProfile) {
       if (!submissionId) throw new Error("agent_app_submission_id_required");
@@ -641,7 +614,6 @@ export const sessionApi = {
               attachments,
               submissionId,
               userTimezone: getBrowserTimezone(),
-              mcpContextId,
             }),
           ),
         },
@@ -659,7 +631,6 @@ export const sessionApi = {
       selectedSkill,
       selectedAgentProfile,
       submissionId,
-      mcpContextId,
     });
     return authFetch(buildSubmitChatUrl(agentId), {
       method: "POST",

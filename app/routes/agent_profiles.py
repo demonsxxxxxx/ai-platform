@@ -89,7 +89,6 @@ async def _submit_dedicated_agent_run(
         file_ids=request.file_ids,
         submission_id=request.submission_id,
         user_timezone=request.user_timezone,
-        mcp_context_id=request.mcp_context_id,
     )
     # Local import avoids making the Chat route depend on this adapter while
     # preserving one admission, Run, Queue, SSE, and artifact authority.

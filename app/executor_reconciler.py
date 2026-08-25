@@ -15,8 +15,8 @@ from app.execution.api import restored_sandbox_run_payload
 from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.mcp.api import (
-    invalidate_terminal_mcp_runtime_context,
-    persisted_mcp_context_id,
+    mcp_targets_from_reconciliation_snapshot,
+    release_terminal_mcp_run_grant,
 )
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.routes.sandbox_runtime_cleanup import (
@@ -135,6 +135,12 @@ def _context_payload(
                 "executor_reconciliation_identity_mismatch"
             )
     return context, run_payload
+
+
+def _lease_mcp_grant_may_exist(lease_row: dict[str, Any]) -> bool:
+    context = lease_row.get("executor_reconciliation_context_json")
+    run_payload = context.get("run_payload") if isinstance(context, dict) else None
+    return bool(mcp_targets_from_reconciliation_snapshot(run_payload))
 
 
 def _context_and_payload(
@@ -605,9 +611,10 @@ async def reconcile_pending_executor_terminals_once(
         return 0
     adapter_registry = registry or AdapterRegistry()
     for lease_row in claimed:
-        terminal_mcp_context_id: str | None = None
         run_status = ""
+        mcp_grant_may_exist = False
         try:
+            mcp_grant_may_exist = _lease_mcp_grant_may_exist(lease_row)
             async with transaction() as conn:
                 claimed_current = await sandbox_lease_repository.has_sandbox_executor_reconciliation_claim(
                     conn,
@@ -625,7 +632,6 @@ async def reconcile_pending_executor_terminals_once(
                 if run is None:
                     raise ValueError("executor_reconciliation_run_missing")
                 run_status = str(run.get("status") or "")
-                terminal_mcp_context_id = persisted_mcp_context_id(run)
                 if run_status in _TERMINAL_RUN_STATUSES:
                     context, _terminal_result, run_payload = _context_and_payload(lease_row)
                     request = _reconciliation_request(lease_row, run_payload)
@@ -644,7 +650,7 @@ async def reconcile_pending_executor_terminals_once(
                         registry=adapter_registry,
                         claim_token=claim_token,
                     )
-                    await reconcile_executor_terminal_result(
+                    outcome = await reconcile_executor_terminal_result(
                         lease_row=lease_row,
                         result=result,
                         registry=adapter_registry,
@@ -652,6 +658,7 @@ async def reconcile_pending_executor_terminals_once(
                         claim_token=claim_token,
                         transaction_factory=lambda: _claim_connection_transaction(conn),
                     )
+                    run_status = outcome.status
                 await _release_reconciled_lease(
                     conn,
                     lease_row,
@@ -659,10 +666,13 @@ async def reconcile_pending_executor_terminals_once(
                     lease=lease,
                     claim_token=claim_token,
                 )
-            await invalidate_terminal_mcp_runtime_context(
-                terminal_mcp_context_id,
-                status=run_status,
-            )
+            if mcp_grant_may_exist:
+                await release_terminal_mcp_run_grant(
+                    tenant_id=str(lease_row["tenant_id"]),
+                    user_id=str(lease_row["user_id"]),
+                    run_id=str(lease_row["run_id"]),
+                    status=run_status,
+                )
         except asyncio.CancelledError:
             await _release_claimed_terminal_batch(claimed, claim_token)
             raise
@@ -700,6 +710,13 @@ async def reconcile_pending_executor_terminals_once(
                     error_code=error_code,
                     logger=_logger,
                 )
+                if mcp_grant_may_exist:
+                    await release_terminal_mcp_run_grant(
+                        tenant_id=str(lease_row["tenant_id"]),
+                        user_id=str(lease_row["user_id"]),
+                        run_id=str(lease_row["run_id"]),
+                        status="failed",
+                    )
             except asyncio.CancelledError:
                 await _release_claimed_terminal_batch(claimed, claim_token)
                 raise

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import app.executor_reconciler as executor_reconciler_module
 import app.worker as worker_module
 from app import repositories as repository_module
 from app.auth import AuthPrincipal, is_ai_admin
@@ -132,16 +133,16 @@ def test_worker_preserves_only_typed_safe_executor_failures():
     assert private_path not in str(worker_module._executor_exception_failure(native_error))
     assert "private-secret" not in str(worker_module._executor_exception_failure(hostile_error))
     assert "private-prompt" not in str(worker_module._executor_exception_failure(hostile_error))
-    context_error = worker_module.McpRuntimeContextError(
-        "mcp_context_required",
-        status_code=409,
+    capability_error = worker_module.McpRuntimeContextError(
+        "mcp_capability_grant_not_found",
+        status_code=401,
     )
     try:
-        raise RuntimeError(context_error.code) from context_error
-    except RuntimeError as wrapped_context_error:
-        assert worker_module._executor_exception_failure(wrapped_context_error) == (
-            "mcp_context_required",
-            "MCP runtime context is unavailable",
+        raise RuntimeError(capability_error.code) from capability_error
+    except RuntimeError as wrapped_capability_error:
+        assert worker_module._executor_exception_failure(wrapped_capability_error) == (
+            "mcp_capability_grant_not_found",
+            "MCP runtime capability is unavailable",
         )
 
 
@@ -1264,40 +1265,257 @@ def test_locked_harness_run_reconstructs_null_skill_identity():
     assert reconstructed.skill_id is None
 
 
-def test_locked_run_replaces_caller_context_with_authoritative_run_context():
-    run_identity = {
+def test_reconciliation_detects_only_authoritative_persisted_mcp_targets():
+    result = ExecutorResult(
+        status="succeeded",
+        adapter_version="adapter/1",
+        executor_type="fake",
+        executor_version="fake/1",
+        capabilities={},
+        result={},
+    )
+
+    def reconciliation(run_input):
+        run_payload = RunPayload(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+                attempt_id="attempt-a",
+                agent_id="general-agent",
+                execution_kind="harness_chat",
+                skill_id=None,
+            file_ids=[],
+            input=run_input,
+            trace_id="trace-a",
+                skill_version="",
+            release_decision={},
+            skill_manifests=[],
+            context_snapshot_id="",
+            context_snapshot={},
+            model_id="",
+            model_value="",
+            agent_profile={},
+            schema_version=RUN_PAYLOAD_SCHEMA_VERSION_V2,
+        )
+        return worker_module._WorkerExecutorReconciliation(
+            result=result,
+            lease_row={
+                "executor_reconciliation_context_json": {
+                    "run_payload": sandbox_reconciliation_payload(run_payload),
+                }
+            },
+            claim_token="claim-a",
+        )
+
+    assert worker_module._reconciliation_mcp_grant_may_exist(
+        reconciliation(
+            {
+                "_runtime_tool_policy_subjects": [
+                    {
+                        "identity": "mcp__inventory__search",
+                        "mcp_server": "inventory",
+                        "mcp_tool": "search",
+                    }
+                ]
+            }
+        )
+    )
+    assert not worker_module._reconciliation_mcp_grant_may_exist(
+        reconciliation({"mcp_tool_ids": ["inventory::search"]})
+    )
+    assert not worker_module._reconciliation_mcp_grant_may_exist(None)
+
+
+def _mcp_reconciler_lease_row(*, malformed: bool = False) -> dict[str, object]:
+    server_id = "invalid server id" if malformed else "inventory"
+    return {
+        "id": "lease-a",
         "tenant_id": "tenant-a",
         "workspace_id": "workspace-a",
         "user_id": "user-a",
         "session_id": "session-a",
         "run_id": "run-a",
-        "agent_id": "general-agent",
-        "execution_kind": "harness_chat",
-        "skill_id": "",
-    }
-    locked_run = {
-        "input_json": {
-            "input": {"mcp_context_id": "mcpctx-caller"},
-            "mcp_context_id": "mcpctx-authoritative",
-            "executor_type": "claude-agent-worker",
-            "schema_version": "ai-platform.run-payload.v2",
+        "attempt_id": "attempt-a",
+        "executor_terminal_reconciliation_attempt_count": 5,
+        "executor_reconciliation_context_json": {
+            "run_payload": {
+                "schema_version": "ai-platform.executor-reconciliation-snapshot.v2",
+                "execution_payload": {
+                    "input": {
+                        "_runtime_tool_policy_subjects": [
+                            {
+                                "identity": "mcp__inventory__search",
+                                "mcp_server": server_id,
+                                "mcp_tool": "search",
+                            }
+                        ]
+                    }
+                },
+            }
         },
     }
 
-    reconstructed = worker_module._payload_from_locked_run(
-        locked_run,
-        run_identity=run_identity,
+
+@asynccontextmanager
+async def _mcp_reconciler_transaction():
+    yield object()
+
+
+@pytest.mark.asyncio
+async def test_reconciler_releases_existing_mcp_grant_after_success(monkeypatch):
+    released = []
+    row = _mcp_reconciler_lease_row()
+
+    async def claim(_conn, **_kwargs):
+        return [row]
+
+    async def collect(_conn, _lease_row, **_kwargs):
+        return object(), object(), object()
+
+    monkeypatch.setattr(executor_reconciler_module, "transaction", _mcp_reconciler_transaction)
+    monkeypatch.setattr(
+        executor_reconciler_module.sandbox_lease_repository,
+        "claim_sandbox_executor_reconciliations",
+        claim,
+    )
+    monkeypatch.setattr(
+        executor_reconciler_module.sandbox_lease_repository,
+        "has_sandbox_executor_reconciliation_claim",
+        lambda *_args, **_kwargs: _async_value(True),
+    )
+    monkeypatch.setattr(
+        executor_reconciler_module.repositories,
+        "get_run",
+        lambda *_args, **_kwargs: _async_value({"status": "running"}),
+    )
+    monkeypatch.setattr(
+        executor_reconciler_module,
+        "_collect_workspace_and_convert_result",
+        collect,
+    )
+    monkeypatch.setattr(
+        executor_reconciler_module,
+        "reconcile_executor_terminal_result",
+        lambda **_kwargs: _async_value(WorkerOutcome("succeeded", "run-a")),
+    )
+    monkeypatch.setattr(
+        executor_reconciler_module,
+        "_release_reconciled_lease",
+        lambda *_args, **_kwargs: _async_value(None),
+    )
+    monkeypatch.setattr(
+        executor_reconciler_module,
+        "release_terminal_mcp_run_grant",
+        lambda **kwargs: _async_append(released, kwargs),
     )
 
-    assert reconstructed is not None
-    assert reconstructed.input["mcp_context_id"] == "mcpctx-authoritative"
-    locked_run["input_json"].pop("mcp_context_id")
-    reconstructed_without_binding = worker_module._payload_from_locked_run(
-        locked_run,
-        run_identity=run_identity,
+    assert await executor_reconciler_module.reconcile_pending_executor_terminals_once() == 1
+    assert released == [
+        {
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "run_id": "run-a",
+            "status": "succeeded",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reconciler_terminalizes_exhausted_malformed_mcp_subjects(monkeypatch):
+    finished = []
+    row = _mcp_reconciler_lease_row(malformed=True)
+
+    async def claim(_conn, **_kwargs):
+        return [row]
+
+    monkeypatch.setattr(executor_reconciler_module, "transaction", _mcp_reconciler_transaction)
+    monkeypatch.setattr(
+        executor_reconciler_module.sandbox_lease_repository,
+        "claim_sandbox_executor_reconciliations",
+        claim,
     )
-    assert reconstructed_without_binding is not None
-    assert "mcp_context_id" not in reconstructed_without_binding.input
+    monkeypatch.setattr(
+        executor_reconciler_module,
+        "_finish_terminal_reconciliation_failure",
+        lambda lease_row, **kwargs: _async_append(
+            finished,
+            (lease_row["id"], kwargs),
+        ),
+    )
+
+    assert await executor_reconciler_module.reconcile_pending_executor_terminals_once() == 1
+    assert len(finished) == 1
+    assert finished[0][0] == "lease-a"
+    assert finished[0][1]["error_code"] == "McpRuntimeContextError"
+
+
+@pytest.mark.asyncio
+async def test_reconciler_releases_existing_mcp_grant_after_exhausted_failure(monkeypatch):
+    finished = []
+    released = []
+    row = _mcp_reconciler_lease_row()
+
+    async def claim(_conn, **_kwargs):
+        return [row]
+
+    async def collect(_conn, _lease_row, **_kwargs):
+        raise RuntimeError("transient failure exhausted")
+
+    monkeypatch.setattr(executor_reconciler_module, "transaction", _mcp_reconciler_transaction)
+    monkeypatch.setattr(
+        executor_reconciler_module.sandbox_lease_repository,
+        "claim_sandbox_executor_reconciliations",
+        claim,
+    )
+    monkeypatch.setattr(
+        executor_reconciler_module.sandbox_lease_repository,
+        "has_sandbox_executor_reconciliation_claim",
+        lambda *_args, **_kwargs: _async_value(True),
+    )
+    monkeypatch.setattr(
+        executor_reconciler_module.repositories,
+        "get_run",
+        lambda *_args, **_kwargs: _async_value({"status": "running"}),
+    )
+    monkeypatch.setattr(
+        executor_reconciler_module,
+        "_collect_workspace_and_convert_result",
+        collect,
+    )
+    monkeypatch.setattr(
+        executor_reconciler_module,
+        "_finish_terminal_reconciliation_failure",
+        lambda lease_row, **kwargs: _async_append(
+            finished,
+            (lease_row["id"], kwargs),
+        ),
+    )
+    monkeypatch.setattr(
+        executor_reconciler_module,
+        "release_terminal_mcp_run_grant",
+        lambda **kwargs: _async_append(released, kwargs),
+    )
+
+    assert await executor_reconciler_module.reconcile_pending_executor_terminals_once() == 1
+    assert finished[0][1]["error_code"] == "RuntimeError"
+    assert released == [
+        {
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "run_id": "run-a",
+            "status": "failed",
+        }
+    ]
+
+
+async def _async_value(value):
+    return value
+
+
+async def _async_append(values, value):
+    values.append(value)
 
 
 @pytest.mark.asyncio
@@ -1680,7 +1898,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         execution_kind="harness_chat",
         skill_id=None,
         file_ids=[],
-        input={"message": "hello", "mcp_context_id": "mcpctx-reconciliation"},
+        input={"message": "hello"},
         executor_type="claude-agent-worker",
         skill_version=None,
         release_decision={},
@@ -1692,7 +1910,6 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
     locked_run["status"] = "running"
     get_run_calls = []
     terminal_calls = []
-    runtime_calls = []
     lifecycle_calls = []
 
     async def get_run(
@@ -1731,27 +1948,22 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         "app.worker.sandbox_lease_repository.is_sandbox_executor_reconciliation_claim_current",
         has_reconciliation_claim,
     )
+    def unexpected_capability_manager():
+        raise AssertionError("non-MCP reconciliation must not access capability storage")
+
+    async def unexpected_release_grant(**_identity):
+        raise AssertionError("non-MCP reconciliation must not release an MCP grant")
+
     monkeypatch.setattr(
         worker_module,
-        "get_mcp_runtime_context_manager",
-        lambda: _RuntimeManagerStub(
-            "mcpbrk:reconciliation:terminal",
-            on_claim=lambda kwargs: (
-                runtime_calls.append(("claim", kwargs)),
-                lifecycle_calls.append("claim"),
-            ),
-            on_release=lambda kwargs: (
-                runtime_calls.append(("release", kwargs)),
-                lifecycle_calls.append("release"),
-            ),
-        ),
+        "get_mcp_run_capability_manager",
+        unexpected_capability_manager,
     )
-
-    async def invalidate_context(context_id):
-        runtime_calls.append(("invalidate", context_id))
-        lifecycle_calls.append("invalidate")
-
-    monkeypatch.setattr(worker_module, "invalidate_mcp_runtime_context", invalidate_context)
+    monkeypatch.setattr(
+        worker_module,
+        "release_terminal_mcp_run_grant",
+        unexpected_release_grant,
+    )
 
     queue_payload = QueueRunPayload.model_validate(persisted)
     run_payload = RunPayload(
@@ -1809,10 +2021,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
     assert get_run_calls.count(False) >= 2
     assert True in get_run_calls
     assert ("complete", "run-a") in terminal_calls
-    assert [kind for kind, _ in runtime_calls] == ["claim", "release", "invalidate"]
-    assert runtime_calls[-1] == ("invalidate", "mcpctx-reconciliation")
-    assert lifecycle_calls.index("terminal_commit") < lifecycle_calls.index("release")
-    assert lifecycle_calls.index("release") < lifecycle_calls.index("invalidate")
+    assert lifecycle_calls == ["terminal_commit"]
     assert not any(
         call == ("event", "capability_not_authorized") for call in terminal_calls
     )
@@ -2035,7 +2244,7 @@ def test_worker_sandbox_admission_delegates_executor_and_mcp_requirement(monkeyp
     }
 
 
-def test_worker_mcp_context_forces_sandbox_without_client_tool_metadata(monkeypatch):
+def test_worker_mcp_selection_forces_sandbox_without_client_runtime_metadata(monkeypatch):
     captured = {}
 
     def decide(**kwargs):
@@ -2050,7 +2259,7 @@ def test_worker_mcp_context_forces_sandbox_without_client_tool_metadata(monkeypa
         {
             key: value
             for key, value in base_payload(
-                input={"mode": "chat", "mcp_context_id": "mcpctx-runtime"},
+                input={"mode": "chat", "mcp_tool_ids": ["gateway::search"]},
             ).items()
             if key != "_queue_attempt_id"
         }
@@ -2169,7 +2378,6 @@ def locked_run_from_payload(payload):
         {key: value for key, value in payload.items() if key != "_queue_attempt_id"}
     ).model_dump(mode="json")
     agent_profile = validated.get("agent_profile") or {}
-    mcp_context_id = validated["input"].pop("mcp_context_id", None)
     input_json = {
         key: value
         for key, value in validated.items()
@@ -2185,8 +2393,6 @@ def locked_run_from_payload(payload):
             "skill_id",
         }
     }
-    if mcp_context_id:
-        input_json["mcp_context_id"] = mcp_context_id
     return {
         "id": validated["run_id"],
         "tenant_id": validated["tenant_id"],
@@ -2898,7 +3104,6 @@ def test_restored_sandbox_run_payload_diagnoses_expected_profile_loss():
 async def test_worker_returns_after_durable_executor_dispatch_acceptance(monkeypatch):
     calls = []
     raw = base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent")
-    raw["input"]["mcp_context_id"] = "mcpctx-async-dispatch"
     runtime_calls = []
 
     class AcceptedAdapter:
@@ -2932,27 +3137,11 @@ async def test_worker_returns_after_durable_executor_dispatch_acceptance(monkeyp
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", append_message)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr(
-        worker_module,
-        "get_mcp_runtime_context_manager",
-        lambda: _RuntimeManagerStub(
-            "mcpbrk:async:dispatch",
-            on_claim=lambda kwargs: runtime_calls.append(("claim", kwargs)),
-            on_release=lambda kwargs: runtime_calls.append(("release", kwargs)),
-        ),
-    )
-
-    async def invalidate_context(context_id):
-        runtime_calls.append(("invalidate", context_id))
-
-    monkeypatch.setattr(worker_module, "invalidate_mcp_runtime_context", invalidate_context)
-
     outcome = await process_run_payload(raw, AdapterRegistry({"fake": AcceptedAdapter()}))
 
     assert outcome == WorkerOutcome("running", "run-a")
     assert calls == [("adapter", "run-a")]
-    assert [kind for kind, _ in runtime_calls] == ["claim"]
-    assert runtime_calls[0][1]["context_id"] == "mcpctx-async-dispatch"
+    assert runtime_calls == []
 
 
 @pytest.mark.asyncio
@@ -7612,6 +7801,9 @@ async def test_worker_stops_silent_executor_after_cancel_requested(monkeypatch):
     async def complete_run(conn, **kwargs):
         raise AssertionError("cancelled silent execution must not complete successfully")
 
+    async def release_terminal_mcp_run_grant(**_kwargs):
+        raise AssertionError("non-MCP Run must not access MCP grant storage")
+
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
@@ -7619,6 +7811,10 @@ async def test_worker_stops_silent_executor_after_cancel_requested(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr(
+        "app.worker.release_terminal_mcp_run_grant",
+        release_terminal_mcp_run_grant,
+    )
 
     original_submit_until_cancelled = worker_module._submit_run_until_cancelled
 
@@ -9561,32 +9757,30 @@ async def test_worker_registered_tools_use_only_current_allowed_mcp_entries(monk
             ("mcp_server", "server-step"): _task6_distribution("mcp_server", "server-step"),
         }
     )
-    raw["input"]["mcp_context_id"] = "mcpctx-worker-tools"
-    state["locked_run"]["input_json"]["mcp_context_id"] = "mcpctx-worker-tools"
     claimed = {}
     released = {}
 
-    def claim_context(kwargs):
+    def claim_capability(kwargs):
         claimed.update(kwargs)
         calls.append(("mcp_claim", kwargs))
 
-    def release_context(kwargs):
+    def release_capability(kwargs):
         released.update(kwargs)
         calls.append(("mcp_release", kwargs))
 
-    async def invalidate_context(context_id):
-        calls.append(("mcp_invalidate", context_id))
+    async def release_grant(**identity):
+        calls.append(("mcp_invalidate", identity))
 
     monkeypatch.setattr(
         worker_module,
-        "get_mcp_runtime_context_manager",
+        "get_mcp_run_capability_manager",
         lambda: _RuntimeManagerStub(
             "mcpbrk:worker:tools",
-            on_claim=claim_context,
-            on_release=release_context,
+            on_claim=claim_capability,
+            on_release=release_capability,
         ),
     )
-    monkeypatch.setattr(worker_module, "invalidate_mcp_runtime_context", invalidate_context)
+    monkeypatch.setattr(worker_module, "release_terminal_mcp_run_grant", release_grant)
 
     outcome = await process_run_payload(raw, registry=registry)
 
@@ -9596,7 +9790,10 @@ async def test_worker_registered_tools_use_only_current_allowed_mcp_entries(monk
         "server-step": ("query",),
     }
     assert released == {"token": "mcpbrk:worker:tools"}
-    assert calls[-1] == ("mcp_invalidate", "mcpctx-worker-tools")
+    assert calls[-1] == (
+        "mcp_invalidate",
+        {"tenant_id": "tenant-a", "user_id": "user-a", "run_id": "run-a", "status": "succeeded"},
+    )
     assert next(index for index, call in enumerate(calls) if call[0] == "complete") < next(
         index for index, call in enumerate(calls) if call[0] == "mcp_release"
     )
@@ -9612,14 +9809,26 @@ async def test_worker_registered_tools_use_only_current_allowed_mcp_entries(monk
 
 
 @pytest.mark.asyncio
-async def test_worker_invalidates_mcp_context_after_failed_terminal_commit(monkeypatch):
-    raw, _, state, calls = _install_task6_worker_fakes(monkeypatch)
-    raw["input"]["mcp_context_id"] = "mcpctx-failed-terminal"
-    state["locked_run"]["input_json"]["mcp_context_id"] = "mcpctx-failed-terminal"
+async def test_worker_releases_mcp_run_grant_after_failed_terminal_commit(monkeypatch):
+    raw, _, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={"mcp_tool_ids": ["server-global::query"]},
+    )
+    state["tools"]["server-global::query"] = _task6_tool(
+        "server-global::query",
+        "server-global",
+    )
+    state["distributions"][("mcp_server", "server-global")] = _task6_distribution(
+        "mcp_server",
+        "server-global",
+    )
+    state["skill"]["executor_type"] = "claude-agent-worker"
+    state["locked_run"]["input_json"]["executor_type"] = "claude-agent-worker"
+    raw["executor_type"] = "claude-agent-worker"
 
     monkeypatch.setattr(
         worker_module,
-        "get_mcp_runtime_context_manager",
+        "get_mcp_run_capability_manager",
         lambda: _RuntimeManagerStub(
             "mcpbrk:failed:terminal",
             on_claim=lambda kwargs: calls.append(("mcp_claim", kwargs)),
@@ -9627,43 +9836,52 @@ async def test_worker_invalidates_mcp_context_after_failed_terminal_commit(monke
         ),
     )
 
-    async def invalidate_context(context_id):
-        calls.append(("mcp_invalidate", context_id))
+    async def release_grant(**identity):
+        calls.append(("mcp_invalidate", identity))
 
-    monkeypatch.setattr(worker_module, "invalidate_mcp_runtime_context", invalidate_context)
+    monkeypatch.setattr(worker_module, "release_terminal_mcp_run_grant", release_grant)
 
     outcome = await process_run_payload(
         raw,
-        registry=AdapterRegistry({"capture": FailingExecutorStub()}),
+        registry=AdapterRegistry({"claude-agent-worker": FailingExecutorStub()}),
     )
 
     assert outcome.status == "failed"
     assert any(call[0] == "fail" for call in calls)
-    assert calls[-1] == ("mcp_invalidate", "mcpctx-failed-terminal")
+    assert calls[-1][0] == "mcp_invalidate"
+    assert calls[-1][1]["status"] == "failed"
     assert next(index for index, call in enumerate(calls) if call[0] == "fail") < next(
-        index for index, call in enumerate(calls) if call[0] == "mcp_release"
-    )
-    assert next(index for index, call in enumerate(calls) if call[0] == "mcp_release") < next(
         index for index, call in enumerate(calls) if call[0] == "mcp_invalidate"
     )
 
 
 @pytest.mark.asyncio
-async def test_worker_invalidates_mcp_context_after_cancelled_terminal_commit(monkeypatch):
-    raw, _, state, calls = _install_task6_worker_fakes(monkeypatch)
-    raw["input"]["mcp_context_id"] = "mcpctx-cancelled-terminal"
-    state["locked_run"]["input_json"]["mcp_context_id"] = "mcpctx-cancelled-terminal"
+async def test_worker_releases_mcp_run_grant_after_cancelled_terminal_commit(monkeypatch):
+    raw, _, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={"mcp_tool_ids": ["server-global::query"]},
+    )
+    state["tools"]["server-global::query"] = _task6_tool(
+        "server-global::query",
+        "server-global",
+    )
+    state["distributions"][("mcp_server", "server-global")] = _task6_distribution(
+        "mcp_server",
+        "server-global",
+    )
+    state["skill"]["executor_type"] = "claude-agent-worker"
+    state["locked_run"]["input_json"]["executor_type"] = "claude-agent-worker"
+    raw["executor_type"] = "claude-agent-worker"
     cancel_checks = 0
 
     class CancellingAdapter:
         async def submit_run(self, payload, event_sink=None):
-            await event_sink(
-                event_type="assistant_delta",
-                stage="message",
-                message="partial",
-                payload={"delta": "partial"},
-            )
-            raise AssertionError("cancelled run must stop before adapter continuation")
+            calls.append(("adapter", "started"))
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                calls.append(("adapter", "cancelled"))
+                raise
 
     async def is_cancel_requested(_conn, **_kwargs):
         nonlocal cancel_checks
@@ -9682,7 +9900,7 @@ async def test_worker_invalidates_mcp_context_after_cancelled_terminal_commit(mo
     monkeypatch.setattr(worker_module.repositories, "cancel_run", cancel_run)
     monkeypatch.setattr(
         worker_module,
-        "get_mcp_runtime_context_manager",
+        "get_mcp_run_capability_manager",
         lambda: _RuntimeManagerStub(
             "mcpbrk:cancelled:terminal",
             on_claim=lambda kwargs: calls.append(("mcp_claim", kwargs)),
@@ -9690,31 +9908,31 @@ async def test_worker_invalidates_mcp_context_after_cancelled_terminal_commit(mo
         ),
     )
 
-    async def invalidate_context(context_id):
-        calls.append(("mcp_invalidate", context_id))
+    async def release_grant(**identity):
+        calls.append(("mcp_invalidate", identity))
 
-    monkeypatch.setattr(worker_module, "invalidate_mcp_runtime_context", invalidate_context)
+    monkeypatch.setattr(worker_module, "release_terminal_mcp_run_grant", release_grant)
 
     outcome = await process_run_payload(
         raw,
-        registry=AdapterRegistry({"capture": CancellingAdapter()}),
+        registry=AdapterRegistry({"claude-agent-worker": CancellingAdapter()}),
     )
 
     assert outcome.status == "cancelled"
+    assert ("adapter", "cancelled") in calls
     assert any(call[0] == "cancel" for call in calls)
-    assert calls[-1] == ("mcp_invalidate", "mcpctx-cancelled-terminal")
+    assert calls[-1][0] == "mcp_invalidate"
+    assert calls[-1][1]["status"] == "cancelled"
     assert next(index for index, call in enumerate(calls) if call[0] == "cancel") < next(
         index for index, call in enumerate(calls) if call[0] == "mcp_invalidate"
     )
 
 
 @pytest.mark.asyncio
-async def test_worker_preserves_mcp_context_when_early_terminal_commit_fails(monkeypatch):
+async def test_worker_preserves_mcp_run_grant_when_early_terminal_commit_fails(monkeypatch):
     raw, _, state, calls = _install_task6_worker_fakes(monkeypatch)
     raw["executor_type"] = "missing-executor"
-    raw["input"]["mcp_context_id"] = "mcpctx-commit-retry"
     state["locked_run"]["input_json"]["executor_type"] = "missing-executor"
-    state["locked_run"]["input_json"]["mcp_context_id"] = "mcpctx-commit-retry"
     transaction_count = 0
 
     @asynccontextmanager
@@ -9731,8 +9949,8 @@ async def test_worker_preserves_mcp_context_when_early_terminal_commit_fails(mon
     async def publish_terminal(*_args, **_kwargs):
         calls.append(("terminal_publish", {}))
 
-    async def invalidate_context(context_id):
-        calls.append(("mcp_invalidate", context_id))
+    async def release_grant(**identity):
+        calls.append(("mcp_invalidate", identity))
 
     monkeypatch.setattr(worker_module, "transaction", commit_failing_transaction)
     monkeypatch.setattr(
@@ -9741,7 +9959,7 @@ async def test_worker_preserves_mcp_context_when_early_terminal_commit_fails(mon
         finalize_parent,
     )
     monkeypatch.setattr(worker_module, "publish_pending_run_terminal", publish_terminal)
-    monkeypatch.setattr(worker_module, "invalidate_mcp_runtime_context", invalidate_context)
+    monkeypatch.setattr(worker_module, "release_terminal_mcp_run_grant", release_grant)
 
     with pytest.raises(RuntimeError, match="terminal commit failed"):
         await process_run_payload(raw, registry=AdapterRegistry({}))
@@ -10048,12 +10266,10 @@ async def test_worker_capability_distribution_admin_bypass_is_auditable(monkeypa
         "server-admin",
         visible_to_user=False,
     )
-    raw["input"]["mcp_context_id"] = "mcpctx-worker-admin-bypass"
-    state["locked_run"]["input_json"]["mcp_context_id"] = "mcpctx-worker-admin-bypass"
 
     monkeypatch.setattr(
         worker_module,
-        "get_mcp_runtime_context_manager",
+        "get_mcp_run_capability_manager",
         lambda: _RuntimeManagerStub("mcpbrk:worker:admin-bypass"),
     )
 
@@ -10192,12 +10408,10 @@ async def test_worker_capability_distribution_audits_synchronous_mcp_risk_write_
     state["skill"]["executor_type"] = "claude-agent-worker"
     state["locked_run"]["input_json"]["executor_type"] = "claude-agent-worker"
     raw["executor_type"] = "claude-agent-worker"
-    raw["input"]["mcp_context_id"] = "mcpctx-worker-risk"
-    state["locked_run"]["input_json"]["mcp_context_id"] = "mcpctx-worker-risk"
 
     monkeypatch.setattr(
         worker_module,
-        "get_mcp_runtime_context_manager",
+        "get_mcp_run_capability_manager",
         lambda: _RuntimeManagerStub("mcpbrk:worker:risk"),
     )
 

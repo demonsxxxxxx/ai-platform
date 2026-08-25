@@ -23,25 +23,24 @@ from app.mcp.infrastructure.runtime import (
     MCP_RELAY_AUTH_FAILURE_CAPABILITY_LIMIT,
     MCP_RELAY_AUTH_FAILURE_SOURCE_LIMIT,
     HostMcpRelay,
-    InMemoryRuntimeContextStore,
+    InMemoryMcpEncryptedStateStore,
     McpPrincipalJwtStore,
     McpRelayAuthFailureLimiter,
     McpRelayAuthFailureCounts,
     McpRelayError,
     McpRelayTarget,
     McpRuntimeContextError,
-    McpRuntimeContextManager,
+    McpRunCapabilityManager,
     McpToolSelectionRequired,
     McpValidatedTarget,
     bounded_tool_view,
     normalize_static_mcp_headers,
     open_mcp_server_credentials,
-    preflight_mcp_admission,
     resolve_registered_mcp_target,
     seal_mcp_server_credentials,
     validate_registered_mcp_target,
 )
-from app.models import ChatStreamRequest, CreateRunRequest
+from app.models import ChatStreamRequest
 from app.routes import mcp as mcp_routes
 from app.runtime.sandbox.contracts import MCP_RELAY_CALLBACK_PATH, build_trusted_callback_target
 from app.settings import Settings
@@ -67,34 +66,13 @@ def _principal(*, user_id: str = "user-a", tenant_id: str = "tenant-a") -> AuthP
 
 
 @pytest.mark.asyncio
-async def test_terminal_context_cleanup_ignores_non_terminal_run_status(monkeypatch):
-    invalidated = []
-
-    async def invalidate(context_id):
-        invalidated.append(context_id)
-
-    monkeypatch.setattr(mcp_api, "invalidate_mcp_runtime_context", invalidate)
-
-    await mcp_api.invalidate_terminal_mcp_runtime_context(
-        "mcpctx-active",
-        status="running",
-    )
-    await mcp_api.invalidate_terminal_mcp_runtime_context(
-        "mcpctx-terminal",
-        status="failed",
-    )
-
-    assert invalidated == ["mcpctx-terminal"]
-
-
-@pytest.mark.asyncio
-async def test_committed_terminal_cleanup_reads_context_after_commit(monkeypatch):
+async def test_committed_terminal_cleanup_reads_run_identity_after_commit(monkeypatch):
     calls = []
 
     class Services:
-        async def get_run_context_id(self, conn, **kwargs):
+        async def get_run_identity(self, conn, **kwargs):
             calls.append(("read", conn, kwargs))
-            return "mcpctx-committed"
+            return {"tenant_id": "tenant-a", "user_id": "user-a", "run_id": "run-a"}
 
     @asynccontextmanager
     async def transaction_factory():
@@ -102,13 +80,13 @@ async def test_committed_terminal_cleanup_reads_context_after_commit(monkeypatch
         yield "connection"
         calls.append(("tx_commit",))
 
-    async def invalidate(context_id):
-        calls.append(("invalidate", context_id))
+    async def release(**identity):
+        calls.append(("release", identity))
 
     monkeypatch.setattr(mcp_api, "mcp_runtime_services", lambda: Services())
-    monkeypatch.setattr(mcp_api, "invalidate_mcp_runtime_context", invalidate)
+    monkeypatch.setattr(mcp_api, "release_mcp_run_grant", release)
 
-    await mcp_api.invalidate_committed_terminal_run_mcp_context(
+    await mcp_api.release_committed_terminal_mcp_run_grant(
         tenant_id="tenant-a",
         run_id="run-a",
         status="running",
@@ -116,7 +94,7 @@ async def test_committed_terminal_cleanup_reads_context_after_commit(monkeypatch
     )
     assert calls == []
 
-    await mcp_api.invalidate_committed_terminal_run_mcp_context(
+    await mcp_api.release_committed_terminal_mcp_run_grant(
         tenant_id="tenant-a",
         run_id="run-a",
         status="cancelled",
@@ -131,7 +109,10 @@ async def test_committed_terminal_cleanup_reads_context_after_commit(monkeypatch
             {"tenant_id": "tenant-a", "run_id": "run-a"},
         ),
         ("tx_commit",),
-        ("invalidate", "mcpctx-committed"),
+        (
+            "release",
+            {"tenant_id": "tenant-a", "user_id": "user-a", "run_id": "run-a"},
+        ),
     ]
 
 
@@ -147,8 +128,7 @@ def _settings(
         lambda: Settings(
             mcp_context_encryption_keys_json=json.dumps({"current": key}),
             mcp_context_current_key_id="current",
-            mcp_context_ttl_seconds=300,
-            mcp_context_lease_seconds=1800,
+            mcp_capability_ttl_seconds=1800,
             mcp_relay_max_response_bytes=max_response_bytes,
         ),
     )
@@ -158,7 +138,7 @@ def _settings(
 @pytest.mark.asyncio
 async def test_principal_jwt_store_seals_overwrites_and_expires_at_jwt_exp(monkeypatch):
     now = [_settings(monkeypatch)]
-    store = InMemoryRuntimeContextStore(clock=lambda: now[0])
+    store = InMemoryMcpEncryptedStateStore(clock=lambda: now[0])
     jwt_store = McpPrincipalJwtStore(store=store, clock=lambda: now[0])
     principal = _principal()
     first = _jwt(exp=now[0] + 900)
@@ -220,66 +200,50 @@ async def _manager_with_capability(
     max_response_bytes: int = 1024 * 1024,
 ):
     now = _settings(monkeypatch, max_response_bytes=max_response_bytes)
-    store = InMemoryRuntimeContextStore(clock=lambda: now)
-    manager = McpRuntimeContextManager(store=store, clock=lambda: now)
+    store = InMemoryMcpEncryptedStateStore(clock=lambda: now)
+    manager = McpRunCapabilityManager(store=store, clock=lambda: now)
+    jwt_store = McpPrincipalJwtStore(store=store, clock=lambda: now)
     token = _jwt(exp=now + 900)
-    context = await manager.create_context(
-        principal=_principal(), bearer_jwt=f"Bearer {token}"
-    )
-    await manager.bind_to_run(
-        context_id=context["mcp_context_id"], principal=_principal(), run_id="run-a"
-    )
+    await jwt_store.put(_principal(), token)
+    monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: jwt_store)
     capability = await manager.claim_attempt_lease(
-        context_id=context["mcp_context_id"],
         tenant_id="tenant-a",
         user_id="user-a",
         run_id="run-a",
         attempt_id="attempt-a",
         targets=targets or {"inventory-mcp": ("search",)},
     )
-    return now, token, store, manager, context, capability
+    return now, token, store, manager, jwt_store, capability
 
 
 @pytest.mark.asyncio
-async def test_runtime_context_is_sealed_and_capability_contains_only_server_tool_targets(monkeypatch):
-    now, token, store, manager, context, capability = await _manager_with_capability(
+async def test_run_capability_grant_is_sealed_and_contains_no_jwt(monkeypatch):
+    now, token, store, manager, _, capability = await _manager_with_capability(
         monkeypatch,
         targets={"inventory-mcp": ("search",), "project-mcp": ("get-project",)},
     )
 
-    raw = await store.get(f"ai-platform:mcp:runtime-context:v1:{context['mcp_context_id']}")
+    raw = await store.get(f"ai-platform:mcp:run-capability:v1:{capability.grant_id}")
     assert raw is not None
     assert token not in raw
+    assert "jwt" not in raw.casefold()
     assert "inventory-mcp" not in capability.token
     assert capability.targets == {
         "inventory-mcp": ("search",),
         "project-mcp": ("get-project",),
     }
-    assert capability.expires_at == now + 300
+    assert capability.expires_at == now + 1800
     resolved = await manager.resolve_capability(capability.token)
-    assert resolved.jwt == token
-    assert resolved.capability.targets == capability.targets
+    assert resolved.targets == capability.targets
+    assert not hasattr(resolved, "jwt")
 
 
 @pytest.mark.asyncio
-async def test_run_binding_never_extends_the_original_context_deadline(monkeypatch):
+async def test_attempt_capability_is_bound_to_one_attempt_and_old_token_cannot_replay(monkeypatch):
     now = [_settings(monkeypatch)]
-    store = InMemoryRuntimeContextStore(clock=lambda: now[0])
-    manager = McpRuntimeContextManager(store=store, clock=lambda: now[0])
-    context = await manager.create_context(
-        principal=_principal(),
-        bearer_jwt=f"Bearer {_jwt(exp=now[0] + 900)}",
-    )
-    initial_deadline = now[0] + 300
-
-    now[0] += 120
-    bound = await manager.bind_to_run(
-        context_id=context["mcp_context_id"],
-        principal=_principal(),
-        run_id="run-a",
-    )
-    capability = await manager.claim_attempt_lease(
-        context_id=context["mcp_context_id"],
+    store = InMemoryMcpEncryptedStateStore(clock=lambda: now[0])
+    manager = McpRunCapabilityManager(store=store, clock=lambda: now[0])
+    first = await manager.claim_attempt_lease(
         tenant_id="tenant-a",
         user_id="user-a",
         run_id="run-a",
@@ -287,103 +251,8 @@ async def test_run_binding_never_extends_the_original_context_deadline(monkeypat
         targets={"inventory-mcp": ("search",)},
     )
 
-    assert bound.expires_at == initial_deadline
-    assert capability.expires_at == initial_deadline
-
-    now[0] = initial_deadline + 1
-    with pytest.raises(McpRelayError, match="mcp_capability_invalid"):
-        await manager.resolve_capability(capability.token)
-
-
-@pytest.mark.asyncio
-async def test_discard_unbound_context_preserves_bound_and_other_principal_contexts(monkeypatch):
-    now = _settings(monkeypatch)
-    store = InMemoryRuntimeContextStore(clock=lambda: now)
-    manager = McpRuntimeContextManager(store=store, clock=lambda: now)
-    token = _jwt(exp=now + 900)
-    unbound = await manager.create_context(
-        principal=_principal(), bearer_jwt=f"Bearer {token}"
-    )
-    bound = await manager.create_context(
-        principal=_principal(), bearer_jwt=f"Bearer {token}"
-    )
-    other = await manager.create_context(
-        principal=_principal(user_id="user-b"), bearer_jwt=f"Bearer {token}"
-    )
-    await manager.bind_to_run(
-        context_id=bound["mcp_context_id"],
-        principal=_principal(),
-        run_id="run-bound",
-    )
-
-    assert await manager.discard_unbound_context(
-        unbound["mcp_context_id"], _principal()
-    ) is True
-    assert await manager.discard_unbound_context(
-        bound["mcp_context_id"], _principal()
-    ) is False
-    assert await manager.discard_unbound_context(
-        other["mcp_context_id"], _principal()
-    ) is False
-    assert await store.get(
-        f"ai-platform:mcp:runtime-context:v1:{unbound['mcp_context_id']}"
-    ) is None
-    assert await store.get(
-        f"ai-platform:mcp:runtime-context:v1:{bound['mcp_context_id']}"
-    ) is not None
-    assert await store.get(
-        f"ai-platform:mcp:runtime-context:v1:{other['mcp_context_id']}"
-    ) is not None
-
-
-@pytest.mark.asyncio
-async def test_discard_unbound_context_denies_cross_tenant_principal(monkeypatch):
-    now = _settings(monkeypatch)
-    store = InMemoryRuntimeContextStore(clock=lambda: now)
-    manager = McpRuntimeContextManager(store=store, clock=lambda: now)
-    token = _jwt(exp=now + 900)
-    foreign = await manager.create_context(
-        principal=_principal(tenant_id="tenant-b"),
-        bearer_jwt=f"Bearer {token}",
-    )
-
-    discarded = await manager.discard_unbound_context(
-        foreign["mcp_context_id"],
-        _principal(tenant_id="tenant-a"),
-    )
-
-    assert discarded is False
-    assert await store.get(
-        f"ai-platform:mcp:runtime-context:v1:{foreign['mcp_context_id']}"
-    ) is not None
-
-
-@pytest.mark.asyncio
-async def test_runtime_context_ciphertext_cannot_be_relocated_to_another_context_key(
-    monkeypatch,
-):
-    now, _, store, manager, context, _ = await _manager_with_capability(monkeypatch)
-    source_key = f"ai-platform:mcp:runtime-context:v1:{context['mcp_context_id']}"
-    raw = await store.get(source_key)
-    assert raw is not None
-    relocated_context_id = "mcpctx_relocated"
-    await store.set(
-        f"ai-platform:mcp:runtime-context:v1:{relocated_context_id}",
-        raw,
-        ttl_seconds=300,
-    )
-
-    with pytest.raises(McpRuntimeContextError, match="mcp_context_corrupt"):
-        await manager._read(relocated_context_id)
-
-
-@pytest.mark.asyncio
-async def test_attempt_capability_is_bound_to_one_attempt_and_old_token_cannot_replay(monkeypatch):
-    _, _, _, manager, context, first = await _manager_with_capability(monkeypatch)
-
     with pytest.raises(McpRuntimeContextError, match="mcp_attempt_lease_conflict"):
         await manager.claim_attempt_lease(
-            context_id=context["mcp_context_id"],
             tenant_id="tenant-a",
             user_id="user-a",
             run_id="run-a",
@@ -393,7 +262,6 @@ async def test_attempt_capability_is_bound_to_one_attempt_and_old_token_cannot_r
 
     await manager.release_attempt_lease(token=first.token)
     second = await manager.claim_attempt_lease(
-        context_id=context["mcp_context_id"],
         tenant_id="tenant-a",
         user_id="user-a",
         run_id="run-a",
@@ -407,11 +275,10 @@ async def test_attempt_capability_is_bound_to_one_attempt_and_old_token_cannot_r
 
 @pytest.mark.asyncio
 async def test_same_attempt_cannot_reuse_a_capability_with_changed_targets(monkeypatch):
-    _, _, _, manager, context, _ = await _manager_with_capability(monkeypatch)
+    _, _, _, manager, _, _ = await _manager_with_capability(monkeypatch)
 
     with pytest.raises(McpRuntimeContextError, match="mcp_attempt_lease_conflict"):
         await manager.claim_attempt_lease(
-            context_id=context["mcp_context_id"],
             tenant_id="tenant-a",
             user_id="user-a",
             run_id="run-a",
@@ -646,7 +513,7 @@ async def test_relay_uses_original_hostname_for_real_tls_handshake(tmp_path, mon
         )
 
     relay = HostMcpRelay(
-        context_manager=object(),  # type: ignore[arg-type]
+        capability_manager=object(),  # type: ignore[arg-type]
         target_validator=pin_target,
         client_factory=lambda **kwargs: httpx.AsyncClient(
             verify=client_context,
@@ -675,10 +542,12 @@ async def test_relay_uses_original_hostname_for_real_tls_handshake(tmp_path, mon
 
 @pytest.mark.asyncio
 async def test_relay_merges_static_headers_with_fixed_jwt_and_isolates_servers(monkeypatch):
-    now, token, _, manager, _, capability = await _manager_with_capability(
+    now, original_token, _, manager, jwt_store, capability = await _manager_with_capability(
         monkeypatch,
         targets={"inventory-mcp": ("search",), "project-mcp": ("get-project",)},
     )
+    token = _jwt(exp=now + 800)
+    await jwt_store.put(_principal(), token)
     seen: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -712,7 +581,7 @@ async def test_relay_merges_static_headers_with_fixed_jwt_and_isolates_servers(m
         )
 
     relay = HostMcpRelay(
-        context_manager=manager,
+        capability_manager=manager,
         target_resolver=resolve,
         target_validator=pin_target,
         client_factory=lambda **kwargs: _Client(handler, **kwargs),
@@ -732,6 +601,7 @@ async def test_relay_merges_static_headers_with_fixed_jwt_and_isolates_servers(m
     )
 
     assert result["result"]["tools"][0]["name"] == "search"
+    assert token != original_token
     assert seen[0].headers["JWT-Authorization"] == f"Bearer {token}"
     assert seen[0].headers["Authorization"] == "Basic service"
     assert seen[0].headers["X-API-Key"] == "static-secret"
@@ -763,7 +633,168 @@ async def test_relay_merges_static_headers_with_fixed_jwt_and_isolates_servers(m
 
 
 @pytest.mark.asyncio
-async def test_relay_blocks_redirect_and_401_invalidates_context(monkeypatch):
+async def test_runtime_tools_list_collects_bounded_pages_before_target_filtering(monkeypatch):
+    now, original_token, _, manager, jwt_store, capability = await _manager_with_capability(
+        monkeypatch,
+        targets={"inventory-mcp": ("selected-page-two",)},
+    )
+    requests: list[tuple[str | None, str | None]] = []
+    authorizations: list[str | None] = []
+    refreshed_token = _jwt(exp=now + 1200)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        cursor = body.get("params", {}).get("cursor")
+        requests.append((cursor, request.headers.get("Mcp-Session-Id")))
+        authorizations.append(request.headers.get("JWT-Authorization"))
+        if cursor is None:
+            await jwt_store.put(_principal(), refreshed_token)
+        result = (
+            {
+                "tools": [{"name": "page-one", "inputSchema": {"type": "object"}}],
+                "nextCursor": "cursor-2",
+            }
+            if cursor is None
+            else {
+                "tools": [
+                    {"name": "selected-page-two", "inputSchema": {"type": "object"}}
+                ]
+            }
+        )
+        return httpx.Response(
+            200,
+            headers={"Mcp-Session-Id": "session-page-2"},
+            json={"jsonrpc": "2.0", "id": body["id"], "result": result},
+        )
+
+    async def resolve(_tenant_id: str, _server_id: str) -> McpRelayTarget:
+        return McpRelayTarget(
+            endpoint="https://inventory.example/mcp",
+            static_headers={},
+            active_tool_names=(),
+        )
+
+    relay = HostMcpRelay(
+        capability_manager=manager,
+        target_resolver=resolve,
+        target_validator=_accept_test_target,
+        client_factory=lambda **kwargs: _Client(handler, **kwargs),
+    )
+    result = await relay.forward(
+        capability_token=capability.token,
+        server_id="inventory-mcp",
+        payload={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+        incoming_headers={"mcp-session-id": "session-page-1"},
+    )
+
+    assert requests == [
+        (None, "session-page-1"),
+        ("cursor-2", "session-page-2"),
+    ]
+    assert authorizations == [
+        f"Bearer {original_token}",
+        f"Bearer {refreshed_token}",
+    ]
+    assert [tool["name"] for tool in result["result"]["tools"]] == ["selected-page-two"]
+    assert "nextCursor" not in result["result"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case", "first_result", "second_result", "limit_name", "limit_value", "error"),
+    [
+        (
+            "cursor-loop",
+            {"tools": [{"name": "one", "inputSchema": {}}], "nextCursor": "same"},
+            {"tools": [{"name": "two", "inputSchema": {}}], "nextCursor": "same"},
+            None,
+            None,
+            "mcp_tool_catalog_unbounded",
+        ),
+        (
+            "duplicate-tool",
+            {"tools": [{"name": "one", "inputSchema": {}}], "nextCursor": "next"},
+            {"tools": [{"name": "one", "inputSchema": {}}]},
+            None,
+            None,
+            "mcp_tools_schema_invalid",
+        ),
+        (
+            "page-limit",
+            {"tools": [{"name": "one", "inputSchema": {}}], "nextCursor": "next"},
+            None,
+            "MCP_DISCOVERY_PAGE_LIMIT",
+            1,
+            "mcp_tool_catalog_unbounded",
+        ),
+        (
+            "tool-limit",
+            {"tools": [{"name": "one", "inputSchema": {}}, {"name": "two", "inputSchema": {}}]},
+            None,
+            "MCP_RUNTIME_DISCOVERY_MAX_TOOLS",
+            1,
+            "mcp_tool_catalog_unbounded",
+        ),
+        (
+            "tool-definition-limit",
+            {
+                "tools": [
+                    {
+                        "name": "one",
+                        "description": "large non-schema definition",
+                        "inputSchema": {},
+                    }
+                ]
+            },
+            None,
+            "MCP_RUNTIME_DISCOVERY_MAX_TOOL_BYTES",
+            1,
+            "mcp_tool_catalog_unbounded",
+        ),
+    ],
+)
+async def test_runtime_tools_list_rejects_unbounded_or_inconsistent_pagination(
+    monkeypatch,
+    case,
+    first_result,
+    second_result,
+    limit_name,
+    limit_value,
+    error,
+):
+    del case
+    _, _, _, manager, _, capability = await _manager_with_capability(monkeypatch)
+    if limit_name is not None:
+        monkeypatch.setattr(mcp_runtime, limit_name, limit_value)
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        body = json.loads(request.content)
+        result = first_result if calls == 1 else second_result
+        assert result is not None
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    async def resolve(_tenant_id: str, _server_id: str) -> McpRelayTarget:
+        return McpRelayTarget("https://inventory.example/mcp", {}, ())
+
+    relay = HostMcpRelay(
+        capability_manager=manager,
+        target_resolver=resolve,
+        target_validator=_accept_test_target,
+        client_factory=lambda **kwargs: _Client(handler, **kwargs),
+    )
+    with pytest.raises(McpRelayError, match=error):
+        await relay.forward(
+            capability_token=capability.token,
+            server_id="inventory-mcp",
+            payload={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+        )
+
+
+@pytest.mark.asyncio
+async def test_relay_blocks_redirect_and_401_preserves_jwt_free_grant(monkeypatch):
     _, _, _, manager, _, capability = await _manager_with_capability(monkeypatch)
 
     async def resolve(_tenant_id: str, _server_id: str) -> McpRelayTarget:
@@ -777,7 +808,7 @@ async def test_relay_blocks_redirect_and_401_invalidates_context(monkeypatch):
         return httpx.Response(302, headers={"location": "http://169.254.169.254/metadata"})
 
     relay = HostMcpRelay(
-        context_manager=manager,
+        capability_manager=manager,
         target_resolver=resolve,
         target_validator=_accept_test_target,
         client_factory=lambda **kwargs: _Client(redirect_handler, **kwargs),
@@ -793,7 +824,7 @@ async def test_relay_blocks_redirect_and_401_invalidates_context(monkeypatch):
         return httpx.Response(401)
 
     relay = HostMcpRelay(
-        context_manager=manager,
+        capability_manager=manager,
         target_resolver=resolve,
         target_validator=_accept_test_target,
         client_factory=lambda **kwargs: _Client(unauthorized_handler, **kwargs),
@@ -804,8 +835,7 @@ async def test_relay_blocks_redirect_and_401_invalidates_context(monkeypatch):
             server_id="inventory-mcp",
             payload={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
         )
-    with pytest.raises(McpRelayError, match="mcp_capability_invalid"):
-        await manager.resolve_capability(capability.token)
+    assert (await manager.resolve_capability(capability.token)).run_id == "run-a"
 
 
 @pytest.mark.asyncio
@@ -826,7 +856,7 @@ async def test_relay_stops_reading_when_streamed_response_exceeds_limit(monkeypa
         return httpx.Response(200, content=b"x" * 1025)
 
     relay = HostMcpRelay(
-        context_manager=manager,
+        capability_manager=manager,
         target_resolver=resolve,
         target_validator=_accept_test_target,
         client_factory=lambda **kwargs: _Client(oversized_handler, **kwargs),
@@ -890,22 +920,10 @@ def test_targets_are_derived_only_from_authorized_policy_subjects():
 def test_platform_request_contract_has_no_gateway_specific_selector():
     request = ChatStreamRequest(
         message="use MCP",
-        mcp_context_id="mcpctx-test",
         selected_mcp_tool_ids=["gateway::inventory-query"],
     )
     assert request.selected_mcp_tool_ids == ["gateway::inventory-query"]
-    with pytest.raises(ValueError):
-        ChatStreamRequest(message="use MCP", mcp_context_id="../invalid")
-    with pytest.raises(ValueError):
-        CreateRunRequest(agent_id="general-agent", mcp_context_id="invalid context")
-    with pytest.raises(ValueError):
-        CreateRunRequest.model_validate(
-            {
-                "agent_id": "general-agent",
-                "mcp_context_id": "mcpctx-test",
-                "mcp_gateway_tool_names": ["inventory.erase"],
-            }
-        )
+    assert not hasattr(request, "mcp_context_id")
 
 
 def test_runtime_config_and_callback_have_no_fixed_gateway_dependency():
@@ -923,8 +941,7 @@ def test_runtime_config_and_callback_have_no_fixed_gateway_dependency():
     required = (
         "MCP_CONTEXT_ENCRYPTION_KEYS_JSON",
         "MCP_CONTEXT_CURRENT_KEY_ID",
-        "MCP_CONTEXT_TTL_SECONDS",
-        "MCP_CONTEXT_LEASE_SECONDS",
+        "MCP_CAPABILITY_TTL_SECONDS",
     )
     assert all(
         sum(
@@ -935,187 +952,6 @@ def test_runtime_config_and_callback_have_no_fixed_gateway_dependency():
         == 2
         for key in required
     )
-
-
-@pytest.mark.asyncio
-async def test_preflight_requires_and_binds_context_before_mcp_admission(monkeypatch):
-    now = _settings(monkeypatch)
-    manager = McpRuntimeContextManager(
-        store=InMemoryRuntimeContextStore(clock=lambda: now), clock=lambda: now
-    )
-    with pytest.raises(McpRuntimeContextError, match="mcp_context_required"):
-        await preflight_mcp_admission(
-            context_id=None,
-            principal=_principal(),
-            run_id="run-a",
-            selected_tool_names=("mcpt-inventory-query",),
-            mcp_required=True,
-            context_manager=manager,
-        )
-
-    context = await manager.create_context(
-        principal=_principal(), bearer_jwt=f"Bearer {_jwt(exp=now + 900)}"
-    )
-    result = await preflight_mcp_admission(
-        context_id=context["mcp_context_id"],
-        principal=_principal(),
-        run_id="run-a",
-        selected_tool_names=("mcpt-inventory-query",),
-        mcp_required=True,
-        context_manager=manager,
-    )
-    assert result is not None and result.run_id == "run-a"
-
-
-@pytest.mark.asyncio
-async def test_preflight_discards_unbound_context_when_resolved_run_has_no_mcp(monkeypatch):
-    now = _settings(monkeypatch)
-    manager = McpRuntimeContextManager(
-        store=InMemoryRuntimeContextStore(clock=lambda: now), clock=lambda: now
-    )
-    context = await manager.create_context(
-        principal=_principal(), bearer_jwt=f"Bearer {_jwt(exp=now + 900)}"
-    )
-
-    result = await preflight_mcp_admission(
-        context_id=context["mcp_context_id"],
-        principal=_principal(),
-        run_id="run-without-mcp",
-        selected_tool_names=(),
-        mcp_required=False,
-        context_manager=manager,
-    )
-
-    assert result is None
-    with pytest.raises(McpRuntimeContextError, match="mcp_context_not_found"):
-        await manager._read(context["mcp_context_id"])
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "preflight",
-    [preflight_mcp_admission, mcp_api.preflight_mcp_admission],
-)
-async def test_no_mcp_preflight_ignores_context_cleanup_infrastructure_failure(preflight):
-    class FailingContextManager:
-        async def discard_unbound_context(self, context_id, principal):
-            raise OSError("redis unavailable")
-
-    result = await preflight(
-        context_id="mcpctx-cleanup-failure",
-        principal=_principal(),
-        run_id="run-without-mcp",
-        selected_tool_names=(),
-        mcp_required=False,
-        context_manager=FailingContextManager(),
-    )
-
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_context_binding_and_attempt_leases_are_race_safe(monkeypatch):
-    now = _settings(monkeypatch)
-    manager = McpRuntimeContextManager(
-        store=InMemoryRuntimeContextStore(clock=lambda: now), clock=lambda: now
-    )
-    context = await manager.create_context(
-        principal=_principal(), bearer_jwt=f"Bearer {_jwt(exp=now + 3600)}"
-    )
-    bind_results = await asyncio.gather(
-        manager.bind_to_run(
-            context_id=context["mcp_context_id"], principal=_principal(), run_id="run-a"
-        ),
-        manager.bind_to_run(
-            context_id=context["mcp_context_id"], principal=_principal(), run_id="run-b"
-        ),
-        return_exceptions=True,
-    )
-    assert sum(not isinstance(item, Exception) for item in bind_results) == 1
-    bound_run_id = next(item.bound_run_id for item in bind_results if not isinstance(item, Exception))
-    lease_results = await asyncio.gather(
-        manager.claim_attempt_lease(
-            context_id=context["mcp_context_id"],
-            tenant_id="tenant-a",
-            user_id="user-a",
-            run_id=bound_run_id,
-            attempt_id="attempt-a",
-            targets={"inventory-mcp": ("search",)},
-        ),
-        manager.claim_attempt_lease(
-            context_id=context["mcp_context_id"],
-            tenant_id="tenant-a",
-            user_id="user-a",
-            run_id=bound_run_id,
-            attempt_id="attempt-b",
-            targets={"inventory-mcp": ("search",)},
-        ),
-        return_exceptions=True,
-    )
-    assert sum(not isinstance(item, Exception) for item in lease_results) == 1
-
-
-@pytest.mark.asyncio
-async def test_runtime_context_route_reads_principal_jwt_and_sets_no_store(monkeypatch):
-    now = _settings(monkeypatch)
-    manager = McpRuntimeContextManager(
-        store=InMemoryRuntimeContextStore(clock=lambda: now), clock=lambda: now
-    )
-    token = _jwt(exp=now + 900)
-
-    async def read_principal_jwt(principal):
-        assert principal == _principal()
-        return token
-
-    monkeypatch.setattr(mcp_routes, "MCP_RUNTIME_CONTEXT_MANAGER", manager)
-    monkeypatch.setattr(mcp_routes, "read_mcp_principal_jwt", read_principal_jwt)
-    response = Response()
-    result = await mcp_routes.create_mcp_runtime_context(
-        response=response,
-        principal=_principal(),
-    )
-    assert result["mcp_context_id"].startswith("mcpctx_")
-    assert response.headers["cache-control"] == "no-store"
-    assert datetime.fromisoformat(result["expires_at"].replace("Z", "+00:00")).tzinfo
-
-
-@pytest.mark.asyncio
-async def test_runtime_context_discard_route_is_principal_scoped_and_opaque(monkeypatch):
-    now = _settings(monkeypatch)
-    store = InMemoryRuntimeContextStore(clock=lambda: now)
-    manager = McpRuntimeContextManager(store=store, clock=lambda: now)
-    token = _jwt(exp=now + 900)
-    owned = await manager.create_context(
-        principal=_principal(), bearer_jwt=f"Bearer {token}"
-    )
-    other = await manager.create_context(
-        principal=_principal(user_id="user-b"), bearer_jwt=f"Bearer {token}"
-    )
-
-    async def discard(context_id, principal):
-        await manager.discard_unbound_context(context_id, principal)
-
-    monkeypatch.setattr(mcp_routes, "discard_unbound_mcp_runtime_context", discard)
-
-    responses = [
-        await mcp_routes.discard_mcp_runtime_context(
-            context_id=owned["mcp_context_id"], principal=_principal()
-        ),
-        await mcp_routes.discard_mcp_runtime_context(
-            context_id=other["mcp_context_id"], principal=_principal()
-        ),
-        await mcp_routes.discard_mcp_runtime_context(
-            context_id="mcpctx_missing", principal=_principal()
-        ),
-    ]
-
-    assert [response.status_code for response in responses] == [204, 204, 204]
-    assert await store.get(
-        f"ai-platform:mcp:runtime-context:v1:{owned['mcp_context_id']}"
-    ) is None
-    assert await store.get(
-        f"ai-platform:mcp:runtime-context:v1:{other['mcp_context_id']}"
-    ) is not None
 
 
 @pytest.mark.asyncio

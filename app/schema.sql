@@ -511,7 +511,6 @@ create table if not exists runs (
   status text not null,
   input_json jsonb not null default '{}'::jsonb,
   context_snapshot_id text,
-  mcp_context_id text,
   session_generation bigint,
   result_json jsonb not null default '{}'::jsonb,
   error_code text,
@@ -795,7 +794,6 @@ alter table runs add column if not exists executor_schema_version text not null 
 alter table runs add column if not exists principal_roles jsonb not null default '[]'::jsonb;
 alter table runs add column if not exists principal_department_id text not null default '';
 alter table runs add column if not exists auth_source text;
-alter table runs add column if not exists mcp_context_id text;
 alter table runs add column if not exists authz_policy_version integer not null default 1;
 alter table runs add column if not exists authority_source text not null default '';
 alter table runs add column if not exists authority_checked_at timestamptz;

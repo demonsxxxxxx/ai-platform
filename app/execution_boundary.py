@@ -185,8 +185,7 @@ def decide_worker_execution_boundary(
             payload.context_snapshot if context_snapshot is None else context_snapshot
         ),
         mcp_requires_sandbox=bool(
-            payload.input.get("mcp_context_id")
-            or repositories.extract_run_mcp_tool_ids(payload.input)
+            repositories.extract_run_mcp_tool_ids(payload.input)
         ),
     )
 

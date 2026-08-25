@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
 
-import { installSuccessfulMcpRuntimeContext } from "../../../hooks/useAgent/__tests__/mcpRuntimeTestHarness.ts";
-
 import React from "react";
 
 import { Permission } from "../../../types/auth.ts";
@@ -819,9 +817,6 @@ test("Agent starter prompts draft before explicit first-message submission", asy
   const originalGetEvents = sessionApi.getEvents;
   const originalMarkRead = sessionApi.markRead;
   const originalSubmitChat = sessionApi.submitChat;
-  const mcpRuntime = installSuccessfulMcpRuntimeContext(
-    "mcpctx-market-profile",
-  );
   agentProfileApi.listPublished = async () => ({ agent_profiles: [profile] });
   agentProfileApi.getPublished = async () => profile;
   agentProfileApi.listConversations = async () => ({
@@ -952,10 +947,7 @@ test("Agent starter prompts draft before explicit first-message submission", asy
       agent_id: profile.agent_id,
       expected_revision: profile.expected_revision,
     });
-    assert.equal(
-      submissions[expectedCount - 1]?.[11],
-      `mcpctx-market-profile-${expectedCount}`,
-    );
+    assert.equal(submissions[expectedCount - 1]?.length, 11);
   }
 
   try {
@@ -1050,7 +1042,6 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     sessionApi.getEvents = originalGetEvents;
     sessionApi.markRead = originalMarkRead;
     sessionApi.submitChat = originalSubmitChat;
-    mcpRuntime.restore();
     shellHarness.restore();
     await React.act(async () => root.unmount());
   }

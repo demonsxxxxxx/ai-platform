@@ -8,8 +8,7 @@ import json
 import secrets
 import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, MutableMapping, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
@@ -31,23 +30,25 @@ from app.mcp.domain.identifiers import (
     assert_safe_mcp_principal_user_id as assert_safe_principal_user_id,
 )
 from app.mcp.domain.targets import normalize_mcp_targets
+from app.mcp.infrastructure.catalog import MCP_DISCOVERY_PAGE_LIMIT
 
 
-MCP_RUNTIME_CONTEXT_TTL_SECONDS = 5 * 60
 MCP_RUNTIME_LEASE_MAX_SECONDS = 30 * 60
 MCP_MAX_TOOLS_PER_RUN = 40
 MCP_MAX_SCHEMA_BYTES = 256 * 1024
-MCP_CONTEXT_KEY_PREFIX = "ai-platform:mcp:runtime-context:v1:"
-MCP_CONTEXT_LOCK_PREFIX = "ai-platform:mcp:runtime-context-lock:v1:"
+MCP_RUNTIME_DISCOVERY_MAX_TOOLS = 10_000
+MCP_RUNTIME_DISCOVERY_MAX_TOOL_BYTES = 4 * 1024 * 1024
+MCP_CAPABILITY_GRANT_KEY_PREFIX = "ai-platform:mcp:run-capability:v1:"
+MCP_CAPABILITY_GRANT_LOCK_PREFIX = "ai-platform:mcp:run-capability-lock:v1:"
 MCP_PRINCIPAL_JWT_KEY_PREFIX = "ai-platform:mcp:principal-jwt:v1:"
-MCP_CONTEXT_LOCK_TTL_SECONDS = 120
+MCP_CAPABILITY_GRANT_LOCK_TTL_SECONDS = 120
 MCP_RELAY_AUTH_FAILURE_KEY_PREFIX = "ai-platform:mcp:relay-auth-failure:v1:"
 MCP_RELAY_AUTH_FAILURE_CAPABILITY_LIMIT = 10
 MCP_RELAY_AUTH_FAILURE_SOURCE_LIMIT = 1000
 MCP_RELAY_AUTH_FAILURE_WINDOW_SECONDS = 60
 MCP_CAPABILITY_HEADER = "X-MCP-Broker-Capability"
 MCP_GATEWAY_SERVICE_TOKEN_HEADER = "X-MCP-Gateway-Service-Token"
-_MCP_CONTEXT_AAD_PREFIX = b"ai-platform:mcp-runtime-context:v1:"
+_MCP_CAPABILITY_GRANT_AAD_PREFIX = b"ai-platform:mcp-run-capability:v1:"
 _MCP_PRINCIPAL_JWT_AAD_PREFIX = b"ai-platform:mcp-principal-jwt:v1:"
 _MCP_SERVER_CREDENTIAL_AAD_PREFIX = b"ai-platform:mcp-server-credential:v1:"
 _RELAY_FORWARD_HEADERS = frozenset(
@@ -130,7 +131,7 @@ class McpContextPrincipal:
 @dataclass(frozen=True)
 class McpBrokerCapability:
     token: str = field(repr=False)
-    context_id: str
+    grant_id: str
     tenant_id: str
     user_id: str
     run_id: str
@@ -142,20 +143,16 @@ class McpBrokerCapability:
 
 
 @dataclass(frozen=True)
-class McpResolvedCapability:
-    capability: McpBrokerCapability
-    jwt: str = field(repr=False)
-    jwt_fingerprint: str
-
-
-@dataclass(frozen=True)
 class McpRelayAuthFailureCounts:
     source: int
     capability: int
 
 
 @dataclass(frozen=True)
-class _ActiveLease:
+class _RunCapabilityGrant:
+    grant_id: str
+    tenant_id: str
+    user_id: str
     run_id: str
     attempt_id: str
     expires_at: int
@@ -165,30 +162,11 @@ class _ActiveLease:
 
 
 @dataclass(frozen=True)
-class _RuntimeContextRecord:
-    context_id: str
-    tenant_id: str
-    user_id: str
-    jwt: str = field(repr=False)
-    jwt_exp: int
-    bind_expires_at: int
-    expires_at: int
-    bound_run_id: str | None = None
-    active_lease: _ActiveLease | None = None
-
-
-@dataclass(frozen=True)
 class _PrincipalJwtRecord:
     tenant_id: str
     user_id: str
     jwt: str = field(repr=False)
     jwt_exp: int
-
-
-@dataclass(frozen=True)
-class McpRuntimePreflight:
-    context_id: str
-    run_id: str
 
 
 @dataclass(frozen=True)
@@ -210,37 +188,27 @@ class McpValidatedTarget:
     sni_hostname: str
 
 
-class RuntimeContextStore(Protocol):
+class McpEncryptedStateStore(Protocol):
     async def create(self, key: str, value: str, *, ttl_seconds: int) -> bool:
-        """Create one context value only when its opaque key is unused."""
+        """Create one sealed state value only when its opaque key is unused."""
 
     async def get(self, key: str) -> str | None:
-        """Return one sealed context value."""
+        """Return one sealed state value."""
 
     async def set(self, key: str, value: str, *, ttl_seconds: int) -> None:
-        """Replace one sealed context value with a bounded TTL."""
-
-    async def compare_and_set(
-        self,
-        key: str,
-        expected: str,
-        value: str,
-        *,
-        ttl_seconds: int,
-    ) -> bool:
-        """Replace one sealed value only when it is still the expected value."""
+        """Replace one sealed state value with a bounded TTL."""
 
     async def delete(self, key: str) -> None:
-        """Delete one context value."""
+        """Delete one sealed state value."""
 
     async def acquire_lock(self, key: str, token: str, *, ttl_seconds: int) -> bool:
-        """Acquire a distributed mutation lock for one context."""
+        """Acquire a distributed mutation lock for one state record."""
 
     async def release_lock(self, key: str, token: str) -> None:
         """Release the lock only when its value still equals the exact token."""
 
 
-class InMemoryRuntimeContextStore:
+class InMemoryMcpEncryptedStateStore:
     """Small deterministic store for unit tests and process-local development."""
 
     def __init__(self, *, clock: Callable[[], float] = time.time) -> None:
@@ -267,22 +235,6 @@ class InMemoryRuntimeContextStore:
     async def set(self, key: str, value: str, *, ttl_seconds: int) -> None:
         async with self._lock:
             self._values[key] = (self._clock() + max(int(ttl_seconds), 1), value)
-
-    async def compare_and_set(
-        self,
-        key: str,
-        expected: str,
-        value: str,
-        *,
-        ttl_seconds: int,
-    ) -> bool:
-        async with self._lock:
-            self._purge(key)
-            item = self._values.get(key)
-            if item is None or item[1] != expected:
-                return False
-            self._values[key] = (self._clock() + max(int(ttl_seconds), 1), value)
-            return True
 
     async def delete(self, key: str) -> None:
         async with self._lock:
@@ -313,7 +265,7 @@ class InMemoryRuntimeContextStore:
             self._values.pop(key, None)
 
 
-class RedisRuntimeContextStore:
+class RedisMcpEncryptedStateStore:
     """Redis-backed opaque store. The value is always sealed before Redis sees it."""
 
     def __init__(self, *, redis: RedisClientHandle | None = None) -> None:
@@ -331,27 +283,6 @@ class RedisRuntimeContextStore:
 
     async def set(self, key: str, value: str, *, ttl_seconds: int) -> None:
         await self._client().set(key, value, ex=max(int(ttl_seconds), 1))
-
-    async def compare_and_set(
-        self,
-        key: str,
-        expected: str,
-        value: str,
-        *,
-        ttl_seconds: int,
-    ) -> bool:
-        return bool(
-            await self._client().eval(
-                "if redis.call('get', KEYS[1]) == ARGV[1] then "
-                "return redis.call('set', KEYS[1], ARGV[2], 'EX', ARGV[3]) "
-                "else return 0 end",
-                1,
-                key,
-                expected,
-                value,
-                max(int(ttl_seconds), 1),
-            )
-        )
 
     async def delete(self, key: str) -> None:
         await self._client().delete(key)
@@ -511,16 +442,6 @@ def _jwt_payload(token: str, *, now: int | None = None) -> dict[str, Any]:
     return payload
 
 
-def extract_bearer_jwt(value: str | None) -> str:
-    """Parse only the MCP-specific header; no body or standard Authorization fallback."""
-
-    raw = str(value or "").strip()
-    scheme, separator, token = raw.partition(" ")
-    if not separator or scheme.casefold() != "bearer" or not token.strip():
-        raise McpRuntimeContextError("mcp_jwt_missing", status_code=401)
-    return token.strip()
-
-
 def _principal_jwt_key(principal: McpContextPrincipal) -> str:
     identity = json.dumps(
         [principal.tenant_id, principal.user_id],
@@ -614,10 +535,10 @@ class McpPrincipalJwtStore:
     def __init__(
         self,
         *,
-        store: RuntimeContextStore | None = None,
+        store: McpEncryptedStateStore | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
-        self.store = store or RedisRuntimeContextStore()
+        self.store = store or RedisMcpEncryptedStateStore()
         self.clock = clock
 
     def _now(self) -> int:
@@ -764,86 +685,56 @@ def open_mcp_server_credentials(
         raise McpRelayError("mcp_server_credentials_invalid", status_code=503) from exc
 
 
-def _utc_iso8601(timestamp: int) -> str:
-    return datetime.fromtimestamp(int(timestamp), tz=timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _record_payload(record: _RuntimeContextRecord) -> dict[str, Any]:
-    active = record.active_lease
+def _grant_payload(grant: _RunCapabilityGrant) -> dict[str, Any]:
     return {
-        "context_id": record.context_id,
-        "tenant_id": record.tenant_id,
-        "user_id": record.user_id,
-        "jwt": record.jwt,
-        "jwt_exp": record.jwt_exp,
-        "bind_expires_at": record.bind_expires_at,
-        "expires_at": record.expires_at,
-        "bound_run_id": record.bound_run_id,
-        "active_lease": (
-            {
-                "run_id": active.run_id,
-                "attempt_id": active.attempt_id,
-                "expires_at": active.expires_at,
-                "token": active.token,
-                "token_sha256": active.token_sha256,
-                "targets": {
-                    server_id: list(tool_names)
-                    for server_id, tool_names in active.targets.items()
-                },
-            }
-            if active is not None
-            else None
-        ),
+        "grant_id": grant.grant_id,
+        "tenant_id": grant.tenant_id,
+        "user_id": grant.user_id,
+        "run_id": grant.run_id,
+        "attempt_id": grant.attempt_id,
+        "expires_at": grant.expires_at,
+        "token": grant.token,
+        "token_sha256": grant.token_sha256,
+        "targets": {
+            server_id: list(tool_names)
+            for server_id, tool_names in grant.targets.items()
+        },
     }
 
 
-def _record_from_payload(payload: object) -> _RuntimeContextRecord:
+def _grant_from_payload(payload: object) -> _RunCapabilityGrant:
     if not isinstance(payload, dict):
-        raise McpRuntimeContextError("mcp_context_corrupt", status_code=503)
-    active_raw = payload.get("active_lease")
-    active = None
-    if active_raw is not None:
-        if not isinstance(active_raw, dict):
-            raise McpRuntimeContextError("mcp_context_corrupt", status_code=503)
-        raw_targets = active_raw.get("targets")
-        active = _ActiveLease(
-            run_id=assert_safe_id(str(active_raw.get("run_id") or ""), "run_id"),
-            attempt_id=assert_safe_id(str(active_raw.get("attempt_id") or ""), "attempt_id"),
-            expires_at=int(active_raw.get("expires_at") or 0),
-            token=str(active_raw.get("token") or ""),
-            token_sha256=str(active_raw.get("token_sha256") or ""),
-            targets=normalize_mcp_targets(raw_targets) if isinstance(raw_targets, dict) else {},
-        )
-    expires_at = int(payload.get("expires_at") or 0)
-    return _RuntimeContextRecord(
-        context_id=assert_safe_id(str(payload.get("context_id") or ""), "mcp_context_id"),
+        raise McpRuntimeContextError("mcp_capability_grant_corrupt", status_code=503)
+    raw_targets = payload.get("targets")
+    return _RunCapabilityGrant(
+        grant_id=assert_safe_id(str(payload.get("grant_id") or ""), "mcp_grant_id"),
         tenant_id=assert_safe_id(str(payload.get("tenant_id") or ""), "tenant_id"),
         user_id=assert_safe_principal_user_id(str(payload.get("user_id") or "")),
-        jwt=str(payload.get("jwt") or ""),
-        jwt_exp=int(payload.get("jwt_exp") or 0),
-        bind_expires_at=int(payload.get("bind_expires_at") or expires_at),
-        expires_at=expires_at,
-        bound_run_id=(str(payload["bound_run_id"]) if payload.get("bound_run_id") else None),
-        active_lease=active,
+        run_id=assert_safe_id(str(payload.get("run_id") or ""), "run_id"),
+        attempt_id=assert_safe_id(str(payload.get("attempt_id") or ""), "attempt_id"),
+        expires_at=int(payload.get("expires_at") or 0),
+        token=str(payload.get("token") or ""),
+        token_sha256=str(payload.get("token_sha256") or ""),
+        targets=normalize_mcp_targets(raw_targets) if isinstance(raw_targets, dict) else {},
     )
 
 
-def _context_aad(key_id: str, context_id: str) -> bytes:
+def _grant_aad(key_id: str, grant_id: str) -> bytes:
     return (
-        _MCP_CONTEXT_AAD_PREFIX
+        _MCP_CAPABILITY_GRANT_AAD_PREFIX
         + key_id.encode("utf-8")
         + b":"
-        + assert_safe_id(context_id, "mcp_context_id").encode("utf-8")
+        + assert_safe_id(grant_id, "mcp_grant_id").encode("utf-8")
     )
 
 
-def _seal(record: _RuntimeContextRecord) -> str:
+def _seal_grant(grant: _RunCapabilityGrant) -> str:
     current_id, keyring = _configured_keyring()
     nonce = secrets.token_bytes(12)
     ciphertext = AESGCM(keyring[current_id]).encrypt(
         nonce,
-        json.dumps(_record_payload(record), ensure_ascii=True, separators=(",", ":")).encode("utf-8"),
-        _context_aad(current_id, record.context_id),
+        json.dumps(_grant_payload(grant), ensure_ascii=True, separators=(",", ":")).encode("utf-8"),
+        _grant_aad(current_id, grant.grant_id),
     )
     return json.dumps(
         {
@@ -856,7 +747,7 @@ def _seal(record: _RuntimeContextRecord) -> str:
     )
 
 
-def _open(value: str, *, context_id: str) -> _RuntimeContextRecord:
+def _open_grant(value: str, *, grant_id: str) -> _RunCapabilityGrant:
     try:
         envelope = json.loads(value)
         key_id = str(envelope["key_id"])
@@ -866,12 +757,12 @@ def _open(value: str, *, context_id: str) -> _RuntimeContextRecord:
         plaintext = AESGCM(keyring[key_id]).decrypt(
             nonce,
             ciphertext,
-            _context_aad(key_id, context_id),
+            _grant_aad(key_id, grant_id),
         )
-        record = _record_from_payload(json.loads(plaintext.decode("utf-8")))
-        if record.context_id != context_id:
-            raise McpRuntimeContextError("mcp_context_corrupt", status_code=503)
-        return record
+        grant = _grant_from_payload(json.loads(plaintext.decode("utf-8")))
+        if grant.grant_id != grant_id:
+            raise McpRuntimeContextError("mcp_capability_grant_corrupt", status_code=503)
+        return grant
     except McpRuntimeContextError:
         raise
     except (
@@ -882,33 +773,46 @@ def _open(value: str, *, context_id: str) -> _RuntimeContextRecord:
         UnicodeError,
         json.JSONDecodeError,
     ) as exc:
-        raise McpRuntimeContextError("mcp_context_corrupt", status_code=503) from exc
+        raise McpRuntimeContextError("mcp_capability_grant_corrupt", status_code=503) from exc
 
 
-def _context_key(context_id: str) -> str:
-    return f"{MCP_CONTEXT_KEY_PREFIX}{assert_safe_id(context_id, 'mcp_context_id')}"
+def _run_grant_id(*, tenant_id: str, user_id: str, run_id: str) -> str:
+    identity = json.dumps(
+        [
+            assert_safe_id(tenant_id, "tenant_id"),
+            assert_safe_principal_user_id(user_id),
+            assert_safe_id(run_id, "run_id"),
+        ],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"mcpgrant_{hashlib.sha256(identity).hexdigest()}"
 
 
-class McpRuntimeContextManager:
-    """Own encrypted JWT contexts and one exact active Broker capability."""
+def _grant_key(grant_id: str) -> str:
+    return f"{MCP_CAPABILITY_GRANT_KEY_PREFIX}{assert_safe_id(grant_id, 'mcp_grant_id')}"
+
+
+class McpRunCapabilityManager:
+    """Issue one JWT-free, exact Run/attempt MCP capability grant."""
 
     def __init__(
         self,
         *,
-        store: RuntimeContextStore | None = None,
+        store: McpEncryptedStateStore | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
-        self.store = store or RedisRuntimeContextStore()
+        self.store = store or RedisMcpEncryptedStateStore()
         self.clock = clock
 
     def _now(self) -> int:
         return int(self.clock())
 
     @asynccontextmanager
-    async def _mutation_guard(self, context_id: str) -> AsyncIterator[None]:
-        """Serialize encrypted record updates across all API/worker processes."""
+    async def _mutation_guard(self, grant_id: str) -> AsyncIterator[None]:
+        """Serialize one Run grant across all API and worker processes."""
 
-        lock_key = f"{MCP_CONTEXT_LOCK_PREFIX}{assert_safe_id(context_id, 'mcp_context_id')}"
+        lock_key = f"{MCP_CAPABILITY_GRANT_LOCK_PREFIX}{assert_safe_id(grant_id, 'mcp_grant_id')}"
         lock_token = secrets.token_urlsafe(24)
         deadline = time.monotonic() + 5.0
         acquired = False
@@ -916,135 +820,37 @@ class McpRuntimeContextManager:
             acquired = await self.store.acquire_lock(
                 lock_key,
                 lock_token,
-                ttl_seconds=MCP_CONTEXT_LOCK_TTL_SECONDS,
+                ttl_seconds=MCP_CAPABILITY_GRANT_LOCK_TTL_SECONDS,
             )
             if acquired:
                 break
             if time.monotonic() >= deadline:
-                raise McpRuntimeContextError("mcp_context_busy", status_code=503)
+                raise McpRuntimeContextError("mcp_capability_grant_busy", status_code=503)
             await asyncio.sleep(0.01)
         try:
             yield
         finally:
             await self.store.release_lock(lock_key, lock_token)
 
-    async def create_context(self, *, principal: McpPrincipal, bearer_jwt: str) -> dict[str, Any]:
-        jwt = extract_bearer_jwt(bearer_jwt)
-        now = self._now()
-        payload = _jwt_payload(jwt, now=now)
-        context_id = f"mcpctx_{secrets.token_urlsafe(24)}"
-        principal_binding = McpContextPrincipal.from_principal(principal)
-        ttl = max(1, int(getattr(get_settings(), "mcp_context_ttl_seconds", MCP_RUNTIME_CONTEXT_TTL_SECONDS)))
-        bind_expires_at = min(now + ttl, int(payload["exp"]))
-        if bind_expires_at <= now:
-            raise McpRuntimeContextError("mcp_jwt_expired_or_missing", status_code=401)
-        record = _RuntimeContextRecord(
-            context_id=context_id,
-            tenant_id=principal_binding.tenant_id,
-            user_id=principal_binding.user_id,
-            jwt=jwt,
-            jwt_exp=int(payload["exp"]),
-            bind_expires_at=bind_expires_at,
-            # This field is populated only after exact Run binding. The
-            # unbound context lifetime is carried separately by bind_expires_at.
-            expires_at=0,
-        )
-        if not await self.store.create(
-            _context_key(context_id),
-            _seal(record),
-            ttl_seconds=bind_expires_at - now,
-        ):
-            raise McpRuntimeContextError("mcp_context_create_conflict", status_code=503)
-        return {
-            "mcp_context_id": context_id,
-            "expires_at": _utc_iso8601(bind_expires_at),
-        }
-
-    async def _read_current(self, context_id: str) -> tuple[str, _RuntimeContextRecord]:
-        value = await self.store.get(_context_key(context_id))
+    async def _read_current(self, grant_id: str) -> tuple[str, _RunCapabilityGrant]:
+        value = await self.store.get(_grant_key(grant_id))
         if value is None:
-            raise McpRuntimeContextError("mcp_context_not_found", status_code=401)
-        record = _open(value, context_id=context_id)
-        deadline = record.expires_at if record.bound_run_id else record.bind_expires_at
-        if deadline <= self._now() or record.jwt_exp <= self._now():
-            await self.store.delete(_context_key(context_id))
-            raise McpRuntimeContextError("mcp_context_expired", status_code=401)
-        return value, record
-
-    async def _read(self, context_id: str) -> _RuntimeContextRecord:
-        _, record = await self._read_current(context_id)
-        return record
+            raise McpRuntimeContextError("mcp_capability_grant_not_found", status_code=401)
+        grant = _open_grant(value, grant_id=grant_id)
+        if grant.expires_at <= self._now():
+            await self.store.delete(_grant_key(grant_id))
+            raise McpRuntimeContextError("mcp_capability_grant_expired", status_code=401)
+        return value, grant
 
     def _bounded_lease_seconds(self) -> int:
         configured = int(
-            getattr(get_settings(), "mcp_context_lease_seconds", MCP_RUNTIME_LEASE_MAX_SECONDS)
+            getattr(get_settings(), "mcp_capability_ttl_seconds", MCP_RUNTIME_LEASE_MAX_SECONDS)
         )
         return max(1, min(configured, MCP_RUNTIME_LEASE_MAX_SECONDS))
-
-    async def _compare_and_set(
-        self,
-        context_id: str,
-        *,
-        expected: str,
-        record: _RuntimeContextRecord,
-        ttl_seconds: int,
-    ) -> None:
-        updated = await self.store.compare_and_set(
-            _context_key(context_id),
-            expected,
-            _seal(record),
-            ttl_seconds=max(1, int(ttl_seconds)),
-        )
-        if not updated:
-            raise McpRuntimeContextError("mcp_context_busy", status_code=503)
-
-    @staticmethod
-    def _assert_principal(record: _RuntimeContextRecord, principal: McpPrincipal) -> None:
-        binding = McpContextPrincipal.from_principal(principal)
-        if record.tenant_id != binding.tenant_id or record.user_id != binding.user_id:
-            raise McpRuntimeContextError("mcp_context_principal_mismatch", status_code=403)
-
-    async def bind_to_run(
-        self,
-        *,
-        context_id: str,
-        principal: McpPrincipal,
-        run_id: str,
-    ) -> _RuntimeContextRecord:
-        assert_safe_id(run_id, "run_id")
-        async with self._mutation_guard(context_id):
-            raw, record = await self._read_current(context_id)
-            self._assert_principal(record, principal)
-            if record.bound_run_id and record.bound_run_id != run_id:
-                raise McpRuntimeContextError("mcp_context_run_mismatch", status_code=403)
-            if record.bound_run_id == run_id:
-                return record
-            now = self._now()
-            lease_seconds = self._bounded_lease_seconds()
-            credential_expires_at = min(
-                record.bind_expires_at,
-                record.jwt_exp,
-                now + lease_seconds,
-            )
-            if credential_expires_at <= now:
-                raise McpRuntimeContextError("mcp_context_expired", status_code=401)
-            updated = replace(
-                record,
-                bound_run_id=run_id,
-                expires_at=credential_expires_at,
-            )
-            await self._compare_and_set(
-                context_id,
-                expected=raw,
-                record=updated,
-                ttl_seconds=credential_expires_at - now,
-            )
-            return updated
 
     async def claim_attempt_lease(
         self,
         *,
-        context_id: str,
         tenant_id: str,
         user_id: str,
         run_id: str,
@@ -1058,35 +864,25 @@ class McpRuntimeContextManager:
         normalized_targets = normalize_mcp_targets(targets)
         if not normalized_targets:
             raise McpRuntimeContextError("mcp_target_selection_required", status_code=409)
-        async with self._mutation_guard(context_id):
-            raw, record = await self._read_current(context_id)
-            if record.tenant_id != tenant_id or record.user_id != user_id:
-                raise McpRuntimeContextError("mcp_context_principal_mismatch", status_code=403)
-            if record.bound_run_id != run_id:
-                raise McpRuntimeContextError("mcp_context_run_mismatch", status_code=403)
+        grant_id = _run_grant_id(tenant_id=tenant_id, user_id=user_id, run_id=run_id)
+        async with self._mutation_guard(grant_id):
             now = self._now()
-            active = record.active_lease
-            if active is not None and active.expires_at > now:
-                if active.run_id != run_id or active.attempt_id != attempt_id:
+            stored = await self.store.get(_grant_key(grant_id))
+            if stored is not None:
+                active = _open_grant(stored, grant_id=grant_id)
+                if active.expires_at > now and active.attempt_id != attempt_id:
                     raise McpRuntimeContextError("mcp_attempt_lease_conflict", status_code=409)
-                if active.targets != normalized_targets:
+                if active.expires_at > now and active.targets != normalized_targets:
                     raise McpRuntimeContextError("mcp_attempt_lease_conflict", status_code=409)
-                return McpBrokerCapability(
-                    token=active.token,
-                    context_id=record.context_id,
-                    tenant_id=record.tenant_id,
-                    user_id=record.user_id,
-                    run_id=active.run_id,
-                    attempt_id=active.attempt_id,
-                    expires_at=active.expires_at,
-                    targets=dict(active.targets),
-                )
+                if active.expires_at > now:
+                    return self._capability(active)
             max_seconds = self._bounded_lease_seconds()
-            expires_at = min(record.expires_at, record.jwt_exp, now + max_seconds)
-            if expires_at <= now:
-                raise McpRuntimeContextError("mcp_context_expired", status_code=401)
-            token = f"mcpbrk:{record.context_id}:{secrets.token_urlsafe(24)}"
-            active = _ActiveLease(
+            expires_at = now + max_seconds
+            token = f"mcpbrk:{grant_id}:{secrets.token_urlsafe(24)}"
+            grant = _RunCapabilityGrant(
+                grant_id=grant_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
                 run_id=run_id,
                 attempt_id=attempt_id,
                 expires_at=expires_at,
@@ -1094,110 +890,77 @@ class McpRuntimeContextManager:
                 token_sha256=hashlib.sha256(token.encode("utf-8")).hexdigest(),
                 targets=dict(normalized_targets),
             )
-            updated = replace(record, active_lease=active)
-            await self._compare_and_set(
-                context_id,
-                expected=raw,
-                record=updated,
-                ttl_seconds=updated.expires_at - now,
+            await self.store.set(
+                _grant_key(grant_id),
+                _seal_grant(grant),
+                ttl_seconds=max_seconds,
             )
-            return McpBrokerCapability(
-                token=token,
-                context_id=record.context_id,
-                tenant_id=record.tenant_id,
-                user_id=record.user_id,
-                run_id=run_id,
-                attempt_id=attempt_id,
-                expires_at=expires_at,
-                targets=dict(normalized_targets),
-            )
+            return self._capability(grant)
 
-    async def resolve_capability(self, token: str) -> McpResolvedCapability:
+    @staticmethod
+    def _capability(grant: _RunCapabilityGrant) -> McpBrokerCapability:
+        return McpBrokerCapability(
+            token=grant.token,
+            grant_id=grant.grant_id,
+            tenant_id=grant.tenant_id,
+            user_id=grant.user_id,
+            run_id=grant.run_id,
+            attempt_id=grant.attempt_id,
+            expires_at=grant.expires_at,
+            targets=dict(grant.targets),
+        )
+
+    async def resolve_capability(self, token: str) -> McpBrokerCapability:
         raw = str(token or "")
         prefix, separator, remainder = raw.partition(":")
         if prefix != "mcpbrk" or not separator:
             raise McpRelayError("mcp_capability_invalid", status_code=401)
-        context_id, separator, _ = remainder.partition(":")
+        grant_id, separator, _ = remainder.partition(":")
         if not separator:
             raise McpRelayError("mcp_capability_invalid", status_code=401)
         try:
-            record = await self._read(context_id)
+            _, grant = await self._read_current(grant_id)
         except McpRuntimeContextError as exc:
+            if exc.code == "mcp_capability_grant_expired":
+                raise McpRelayError("mcp_capability_expired", status_code=401) from exc
             raise McpRelayError("mcp_capability_invalid", status_code=401) from exc
-        active = record.active_lease
-        if active is None or active.expires_at <= self._now():
+        if grant.expires_at <= self._now():
             raise McpRelayError("mcp_capability_expired", status_code=401)
-        if not secrets.compare_digest(active.token_sha256, hashlib.sha256(raw.encode("utf-8")).hexdigest()):
+        if not secrets.compare_digest(grant.token_sha256, hashlib.sha256(raw.encode("utf-8")).hexdigest()):
             raise McpRelayError("mcp_capability_invalid", status_code=401)
-        capability = McpBrokerCapability(
-            token=raw,
-            context_id=record.context_id,
-            tenant_id=record.tenant_id,
-            user_id=record.user_id,
-            run_id=active.run_id,
-            attempt_id=active.attempt_id,
-            expires_at=active.expires_at,
-            targets=dict(active.targets),
-        )
-        return McpResolvedCapability(
-            capability=capability,
-            jwt=record.jwt,
-            jwt_fingerprint=hashlib.sha256(record.jwt.encode("utf-8")).hexdigest(),
-        )
+        return self._capability(grant)
 
     async def release_attempt_lease(self, *, token: str) -> None:
         raw = str(token or "")
         try:
             prefix, _, remainder = raw.partition(":")
-            context_id = remainder.partition(":")[0] if prefix == "mcpbrk" else ""
-            if not context_id:
+            grant_id = remainder.partition(":")[0] if prefix == "mcpbrk" else ""
+            if not grant_id:
                 return
         except McpRuntimeContextError:
             return
-        async with self._mutation_guard(context_id):
+        async with self._mutation_guard(grant_id):
             try:
-                stored, record = await self._read_current(context_id)
+                _, grant = await self._read_current(grant_id)
             except McpRuntimeContextError:
                 return
-            active = record.active_lease
-            if active and secrets.compare_digest(active.token_sha256, hashlib.sha256(raw.encode()).hexdigest()):
-                updated = replace(record, active_lease=None)
-                await self._compare_and_set(
-                    record.context_id,
-                    expected=stored,
-                    record=updated,
-                    ttl_seconds=max(1, updated.expires_at - self._now()),
-                )
+            if secrets.compare_digest(grant.token_sha256, hashlib.sha256(raw.encode()).hexdigest()):
+                await self.store.delete(_grant_key(grant_id))
 
-    async def invalidate_context(self, context_id: str) -> None:
-        """Retire a context after MCP authentication failure or explicit logout."""
-
-        await self.store.delete(_context_key(context_id))
-
-    async def discard_unbound_context(
+    async def release_run_grant(
         self,
-        context_id: str,
-        principal: McpPrincipal,
-    ) -> bool:
-        """Delete only an unused context owned by the supplied principal."""
-
-        async with self._mutation_guard(context_id):
-            try:
-                _, record = await self._read_current(context_id)
-            except McpRuntimeContextError:
-                return False
-            try:
-                self._assert_principal(record, principal)
-            except McpRuntimeContextError:
-                return False
-            if record.bound_run_id is not None:
-                return False
-            await self.store.delete(_context_key(context_id))
-            return True
+        *,
+        tenant_id: str,
+        user_id: str,
+        run_id: str,
+    ) -> None:
+        grant_id = _run_grant_id(tenant_id=tenant_id, user_id=user_id, run_id=run_id)
+        async with self._mutation_guard(grant_id):
+            await self.store.delete(_grant_key(grant_id))
 
 
 _DEFAULT_PRINCIPAL_JWT_STORE: McpPrincipalJwtStore | None = None
-_DEFAULT_RUNTIME_CONTEXT_MANAGER: McpRuntimeContextManager | None = None
+_DEFAULT_RUN_CAPABILITY_MANAGER: McpRunCapabilityManager | None = None
 
 
 def get_mcp_principal_jwt_store() -> McpPrincipalJwtStore:
@@ -1207,11 +970,11 @@ def get_mcp_principal_jwt_store() -> McpPrincipalJwtStore:
     return _DEFAULT_PRINCIPAL_JWT_STORE
 
 
-def get_mcp_runtime_context_manager() -> McpRuntimeContextManager:
-    global _DEFAULT_RUNTIME_CONTEXT_MANAGER
-    if _DEFAULT_RUNTIME_CONTEXT_MANAGER is None:
-        _DEFAULT_RUNTIME_CONTEXT_MANAGER = McpRuntimeContextManager()
-    return _DEFAULT_RUNTIME_CONTEXT_MANAGER
+def get_mcp_run_capability_manager() -> McpRunCapabilityManager:
+    global _DEFAULT_RUN_CAPABILITY_MANAGER
+    if _DEFAULT_RUN_CAPABILITY_MANAGER is None:
+        _DEFAULT_RUN_CAPABILITY_MANAGER = McpRunCapabilityManager()
+    return _DEFAULT_RUN_CAPABILITY_MANAGER
 
 
 def _registered_mcp_target(raw: str) -> str:
@@ -1334,6 +1097,19 @@ def _schema_bytes(tool: Mapping[str, Any]) -> int:
     return len(encoded)
 
 
+def _tool_definition_bytes(tool: Mapping[str, Any]) -> int:
+    try:
+        encoded = json.dumps(
+            tool,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise McpRelayError("mcp_tools_schema_invalid", status_code=502) from exc
+    return len(encoded)
+
+
 def bounded_tool_view(
     tools: object,
     *,
@@ -1404,7 +1180,8 @@ class HostMcpRelay:
     def __init__(
         self,
         *,
-        context_manager: McpRuntimeContextManager,
+        capability_manager: McpRunCapabilityManager,
+        principal_jwt_store: McpPrincipalJwtStore | None = None,
         target_resolver: Callable[[str, str], Awaitable[McpRelayTarget]] | None = None,
         target_validator: Callable[
             [str], Awaitable[str | McpValidatedTarget]
@@ -1412,7 +1189,8 @@ class HostMcpRelay:
         | None = None,
         client_factory: Callable[..., Any] | None = None,
     ) -> None:
-        self.context_manager = context_manager
+        self.capability_manager = capability_manager
+        self.principal_jwt_store = principal_jwt_store or get_mcp_principal_jwt_store()
         self.target_resolver = target_resolver or resolve_registered_mcp_target
         self.target_validator = target_validator or validate_registered_mcp_target
         self.client_factory = client_factory
@@ -1467,13 +1245,33 @@ class HostMcpRelay:
     ) -> None:
         if response_headers is None:
             return
+        session_id = HostMcpRelay._response_session_id(response)
+        if session_id:
+            response_headers[_MCP_SESSION_ID_HEADER] = session_id
+
+    @staticmethod
+    def _response_session_id(response: httpx.Response) -> str | None:
         session_id = str(response.headers.get(_MCP_SESSION_ID_HEADER) or "")
         if (
             session_id
             and len(session_id) <= _MCP_SESSION_ID_MAX_LENGTH
             and all(0x21 <= ord(character) <= 0x7E for character in session_id)
         ):
-            response_headers[_MCP_SESSION_ID_HEADER] = session_id
+            return session_id
+        return None
+
+    @staticmethod
+    def _with_session_header(
+        headers: Mapping[str, str] | None,
+        session_id: str,
+    ) -> dict[str, str]:
+        output = {
+            str(key): value
+            for key, value in (headers or {}).items()
+            if str(key).casefold() != _MCP_SESSION_ID_HEADER.casefold()
+        }
+        output[_MCP_SESSION_ID_HEADER] = session_id
+        return output
 
     async def _post(
         self,
@@ -1562,30 +1360,22 @@ class HostMcpRelay:
         result_body = result.get("result")
         if not isinstance(result_body, dict):
             raise McpRelayError("mcp_server_protocol_error", status_code=502)
-        if result_body.get("nextCursor"):
-            raise McpRelayError("mcp_tool_catalog_unbounded", status_code=502)
         tools = result_body.get("tools")
         if not isinstance(tools, list) or any(not isinstance(tool, dict) for tool in tools):
             raise McpRelayError("mcp_tools_schema_invalid", status_code=502)
         return result, result_body, [dict(tool) for tool in tools]
 
-    async def preflight(
-        self,
+    @staticmethod
+    def _assert_discovery_bounds(
+        tools: list[dict[str, Any]],
         *,
-        context_id: str,
-        principal: McpPrincipal,
-        run_id: str,
-        selected_tool_names: list[str] | tuple[str, ...] | None = None,
-    ) -> McpRuntimePreflight:
-        """Bind the encrypted JWT context before Run persistence."""
-
-        del selected_tool_names
-        await self.context_manager.bind_to_run(
-            context_id=context_id,
-            principal=principal,
-            run_id=run_id,
-        )
-        return McpRuntimePreflight(context_id=context_id, run_id=run_id)
+        tool_bytes: int,
+    ) -> None:
+        if (
+            len(tools) > MCP_RUNTIME_DISCOVERY_MAX_TOOLS
+            or tool_bytes > MCP_RUNTIME_DISCOVERY_MAX_TOOL_BYTES
+        ):
+            raise McpRelayError("mcp_tool_catalog_unbounded", status_code=502)
 
     async def forward(
         self,
@@ -1601,15 +1391,18 @@ class HostMcpRelay:
         method = payload.get("method")
         if method not in {"initialize", "notifications/initialized", "tools/list", "tools/call"}:
             raise McpRelayError("mcp_method_not_supported", status_code=422)
-        resolved = await self.context_manager.resolve_capability(capability_token)
+        capability = await self.capability_manager.resolve_capability(capability_token)
         try:
             safe_server_id = assert_safe_id(server_id, "mcp_server_id")
         except ValueError as exc:
             raise McpRelayError("mcp_server_not_selected", status_code=403) from exc
-        allowed_tool_names = resolved.capability.targets.get(safe_server_id)
+        allowed_tool_names = capability.targets.get(safe_server_id)
         if not allowed_tool_names:
             raise McpRelayError("mcp_server_not_selected", status_code=403)
-        target = await self.target_resolver(resolved.capability.tenant_id, safe_server_id)
+        target = await self.target_resolver(capability.tenant_id, safe_server_id)
+        jwt = await self.principal_jwt_store.get(
+            McpContextPrincipal(capability.tenant_id, capability.user_id)
+        )
         max_bytes = int(getattr(get_settings(), "mcp_relay_max_response_bytes", 1024 * 1024))
         if method == "tools/call":
             params = payload.get("params")
@@ -1617,20 +1410,13 @@ class HostMcpRelay:
             if not isinstance(tool_name, str) or tool_name not in set(allowed_tool_names):
                 raise McpRelayError("mcp_tool_not_selected", status_code=403)
 
-        try:
-            response = await self._post(
-                target=target,
-                jwt=resolved.jwt,
-                payload=payload,
-                incoming_headers=incoming_headers,
-            )
-        except McpRelayError as exc:
-            if exc.code == "mcp_server_unauthorized":
-                await self.context_manager.invalidate_context(resolved.capability.context_id)
-            raise
+        response = await self._post(
+            target=target,
+            jwt=jwt,
+            payload=payload,
+            incoming_headers=incoming_headers,
+        )
         self._copy_response_headers(response, response_headers)
-        if response.status_code == 401:
-            await self.context_manager.invalidate_context(resolved.capability.context_id)
         if method == "notifications/initialized" and (
             response.status_code in {202, 204} or not response.content
         ):
@@ -1640,60 +1426,79 @@ class HostMcpRelay:
                 response,
                 max_bytes=max_bytes,
             )
-            current_names = [str(tool.get("name") or "") for tool in current_tools]
-            if (
-                any(not name for name in current_names)
-                or len(current_names) != len(set(current_names))
-            ):
-                raise McpRelayError("mcp_tools_schema_invalid", status_code=502)
-            current_by_name = {
-                str(tool["name"]): dict(tool) for tool in current_tools
-            }
+            pagination_headers = dict(incoming_headers or {})
+            session_id = self._response_session_id(response)
+            if session_id:
+                pagination_headers = self._with_session_header(
+                    pagination_headers,
+                    session_id,
+                )
+            first_result_body = dict(result_body)
+            all_tools: list[dict[str, Any]] = []
+            current_by_name: dict[str, dict[str, Any]] = {}
+            seen_cursors: set[str] = set()
+            tool_bytes = 0
+            page_number = 0
+            while True:
+                current_names = [str(tool.get("name") or "") for tool in current_tools]
+                if (
+                    any(not name for name in current_names)
+                    or len(current_names) != len(set(current_names))
+                    or any(name in current_by_name for name in current_names)
+                ):
+                    raise McpRelayError("mcp_tools_schema_invalid", status_code=502)
+                for tool, name in zip(current_tools, current_names, strict=True):
+                    copied = dict(tool)
+                    current_by_name[name] = copied
+                    all_tools.append(copied)
+                    tool_bytes += _tool_definition_bytes(copied)
+                self._assert_discovery_bounds(all_tools, tool_bytes=tool_bytes)
+
+                next_cursor = result_body.get("nextCursor")
+                if next_cursor is None:
+                    break
+                if (
+                    not isinstance(next_cursor, str)
+                    or not next_cursor
+                    or next_cursor in seen_cursors
+                    or page_number + 1 >= MCP_DISCOVERY_PAGE_LIMIT
+                ):
+                    raise McpRelayError("mcp_tool_catalog_unbounded", status_code=502)
+                seen_cursors.add(next_cursor)
+                page_number += 1
+                original_params = payload.get("params")
+                params = dict(original_params) if isinstance(original_params, dict) else {}
+                params["cursor"] = next_cursor
+                jwt = await self.principal_jwt_store.get(
+                    McpContextPrincipal(capability.tenant_id, capability.user_id)
+                )
+                page_response = await self._post(
+                    target=target,
+                    jwt=jwt,
+                    payload={
+                        **payload,
+                        "id": f"{payload.get('id', 'mcp-tools-list')}:{page_number}",
+                        "params": params,
+                    },
+                    incoming_headers=pagination_headers,
+                )
+                self._copy_response_headers(page_response, response_headers)
+                session_id = self._response_session_id(page_response)
+                if session_id:
+                    pagination_headers = self._with_session_header(
+                        pagination_headers,
+                        session_id,
+                    )
+                _, result_body, current_tools = self._tool_list_result(
+                    page_response,
+                    max_bytes=max_bytes,
+                )
             bounded = bounded_tool_view(
                 [current_by_name[name] for name in allowed_tool_names if name in current_by_name]
             )
-            result["result"] = {**result_body, "tools": bounded}
+            result["result"] = {
+                key: value for key, value in first_result_body.items() if key != "nextCursor"
+            }
+            result["result"]["tools"] = bounded
             return result
         return self._json_response(response, max_bytes=max_bytes)
-
-
-async def preflight_mcp_admission(
-    *,
-    context_id: str | None,
-    principal: McpPrincipal,
-    run_id: str,
-    selected_tool_names: list[str] | tuple[str, ...] | None,
-    mcp_required: bool,
-    context_manager: McpRuntimeContextManager | None = None,
-) -> McpRuntimePreflight | None:
-    """Fail before persistence whenever an admitted Run requires MCP."""
-
-    if not mcp_required:
-        if context_id:
-            manager = context_manager or get_mcp_runtime_context_manager()
-            try:
-                await manager.discard_unbound_context(context_id, principal)
-            except Exception:  # noqa: BLE001 - expiry remains the final cleanup fence.
-                pass
-        return None
-    if not context_id:
-        raise McpRuntimeContextError("mcp_context_required", status_code=409)
-    return await HostMcpRelay(
-        context_manager=context_manager or get_mcp_runtime_context_manager(),
-    ).preflight(
-        context_id=context_id,
-        principal=principal,
-        run_id=run_id,
-        selected_tool_names=selected_tool_names,
-    )
-
-
-@asynccontextmanager
-async def runtime_context_manager_lock(
-    manager: McpRuntimeContextManager,
-    context_id: str,
-) -> AsyncIterator[None]:
-    """Expose the shared Redis mutation lock for one context to admission code."""
-
-    async with manager._mutation_guard(context_id):
-        yield
