@@ -397,6 +397,10 @@ async def test_catalog_materializes_manifest_above_legacy_file_limit(monkeypatch
     assert [manifest["skill_id"] for manifest in resolution.manifests] == [
         "large-skill"
     ]
+    materialized_manifest = resolution.manifests[0]
+    materialized_files = materialized_manifest["files"]
+    assert len(materialized_files) == 513
+    assert {file["relative_path"] for file in materialized_files} == set(files)
 
 
 @pytest.mark.asyncio
