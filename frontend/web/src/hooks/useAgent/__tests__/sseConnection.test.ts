@@ -2611,7 +2611,7 @@ test("replay gap preserves partial output until an active run reaches terminal h
           return {
             session_id: "session-1",
             run_id: "run-1",
-            status: statusCalls === 1 ? "running" : "succeeded",
+            status: statusCalls <= 4 ? "running" : "succeeded",
           };
         },
         replayGapStatusPollDelayMs: 0,
@@ -2619,7 +2619,7 @@ test("replay gap preserves partial output until an active run reaches terminal h
     },
   );
 
-  assert.equal(statusCalls, 2);
+  assert.equal(statusCalls, 5);
   assert.equal(hydrateCalls, 1);
   assert.doesNotThrow(() =>
     capturedInit?.onmessage?.({ event: "message", data: "not-json" } as never),

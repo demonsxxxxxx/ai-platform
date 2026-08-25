@@ -7,6 +7,14 @@ def test_release_atomic_cutover_has_no_pg_live_reader_or_predispatch_sdk():
     assert cutover.check() == []
 
 
+def test_release_atomic_cutover_rejects_optional_v3_runtime_markers():
+    assert cutover._retired_v3_runtime_failures(
+        {"sseConnection.ts": 'import { connect } from "./publicRunStreamV3";'}
+    ) == [
+        "sseConnection.ts:retired_v3_runtime_marker:publicRunStreamV3"
+    ]
+
+
 def test_assistant_delta_ownership_guard_rejects_a_second_worker_ingress():
     valid = {
         "worker_source": "raise WorkerDirectAssistantDeltaError",

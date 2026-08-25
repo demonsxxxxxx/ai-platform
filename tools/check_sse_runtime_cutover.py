@@ -354,6 +354,20 @@ def _nginx_sse_contract_failures(source: str) -> list[str]:
     ]
 
 
+def _retired_v3_runtime_failures(sources: dict[str, str]) -> list[str]:
+    retired_markers = (
+        "publicRunStreamV3",
+        "enable_sse_v3",
+        "ENABLE_SSE_V3",
+    )
+    return [
+        f"{path}:retired_v3_runtime_marker:{marker}"
+        for path, source in sources.items()
+        for marker in retired_markers
+        if marker in source
+    ]
+
+
 def _worker_admission_failures(worker: ast.AST) -> list[str]:
     calls = _calls(worker)
     admission_lines = [
@@ -492,6 +506,19 @@ def check() -> list[str]:
     failures.extend(_frontend_cursor_commit_failures(frontend))
     if connect.count("handlePublicRunStreamFrameV4(") != 1:
         failures.append("sseConnection.ts:v4_handler_not_unique")
+    active_frontend_paths = (
+        "frontend/web/src/hooks/useAgent/sseConnection.ts",
+        "frontend/web/src/hooks/useAgent/eventHandlers.ts",
+        "frontend/web/src/hooks/useAgent.ts",
+    )
+    failures.extend(
+        _retired_v3_runtime_failures(
+            {
+                path: (ROOT / path).read_text(encoding="utf-8")
+                for path in active_frontend_paths
+            }
+        )
+    )
     event_handlers = (
         ROOT / "frontend/web/src/hooks/useAgent/eventHandlers.ts"
     ).read_text(encoding="utf-8")

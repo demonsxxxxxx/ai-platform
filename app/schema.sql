@@ -2372,13 +2372,18 @@ create table if not exists sse_stream_rebuilds (
       and receipt_digest is null
     )
     or (
-      receipt_entry_count > 0
-      and receipt_open_event_id <> ''
-      and receipt_terminal_event_id <> ''
-      and receipt_end_event_id <> ''
+      receipt_entry_count is not null
+      and receipt_entry_count = item_count + 2
+      and receipt_open_event_id is not null and receipt_open_event_id <> ''
+      and receipt_terminal_event_id is not null and receipt_terminal_event_id <> ''
+      and receipt_end_event_id is not null and receipt_end_event_id <> ''
+      and receipt_last_redis_id is not null
       and receipt_last_redis_id ~ '^[0-9]+-[0-9]+$'
+      and receipt_last_envelope_bytes is not null
       and receipt_last_envelope_bytes <> ''
+      and receipt_last_envelope_digest is not null
       and receipt_last_envelope_digest ~ '^[0-9a-f]{64}$'
+      and receipt_digest is not null
       and receipt_digest ~ '^[0-9a-f]{64}$'
     )
   ),
@@ -2403,6 +2408,40 @@ alter table sse_stream_rebuilds add column if not exists receipt_last_redis_id t
 alter table sse_stream_rebuilds add column if not exists receipt_last_envelope_bytes text;
 alter table sse_stream_rebuilds add column if not exists receipt_last_envelope_digest text;
 alter table sse_stream_rebuilds add column if not exists receipt_digest text;
+
+alter table sse_stream_rebuilds
+  drop constraint if exists chk_sse_stream_rebuild_receipt;
+alter table sse_stream_rebuilds
+  add constraint chk_sse_stream_rebuild_receipt
+  check (
+    (
+      receipt_entry_count is null
+      and receipt_open_event_id is null
+      and receipt_terminal_event_id is null
+      and receipt_end_event_id is null
+      and receipt_last_redis_id is null
+      and receipt_last_envelope_bytes is null
+      and receipt_last_envelope_digest is null
+      and receipt_digest is null
+    )
+    or (
+      receipt_entry_count is not null
+      and receipt_entry_count = item_count + 2
+      and receipt_open_event_id is not null and receipt_open_event_id <> ''
+      and receipt_terminal_event_id is not null and receipt_terminal_event_id <> ''
+      and receipt_end_event_id is not null and receipt_end_event_id <> ''
+      and receipt_last_redis_id is not null
+      and receipt_last_redis_id ~ '^[0-9]+-[0-9]+$'
+      and receipt_last_envelope_bytes is not null
+      and receipt_last_envelope_bytes <> ''
+      and receipt_last_envelope_digest is not null
+      and receipt_last_envelope_digest ~ '^[0-9a-f]{64}$'
+      and receipt_digest is not null
+      and receipt_digest ~ '^[0-9a-f]{64}$'
+    )
+  ) not valid;
+alter table sse_stream_rebuilds
+  validate constraint chk_sse_stream_rebuild_receipt;
 
 create unique index if not exists uq_sse_stream_rebuild_successor
   on sse_stream_rebuilds(tenant_id, run_id, successor_incarnation);

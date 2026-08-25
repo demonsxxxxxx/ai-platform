@@ -66,6 +66,19 @@ class V4Publication:
     envelope: dict[str, object]
 
 
+_V4_REPLAY_PAGE_LUA = r"""
+local rows = redis.call('XRANGE', KEYS[1], ARGV[1], ARGV[2], 'COUNT', tonumber(ARGV[3]))
+local predecessor = ARGV[4]
+if predecessor == '' then
+  return {1, rows}
+end
+if #rows == 0 or rows[1][1] ~= predecessor then
+  return {0, rows}
+end
+table.remove(rows, 1)
+return {1, rows}
+"""
+
 
 async def append_application_v4_row(
     conn: Any,
@@ -909,10 +922,28 @@ class V4RedisStreamBridge:
         if after >= through:
             return ()
         key = stream_key(tenant_scope_value=tenant_scope_value, run_id=run_id, stream_incarnation=stream_incarnation)
+        predecessor = "" if after_redis_id == "0-0" else after_redis_id
+        minimum = f"({after_redis_id}" if not predecessor else predecessor
+        count = 128 if not predecessor else 129
         try:
-            rows = await self._bridge._publish_client.xrange(key, min=f"({after_redis_id}", max=through_redis_id, count=128)
+            result = await self._bridge._publish_client.eval(
+                _V4_REPLAY_PAGE_LUA,
+                1,
+                key,
+                minimum,
+                through_redis_id,
+                count,
+                predecessor,
+            )
         except Exception as exc:
             raise StreamTransportUnavailable("v4_stream_replay_unavailable") from exc
+        if not isinstance(result, (tuple, list)) or len(result) != 2:
+            raise StreamTransportUnavailable("v4_stream_replay_result_invalid")
+        continuity, rows = result
+        if int(continuity) != 1:
+            raise StreamContractError("stream_replay_continuity_unproven")
+        if not isinstance(rows, (tuple, list)):
+            raise StreamTransportUnavailable("v4_stream_replay_result_invalid")
         return tuple(
             self._decode(
                 row,

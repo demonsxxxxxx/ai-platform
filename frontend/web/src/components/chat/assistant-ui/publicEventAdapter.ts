@@ -350,7 +350,17 @@ export function adaptPublicRunStreamEventV4(
   if (frame.eventHeader !== eventType || frame.value.run_id !== binding.runId) return null;
   const incarnation = frame.value.stream_incarnation as number;
   if (!isValidTransportCursor(frame.transportCursor, binding.runId, incarnation)) return null;
-  if (binding.streamIncarnation != null && binding.streamIncarnation !== incarnation) return null;
+  const payload = frame.value.payload as Record<string, unknown>;
+  const acceptedCrossIncarnationGap =
+    eventType === "stream.gap" &&
+    binding.streamIncarnation != null &&
+    payload.requested_stream_incarnation === binding.streamIncarnation &&
+    payload.current_stream_incarnation === incarnation;
+  if (
+    binding.streamIncarnation != null &&
+    binding.streamIncarnation !== incarnation &&
+    !acceptedCrossIncarnationGap
+  ) return null;
   if (binding.generation != null && frame.generation !== binding.generation) return null;
   return {
     event: frame.value as PublicRunStreamEventV4,

@@ -210,8 +210,31 @@ async def test_base_schema_ledger_advances_to_terminal_reconciliation_schema():
     )
 
 
+@pytest.mark.asyncio
+async def test_pending_admission_schema_advances_to_successor_activation_schema():
+    state = SharedMigrationState()
+    predecessor_checksum = "9f80933b643ad71c23f416e8ad2a52b3890efba83ec16e990a66979662b93d20"
+    state.ledger[schema_migrations.V4_PENDING_ADMISSION_SCHEMA_VERSION] = (
+        predecessor_checksum
+    )
+
+    result = await schema_migrations.apply_migrations(
+        transaction_factory=transaction_factory(state),
+        index_connection_factory=index_connection_factory(state),
+    )
+
+    assert result["status"] == "applied"
+    assert state.schema_execute_count == 1
+    assert state.ledger[schema_migrations.V4_PENDING_ADMISSION_SCHEMA_VERSION] == (
+        predecessor_checksum
+    )
+    assert state.ledger[schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION] == (
+        schema_migrations.schema_checksum()
+    )
+
+
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.26.2"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.27.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -525,12 +548,21 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "AND (receipt_end_event_id IS NULL) AND (receipt_last_redis_id IS NULL) "
             "AND (receipt_last_envelope_bytes IS NULL) "
             "AND (receipt_last_envelope_digest IS NULL) AND (receipt_digest IS NULL)) "
-            "OR ((receipt_entry_count > 0) AND (receipt_open_event_id <> ''::text) "
+            "OR ((receipt_entry_count IS NOT NULL) "
+            "AND (receipt_entry_count = (item_count + 2)) "
+            "AND (receipt_open_event_id IS NOT NULL) "
+            "AND (receipt_open_event_id <> ''::text) "
+            "AND (receipt_terminal_event_id IS NOT NULL) "
             "AND (receipt_terminal_event_id <> ''::text) "
+            "AND (receipt_end_event_id IS NOT NULL) "
             "AND (receipt_end_event_id <> ''::text) "
+            "AND (receipt_last_redis_id IS NOT NULL) "
             "AND (receipt_last_redis_id ~ '^[0-9]+-[0-9]+$'::text) "
+            "AND (receipt_last_envelope_bytes IS NOT NULL) "
             "AND (receipt_last_envelope_bytes <> ''::text) "
+            "AND (receipt_last_envelope_digest IS NOT NULL) "
             "AND (receipt_last_envelope_digest ~ '^[0-9a-f]{64}$'::text) "
+            "AND (receipt_digest IS NOT NULL) "
             "AND (receipt_digest ~ '^[0-9a-f]{64}$'::text)))",
         ),
         (
@@ -722,7 +754,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "9f80933b643ad71c23f416e8ad2a52b3890efba83ec16e990a66979662b93d20"
+        "d474b751d6fb6bff75cbbb8f3c482cb42f38ac462c116313baeccfc2c247fef7"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "
@@ -778,6 +810,9 @@ def test_v4_successor_rebuild_schema_is_additive_and_claim_fenced():
     assert "successor_incarnation > source_incarnation" in schema
     assert "successor_authorization_epoch > source_authorization_epoch" in schema
     assert "claim_token_digest ~ '^[0-9a-f]{64}$'" in schema
+    assert "receipt_entry_count = item_count + 2" in schema
+    assert "receipt_digest is not null" in schema
+    assert "drop constraint if exists chk_sse_stream_rebuild_receipt" in schema
     assert "where state in ('building', 'ready')" in schema
     assert (
         "sse_stream_rebuilds",
@@ -796,24 +831,54 @@ def test_v4_successor_rebuild_schema_is_additive_and_claim_fenced():
 
 @pytest.mark.asyncio
 async def test_v4_successor_rollback_removes_only_dormant_snapshot_tables():
+    class FakeResult:
+        async def fetchone(self):
+            return None
+
     class FakeRollbackConnection:
         def __init__(self) -> None:
             self.statements: list[tuple[str, object]] = []
 
-        async def execute(self, statement: str, params: object = None) -> None:
+        async def execute(self, statement: str, params: object = None):
             self.statements.append((" ".join(statement.lower().split()), params))
+            return FakeResult()
 
     conn = FakeRollbackConnection()
     await schema_migrations.rollback_v4_successor_rebuild_migration(conn)
-    assert [statement for statement, _ in conn.statements[:2]] == [
+    assert [statement for statement, _ in conn.statements[1:3]] == [
         "drop table if exists sse_stream_rebuild_items",
         "drop table if exists sse_stream_rebuilds",
     ]
-    assert conn.statements[2][1] == (
+    assert conn.statements[3][1] == (
         schema_migrations.V4_SUCCESSOR_REBUILD_SCHEMA_VERSION,
     )
     assert all("run_events" not in statement for statement, _ in conn.statements)
     assert all("sse_stream_authorities" not in statement for statement, _ in conn.statements)
+
+
+@pytest.mark.asyncio
+async def test_v4_successor_rollback_rejects_activated_lineage():
+    class ActivatedResult:
+        async def fetchone(self):
+            return {"exists": 1}
+
+    class ActivatedConnection:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        async def execute(self, statement: str, params: object = None):
+            self.statements.append(" ".join(statement.lower().split()))
+            return ActivatedResult()
+
+    conn = ActivatedConnection()
+    with pytest.raises(
+        schema_migrations.SchemaMigrationError,
+        match="v4_successor_rebuild_rollback_cutover_exists",
+    ):
+        await schema_migrations.rollback_v4_successor_rebuild_migration(conn)
+    assert conn.statements == [
+        "select 1 from sse_stream_rebuilds where state = 'cutover' limit 1"
+    ]
 
 
 @pytest.mark.asyncio

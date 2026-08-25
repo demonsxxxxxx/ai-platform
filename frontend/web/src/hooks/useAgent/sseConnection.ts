@@ -216,7 +216,6 @@ function isSSEReplayGapError(error: unknown): error is SSEReplayGapError {
 }
 
 export const MAX_STATUS_QUERY_RETRIES = 2;
-export const MAX_REPLAY_GAP_STATUS_POLLS = 3;
 export const REPLAY_GAP_STATUS_POLL_DELAY_MS = 1_000;
 /** Per-attempt ceiling for an authoritative run status read. */
 export const AUTHORITATIVE_STATUS_ATTEMPT_TIMEOUT_MS = 8_000;
@@ -412,7 +411,7 @@ export async function recoverReplayGap(
   );
   const promise = (async () => {
     try {
-      for (let poll = 0; poll < MAX_REPLAY_GAP_STATUS_POLLS; poll += 1) {
+      while (isCurrent()) {
         const statusResult = await queryAuthoritativeRunStatus({
           sessionId,
           runId,
@@ -440,14 +439,11 @@ export async function recoverReplayGap(
           }
           return;
         }
-        if (poll + 1 < MAX_REPLAY_GAP_STATUS_POLLS) {
-          await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
-          if (!isCurrent()) {
-            return;
-          }
+        await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+        if (!isCurrent()) {
+          return;
         }
       }
-      settleUnavailable();
     } finally {
       if (ctx.replayGapRecoveryRef?.current === owner) {
         ctx.replayGapRecoveryRef.current = null;

@@ -125,6 +125,33 @@ async def test_real_redis_rejects_v3_append_to_v4_phase_without_mutation():
 
 
 @pytest.mark.asyncio
+async def test_real_redis_replay_rejects_deleted_predecessor_instead_of_skipping():
+    client, key, state_key, bridge = await _stream()
+    try:
+        first = await bridge.append(_envelope(event_id="evt4_replay_predecessor"))
+        second = await bridge.append(
+            _envelope(event_id="evt4_replay_successor", seq=2)
+        )
+        await client.xdel(key, first.redis_id)
+
+        with pytest.raises(
+            StreamContractError,
+            match="stream_replay_continuity_unproven",
+        ):
+            await bridge.replay_page(
+                tenant_scope_value="scope_v4_evidence",
+                run_id="run-v4-evidence",
+                attempt_id="attempt-v4-evidence",
+                stream_incarnation=3,
+                after_redis_id=first.redis_id,
+                through_redis_id=second.redis_id,
+            )
+    finally:
+        await client.delete(key, state_key)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_real_redis_append_reuses_one_receipt_across_semantic_retry():
     client, key, state_key, bridge = await _stream()
     event = _envelope(event_id="evt4_retry")

@@ -140,6 +140,40 @@ test("v4 gap payload uses raw Redis IDs while SSE carries the full cursor", () =
     },
   };
   assert.ok(adaptPublicRunStreamEventV4(control, { runId: "run-1" }));
+  const successorControl = {
+    ...control,
+    transportCursor: "run-1:3:10-0",
+    value: {
+      ...(control.value as Record<string, unknown>),
+      stream_incarnation: 3,
+      payload: {
+        ...((control.value as Record<string, unknown>).payload as Record<string, unknown>),
+        current_stream_incarnation: 3,
+      },
+    },
+  };
+  assert.ok(
+    adaptPublicRunStreamEventV4(successorControl, {
+      runId: "run-1",
+      streamIncarnation: 2,
+    }),
+  );
+  assert.equal(
+    adaptPublicRunStreamEventV4(
+      {
+        ...successorControl,
+        value: {
+          ...(successorControl.value as Record<string, unknown>),
+          payload: {
+            ...((successorControl.value as Record<string, unknown>).payload as Record<string, unknown>),
+            requested_stream_incarnation: 1,
+          },
+        },
+      },
+      { runId: "run-1", streamIncarnation: 2 },
+    ),
+    null,
+  );
   assert.equal(
     adaptPublicRunStreamEventV4(
       { ...control, value: { ...(control.value as Record<string, unknown>), payload: { ...((control.value as Record<string, unknown>).payload as Record<string, unknown>), latest_available_event_id: "run-1:2:4-0" } } },

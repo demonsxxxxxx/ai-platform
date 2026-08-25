@@ -914,3 +914,28 @@ async def test_existing_v4_authority_requires_canonical_digest_and_identity() ->
             "open_payload_digest": hashlib.sha256(payload.encode()).hexdigest(),
             "open_event_id": "open-a",
         }.items()})
+
+
+@pytest.mark.asyncio
+async def test_v4_replay_page_fails_closed_when_atomic_predecessor_is_trimmed():
+    class TrimmedRedis:
+        calls: list[tuple[object, ...]] = []
+
+        async def eval(self, *args: object):
+            self.calls.append(args)
+            return [0, []]
+
+    client = TrimmedRedis()
+    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+
+    with pytest.raises(StreamContractError, match="stream_replay_continuity_unproven"):
+        await bridge.replay_page(
+            tenant_scope_value="scope-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            stream_incarnation=2,
+            after_redis_id="1-0",
+            through_redis_id="2-0",
+        )
+
+    assert client.calls[0][6] == "1-0"

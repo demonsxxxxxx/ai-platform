@@ -18,7 +18,8 @@ from app.db import SCHEMA_PATH, close_pool, connect, transaction
 V4_PUBLICATION_SCHEMA_VERSION = "2026.08.24.1"
 V4_SUCCESSOR_REBUILD_SCHEMA_VERSION = "2026.08.25.1"
 V4_PENDING_ADMISSION_SCHEMA_VERSION = "2026.08.26.2"
-TARGET_SCHEMA_VERSION = V4_PENDING_ADMISSION_SCHEMA_VERSION
+V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION = "2026.08.27.1"
+TARGET_SCHEMA_VERSION = V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
@@ -375,12 +376,21 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "AND (receipt_end_event_id IS NULL) AND (receipt_last_redis_id IS NULL) "
         "AND (receipt_last_envelope_bytes IS NULL) "
         "AND (receipt_last_envelope_digest IS NULL) AND (receipt_digest IS NULL)) "
-        "OR ((receipt_entry_count > 0) AND (receipt_open_event_id <> ''::text) "
+        "OR ((receipt_entry_count IS NOT NULL) "
+        "AND (receipt_entry_count = (item_count + 2)) "
+        "AND (receipt_open_event_id IS NOT NULL) "
+        "AND (receipt_open_event_id <> ''::text) "
+        "AND (receipt_terminal_event_id IS NOT NULL) "
         "AND (receipt_terminal_event_id <> ''::text) "
+        "AND (receipt_end_event_id IS NOT NULL) "
         "AND (receipt_end_event_id <> ''::text) "
+        "AND (receipt_last_redis_id IS NOT NULL) "
         "AND (receipt_last_redis_id ~ '^[0-9]+-[0-9]+$'::text) "
+        "AND (receipt_last_envelope_bytes IS NOT NULL) "
         "AND (receipt_last_envelope_bytes <> ''::text) "
+        "AND (receipt_last_envelope_digest IS NOT NULL) "
         "AND (receipt_last_envelope_digest ~ '^[0-9a-f]{64}$'::text) "
+        "AND (receipt_digest IS NOT NULL) "
         "AND (receipt_digest ~ '^[0-9a-f]{64}$'::text)))",
     ),
     (
@@ -1004,8 +1014,13 @@ async def _apply_concurrent_indexes(conn: Any) -> bool:
 
 
 async def rollback_v4_successor_rebuild_migration(conn: Any) -> None:
-    """Remove only dormant successor snapshots; source events and authority stay intact."""
+    """Remove dormant successor snapshots, but never activated lineage."""
 
+    activated = await conn.execute(
+        "select 1 from sse_stream_rebuilds where state = 'cutover' limit 1"
+    )
+    if await activated.fetchone() is not None:
+        raise SchemaMigrationError("v4_successor_rebuild_rollback_cutover_exists")
     await conn.execute("drop table if exists sse_stream_rebuild_items")
     await conn.execute("drop table if exists sse_stream_rebuilds")
     await conn.execute(

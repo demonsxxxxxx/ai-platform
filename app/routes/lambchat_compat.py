@@ -1664,6 +1664,7 @@ async def chat_session_stream(
         stream_incarnation=authority.stream_incarnation,
     )
     subscription = None
+    setup_gap_requested_event_id: str | None = None
     try:
         subscription = await runtime.hub.subscribe(channel)
         resume = await bridge.resolve_resume(
@@ -1733,19 +1734,24 @@ async def chat_session_stream(
             if bounds is None:
                 raise StreamContractError("stream_replay_bounds_unavailable")
             replay_tail = bounds[1].cursor.redis_id
-            (
-                answer_projector,
-                restored_terminal_event_id,
-                resume_already_ended,
-            ) = await _restore_chat_stream_projection(
-                bridge,
-                run=initial_run,
-                tenant_scope_value=authority.tenant_scope,
-                run_id=run_id,
-                attempt_id=authority.attempt_id,
-                stream_incarnation=authority.stream_incarnation,
-                through_redis_id=resume.after_redis_id or "0-0",
-            )
+            try:
+                (
+                    answer_projector,
+                    restored_terminal_event_id,
+                    resume_already_ended,
+                ) = await _restore_chat_stream_projection(
+                    bridge,
+                    run=initial_run,
+                    tenant_scope_value=authority.tenant_scope,
+                    run_id=run_id,
+                    attempt_id=authority.attempt_id,
+                    stream_incarnation=authority.stream_incarnation,
+                    through_redis_id=resume.after_redis_id or "0-0",
+                )
+            except StreamContractError as exc:
+                if str(exc) != "stream_replay_continuity_unproven":
+                    raise
+                setup_gap_requested_event_id = resume.after_redis_id or "0-0"
     except StreamContractError as exc:
         cleanup_failed = False
         if subscription is not None:
@@ -1837,25 +1843,43 @@ async def chat_session_stream(
                 raise StreamContractError("stream_end_without_observed_terminal")
             return _sse(event_type, envelope, entry.cursor.event_id), ended
 
+        async def gap_frame(
+            *,
+            reason: str,
+            requested_event_id: str | None,
+            requested_stream_incarnation: int | None,
+        ) -> str:
+            gap_envelope, gap_cursor = await bridge.build_gap(
+                event_id=f"evt4_gap_{connection_id}",
+                tenant_scope_value=authority.tenant_scope,
+                run_id=run_id,
+                attempt_id=authority.attempt_id,
+                requested_event_id=requested_event_id,
+                requested_stream_incarnation=requested_stream_incarnation,
+                current_stream_incarnation=authority.stream_incarnation,
+                reason=reason,
+            )
+            public_gap = project_public_envelope_v4(gap_envelope)
+            if public_gap is None:
+                raise StreamContractError("stream_gap_public_event_unmapped")
+            return _sse("stream.gap", public_gap, gap_cursor)
+
         try:
-            if resume.gap is not None:
+            if resume.gap is not None or setup_gap_requested_event_id is not None:
                 exit_reason = "stream_contract_failure"
-                gap_envelope, gap_cursor = await bridge.build_gap(
-                    event_id=f"evt4_gap_{connection_id}",
-                    tenant_scope_value=authority.tenant_scope,
-                    run_id=run_id,
-                    attempt_id=authority.attempt_id,
-                    requested_event_id=resume.gap.requested_event_id,
-                    requested_stream_incarnation=(
-                        resume.gap.requested_stream_incarnation
-                    ),
-                    current_stream_incarnation=authority.stream_incarnation,
-                    reason=resume.gap.reason,
+                if resume.gap is not None:
+                    reason = resume.gap.reason
+                    requested_event_id = resume.gap.requested_event_id
+                    requested_incarnation = resume.gap.requested_stream_incarnation
+                else:
+                    reason = "stream_continuity_unproven"
+                    requested_event_id = setup_gap_requested_event_id
+                    requested_incarnation = authority.stream_incarnation
+                yield await gap_frame(
+                    reason=reason,
+                    requested_event_id=requested_event_id,
+                    requested_stream_incarnation=requested_incarnation,
                 )
-                public_gap = project_public_envelope_v4(gap_envelope)
-                if public_gap is None:
-                    raise StreamContractError("stream_gap_public_event_unmapped")
-                yield _sse("stream.gap", public_gap, gap_cursor)
                 return
             if resume_already_ended:
                 exit_reason = "terminal_completed"
@@ -1865,14 +1889,25 @@ async def chat_session_stream(
                 return
             while after != replay_tail:
                 previous_after = after
-                entries = await bridge.replay_page(
-                    tenant_scope_value=authority.tenant_scope,
-                    run_id=run_id,
-                    attempt_id=authority.attempt_id,
-                    stream_incarnation=authority.stream_incarnation,
-                    after_redis_id=after,
-                    through_redis_id=replay_tail,
-                )
+                try:
+                    entries = await bridge.replay_page(
+                        tenant_scope_value=authority.tenant_scope,
+                        run_id=run_id,
+                        attempt_id=authority.attempt_id,
+                        stream_incarnation=authority.stream_incarnation,
+                        after_redis_id=after,
+                        through_redis_id=replay_tail,
+                    )
+                except StreamContractError as exc:
+                    if str(exc) != "stream_replay_continuity_unproven":
+                        raise
+                    exit_reason = "stream_contract_failure"
+                    yield await gap_frame(
+                        reason="stream_continuity_unproven",
+                        requested_event_id=after,
+                        requested_stream_incarnation=authority.stream_incarnation,
+                    )
+                    return
                 if not entries:
                     raise StreamContractError("stream_replay_history_unavailable")
                 for entry in entries:

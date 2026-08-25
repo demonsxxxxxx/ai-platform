@@ -21,6 +21,7 @@ from app.streaming.redis import (
     SseAuthorityConflictError,
     SseAuthorityLease,
     StreamAuthority,
+    StreamContractError,
     StreamCursor,
     StreamGap,
     StreamTransportUnavailable,
@@ -155,10 +156,18 @@ class BlockingSubscription:
 
 
 class FakeBridge:
-    def __init__(self, rows, *, resume=None, resolve_error=None):
+    def __init__(
+        self,
+        rows,
+        *,
+        resume=None,
+        resolve_error=None,
+        replay_error=None,
+    ):
         self.rows = list(rows)
         self.resume = resume
         self.resolve_error = resolve_error
+        self.replay_error = replay_error
         self.calls = []
 
     async def resolve_resume(self, **kwargs):
@@ -180,11 +189,15 @@ class FakeBridge:
     async def build_gap(self, **kwargs):
         self.calls.append("gap")
         requested = kwargs["requested_event_id"]
-        requested_redis_id = (
-            StreamCursor.parse(requested, run_id="run-a").redis_id
-            if requested is not None
-            else None
-        )
+        if requested is None:
+            requested_redis_id = None
+        else:
+            try:
+                requested_redis_id = StreamCursor.parse(
+                    requested, run_id="run-a"
+                ).redis_id
+            except StreamContractError:
+                requested_redis_id = requested
         last = self.rows[-1].cursor.redis_id if self.rows else None
         envelope = build_v4_control(
             event_id=kwargs["event_id"],
@@ -215,6 +228,8 @@ class FakeBridge:
 
     async def replay_page(self, *, after_redis_id, through_redis_id, **kwargs):
         self.calls.append(f"replay:{after_redis_id}:{through_redis_id}")
+        if self.replay_error is not None:
+            raise self.replay_error
         return tuple(
             row
             for row in self.rows
@@ -433,6 +448,23 @@ async def test_v4_trim_gap_is_control_and_requests_durable_hydration(monkeypatch
     assert body.startswith("id: run-a:1:1-0\nevent: stream.gap\n")
     assert '"schema": "ai-platform.public-run-stream-control.v4"' in body
     assert '"recovery": "reload_durable_state"' in body
+
+
+@pytest.mark.asyncio
+async def test_v4_trim_between_resume_and_replay_emits_gap_instead_of_omitting_rows(
+    monkeypatch,
+):
+    patch_authority(monkeypatch)
+    bridge = FakeBridge(
+        [open_entry()],
+        replay_error=StreamContractError("stream_replay_continuity_unproven"),
+    )
+
+    _, body = await connect(bridge)
+
+    assert "event: stream.gap\n" in body
+    assert '"reason": "stream_continuity_unproven"' in body
+    assert "event: stream.open\n" not in body
 
 
 @pytest.mark.asyncio
