@@ -91,6 +91,125 @@ def test_lambchat_live_and_history_use_public_execution_event_names():
     assert raw_records == []
 
 
+def test_lambchat_history_projects_valid_v4_execution_events_and_rejects_raw_fields():
+    principal = AuthPrincipal(user_id="user-a", display_name="User A", tenant_id="default")
+    run = {"id": "run-a", "status": "running", "trace_id": "trace-run-a"}
+    common = {
+        "trace_id": "trace-run-a",
+        "schema_version": "ai-platform.event-envelope.v1",
+        "stage": "streaming",
+        "severity": "info",
+        "visible_to_user": True,
+        "created_at": None,
+    }
+    events = [
+        {
+            **common,
+            "id": "evt-progress-legacy",
+            "sequence": 0,
+            "event_type": "agent_public_progress",
+            "message": "",
+            "payload_json": {
+                "schema_version": "ai-platform.public-agent-progress.v1",
+                "step_id": "phase_sandbox_preparation",
+                "phase": "sandbox_preparation",
+                "lifecycle": "completed",
+                "message": "Controlled execution is ready",
+            },
+        },
+        {
+            **common,
+            "id": "evt-progress",
+            "sequence": 1,
+            "event_type": "agent.progress",
+            "message": "",
+            "payload_json": {
+                "schema_version": "ai-platform.public-agent-progress.v1",
+                "step_id": "phase_sandbox_preparation",
+                "phase": "sandbox_preparation",
+                "lifecycle": "completed",
+                "message": "Controlled execution is ready",
+                "__stream_v4": {"version": "ai-platform.stream-row.v4"},
+            },
+        },
+        {
+            **common,
+            "id": "evt-thinking",
+            "sequence": 2,
+            "event_type": "thinking.started",
+            "message": "",
+            "payload_json": {
+                "public_summary": "Analyzing the request",
+                "__stream_v4": {"version": "ai-platform.stream-row.v4"},
+            },
+        },
+        {
+            **common,
+            "id": "evt-tool-started",
+            "sequence": 3,
+            "event_type": "tool.started",
+            "message": "",
+            "payload_json": {
+                "operation_id": "operation-search-1",
+                "category": "search",
+                "display_name": "Search authorized sources",
+                "input_summary": "Query: stability evidence",
+                "__stream_v4": {"version": "ai-platform.stream-row.v4"},
+            },
+        },
+        {
+            **common,
+            "id": "evt-tool-completed",
+            "sequence": 4,
+            "event_type": "tool.completed",
+            "message": "",
+            "payload_json": {
+                "operation_id": "operation-search-1",
+                "category": "search",
+                "display_name": "Search authorized sources",
+                "duration_ms": 42,
+                "result_summary": "Search authorized sources completed",
+                "evidence_refs": [],
+                "artifact_refs": [],
+                "__stream_v4": {"version": "ai-platform.stream-row.v4"},
+            },
+        },
+        {
+            **common,
+            "id": "evt-tool-private",
+            "sequence": 5,
+            "event_type": "tool.started",
+            "message": "",
+            "payload_json": {
+                "operation_id": "operation-private-1",
+                "category": "execute",
+                "display_name": "Execute authorized action",
+                "command": "private command",
+                "__stream_v4": {"version": "ai-platform.stream-row.v4"},
+            },
+        },
+    ]
+
+    records = _compatibility_events_for_run(run, events, [], principal)
+
+    assert [record.history_event["event_type"] for record in records] == [
+        "agent_public_progress",
+        "public_activity",
+        "public_tool_activity",
+        "public_tool_activity",
+    ]
+    progress = records[0].history_event["data"]
+    assert progress["phase"] == "sandbox_preparation"
+    assert progress["message"] == "Controlled execution is ready"
+    started = records[2].history_event["data"]
+    assert started["status"] == "started"
+    assert started["input_summary"] == "Query: stability evidence"
+    completed = records[3].history_event["data"]
+    assert completed["status"] == "completed"
+    assert completed["result_summary"] == "Search authorized sources completed"
+    assert "command" not in str(records).lower()
+
+
 def test_lambchat_omits_legacy_capability_rows_when_strict_timeline_exists_for_every_principal():
     legacy_event = {
         "id": "evt-legacy",

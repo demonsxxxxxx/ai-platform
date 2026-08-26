@@ -36,21 +36,25 @@ test("external message conversion keeps assistant-only status off user messages"
 });
 
 
-test("external message conversion preserves authorized public tool identity without raw results", () => {
+test("external message conversion preserves only authorized public tool summaries", () => {
   const converted = toAssistantUiMessage({
     id: "message-1",
     role: "assistant",
     content: "",
     timestamp: new Date("2026-01-01T00:00:00Z"),
-    parts: [{ type: "tool", id: "operation-1", name: "Read authorized files", args: { category: "read" }, result: "safe summary", public_operation_id: "operation-1", public_category: "read" }],
+    parts: [{ type: "tool", id: "operation-1", name: "Search authorized sources", args: { category: "search", summary: "Query: stability evidence" }, result: "Search authorized sources completed", public_operation_id: "operation-1", public_category: "search", public_input_summary: "Query: stability evidence" }],
   });
   assert.deepEqual(converted.content, [{
     type: "tool-call",
     toolCallId: "operation-1",
-    toolName: "Read authorized files",
-    args: { category: "read" },
-    argsText: "",
+    toolName: "Search authorized sources",
+    args: { category: "search", summary: "Query: stability evidence" },
+    argsText: "Query: stability evidence",
     isError: false,
+    data: {
+      inputSummary: "Query: stability evidence",
+      resultSummary: "Search authorized sources completed",
+    },
   }]);
 });
 

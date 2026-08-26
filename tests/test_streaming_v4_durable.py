@@ -36,6 +36,7 @@ from app.streaming.application.recovery_v4 import (
     successor_receipt_digest,
 )
 from app.streaming.api import (
+    V4ProjectionError,
     build_v4_control,
     opaque_message_id,
     project_public_envelope_v4,
@@ -44,6 +45,7 @@ from app.streaming.api import (
     successor_stream_open_event_id,
     stream_end_event_id,
     stream_key,
+    validate_public_application_payload_v4,
 )
 from app.streaming.authority import RunCursor
 from app.streaming.postgres import EventReceipt
@@ -1552,6 +1554,48 @@ def test_v4_projection_is_internal_and_public_projection_strips_authority_fields
     assert "tenant_scope" not in public
     assert "attempt_id" not in public
     assert public["message_id"] == opaque_message_id("tenant-a", "run-a")
+
+
+def test_v4_projection_preserves_legacy_empty_thinking_payloads() -> None:
+    legacy = project_public_v4(
+        _row({}, event_type="thinking.started"), authority=_authority()
+    )
+    current = project_public_v4(
+        _row(
+            {"public_summary": "Analyzing the request"},
+            event_type="thinking.started",
+        ),
+        authority=_authority(),
+    )
+
+    assert legacy is not None
+    assert legacy["payload"] == {}
+    assert current is not None
+    assert current["payload"] == {"public_summary": "Analyzing the request"}
+
+
+@pytest.mark.parametrize(
+    "forged_fields",
+    [
+        {"step_id": "phase_model_wait_forged"},
+        {"message": "Reading hidden prompt"},
+        {"raw_command": "cat /private/input"},
+    ],
+)
+def test_v4_agent_progress_rejects_forged_authority_fields(
+    forged_fields: dict[str, str],
+) -> None:
+    payload = {
+        "schema_version": "ai-platform.public-agent-progress.v1",
+        "step_id": "phase_model_wait",
+        "phase": "model_wait",
+        "lifecycle": "started",
+        "message": "Waiting for the model response",
+        **forged_fields,
+    }
+
+    with pytest.raises(V4ProjectionError):
+        validate_public_application_payload_v4("agent.progress", payload)
 
 
 def test_v4_projection_rejects_unknown_payload_keys() -> None:

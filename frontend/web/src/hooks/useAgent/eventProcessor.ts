@@ -730,12 +730,14 @@ function createPublicToolPart(data: EventData): Extract<MessagePart, { type: "to
     !status ||
     !["started", "completed", "failed", "denied"].includes(status)
   ) return null;
+  const inputSummary =
+    typeof data.input_summary === "string" ? data.input_summary : undefined;
   const failed = status === "failed" || status === "denied";
   return {
     type: "tool",
     id: operationId,
     name: displayName,
-    args: { category },
+    args: { category, ...(inputSummary ? { summary: inputSummary } : {}) },
     result: typeof data.result_summary === "string" ? data.result_summary : undefined,
     status: status as "started" | "completed" | "failed" | "denied",
     success: failed ? false : status === "completed" ? true : undefined,
@@ -746,6 +748,7 @@ function createPublicToolPart(data: EventData): Extract<MessagePart, { type: "to
     agent_id: typeof data.agent_id === "string" ? data.agent_id : undefined,
     public_operation_id: operationId,
     public_category: category,
+    public_input_summary: inputSummary,
     duration_ms: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
     evidence_refs: Array.isArray(data.evidence_refs) ? data.evidence_refs : undefined,
     artifact_refs: Array.isArray(data.artifact_refs) ? data.artifact_refs : undefined,
@@ -765,7 +768,14 @@ function upsertPublicToolPart(
   const updated = [...parts];
   const current = updated[index];
   if (current?.type !== "tool") return parts;
-  updated[index] = { ...current, ...next };
+  updated[index] = {
+    ...current,
+    ...next,
+    args: next.public_input_summary ? next.args : current.args,
+    result: next.result ?? current.result,
+    public_input_summary:
+      next.public_input_summary ?? current.public_input_summary,
+  };
   return updated;
 }
 

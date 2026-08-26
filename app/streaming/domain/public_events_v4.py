@@ -82,6 +82,9 @@ _REQUIRED_PAYLOAD_KEYS: dict[str, frozenset[str]] = {
     "message.completed": frozenset({"content"}),
     "thinking.started": frozenset(),
     "thinking.completed": frozenset(),
+    "agent.progress": frozenset(
+        {"schema_version", "step_id", "phase", "lifecycle", "message"}
+    ),
     "model.completed": frozenset({"duration_ms", "turn_count", "stop_category"}),
     "tool.started": frozenset({"operation_id", "category", "display_name"}),
     "tool.completed": frozenset({"operation_id", "category", "display_name", "duration_ms"}),
@@ -200,12 +203,67 @@ _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _TRACE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _FILENAME_RE = re.compile(r"^[^/\\\\\x00-\x1f\x7f]+$")
 _TOOL_CATEGORIES = frozenset({"skill", "mcp", "read", "write", "edit", "search", "execute"})
+_AGENT_PROGRESS_SCHEMA = "ai-platform.public-agent-progress.v1"
+_AGENT_PROGRESS_MESSAGES = {
+    "attachment_materialization": {
+        "started": "Preparing authorized attachments",
+        "progress": "Preparing authorized attachments",
+        "completed": "Authorized attachments are ready",
+        "failed": "Authorized attachments could not be prepared",
+    },
+    "skill_staging": {
+        "started": "Loading authorized Skills",
+        "progress": "Loading authorized Skills",
+        "completed": "Authorized Skills are ready",
+        "failed": "Authorized Skills could not be loaded",
+    },
+    "sandbox_preparation": {
+        "started": "Preparing controlled execution",
+        "progress": "Preparing controlled execution",
+        "completed": "Controlled execution is ready",
+        "failed": "Controlled execution could not be prepared",
+    },
+    "sandbox_submission": {
+        "started": "Running controlled task",
+        "progress": "Controlled task is still running",
+        "completed": "Controlled task has completed",
+        "failed": "Controlled task did not complete",
+    },
+    "model_wait": {
+        "started": "Waiting for the model response",
+        "progress": "Waiting for the model response",
+        "completed": "Model response is ready",
+        "failed": "Model response was not available",
+    },
+    "artifact_validation": {
+        "started": "Checking generated results",
+        "progress": "Checking generated results",
+        "completed": "Generated results have been checked",
+        "failed": "Generated results could not be checked",
+    },
+    "artifact_recovery": {
+        "started": "Preparing result recovery",
+        "progress": "Preparing result recovery",
+        "completed": "Result recovery is ready",
+        "failed": "Result recovery did not complete",
+    },
+}
 _PAYLOAD_FIELDS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "message.started": (frozenset(), frozenset()),
     "message.delta": (frozenset({"delta"}), frozenset({"delta"})),
     "message.completed": (frozenset({"content"}), frozenset({"content"})),
-    "thinking.started": (frozenset(), frozenset()),
-    "thinking.completed": (frozenset(), frozenset()),
+    "thinking.started": (
+        frozenset(),
+        frozenset({"public_summary"}),
+    ),
+    "thinking.completed": (
+        frozenset(),
+        frozenset({"public_summary"}),
+    ),
+    "agent.progress": (
+        frozenset({"schema_version", "step_id", "phase", "lifecycle", "message"}),
+        frozenset({"schema_version", "step_id", "phase", "lifecycle", "message"}),
+    ),
     "model.completed": (
         frozenset({"duration_ms", "turn_count", "stop_category"}),
         frozenset({"duration_ms", "turn_count", "stop_category"}),
@@ -282,6 +340,7 @@ _PAYLOAD_FIELDS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     ),
 }
 _MESSAGE_EVENT_TYPES = frozenset(_MESSAGE_EVENT_TYPES)
+_CALLBACK_EVENT_TYPES = _MESSAGE_EVENT_TYPES | frozenset({"agent.progress"})
 
 
 def _validate_control_payload(event_type: str, payload: object) -> dict[str, object]:
@@ -473,6 +532,22 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
     result = dict(payload)
     if set(result) - allowed or not required.issubset(result):
         raise V4ProjectionError("v4_payload_keys_invalid")
+    if event_type == "agent.progress":
+        phase = result.get("phase")
+        lifecycle = result.get("lifecycle")
+        expected_message = (
+            _AGENT_PROGRESS_MESSAGES.get(phase, {}).get(lifecycle)
+            if isinstance(phase, str) and isinstance(lifecycle, str)
+            else None
+        )
+        if (
+            result.get("schema_version") != _AGENT_PROGRESS_SCHEMA
+            or result.get("step_id") != f"phase_{phase}"
+            or expected_message is None
+            or result.get("message") != expected_message
+        ):
+            raise V4ProjectionError("v4_agent_progress_payload_invalid")
+        return result
     for key in result:
         if not isinstance(key, str) or key.startswith("__"):
             raise V4ProjectionError("v4_payload_unknown_key")
@@ -495,6 +570,13 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
             _bounded_string(value, name=key, maximum=8192, minimum=1)
         elif key == "content":
             _bounded_string(value, name=key, maximum=262144)
+        elif key == "public_summary":
+            expected_summary = {
+                "thinking.started": "Analyzing the request",
+                "thinking.completed": "Analysis step completed",
+            }.get(event_type)
+            if value != expected_summary:
+                raise V4ProjectionError("v4_public_summary_invalid")
         elif key == "input_summary":
             _bounded_string(value, name=key, maximum=512)
         elif key == "result_summary":
@@ -554,6 +636,14 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
         else:
             raise V4ProjectionError("v4_payload_key_unimplemented")
     return result
+
+
+def validate_public_application_payload_v4(
+    event_type: str, payload: object
+) -> dict[str, object]:
+    """Validate one public application payload without its internal envelope."""
+
+    return _validate_payload(event_type, payload)
 
 
 def _validate_source(source: object) -> dict[str, object]:

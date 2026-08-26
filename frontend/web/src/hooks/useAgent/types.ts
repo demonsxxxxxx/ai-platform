@@ -414,27 +414,50 @@ const PUBLIC_AGENT_PROGRESS_MESSAGES: Record<string, Record<string, string>> = {
   },
 };
 
-/** Accept only a fixed server-owned public phase message. */
-export function isPublicAgentProgressEvent(data: EventData): boolean {
-  const payload = data.payload as Record<string, unknown> | undefined;
+/** Accept only a fixed server-owned public phase payload. */
+export function isPublicAgentProgressPayload(
+  value: unknown,
+): value is Record<string, unknown> {
   if (
-    data.projection_version !== CHAT_PUBLIC_PROJECTION_VERSION ||
-    data.event_type !== PUBLIC_AGENT_PROGRESS_EVENT_TYPE ||
-    typeof data.stage !== "string" ||
-    typeof data.message !== "string" ||
-    !payload ||
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value)
+  ) {
+    return false;
+  }
+  const payload = value as Record<string, unknown>;
+  if (
     Object.keys(payload).length !== 5 ||
     payload.schema_version !== PUBLIC_AGENT_PROGRESS_SCHEMA_VERSION ||
     typeof payload.phase !== "string" ||
     typeof payload.lifecycle !== "string" ||
     typeof payload.step_id !== "string" ||
-    payload.step_id !== `phase_${payload.phase}` ||
+    typeof payload.message !== "string" ||
+    payload.step_id !== `phase_${payload.phase}`
+  ) {
+    return false;
+  }
+  return (
+    PUBLIC_AGENT_PROGRESS_MESSAGES[payload.phase]?.[payload.lifecycle] ===
+    payload.message
+  );
+}
+
+/** Accept only a fixed server-owned public phase message. */
+export function isPublicAgentProgressEvent(data: EventData): boolean {
+  const payload = data.payload;
+  if (
+    data.projection_version !== CHAT_PUBLIC_PROJECTION_VERSION ||
+    data.event_type !== PUBLIC_AGENT_PROGRESS_EVENT_TYPE ||
+    typeof data.stage !== "string" ||
+    typeof data.message !== "string" ||
+    !isPublicAgentProgressPayload(payload) ||
     payload.message !== data.message ||
     payload.phase !== data.stage
   ) {
     return false;
   }
-  return PUBLIC_AGENT_PROGRESS_MESSAGES[payload.phase]?.[payload.lifecycle] === data.message;
+  return true;
 }
 
 /** A persisted sequence that proves new public progress on this run. */

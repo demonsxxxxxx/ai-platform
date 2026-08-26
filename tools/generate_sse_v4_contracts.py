@@ -290,7 +290,7 @@ _PUBLIC_TYPES = {
     "PublicMessageApplicationEnvelopeV4", "PublicTransportControlEnvelopeV4", "StreamOpenControlV4", "StreamHeartbeatControlV4",
     "StreamGapControlV4", "StreamEndControlV4", "MessageStartedEventV4",
     "MessageDeltaEventV4", "MessageCompletedEventV4", "ThinkingStartedEventV4",
-    "ThinkingCompletedEventV4", "ModelCompletedEventV4", "ToolStartedEventV4",
+    "ThinkingCompletedEventV4", "AgentProgressEventV4", "ModelCompletedEventV4", "ToolStartedEventV4",
     "ToolCompletedEventV4", "ToolFailedEventV4", "ToolDeniedEventV4",
     "SubagentStartedEventV4", "SubagentProgressEventV4", "SubagentCompletedEventV4",
     "SubagentFailedEventV4", "SubagentCancelledEventV4", "ArtifactCreatedEventV4",
