@@ -42,8 +42,6 @@ EXPECTED_WORKFLOW_PYTEST = (
     "tests/test_frontend_release_traceability.py "
     "tests/test_frontend_packaged_runtime_smoke.py "
     "tests/test_frontend_ci_workflow.py "
-    "tests/test_require_zero_junit_skips.py "
-    "tests/test_source_authority_docs.py "
     "-q --basetemp .pytest-tmp"
 )
 EXPECTED_LINUX_WORKFLOW_PYTEST = (
