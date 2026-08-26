@@ -3273,12 +3273,14 @@ def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -
         TRANSACTION_RECORDS=$DEPLOY_STATE/transactions
         mkdir -p "$DEPLOY_STATE" "$TRANSACTION_RECORDS"
         mkdir -p "$SYSTEMD_DIR" "$CONFIG_DIR" "$WORKSPACE_ROOT" "$STATE"
+        mkdir -p "$RELEASES/{old}" "$RELEASES/{new}"
         printf 'old-public\n' > "$SYSTEMD_DIR/opensandbox-gateway.service"
         printf 'old-helper\n' > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         printf 'old-config\n' > "$CONFIG_DIR/gateway.env"; printf 'acl-old\n' > "$ROOT/acl.current"
         printf '{old}\n' > "$AUTHORITY_SHA_STATE"
         printf 'ls-remote-old\n' > "$AUTHORITY_EVIDENCE_STATE"
         rm -f "$CURRENT_LINK"; ln -s releases/{old} "$CURRENT_LINK"
+        test -d "$CURRENT_LINK"
         : > "$STATE/opensandbox-gateway.service.active"; : > "$STATE/opensandbox-gateway.service.enabled"
         : > "$STATE/opensandbox-gateway-helper.service.active"; : > "$STATE/opensandbox-gateway-helper.service.enabled"
         require_root_tree() {{ test -d "$1" && test ! -L "$1"; }}
@@ -3352,6 +3354,7 @@ def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -
         printf 'new-helper\n' > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         printf 'new-config\n' > "$CONFIG_DIR/gateway.env"; printf 'acl-new\n' > "$ROOT/acl.current"
         rm "$CURRENT_LINK"; ln -s releases/{new} "$CURRENT_LINK"
+        test -d "$CURRENT_LINK"
         restore_snapshot_payload "$SNAPSHOT" 11111111111111111111111111111111
         restore_snapshot_runtime "$SNAPSHOT"
         grep -qx old-public "$SYSTEMD_DIR/opensandbox-gateway.service"
