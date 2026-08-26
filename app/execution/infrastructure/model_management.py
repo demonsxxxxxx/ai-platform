@@ -276,8 +276,8 @@ async def resolve_run_model(
           on catalog.enabled = true
          and catalog.upstream_available = true
          and catalog.last_seen_revision = active_gateway.revision
-         and (%s is null or catalog.model_id = %s)
-         and (%s is null or catalog.upstream_model_id = %s)
+         and (%s::text is null or catalog.model_id = %s)
+         and (%s::text is null or catalog.upstream_model_id = %s)
         order by catalog.is_default desc nulls last,
                  catalog.display_order asc nulls last,
                  catalog.model_id asc nulls last

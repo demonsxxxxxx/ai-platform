@@ -4435,7 +4435,8 @@ def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -
         test "$(readlink "$CURRENT_LINK")" = releases/{old}
         grep -qx '{old}' "$AUTHORITY_SHA_STATE"
         grep -qx 'ls-remote-old' "$AUTHORITY_EVIDENCE_STATE"
-        grep '^restart:.*:releases/{new}$' "$ACTIONS" >/dev/null
+        grep '^restart:.*:releases/{old}$' "$ACTIONS" >/dev/null
+        ! grep '^restart:.*:releases/{new}$' "$ACTIONS" >/dev/null
         ''',
     )
     assert result.returncode == 0, result.stderr or result.stdout
