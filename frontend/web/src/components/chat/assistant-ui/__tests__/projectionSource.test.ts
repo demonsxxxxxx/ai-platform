@@ -163,6 +163,19 @@ test("mounted projection delegates one tool action and remains keyboard accessib
     assert.ok(frame);
     assert.equal(projection?.getAttribute("role"), "log");
     assert.equal(projection?.getAttribute("aria-live"), "polite");
+    for (const requiredClass of [
+      "min-h-0",
+      "flex",
+      "flex-1",
+      "flex-col",
+      "overflow-hidden",
+    ]) {
+      assert.equal(
+        projection?.classList.contains(requiredClass),
+        true,
+        `projection must retain ${requiredClass} so the transcript has usable height`,
+      );
+    }
     assert.equal(frame?.getAttribute("role"), "group");
     assert.equal(frame?.getAttribute("tabindex"), "0");
     assert.equal(tool?.getAttribute("aria-label"), "Open Read file");

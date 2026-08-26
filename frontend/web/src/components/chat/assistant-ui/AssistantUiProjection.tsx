@@ -29,6 +29,7 @@ export function AssistantUiProjection({
     <AssistantRuntimeProvider runtime={runtime}>
       <ThreadPrimitive.Root asChild>
         <div
+          className="min-h-0 flex flex-1 flex-col overflow-hidden"
           data-assistant-ui-projection
           role="log"
           aria-live="polite"
