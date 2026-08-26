@@ -4,8 +4,6 @@ import json
 import pytest
 
 from app import repositories as repository_module
-import app.skills.dependencies as dependency_policy
-from app.skills.dependencies import SkillDependencyPolicyError
 from app.skills.pinning import (
     attach_skill_snapshot_governance,
     build_skill_manifest_ref,
@@ -32,7 +30,7 @@ def write_skill(root, name, description):
     return skill_dir
 
 
-def test_build_skill_manifest_pins_includes_primary_dependencies_and_file_snapshots(tmp_path):
+def test_build_skill_manifest_pins_keeps_primary_independent_from_available_internal_skills(tmp_path):
     write_skill(tmp_path, "qa-file-reviewer", "Review Word documents.")
     write_skill(tmp_path, "minimax-docx", "Manipulate Word documents.")
     (tmp_path / "qa-file-reviewer" / "references").mkdir()
@@ -45,9 +43,9 @@ def test_build_skill_manifest_pins_includes_primary_dependencies_and_file_snapsh
         builtin_skills=skills,
     )
 
-    assert [item["skill_id"] for item in pins] == ["qa-file-reviewer", "minimax-docx"]
+    assert [item["skill_id"] for item in pins] == ["qa-file-reviewer"]
     assert pins[0]["version"] == pins[0]["content_hash"]
-    assert pins[0]["dependency_ids"] == ["minimax-docx"]
+    assert pins[0]["dependency_ids"] == []
     assert pins[0]["source"]["asset_dir"] == "qa-file-reviewer"
     assert [item["relative_path"] for item in pins[0]["files"]] == ["SKILL.md", "references/guide.md"]
     assert pins[0]["files"][0]["content_base64"]
@@ -56,7 +54,6 @@ def test_build_skill_manifest_pins_includes_primary_dependencies_and_file_snapsh
     assert pins[0]["staged"] is False
     assert pins[0]["used"] is False
     assert pins[0]["builtin_tool_identities"] == ["Bash", "Write"]
-    assert pins[1]["builtin_tool_identities"] == ["Bash", "Write"]
 
 
 def test_builtin_tool_identity_snapshot_comes_from_server_skill_declaration_not_input(tmp_path):
@@ -70,8 +67,8 @@ def test_builtin_tool_identity_snapshot_comes_from_server_skill_declaration_not_
         builtin_skills=skills,
     )
 
+    assert len(pins) == 1
     assert pins[0]["builtin_tool_identities"] == ["Bash", "Write"]
-    assert pins[1]["builtin_tool_identities"] == ["Bash", "Write"]
 
 
 def test_snapshot_source_locks_canonical_builtin_tool_identities(tmp_path):
@@ -301,18 +298,19 @@ def test_build_skill_manifest_pins_keeps_ragflow_skill_as_single_zero_dependency
     assert pins[0]["used"] is False
 
 
-def test_build_skill_manifest_pins_rejects_public_skill_dependency(monkeypatch, tmp_path):
+def test_build_skill_manifest_pins_keeps_explicit_peer_skills_independent(tmp_path):
     write_skill(tmp_path, "qa-file-reviewer", "Review Word documents.")
     write_skill(tmp_path, "baoyu-translate", "Translate documents.")
     skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
-    monkeypatch.setattr(dependency_policy, "SKILL_DEPENDENCIES", {"qa-file-reviewer": ["baoyu-translate"]})
 
-    with pytest.raises(SkillDependencyPolicyError, match="skill_dependency_not_internal"):
-        build_skill_manifest_pins(
-            skill_id="qa-file-reviewer",
-            input_payload={},
-            builtin_skills=skills,
-        )
+    pins = build_skill_manifest_pins(
+        skill_id="qa-file-reviewer",
+        input_payload={"skill_ids": ["baoyu-translate"]},
+        builtin_skills=skills,
+    )
+
+    assert [pin["skill_id"] for pin in pins] == ["qa-file-reviewer", "baoyu-translate"]
+    assert [pin["dependency_ids"] for pin in pins] == [[], []]
 
 
 def test_build_skill_manifest_pins_returns_empty_for_non_builtin_skill(tmp_path):
@@ -423,49 +421,53 @@ def test_snapshot_source_rejects_forged_uploaded_execution_profile():
         repository_module.run_skill_snapshot_source_json(forged)
 
 
-def test_build_skill_version_policy_manifest_pins_rejects_stale_builtin_dependencies():
+def test_build_skill_version_policy_manifest_pins_accepts_zero_dependency_builtin_version():
     files = [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}]
 
-    with pytest.raises(SkillVersionMaterializationError, match="skill_version_not_materializable"):
-        build_skill_version_policy_manifest_pins(
-            {
-                "skill_id": "qa-file-reviewer",
+    pins = build_skill_version_policy_manifest_pins(
+        {
+            "skill_id": "qa-file-reviewer",
+            "version": "hash-builtin",
+            "content_hash": "hash-builtin",
+            "description": "Review Word documents.",
+            "source": {
+                "kind": "builtin",
+                "asset_dir": "qa-file-reviewer",
                 "version": "hash-builtin",
-                "content_hash": "hash-builtin",
-                "description": "Review Word documents.",
-                "source": {
-                    "kind": "builtin",
-                    "asset_dir": "qa-file-reviewer",
-                    "version": "hash-builtin",
-                    "files": files,
-                },
-                "dependency_ids": [],
-                "status": "active",
+                "files": files,
             },
-            available_skill_ids={"qa-file-reviewer", "minimax-docx"},
-        )
+            "dependency_ids": [],
+            "status": "active",
+        },
+        available_skill_ids={"qa-file-reviewer", "minimax-docx"},
+    )
+
+    assert [pin["skill_id"] for pin in pins] == ["qa-file-reviewer"]
+    assert pins[0]["dependency_ids"] == []
 
 
-def test_build_skill_version_policy_manifest_pins_rejects_stale_uploaded_dependencies():
+def test_build_skill_version_policy_manifest_pins_accepts_zero_dependency_uploaded_version():
     files = [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}]
 
-    with pytest.raises(SkillVersionMaterializationError, match="skill_version_not_materializable"):
-        build_skill_version_policy_manifest_pins(
-            {
-                "skill_id": "qa-file-reviewer",
-                "version": "hash-uploaded",
-                "content_hash": "hash-uploaded",
-                "description": "Review Word documents.",
-                "source": {
-                    "kind": "uploaded",
-                    "storage_key": "package.zip",
-                    "files": files,
-                },
-                "dependency_ids": [],
-                "status": "active",
+    pins = build_skill_version_policy_manifest_pins(
+        {
+            "skill_id": "qa-file-reviewer",
+            "version": "hash-uploaded",
+            "content_hash": "hash-uploaded",
+            "description": "Review Word documents.",
+            "source": {
+                "kind": "uploaded",
+                "storage_key": "package.zip",
+                "files": files,
             },
-            available_skill_ids={"qa-file-reviewer", "minimax-docx"},
-        )
+            "dependency_ids": [],
+            "status": "active",
+        },
+        available_skill_ids={"qa-file-reviewer", "minimax-docx"},
+    )
+
+    assert [pin["skill_id"] for pin in pins] == ["qa-file-reviewer"]
+    assert pins[0]["dependency_ids"] == []
 
 
 def test_build_skill_version_dependency_manifest_pins_uses_versioned_dependency_snapshot():

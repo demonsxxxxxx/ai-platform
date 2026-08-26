@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from app.skills.dependencies import skill_dependency_ids, with_skill_dependencies
+from app.skills.dependencies import validate_skill_dependency_ids
 from app.skills.execution_profiles import resolve_skill_execution_profile
 from app.skills.lifecycle import is_admin_materializable_status
 from app.skills.registry import BuiltinSkill, iter_skill_files
@@ -271,8 +271,6 @@ def build_skill_manifest_pins(
     selected = [item for item in _requested_skill_ids(skill_id, input_payload) if item in available]
     if not selected:
         return []
-    selected = with_skill_dependencies(selected, available)
-    selected_set = set(selected)
     manifests: list[dict[str, Any]] = []
     for item in selected:
         skill = by_id[item]
@@ -289,7 +287,7 @@ def build_skill_manifest_pins(
                 "content_hash": skill.version,
                 "source": skill.source,
                 "files": _snapshot_files(skill.path),
-                "dependency_ids": skill_dependency_ids(skill.name, selected_set),
+                "dependency_ids": [],
                 "lifecycle_status": "released",
                 "execution_profile": execution_profile,
                 "builtin_tool_identities": execution_profile["builtin_tool_identities"],
@@ -400,14 +398,13 @@ def validate_skill_version_dependency_policy(
     available_skill_ids: set[str],
 ) -> None:
     try:
-        expected_dependency_ids = skill_dependency_ids(
+        validate_skill_dependency_ids(
             str(skill_version.get("skill_id") or ""),
+            _string_list(skill_version.get("dependency_ids")),
             available_skill_ids,
         )
     except ValueError as exc:
         raise _materialization_error() from exc
-    if _string_list(skill_version.get("dependency_ids")) != expected_dependency_ids:
-        raise _materialization_error()
 
 
 def build_skill_version_policy_manifest_pins(

@@ -1,5 +1,5 @@
-from app.validation import assert_safe_id
 from app.skills.api import INTERNAL_DEPENDENCY_SKILL_IDS
+from app.validation import assert_safe_id
 
 
 INVALID_DEPENDENCY_ID = "[invalid-skill-id]"
@@ -9,11 +9,6 @@ PUBLIC_WORKBENCH_SKILL_IDS = {
     "baoyu-translate",
     "ragflow-knowledge-search",
     "ctd-32s73-stability-template-fill",
-}
-
-SKILL_DEPENDENCIES = {
-    "qa-file-reviewer": ["minimax-docx"],
-    "ctd-32s73-stability-template-fill": ["reference-fact-extraction"],
 }
 
 
@@ -32,7 +27,11 @@ def is_workbench_skill_public(skill_id: str) -> bool:
     return skill_id in PUBLIC_WORKBENCH_SKILL_IDS
 
 
-def _assert_dependency_allowed(skill_id: str, dependency_id: str, available_skill_ids: set[str]) -> None:
+def _assert_dependency_allowed(
+    skill_id: str,
+    dependency_id: str,
+    available_skill_ids: set[str],
+) -> None:
     if _safe_dependency_id(dependency_id) is None:
         raise SkillDependencyPolicyError("skill_dependency_invalid_id")
     if dependency_id == skill_id:
@@ -45,7 +44,11 @@ def _assert_dependency_allowed(skill_id: str, dependency_id: str, available_skil
         raise SkillDependencyPolicyError(f"skill_dependency_missing: {dependency_id}")
 
 
-def _dependency_policy_detail(skill_id: str, dependency_id: str, available_skill_ids: set[str]) -> dict[str, object]:
+def _dependency_policy_detail(
+    skill_id: str,
+    dependency_id: str,
+    available_skill_ids: set[str],
+) -> dict[str, object]:
     safe_dependency_id = _safe_dependency_id(dependency_id)
     if safe_dependency_id is None:
         return {
@@ -82,36 +85,34 @@ def _dependency_policy_detail(skill_id: str, dependency_id: str, available_skill
     }
 
 
-def skill_dependency_ids(skill_id: str, available_skill_ids: set[str]) -> list[str]:
-    dependency_ids: list[str] = []
-    for dependency_id in SKILL_DEPENDENCIES.get(skill_id, []):
+def validate_skill_dependency_ids(
+    skill_id: str,
+    dependency_ids: list[str],
+    available_skill_ids: set[str],
+) -> list[str]:
+    validated: list[str] = []
+    for dependency_id in dependency_ids:
         _assert_dependency_allowed(skill_id, dependency_id, available_skill_ids)
-        dependency_ids.append(dependency_id)
-    return dependency_ids
+        if dependency_id in validated:
+            raise SkillDependencyPolicyError(f"skill_dependency_duplicate: {dependency_id}")
+        validated.append(dependency_id)
+    return validated
 
 
-def skill_dependency_policy(skill_id: str, available_skill_ids: set[str]) -> dict[str, object]:
-    dependency_ids: list[str] = []
-    dependency_details: list[dict[str, object]] = []
-    for dependency_id in SKILL_DEPENDENCIES.get(skill_id, []):
-        detail = _dependency_policy_detail(skill_id, dependency_id, available_skill_ids)
-        dependency_ids.append(str(detail["skill_id"]))
-        dependency_details.append(detail)
+def skill_dependency_policy(
+    skill_id: str,
+    available_skill_ids: set[str],
+    dependency_ids: list[str] | None = None,
+) -> dict[str, object]:
+    declared_dependency_ids = dependency_ids or []
+    dependency_details = [
+        _dependency_policy_detail(skill_id, dependency_id, available_skill_ids)
+        for dependency_id in declared_dependency_ids
+    ]
     return {
         "skill_id": skill_id,
         "public": skill_id in PUBLIC_WORKBENCH_SKILL_IDS,
         "internal_dependency": skill_id in INTERNAL_DEPENDENCY_SKILL_IDS,
-        "dependency_ids": dependency_ids,
+        "dependency_ids": [str(detail["skill_id"]) for detail in dependency_details],
         "dependency_details": dependency_details,
     }
-
-
-def with_skill_dependencies(selected: list[str], available_skill_ids: set[str]) -> list[str]:
-    expanded: list[str] = []
-    for skill_id in selected:
-        if skill_id in available_skill_ids and skill_id not in expanded:
-            expanded.append(skill_id)
-        for dependency_id in skill_dependency_ids(skill_id, available_skill_ids):
-            if dependency_id not in expanded:
-                expanded.append(dependency_id)
-    return expanded
