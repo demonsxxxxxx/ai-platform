@@ -59,6 +59,7 @@ export interface EventHandlerContext {
   v4TerminalEventIdsRef?: React.MutableRefObject<Set<string>>;
   v4TerminalFenceRef?: React.MutableRefObject<V4TerminalFence | null>;
   v4MessageOwnerRef?: React.MutableRefObject<V4MessageOwner | null>;
+  v4MessageCandidateRef?: React.MutableRefObject<V4MessageCandidate | null>;
   lastHistoryTimestampRef: React.MutableRefObject<Date | null>;
   activeSubagentStackRef: React.MutableRefObject<SubagentStackItem[]>;
   streamVersionRef: React.MutableRefObject<number>;
@@ -85,6 +86,14 @@ export interface V4MessageOwner {
   streamIncarnation: number;
   protocolMessageId: string;
   reducerMessageId: string;
+}
+
+export interface V4MessageCandidate {
+  sessionId: string;
+  runId: string;
+  streamVersion: number;
+  streamIncarnation: number;
+  protocolMessageId: string;
 }
 
 export function rebindV4MessageOwner(
@@ -449,14 +458,30 @@ export function handlePublicRunStreamEventV4(
       owner.streamVersion === binding.streamVersion &&
       owner.streamIncarnation === binding.streamIncarnation,
   );
+  const candidate = ctx.v4MessageCandidateRef?.current;
+  const candidateMatchesRun = Boolean(
+    candidate &&
+      candidate.sessionId === binding.sessionId &&
+      candidate.runId === binding.runId &&
+      candidate.streamVersion === binding.streamVersion &&
+      candidate.streamIncarnation === binding.streamIncarnation,
+  );
+  const isMessageLifecycleEvent = event.eventType.startsWith("message.");
+  const isPreOwnerActivity = !isMessageLifecycleEvent;
   let projectedMessageId = messageId;
   if (event.messageId) {
     if (ownerMatchesRun) {
       if (owner!.protocolMessageId !== event.messageId) return false;
       projectedMessageId = owner!.reducerMessageId;
-    } else if (event.eventType !== "message.started") {
-      // A message-scoped event cannot invent an owner before the authoritative
-      // started frame has been accepted.
+    } else if (event.eventType !== "message.started" && !isPreOwnerActivity) {
+      // Message lifecycle events cannot invent an owner before message.started.
+      return false;
+    } else if (
+      candidateMatchesRun &&
+      candidate!.protocolMessageId !== event.messageId
+    ) {
+      // Correlated activity may precede message.started, but it must remain
+      // attached to one protocol message identity until the owner is declared.
       return false;
     }
   } else if (ownerMatchesRun) {
@@ -465,6 +490,29 @@ export function handlePublicRunStreamEventV4(
   const projected = projectV4EventToLegacyHandler(event, projectedMessageId);
   if (!projected) return false;
   const commit = (semanticApplied: boolean) => {
+    if (semanticApplied && ctx.v4MessageCandidateRef && event.messageId) {
+      if (event.eventType === "message.started") {
+        ctx.v4MessageCandidateRef.current = null;
+      } else if (isPreOwnerActivity && !ownerMatchesRun) {
+        const currentCandidate = ctx.v4MessageCandidateRef.current;
+        const candidateIsCurrent = Boolean(
+          currentCandidate &&
+            currentCandidate.sessionId === binding.sessionId &&
+            currentCandidate.runId === binding.runId &&
+            currentCandidate.streamVersion === binding.streamVersion &&
+            currentCandidate.streamIncarnation === binding.streamIncarnation,
+        );
+        if (!candidateIsCurrent) {
+          ctx.v4MessageCandidateRef.current = {
+            sessionId: binding.sessionId,
+            runId: binding.runId,
+            streamVersion: binding.streamVersion,
+            streamIncarnation: binding.streamIncarnation,
+            protocolMessageId: event.messageId,
+          };
+        }
+      }
+    }
     if (
       semanticApplied &&
       event.eventType === "message.started" &&
