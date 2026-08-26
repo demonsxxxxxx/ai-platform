@@ -44,6 +44,44 @@ class SandboxRuntimeCleanupError(RuntimeError):
         self.failed_leases = failed_leases or []
 
 
+def _sandbox_cleanup_timeout_seconds() -> float:
+    return max(
+        float(getattr(get_settings(), "sandbox_cleanup_timeout_seconds", 30) or 30),
+        0.001,
+    )
+
+
+def _consume_cleanup_stop_task(task: asyncio.Task[Any]) -> None:
+    try:
+        task.exception()
+    except BaseException:
+        pass
+
+
+async def _stop_failed_reconciliation_lease(
+    provider: ContainerProvider,
+    lease: ContainerLease,
+) -> Any:
+    stop_task = asyncio.create_task(
+        provider.stop(lease, reason="executor_reconciliation_cleanup")
+    )
+    try:
+        return await asyncio.wait_for(
+            asyncio.shield(stop_task),
+            timeout=_sandbox_cleanup_timeout_seconds(),
+        )
+    except asyncio.CancelledError:
+        stop_task.cancel()
+        stop_task.add_done_callback(_consume_cleanup_stop_task)
+        raise
+    except TimeoutError:
+        stop_task.cancel()
+        stop_task.add_done_callback(_consume_cleanup_stop_task)
+        return None
+    except Exception:  # noqa: BLE001 - the claim is released for bounded cleanup retry.
+        return None
+
+
 def container_lease_from_persisted_row(row: dict[str, Any]) -> ContainerLease | None:
     provider = str(row.get("provider") or "fake")
     if provider not in {"fake", "docker", "opensandbox"}:
@@ -328,83 +366,83 @@ async def cleanup_expired_sandbox_leases(
 
 
 async def cleanup_failed_sandbox_executor_reconciliation_leases(
-    conn: Any,
     *,
     tenant_id: str | None = None,
     provider_factory: ProviderFactory,
     stale_after_seconds: int = 45,
+    transaction_factory: Any | None = None,
 ) -> list[dict[str, Any]]:
-    """Retry one verified runtime cleanup under a failed-reconciliation row lock."""
+    """Retry one verified runtime cleanup without holding DB locks across provider I/O."""
 
+    transaction_factory = transaction_factory or transaction
     claim_token = str(uuid.uuid4())
-    claimed = await sandbox_lease_repository.claim_failed_sandbox_executor_reconciliation_cleanups(
-        conn,
-        claim_token=claim_token,
-        tenant_id=tenant_id,
-        limit=1,
-        stale_after_seconds=stale_after_seconds,
-    )
+    async with transaction_factory() as conn:
+        claimed = await sandbox_lease_repository.claim_failed_sandbox_executor_reconciliation_cleanups(
+            conn,
+            claim_token=claim_token,
+            tenant_id=tenant_id,
+            limit=1,
+            stale_after_seconds=stale_after_seconds,
+        )
     released: list[dict[str, Any]] = []
     for row in claimed:
-        owns_claim = await sandbox_lease_repository.has_failed_sandbox_executor_reconciliation_cleanup_claim(
-            conn,
-            lease_id=str(row["id"]),
-            claim_token=claim_token,
-        )
-        if not owns_claim:
-            continue
-        lease = container_lease_from_persisted_row(row)
-        if lease is None:
-            await sandbox_lease_repository.quarantine_failed_sandbox_executor_reconciliation_cleanup(
+        async with transaction_factory() as conn:
+            owns_claim = await sandbox_lease_repository.has_failed_sandbox_executor_reconciliation_cleanup_claim(
                 conn,
                 lease_id=str(row["id"]),
                 claim_token=claim_token,
-                error="executor_reconciliation_runtime_handle_invalid",
             )
+            if not owns_claim:
+                continue
+            lease = container_lease_from_persisted_row(row)
+            if lease is None:
+                await sandbox_lease_repository.quarantine_failed_sandbox_executor_reconciliation_cleanup(
+                    conn,
+                    lease_id=str(row["id"]),
+                    claim_token=claim_token,
+                    error="executor_reconciliation_runtime_handle_invalid",
+                )
+                continue
+        stop_result = await _stop_failed_reconciliation_lease(
+            provider_factory(lease.provider),
+            lease,
+        )
+        if getattr(stop_result, "status", "failed") not in {"stopped", "not_found"}:
+            async with transaction_factory() as conn:
+                await sandbox_lease_repository.release_failed_sandbox_executor_reconciliation_cleanup_claim(
+                    conn,
+                    lease_id=str(row["id"]),
+                    claim_token=claim_token,
+                    error="executor_reconciliation_sandbox_stop_failed",
+                )
             continue
-        try:
-            stop_result = await provider_factory(lease.provider).stop(
-                lease,
+        async with transaction_factory() as conn:
+            finalized = await sandbox_lease_repository.finalize_failed_sandbox_executor_reconciliation_cleanup(
+                conn,
+                tenant_id=str(row["tenant_id"]),
+                user_id=str(row["user_id"]),
+                run_id=str(row["run_id"]),
+                lease_id=str(row["id"]),
+                claim_token=claim_token,
                 reason="executor_reconciliation_cleanup",
             )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            stop_result = None
-        if getattr(stop_result, "status", "failed") not in {"stopped", "not_found"}:
-            await sandbox_lease_repository.release_failed_sandbox_executor_reconciliation_cleanup_claim(
+            if finalized is None:
+                continue
+            await repositories.append_event(
                 conn,
-                lease_id=str(row["id"]),
-                claim_token=claim_token,
-                error="executor_reconciliation_sandbox_stop_failed",
+                tenant_id=str(finalized["tenant_id"]),
+                run_id=str(finalized["run_id"]),
+                trace_id=finalized.get("trace_id"),
+                event_type="sandbox_lease_released",
+                stage="sandbox",
+                message="已释放 Sandbox 租约",
+                payload={
+                    "visible_to_user": True,
+                    "lease_id": finalized.get("id"),
+                    "reason": "executor_reconciliation_cleanup",
+                },
             )
-            continue
-        finalized = await sandbox_lease_repository.finalize_failed_sandbox_executor_reconciliation_cleanup(
-            conn,
-            tenant_id=str(row["tenant_id"]),
-            user_id=str(row["user_id"]),
-            run_id=str(row["run_id"]),
-            lease_id=str(row["id"]),
-            claim_token=claim_token,
-            reason="executor_reconciliation_cleanup",
-        )
-        if finalized is None:
-            continue
-        await repositories.append_event(
-            conn,
-            tenant_id=str(finalized["tenant_id"]),
-            run_id=str(finalized["run_id"]),
-            trace_id=finalized.get("trace_id"),
-            event_type="sandbox_lease_released",
-            stage="sandbox",
-            message="已释放 Sandbox 租约",
-            payload={
-                "visible_to_user": True,
-                "lease_id": finalized.get("id"),
-                "reason": "executor_reconciliation_cleanup",
-            },
-        )
-        released.append(finalized)
+            released.append(finalized)
     return released
 
 

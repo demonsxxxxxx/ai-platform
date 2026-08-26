@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -6,6 +7,7 @@ import pytest
 
 from app.executor_reconciler import (
     PermanentExecutorReconciliationError,
+    SandboxReconciliationStopError,
     _context_payload,
     _finish_terminal_reconciliation_failure,
     _release_reconciled_lease,
@@ -487,23 +489,14 @@ async def test_probe_terminalizes_authoritatively_missing_sandbox_immediately(mo
 
 
 @pytest.mark.asyncio
-async def test_reconciler_owns_workspace_terminalization_and_release(monkeypatch):
+async def test_reconciler_exits_claim_transaction_before_terminalization_and_release(monkeypatch):
     calls = []
     transaction_active = {}
-    nested_transaction_active = {}
     transaction_count = 0
 
     class OwnerConnection:
         def __init__(self, index):
             self.index = index
-
-        @asynccontextmanager
-        async def transaction(self):
-            nested_transaction_active[self.index] = True
-            try:
-                yield
-            finally:
-                nested_transaction_active[self.index] = False
 
     @asynccontextmanager
     async def fenced_transaction():
@@ -529,24 +522,24 @@ async def test_reconciler_owns_workspace_terminalization_and_release(monkeypatch
     async def get_run(conn, **kwargs):
         assert transaction_active[conn.index] is True
         assert kwargs["for_update"] is False
+        calls.append(("get_run", conn.index))
         return {"id": "run-a", "status": "running"}
 
-    async def collect(conn, lease_row, **_kwargs):
-        assert transaction_active[conn.index] is True
-        calls.append(("collect", lease_row["id"], conn.index))
+    async def collect(lease_row, **_kwargs):
+        assert all(active is False for active in transaction_active.values())
+        calls.append(("collect", lease_row["id"], transaction_count))
         return _result(), object(), object()
 
     async def terminalize(**kwargs):
-        assert any(transaction_active.values())
-        async with kwargs["transaction_factory"]() as nested_conn:
-            assert transaction_active[nested_conn.index] is True
-            assert nested_transaction_active[nested_conn.index] is True
-        calls.append(("terminalize", kwargs["claim_token"]))
+        assert all(active is False for active in transaction_active.values())
+        assert kwargs["transaction_factory"] is fenced_transaction
+        calls.append(("terminalize", kwargs["claim_token"], transaction_count))
         return WorkerOutcome("succeeded", "run-a")
 
-    async def release(conn, _lease_row, **kwargs):
-        assert transaction_active[conn.index] is True
-        calls.append(("release", kwargs["claim_token"], conn.index))
+    async def release(lease_row, **kwargs):
+        assert all(active is False for active in transaction_active.values())
+        assert kwargs["transaction_factory"] is fenced_transaction
+        calls.append(("release", kwargs["claim_token"], lease_row["id"], transaction_count))
 
     monkeypatch.setattr("app.executor_reconciler.transaction", fenced_transaction)
     monkeypatch.setattr(
@@ -568,12 +561,19 @@ async def test_reconciler_owns_workspace_terminalization_and_release(monkeypatch
     )
 
     assert processed == 1
-    owner_connection = calls[0][1]
-    assert calls[0] == ("has_claim", owner_connection)
-    assert calls[1] == ("collect", "lease-a", owner_connection)
-    assert calls[2][0] == "terminalize"
-    assert calls[3] == ("release", calls[2][1], owner_connection)
-    assert nested_transaction_active[owner_connection] is False
+    assert [call[0] for call in calls] == [
+        "has_claim",
+        "get_run",
+        "collect",
+        "terminalize",
+        "release",
+    ]
+    assert calls[0] == ("has_claim", 2)
+    assert calls[1] == ("get_run", 2)
+    assert calls[2] == ("collect", "lease-a", 2)
+    assert calls[3][0] == "terminalize"
+    assert calls[3][2] == 2
+    assert calls[4] == ("release", calls[3][1], "lease-a", 2)
     assert all(active is False for active in transaction_active.values())
 
 
@@ -634,7 +634,7 @@ async def test_reconciler_requeues_receipt_after_transient_failure(monkeypatch):
     async def get_run(_conn, **_kwargs):
         return {"id": "run-a", "status": "running"}
 
-    async def collect(_conn, _lease_row, **_kwargs):
+    async def collect(_lease_row, **_kwargs):
         raise RuntimeError("temporary workspace failure")
 
     async def retry(_conn, **kwargs):
@@ -671,7 +671,7 @@ async def test_reconciler_scans_postgres_when_redis_wakeup_is_unavailable(monkey
         stop_event.set()
         return 0
 
-    async def cleanup(_conn, **_kwargs):
+    async def cleanup(**_kwargs):
         calls.append("cleanup")
         return []
 
@@ -858,7 +858,7 @@ async def test_reconciler_terminalizes_permanent_or_exhausted_failure(
     async def get_run(_conn, **_kwargs):
         return {"id": "run-a", "status": "running"}
 
-    async def collect(_conn, _lease_row, **_kwargs):
+    async def collect(_lease_row, **_kwargs):
         raise failure
 
     async def finish(lease_row, **kwargs):
@@ -1134,22 +1134,25 @@ async def test_verified_runtime_stop_failure_remains_eligible_for_cleanup(monkey
 
 
 @pytest.mark.asyncio
-async def test_release_helper_locks_claim_before_stop_and_atomic_finalize(monkeypatch):
+async def test_release_helper_stops_provider_between_claim_and_finalize_transactions(monkeypatch):
     calls = []
     transaction_state = {"active": False}
     connection = object()
 
     @asynccontextmanager
     async def fenced_transaction():
+        assert transaction_state["active"] is False
         transaction_state["active"] = True
+        calls.append("transaction_enter")
         try:
             yield connection
         finally:
             transaction_state["active"] = False
+            calls.append("transaction_exit")
 
     class Provider:
         async def stop(self, lease, *, reason):
-            assert transaction_state["active"] is True
+            assert transaction_state["active"] is False
             calls.append(("stop", lease, reason))
             return SimpleNamespace(status="stopped")
 
@@ -1176,9 +1179,97 @@ async def test_release_helper_locks_claim_before_stop_and_atomic_finalize(monkey
     )
 
     lease = object()
-    async with fenced_transaction() as conn:
+    await _release_reconciled_lease(
+        {
+            "id": "lease-a",
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "run_id": "run-a",
+        },
+        provider=Provider(),
+        lease=lease,
+        claim_token="claim-a",
+        transaction_factory=fenced_transaction,
+    )
+
+    assert transaction_state["active"] is False
+    assert calls == [
+        "transaction_enter",
+        ("has_claim", {"lease_id": "lease-a", "claim_token": "claim-a"}),
+        "transaction_exit",
+        ("stop", lease, "executor_reconciled"),
+        "transaction_enter",
+        (
+            "release_and_finalize",
+            {
+                "tenant_id": "tenant-a",
+                "user_id": "user-a",
+                "run_id": "run-a",
+                "lease_id": "lease-a",
+                "claim_token": "claim-a",
+                "reason": "executor_reconciled",
+            },
+        ),
+        "transaction_exit",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_release_helper_stop_timeout_closes_claim_transaction(monkeypatch):
+    calls = []
+    transaction_state = {"active": False}
+    connection = object()
+    stop_started = asyncio.Event()
+    stop_cancelled = asyncio.Event()
+
+    @asynccontextmanager
+    async def fenced_transaction():
+        transaction_state["active"] = True
+        calls.append("transaction_enter")
+        try:
+            yield connection
+        finally:
+            transaction_state["active"] = False
+            calls.append("transaction_exit")
+
+    class Provider:
+        async def stop(self, _lease, *, reason):
+            assert transaction_state["active"] is False
+            calls.append(("stop", reason))
+            stop_started.set()
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                stop_cancelled.set()
+                raise
+
+    async def has_claim(conn, **_kwargs):
+        assert conn is connection
+        assert transaction_state["active"] is True
+        return True
+
+    async def unexpected_finalize(*_args, **_kwargs):
+        pytest.fail("timed-out provider stop must not finalize the lease")
+
+    owner = "app.executor_reconciler"
+    monkeypatch.setattr(
+        f"{owner}.get_settings",
+        lambda: SimpleNamespace(sandbox_cleanup_timeout_seconds=0.001),
+    )
+    monkeypatch.setattr(
+        f"{owner}.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
+        has_claim,
+    )
+    monkeypatch.setattr(
+        f"{owner}.sandbox_lease_repository.release_and_finalize_sandbox_executor_reconciliation",
+        unexpected_finalize,
+    )
+
+    with pytest.raises(
+        SandboxReconciliationStopError,
+        match="executor_reconciliation_sandbox_stop_failed",
+    ):
         await _release_reconciled_lease(
-            conn,
             {
                 "id": "lease-a",
                 "tenant_id": "tenant-a",
@@ -1186,27 +1277,19 @@ async def test_release_helper_locks_claim_before_stop_and_atomic_finalize(monkey
                 "run_id": "run-a",
             },
             provider=Provider(),
-            lease=lease,
+            lease=object(),
             claim_token="claim-a",
+            transaction_factory=fenced_transaction,
         )
 
+    await stop_started.wait()
+    await stop_cancelled.wait()
     assert transaction_state["active"] is False
-    assert calls[0] == (
-        "has_claim",
-        {"lease_id": "lease-a", "claim_token": "claim-a"},
-    )
-    assert calls[1] == ("stop", lease, "executor_reconciled")
-    assert calls[2] == (
-        "release_and_finalize",
-        {
-            "tenant_id": "tenant-a",
-            "user_id": "user-a",
-            "run_id": "run-a",
-            "lease_id": "lease-a",
-            "claim_token": "claim-a",
-            "reason": "executor_reconciled",
-        },
-    )
+    assert calls == [
+        "transaction_enter",
+        "transaction_exit",
+        ("stop", "executor_reconciled"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -1230,7 +1313,6 @@ async def test_release_helper_lost_claim_has_no_provider_side_effect(monkeypatch
 
     with pytest.raises(RuntimeError, match="executor_reconciliation_claim_lost"):
         await _release_reconciled_lease(
-            _Connection(),
             {
                 "id": "lease-a",
                 "tenant_id": "tenant-a",
@@ -1240,6 +1322,7 @@ async def test_release_helper_lost_claim_has_no_provider_side_effect(monkeypatch
             provider=Provider(),
             lease=object(),
             claim_token="stale-claim",
+            transaction_factory=_transaction,
         )
 
     assert calls == [

@@ -620,7 +620,7 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
     assert signaled == [{}]
 
 
-def test_failed_executor_callback_terminalizes_run_before_publication_and_lease_release(monkeypatch):
+def test_failed_executor_callback_persists_receipt_and_signals_reconciliation(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     calls = []
 
@@ -638,7 +638,6 @@ def test_failed_executor_callback_terminalizes_run_before_publication_and_lease_
         "user_id": "user-a",
         "lease_payload_json": {"attempt_id": "attempt-a"},
     }
-    lease_active = True
 
     async def fake_get_run_identity(conn, *, run_id, for_update=False):
         calls.append(("identity", for_update))
@@ -652,7 +651,7 @@ def test_failed_executor_callback_terminalizes_run_before_publication_and_lease_
 
     async def fake_list_current_leases(conn, *, tenant_id, run_id, attempt_id):
         calls.append(("list_lease", attempt_id))
-        return [lease] if lease_active else []
+        return [lease]
 
     async def fake_append_event(conn, **kwargs):
         calls.append(("append_event", kwargs["event_type"]))
@@ -662,19 +661,14 @@ def test_failed_executor_callback_terminalizes_run_before_publication_and_lease_
         calls.append(("executor_terminal", kwargs["executor_status"]))
         return lease
 
-    async def fake_fail_run_with_v4(conn, **kwargs):
-        calls.append(("fail_run", kwargs["error_code"], kwargs["error_message"]))
-        return SimpleNamespace(did_transition=True)
+    async def unexpected_fail_run(*_args, **_kwargs):
+        pytest.fail("failed callback must defer Run terminalization to reconciliation")
 
-    async def fake_release_lease(conn, **kwargs):
-        nonlocal lease_active
-        lease_active = False
-        calls.append(("release_lease", kwargs["user_id"], kwargs["reason"]))
-        return lease
+    async def unexpected_release(*_args, **_kwargs):
+        pytest.fail("failed callback must defer lease release to reconciliation")
 
-    async def fake_publish_pending(_capabilities, **kwargs):
-        calls.append(("publish_pending", kwargs["run_id"]))
-        return 2
+    async def fake_publish_pending(*_args, **_kwargs):
+        pytest.fail("failed callback must not publish a terminal row directly")
 
     async def fake_signal(**kwargs):
         calls.append("terminal_signal")
@@ -694,12 +688,12 @@ def test_failed_executor_callback_terminalizes_run_before_publication_and_lease_
         "record_sandbox_executor_terminal",
         fake_record_terminal,
     )
+    monkeypatch.setattr(runtime_callbacks, "fail_run_with_v4", unexpected_fail_run, raising=False)
     monkeypatch.setattr(
         runtime_callbacks.sandbox_lease_repository,
         "release_sandbox_lease",
-        fake_release_lease,
+        unexpected_release,
     )
-    monkeypatch.setattr(runtime_callbacks, "fail_run_with_v4", fake_fail_run_with_v4)
     monkeypatch.setattr(runtime_callbacks, "publish_pending_v4_events", fake_publish_pending)
     monkeypatch.setattr(runtime_callbacks, "publish_executor_terminal_signal", fake_signal)
 
@@ -717,14 +711,10 @@ def test_failed_executor_callback_terminalizes_run_before_publication_and_lease_
 
     assert response.status_code == 200
     assert response.json() == {"accepted": True, "event_count": 1}
-    assert calls.index(("executor_terminal", "failed")) < calls.index(
-        ("fail_run", "executor_failed", "Executor reported failure")
-    )
-    assert calls.index(
-        ("fail_run", "executor_failed", "Executor reported failure")
-    ) < calls.index(("release_lease", "user-a", "run_failed"))
-    assert calls.index("transaction_exit") < calls.index(("publish_pending", "run-a"))
-    assert calls.index(("publish_pending", "run-a")) < calls.index("terminal_signal")
+    assert ("executor_terminal", "failed") in calls
+    assert ("list_lease", "attempt-a") in calls
+    assert "transaction_exit" in calls
+    assert calls.index("transaction_exit") < calls.index("terminal_signal")
 
 
 def test_executor_callback_does_not_stop_runtime_container_from_callback(monkeypatch):

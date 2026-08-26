@@ -842,14 +842,13 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
 
         cleaned_failed = []
         for _ in range(2):
-            async with conn.transaction():
-                cleaned_failed.extend(
-                    await cleanup_failed_sandbox_executor_reconciliation_leases(
-                        conn,
-                        tenant_id="tenant-a",
-                        provider_factory=lambda _provider: CleanupProvider(),
-                    )
+            cleaned_failed.extend(
+                await cleanup_failed_sandbox_executor_reconciliation_leases(
+                    tenant_id="tenant-a",
+                    provider_factory=lambda _provider: CleanupProvider(),
+                    transaction_factory=test_transaction,
                 )
+            )
 
         cleaned_ids = {str(row["id"]) for row in cleaned_failed}
         assert cleaned_ids == {"lease-b", "lease-c"}
