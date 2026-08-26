@@ -330,7 +330,11 @@ def test_v4_decode_normalizes_mapping_and_lua_field_value_list() -> None:
     )
     raw = canonical_json_bytes(envelope).decode()
 
-    for fields in ({"envelope": raw}, ["envelope", raw]):
+    for fields in (
+        {"envelope": raw},
+        ["envelope", raw],
+        ("envelope", raw),
+    ):
         decoded = bridge._decode(
             ("1-0", fields),
             tenant_scope_value="scope-a",
