@@ -26,6 +26,7 @@ from app.runtime.sandbox.contracts import (
     executor_callback_receipt_event_count,
 )
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
+from app.runtime.sandbox.executor_client import normalize_executor_reported_failure
 from app.runtime.sandbox.executor_signals import (
     ExecutorSignalUnavailable,
     publish_executor_terminal_signal,
@@ -41,6 +42,7 @@ from app.streaming.api import (
 )
 from app.streaming.redis import get_stream_authority
 from app.storage import ObjectStorage
+from app.tool_permission_lifecycle import fail_run_with_v4
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -48,6 +50,26 @@ logger = logging.getLogger(__name__)
 
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled", "canceled"}
 _TERMINAL_EXECUTOR_CALLBACK_STATUSES = {"completed", "failed", "cancelled"}
+
+
+def _safe_failed_executor_result(
+    callback: ExecutorCallbackEvent,
+) -> tuple[str, str, dict[str, Any]]:
+    terminal = callback.terminal_result
+    if terminal is None:
+        raise ValueError("failed executor callback requires a terminal result")
+    normalized = normalize_executor_reported_failure(
+        {
+            "status": "failed",
+            "run_id": callback.run_id,
+            "error_code": terminal.error_code,
+            "error_message": terminal.error_message,
+        },
+        expected_run_id=callback.run_id,
+    )
+    error_code = str(normalized["error_code"])
+    error_message = str(normalized["error_message"])
+    return error_code, error_message, normalized
 
 
 def _executor_callback_receipt(
@@ -82,6 +104,7 @@ async def record_executor_callback(
     v4_items = []
     authority = None
     callback_deduplicated = False
+    failed_run_terminalized = False
     tenant_id = ""
     lease_id = ""
     async with transaction() as conn:
@@ -235,6 +258,46 @@ async def record_executor_callback(
                     status_code=409,
                     detail="sandbox_executor_terminal_conflict",
                 ) from exc
+            if callback.status == "failed":
+                error_code, error_message, result_json = _safe_failed_executor_result(callback)
+                progress = await fail_run_with_v4(
+                    conn,
+                    capabilities=capabilities,
+                    tenant_id=tenant_id,
+                    run_id=callback.run_id,
+                    error_code=error_code,
+                    error_message=error_message,
+                    result_json=result_json,
+                )
+                if not progress.did_transition:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="run_terminalization_not_owned",
+                    )
+                user_id = str(
+                    (lease.get("user_id") if isinstance(lease, dict) else None)
+                    or run_identity.get("user_id")
+                    or ""
+                )
+                if not user_id:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="sandbox_executor_lease_receipt_unavailable",
+                    )
+                released = await sandbox_lease_repository.release_sandbox_lease(
+                    conn,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    run_id=callback.run_id,
+                    lease_id=lease_id,
+                    reason="run_failed",
+                )
+                if released is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="sandbox_runtime_lease_release_conflict",
+                    )
+                failed_run_terminalized = True
         elif lease_id:
             heartbeat = await sandbox_lease_repository.record_sandbox_executor_heartbeat(
                 conn,
@@ -250,20 +313,22 @@ async def record_executor_callback(
                     status_code=409,
                     detail="sandbox_runtime_attempt_inactive",
                 )
-        await _require_current_runtime_attempt(
-            conn,
-            tenant_id=tenant_id,
-            run_id=callback.run_id,
-            attempt_id=callback.attempt_id,
-        )
-    if v4_items:
-        try:
-            await admit_v4_stream(
-                capabilities,
+        if not failed_run_terminalized:
+            await _require_current_runtime_attempt(
+                conn,
                 tenant_id=tenant_id,
                 run_id=callback.run_id,
                 attempt_id=callback.attempt_id,
             )
+    if v4_items or failed_run_terminalized:
+        try:
+            if v4_items:
+                await admit_v4_stream(
+                    capabilities,
+                    tenant_id=tenant_id,
+                    run_id=callback.run_id,
+                    attempt_id=callback.attempt_id,
+                )
             await publish_pending_v4_events(
                 capabilities,
                 tenant_id=tenant_id,
