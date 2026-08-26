@@ -3,7 +3,6 @@ import {
   BadgeCheck,
   Bot,
   CircleAlert,
-  Cpu,
   FileText,
   Plus,
   RefreshCw,
@@ -16,7 +15,6 @@ import {
 } from "lucide-react";
 
 import { AgentBuilderDialog } from "../../components/agent-builder/AgentBuilderDialog";
-import type { ModelOption } from "../../services/api/modelPublic";
 import type { PublicSkillResponse } from "../../types";
 import { AgentBuilderEnterpriseFields } from "./AgentBuilderEnterpriseFields";
 import { AgentBuilderLifecycle } from "./AgentBuilderLifecycle";
@@ -36,10 +34,8 @@ import { AgentBuilderController } from "./agentBuilderController";
 export interface AgentBuilderWorkbenchCatalog {
   skills: readonly PublicSkillResponse[];
   tools: readonly AgentBuilderSafeMcpTool[];
-  models: readonly ModelOption[];
   skillsResolved: boolean;
   mcpToolsResolved: boolean;
-  modelsResolved: boolean;
   effectivePermissionsKnown: boolean;
   isLoading: boolean;
   error: string | null;
@@ -101,17 +97,13 @@ export function AgentBuilderWorkbench({
     () => ({
       skills: catalog.skills,
       mcpTools: catalog.tools,
-      models: catalog.models,
       skillsResolved: catalog.skillsResolved,
       mcpToolsResolved: catalog.mcpToolsResolved,
-      modelsResolved: catalog.modelsResolved,
       effectivePermissionsKnown: catalog.effectivePermissionsKnown,
     }),
     [
       catalog.effectivePermissionsKnown,
       catalog.mcpToolsResolved,
-      catalog.models,
-      catalog.modelsResolved,
       catalog.skills,
       catalog.skillsResolved,
       catalog.tools,
@@ -127,12 +119,8 @@ export function AgentBuilderWorkbench({
     workbench.mutation.phase === "unpublishing" ||
     workbench.mutation.phase === "testing";
   const interactionBusy = mutationBusy || workbench.destructiveReloadPending;
-  const modelCatalogResolved = catalog.modelsResolved;
   const skillCatalogResolved = catalog.skillsResolved && catalog.effectivePermissionsKnown;
   const mcpCatalogResolved = catalog.mcpToolsResolved;
-  const selectedModel = activeEditor && modelCatalogResolved
-    ? catalog.models.find((model) => model.id === activeEditor.modelId)
-    : undefined;
   const selectedSkillKeys = new Set(
     (activeEditor?.selectedSkills ?? []).map(
       (skill) => `${skill.skill_id}:${skill.expected_version}`,
@@ -512,7 +500,7 @@ export function AgentBuilderWorkbench({
                   <h3 id="agent-basic-heading" className="text-sm font-semibold">基础信息</h3>
                 </div>
                 <p className="mb-4 text-sm leading-6 text-[var(--theme-text-secondary)]">
-                  完成下面 4 项即可保存：名称、Agent.md 初始指令、模型和至少一个 Skill。
+                  完成下面 3 项即可保存：名称、Agent.md 初始指令和至少一个 Skill。
                 </p>
                 <div className="grid grid-cols-1 gap-4">
                   <label className="flex flex-col gap-2">
@@ -546,44 +534,6 @@ export function AgentBuilderWorkbench({
                   required
                   value={activeEditor.instructions}
                 />
-              </section>
-
-              <section aria-labelledby="agent-model-heading" className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-5">
-                <div className="mb-4 flex items-center gap-2">
-                  <Cpu size={17} className="text-[var(--theme-text-secondary)]" aria-hidden="true" />
-                  <h3 id="agent-model-heading" className="text-sm font-semibold">运行模型</h3>
-                </div>
-                <label className="flex max-w-xl flex-col gap-2">
-                  <span className="text-sm font-medium">当前模型</span>
-                  <select
-                    aria-label="专家模型"
-                    className="h-10 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)]"
-                    disabled={catalog.isLoading || !modelCatalogResolved || interactionBusy}
-                    onChange={(event) => updateEditor((editor) => ({ ...editor, modelId: event.target.value }))}
-                    required
-                    value={selectedModel ? activeEditor.modelId : ""}
-                  >
-                    <option value="">
-                      {!modelCatalogResolved
-                        ? "模型目录尚未完整加载"
-                        : activeEditor.modelId && !selectedModel
-                          ? "请重新选择当前可用模型"
-                          : "选择模型"}
-                    </option>
-                    {catalog.models.map((model) => (
-                      <option key={model.id} value={model.id}>{model.label}</option>
-                    ))}
-                  </select>
-                </label>
-                {activeEditor.modelId && !modelCatalogResolved ? (
-                  <p className="mt-2 break-all text-sm text-[var(--theme-text-secondary)]">
-                    模型目录尚未完整加载，已保留服务端模型 {activeEditor.modelId}。
-                  </p>
-                ) : activeEditor.modelId && !selectedModel ? (
-                  <p className="mt-2 text-sm text-[var(--theme-danger)]">
-                    已保存模型 <span className="font-mono">{activeEditor.modelId}</span> 当前不可用，未自动替换。
-                  </p>
-                ) : null}
               </section>
 
               <section aria-labelledby="agent-skill-heading" className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-5">

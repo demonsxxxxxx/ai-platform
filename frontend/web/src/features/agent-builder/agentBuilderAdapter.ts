@@ -1,4 +1,3 @@
-import type { ModelOption } from "../../services/api/modelPublic";
 import type {
   AgentProfileAdminProjection,
   AgentProfileDraftRequest,
@@ -16,10 +15,8 @@ export interface AgentBuilderSafeMcpTool {
 export interface AgentBuilderCurrentCatalog {
   skills: readonly PublicSkillResponse[];
   mcpTools: readonly AgentBuilderSafeMcpTool[];
-  models: readonly ModelOption[];
   skillsResolved: boolean;
   mcpToolsResolved: boolean;
-  modelsResolved: boolean;
   effectivePermissionsKnown: boolean;
 }
 
@@ -38,7 +35,6 @@ export interface AgentBuilderEditor {
   expectedOutputs: string[];
   permissionsAndDataAccessNotice: string;
   instructions: string;
-  modelId: string;
   selectedSkills: SelectedSkillRequest[];
   selectedMcpToolIds: string[];
   avatarRef: AgentProfileDraftRequest["avatar_ref"];
@@ -56,12 +52,10 @@ export type AgentBuilderBlockCode =
   | "no_selection"
   | "name_required"
   | "instructions_required"
-  | "model_required"
   | "skill_required"
   | "skill_limit_exceeded"
   | "profile_revision_missing"
   | "catalog_unavailable"
-  | "selected_model_stale"
   | "selected_skill_stale"
   | "selected_mcp_tool_unavailable"
   | "no_changes"
@@ -131,7 +125,6 @@ export function createUnsavedAgentEditor(): AgentBuilderEditor {
     expectedOutputs: [],
     permissionsAndDataAccessNotice: "",
     instructions: "",
-    modelId: "",
     selectedSkills: [],
     selectedMcpToolIds: [],
     avatarRef: "builtin:agent",
@@ -167,7 +160,6 @@ export function hydrateAgentProfileEditor(
     expectedOutputs: [...profile.expected_outputs],
     permissionsAndDataAccessNotice: profile.permissions_and_data_access_notice,
     instructions: profile.instructions,
-    modelId: profile.model_id,
     selectedSkills: (profile.skill_set?.length
       ? profile.skill_set
       : [profile.selected_skill]
@@ -212,7 +204,6 @@ function editorDefinition(editor: AgentBuilderEditor) {
     expected_outputs: editor.expectedOutputs.map((item) => item.trim()).filter(Boolean),
     permissions_and_data_access_notice: editor.permissionsAndDataAccessNotice.trim(),
     instructions: editor.instructions,
-    model_id: editor.modelId,
     selected_skill: editor.selectedSkills[0] ?? null,
     skill_set: editor.selectedSkills,
     mcp_tool_ids: editor.selectedMcpToolIds,
@@ -239,7 +230,6 @@ function profileDefinition(profile: AgentProfileAdminProjection) {
     expected_outputs: profile.expected_outputs,
     permissions_and_data_access_notice: profile.permissions_and_data_access_notice,
     instructions: profile.instructions,
-    model_id: profile.model_id,
     selected_skill: profile.selected_skill,
     skill_set: profile.skill_set?.length ? profile.skill_set : [profile.selected_skill],
     mcp_tool_ids: profile.mcp_tool_ids,
@@ -279,7 +269,6 @@ export function hasUnsavedAgentProfileEdits(editor: AgentBuilderEditor): boolean
     editor.expectedOutputs.length > 0 ||
     editor.permissionsAndDataAccessNotice.trim() ||
     editor.instructions.trim() ||
-    editor.modelId.trim() ||
     editor.selectedSkills.length > 0 ||
     editor.selectedMcpToolIds.length > 0 ||
     editor.avatarRef !== "builtin:agent" ||
@@ -303,14 +292,8 @@ export function validateAgentProfileEditor(
   }
   if (!editor.name.trim()) return { code: "name_required" };
   if (!editor.instructions.trim()) return { code: "instructions_required" };
-  if (!editor.modelId.trim()) return { code: "model_required" };
   if (editor.selectedSkills.length === 0) return { code: "skill_required" };
   if (editor.selectedSkills.length > 32) return { code: "skill_limit_exceeded" };
-
-  if (!catalog.modelsResolved) return { code: "catalog_unavailable" };
-  if (!catalog.models.some((model) => model.id === editor.modelId)) {
-    return { code: "selected_model_stale" };
-  }
 
   if (!catalog.skillsResolved || !catalog.effectivePermissionsKnown) {
     return { code: "catalog_unavailable" };
@@ -385,7 +368,6 @@ export function buildAgentProfileDraftRequest(
     expected_outputs: editor.expectedOutputs.map((item) => item.trim()).filter(Boolean),
     permissions_and_data_access_notice: editor.permissionsAndDataAccessNotice.trim(),
     instructions: editor.instructions,
-    model_id: editor.modelId,
     selected_skill: { ...editor.selectedSkills[0] },
     skill_set: editor.selectedSkills.map((skill) => ({ ...skill })),
     mcp_tool_ids: [...editor.selectedMcpToolIds],
@@ -410,8 +392,6 @@ export function agentBuilderBlockReason(issue: AgentBuilderValidationIssue): str
       return "缺少名称，请填写后再保存。";
     case "instructions_required":
       return "缺少 Agent.md 初始指令，请填写后再保存。";
-    case "model_required":
-      return "缺少模型，请选择当前可用模型。";
     case "skill_required":
       return "缺少 Skill，请至少选择一个已授权版本。";
     case "skill_limit_exceeded":
@@ -420,8 +400,6 @@ export function agentBuilderBlockReason(issue: AgentBuilderValidationIssue): str
       return "当前专家缺少可用于版本锁定的服务端 revision，请刷新目录。";
     case "catalog_unavailable":
       return "授权目录尚未完整加载，暂不能保存或发布。";
-    case "selected_model_stale":
-      return "所选模型已不在当前目录中，请重新选择。";
     case "selected_skill_stale":
       return "所选 Skill 或其固定版本已不可用，请重新选择。";
     case "selected_mcp_tool_unavailable":

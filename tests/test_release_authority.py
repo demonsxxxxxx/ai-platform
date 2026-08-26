@@ -615,11 +615,12 @@ def test_env_example_inventory_covers_exact_base_and_opensandbox_required_keys()
     )
     reviewed_colocation_required = {
         "AI_PLATFORM_FRONTEND_IMAGE",
-        "AI_PLATFORM_MODEL_UPSTREAM",
         "AI_PLATFORM_SOURCE_COMMIT",
         "CLAUDE_AGENT_ALLOWED_TOOLS",
         "CLAUDE_AGENT_DISALLOWED_TOOLS",
         "CLAUDE_AGENT_PERMISSION_MODE",
+        "MODEL_CONNECTION_ENCRYPTION_KEY",
+        "MODEL_PROXY_INTERNAL_TOKEN",
         "OPENSANDBOX_API_KEY",
         "OPENSANDBOX_DOMAIN",
         "OPENSANDBOX_EXECUTOR_IMAGE",
@@ -4918,12 +4919,22 @@ def test_run_canonical_timeout_cleans_process_before_classification(monkeypatch,
     pid_file = tmp_path / "build-progress-timeout.pid"
     observed: list[tuple[str, int | None]] = []
     original_classify = release_authority._BoundedBuildProgressCapture.classify
+    original_communicate = release_authority._communicate_with_bounded_build_progress
     child_code = (
         "import os, pathlib, sys, time; "
-        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()), encoding='utf-8'); "
         "sys.stdout.buffer.write(b'#6 [runtime 3/8] RUN pip install -r /private/requirements\\n'); "
-        "sys.stdout.buffer.write(b'#6 1.000 downloading 1.0MB / 8.0MB\\n'); sys.stdout.flush(); time.sleep(60)"
+        "sys.stdout.buffer.write(b'#6 1.000 downloading 1.0MB / 8.0MB\\n'); sys.stdout.flush(); "
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()), encoding='utf-8'); "
+        "time.sleep(60)"
     )
+
+    def communicate_after_child_ready(process, **kwargs):
+        deadline = time.monotonic() + 2
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if not pid_file.exists():
+            pytest.fail("controlled child did not start before timeout verification")
+        return original_communicate(process, **kwargs)
 
     def classify_after_cleanup(capture):
         pid = int(pid_file.read_text(encoding="utf-8"))
@@ -4931,6 +4942,11 @@ def test_run_canonical_timeout_cleans_process_before_classification(monkeypatch,
         assert _wait_for_owned_test_process_exit(pid)
         return original_classify(capture)
 
+    monkeypatch.setattr(
+        release_authority,
+        "_communicate_with_bounded_build_progress",
+        communicate_after_child_ready,
+    )
     monkeypatch.setattr(
         release_authority._BoundedBuildProgressCapture,
         "classify",

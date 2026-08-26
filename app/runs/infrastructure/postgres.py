@@ -558,6 +558,149 @@ async def _stage_run_tool_permission_terminalization(
     return await cursor.fetchone()
 
 
+async def bind_run_model(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    model_id: str,
+    model_value: str,
+    connection_revision: int | None,
+) -> None:
+    """Persist an Execution-admitted model snapshot on a new queued Run."""
+
+    if not model_id or not model_value:
+        raise ValueError("run_model_binding_invalid")
+    if connection_revision is not None and (
+        not isinstance(connection_revision, int)
+        or isinstance(connection_revision, bool)
+        or connection_revision < 1
+    ):
+        raise ValueError("run_model_binding_invalid")
+    cursor = await conn.execute(
+        """
+        update runs
+        set model_id = %s,
+            model_value = %s,
+            model_gateway_revision = %s
+        where tenant_id = %s
+          and id = %s
+          and status = 'queued'
+          and model_id is null
+          and model_value is null
+          and model_gateway_revision is null
+        returning id
+        """,
+        (model_id, model_value, connection_revision, tenant_id, run_id),
+    )
+    if await cursor.fetchone() is None:
+        raise ValueError("run_model_binding_invalid")
+
+
+async def inherit_run_model(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    source_run_id: str,
+    child_run_id: str,
+) -> None:
+    """Copy the exact source model snapshot into a new queued child Run."""
+
+    if source_run_id == child_run_id:
+        raise ValueError("run_model_inheritance_invalid")
+    source_cursor = await conn.execute(
+        """
+        select model_id, model_value, model_gateway_revision
+        from runs
+        where tenant_id = %s and id = %s
+        for update
+        """,
+        (tenant_id, source_run_id),
+    )
+    source = await source_cursor.fetchone()
+    if source is None:
+        raise ValueError("run_model_source_missing")
+    child_cursor = await conn.execute(
+        """
+        select status, copied_from_run_id, model_id, model_value, model_gateway_revision
+        from runs
+        where tenant_id = %s and id = %s
+        for update
+        """,
+        (tenant_id, child_run_id),
+    )
+    child = await child_cursor.fetchone()
+    if child is None:
+        raise ValueError("run_model_child_missing")
+    if str(child.get("status") or "") != "queued":
+        raise ValueError("run_model_child_state_invalid")
+    if str(child.get("copied_from_run_id") or "") != source_run_id:
+        raise ValueError("run_model_child_source_mismatch")
+
+    source_model_id = source.get("model_id")
+    source_model_value = source.get("model_value")
+    source_revision = source.get("model_gateway_revision")
+    if source_model_id is None and source_model_value is None and source_revision is None:
+        if any(
+            value is not None
+            for value in (
+                child.get("model_id"),
+                child.get("model_value"),
+                child.get("model_gateway_revision"),
+            )
+        ):
+            raise ValueError("run_model_child_partial")
+        return
+    if (
+        not isinstance(source_model_id, str)
+        or not source_model_id
+        or not isinstance(source_model_value, str)
+        or not source_model_value
+        or (
+            source_revision is not None
+            and (
+                not isinstance(source_revision, int)
+                or isinstance(source_revision, bool)
+                or source_revision < 1
+            )
+        )
+    ):
+        raise ValueError("run_model_source_partial")
+    if any(
+        value is not None
+        for value in (
+            child.get("model_id"),
+            child.get("model_value"),
+            child.get("model_gateway_revision"),
+        )
+    ):
+        raise ValueError("run_model_child_partial")
+    update_cursor = await conn.execute(
+        """
+        update runs
+        set model_id = %s, model_value = %s, model_gateway_revision = %s
+        where tenant_id = %s and id = %s and status = 'queued'
+          and model_id is null and model_value is null and model_gateway_revision is null
+        returning id
+        """,
+        (
+            source_model_id,
+            source_model_value,
+            source_revision,
+            tenant_id,
+            child_run_id,
+        ),
+    )
+    if await update_cursor.fetchone() is None:
+        raise ValueError("run_model_child_update_failed")
+
+
+class PostgresRunModelSnapshotRepository:
+    async def bind(self, conn: AsyncConnection, **kwargs: Any) -> None:
+        await bind_run_model(conn, **kwargs)
+
+    async def inherit(self, conn: AsyncConnection, **kwargs: Any) -> None:
+        await inherit_run_model(conn, **kwargs)
 class _AppendRunEvent(Protocol):
     async def __call__(
         self,

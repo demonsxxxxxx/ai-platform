@@ -47,7 +47,8 @@ does not represent deployed runtime state.
   registered Skill to invoke; Skill file capability is not a per-run upload
   requirement.
 - `architecture/opensandbox-ephemeral-model-credentials.md` defines the
-  attempt-bound model-route admission and trusted provider-secret boundary.
+  attempt-bound model-route admission, Run-pinned compatible-endpoint revision,
+  and trusted encrypted credential/proxy boundary.
 - `architecture/redis-streams-sse-event-channel.md` indexes the implemented v4
   single-runtime Redis SSE contract. Its wire-protocol, execution-control, and
   cutover/acceptance links are the single detailed authorities; implementation

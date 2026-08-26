@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import base64
 import json
 import multiprocessing
 import os
@@ -10,6 +11,8 @@ import subprocess
 import pytest
 import yaml
 
+from app.execution.application import model_control_plane
+from app.execution.infrastructure import model_upstream as model_client
 from app.runtime.sandbox import container_provider as runtime_provider
 from tools import s72_release_contract as contract
 
@@ -17,10 +20,21 @@ from tools import s72_release_contract as contract
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+class ComposeLoader(yaml.SafeLoader):
+    pass
+
+
+ComposeLoader.add_constructor(
+    "!reset",
+    lambda loader, node: loader.construct_sequence(node),
+)
+
+
 def _environment() -> dict[str, str]:
     digest = "sha256:" + "1" * 64
     return {
-        "AI_PLATFORM_MODEL_UPSTREAM": "http://host.docker.internal:3002",
+        "MODEL_CONNECTION_ENCRYPTION_KEY": base64.b64encode(b"e" * 32).decode("ascii"),
+        "MODEL_PROXY_INTERNAL_TOKEN": "m" * 32,
         "AI_PLATFORM_FRONTEND_PORT": "18001",
         "WORKER_CLAUDE_AGENT_SDK_ENABLED": "true",
         "CLAUDE_AGENT_PERMISSION_MODE": "dontAsk",
@@ -189,7 +203,8 @@ def test_unsafe_sdk_or_sandbox_selection_fails_closed(
         ("OPENSANDBOX_EXECUTOR_IMAGE", "registry.example/executor:latest", "immutable"),
         ("OPENSANDBOX_EXECUTOR_IMAGE_DIGEST", "sha256:1234", "immutable"),
         ("OPENSANDBOX_EXPECTED_NETWORK_MODE", "host", "network mode"),
-        ("AI_PLATFORM_MODEL_UPSTREAM", "http://postgres:5432", "model upstream"),
+        ("MODEL_CONNECTION_ENCRYPTION_KEY", "!" * 44, "model encryption key"),
+        ("MODEL_PROXY_INTERNAL_TOKEN", "x;" * 16, "model proxy token"),
         ("SANDBOX_RUNTIME_SUBJECT", "contains whitespace", "identity subject"),
         ("SANDBOX_CALLBACK_TOKEN", "replace_me", "secret authority"),
     ],
@@ -761,3 +776,73 @@ def test_managed_environment_replacement_between_prestat_and_open_is_bounded(
 
     assert process.exitcode == 0
     assert result.get(timeout=1) == ("rejected", True)
+
+
+@pytest.mark.parametrize(
+    ("provider", "incoming_path", "location_prefix", "internal_prefix", "expected_upstream_path"),
+    [
+        (
+            "openai",
+            "/openai/v1/chat/completions",
+            "/openai/",
+            "/api/ai/internal/model-proxy/openai/",
+            "v1/chat/completions",
+        ),
+        (
+            "openai",
+            "/openai/v1/responses",
+            "/openai/",
+            "/api/ai/internal/model-proxy/openai/",
+            "v1/responses",
+        ),
+        (
+            "anthropic",
+            "/anthropic/v1/messages",
+            "/anthropic/",
+            "/api/ai/internal/model-proxy/anthropic/",
+            "v1/messages",
+        ),
+    ],
+)
+def test_s72_model_proxy_paths_assemble_to_standard_upstream_routes(
+    provider: str,
+    incoming_path: str,
+    location_prefix: str,
+    internal_prefix: str,
+    expected_upstream_path: str,
+) -> None:
+    template = (
+        REPO_ROOT / "deploy" / "ai-platform" / "s72-broker-nginx.conf.template"
+    ).read_text(encoding="utf-8")
+    proxy_pass = "proxy_pass ${AI_PLATFORM_API_UPSTREAM}" + internal_prefix + ";"
+
+    assert f"location ^~ {location_prefix}" in template
+    assert proxy_pass in template
+
+    internal_path = internal_prefix + incoming_path.removeprefix(location_prefix)
+    assert internal_path == "/api/ai/internal/model-proxy/" + provider + "/" + expected_upstream_path
+    upstream_path = internal_path.removeprefix(internal_prefix)
+    assert upstream_path == expected_upstream_path
+    assert upstream_path in model_control_plane._ALLOWED_RUNTIME_PATHS[provider]
+    assert f"/{upstream_path}" in model_client._PROXY_PATHS[provider]
+
+
+def test_s72_compose_exposes_governed_sdk_bridge_base_urls() -> None:
+    compose = yaml.load(
+        (
+            REPO_ROOT
+            / "deploy"
+            / "ai-platform"
+            / "docker-compose.s72-colocation.yml"
+        ).read_text(encoding="utf-8"),
+        Loader=ComposeLoader,
+    )
+
+    for service_name in ("api", "worker"):
+        environment = compose["services"][service_name]["environment"]
+        assert environment["OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL"] == (
+            "http://127.0.0.1:18043/openai/v1"
+        )
+        assert environment["OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL"] == (
+            "http://127.0.0.1:18043/anthropic"
+        )

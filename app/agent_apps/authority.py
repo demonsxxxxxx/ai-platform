@@ -15,7 +15,6 @@ from app.agent_apps.api import safe_agent_avatar_seed
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
-from app.model_catalog import resolve_model_selection
 from app.models import (
     AgentConversationIdentity,
     AgentProfileAdminProjection,
@@ -26,7 +25,6 @@ from app.models import (
     SelectedAgentProfileRequest,
     SelectedSkillRequest,
 )
-from app.settings import get_settings
 
 
 _AVATAR_REFS = {"builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"}
@@ -785,7 +783,7 @@ class AgentProfileAuthority:
         agent_id: str,
         definition: AgentProfileDraftRequest,
     ) -> tuple[tuple[dict[str, Any], ...], dict[str, str]]:
-        """Revalidate current model, Skill, and MCP authorization for a definition."""
+        """Revalidate current Skill and MCP authorization for a definition."""
 
         if definition.avatar_asset_id:
             avatar_asset = await repositories.get_file(
@@ -801,10 +799,6 @@ class AgentProfileAuthority:
                 or int(avatar_asset.get("size_bytes") or 0) > 5 * 1024 * 1024
             ):
                 raise HTTPException(status_code=400, detail="agent_profile_avatar_asset_invalid")
-        try:
-            model = resolve_model_selection(definition.model_id, get_settings())
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail="agent_profile_model_not_available") from exc
         try:
             skills = tuple(
                 [
@@ -837,7 +831,10 @@ class AgentProfileAuthority:
             raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
         except repositories.RepositoryAuthorizationError as exc:
             raise HTTPException(status_code=403, detail="agent_profile_capability_not_available") from exc
-        return skills, model
+        return skills, {
+            "id": definition.model_id,
+            "value": definition.model_id,
+        }
 
     async def save_draft(
         self,
@@ -1616,8 +1613,6 @@ class AgentProfileAuthority:
             or not skill_version_matches
             or str(snapshot.get("executor_type") or "")
             != str(admission.skill.get("executor_type") or "")
-            or str(snapshot.get("model_id") or "") != str(admission.model.get("id") or "")
-            or str(snapshot.get("model_value") or "") != str(admission.model.get("value") or "")
             or execution_mcp_tool_ids != admission.mcp_tool_ids
         ):
             raise repositories.RepositoryConflictError("agent_profile_snapshot_invalid")
@@ -1734,8 +1729,15 @@ class AgentProfileAuthority:
             return
         selector_paths = set(request.profile_capability_selector_paths())
         if admission is None:
-            if query_agent_id is not None or selector_paths:
+            if query_agent_id is not None or selector_paths - {"$.agent_options"}:
                 raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
+            if "agent_options" in request.model_fields_set:
+                if not isinstance(request.agent_options, dict):
+                    raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
+                if set(request.agent_options) - _PROFILE_TRANSPORT_AGENT_OPTION_KEYS:
+                    raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
+                if request.agent_options.get("enable_thinking", "off") != "off":
+                    raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
             return
 
         allowed_query_agent_ids = {admission.agent_id}
@@ -1753,12 +1755,6 @@ class AgentProfileAuthority:
             if set(request.agent_options) - _PROFILE_TRANSPORT_AGENT_OPTION_KEYS:
                 raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
             if request.agent_options.get("enable_thinking", "off") != "off":
-                raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
-            submitted_model_id = request.agent_options.get("model_id")
-            if submitted_model_id is not None and submitted_model_id != admission.model["id"]:
-                raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
-            submitted_model_value = request.agent_options.get("model")
-            if submitted_model_value is not None and submitted_model_value != admission.model["value"]:
                 raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
         if "disabled_skills" in submitted_fields and request.disabled_skills:
             raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")

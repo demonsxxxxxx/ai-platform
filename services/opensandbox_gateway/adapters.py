@@ -1015,8 +1015,13 @@ class BrokerPolicy:
         self.transport = "loopback_http" if schemes == {"http"} else "pinned_https"
 
 
+class MailboxScanLimitExceeded(RuntimeError):
+    """The sandbox-controlled mailbox contained more entries than we inspect."""
+
+
 class MailboxBroker:
     """Move bounded requests from scoped workspaces to exact pinned HTTPS targets."""
+
 
     REQUEST_TTL_SECONDS = 70.0
     PER_SANDBOX_PENDING_COUNT = 64
@@ -1024,6 +1029,12 @@ class MailboxBroker:
     GLOBAL_PENDING_COUNT = 256
     GLOBAL_PENDING_BYTES = 64 * 1024 * 1024
     EXPIRED_SWEEP_LIMIT = 16
+    STREAM_ARTIFACT_MAX_BYTES = 16 * 1024 * 1024
+    CANCELLATION_SWEEP_LIMIT = 16
+    RESPONSE_SWEEP_LIMIT = 16
+    DIRECTORY_SCAN_LIMIT = PER_SANDBOX_PENDING_COUNT + EXPIRED_SWEEP_LIMIT + 1
+    CLAIM_DIRECTORY_SCAN_LIMIT = EXPIRED_SWEEP_LIMIT + 1
+    RESPONSE_DIRECTORY_SCAN_LIMIT = RESPONSE_SWEEP_LIMIT + 1
 
     def __init__(
         self,
@@ -1035,7 +1046,6 @@ class MailboxBroker:
         dispatch_timeout_seconds: float | None = None,
         *,
         upstream_tls_context: ssl.SSLContext | None = None,
-        provider_credentials: Mapping[str, str] | None = None,
     ) -> None:
         if upstream_tls_context is not None and (
             not isinstance(upstream_tls_context, ssl.SSLContext)
@@ -1056,13 +1066,9 @@ class MailboxBroker:
         )
         self.max_response_bytes = max_response_bytes
         self.workspace_root = workspace_root
-        credentials = dict(provider_credentials or {})
-        if credentials and (
-            set(credentials) != {"openai", "anthropic"}
-            or any(not value or "\x00" in value or len(value.encode("utf-8")) > 4096 for value in credentials.values())
-        ):
-            raise ValueError("broker provider credentials are invalid")
-        self._provider_credentials = credentials
+        self._active_response_fd: int | None = None
+        self._active_request_fd: int | None = None
+        self._poll_deadline = None
         self._rotation = 0
 
     def poll_once(self) -> int:
@@ -1070,7 +1076,11 @@ class MailboxBroker:
 
         deadline = operation_deadline(self.dispatch_timeout_seconds)
         with deadline_scope(deadline):
-            return self._poll_until(deadline)
+            self._poll_deadline = deadline
+            try:
+                return self._poll_until(deadline)
+            finally:
+                self._poll_deadline = None
 
     def _poll_until(self, deadline) -> int:
         records = list(self.store.list({"state": "active"}))
@@ -1096,6 +1106,9 @@ class MailboxBroker:
             try:
                 count, size, entries = self._snapshot_record(record, now)
             except FileNotFoundError:
+                continue
+            except MailboxScanLimitExceeded:
+                self.store.record_deny("mailbox-broker", "broker_mailbox_scan_exceeded")
                 continue
             except Exception:
                 self.store.record_deny("mailbox-broker", "mailbox_scope_invalid")
@@ -1128,6 +1141,29 @@ class MailboxBroker:
                 continue
         return handled
 
+    @classmethod
+    def _bounded_names(cls, directory_fd: int, pattern: re.Pattern[str], limit: int, deadline=None) -> list[str]:
+        names: list[str] = []
+        scanner = os.scandir(directory_fd)
+        iterator = iter(scanner)
+        position = 0
+        try:
+            while True:
+                if deadline is not None:
+                    deadline.remaining()
+                try:
+                    entry = next(iterator)
+                except StopIteration:
+                    break
+                position += 1
+                if position > limit:
+                    raise MailboxScanLimitExceeded("mailbox directory entry cap exceeded")
+                if pattern.fullmatch(entry.name):
+                    names.append(entry.name)
+        finally:
+            scanner.close()
+        return sorted(names)
+
     def _snapshot_record(
         self,
         record: LeaseRecord,
@@ -1137,16 +1173,27 @@ class MailboxBroker:
         workspace_fd, _mailbox_fd, request_fd, claim_fd, response_fd = descriptors
         try:
             _revalidate_workspace_fd(workspace_fd, record.workspace_host_path)
-            self._prune_claims(claim_fd)
-            self._prune_responses(response_fd)
-            candidates = sorted(
-                name for name in os.listdir(request_fd) if re.fullmatch(r"[0-9a-f]{32}\.json", name)
+            poll_deadline = self._poll_deadline
+            if poll_deadline is None:
+                self._prune_claims(claim_fd)
+                self._prune_cancellations(request_fd)
+                self._prune_responses(response_fd)
+            else:
+                self._prune_claims(claim_fd, deadline=poll_deadline)
+                self._prune_cancellations(request_fd, deadline=poll_deadline)
+                self._prune_responses(response_fd, deadline=poll_deadline)
+            scan_limit = self.PER_SANDBOX_PENDING_COUNT + self.EXPIRED_SWEEP_LIMIT + 1
+            candidates = self._bounded_names(
+                request_fd,
+                re.compile(r"[0-9a-f]{32}\.json"),
+                scan_limit,
+                self._poll_deadline,
             )
             entries: list[tuple[str, int, int, int, int]] = []
             expired = 0
             known_bytes = 0
-            scan_limit = self.PER_SANDBOX_PENDING_COUNT + self.EXPIRED_SWEEP_LIMIT + 1
-            for name in candidates[:scan_limit]:
+            for name in candidates:
+
                 try:
                     evidence = os.stat(name, dir_fd=request_fd, follow_symlinks=False)
                 except FileNotFoundError:
@@ -1160,8 +1207,6 @@ class MailboxBroker:
                 entries.append(identity)
                 known_bytes += max(0, int(evidence.st_size))
             count = max(0, len(candidates) - expired)
-            if len(candidates) > scan_limit:
-                known_bytes = max(known_bytes, self.PER_SANDBOX_PENDING_BYTES + 1)
             return count, known_bytes, entries
         finally:
             self._close_mailbox(descriptors)
@@ -1189,26 +1234,45 @@ class MailboxBroker:
             if claimed is None:
                 self.store.record_deny("mailbox-broker", "broker_request_changed")
                 return False
+            model_route = self._request_is_model(claim_fd, claimed[0])
             if not self.store.confirm_mailbox_outbound(record.sandbox_id, token):
                 token = None
                 abandoned_to_cleanup = True
                 self.store.record_deny("mailbox-broker", "broker_lease_inactive")
                 return False
-            if overflow:
+            if self._consume_cancellation(request_fd, claimed[0]):
+                self.store.record_deny("mailbox-broker", "broker_request_cancelled")
+                response = None
+            elif overflow:
                 self.store.record_deny("mailbox-broker", "broker_backlog_exceeded")
                 response = self._error_response(429, "broker_backlog_exceeded")
             else:
                 try:
+                    self._active_response_fd = response_fd
+                    self._active_request_fd = request_fd
                     response = self._process(claim_fd, claimed[0], claimed, record)
                 except DeadlineExceeded:
                     raise
                 except GatewayError as exc:
                     self.store.record_deny("mailbox-broker", exc.code)
-                    response = self._error_response(exc.status, exc.code)
+                    if getattr(exc, "stream_started", False):
+                        response = None
+                    else:
+                        response = self._error_response(exc.status, exc.code)
                 except Exception:
                     self.store.record_deny("mailbox-broker", "broker_internal_error")
                     response = self._error_response(500, "broker_internal_error")
-            self._write_response(response_fd, name, response)
+                finally:
+                    self._active_response_fd = None
+                    self._active_request_fd = None
+            if self._consume_cancellation(request_fd, claimed[0]):
+                self.store.record_deny("mailbox-broker", "broker_request_cancelled")
+                response = None
+            if response is not None:
+                if model_route:
+                    self._write_model_complete_response(response_fd, name, response)
+                else:
+                    self._write_response(response_fd, name, response)
             if not self._unlink_request_if_identity(claim_fd, claimed):
                 self._unlink_response_if_regular(response_fd, name)
                 self.store.record_deny("mailbox-broker", "broker_request_changed")
@@ -1268,7 +1332,11 @@ class MailboxBroker:
         name: str,
         expected_identity: tuple[str, int, int, int, int] | None = None,
         record: LeaseRecord | None = None,
-    ) -> dict[str, Any]:
+        response_fd: int | None = None,
+    ) -> dict[str, Any] | None:
+        if response_fd is None:
+            response_fd = getattr(self, "_active_response_fd", None)
+        cancellation_fd = getattr(self, "_active_request_fd", None)
         try:
             descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=request_fd)
             try:
@@ -1317,71 +1385,430 @@ class MailboxBroker:
         if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"} or len(body) > 1024 * 1024 or local.scheme or local.netloc or ".." in local.path.split("/"):
             raise GatewayError(400, "broker_request_invalid")
         kind, suffix = self._route(local.path)
-        base, ips = self.policy.targets[kind]
-        target = urllib.parse.urlsplit(base + suffix)
-        if kind == "callback" and target.path not in CALLBACK_PATHS:
-            raise GatewayError(404, "broker_route_not_allowed")
-        if not target.hostname:
-            raise GatewayError(500, "broker_policy_invalid")
-        allowed_headers = {"authorization", "content-type", "accept", "anthropic-version", "x-api-key", "user-agent"}
-        if kind == "callback":
-            allowed_headers.add("x-ai-platform-callback-token")
-        outbound_headers = {str(k).lower(): str(v) for k, v in headers.items() if str(k).lower() in allowed_headers}
-        policy_timeout = self.dispatch_timeout_seconds if kind in {"openai", "anthropic"} else self.timeout_seconds
-        try:
-            created_at = float(value["created_at_unix_seconds"])
-            requested_timeout = float(value["timeout_seconds"])
-        except (TypeError, ValueError):
-            raise GatewayError(400, "broker_request_invalid") from None
-        now = time.time()
-        if (
-            not math.isfinite(created_at)
-            or not math.isfinite(requested_timeout)
-            or created_at > now
-            or requested_timeout <= 0
-        ):
+        request_id = self._request_id_from_name(name)
+        if request_id is None:
             raise GatewayError(400, "broker_request_invalid")
-        if kind in {"openai", "anthropic"}:
-            auth_name, auth_value = authorize_model_request(
-                self.store,
-                record,
-                name=name,
-                provider=kind,
-                method=method,
-                path=suffix,
-                query=local.query,
-                body=body,
-                created_at=created_at,
-                now=now,
-                credential=self._provider_credentials.get(kind, ""),
-            )
-            outbound_headers.pop("authorization", None)
-            outbound_headers.pop("x-api-key", None)
-            outbound_headers[auth_name] = auth_value
-        remaining = created_at + min(requested_timeout, policy_timeout) - now
-        deadline = operation_deadline(remaining)
-        connection = self._upstream_connection(target, ips, deadline)
-        timer = deadline.arm(lambda: _close_http_connection(connection))
+        response_name = f"{request_id}.json"
+        stream = (
+            self._start_stream_response(response_fd, response_name)
+            if kind in {"openai", "anthropic"} and response_fd is not None
+            else None
+        )
         try:
-            request_path = target.path + (("?" + local.query) if local.query else "")
-            connection.request(method, request_path, body=body, headers=outbound_headers)
-            if connection.sock is not None:
-                deadline.bind_socket(connection.sock)
-            response = connection.getresponse()
-            if 300 <= response.status < 400:
-                raise GatewayError(502, "broker_redirect_rejected")
-            if connection.sock is not None:
-                deadline.bind_socket(connection.sock)
-            data = response.read(self.max_response_bytes + 1)
-            if len(data) > self.max_response_bytes:
-                raise GatewayError(502, "broker_response_too_large")
-            kept = {k.lower(): v for k, v in response.getheaders() if k.lower() in {"content-type", "cache-control"}}
-            return {"status": response.status, "headers": kept, "body": base64.b64encode(data).decode("ascii")}
-        except (DeadlineExceeded, OSError, ssl.SSLError, http.client.HTTPException):
-            raise GatewayError(502, "broker_upstream_unavailable") from None
+            base, ips = self.policy.targets[kind]
+            target = urllib.parse.urlsplit(base + suffix)
+            if kind == "callback" and target.path not in CALLBACK_PATHS:
+                raise GatewayError(404, "broker_route_not_allowed")
+            if not target.hostname:
+                raise GatewayError(500, "broker_policy_invalid")
+            allowed_headers = {"authorization", "content-type", "accept", "anthropic-version", "x-api-key", "user-agent"}
+            if kind == "callback":
+                allowed_headers.add("x-ai-platform-callback-token")
+            outbound_headers = {str(k).lower(): str(v) for k, v in headers.items() if str(k).lower() in allowed_headers}
+            policy_timeout = self.dispatch_timeout_seconds if kind in {"openai", "anthropic"} else self.timeout_seconds
+            try:
+                created_at = float(value["created_at_unix_seconds"])
+                requested_timeout = float(value["timeout_seconds"])
+            except (TypeError, ValueError):
+                raise GatewayError(400, "broker_request_invalid") from None
+            now = time.time()
+            if (
+                not math.isfinite(created_at)
+                or not math.isfinite(requested_timeout)
+                or created_at > now
+                or requested_timeout <= 0
+            ):
+                raise GatewayError(400, "broker_request_invalid")
+            if kind in {"openai", "anthropic"}:
+                if cancellation_fd is not None and self._cancellation_present(cancellation_fd, name):
+                    raise GatewayError(499, "broker_request_cancelled")
+                auth_name, auth_value = authorize_model_request(
+                    self.store,
+                    record,
+                    name=name,
+                    provider=kind,
+                    method=method,
+                    path=suffix,
+                    query=local.query,
+                    body=body,
+                    created_at=created_at,
+                    now=now,
+                )
+                outbound_headers.pop("authorization", None)
+                outbound_headers.pop("x-api-key", None)
+                outbound_headers[auth_name] = auth_value
+                run_id = str(record.scope.get("run_id") or "")
+                if not run_id:
+                    raise GatewayError(403, "model_route_context_missing")
+                outbound_headers["x-ai-platform-run-id"] = run_id
+                outbound_headers["x-ai-platform-attempt-id"] = str(
+                    record.scope.get("attempt_id") or ""
+                )
+            remaining = created_at + min(requested_timeout, policy_timeout) - now
+            deadline = operation_deadline(remaining)
+            connection = self._upstream_connection(target, ips, deadline)
+            timer = deadline.arm(lambda: _close_http_connection(connection))
+            cancelled = threading.Event()
+            set_cancellation_event = getattr(connection, "set_cancellation_event", None)
+            if set_cancellation_event is not None:
+                set_cancellation_event(cancelled)
+            watcher_stop = threading.Event()
+            watcher = None
+            if cancellation_fd is not None:
+                watcher = threading.Thread(
+                    target=self._watch_cancellation,
+                    args=(cancellation_fd, name, watcher_stop, cancelled, connection, stream),
+                )
+                watcher.start()
+            try:
+                request_path = target.path + (("?" + local.query) if local.query else "")
+                connection.request(method, request_path, body=body, headers=outbound_headers)
+                self._raise_if_cancelled(cancelled)
+                if connection.sock is not None:
+                    deadline.bind_socket(connection.sock)
+                response = connection.getresponse()
+                self._raise_if_cancelled(cancelled)
+                if 300 <= response.status < 400:
+                    raise GatewayError(502, "broker_redirect_rejected")
+                if connection.sock is not None:
+                    deadline.bind_socket(connection.sock)
+                if stream is not None:
+                    self._stream_upstream_response(stream, response, cancelled)
+                    self._raise_if_cancelled(cancelled)
+                    return None
+                data = response.read(self.max_response_bytes + 1)
+                self._raise_if_cancelled(cancelled)
+                if len(data) > self.max_response_bytes:
+                    raise GatewayError(502, "broker_response_too_large")
+                kept = {k.lower(): v for k, v in response.getheaders() if k.lower() in {"content-type", "cache-control"}}
+                return {"status": response.status, "headers": kept, "body": base64.b64encode(data).decode("ascii")}
+            except (DeadlineExceeded, OSError, ssl.SSLError, http.client.HTTPException):
+                if cancelled.is_set():
+                    raise GatewayError(499, "broker_request_cancelled") from None
+                raise GatewayError(502, "broker_upstream_unavailable") from None
+            finally:
+                watcher_stop.set()
+                if watcher is not None:
+                    watcher.join()
+                timer.cancel()
+                connection.close()
+        except DeadlineExceeded:
+            if stream is not None:
+                self._mark_stream_failure(stream, GatewayError(502, "broker_upstream_unavailable"))
+            raise
+        except GatewayError as exc:
+            if stream is not None:
+                self._mark_stream_failure(stream, exc)
+                setattr(exc, "stream_started", True)
+            raise
+        except Exception:
+            failure = GatewayError(500, "broker_internal_error")
+            if stream is not None:
+                self._mark_stream_failure(stream, failure)
+                setattr(failure, "stream_started", True)
+            raise failure from None
         finally:
-            timer.cancel()
-            connection.close()
+            if stream is not None:
+                os.close(stream["descriptor"])
+
+    @staticmethod
+    def _raise_if_cancelled(cancelled: threading.Event) -> None:
+        if cancelled.is_set():
+            raise GatewayError(499, "broker_request_cancelled")
+
+    def _watch_cancellation(
+        self,
+        request_fd: int,
+        name: str,
+        stop: threading.Event,
+        cancelled: threading.Event,
+        connection: http.client.HTTPConnection,
+        stream: dict[str, Any] | None = None,
+    ) -> None:
+        while not stop.wait(0.02):
+            if self._cancellation_present(request_fd, name):
+                if stream is None:
+                    cancelled.set()
+                else:
+                    with self._stream_lock(stream):
+                        if not stream.get("terminal", False):
+                            cancelled.set()
+                try:
+                    _close_http_connection(connection)
+                except OSError:
+                    pass
+                return
+
+    @classmethod
+    def _request_is_model(cls, request_fd: int, name: str) -> bool:
+        descriptor = None
+        try:
+            descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=request_fd)
+            evidence = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(evidence.st_mode)
+                or evidence.st_size > 2 * 1024 * 1024
+                or evidence.st_uid != 1000
+                or evidence.st_gid != os.getgid()
+                or stat.S_IMODE(evidence.st_mode) != 0o640
+            ):
+                return False
+            raw = b""
+            while len(raw) <= 2 * 1024 * 1024:
+                chunk = os.read(descriptor, 65536)
+                if not chunk:
+                    break
+                raw += chunk
+            if len(raw) > 2 * 1024 * 1024:
+                return False
+            value = json.loads(raw.decode("utf-8"))
+            path = value.get("path") if isinstance(value, dict) else None
+            if not isinstance(path, str):
+                return False
+            kind, _suffix = cls._route(path)
+            return kind in {"openai", "anthropic"}
+        except (OSError, NotImplementedError, ValueError, KeyError, TypeError, json.JSONDecodeError, GatewayError):
+            return False
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    @staticmethod
+    def _request_id_from_name(name: str) -> str | None:
+        matched = re.fullmatch(r"([0-9a-f]{32})\.json(?:\.[0-9a-f]{32}\.claim)?", name)
+        return matched.group(1) if matched is not None else None
+
+    @classmethod
+    def _cancellation_present(cls, request_fd: int, name: str) -> bool:
+        request_id = cls._request_id_from_name(name)
+        if request_id is None:
+            return False
+        cancellation_name = request_id + ".cancel"
+        try:
+            named = os.stat(cancellation_name, dir_fd=request_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        except (OSError, NotImplementedError):
+            return False
+        descriptor = None
+        try:
+            if not stat.S_ISREG(named.st_mode):
+                return False
+            descriptor = os.open(cancellation_name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=request_fd)
+            opened = os.fstat(descriptor)
+            return (
+                stat.S_ISREG(opened.st_mode)
+                and opened.st_uid == 1000
+                and opened.st_gid == os.getgid()
+                and stat.S_IMODE(opened.st_mode) == 0o600
+                and opened.st_size == 0
+                and (named.st_dev, named.st_ino) == (opened.st_dev, opened.st_ino)
+            )
+        except OSError:
+            return False
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    @classmethod
+    def _consume_cancellation(cls, request_fd: int, name: str) -> bool:
+        if not cls._cancellation_present(request_fd, name):
+            return False
+        request_id = cls._request_id_from_name(name)
+        if request_id is None:
+            return False
+        cancellation_name = request_id + ".cancel"
+        descriptor = None
+        try:
+            named = os.stat(cancellation_name, dir_fd=request_fd, follow_symlinks=False)
+            descriptor = os.open(cancellation_name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=request_fd)
+            opened = os.fstat(descriptor)
+            if (
+                stat.S_ISREG(named.st_mode)
+                and stat.S_ISREG(opened.st_mode)
+                and opened.st_uid == 1000
+                and opened.st_gid == os.getgid()
+                and stat.S_IMODE(opened.st_mode) == 0o600
+                and opened.st_size == 0
+                and (named.st_dev, named.st_ino) == (opened.st_dev, opened.st_ino)
+            ):
+                os.unlink(cancellation_name, dir_fd=request_fd)
+        except FileNotFoundError:
+            return False
+        except (OSError, NotImplementedError):
+            return True
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        return True
+
+    def _start_stream_response(self, response_fd: int, name: str) -> dict[str, Any]:
+        temporary = f".{secrets.token_hex(16)}.tmp"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_APPEND
+        descriptor = os.open(temporary, flags, 0o444, dir_fd=response_fd)
+        try:
+            os.fchmod(descriptor, 0o444)
+            os.fsync(descriptor)
+            os.replace(temporary, name, src_dir_fd=response_fd, dst_dir_fd=response_fd)
+        except Exception:
+            os.close(descriptor)
+            try:
+                os.unlink(temporary, dir_fd=response_fd)
+            except FileNotFoundError:
+                pass
+            self._unlink_response_if_regular(response_fd, name)
+            raise
+        return {
+            "descriptor": descriptor,
+            "artifact_size": 0,
+            "sequence": 0,
+            "body_bytes": 0,
+            "header_written": False,
+            "terminal": False,
+            "lock": threading.RLock(),
+        }
+
+    def _stream_lock(self, stream: dict[str, Any]) -> threading.RLock:
+        return stream.setdefault("lock", threading.RLock())
+
+    @staticmethod
+    def _append_stream_frame_unlocked(stream: dict[str, Any], data: bytes) -> None:
+        if stream["artifact_size"] + len(data) > MailboxBroker.STREAM_ARTIFACT_MAX_BYTES:
+            raise GatewayError(502, "broker_stream_artifact_too_large")
+        offset = 0
+        while offset < len(data):
+            offset += os.write(stream["descriptor"], data[offset:])
+        os.fsync(stream["descriptor"])
+        stream["artifact_size"] += len(data)
+
+    def _append_stream_frame(self, stream: dict[str, Any], frame: Mapping[str, Any]) -> None:
+        data = (_json_text(dict(frame)) + "\n").encode("utf-8")
+        with self._stream_lock(stream):
+            if stream.get("terminal", False):
+                raise GatewayError(499, "broker_request_cancelled")
+            self._append_stream_frame_unlocked(stream, data)
+
+    def _finish_stream_success(self, stream: dict[str, Any], cancelled: threading.Event | None) -> bool:
+        with self._stream_lock(stream):
+            if stream.get("terminal", False):
+                return False
+            if cancelled is not None and cancelled.is_set():
+                return False
+            data = (
+                _json_text(
+                    {"version": 1, "kind": "end", "sequence": stream["sequence"], "ok": True}
+                )
+                + "\n"
+            ).encode("utf-8")
+            self._append_stream_frame_unlocked(stream, data)
+            stream["terminal"] = True
+            return True
+
+    def _stream_upstream_response(
+        self,
+        stream: dict[str, Any],
+        response: Any,
+        cancelled: threading.Event | None = None,
+    ) -> None:
+        if cancelled is not None:
+            self._raise_if_cancelled(cancelled)
+        headers = {k.lower(): v for k, v in response.getheaders() if k.lower() in {"content-type", "cache-control"}}
+        with self._stream_lock(stream):
+            if stream.get("terminal", False):
+                return
+            self._append_stream_frame_unlocked(
+                stream,
+                (
+                    _json_text({"version": 1, "kind": "headers", "status": int(response.status), "headers": headers})
+                    + "\n"
+                ).encode("utf-8"),
+            )
+            stream["header_written"] = True
+        while True:
+            if cancelled is not None:
+                self._raise_if_cancelled(cancelled)
+            read_size = min(65536, max(1, self.max_response_bytes - stream["body_bytes"] + 1))
+            chunk = response.read(read_size)
+            if not chunk:
+                break
+            if not isinstance(chunk, bytes):
+                raise GatewayError(502, "broker_upstream_unavailable")
+            with self._stream_lock(stream):
+                if stream.get("terminal", False):
+                    return
+                stream["body_bytes"] += len(chunk)
+                if stream["body_bytes"] > self.max_response_bytes:
+                    raise GatewayError(502, "broker_response_too_large")
+                self._append_stream_frame_unlocked(
+                    stream,
+                    (
+                        _json_text(
+                            {
+                                "version": 1,
+                                "kind": "chunk",
+                                "sequence": stream["sequence"],
+                                "body": base64.b64encode(chunk).decode("ascii"),
+                            }
+                        )
+                        + "\n"
+                    ).encode("utf-8"),
+                )
+                stream["sequence"] += 1
+        if cancelled is not None:
+            self._raise_if_cancelled(cancelled)
+        if not self._finish_stream_success(stream, cancelled):
+            if cancelled is not None and cancelled.is_set():
+                raise GatewayError(499, "broker_request_cancelled")
+
+    def _mark_stream_failure(self, stream: dict[str, Any], error: GatewayError) -> None:
+        with self._stream_lock(stream):
+            if stream.get("terminal", False):
+                return
+            try:
+                if not stream["header_written"]:
+                    self._append_stream_frame_unlocked(
+                        stream,
+                        (
+                            _json_text(
+                                {
+                                    "version": 1,
+                                    "kind": "headers",
+                                    "status": int(error.status),
+                                    "headers": {"content-type": "application/json"},
+                                }
+                            )
+                            + "\n"
+                        ).encode("utf-8"),
+                    )
+                    stream["header_written"] = True
+                    body = _json_text({"error": {"code": error.code}}).encode("utf-8")
+                    self._append_stream_frame_unlocked(
+                        stream,
+                        (
+                            _json_text(
+                                {
+                                    "version": 1,
+                                    "kind": "chunk",
+                                    "sequence": stream["sequence"],
+                                    "body": base64.b64encode(body).decode("ascii"),
+                                }
+                            )
+                            + "\n"
+                        ).encode("utf-8"),
+                    )
+                    stream["sequence"] += 1
+                self._append_stream_frame_unlocked(
+                    stream,
+                    (
+                        _json_text(
+                            {"version": 1, "kind": "end", "sequence": stream["sequence"], "ok": False}
+                        )
+                        + "\n"
+                    ).encode("utf-8"),
+                )
+                stream["terminal"] = True
+            except Exception:
+                pass
 
     def _upstream_connection(self, target, ips: tuple[str, ...], deadline):
         """Create the policy-selected connection without DNS or redirects."""
@@ -1476,6 +1903,24 @@ class MailboxBroker:
             if descriptor is not None:
                 os.close(descriptor)
 
+    def _write_model_complete_response(
+        self,
+        response_fd: int,
+        name: str,
+        response: Mapping[str, Any],
+    ) -> None:
+        self._write_response(
+            response_fd,
+            name,
+            {
+                "version": 1,
+                "kind": "complete",
+                "status": response["status"],
+                "headers": response.get("headers", {}),
+                "body": response["body"],
+            },
+        )
+
     @staticmethod
     def _write_response(response_fd: int, name: str, response: Mapping[str, Any]) -> None:
         temporary = f".{secrets.token_hex(16)}.tmp"
@@ -1483,6 +1928,8 @@ class MailboxBroker:
         descriptor = os.open(temporary, flags, 0o600, dir_fd=response_fd)
         try:
             data = _json_text(response).encode("utf-8")
+            if response.get("kind") == "complete":
+                data += b"\n"
             offset = 0
             while offset < len(data):
                 offset += os.write(descriptor, data[offset:])
@@ -1499,13 +1946,66 @@ class MailboxBroker:
                 pass
             raise
 
+    @staticmethod
+    def _unlink_cancellation_if_identity(request_fd: int, name: str) -> bool:
+        descriptor = None
+        try:
+            named = os.stat(name, dir_fd=request_fd, follow_symlinks=False)
+            descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=request_fd)
+            opened = os.fstat(descriptor)
+            if not (
+                stat.S_ISREG(named.st_mode)
+                and stat.S_ISREG(opened.st_mode)
+                and opened.st_uid == 1000
+                and opened.st_gid == os.getgid()
+                and stat.S_IMODE(opened.st_mode) == 0o600
+                and opened.st_size == 0
+                and (named.st_dev, named.st_ino) == (opened.st_dev, opened.st_ino)
+            ):
+                return False
+            os.unlink(name, dir_fd=request_fd)
+            return True
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return False
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
     @classmethod
-    def _prune_responses(cls, response_fd: int) -> None:
+    def _prune_cancellations(cls, request_fd: int, deadline=None) -> None:
+        cutoff = time.time() - cls.REQUEST_TTL_SECONDS
+        removed = 0
+        names = cls._bounded_names(
+            request_fd,
+            re.compile(r"[0-9a-f]{32}\.cancel"),
+            cls.DIRECTORY_SCAN_LIMIT,
+            deadline,
+        )
+        for name in names:
+            if removed >= cls.CANCELLATION_SWEEP_LIMIT:
+                break
+            try:
+                evidence = os.stat(name, dir_fd=request_fd, follow_symlinks=False)
+                if stat.S_ISREG(evidence.st_mode) and evidence.st_mtime < cutoff:
+                    removed += int(cls._unlink_cancellation_if_identity(request_fd, name))
+            except FileNotFoundError:
+                continue
+
+    @classmethod
+    def _prune_responses(cls, response_fd: int, deadline=None) -> None:
         cutoff = time.time() - 120.0
         removed = 0
-        for name in sorted(os.listdir(response_fd)):
-            if removed >= 16 or not re.fullmatch(r"[0-9a-f]{32}\.json", name):
-                continue
+        names = cls._bounded_names(
+            response_fd,
+            re.compile(r"[0-9a-f]{32}\.json"),
+            cls.RESPONSE_DIRECTORY_SCAN_LIMIT,
+            deadline,
+        )
+        for name in names:
+            if removed >= cls.RESPONSE_SWEEP_LIMIT:
+                break
             try:
                 evidence = os.stat(name, dir_fd=response_fd, follow_symlinks=False)
                 if stat.S_ISREG(evidence.st_mode) and evidence.st_mtime < cutoff:
@@ -1515,12 +2015,18 @@ class MailboxBroker:
                 continue
 
     @classmethod
-    def _prune_claims(cls, claim_fd: int) -> None:
+    def _prune_claims(cls, claim_fd: int, deadline=None) -> None:
         cutoff = time.time() - cls.REQUEST_TTL_SECONDS
         removed = 0
-        for name in sorted(os.listdir(claim_fd)):
-            if removed >= cls.EXPIRED_SWEEP_LIMIT or not re.fullmatch(r"[0-9a-f]{32}\.json\.[0-9a-f]{32}\.claim", name):
-                continue
+        names = cls._bounded_names(
+            claim_fd,
+            re.compile(r"[0-9a-f]{32}\.json\.[0-9a-f]{32}\.claim"),
+            cls.CLAIM_DIRECTORY_SCAN_LIMIT,
+            deadline,
+        )
+        for name in names:
+            if removed >= cls.EXPIRED_SWEEP_LIMIT:
+                break
             try:
                 evidence = os.stat(name, dir_fd=claim_fd, follow_symlinks=False)
                 identity = (name, evidence.st_dev, evidence.st_ino, evidence.st_size, evidence.st_mtime_ns)
@@ -1551,15 +2057,61 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         super().__init__(hostname, port, timeout=deadline.remaining(), context=upstream_tls_context)
         self.expected_ips = expected_ips
         self.deadline = deadline
+        self._socket_lock = threading.Lock()
+        self._connecting_socket: socket.socket | None = None
+        self._cancellation_event: threading.Event | None = None
+
+    def set_cancellation_event(self, event: threading.Event) -> None:
+        self._cancellation_event = event
+
+    def _raise_if_cancelled(self) -> None:
+        if self._cancellation_event is not None and self._cancellation_event.is_set():
+            raise OSError("upstream connection cancelled")
+
+    def request(self, method, url, body=None, headers={}, *, encode_chunked=False):
+        self._raise_if_cancelled()
+        return super().request(method, url, body=body, headers=headers, encode_chunked=encode_chunked)
 
     def connect(self) -> None:
-        raw = socket.create_connection((self.expected_ips[0], self.port), self.deadline.remaining())
-        self.sock = raw
-        self.deadline.bind_socket(raw)
-        wrapped = self._context.wrap_socket(raw, server_hostname=self.host, do_handshake_on_connect=False)
-        self.sock = wrapped
-        self.deadline.bind_socket(wrapped)
-        wrapped.do_handshake()
+        self._raise_if_cancelled()
+        ip = self.expected_ips[0]
+        address = (ip, self.port, 0, 0) if ipaddress.ip_address(ip).version == 6 else (ip, self.port)
+        family = socket.AF_INET6 if len(address) == 4 else socket.AF_INET
+        raw = socket.socket(family, socket.SOCK_STREAM)
+        wrapped = None
+        with self._socket_lock:
+            self._connecting_socket = raw
+        try:
+            self.deadline.bind_socket(raw)
+            self._raise_if_cancelled()
+            raw.connect(address)
+            self._raise_if_cancelled()
+            with self._socket_lock:
+                self.sock = raw
+                self._connecting_socket = None
+            self.deadline.bind_socket(raw)
+            wrapped = self._context.wrap_socket(
+                raw,
+                server_hostname=self.host,
+                do_handshake_on_connect=False,
+            )
+            self._raise_if_cancelled()
+            with self._socket_lock:
+                self.sock = wrapped
+            self.deadline.bind_socket(wrapped)
+            wrapped.do_handshake()
+            self._raise_if_cancelled()
+        except BaseException:
+            with self._socket_lock:
+                if self._connecting_socket is raw:
+                    self._connecting_socket = None
+                if self.sock is raw or self.sock is wrapped:
+                    self.sock = None
+            try:
+                _expire_socket(wrapped if wrapped is not None else raw)
+            except OSError:
+                pass
+            raise
 
 
 def _runtime_skill_mount_fingerprint(record: LeaseRecord, workspace_root: str) -> str:
@@ -1731,8 +2283,21 @@ def _expire_socket(connection: socket.socket) -> None:
 
 
 def _close_http_connection(connection: http.client.HTTPConnection) -> None:
-    sock = connection.sock
-    if sock is not None:
+    lock = getattr(connection, "_socket_lock", None)
+    if lock is None:
+        sock = connection.sock
+        if sock is not None:
+            _expire_socket(sock)
+        connection.close()
+        return
+    sockets: list[socket.socket] = []
+    with lock:
+        for candidate in (connection.sock, getattr(connection, "_connecting_socket", None)):
+            if candidate is not None and not any(candidate is existing for existing in sockets):
+                sockets.append(candidate)
+        connection.sock = None
+        connection._connecting_socket = None
+    for sock in sockets:
         _expire_socket(sock)
     connection.close()
 

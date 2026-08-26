@@ -90,10 +90,8 @@ function catalog(
         description: "Search the authorized knowledge base.",
       },
     ],
-    models: [model],
     skillsResolved: true,
     mcpToolsResolved: true,
-    modelsResolved: true,
     effectivePermissionsKnown: true,
     ...overrides,
   };
@@ -229,7 +227,6 @@ test("successful create materializes server identity and enables publish", async
     expectedOutputs: ["处理建议"],
     permissionsAndDataAccessNotice: "仅访问当前用户授权的数据。",
     instructions: "服务端说明",
-    modelId: model.id,
     selectedSkills: [{
       skill_id: "document-review",
       expected_version: "2026.07.28",
@@ -297,7 +294,6 @@ test("edit disables publish, save fences the exact revision, then publish adopts
       expected_outputs: ["审阅意见"],
       permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
       instructions: "更新后的说明",
-      model_id: "model-id",
       selected_skill: {
         skill_id: "document-review",
         expected_version: "2026.07.28",
