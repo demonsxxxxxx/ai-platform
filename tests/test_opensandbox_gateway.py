@@ -1550,20 +1550,26 @@ def test_exact_dispatch_cannot_outlive_accept_time_total_budget() -> None:
     thread.start()
     client = socket.create_connection(server.server_address, timeout=1)
     started = time.monotonic()
+    response = bytearray()
     try:
         client.sendall(
             b"POST /v1/sandboxes/sandbox-one/proxy/18000/v2/tasks HTTP/1.1\r\n"
             b"Host: 127.0.0.1\r\nContent-Length: 0\r\n\r\n"
         )
         client.settimeout(1)
-        while client.recv(4096):
+        try:
+            while chunk := client.recv(4096):
+                response.extend(chunk)
+        except (ConnectionResetError, ConnectionAbortedError):
             pass
         assert time.monotonic() - started < 0.7
+        assert b"200 OK" not in response
     finally:
         client.close()
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+        assert not thread.is_alive()
 
 
 def test_helper_server_uses_real_framing_and_one_bounded_connection_budget(monkeypatch) -> None:
