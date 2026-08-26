@@ -1369,7 +1369,7 @@ def test_http_transport_rejects_te_ambiguous_length_and_enforces_handler_bound()
     (
         b"GET /healthz HTTP/1.1",
         b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Slow:",
-        b"POST /v1/sandboxes HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 10\r\n\r\nx",
+        b"POST /v1/sandboxes HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 100000\r\n\r\nx",
     ),
 )
 def test_absolute_request_deadline_closes_slowloris_and_releases_slot(partial: bytes) -> None:
@@ -1383,7 +1383,7 @@ def test_absolute_request_deadline_closes_slowloris_and_releases_slot(partial: b
         ("127.0.0.1", 0),
         Handler,
         1,
-        request_deadline_seconds=0.1,
+        request_deadline_seconds=0.4,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
