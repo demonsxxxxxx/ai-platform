@@ -124,8 +124,11 @@ claim token. One 240-second ownership deadline covers workspace recovery, provid
 collection, terminal persistence and publication, provider stop, and lease
 finalization; it remains below the 300-second stale-claim interval, so cooperative
 provider work is cancelled and the receipt is claim-fenced for retry before takeover
-can overlap a live owner. Provider stop also retains its narrower cleanup timeout.
-Runtime callbacks that touch both authorities lock the exact
+can overlap a live owner. If terminal-failure handling reaches that deadline, it
+releases the claim through retry; the next fresh claim enters bounded failure
+terminalization without repeating provider collection. Provider stop also retains
+its narrower cleanup timeout. Runtime callbacks that touch both authorities lock the
+exact
 attempt lease before the Run and then revalidate the Run identity. Before workspace
 preparation, collection, worker reconstruction, or primary terminal cleanup, the
 restored tenant, workspace, user, session, Run, and attempt identity must exactly

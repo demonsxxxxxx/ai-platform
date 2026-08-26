@@ -663,6 +663,18 @@ async def reconcile_pending_executor_terminals_once(
                     )
                 if run is None:
                     raise ValueError("executor_reconciliation_run_missing")
+                attempt_count = int(
+                    lease_row.get("executor_terminal_reconciliation_attempt_count") or 0
+                )
+                if attempt_count > _RECONCILIATION_FAILURE_LIMIT:
+                    await _finish_terminal_reconciliation_failure(
+                        lease_row,
+                        claim_token=claim_token,
+                        error_code="executor_reconciliation_retry_exhausted",
+                        logger=_logger,
+                        v4_capabilities=v4_capabilities,
+                    )
+                    continue
                 if str(run.get("status") or "") in _TERMINAL_RUN_STATUSES:
                     context, _terminal_result, run_payload = _context_and_payload(lease_row)
                     request = _reconciliation_request(lease_row, run_payload)
@@ -729,16 +741,25 @@ async def reconcile_pending_executor_terminals_once(
                     )
                 continue
             try:
-                await _finish_terminal_reconciliation_failure(
-                    lease_row,
-                    claim_token=claim_token,
-                    error_code=error_code,
-                    logger=_logger,
-                    v4_capabilities=v4_capabilities,
-                )
+                async with asyncio.timeout_at(reconciliation_deadline):
+                    await _finish_terminal_reconciliation_failure(
+                        lease_row,
+                        claim_token=claim_token,
+                        error_code=error_code,
+                        logger=_logger,
+                        v4_capabilities=v4_capabilities,
+                    )
             except asyncio.CancelledError:
                 await _release_claimed_terminal_batch(claimed, claim_token)
                 raise
+            except TimeoutError:
+                async with transaction() as conn:
+                    await sandbox_lease_repository.retry_sandbox_executor_reconciliation(
+                        conn,
+                        lease_id=str(lease_row["id"]),
+                        claim_token=claim_token,
+                        error="TimeoutError",
+                    )
             except Exception as terminal_exc:  # noqa: BLE001 - retry the durable failure handler.
                 _logger.exception(
                     "executor_terminal_reconciliation_failure_handler_failed",

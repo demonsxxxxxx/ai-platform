@@ -744,6 +744,82 @@ async def test_reconciler_times_out_work_before_stale_claim_takeover(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_reconciler_reclaims_fresh_window_before_exhausted_failure_cleanup(monkeypatch):
+    from app import executor_reconciler
+
+    rows = []
+    for attempt_count in (5, 6):
+        row = _lease_row()
+        row["executor_terminal_reconciliation_attempt_count"] = attempt_count
+        rows.append(row)
+    finish_calls = []
+    finish_cancelled = asyncio.Event()
+    retried = []
+    collect_calls = 0
+
+    async def claim(_conn, **_kwargs):
+        return [rows.pop(0)]
+
+    async def get_run(_conn, **_kwargs):
+        return {"id": "run-a", "status": "running"}
+
+    async def collect(_lease_row, **_kwargs):
+        nonlocal collect_calls
+        collect_calls += 1
+        raise RuntimeError("terminal work failed")
+
+    async def finish(_lease_row, **_kwargs):
+        finish_calls.append(len(finish_calls) + 1)
+        if len(finish_calls) == 1:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                finish_cancelled.set()
+                raise
+
+    async def retry(_conn, **kwargs):
+        retried.append(kwargs)
+        return True
+
+    monkeypatch.setattr(executor_reconciler, "transaction", _transaction)
+    monkeypatch.setattr(
+        executor_reconciler,
+        "_RECONCILIATION_WORK_TIMEOUT_SECONDS",
+        0.001,
+    )
+    monkeypatch.setattr(
+        executor_reconciler.sandbox_lease_repository,
+        "claim_sandbox_executor_reconciliations",
+        claim,
+    )
+    monkeypatch.setattr(executor_reconciler.repositories, "get_run", get_run)
+    monkeypatch.setattr(executor_reconciler, "_collect_workspace_and_convert_result", collect)
+    monkeypatch.setattr(executor_reconciler, "_finish_terminal_reconciliation_failure", finish)
+    monkeypatch.setattr(
+        executor_reconciler.sandbox_lease_repository,
+        "retry_sandbox_executor_reconciliation",
+        retry,
+    )
+
+    assert await reconcile_pending_executor_terminals_once(worker_id="worker-a") == 1
+    assert finish_cancelled.is_set()
+    assert collect_calls == 1
+    assert len(retried) == 1
+    assert retried[0]["error"] == "TimeoutError"
+
+    monkeypatch.setattr(
+        executor_reconciler,
+        "_RECONCILIATION_WORK_TIMEOUT_SECONDS",
+        1.0,
+    )
+
+    assert await reconcile_pending_executor_terminals_once(worker_id="worker-a") == 1
+    assert finish_calls == [1, 2]
+    assert collect_calls == 1
+    assert len(retried) == 1
+
+
+@pytest.mark.asyncio
 async def test_reconciler_scans_postgres_when_redis_wakeup_is_unavailable(monkeypatch):
     stop_event = __import__("asyncio").Event()
     calls = []
