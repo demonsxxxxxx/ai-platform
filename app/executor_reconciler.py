@@ -266,6 +266,7 @@ async def _terminalize_reconciliation_failure(
     tenant_id = str(lease_row["tenant_id"])
     run_id = str(lease_row["run_id"])
     progress = None
+    run_was_terminal = False
     async with transaction() as conn:
         claimed = await sandbox_lease_repository.has_sandbox_executor_reconciliation_claim(
             conn,
@@ -282,7 +283,9 @@ async def _terminalize_reconciliation_failure(
         )
         if run is None:
             return
-        if str(run.get("status") or "") not in _TERMINAL_RUN_STATUSES:
+        if str(run.get("status") or "") in _TERMINAL_RUN_STATUSES:
+            run_was_terminal = True
+        else:
             progress = await fail_run_with_v4(
                 conn,
                 capabilities=v4_capabilities,
@@ -314,6 +317,8 @@ async def _terminalize_reconciliation_failure(
                 "executor_terminal_reconciliation_child_reconcile_failed",
                 extra={"run_id": run_id},
             )
+    if run_was_terminal:
+        return
     await publish_pending_run_terminal(
         v4_capabilities,
         tenant_id=tenant_id,

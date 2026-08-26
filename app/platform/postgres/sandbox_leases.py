@@ -620,7 +620,14 @@ async def claim_sandbox_executor_reconciliations(
                 and executor_reconciliation_claimed_at < now() - make_interval(secs => %s)
               )
             )
-          order by executor_terminal_received_at asc, id asc
+          order by
+            case executor_reconciliation_status
+              when 'pending' then 0
+              when 'claimed' then 1
+              else 2
+            end,
+            executor_terminal_received_at asc,
+            id asc
           for update skip locked
           limit %s
         )
