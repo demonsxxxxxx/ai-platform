@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -795,10 +796,10 @@ def _prepare_managed_target_checkout(
     managed_root = tmp_path / "m"
     release_root = managed_root / "releases"
     release_root.mkdir(parents=True)
-    staging = release_root / "staging"
-    commit = _init_repo(staging)
+    source = tmp_path / "source"
+    commit = _init_repo(source)
     checkout = release_root / commit
-    staging.rename(checkout)
+    shutil.copytree(source, checkout)
     env_file = managed_root / "deploy" / "ai-platform" / ".env"
     env_file.parent.mkdir(parents=True)
     env_file.write_text("PRIVATE_VALUE=must-not-be-read\n", encoding="utf-8")
@@ -1161,6 +1162,25 @@ def test_managed_env_can_return_the_exact_authority_validated_identity(
     assert resolved == canonical_env
     assert sealed == canonical_env.stat(follow_symlinks=False)
     assert authority_metadata == [sealed]
+
+
+def test_managed_target_checkout_fixture_does_not_rename_live_git_tree(
+    monkeypatch,
+    tmp_path,
+):
+    def forbid_rename(*_args, **_kwargs):
+        raise AssertionError("managed checkout fixture must not rename a live Git tree")
+
+    monkeypatch.setattr(Path, "rename", forbid_rename)
+
+    _, release_root, checkout, _, commit = _prepare_managed_target_checkout(
+        monkeypatch,
+        tmp_path,
+    )
+
+    assert checkout == release_root / commit
+    assert (checkout / ".git").is_dir()
+    assert (checkout / "tracked.txt").read_text(encoding="utf-8") == "baseline\n"
 
 
 def test_managed_target_checkout_accepts_safe_exact_git_tree(monkeypatch, tmp_path):
