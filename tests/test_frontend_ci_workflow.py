@@ -146,11 +146,14 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     jobs = contract["jobs"]
     assert isinstance(jobs, dict)
     assert jobs["frontend"]["runs-on"] == "windows-latest"
+    assert jobs["frontend"]["timeout-minutes"] == "15"
     assert jobs["frontend-image"]["runs-on"] == "ubuntu-latest"
+    assert jobs["frontend-image"]["timeout-minutes"] == "30"
     assert "needs" not in jobs["frontend-image"]
     required = jobs["required"]
     assert isinstance(required, dict)
     assert required["name"] == "frontend required"
+    assert required["timeout-minutes"] == "5"
     assert required["needs"] == ["frontend", "frontend-image"]
     assert required["if"] == "${{ always() }}"
     image_job = workflow.split("  frontend-image:", 1)[1].split("  required:", 1)[0]

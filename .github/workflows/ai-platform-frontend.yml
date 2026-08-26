@@ -24,6 +24,7 @@ jobs:
   frontend:
     name: projection audit, lint, build, trace
     runs-on: windows-latest
+    timeout-minutes: 15
     env:
       SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
@@ -189,6 +190,7 @@ jobs:
   frontend-image:
     name: packaged image build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       IMAGE_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
       IMAGE_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -334,6 +336,7 @@ jobs:
   required:
     name: frontend required
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: [frontend, frontend-image]
     if: ${{ always() }}
     steps:
