@@ -714,7 +714,7 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
               id, tenant_id, workspace_id, session_id, user_id, agent_id, status,
               started_at
             ) values (
-              'run-b', 'tenant-a', 'workspace-a', 'session-a', 'user-a',
+              'run-pending', 'tenant-a', 'workspace-a', 'session-a', 'user-a',
               'agent-a', 'running', now()
             )
             """
@@ -728,9 +728,10 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
               executor_reconciliation_context_json, executor_reconciliation_status,
               expires_at
             ) values (
-              'lease-b', 'tenant-a', 'workspace-a', 'user-a', 'session-a',
-              'run-b', 'attempt-b', 'ephemeral', 'fake', 'active', '{}'::jsonb,
-              'completed', '{"run_id":"run-b","status":"succeeded"}'::jsonb,
+              'lease-pending', 'tenant-a', 'workspace-a', 'user-a', 'session-a',
+              'run-pending', 'attempt-pending', 'ephemeral', 'fake', 'active',
+              '{}'::jsonb, 'completed',
+              '{"run_id":"run-pending","status":"succeeded"}'::jsonb,
               now(), '{}'::jsonb, 'pending', now() + interval '1 minute'
             )
             """
@@ -742,11 +743,11 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
                 limit=1,
                 stale_after_seconds=300,
             )
-        assert [row["id"] for row in pending_rows] == ["lease-b"]
+        assert [row["id"] for row in pending_rows] == ["lease-pending"]
         async with conn.transaction():
             assert await sandbox_lease_repository.quarantine_sandbox_executor_reconciliation(
                 conn,
-                lease_id="lease-b",
+                lease_id="lease-pending",
                 claim_token="pending-claim",
                 error="test_pending_priority_complete",
             )
