@@ -250,3 +250,30 @@ async def test_real_redis_rejects_private_fields_unknown_event_codes_and_cross_v
     finally:
         await client.delete(key, state_key)
         await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_redis_replay_decodes_production_lua_field_value_rows():
+    client, key, state_key, bridge = await _stream()
+    try:
+        first = await bridge.append(_envelope(event_id="evt4_replay_first"))
+        second = await bridge.append(
+            _envelope(event_id="evt4_replay_second", seq=2)
+        )
+
+        replayed = await bridge.replay_page(
+            tenant_scope_value="scope_v4_evidence",
+            run_id="run-v4-evidence",
+            attempt_id="attempt-v4-evidence",
+            stream_incarnation=3,
+            after_redis_id=first,
+            through_redis_id=second,
+        )
+
+        assert [entry.cursor.redis_id for entry in replayed] == [second]
+        assert [entry.envelope["event_id"] for entry in replayed] == [
+            "evt4_replay_second"
+        ]
+    finally:
+        await client.delete(key, state_key)
+        await client.aclose()
