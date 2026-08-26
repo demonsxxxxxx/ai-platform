@@ -136,6 +136,19 @@ async def test_real_postgres_concurrent_migrations_use_one_global_lock_and_ledge
                 "checksum_sha256": schema_migrations.schema_checksum(),
             }
         ]
+        cursor = await admin.execute(
+            """
+            select pg_get_constraintdef(oid, true) as definition
+            from pg_constraint
+            where conrelid = to_regclass(%s)
+              and conname = 'chk_run_attempts_terminal_time'
+            """,
+            (f"{schema_name}.run_attempts",),
+        )
+        row = await cursor.fetchone()
+        assert row is not None
+        assert "status <> ALL" in row["definition"]
+        assert "NOT (status = ANY" not in row["definition"]
         async with factory() as conn:
             status = await schema_migrations.schema_status(conn)
             definition_mismatches = []

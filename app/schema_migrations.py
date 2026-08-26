@@ -289,6 +289,8 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "CHECK (execution_spec_canonical_json <> ''::text "
         "AND execution_spec_canonical_json::jsonb = execution_spec_json)",
     ),
+    # PostgreSQL renders `NOT (x = ANY (...))` as `x <> ALL (...)` in
+    # pg_get_constraintdef(); keep this contract in catalog form.
     (
         "run_attempts",
         "chk_run_attempts_terminal_time",
