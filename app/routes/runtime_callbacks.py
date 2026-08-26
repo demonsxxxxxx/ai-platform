@@ -14,6 +14,7 @@ from app.context.retrieval import (
 )
 from app.db import transaction
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+from app.public_execution import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.sandbox.callback_tokens import (
     CallbackTokenBinding,
@@ -77,6 +78,10 @@ async def record_executor_callback(
 
     # Compatibility fields are retained in the private callback receipt only;
     # v4 public rows come from the typed post-bridge event subset.
+    if callback.batch_id is None and any(
+        event.type == PUBLIC_AGENT_PROGRESS_EVENT_TYPE for event in callback.events
+    ):
+        raise HTTPException(status_code=409, detail="callback_batch_id_required")
     callback_for_events = callback.model_copy(update={"new_message": None})
     events = callback_event_to_run_events(callback_for_events)
     v4_items = []

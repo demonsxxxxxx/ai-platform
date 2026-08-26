@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from app.streaming.domain.public_events_v4 import (
     V4ProjectionError,
+    _CALLBACK_EVENT_TYPES,
     _MESSAGE_EVENT_TYPES,
     _safe_ref,
     _validate_payload,
@@ -42,7 +43,7 @@ def callback_item_to_v4(
 
     event_type = item.get("event_type")
     payload = item.get("payload")
-    if event_type not in _MESSAGE_EVENT_TYPES or not isinstance(payload, Mapping):
+    if event_type not in _CALLBACK_EVENT_TYPES or not isinstance(payload, Mapping):
         return None
     source_event_id = item.get("event_id")
     source_run_id = item.get("run_id")

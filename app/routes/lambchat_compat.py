@@ -55,11 +55,13 @@ from app.run_projection import (
 from app.settings import get_settings
 from app.streaming.api import (
     LiveSubscriptionClosed,
+    V4ProjectionError,
     V4StreamEntry,
     live_redis_id_is_after,
     project_public_envelope_v4,
     recover_v4_missing_terminal_stream,
     stream_live_channel,
+    validate_public_application_payload_v4,
 )
 from app.streaming.authority import RunCursor, event_page
 from app.streaming.redis import (
@@ -198,6 +200,30 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
         "agent_progress",
         "Agent progress update",
         "active",
+    ),
+    "agent.progress": _ChatPublicRunEventProjection(
+        PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
+        "agent_progress",
+        "Agent progress update",
+        "active",
+    ),
+    "thinking.started": _ChatPublicRunEventProjection(
+        "public_activity", "thinking", "Analyzing the request", "active"
+    ),
+    "thinking.completed": _ChatPublicRunEventProjection(
+        "public_activity", "thinking", "Analysis step completed", "completed"
+    ),
+    "tool.started": _ChatPublicRunEventProjection(
+        "public_tool_activity", "tool", "Tool execution started", "active"
+    ),
+    "tool.completed": _ChatPublicRunEventProjection(
+        "public_tool_activity", "tool", "Tool execution completed", "completed"
+    ),
+    "tool.failed": _ChatPublicRunEventProjection(
+        "public_tool_activity", "tool", "Tool execution failed", "failed"
+    ),
+    "tool.denied": _ChatPublicRunEventProjection(
+        "public_tool_activity", "tool", "Tool execution denied", "failed"
     ),
     "run_queued": _ChatPublicRunEventProjection(
         "queued", "queue", "任务正在排队", "waiting", "queue_capacity"
@@ -521,6 +547,49 @@ def _chat_projection_payload(envelope: dict[str, Any]) -> dict[str, object]:
     return {"activity": dict(activity)}
 
 
+def _public_progress_identity(
+    payload: dict[str, object] | None,
+) -> tuple[str, str, str, str, str] | None:
+    if payload is None:
+        return None
+    return (
+        str(payload["schema_version"]),
+        str(payload["step_id"]),
+        str(payload["phase"]),
+        str(payload["lifecycle"]),
+        str(payload["message"]),
+    )
+
+
+def _strict_v4_execution_history_payload(
+    event_type: str, payload: object
+) -> dict[str, object] | None:
+    if event_type not in {
+        "agent.progress",
+        "thinking.started",
+        "thinking.completed",
+        "tool.started",
+        "tool.completed",
+        "tool.failed",
+        "tool.denied",
+    }:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    application_payload = {
+        key: value for key, value in payload.items() if key != "__stream_v4"
+    }
+    try:
+        validated = validate_public_application_payload_v4(
+            event_type, application_payload
+        )
+    except V4ProjectionError:
+        return None
+    if event_type.startswith("tool."):
+        validated["status"] = event_type.removeprefix("tool.")
+    return validated
+
+
 def _public_run_event_envelope(
     run: dict[str, Any],
     event: dict[str, Any],
@@ -532,12 +601,31 @@ def _public_run_event_envelope(
     presentation = CHAT_PUBLIC_RUN_EVENT_PROJECTIONS.get(raw_event_type)
     if presentation is None:
         return None
-    public_progress = (
-        validate_public_agent_progress_payload(event.get("payload_json"))
-        if raw_event_type == PUBLIC_AGENT_PROGRESS_EVENT_TYPE
-        else None
+    strict_v4_payload = _strict_v4_execution_history_payload(
+        raw_event_type, event.get("payload_json")
     )
-    if raw_event_type == PUBLIC_AGENT_PROGRESS_EVENT_TYPE and public_progress is None:
+    if raw_event_type in {
+        "agent.progress",
+        "thinking.started",
+        "thinking.completed",
+        "tool.started",
+        "tool.completed",
+        "tool.failed",
+        "tool.denied",
+    } and strict_v4_payload is None:
+        return None
+    if raw_event_type == "agent.progress":
+        public_progress = strict_v4_payload
+    elif raw_event_type == PUBLIC_AGENT_PROGRESS_EVENT_TYPE:
+        public_progress = validate_public_agent_progress_payload(
+            event.get("payload_json")
+        )
+    else:
+        public_progress = None
+    if raw_event_type in {
+        "agent.progress",
+        PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
+    } and public_progress is None:
         return None
     typed_product = _strict_typed_chat_event_product(run, event, principal)
     if typed_product is not None and typed_product.kind == "capability":
@@ -562,7 +650,13 @@ def _public_run_event_envelope(
         severity = "warning"
     elif severity not in {"info", "warning", "error"}:
         severity = "info"
-    payload = typed_product.payload if typed_product is not None else _chat_projection_payload(projected)
+    payload = (
+        strict_v4_payload
+        if strict_v4_payload is not None
+        else typed_product.payload
+        if typed_product is not None
+        else _chat_projection_payload(projected)
+    )
     message = presentation.message
     stage = presentation.stage
     if public_progress is not None:
@@ -695,6 +789,19 @@ def _compatibility_events_for_run_page(
         enumerate(run_events),
         key=lambda item: _event_sequence_sort_key(item[1], item[0]),
     )
+    canonical_progress_identities = {
+        identity
+        for _, event in ordered_events
+        if str(event.get("event_type") or "") == "agent.progress"
+        and (
+            identity := _public_progress_identity(
+                _strict_v4_execution_history_payload(
+                    "agent.progress", event.get("payload_json")
+                )
+            )
+        )
+        is not None
+    }
     answer_projector = PublicChatAnswerStreamProjector(
         run,
         fold_state.answer_projection_state,
@@ -756,6 +863,14 @@ def _compatibility_events_for_run_page(
         if (
             not _chat_event_marked_visible(event)
             or not event_visible_to_principal(event, principal)
+        ):
+            continue
+        if (
+            raw_event_type == PUBLIC_AGENT_PROGRESS_EVENT_TYPE
+            and _public_progress_identity(
+                validate_public_agent_progress_payload(event.get("payload_json"))
+            )
+            in canonical_progress_identities
         ):
             continue
         if raw_event_type in PUBLIC_EXECUTION_EVENT_TYPES:
@@ -842,6 +957,7 @@ def _compatibility_events_for_run_page(
             seen_public_lifecycle_singletons.add(public_event_type)
         payload = envelope["payload"] if isinstance(envelope.get("payload"), dict) else {}
         history_data = {
+            **payload,
             "projection_version": envelope["projection_version"],
             "event_id": envelope["event_id"],
             "run_id": run_id,
@@ -860,7 +976,7 @@ def _compatibility_events_for_run_page(
             history_data["status"] = "queued"
         else:
             history_data["content"] = envelope["message"]
-            history_data["status"] = envelope["stage"]
+            history_data.setdefault("status", envelope["stage"])
         compatibility_events.append(
             _CompatibilityWireEvent(
                 id=str(event["id"]),

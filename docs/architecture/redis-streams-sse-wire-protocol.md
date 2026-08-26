@@ -79,6 +79,7 @@ The closed Agent-kernel application registry is:
 
 - `message.started`, `message.delta`, `message.completed`;
 - `thinking.started`, `thinking.completed`, `model.completed`;
+- `agent.progress` for fixed, server-owned execution-phase lifecycle;
 - `tool.started`, `tool.completed`, `tool.failed`, `tool.denied`;
 - `subagent.started`, `subagent.progress`, `subagent.completed`,
   `subagent.failed`, `subagent.cancelled`;
@@ -93,8 +94,14 @@ The closed transport controls are `stream.open`, `stream.heartbeat`,
 
 Hidden reasoning, raw SDK objects, commands, arguments, outputs, credentials,
 paths, storage keys, private trace values, and unclassified objects are
-prohibited. The strict event-specific projector applies identity, byte, depth,
-and count bounds before a canonical public row can be committed.
+prohibited. Thinking events carry only fixed platform summaries. New rows
+include the summary; legacy empty thinking payloads remain replayable and the
+frontend derives the same fixed text. Agent progress carries only fixed
+server-owned phase messages. Tool input summaries are
+restricted to tool-specific allowlisted fields after public sanitization, and
+Tool result summaries remain fixed lifecycle text. The strict event-specific
+projector applies identity, byte, depth, and count bounds before a canonical
+public row can be committed.
 
 ## Key and stream incarnation
 

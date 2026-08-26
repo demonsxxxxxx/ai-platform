@@ -219,10 +219,14 @@ def agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
         if payload is None or event.admin_only or event.message:
             return _private_executor_event()
         return {
-            "event_type": PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
+            "event_type": "agent.progress",
             "stage": "agent_progress",
             "message": payload["message"],
             "payload": payload,
+            "event_id": event.event_id,
+            "run_id": event.run_id,
+            "message_id": None,
+            "causation_event_id": None,
         }
     if event.type in PUBLIC_EXECUTION_EVENT_TYPES:
         payload = validate_versioned_public_execution_step_payload(

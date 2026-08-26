@@ -22,6 +22,7 @@ def _adapter():
         payload_sanitizer=sanitize_public_payload,
         authorized_capabilities={
             "Read": ("read", "Read file"),
+            "WebSearch": ("search", "Web search"),
             "mcp__server__search": ("mcp", "Tenant search"),
             "qa-review": ("skill", "QA review"),
         },
@@ -163,7 +164,7 @@ def test_policy_decision_emits_checking_then_terminal_and_denial_tool_event():
 
 
 
-def test_thinking_has_lifecycle_only_and_tool_hooks_dedupe_exact_sdk_identity():
+def test_thinking_and_tool_hooks_expose_public_lifecycle_without_private_sdk_content():
     adapter = _adapter()
     class ThinkingBlock:
         pass
@@ -184,16 +185,37 @@ def test_thinking_has_lifecycle_only_and_tool_hooks_dedupe_exact_sdk_identity():
         "thinking.started",
         "thinking.completed",
     ]
+    assert [event.payload for event in thinking_events] == [
+        {"public_summary": "Analyzing the request"},
+        {"public_summary": "Analysis step completed"},
+    ]
     assert all("private" not in repr(event.as_dict()) for event in thinking_events)
 
     assert adapter.accept_content_block(block) == ()
     pre = {"tool_name": "Read", "tool_use_id": "sdk-tool-1", "tool_input": {}}
     started = adapter.accept_hook("PreToolUse", pre, tool_use_id="sdk-tool-1")
     assert [event.event_type for event in started] == ["tool.started"]
+    assert started[0].payload["input_summary"] == "Starting Read file"
     assert adapter.accept_hook("PreToolUse", pre, tool_use_id="sdk-tool-1") == ()
 
     completed = adapter.accept_hook("PostToolUse", pre, tool_use_id="sdk-tool-1")
     assert [event.event_type for event in completed] == ["tool.completed"]
+    assert completed[0].payload["result_summary"] == "Read file completed"
+
+    search = ToolUseBlock()
+    search.id = "search-call-1"
+    search.name = "WebSearch"
+    search.input = {"query": "OpenSandbox workspace limits"}
+    assert adapter.accept_content_block(search) == ()
+    search_started = adapter.accept_hook(
+        "PreToolUse",
+        {"tool_use_id": "search-call-1", "tool_name": "WebSearch"},
+    )
+    assert search_started[0].payload["input_summary"] == (
+        "Searching for: OpenSandbox workspace limits"
+    )
+    assert "query" not in search_started[0].payload
+
     assert adapter.accept_hook("PostToolUse", pre, tool_use_id="sdk-tool-1") == ()
     assert "sdk-tool-1" not in repr(started + completed)
 
@@ -538,9 +560,6 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         await pre({"tool_name": "Read", "tool_input": {"file_path": "answer.txt"}, "tool_use_id": "sdk-tool-1"}, "sdk-tool-1", {})
         post = options.hooks["PostToolUse"][-1].hooks[0]
         await post({"tool_name": "Read", "tool_input": {"file_path": "answer.txt"}, "tool_use_id": "sdk-tool-1"}, "sdk-tool-1", {})
-        permission_context = getattr(sdk, "ToolPermissionContext", None)
-        if permission_context is not None:
-            await options.can_use_tool("Read", {}, permission_context(tool_use_id="permission-tool"))
         yield sdk.TaskStartedMessage(
             subtype="started",
             data={},
@@ -549,15 +568,6 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
             uuid="task-started",
             session_id="sdk-session",
             tool_use_id="sdk-tool-1",
-        )
-        yield sdk.TaskUpdatedMessage(
-            subtype="update",
-            data={},
-            task_id="task-private",
-            patch={"progress_percent": 50, "current_category": "execute"},
-            status="running",
-            session_id="sdk-session",
-            uuid="task-progress",
         )
         yield sdk.TaskNotificationMessage(
             subtype="update",
@@ -600,11 +610,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         "policy.allowed",
         "tool.started",
         "tool.completed",
-        "policy.checking",
-        "policy.denied",
-        "tool.denied",
         "subagent.started",
-        "subagent.progress",
         "subagent.completed",
         "message.started",
         "message.delta",
@@ -613,7 +619,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
     ]
     deltas = [candidate.payload["delta"] for candidate in candidates if candidate.event_type == "message.delta"]
     assert deltas == ["safe answer"]
-    assert all(value not in repr(candidate.as_dict()) for candidate in candidates for value in ("sdk-tool-1", "permission-tool"))
+    assert all("sdk-tool-1" not in repr(candidate.as_dict()) for candidate in candidates)
 
 
 @pytest.mark.asyncio

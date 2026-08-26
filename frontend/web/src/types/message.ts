@@ -221,6 +221,7 @@ export interface ToolPart {
   /** Server-authorized, non-sensitive identity used by the v4 Render Contract. */
   public_operation_id?: string;
   public_category?: string;
+  public_input_summary?: string;
   duration_ms?: number;
   evidence_refs?: string[];
   artifact_refs?: string[];
