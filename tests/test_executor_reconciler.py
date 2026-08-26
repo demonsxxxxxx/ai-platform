@@ -779,6 +779,8 @@ async def test_probe_and_terminal_claims_use_independent_attempt_counters():
     assert "executor_reconciliation_claimed_at" in statements[0]
     assert "executor_terminal_reconciliation_attempt_count = executor_terminal_reconciliation_attempt_count + 1" in statements[1]
     assert "status in ('active', 'released')" in statements[1]
+    assert "case executor_reconciliation_status when 'pending' then 0" in statements[1]
+    assert "when 'claimed' then 1" in statements[1]
     assert "executor_reconciliation_attempt_count = executor_reconciliation_attempt_count + 1" not in statements[1]
 
 
@@ -948,6 +950,46 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(mon
         "reconcile_child",
         "publish",
     ]
+
+
+@pytest.mark.asyncio
+async def test_terminal_reconciliation_failure_does_not_republish_an_already_terminal_run(
+    monkeypatch,
+):
+    calls = []
+
+    async def has_claim(_conn, **_kwargs):
+        calls.append("has_claim")
+        return True
+
+    async def get_run(_conn, **_kwargs):
+        calls.append("get_run")
+        return {"id": "run-a", "status": "failed"}
+
+    async def fail_run(*_args, **_kwargs):
+        pytest.fail("an already terminal Run must not be terminalized again")
+
+    async def publish(*_args, **_kwargs):
+        pytest.fail("a reconciliation failure must not republish another owner's terminal fact")
+
+    owner = "app.executor_reconciler"
+    monkeypatch.setattr(f"{owner}.transaction", _transaction)
+    monkeypatch.setattr(
+        f"{owner}.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
+        has_claim,
+    )
+    monkeypatch.setattr(f"{owner}.repositories.get_run", get_run)
+    monkeypatch.setattr(f"{owner}.repositories.fail_run", fail_run)
+    monkeypatch.setattr(f"{owner}.publish_pending_run_terminal", publish)
+
+    await _terminalize_reconciliation_failure(
+        {"id": "lease-a", "tenant_id": "tenant-a", "run_id": "run-a"},
+        claim_token="claim-a",
+        logger=logging.getLogger(__name__),
+        v4_capabilities=_TEST_V4_CAPABILITIES,
+    )
+
+    assert calls == ["has_claim", "get_run"]
 
 
 @pytest.mark.asyncio
