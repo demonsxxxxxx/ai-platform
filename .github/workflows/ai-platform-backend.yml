@@ -99,9 +99,15 @@ jobs:
           git checkout --detach "$VALIDATED_PR_HEAD_REF"
           test "$(git rev-parse HEAD)" = "$VALIDATED_PR_HEAD_REF"
 
+      - name: Set up uv with lock-keyed cache
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
       - name: Install candidate dependencies from the lock authority
         run: |
-          python -m pip install "uv==$UV_VERSION"
           uv lock --check
           uv sync --locked --extra test --no-install-project
 
@@ -246,6 +252,7 @@ jobs:
               tests/test_pr_review_record.py
               tests/test_source_authority_docs.py
               tests/test_ci_image_scope.py
+              tests/test_require_zero_junit_skips.py
               tests/test_s72_release_contract.py
               tests/test_packaging_contract.py
               tests/test_packaging_publish_workflow.py
@@ -290,9 +297,15 @@ jobs:
         with:
           python-version: ${{ env.BACKEND_PYTHON_VERSION }}
 
+      - name: Set up uv with lock-keyed cache
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
       - name: Install candidate dependencies from the lock authority
         run: |
-          python -m pip install "uv==$UV_VERSION"
           uv lock --check
           uv sync --locked --extra test --no-install-project
 
@@ -352,14 +365,21 @@ jobs:
         with:
           python-version: ${{ env.BACKEND_PYTHON_VERSION }}
 
+      - name: Set up uv with lock-keyed cache
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
       - name: Install candidate dependencies from the lock authority
         run: |
-          python -m pip install "uv==$UV_VERSION"
           uv lock --check
           uv sync --locked --extra test --no-install-project
 
       - name: Run Agent and Skill contract tests
         run: |
+          set -euo pipefail
           mkdir -p .pytest-tmp
           timeout --signal=TERM --kill-after=30s 10m \
             uv run --locked --extra test python -m pytest \
@@ -379,7 +399,10 @@ jobs:
               -vv \
               --tb=short \
               -o faulthandler_timeout=120 \
+              --junitxml .pytest-tmp/agent-skill-contracts.xml \
               --basetemp .pytest-tmp/agent-skill-contracts
+          uv run --locked --extra test python tools/require_zero_junit_skips.py \
+            .pytest-tmp/agent-skill-contracts.xml
 
   backend-image:
     name: packaged backend image build

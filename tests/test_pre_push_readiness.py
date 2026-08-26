@@ -15,6 +15,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 READINESS_TOOL = REPO_ROOT / "tools" / "pre_push_readiness.py"
+TEST_STAGE_RUNNER = REPO_ROOT / "tools" / "run_test_stage.py"
 GOVERNANCE_TOOL = REPO_ROOT / "tools" / "code_governance.py"
 ARCHITECTURE_TOOL = REPO_ROOT / "tools" / "architecture_governance.py"
 ARCHITECTURE_POLICY = REPO_ROOT / "architecture-policy.json"
@@ -121,6 +122,7 @@ def _create_readiness_repo(tmp_path: Path, *, code_governance_test_path: str) ->
     _write(repo, "tools/code_governance.py", GOVERNANCE_TOOL.read_text(encoding="utf-8"))
     _write(repo, "tools/architecture_governance.py", ARCHITECTURE_TOOL.read_text(encoding="utf-8"))
     _write(repo, "tools/pre_push_readiness.py", READINESS_TOOL.read_text(encoding="utf-8"))
+    _write(repo, "tools/run_test_stage.py", TEST_STAGE_RUNNER.read_text(encoding="utf-8"))
     policy = json.loads(ARCHITECTURE_POLICY.read_text(encoding="utf-8"))
     policy["legacy_api_cutovers"] = [_retired_runs_legacy_api_cutover()]
     migration_bridge_sources = sorted(
@@ -1392,9 +1394,44 @@ def test_authority_architecture_snapshot_never_executes_a_candidate_replacement(
     assert payload["authority"]["architecture_governance"] == "sealed"
 
 
+def test_authority_test_runner_snapshot_never_executes_a_candidate_replacement(
+    readiness_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    repo, base = readiness_repo
+    marker = tmp_path / "candidate-test-runner-executed.txt"
+    _write(
+        repo,
+        "tools/run_test_stage.py",
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('executed', encoding='utf-8')\n",
+    )
+    _write(
+        repo,
+        "tests/test_candidate_runner_change.py",
+        "def test_candidate_runner_change():\n    assert True\n",
+    )
+    head = _commit(repo, "replace candidate test-stage runner")
+
+    result = _check(repo, base, head)
+    payload = _payload(result)
+
+    assert result.returncode == 0, json.dumps(payload, indent=2, sort_keys=True)
+    assert marker.exists() is False
+    responsibility = next(
+        stage for stage in payload["stages"] if stage["name"] == "responsibility_tests"
+    )
+    assert responsibility["status"] == "pass"
+    assert Path(responsibility["command"][2]).name == "authority-test-runner.py"
+    assert responsibility["runner_evidence"]["schema_version"] == "ai-platform.local-test-stage.v1"
+    assert responsibility["runner_evidence"]["head_sha"] == head
+    assert responsibility["runner_evidence"]["cleanup"] == "completed"
+    assert responsibility["runner_evidence"]["timeout_seconds"] == 600
+
+
 @pytest.mark.parametrize(
     "authority_path",
     (
+        "tools/run_test_stage.py",
         "tools/architecture_governance.py",
         "architecture-policy.json",
         "schemas/architecture-policy.v1.schema.json",
@@ -2291,6 +2328,31 @@ def test_malformed_authority_ref_is_rejected_before_candidate_checks(
     assert payload["stages"] == []
 
 
+def test_historical_authority_is_rejected_even_when_it_is_an_origin_main_ancestor(
+    readiness_repo: tuple[Path, str],
+) -> None:
+    repo, historical_authority = readiness_repo
+    _write(repo, "docs/current-authority.md", "current\n")
+    accepted_authority = _commit(repo, "advance accepted authority")
+    _git(repo, "update-ref", "refs/remotes/origin/main", accepted_authority)
+
+    result = _check(
+        repo,
+        historical_authority,
+        accepted_authority,
+        authority_ref=historical_authority,
+    )
+    payload = _payload(result)
+
+    assert result.returncode == 2
+    assert payload["category"] == "governance_violation"
+    assert payload["failure"]["code"] == "authority_not_accepted"
+    assert payload["failure"]["message"] == (
+        "authority_ref must equal the currently accepted origin/main commit"
+    )
+    assert payload["stages"] == []
+
+
 def test_deterministic_product_failure_preserves_pytest_identity(
     readiness_repo: tuple[Path, str],
 ) -> None:
@@ -2446,6 +2508,8 @@ def test_pr_workflow_keeps_immutable_authority_and_failure_contract() -> None:
     assert "full 40-hex commits" in workflow
     assert "immutable authority git object" in compact.lower()
     assert "governance decision is sealed first" in compact.lower()
+    assert "accepted authority git object's `tools/run_test_stage.py`" in compact.lower()
+    assert "candidate copy of that runner is never execution authority" in compact.lower()
     assert "regression evidence regardless of filename stem" in compact.lower()
     for category in (
         "stale_base",

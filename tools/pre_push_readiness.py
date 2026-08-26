@@ -21,12 +21,19 @@ REPORT_SCHEMA_VERSION = "ai-platform.pre-push-readiness.v1"
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 MAX_RESPONSIBILITY_TESTS = 24
 AUTHORITY_TOOL_PATH = "tools/pre_push_readiness.py"
+AUTHORITY_TEST_RUNNER_PATH = "tools/run_test_stage.py"
 AUTHORITY_GOVERNANCE_PATH = "tools/code_governance.py"
 AUTHORITY_ARCHITECTURE_PATH = "tools/architecture_governance.py"
 ARCHITECTURE_POLICY_PATH = "architecture-policy.json"
 ARCHITECTURE_POLICY_SCHEMA_PATH = "schemas/architecture-policy.v1.schema.json"
 CODE_GOVERNANCE_EXCEPTION_PATH = ".code-governance-exception.json"
 CODE_GOVERNANCE_TEST_PATH = "tests/test_code_governance.py"
+LOCAL_TEST_STAGE_SCHEMA_VERSION = "ai-platform.local-test-stage.v1"
+RESPONSIBILITY_TEST_STAGE = "pre-push-responsibility"
+RESPONSIBILITY_TEST_TIMEOUT_SECONDS = 600
+LOCAL_TEST_STAGE_EVIDENCE = re.compile(
+    r"(?m)^\[local-test-stage\] evidence=(?P<path>\.pytest-tmp/test-runs/[^\r\n]+/evidence\.json)$"
+)
 # Frozen high-risk safety suites. Do not expand this map for ordinary product changes.
 IRREGULAR_RESPONSIBILITY_SUITES = {
     "app/skills/catalog.py": ("tests/test_authorized_skill_catalog.py",),
@@ -199,7 +206,14 @@ class PrePushReadiness:
             candidate_failure: ReadinessError | None = None
             try:
                 self._run_compileall(result, head_worktree)
-                self._run_responsibility_tests(result, head_worktree, plan.tests)
+                self._run_responsibility_tests(
+                    result,
+                    authority,
+                    head,
+                    temporary_root,
+                    head_worktree,
+                    plan.tests,
+                )
                 if plan.frontend:
                     package_manager = self._bootstrap_frontend_dependencies(
                         result,
@@ -253,15 +267,12 @@ class PrePushReadiness:
                 "origin/main must resolve to an accepted authority commit before readiness can run",
             )
         accepted_ref = accepted.stdout.strip().lower()
-        ancestor = self._run(("git", "merge-base", "--is-ancestor", authority, accepted_ref), self._repo_root)
-        if ancestor.returncode == 1:
+        if authority != accepted_ref:
             raise ReadinessError(
                 "governance_violation",
                 "authority_not_accepted",
-                "authority_ref must be reachable from accepted origin/main",
+                "authority_ref must equal the currently accepted origin/main commit",
             )
-        if ancestor.returncode != 0:
-            raise ReadinessError("infrastructure_failure", "git_failed", _command_failure("git merge-base", ancestor))
 
     def _assert_authority_provenance(self, authority: str) -> None:
         source_path = Path(__file__).resolve()
@@ -304,6 +315,14 @@ class PrePushReadiness:
             authority_root / AUTHORITY_GOVERNANCE_PATH,
             code="authority_provenance_mismatch",
             message="the authority governance script does not match the authority_ref Git object",
+        )
+        self._assert_authority_path_matches_ref(
+            authority,
+            authority_root,
+            AUTHORITY_TEST_RUNNER_PATH,
+            authority_root / AUTHORITY_TEST_RUNNER_PATH,
+            code="authority_provenance_mismatch",
+            message="the authority test-stage runner does not match the authority_ref Git object",
         )
         for relative_path, message in (
             (AUTHORITY_ARCHITECTURE_PATH, "the authority architecture checker does not match the authority_ref Git object"),
@@ -597,23 +616,76 @@ class PrePushReadiness:
     def _run_responsibility_tests(
         self,
         result: dict[str, Any],
+        authority: str,
+        head: str,
+        temporary_root: Path,
         head_worktree: Path,
         tests: tuple[str, ...],
     ) -> None:
-        command = (sys.executable, "-m", "pytest", *tests, "-q", "--basetemp", ".pytest-tmp")
         if not tests:
-            result["stages"].append({"command": list(command), "name": "responsibility_tests", "status": "not_applicable", "tests": []})
-            return
-        tested = self._run(command, head_worktree, env=_candidate_environment())
-        if tested.returncode != 0:
-            result["stages"].append(_stage("responsibility_tests", command, "failed", tested, tests=tests))
-            raise ReadinessError(
-                "product_test_failure",
-                "pytest_failed",
-                _command_failure("python -m pytest", tested),
-                path=_failed_test_identity(tested),
+            result["stages"].append(
+                {
+                    "command": [],
+                    "name": "responsibility_tests",
+                    "status": "not_applicable",
+                    "tests": [],
+                }
             )
-        result["stages"].append(_stage("responsibility_tests", command, "pass", tested, tests=tests))
+            return
+        snapshot = self._materialize_authority_snapshot(
+            authority,
+            temporary_root,
+            AUTHORITY_TEST_RUNNER_PATH,
+            "authority-test-runner.py",
+        )
+        command = (
+            sys.executable,
+            "-P",
+            str(snapshot),
+            "--stage",
+            RESPONSIBILITY_TEST_STAGE,
+            "--timeout-seconds",
+            str(RESPONSIBILITY_TEST_TIMEOUT_SECONDS),
+            "--",
+            *tests,
+        )
+        tested = self._run(command, head_worktree, env=_candidate_environment())
+        try:
+            evidence = _load_test_stage_evidence(
+                tested,
+                head_worktree,
+                expected_head=head,
+                expected_tests=tests,
+            )
+        except ReadinessError:
+            result["stages"].append(
+                _stage("responsibility_tests", command, "failed", tested, tests=tests)
+            )
+            raise
+        stage = _stage(
+            "responsibility_tests",
+            command,
+            "pass" if tested.returncode == 0 else "failed",
+            tested,
+            tests=tests,
+        )
+        stage["runner_evidence"] = _public_test_stage_evidence(evidence)
+        result["stages"].append(stage)
+        if tested.returncode != 0:
+            category = evidence.get("category")
+            if category == "product_test_failure":
+                readiness_category = "product_test_failure"
+            elif category == "invalid_test_plan":
+                readiness_category = "governance_violation"
+            else:
+                readiness_category = "infrastructure_failure"
+            code = evidence.get("code")
+            raise ReadinessError(
+                readiness_category,
+                code if isinstance(code, str) and code else "test_stage_failed",
+                _command_failure("accepted-authority test stage", tested),
+                path=_failed_test_identity(tested) if code == "pytest_failed" else None,
+            )
 
     def _bootstrap_frontend_dependencies(
         self,
@@ -917,6 +989,14 @@ class PrePushReadiness:
                 self._authority_root / AUTHORITY_GOVERNANCE_PATH,
                 code="authority_post_candidate_integrity_mismatch",
                 message="candidate activity changed authority governance after governance was sealed",
+            )
+            self._assert_authority_path_matches_ref(
+                authority,
+                self._authority_root,
+                AUTHORITY_TEST_RUNNER_PATH,
+                self._authority_root / AUTHORITY_TEST_RUNNER_PATH,
+                code="authority_post_candidate_integrity_mismatch",
+                message="candidate activity changed the authority test-stage runner after governance was sealed",
             )
             for relative_path, message in (
                 (AUTHORITY_ARCHITECTURE_PATH, "candidate activity changed the authority architecture checker after governance was sealed"),
@@ -1410,6 +1490,99 @@ def _failed_test_identity(completed: _CommandResult) -> str | None:
     output = "\n".join((completed.stdout, completed.stderr))
     match = re.search(r"(?m)^FAILED ([^\s]+::[^\s]+)", output)
     return match.group(1) if match else None
+
+
+def _load_test_stage_evidence(
+    completed: _CommandResult,
+    head_worktree: Path,
+    *,
+    expected_head: str,
+    expected_tests: tuple[str, ...],
+) -> dict[str, Any]:
+    matches = list(LOCAL_TEST_STAGE_EVIDENCE.finditer(completed.stdout))
+    if len(matches) != 1:
+        raise ReadinessError(
+            "infrastructure_failure",
+            "test_stage_evidence_missing",
+            "accepted-authority test stage did not emit exactly one evidence path",
+        )
+    relative_text = matches[0].group("path")
+    relative_path = PurePosixPath(relative_text)
+    if (
+        relative_path.is_absolute()
+        or any(part in {"", ".", ".."} for part in relative_path.parts)
+        or relative_path.parts[:2] != (".pytest-tmp", "test-runs")
+        or relative_path.name != "evidence.json"
+        or relative_path.as_posix() != relative_text
+    ):
+        raise ReadinessError(
+            "infrastructure_failure",
+            "test_stage_evidence_invalid",
+            "accepted-authority test stage emitted an unsafe evidence path",
+            path=relative_text,
+        )
+    try:
+        evidence_path = (head_worktree / relative_path).resolve(strict=True)
+        evidence_path.relative_to(head_worktree.resolve(strict=True))
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        raise ReadinessError(
+            "infrastructure_failure",
+            "test_stage_evidence_invalid",
+            f"accepted-authority test-stage evidence is unreadable: {error}",
+            path=relative_text,
+        ) from error
+    expected = {
+        "schema_version": LOCAL_TEST_STAGE_SCHEMA_VERSION,
+        "stage": RESPONSIBILITY_TEST_STAGE,
+        "head_sha": expected_head,
+        "selectors": list(expected_tests),
+        "timeout_seconds": RESPONSIBILITY_TEST_TIMEOUT_SECONDS,
+        "cleanup": "completed",
+    }
+    if not isinstance(evidence, dict) or any(evidence.get(key) != value for key, value in expected.items()):
+        raise ReadinessError(
+            "infrastructure_failure",
+            "test_stage_evidence_invalid",
+            "accepted-authority test-stage evidence does not match the exact candidate plan",
+            path=relative_text,
+        )
+    paths = evidence.get("paths")
+    if not isinstance(paths, dict) or paths.get("evidence") != relative_text:
+        raise ReadinessError(
+            "infrastructure_failure",
+            "test_stage_evidence_invalid",
+            "accepted-authority test-stage evidence does not bind its reported path",
+            path=relative_text,
+        )
+    expected_statuses = {"passed", "passed_with_skips"} if completed.returncode == 0 else {
+        "failed",
+        "interrupted",
+        "timed_out",
+    }
+    if evidence.get("returncode") != completed.returncode or evidence.get("status") not in expected_statuses:
+        raise ReadinessError(
+            "infrastructure_failure",
+            "test_stage_evidence_invalid",
+            "accepted-authority test-stage evidence does not match the process result",
+            path=relative_text,
+        )
+    return evidence
+
+
+def _public_test_stage_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    paths = evidence["paths"]
+    return {
+        "category": evidence.get("category"),
+        "cleanup": evidence["cleanup"],
+        "code": evidence.get("code"),
+        "head_sha": evidence["head_sha"],
+        "path": paths["evidence"],
+        "pytest": evidence.get("pytest"),
+        "schema_version": evidence["schema_version"],
+        "status": evidence["status"],
+        "timeout_seconds": evidence["timeout_seconds"],
+    }
 
 
 def _json_payload(completed: _CommandResult) -> dict[str, Any]:

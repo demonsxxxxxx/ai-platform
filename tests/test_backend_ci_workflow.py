@@ -124,6 +124,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_pr_review_record.py",
         "tests/test_source_authority_docs.py",
         "tests/test_ci_image_scope.py",
+        "tests/test_require_zero_junit_skips.py",
         "tests/test_s72_release_contract.py",
         "tests/test_packaging_contract.py",
         "tests/test_packaging_publish_workflow.py",
@@ -250,7 +251,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
         "release-governance-authority": ("", ""),
     }
     all_selectors = [selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors]
-    assert len(all_selectors) == len(set(all_selectors)) == 70
+    assert len(all_selectors) == len(set(all_selectors)) == 71
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job
@@ -340,6 +341,8 @@ def test_agent_skill_contract_job_is_bounded_and_required():
     )
     assert "uv lock --check" in agent_skill_job
     assert "uv sync --locked --extra test --no-install-project" in agent_skill_job
+    assert "--junitxml .pytest-tmp/agent-skill-contracts.xml" in agent_skill_job
+    assert "tools/require_zero_junit_skips.py" in agent_skill_job
     assert re.search(r"(?m)^\s*continue-on-error\s*:", agent_skill_job) is None
     assert agent_skill_job_document["services"] == {
         "postgres": {
@@ -386,8 +389,18 @@ def test_agent_skill_contract_job_is_bounded_and_required():
         "--tb=short",
         "-o",
         "faulthandler_timeout=120",
+        "--junitxml",
+        ".pytest-tmp/agent-skill-contracts.xml",
         "--basetemp",
         ".pytest-tmp/agent-skill-contracts",
+        "uv",
+        "run",
+        "--locked",
+        "--extra",
+        "test",
+        "python",
+        "tools/require_zero_junit_skips.py",
+        ".pytest-tmp/agent-skill-contracts.xml",
     ]
     assert tokens == expected_tokens
     assert not any(token.startswith("-k") for token in tokens)
@@ -1032,6 +1045,20 @@ def test_code_governance_uses_exact_trusted_base_bootstrap_and_propagates_pr_fai
     assert "set +e" not in governance_step
     assert "ruff check ." not in workflow
     assert "ruff format" not in workflow
+
+
+def test_candidate_dependencies_use_one_pinned_lock_keyed_uv_cache_contract_per_job():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    setup_uv = (
+        "uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d "
+        "# v10.0.1"
+    )
+
+    assert workflow.count(setup_uv) == 3
+    assert workflow.count("version: ${{ env.UV_VERSION }}") == 3
+    assert workflow.count("enable-cache: true") == 3
+    assert workflow.count("cache-dependency-glob: uv.lock") == 3
+    assert 'python -m pip install "uv==$UV_VERSION"' not in workflow
 
 
 def test_existing_pr_checks_switch_to_the_validated_head_after_governance():

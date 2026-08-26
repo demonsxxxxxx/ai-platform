@@ -18,8 +18,6 @@ PYTEST_COMMAND = (
     "tests/test_frontend_release_traceability.py "
     "tests/test_frontend_packaged_runtime_smoke.py "
     "tests/test_frontend_ci_workflow.py "
-    "tests/test_require_zero_junit_skips.py "
-    "tests/test_source_authority_docs.py "
     "-q --basetemp .pytest-tmp"
 )
 LINUX_PYTEST_COMMAND = (
@@ -33,7 +31,9 @@ BACKEND_OWNED_STATIC_SUITES = {
     "tests/test_packaging_publish_workflow.py",
     "tests/test_release_image_manifest.py",
     "tests/test_release_authority.py",
+    "tests/test_require_zero_junit_skips.py",
     "tests/test_runtime_launch_script.py",
+    "tests/test_source_authority_docs.py",
 }
 
 
