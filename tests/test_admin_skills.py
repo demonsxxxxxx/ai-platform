@@ -14,9 +14,12 @@ from app.main import create_app
 from app.models import AdminSkillDetailResponse
 from app.repositories import RepositoryConflictError
 from app.routes.admin_skills import admin_upload_skill_package
-from app.skills import dependencies as skill_dependencies
 from app.skills import packages as skill_packages
-from app.skills.dependencies import SkillDependencyPolicyError, skill_dependency_ids, skill_dependency_policy
+from app.skills.dependencies import (
+    SkillDependencyPolicyError,
+    skill_dependency_policy,
+    validate_skill_dependency_ids,
+)
 from app.settings import Settings
 from app.storage import StoredObject
 from tests.support.db_transactions import OpaqueConnection, opaque_connection_transaction, opaque_transaction
@@ -313,8 +316,8 @@ def test_admin_skill_detail_response_rejects_extra_dependency_policy_fields():
         AdminSkillDetailResponse.model_validate(payload)
 
 
-def test_dependency_policy_reports_missing_internal_dependency_for_admin_audit():
-    policy = skill_dependency_policy("qa-file-reviewer", {"qa-file-reviewer"})
+def test_dependency_policy_reports_missing_persisted_internal_dependency_for_admin_audit():
+    policy = skill_dependency_policy("qa-file-reviewer", {"qa-file-reviewer"}, ["minimax-docx"])
 
     assert policy == {
         "skill_id": "qa-file-reviewer",
@@ -333,13 +336,15 @@ def test_dependency_policy_reports_missing_internal_dependency_for_admin_audit()
         ],
     }
     with pytest.raises(SkillDependencyPolicyError, match="skill_dependency_missing: minimax-docx"):
-        skill_dependency_ids("qa-file-reviewer", {"qa-file-reviewer"})
+        validate_skill_dependency_ids("qa-file-reviewer", ["minimax-docx"], {"qa-file-reviewer"})
 
 
-def test_dependency_policy_allows_ctd_stability_reference_dependency():
+def test_dependency_policy_allows_persisted_ctd_stability_reference_dependency():
+    available = {"ctd-32s73-stability-template-fill", "reference-fact-extraction"}
     policy = skill_dependency_policy(
         "ctd-32s73-stability-template-fill",
-        {"ctd-32s73-stability-template-fill", "reference-fact-extraction"},
+        available,
+        ["reference-fact-extraction"],
     )
 
     assert policy == {
@@ -358,18 +363,19 @@ def test_dependency_policy_allows_ctd_stability_reference_dependency():
             }
         ],
     }
-    assert skill_dependency_ids(
+    assert validate_skill_dependency_ids(
         "ctd-32s73-stability-template-fill",
-        {"ctd-32s73-stability-template-fill", "reference-fact-extraction"},
+        ["reference-fact-extraction"],
+        available,
     ) == ["reference-fact-extraction"]
 
 
-def test_dependency_policy_reports_public_dependency_without_allowing_it(monkeypatch):
-    monkeypatch.setitem(skill_dependencies.SKILL_DEPENDENCIES, "qa-file-reviewer", ["baoyu-translate"])
-
+def test_dependency_policy_reports_persisted_public_dependency_without_allowing_it():
+    available = {"baoyu-translate", "minimax-docx", "qa-file-reviewer"}
     policy = skill_dependency_policy(
         "qa-file-reviewer",
-        {"baoyu-translate", "minimax-docx", "qa-file-reviewer"},
+        available,
+        ["baoyu-translate"],
     )
 
     assert policy["dependency_ids"] == ["baoyu-translate"]
@@ -384,13 +390,10 @@ def test_dependency_policy_reports_public_dependency_without_allowing_it(monkeyp
         }
     ]
     with pytest.raises(SkillDependencyPolicyError, match="skill_dependency_not_internal: baoyu-translate"):
-        skill_dependency_ids(
-            "qa-file-reviewer",
-            {"baoyu-translate", "minimax-docx", "qa-file-reviewer"},
-        )
+        validate_skill_dependency_ids("qa-file-reviewer", ["baoyu-translate"], available)
 
 
-def test_admin_skill_detail_returns_blocked_dependency_policy_for_admin_audit(monkeypatch):
+def test_admin_skill_detail_does_not_infer_dependency_without_persisted_version(monkeypatch):
     async def fake_detail(conn, *, tenant_id, skill_id):
         return {
             "skill": {"skill_id": skill_id, "name": "QA File Reviewer"},
@@ -414,21 +417,12 @@ def test_admin_skill_detail_returns_blocked_dependency_policy_for_admin_audit(mo
         "skill_id": "qa-file-reviewer",
         "public": True,
         "internal_dependency": False,
-        "dependency_ids": ["minimax-docx"],
-        "dependency_details": [
-            {
-                "skill_id": "minimax-docx",
-                "status": "blocked",
-                "reason": "skill_dependency_missing",
-                "public": False,
-                "internal_dependency": True,
-                "available": False,
-            }
-        ],
+        "dependency_ids": [],
+        "dependency_details": [],
     }
 
 
-def test_admin_sync_builtin_skills_records_registry_versions_dependencies_and_snapshots(monkeypatch, tmp_path):
+def test_admin_sync_builtin_skills_records_registry_versions_without_inferred_dependencies(monkeypatch, tmp_path):
     skills_root = tmp_path / "skills"
     minimax_dir = skills_root / "minimax-docx"
     qa_dir = skills_root / "qa-file-reviewer"
@@ -502,6 +496,10 @@ def test_admin_sync_builtin_skills_records_registry_versions_dependencies_and_sn
         assert isinstance(conn, OpaqueConnection)
         catalog_updates.append(kwargs)
 
+    async def fake_get_version(conn, *, skill_id, version):
+        assert isinstance(conn, OpaqueConnection)
+        return None
+
     async def fake_backfill_snapshot(conn, **kwargs):
         assert isinstance(conn, OpaqueConnection)
         snapshot_backfills.append(kwargs)
@@ -513,6 +511,7 @@ def test_admin_sync_builtin_skills_records_registry_versions_dependencies_and_sn
     monkeypatch.setattr("app.routes.admin_skills.BuiltinSkillRegistry", FakeRegistry)
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fake_upsert)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr(
         "app.routes.admin_skills.repositories.backfill_builtin_skill_version_snapshot",
         fake_backfill_snapshot,
@@ -545,12 +544,11 @@ def test_admin_sync_builtin_skills_records_registry_versions_dependencies_and_sn
     assert synced[0]["source_json"]["files"][0]["relative_path"] == "SKILL.md"
     assert synced[1]["version"] == "hash-qa"
     assert synced[1]["content_hash"] == "hash-qa"
-    assert synced[1]["dependency_ids"] == ["minimax-docx"]
+    assert synced[1]["dependency_ids"] == []
     assert synced[1]["status"] == "draft"
     assert synced[1]["source_json"]["kind"] == "builtin"
     assert synced[1]["source_json"]["files"][0]["relative_path"] == "SKILL.md"
-    assert synced[1]["source_json"]["dependency_manifests"][0]["skill_id"] == "minimax-docx"
-    assert synced[1]["source_json"]["dependency_manifests"][0]["files"][0]["relative_path"] == "SKILL.md"
+    assert "dependency_manifests" not in synced[1]["source_json"]
     assert synced[2]["version"] == "hash-ragflow"
     assert synced[2]["content_hash"] == "hash-ragflow"
     assert synced[2]["dependency_ids"] == []
@@ -570,7 +568,7 @@ def test_admin_sync_builtin_skills_records_registry_versions_dependencies_and_sn
     ]
 
 
-def test_admin_sync_builtin_skills_rejects_dependency_policy_violation(monkeypatch, tmp_path):
+def test_admin_sync_builtin_skills_preserves_existing_immutable_dependency_manifest(monkeypatch, tmp_path):
     skills_root = tmp_path / "skills"
     qa_dir = skills_root / "qa-file-reviewer"
     minimax_dir = skills_root / "minimax-docx"
@@ -592,9 +590,11 @@ def test_admin_sync_builtin_skills_rejects_dependency_policy_violation(monkeypat
     )
 
     settings = Settings(frontend_poc_auth_enabled=True, platform_skills_root=str(skills_root))
+    synced = []
 
     async def fake_upsert(conn, **kwargs):
         assert isinstance(conn, OpaqueConnection)
+        synced.append(kwargs)
 
     async def fake_update_catalog(conn, **kwargs):
         assert isinstance(conn, OpaqueConnection)
@@ -602,15 +602,16 @@ def test_admin_sync_builtin_skills_rejects_dependency_policy_violation(monkeypat
     async def fake_backfill_snapshot(conn, **kwargs):
         assert isinstance(conn, OpaqueConnection)
 
-    def disallowed_dependency(skill_id, available_skill_ids):
-        if skill_id == "qa-file-reviewer":
-            raise SkillDependencyPolicyError("skill_dependency_not_internal: baoyu-translate")
-        return []
+    async def fake_get_version(conn, *, skill_id, version):
+        assert isinstance(conn, OpaqueConnection)
+        if skill_id != "qa-file-reviewer":
+            return None
+        return materializable_builtin_qa_version(version)
 
     monkeypatch.setattr("app.auth.get_settings", lambda: settings)
     monkeypatch.setattr("app.routes.admin_skills.get_settings", lambda: settings)
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.skill_dependency_ids", disallowed_dependency)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fake_upsert)
     monkeypatch.setattr(
         "app.routes.admin_skills.repositories.backfill_builtin_skill_version_snapshot",
@@ -625,8 +626,10 @@ def test_admin_sync_builtin_skills_rejects_dependency_policy_violation(monkeypat
 
     response = client.post("/api/ai/admin/skills/sync-builtin", headers=admin_headers())
 
-    assert response.status_code == 409
-    assert response.json()["detail"] == "skill_dependency_policy_violation"
+    assert response.status_code == 200
+    qa_sync = next(item for item in synced if item["skill_id"] == "qa-file-reviewer")
+    assert qa_sync["dependency_ids"] == ["minimax-docx"]
+    assert qa_sync["source_json"]["dependency_manifests"][0]["skill_id"] == "minimax-docx"
 
 
 def test_admin_upload_skill_package_requires_admin(monkeypatch):
@@ -677,32 +680,6 @@ def test_skill_admin_upload_existing_catalog_skill_is_denied_before_storage(monk
 
     assert response.status_code == 403
     assert response.json()["detail"] == "not_ai_admin"
-
-
-def test_admin_upload_skill_package_rejects_missing_internal_dependency(monkeypatch):
-    async def fake_get_skill(conn, *, skill_id):
-        assert isinstance(conn, OpaqueConnection)
-        assert skill_id == "qa-file-reviewer"
-        return {"skill_id": skill_id, "status": "active"}
-
-    async def fake_list_skill_ids(conn):
-        assert isinstance(conn, OpaqueConnection)
-        return ["qa-file-reviewer"]
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/ai/admin/skills/qa-file-reviewer/versions/upload",
-        files={"package": ("qa-file-reviewer.zip", skill_package_zip(), "application/zip")},
-        headers=admin_headers(),
-    )
-
-    assert response.status_code == 409
-    assert response.json()["detail"] == "skill_dependency_policy_violation"
 
 
 def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monkeypatch):
@@ -794,10 +771,10 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
     assert uploaded["source"]["package_contract"]["uploaded_by"] == "dev-admin"
     assert uploaded["source"]["dependency_evidence"] == {
         "schema_version": "ai-platform.skill-dependency-evidence.v1",
-        "status": "review_required",
-        "dependency_count": 1,
-        "dependency_ids": ["minimax-docx"],
-        "manifest_snapshot_present": True,
+        "status": "not_required",
+        "dependency_count": 0,
+        "dependency_ids": [],
+        "manifest_snapshot_present": False,
         "package_evidence_present": False,
         "evidence_files": {
             "sbom_or_signed_package": [],
@@ -806,9 +783,7 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
         },
     }
     assert [item["relative_path"] for item in uploaded["source"]["files"]] == ["SKILL.md", "references/guide.md"]
-    assert uploaded["source"]["dependency_manifests"][0]["skill_id"] == "minimax-docx"
-    dependency_paths = [item["relative_path"] for item in uploaded["source"]["dependency_manifests"][0]["files"]]
-    assert "SKILL.md" in dependency_paths
+    assert "dependency_manifests" not in uploaded["source"]
 
     assert len(stored_objects) == 1
     assert stored_objects[0]["storage_key"] == expected_key
@@ -820,7 +795,7 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
     assert upsert["content_hash"] == uploaded["content_hash"]
     assert upsert["description"] == "Review Word documents."
     assert upsert["source_json"] == uploaded["source"]
-    assert upsert["dependency_ids"] == ["minimax-docx"]
+    assert upsert["dependency_ids"] == []
     assert upsert["status"] == "draft"
     assert upsert["created_by"] == "dev-admin"
 
@@ -1516,62 +1491,6 @@ def test_admin_upload_existing_version_reuses_draft_without_policy_or_distributi
     assert policies == []
     assert visibility_updates == []
     assert [item["action"] for item in calls] == ["skill_version_upload_reused"]
-
-
-def test_admin_upload_skill_package_reuse_rejects_stale_dependency_policy(monkeypatch):
-    calls = []
-
-    class FailingObjectStorage:
-        def put_bytes(self, **kwargs):
-            raise AssertionError("stale existing skill version must reject before object storage")
-
-    async def fake_get_skill(conn, *, skill_id):
-        return {"skill_id": skill_id, "status": "active"}
-
-    async def fake_list_skill_ids(conn):
-        return ["qa-file-reviewer", "minimax-docx"]
-
-    async def fake_get_version(conn, *, skill_id, version):
-        return {
-            "skill_id": skill_id,
-            "version": version,
-            "content_hash": version,
-            "description": "Stale existing upload",
-            "source": {
-                "kind": "uploaded",
-                "storage_key": f"skills/{skill_id}/versions/{version}/package.zip",
-                "package_sha256": "existing-sha",
-                "size_bytes": 123,
-                "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
-            },
-            "dependency_ids": [],
-            "status": "active",
-            "created_by": "first-admin",
-            "created_at": None,
-        }
-
-    async def fail_audit(conn, **kwargs):
-        calls.append(kwargs)
-        raise AssertionError("stale existing skill version must reject before audit")
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FailingObjectStorage)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fail_audit)
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/ai/admin/skills/qa-file-reviewer/versions/upload",
-        files={"package": ("qa-file-reviewer.zip", skill_package_zip(), "application/zip")},
-        headers=admin_headers(),
-    )
-
-    assert response.status_code == 409
-    assert response.json()["detail"] == "skill_version_not_materializable"
-    assert calls == []
 
 
 def test_admin_upload_skill_package_reuse_rejects_non_uploaded_existing_version(monkeypatch):
@@ -2756,43 +2675,6 @@ def test_admin_promote_accepts_uploaded_version_with_snapshot_files(monkeypatch)
     assert [item for item in calls if item[0] == "set_policy"][0][1]["version"] == "hash-uploaded"
 
 
-def test_admin_promote_rejects_uploaded_version_with_stale_dependency_policy(monkeypatch):
-    async def fake_get_version(conn, *, skill_id, version):
-        return {
-            "skill_id": skill_id,
-            "version": version,
-            "content_hash": version,
-            "description": "Uploaded QA review",
-            "source": {
-                "kind": "uploaded",
-                "storage_key": "tenants/default/skills/qa-file-reviewer/versions/hash-uploaded/package.zip",
-                "files": snapshot_files(),
-            },
-            "dependency_ids": [],
-            "status": "active",
-            "created_by": "dev-admin",
-            "created_at": None,
-        }
-
-    async def fail_get_policy(*args, **kwargs):
-        raise AssertionError("stale uploaded dependency metadata must reject before policy lookup")
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/ai/admin/skills/qa-file-reviewer/promote",
-        json={"version": "hash-uploaded", "rollout_percent": 100},
-        headers=admin_headers(),
-    )
-
-    assert response.status_code == 409
-    assert response.json()["detail"] == "skill_version_not_materializable"
-
-
 def test_admin_promote_rejects_uploaded_version_without_snapshot_files(monkeypatch):
     async def fake_get_version(conn, *, skill_id, version):
         return {
@@ -2885,44 +2767,6 @@ def test_admin_promote_rejects_fileless_builtin_version(monkeypatch):
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/ai/admin/skills/qa-file-reviewer/promote",
-        json={"version": "hash-b", "rollout_percent": 100},
-        headers=admin_headers(),
-    )
-
-    assert response.status_code == 409
-    assert response.json()["detail"] == "skill_version_not_materializable"
-
-
-def test_admin_promote_rejects_builtin_snapshot_with_stale_dependency_policy(monkeypatch):
-    async def fake_get_version(conn, *, skill_id, version):
-        return {
-            "skill_id": skill_id,
-            "version": version,
-            "content_hash": version,
-            "description": "QA review",
-            "source": {
-                "kind": "builtin",
-                "asset_dir": "qa-file-reviewer",
-                "version": version,
-                "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
-            },
-            "dependency_ids": [],
-            "status": "active",
-            "created_by": "dev-admin",
-            "created_at": None,
-        }
-
-    async def fail_get_policy(*args, **kwargs):
-        raise AssertionError("stale builtin dependency metadata must reject before policy lookup")
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
     client = TestClient(create_app())
 
     response = client.post(
@@ -3156,43 +3000,6 @@ def test_admin_rollback_accepts_uploaded_version_with_snapshot_files(monkeypatch
     assert [item for item in calls if item[0] == "set_policy"][0][1]["version"] == "hash-uploaded"
 
 
-def test_admin_rollback_rejects_uploaded_version_with_stale_dependency_policy(monkeypatch):
-    async def fake_get_version(conn, *, skill_id, version):
-        return {
-            "skill_id": skill_id,
-            "version": version,
-            "content_hash": version,
-            "description": "Uploaded QA review",
-            "source": {
-                "kind": "uploaded",
-                "storage_key": "tenants/default/skills/qa-file-reviewer/versions/hash-uploaded/package.zip",
-                "files": snapshot_files(),
-            },
-            "dependency_ids": [],
-            "status": "active",
-            "created_by": "dev-admin",
-            "created_at": None,
-        }
-
-    async def fail_get_policy(*args, **kwargs):
-        raise AssertionError("stale uploaded dependency metadata must reject before policy lookup")
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/ai/admin/skills/qa-file-reviewer/rollback",
-        json={"version": "hash-uploaded"},
-        headers=admin_headers(),
-    )
-
-    assert response.status_code == 409
-    assert response.json()["detail"] == "skill_version_not_materializable"
-
-
 def test_admin_rollback_rejects_uploaded_version_without_snapshot_files(monkeypatch):
     async def fake_get_version(conn, *, skill_id, version):
         return {
@@ -3285,44 +3092,6 @@ def test_admin_rollback_rejects_fileless_builtin_version(monkeypatch):
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/ai/admin/skills/qa-file-reviewer/rollback",
-        json={"version": "hash-a"},
-        headers=admin_headers(),
-    )
-
-    assert response.status_code == 409
-    assert response.json()["detail"] == "skill_version_not_materializable"
-
-
-def test_admin_rollback_rejects_builtin_snapshot_with_stale_dependency_policy(monkeypatch):
-    async def fake_get_version(conn, *, skill_id, version):
-        return {
-            "skill_id": skill_id,
-            "version": version,
-            "content_hash": version,
-            "description": "QA review",
-            "source": {
-                "kind": "builtin",
-                "asset_dir": "qa-file-reviewer",
-                "version": version,
-                "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
-            },
-            "dependency_ids": [],
-            "status": "active",
-            "created_by": "dev-admin",
-            "created_at": None,
-        }
-
-    async def fail_get_policy(*args, **kwargs):
-        raise AssertionError("stale builtin dependency metadata must reject before policy lookup")
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
     client = TestClient(create_app())
 
     response = client.post(

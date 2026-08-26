@@ -14,6 +14,7 @@ import ssl
 import stat
 import subprocess
 import sys
+import tempfile
 import textwrap
 import threading
 import time
@@ -1551,20 +1552,26 @@ def test_exact_dispatch_cannot_outlive_accept_time_total_budget() -> None:
     thread.start()
     client = socket.create_connection(server.server_address, timeout=1)
     started = time.monotonic()
+    response = bytearray()
     try:
         client.sendall(
             b"POST /v1/sandboxes/sandbox-one/proxy/18000/v2/tasks HTTP/1.1\r\n"
             b"Host: 127.0.0.1\r\nContent-Length: 0\r\n\r\n"
         )
         client.settimeout(1)
-        while client.recv(4096):
+        try:
+            while chunk := client.recv(4096):
+                response.extend(chunk)
+        except (ConnectionResetError, ConnectionAbortedError):
             pass
         assert time.monotonic() - started < 0.7
+        assert b"200 OK" not in response
     finally:
         client.close()
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+        assert not thread.is_alive()
 
 
 def test_helper_server_uses_real_framing_and_one_bounded_connection_budget(monkeypatch) -> None:
@@ -4068,8 +4075,8 @@ def _run_gateway_bash_contract(script: pathlib.Path, root: pathlib.Path, body: s
     if not executable:
         pytest.skip("Git Bash is required for executable deployment contracts")
     workspace_tmp = pathlib.Path(__file__).resolve().parents[1] / ".pytest-tmp"
-    short_root = workspace_tmp / f"gw-{os.getpid()}-{hashlib.sha256(str(root).encode()).hexdigest()[:8]}"
-    short_root.mkdir(parents=True)
+    workspace_tmp.mkdir(exist_ok=True)
+    short_root_prefix = f"gw-{os.getpid()}-{hashlib.sha256(str(root).encode()).hexdigest()[:8]}-"
     path_compat = r"""
     if ! command -v cygpath >/dev/null 2>&1; then
       cygpath() {
@@ -4080,7 +4087,7 @@ def _run_gateway_bash_contract(script: pathlib.Path, root: pathlib.Path, body: s
       }
     fi
     """
-    try:
+    with tempfile.TemporaryDirectory(prefix=short_root_prefix, dir=workspace_tmp) as short_root:
         return subprocess.run(
             [
                 executable,
@@ -4088,7 +4095,7 @@ def _run_gateway_bash_contract(script: pathlib.Path, root: pathlib.Path, body: s
                 textwrap.dedent(path_compat + body),
                 "gateway-contract",
                 str(script),
-                str(short_root),
+                short_root,
                 sys.executable,
             ],
             text=True,
@@ -4096,8 +4103,28 @@ def _run_gateway_bash_contract(script: pathlib.Path, root: pathlib.Path, body: s
             timeout=90,
             check=False,
         )
-    finally:
-        shutil.rmtree(short_root, ignore_errors=True)
+
+
+def test_gateway_bash_contract_removes_read_only_short_root(tmp_path) -> None:
+    script = pathlib.Path(__file__).resolve().parents[1] / "deploy/opensandbox/install-s72.sh"
+    workspace_tmp = pathlib.Path(__file__).resolve().parents[1] / ".pytest-tmp"
+    pattern = f"gw-{os.getpid()}-*"
+    roots_before = set(workspace_tmp.glob(pattern))
+
+    result = _run_gateway_bash_contract(
+        script,
+        tmp_path,
+        r'''
+        set -eu
+        ROOT=$(cygpath -u "$2")
+        mkdir "$ROOT/read-only"
+        printf '%s\n' 'owned test output' > "$ROOT/read-only/result.txt"
+        chmod 0400 "$ROOT/read-only/result.txt"
+        ''',
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert set(workspace_tmp.glob(pattern)) == roots_before
 
 
 def test_installer_accepts_only_standard_sticky_or_nonwritable_lock_parent_modes(tmp_path) -> None:
@@ -4343,12 +4370,14 @@ def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -
         TRANSACTION_RECORDS=$DEPLOY_STATE/transactions
         mkdir -p "$DEPLOY_STATE" "$TRANSACTION_RECORDS"
         mkdir -p "$SYSTEMD_DIR" "$CONFIG_DIR" "$WORKSPACE_ROOT" "$STATE"
+        mkdir -p "$RELEASES/{old}" "$RELEASES/{new}"
         printf 'old-public\n' > "$SYSTEMD_DIR/opensandbox-gateway.service"
         printf 'old-helper\n' > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         printf 'old-config\n' > "$CONFIG_DIR/gateway.env"; printf 'acl-old\n' > "$ROOT/acl.current"
         printf '{old}\n' > "$AUTHORITY_SHA_STATE"
         printf 'ls-remote-old\n' > "$AUTHORITY_EVIDENCE_STATE"
         rm -f "$CURRENT_LINK"; ln -s releases/{old} "$CURRENT_LINK"
+        test -d "$CURRENT_LINK"
         : > "$STATE/opensandbox-gateway.service.active"; : > "$STATE/opensandbox-gateway.service.enabled"
         : > "$STATE/opensandbox-gateway-helper.service.active"; : > "$STATE/opensandbox-gateway-helper.service.enabled"
         require_root_tree() {{ test -d "$1" && test ! -L "$1"; }}
@@ -4427,6 +4456,7 @@ def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -
         printf 'new-helper\n' > "$SYSTEMD_DIR/opensandbox-gateway-helper.service"
         printf 'new-config\n' > "$CONFIG_DIR/gateway.env"; printf 'acl-new\n' > "$ROOT/acl.current"
         rm "$CURRENT_LINK"; ln -s releases/{new} "$CURRENT_LINK"
+        test -d "$CURRENT_LINK"
         restore_snapshot_payload "$SNAPSHOT" 11111111111111111111111111111111
         restore_snapshot_runtime "$SNAPSHOT"
         grep -qx old-public "$SYSTEMD_DIR/opensandbox-gateway.service"

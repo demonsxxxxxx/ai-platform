@@ -33,7 +33,7 @@ WORKDIR /app
 
 RUN APT_MIRROR="$APT_MIRROR" APT_SECURITY_MIRROR="$APT_SECURITY_MIRROR" python -c 'import os; from pathlib import Path; p = Path("/etc/apt/sources.list.d/debian.sources"); archive = os.environ.get("APT_MIRROR", ""); security = os.environ.get("APT_SECURITY_MIRROR", ""); mirrors = {key: archive for key in ("http://deb.debian.org/debian", "https://deb.debian.org/debian") if archive} | {key: security for key in ("http://deb.debian.org/debian-security", "https://deb.debian.org/debian-security", "http://security.debian.org/debian-security", "https://security.debian.org/debian-security") if security}; lines = p.read_text(encoding="utf-8").splitlines(); rewritten = [line.partition(":")[0] + ": " + " ".join(mirrors.get(uri.rstrip("/"), uri) for uri in line.partition(":")[2].split()) if line.lstrip().startswith("URIs:") else line for line in lines]; p.write_text("\n".join(rewritten) + "\n", encoding="utf-8")' \
     && apt-get update \
-    && apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk git passwd \
+    && apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk git pandoc passwd \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 ai-platform \
     && useradd --uid 10001 --gid 10001 --home-dir /home/ai-platform --create-home --shell /usr/sbin/nologin ai-platform \

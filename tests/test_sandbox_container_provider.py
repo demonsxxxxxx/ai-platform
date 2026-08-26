@@ -1463,6 +1463,23 @@ def test_opensandbox_workspace_manifest_enforces_explicit_upload_bounds(monkeypa
         container_provider._build_opensandbox_workspace_manifest(request(), lease_workspace)
 
 
+def test_opensandbox_workspace_manifest_allows_1024_files_and_rejects_1025(tmp_path):
+    from app.runtime.sandbox import container_provider
+
+    local_workspace = tmp_path / "workspace"
+    local_workspace.mkdir()
+    for index in range(1024):
+        (local_workspace / f"file-{index:04d}.txt").write_bytes(b"x")
+    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
+
+    _directories, files = container_provider._build_opensandbox_workspace_manifest(request(), lease_workspace)
+    assert len(files) == 1024
+
+    (local_workspace / "file-1024.txt").write_bytes(b"x")
+    with pytest.raises(container_provider.ContainerStartFailedError, match="file count"):
+        container_provider._build_opensandbox_workspace_manifest(request(), lease_workspace)
+
+
 def test_opensandbox_workspace_manifest_enforces_upload_file_and_total_bytes(monkeypatch, tmp_path):
     from app.runtime.sandbox import container_provider
 

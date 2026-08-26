@@ -1836,7 +1836,7 @@ def _opensandbox_sentinel_path(workspace: WorkspaceLease) -> str:
     return f"{workspace.workspace_container_path.rstrip('/')}/.ai-platform-opensandbox-lease.json"
 
 
-_OPENSANDBOX_STAGE_MAX_FILES = 512
+_OPENSANDBOX_STAGE_MAX_FILES = 1024
 _OPENSANDBOX_STAGE_MAX_FILE_BYTES = 32 * 1024 * 1024
 _OPENSANDBOX_STAGE_MAX_TOTAL_BYTES = 128 * 1024 * 1024
 _OPENSANDBOX_STAGE_MAX_DIRECTORIES = 512
