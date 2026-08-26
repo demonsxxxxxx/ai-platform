@@ -55,6 +55,7 @@ def test_model_transport_maps_missing_write_only_key_to_validation_error() -> No
 def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) -> None:
     principal = SimpleNamespace(user_id="admin-user")
     authorized = {"value": True}
+    configure_calls: list[dict[str, object]] = []
 
     async def require_principal() -> SimpleNamespace:
         return principal
@@ -63,10 +64,15 @@ def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) ->
         async def admin_projection(self) -> dict[str, object]:
             return {"connection": None, "models": []}
 
+        async def configure_connection(self, **kwargs) -> dict[str, object]:
+            configure_calls.append(kwargs)
+            return {"connection": {"configured": True}, "models": []}
+
+    service = _Service()
     monkeypatch.setattr(
         model_routes,
         "configured_model_control_plane",
-        lambda: _Service(),
+        lambda: service,
     )
     app = FastAPI()
     app.include_router(
@@ -77,13 +83,53 @@ def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) ->
         prefix="/api/ai",
     )
 
+    credential_marker = "controlled-write-only-value"
+    legacy_marker = "deprecated-write-only-value"
+    oversized_marker = "oversized-write-only-value"
     with TestClient(app) as client:
         accepted = client.get("/api/ai/admin/models")
+        configured = client.put(
+            "/api/ai/admin/models/connection",
+            json={
+                "base_url": "https://gateway.example",
+                "credential": credential_marker,
+            },
+        )
+        rejected_legacy_field = client.put(
+            "/api/ai/admin/models/connection",
+            json={"base_url": "https://gateway.example", "api_key": legacy_marker},
+        )
+        rejected_oversized_credential = client.put(
+            "/api/ai/admin/models/connection",
+            json={
+                "base_url": "https://gateway.example",
+                "credential": oversized_marker + ("x" * 4097),
+            },
+        )
         authorized["value"] = False
         denied = client.get("/api/ai/admin/models")
 
     assert accepted.status_code == 200
     assert accepted.json() == {"connection": None, "models": []}
+    assert configured.status_code == 200
+    assert credential_marker not in configured.text
+    assert configure_calls == [
+        {
+            "base_url": "https://gateway.example",
+            "api_key": credential_marker,
+            "actor_user_id": "admin-user",
+        }
+    ]
+    assert rejected_legacy_field.status_code == 422
+    assert rejected_legacy_field.json() == {
+        "detail": "model_connection_credential_field_invalid"
+    }
+    assert legacy_marker not in rejected_legacy_field.text
+    assert rejected_oversized_credential.status_code == 422
+    assert rejected_oversized_credential.json() == {
+        "detail": "model_connection_credential_field_invalid"
+    }
+    assert oversized_marker not in rejected_oversized_credential.text
     assert denied.status_code == 403
     assert denied.json() == {"detail": "model_admin_required"}
 

@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.execution.application.model_control_plane import configured_model_control_plane
 
@@ -16,8 +16,11 @@ PrincipalDependency = Callable[..., Any]
 AdminPredicate = Callable[[Any], bool]
 
 class ModelConnectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     base_url: str = Field(min_length=1, max_length=2048)
-    api_key: str | None = Field(default=None, max_length=4096)
+    credential: Any = None
+    deprecated_api_key: Any = Field(default=None, alias="api_key", exclude=True)
 
 
 class ModelCatalogEntryPatch(BaseModel):
@@ -69,10 +72,22 @@ async def configure_model_connection(
     is_admin: AdminPredicate,
 ) -> dict[str, Any]:
     _require_admin(principal, is_admin=is_admin)
+    if "deprecated_api_key" in payload.model_fields_set:
+        raise HTTPException(
+            status_code=422,
+            detail="model_connection_credential_field_invalid",
+        )
+    if payload.credential is not None and (
+        not isinstance(payload.credential, str) or len(payload.credential) > 4096
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="model_connection_credential_field_invalid",
+        )
     try:
         return await configured_model_control_plane().configure_connection(
             base_url=payload.base_url,
-            api_key=payload.api_key,
+            api_key=payload.credential,
             actor_user_id=principal.user_id,
         )
     except (RuntimeError, ValueError) as exc:

@@ -14,7 +14,7 @@ function errorMessage(error: unknown): string {
 export function ModelAdminControl({ canManage = true }: { canManage?: boolean }) {
   const [state, setState] = useState<AdminModelState | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
-  const [apiKey, setApiKey] = useState("");
+  const [credential, setCredential] = useState("");
   const [labels, setLabels] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -47,10 +47,10 @@ export function ModelAdminControl({ canManage = true }: { canManage?: boolean })
     try {
       const next = await modelAdminApi.configure(
         baseUrl.trim(),
-        apiKey.trim() ? apiKey : undefined,
+        credential.trim() ? credential : undefined,
       );
       applyState(next);
-      setApiKey("");
+      setCredential("");
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
@@ -143,10 +143,10 @@ export function ModelAdminControl({ canManage = true }: { canManage?: boolean })
             aria-label="模型 API Key"
             autoComplete="new-password"
             className="h-10 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 outline-none focus:border-[var(--theme-primary)]"
-            onChange={(event) => setApiKey(event.target.value)}
+            onChange={(event) => setCredential(event.target.value)}
             placeholder={state?.connection.configured ? "留空则保持当前 Key" : "输入 API Key"}
             type="password"
-            value={apiKey}
+            value={credential}
           />
         </label>
         <button

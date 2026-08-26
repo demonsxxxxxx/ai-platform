@@ -32,12 +32,12 @@ export const modelAdminApi = {
     return authFetch<AdminModelState>(`${API_BASE}/api/ai/admin/models`);
   },
 
-  configure(baseUrl: string, apiKey?: string): Promise<AdminModelState> {
+  configure(baseUrl: string, credential?: string): Promise<AdminModelState> {
     return authFetch<AdminModelState>(`${API_BASE}/api/ai/admin/models/connection`, {
       method: "PUT",
       body: JSON.stringify({
         base_url: baseUrl,
-        ...(apiKey ? { api_key: apiKey } : {}),
+        ...(credential ? { credential } : {}),
       }),
     });
   },

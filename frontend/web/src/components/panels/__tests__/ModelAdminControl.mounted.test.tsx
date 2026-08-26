@@ -115,7 +115,7 @@ test("Model admin control gates non-admins and refreshes mounted mutations witho
   };
   const calls = {
     get: 0,
-    configure: [] as Array<{ baseUrl: string; apiKey?: string }>,
+    configure: [] as Array<{ baseUrl: string; credential?: string }>,
     sync: 0,
     patch: [] as Array<{ modelId: string; patch: Record<string, unknown> }>,
   };
@@ -144,8 +144,8 @@ test("Model admin control gates non-admins and refreshes mounted mutations witho
       },
     });
   };
-  modelAdminApi.configure = async (baseUrl, apiKey) => {
-    calls.configure.push({ baseUrl, apiKey });
+  modelAdminApi.configure = async (baseUrl, credential) => {
+    calls.configure.push({ baseUrl, credential });
     return configured;
   };
   modelAdminApi.sync = async () => {
@@ -202,7 +202,7 @@ test("Model admin control gates non-admins and refreshes mounted mutations witho
       "configure should refresh state and clear the write-only key field",
     );
     assert.deepEqual(calls.configure, [
-      { baseUrl: "https://gateway.example", apiKey: "super-secret-key" },
+      { baseUrl: "https://gateway.example", credential: "super-secret-key" },
     ]);
     assert.equal(inputByLabel(container, "模型 API Key").value, "");
     const connectionText = renderedParagraphText(container);
