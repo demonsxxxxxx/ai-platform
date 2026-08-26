@@ -4281,6 +4281,41 @@ def test_installer_snapshot_restores_first_install_absence(tmp_path) -> None:
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+def test_atomic_matchers_do_not_mutate_caller_paths(tmp_path) -> None:
+    script = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "deploy/opensandbox/lib/s72-atomic-recovery-authority.sh"
+    )
+    result = _run_gateway_bash_contract(
+        script,
+        tmp_path,
+        r'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1"); ROOT=$(cygpath -u "$2")
+        . "$SCRIPT"
+        printf 'same\n' > "$ROOT/live-file"
+        cp "$ROOT/live-file" "$ROOT/source-file"
+        stat() {
+          if test "${1:-}" = -c && test "${2:-}" = %u:%g:%a; then
+            echo 0:0:644
+            return
+          fi
+          command stat "$@"
+        }
+        live=caller-live; source=caller-source
+        s72_atomic_file_matches "$ROOT/live-file" "$ROOT/source-file" 644
+        test "$live" = caller-live; test "$source" = caller-source
+
+        mkdir "$ROOT/live-dir" "$ROOT/source-dir"
+        capture_config_metadata() { echo matching-metadata; }
+        live=caller-directory; source=caller-directory-source
+        s72_atomic_directory_matches "$ROOT/live-dir" "$ROOT/source-dir"
+        test "$live" = caller-directory; test "$source" = caller-directory-source
+        ''',
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -> None:
     old = "1" * 40
     new = "2" * 40

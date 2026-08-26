@@ -15,6 +15,7 @@ from app.execution.infrastructure.model_management import (
     activate_connection_and_sync,
     resolve_run_model,
 )
+from app.execution.infrastructure.model_security import api_key_fingerprint
 from app.runs.infrastructure.postgres import inherit_run_model
 
 
@@ -58,7 +59,7 @@ async def test_model_resolution_shared_lock_allows_readers_and_blocks_activation
             first,
             base_url="https://gateway.example",
             api_key="first-key",
-            key_fingerprint="first",
+            key_fingerprint=api_key_fingerprint("first-key"),
             encryption_key=encryption_key,
             actor_user_id="admin-a",
             upstream_model_ids=["openai/gpt-5"],
@@ -76,7 +77,7 @@ async def test_model_resolution_shared_lock_allows_readers_and_blocks_activation
                     activator,
                     base_url="https://gateway-2.example",
                     api_key="second-key",
-                    key_fingerprint="second",
+                    key_fingerprint=api_key_fingerprint("second-key"),
                     encryption_key=encryption_key,
                     actor_user_id="admin-a",
                     upstream_model_ids=["openai/gpt-5"],
