@@ -4418,7 +4418,14 @@ def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -
           fi
           command stat "$@"
         }}
-        install() {{ if test "$1" = -d; then mkdir -p "${{@: -1}}"; else cp "${{@: -2:1}}" "${{@: -1}}"; fi; }}
+        install() {{
+          if test "$1" = -d; then
+            mkdir -p "${{@: -1}}"
+          else
+            cp "${{@: -2:1}}" "${{@: -1}}"
+            test "${{5:-}}" != -m || chmod "$6" "${{@: -1}}"
+          fi
+        }}
         getfacl() {{ cat "$ROOT/acl.current"; }}
         setfacl() {{ cp "${{1#--restore=}}" "$ROOT/acl.current"; }}
         systemctl() {{
