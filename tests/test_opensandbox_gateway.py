@@ -3927,12 +3927,22 @@ def _run_gateway_bash_contract(script: pathlib.Path, root: pathlib.Path, body: s
     workspace_tmp = pathlib.Path(__file__).resolve().parents[1] / ".pytest-tmp"
     short_root = workspace_tmp / f"gw-{os.getpid()}-{hashlib.sha256(str(root).encode()).hexdigest()[:8]}"
     short_root.mkdir(parents=True)
+    path_compat = r"""
+    if ! command -v cygpath >/dev/null 2>&1; then
+      cygpath() {
+        if [ "${1:-}" = "-u" ]; then
+          shift
+        fi
+        printf '%s\n' "$1"
+      }
+    fi
+    """
     try:
         return subprocess.run(
             [
                 executable,
                 "-c",
-                textwrap.dedent(body),
+                textwrap.dedent(path_compat + body),
                 "gateway-contract",
                 str(script),
                 str(short_root),

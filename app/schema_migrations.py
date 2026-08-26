@@ -1347,7 +1347,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
           and indexes.indisunique = expected.is_unique
           and relations.relname = expected.relation_name
           and array(
-            select attributes.attname
+            select attributes.attname::text
             from unnest(indexes.indkey::smallint[]) with ordinality keys(attnum, position)
             join pg_attribute attributes
               on attributes.attrelid = indexes.indrelid
