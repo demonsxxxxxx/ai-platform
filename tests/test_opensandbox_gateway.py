@@ -1493,7 +1493,7 @@ def test_exact_dispatch_uses_accept_time_total_budget_not_ingress_phase_cap() ->
     class DispatchApp:
         def handle(self, request: Request) -> Response:
             observed.append(operation_deadline(1.0).remaining())
-            time.sleep(0.12)
+            time.sleep(0.3)
             return Response.json(200, {"ok": True})
 
     class Handler(_GatewayHandler):
@@ -1504,8 +1504,8 @@ def test_exact_dispatch_uses_accept_time_total_budget_not_ingress_phase_cap() ->
         ("127.0.0.1", 0),
         Handler,
         1,
-        request_deadline_seconds=0.05,
-        dispatch_deadline_seconds=0.4,
+        request_deadline_seconds=0.2,
+        dispatch_deadline_seconds=0.7,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -1520,7 +1520,7 @@ def test_exact_dispatch_uses_accept_time_total_budget_not_ingress_phase_cap() ->
         while chunk := client.recv(4096):
             response += chunk
         assert b"200 OK" in response and b'{"ok":true}' in response
-        assert observed and 0.15 < observed[0] <= 0.4
+        assert observed and 0.35 < observed[0] <= 0.7
     finally:
         client.close()
         server.shutdown()
@@ -3011,13 +3011,37 @@ def _run_gateway_bash_contract(script: pathlib.Path, root: pathlib.Path, body: s
     executable = str(bash) if bash.exists() else shutil.which("bash")
     if not executable:
         pytest.skip("Git Bash is required for executable deployment contracts")
-    return subprocess.run(
-        [executable, "-c", textwrap.dedent(body), "gateway-contract", str(script), str(root)],
-        text=True,
-        capture_output=True,
-        timeout=90,
-        check=False,
-    )
+    workspace_tmp = pathlib.Path(__file__).resolve().parents[1] / ".pytest-tmp"
+    short_root = workspace_tmp / f"gw-{os.getpid()}-{hashlib.sha256(str(root).encode()).hexdigest()[:8]}"
+    short_root.mkdir(parents=True)
+    path_compat = r"""
+    if ! command -v cygpath >/dev/null 2>&1; then
+      cygpath() {
+        if [ "${1:-}" = "-u" ]; then
+          shift
+        fi
+        printf '%s\n' "$1"
+      }
+    fi
+    """
+    try:
+        return subprocess.run(
+            [
+                executable,
+                "-c",
+                textwrap.dedent(path_compat + body),
+                "gateway-contract",
+                str(script),
+                str(short_root),
+                sys.executable,
+            ],
+            text=True,
+            capture_output=True,
+            timeout=90,
+            check=False,
+        )
+    finally:
+        shutil.rmtree(short_root, ignore_errors=True)
 
 
 def test_installer_accepts_only_standard_sticky_or_nonwritable_lock_parent_modes(tmp_path) -> None:
@@ -3048,7 +3072,9 @@ def test_installer_rejects_unresolved_or_malformed_egress_policy(tmp_path) -> No
         tmp_path,
         r'''
         set -eu
-        SCRIPT=$1; ROOT=$2
+        SCRIPT=$(cygpath -u "$1"); ROOT=$(cygpath -u "$2")
+        PYTHON_EXE=$(cygpath -u "$3")
+        python3() { "$PYTHON_EXE" "$@"; }
         eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
         cp "${SCRIPT%/*}/egress-policy.v1.example.json" "$ROOT/policy.json"
         ! require_resolved_egress_policy_at "$ROOT/policy.json"
