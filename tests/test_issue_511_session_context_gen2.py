@@ -1,10 +1,12 @@
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
 from app.models import QueueRunPayload
+from app.runs.api import RunTerminalizationProgress
 from app.routes import lambchat_compat
 from app.routes.runs import (
     _compensate_enqueue_failure,
@@ -31,6 +33,21 @@ async def _fake_transaction():
 
 def _principal() -> AuthPrincipal:
     return AuthPrincipal(user_id="user-a", display_name="User A", tenant_id="tenant-a", roles=["admin"])
+
+
+def _stream_request(pending_admissions, event_persistence):
+    return SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                run_stream_runtime=SimpleNamespace(
+                    worker_capabilities=SimpleNamespace(
+                        pending_admissions=pending_admissions,
+                        event_persistence=event_persistence,
+                    )
+                )
+            )
+        )
+    )
 
 
 @pytest.mark.asyncio
@@ -225,18 +242,51 @@ async def test_run_enqueue_compensation_uses_the_durable_failed_transition(monke
 
     async def mark_failed(_conn, **kwargs):
         calls.append(kwargs)
+        return RunTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=True,
+        )
+
+    class PendingAdmissions:
+        async def prepare_pending_authority_in_transaction(
+            self, _conn, *, tenant_id, run_id, attempt_id
+        ):
+            assert (tenant_id, run_id, attempt_id) == (
+                "tenant-a",
+                "run-a",
+                "enqueue_failure_run-a",
+            )
+            calls.append({"authority_prepared": True})
+            return object()
+
+    class EventPersistence:
+        async def append_terminal_row(self, _conn, *, tenant_id, run_id):
+            assert (tenant_id, run_id) == ("tenant-a", "run-a")
+            return "row-a"
 
     monkeypatch.setattr("app.routes.runs.transaction", _fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.mark_run_enqueue_failed", mark_failed)
 
-    await _compensate_enqueue_failure(principal=_principal(), run_id="run-a", trace_id="trace-run-a")
+    await _compensate_enqueue_failure(
+        principal=_principal(),
+        run_id="run-a",
+        trace_id="trace-run-a",
+        v4_capabilities=SimpleNamespace(
+            pending_admissions=PendingAdmissions(),
+            event_persistence=EventPersistence(),
+        ),
+    )
 
-    assert calls == [{
-        "tenant_id": "tenant-a",
-        "user_id": "user-a",
-        "run_id": "run-a",
-        "trace_id": "trace-run-a",
-    }]
+    assert calls == [
+        {"authority_prepared": True},
+        {
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "run_id": "run-a",
+            "trace_id": "trace-run-a",
+        },
+    ]
 
 
 @pytest.mark.asyncio
@@ -299,7 +349,28 @@ async def test_copied_run_enqueue_failures_commit_compensation_after_creation(
 
     async def mark_enqueue_failed(conn, **kwargs):
         conn.pending.append(("run_failed", str(kwargs["run_id"])))
-        return True
+        return RunTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=True,
+        )
+
+    class PendingAdmissions:
+        async def prepare_pending_authority_in_transaction(
+            self, conn, *, tenant_id, run_id, attempt_id
+        ):
+            assert tenant_id == "tenant-a"
+            assert attempt_id == f"enqueue_failure_{run_id}"
+            conn.pending.append(("authority", str(run_id)))
+            return object()
+
+    class EventPersistence:
+        async def append_terminal_row(self, conn, *, tenant_id, run_id):
+            assert tenant_id == "tenant-a"
+            conn.pending.append(("terminal_row", str(run_id)))
+            return "row-enqueue-failure"
+
+    request = _stream_request(PendingAdmissions(), EventPersistence())
 
     monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
     monkeypatch.setattr("app.routes.runs.enforce_user_active_run_limit", allow_admission)
@@ -322,13 +393,17 @@ async def test_copied_run_enqueue_failures_commit_compensation_after_creation(
     monkeypatch.setattr("app.routes.runs.repositories.mark_run_enqueue_failed", mark_enqueue_failed)
 
     with pytest.raises(HTTPException) as exc_info:
-        await route(source_run_id, principal=_principal())
+        await route(source_run_id, request=request, principal=_principal())
 
     assert exc_info.value.status_code == 503
     assert committed == (
         [
             [("run_created", "run-enqueue-failure")],
-            [("run_failed", "run-enqueue-failure")],
+            [
+                ("authority", "run-enqueue-failure"),
+                ("run_failed", "run-enqueue-failure"),
+                ("terminal_row", "run-enqueue-failure"),
+            ],
         ]
         if repository_method == "copy_run_as_new_task"
         else [[("run_created", "run-enqueue-failure")]]

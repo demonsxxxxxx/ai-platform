@@ -1,8 +1,9 @@
+import logging
 import re
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import UUID4
 
 from app import repositories
@@ -80,8 +81,18 @@ from app.run_admission_policy import (
     contains_persisted_platform_multi_agent_control,
     contains_platform_multi_agent_control,
 )
-from app.run_admission_terminalization import terminalize_retired_platform_multi_agent_run
+from app.run_admission_terminalization import (
+    terminalize_enqueue_failure_with_v4,
+    terminalize_retired_platform_multi_agent_run,
+)
 from app.run_control_readiness import run_control_readiness_snapshot
+from app.runs.api import RunCancellationUseCase
+from app.streaming.api import (
+    V4PublicationTransportUnavailable,
+    WorkerV4Capabilities,
+    admit_v4_stream,
+    publish_pending_run_terminal,
+)
 from app.routes.sandbox_runtime_cleanup import (
     SandboxRuntimeCleanupError,
     release_stopped_sandbox_leases_for_cancel,
@@ -104,6 +115,16 @@ from app.skills.registry import BuiltinSkillRegistry
 from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+def _require_run_cancellation_use_case(request: Request) -> RunCancellationUseCase:
+    use_case = getattr(request.app.state, "run_cancellation_use_case", None)
+    if type(use_case) is not RunCancellationUseCase:
+        raise RuntimeError("run_cancellation_use_case_unavailable")
+    return use_case
+
+
 RUN_PLAYBACK_CONTRACT_VERSION = "ai-platform.run-playback.v1"
 RUN_RESUME_MANIFEST_CONTRACT_VERSION = "ai-platform.run-resume-manifest.v1"
 _CAPABILITY_REVOCATION_LIFECYCLE_ERRORS = {"agent_or_skill_not_found", "skill_inactive", "mcp_tool_disabled"}
@@ -601,13 +622,13 @@ async def _compensate_enqueue_failure(
     *,
     principal: AuthPrincipal,
     run_id: str,
+    v4_capabilities: WorkerV4Capabilities,
     trace_id: str | None = None,
 ) -> None:
     """Leave a committed run in a truthful terminal state when queue admission fails."""
 
     async with transaction() as conn:
-        await repositories.mark_run_enqueue_failed(
-            conn,
+        await terminalize_enqueue_failure_with_v4(v4_capabilities, conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
             run_id=run_id,
@@ -820,6 +841,7 @@ def resolve_run_selector(request: CreateRunRequest, principal: AuthPrincipal) ->
 @router.post("/runs", response_model=CreateRunResponse)
 async def create_run(
     request: CreateRunRequest,
+    http_request: Request,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> CreateRunResponse:
     _validate_principal_user_id_for_route(principal)
@@ -1117,7 +1139,11 @@ async def create_run(
     try:
         await enqueue_run(queue_payload)
     except Exception as exc:
-        await _compensate_enqueue_failure(principal=principal, run_id=run_id)
+        await _compensate_enqueue_failure(
+            principal=principal,
+            run_id=run_id,
+            v4_capabilities=http_request.app.state.run_stream_runtime.worker_capabilities,
+        )
         raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
     return CreateRunResponse(run_id=run_id, session_id=session_id, status="queued")
 
@@ -1125,6 +1151,7 @@ async def create_run(
 @router.post("/runs/{run_id}/copy", response_model=RunControlResponse)
 async def copy_run(
     run_id: str,
+    request: Request,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlResponse:
     _validate_principal_user_id_for_route(principal)
@@ -1195,7 +1222,11 @@ async def copy_run(
         await _audit_wrapped_capability_denial(principal, exc, source="copy_run")
         raise
     except Exception as exc:
-        await _compensate_enqueue_failure(principal=principal, run_id=str(copied["run_id"]))
+        await _compensate_enqueue_failure(
+            principal=principal,
+            run_id=str(copied["run_id"]),
+            v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
+        )
         raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
     return RunControlResponse(
         run_id=copied["run_id"],
@@ -1294,6 +1325,7 @@ async def _mutate_run_control_child(
     action: Literal["retry", "resume"],
     operation_id: UUID4,
     principal: AuthPrincipal,
+    v4_capabilities: WorkerV4Capabilities,
 ) -> RunControlMutationResponse:
     normalized_operation_id = str(operation_id)
     created = False
@@ -1330,6 +1362,7 @@ async def _mutate_run_control_child(
                         conn,
                         tenant_id=principal.tenant_id,
                         run_id=child_run_id,
+                        v4_capabilities=v4_capabilities,
                     )
             if copied is None:
                 await enforce_user_active_run_limit(
@@ -1440,6 +1473,7 @@ async def _mutate_run_control_child(
 @router.post("/runs/{run_id}/retry", response_model=RunControlMutationResponse)
 async def retry_run(
     run_id: str,
+    request: Request,
     operation_id: UUID4 | None = None,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlMutationResponse:
@@ -1451,12 +1485,14 @@ async def retry_run(
         action="retry",
         operation_id=operation_id or uuid4(),
         principal=principal,
+        v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
     )
 
 
 @router.post("/runs/{run_id}/resume", response_model=RunControlMutationResponse)
 async def resume_run(
     run_id: str,
+    request: Request,
     operation_id: UUID4 | None = None,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlMutationResponse:
@@ -1468,6 +1504,7 @@ async def resume_run(
         action="resume",
         operation_id=operation_id or uuid4(),
         principal=principal,
+        v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
     )
 
 
@@ -1644,15 +1681,32 @@ async def get_run_checkpoint_audit(
 @router.post("/runs/{run_id}/cancel", response_model=RunControlResponse, response_model_exclude={"queue_position", "queue_insight"})
 async def cancel_run(
     run_id: str,
+    request: Request,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlResponse:
-    async with transaction() as conn:
-        result = await repositories.request_run_cancel(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            run_id=run_id,
-        )
+    runtime = request.app.state.run_stream_runtime
+    cancellation = await _require_run_cancellation_use_case(request).request_owner_cancel(
+        tenant_id=principal.tenant_id,
+        owner_user_id=principal.user_id,
+        run_id=run_id,
+    )
+    if cancellation is not None and cancellation.attempt_id:
+        try:
+            await admit_v4_stream(
+                runtime.worker_capabilities,
+                tenant_id=principal.tenant_id,
+                run_id=cancellation.run_id,
+                attempt_id=cancellation.attempt_id,
+            )
+        except V4PublicationTransportUnavailable as exc:
+            logger.warning("Cancellation v4 admission deferred", extra={"run_id": cancellation.run_id, "error": exc.error_code})
+        except Exception as exc:  # noqa: BLE001 - cancellation cleanup must outlive publication faults
+            logger.warning(
+                "Cancellation v4 admission deferred",
+                extra={"run_id": cancellation.run_id, "error": type(exc).__name__},
+                exc_info=True,
+            )
+    result = cancellation.as_route_result() if cancellation is not None else None
     if result is not None:
         initial_progress = result.pop("_permission_terminalization_progress", None)
         if initial_progress is not None:
@@ -1665,6 +1719,7 @@ async def cancel_run(
         progress = await drain_run_tool_permission_terminalization(
             tenant_id=principal.tenant_id,
             run_id=run_id,
+            capabilities=runtime.worker_capabilities,
             transaction_factory=transaction,
         )
         if progress is not None and progress.is_terminal():
@@ -1680,6 +1735,19 @@ async def cancel_run(
             progress=progress,
             transaction_factory=transaction,
         )
+    if cancellation is not None and cancellation.attempt_id:
+        try:
+            await publish_pending_run_terminal(
+                runtime.worker_capabilities,
+                tenant_id=principal.tenant_id,
+                run_id=cancellation.run_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - durable publication retries after cleanup
+            logger.warning(
+                "Cancellation v4 terminal publication deferred",
+                extra={"run_id": cancellation.run_id, "error": type(exc).__name__},
+                exc_info=True,
+            )
     if result is None:
         raise HTTPException(status_code=404, detail="active_run_not_found")
     queue_cleanup_failures = await _remove_cancelled_queue_payloads(

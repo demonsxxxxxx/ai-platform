@@ -1491,6 +1491,7 @@ async def test_worker_dispatch_profile_reauthorization_fails_closed(monkeypatch,
 @pytest.mark.asyncio
 async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_override(monkeypatch):
     from contextlib import asynccontextmanager
+    from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
     from app import repositories
@@ -1498,7 +1499,19 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
     from app.execution.api import RunModelSelection
     from app.main import create_app
     from app.models import AgentConversationIdentity, ChatStreamRequest, SelectedAgentProfileRequest
-    from app.routes.chat import chat_stream
+    from app.routes.chat import chat_stream as route_chat_stream
+
+    test_stream_request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                run_stream_runtime=SimpleNamespace(worker_capabilities=object())
+            )
+        )
+    )
+
+    async def chat_stream(*args, **kwargs):
+        kwargs.setdefault("http_request", test_stream_request)
+        return await route_chat_stream(*args, **kwargs)
 
     create_app()
 
@@ -2205,3 +2218,64 @@ def test_session_recovery_projects_only_safe_agent_conversation_identity():
     serialized = str(response)
     for forbidden in ("must never be projected", "private-model", "private-skill", "private-tool", "a" * 64):
         assert forbidden not in serialized
+
+
+@pytest.mark.asyncio
+async def test_dedicated_agent_run_forwards_http_request_to_chat_composition(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from app.models import AgentAppRunRequest
+    from app.routes import agent_profiles
+
+    connection = object()
+    http_request = object()
+    expected_response = object()
+    observed: dict[str, object] = {}
+
+    @asynccontextmanager
+    async def transaction():
+        yield connection
+
+    async def get_session(observed_connection, **kwargs):
+        assert observed_connection is connection
+        assert kwargs == {
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+        }
+        return {"workspace_id": "workspace-a", "agent_id": "agent-a"}
+
+    async def chat_stream(request, observed_http_request, *, agent_id, principal):
+        observed.update(
+            request=request,
+            http_request=observed_http_request,
+            agent_id=agent_id,
+            principal=principal,
+        )
+        return expected_response
+
+    monkeypatch.setattr(agent_profiles, "transaction", transaction)
+    monkeypatch.setattr(
+        agent_profiles.repositories,
+        "get_authorized_session_projection",
+        get_session,
+    )
+    monkeypatch.setattr("app.routes.chat.chat_stream", chat_stream)
+
+    principal = _principal()
+    result = await agent_profiles._submit_dedicated_agent_run(
+        agent_id="agent-a",
+        session_id="session-a",
+        request=AgentAppRunRequest(
+            message="hello",
+            submission_id=UUID("12345678-1234-5678-1234-567812345678"),
+        ),
+        http_request=http_request,
+        principal=principal,
+    )
+
+    assert result is expected_response
+    assert observed["http_request"] is http_request
+    assert observed["agent_id"] == "agent-a"
+    assert observed["principal"] is principal
+    assert observed["request"].session_id == "session-a"

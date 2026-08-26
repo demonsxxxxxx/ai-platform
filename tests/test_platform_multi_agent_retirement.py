@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException, Response
@@ -32,7 +33,9 @@ def client(monkeypatch):
         "app.auth.get_settings",
         lambda: Settings(frontend_poc_auth_enabled=True),
     )
-    return TestClient(create_app())
+    app = create_app()
+    app.state.run_stream_runtime = SimpleNamespace(worker_capabilities=object())
+    return TestClient(app)
 
 
 @pytest.mark.parametrize(
@@ -248,6 +251,7 @@ def test_committed_run_control_recovery_terminalizes_retired_snapshot_without_en
         {
             "tenant_id": "tenant-a",
             "run_id": "run-retired-child",
+            "v4_capabilities": client.app.state.run_stream_runtime.worker_capabilities,
         }
     ]
 
@@ -308,11 +312,9 @@ async def test_chat_retry_terminalizes_retired_persisted_snapshot_before_enqueue
     async def get_run(*_args, **_kwargs):
         return run
 
-    async def terminalize(_conn, **kwargs):
-        calls.append(("run", kwargs))
-
-    async def finalize(_conn, **kwargs):
-        calls.append(("submission", kwargs))
+    async def reject_retired_control(_conn, **kwargs):
+        calls.append(("retired_control", kwargs))
+        return True
 
     async def recover_submission(*_args, **_kwargs):
         return ChatSubmissionResponse(submission_id=submission_id, state="accepted_pending_enqueue")
@@ -323,8 +325,10 @@ async def test_chat_retry_terminalizes_retired_persisted_snapshot_before_enqueue
     monkeypatch.setattr("app.routes.chat.transaction", transaction)
     monkeypatch.setattr(repository_module, "get_chat_submission", get_submission)
     monkeypatch.setattr(repository_module, "get_authorized_run", get_run)
-    monkeypatch.setattr("app.routes.chat.terminalize_retired_platform_multi_agent_run", terminalize)
-    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize)
+    monkeypatch.setattr(
+        "app.routes.chat.reject_chat_submission_for_retired_platform_multi_agent",
+        reject_retired_control,
+    )
     monkeypatch.setattr("app.routes.chat._recover_preledger_chat_submission", recover_submission)
     monkeypatch.setattr("app.routes.chat._attempt_chat_queue_admission", forbidden)
 
@@ -332,6 +336,13 @@ async def test_chat_retry_terminalizes_retired_persisted_snapshot_before_enqueue
     with pytest.raises(HTTPException) as exc_info:
         await retry_chat_submission_admission(
             submission_id,
+            request=SimpleNamespace(
+                app=SimpleNamespace(
+                    state=SimpleNamespace(
+                        run_stream_runtime=SimpleNamespace(worker_capabilities=object())
+                    )
+                )
+            ),
             response=response_headers,
             principal=AuthPrincipal(user_id="user-a", display_name="User A", tenant_id="tenant-a"),
         )
@@ -340,9 +351,9 @@ async def test_chat_retry_terminalizes_retired_persisted_snapshot_before_enqueue
     assert exc_info.value.detail == "platform_multi_agent_not_supported"
     assert exc_info.value.headers == {"Cache-Control": "private, no-store"}
     assert committed_transactions == 1
-    assert [kind for kind, _kwargs in calls] == ["run", "submission"]
-    assert calls[1][1]["state"] == "admission_rejected"
-    assert calls[1][1]["rejection_code"] == "platform_multi_agent_not_supported"
+    assert [kind for kind, _kwargs in calls] == ["retired_control"]
+    assert calls[0][1]["run"] is run
+    assert calls[0][1]["execution_snapshot"] is not None
 
 
 @pytest.mark.asyncio

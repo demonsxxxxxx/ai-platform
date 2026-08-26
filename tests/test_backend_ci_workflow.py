@@ -90,6 +90,33 @@ BACKEND_TEST_SHARDS = {
         "tests/test_execution_spec.py::test_execution_spec_rejects_unsafe_upstream_model_identity",
         "tests/test_schema.py::test_schema_adds_versioned_model_gateway_and_non_deleting_shared_catalog",
     ),
+    "run-control-contracts": (
+        "tests/test_admin_run_detail.py",
+        "tests/test_chat_selected_skill_routing.py",
+        "tests/test_claude_agent_events.py",
+        "tests/test_executor_reconciler.py",
+        "tests/test_issue_511_session_context_gen2.py",
+        "tests/test_platform_multi_agent_retirement.py",
+        "tests/test_routes.py",
+        "tests/test_run_admission_terminalization.py",
+        "tests/test_run_cancellation_use_case.py",
+        "tests/test_run_control_routes.py",
+        "tests/test_run_persistence.py",
+        "tests/test_run_projection.py",
+        "tests/test_sse_v3_contract_generation.py",
+        "tests/test_sse_v4_contract_generation.py",
+        "tests/test_streaming_contracts.py",
+    ),
+    "schema-migrations": (
+        "tests/test_schema_migrations.py",
+        "tests/test_schema_migrations_postgres.py",
+    ),
+    "v4-durable-streaming": (
+        "tests/test_streaming_v4_durable.py",
+        "tests/test_streaming_v4_postgres_integration.py",
+        "tests/test_streaming_v4_redis_integration.py",
+        "tests/test_streaming_v4_transport.py",
+    ),
     "release-governance-policy": (
         "tests/test_architecture_governance.py",
         "tests/test_backend_ci_workflow.py",
@@ -162,7 +189,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
 
     assert "runs-on: ubuntu-latest" in validation_job
     assert "timeout-minutes: 10" in validation_job
-    assert validation_job.count("- name: Enforce SSE v3 release-atomic cutover") == 1
+    assert validation_job.count("- name: Enforce SSE v4 release-atomic cutover") == 1
     assert validation_job.count("run: python tools/check_sse_runtime_cutover.py") == 1
     assert "runs-on: ubuntu-latest" in tests_job
     assert "needs: backend-validation" in tests_job
@@ -180,6 +207,10 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
         entry["shard"]: (entry["redis_image"], entry["redis_url"])
         for entry in matrix_entries
     }
+    actual_postgres = {
+        entry["shard"]: (entry["postgres_image"], entry["postgres_url"])
+        for entry in matrix_entries
+    }
     assert actual_shards == BACKEND_TEST_SHARDS
     assert actual_redis == {
         "sandbox-runtime": ("redis:7.4-alpine", "redis://localhost:6379/15"),
@@ -188,18 +219,47 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
             "redis://localhost:6379/15",
         ),
         "model-control-plane": ("", ""),
+        "run-control-contracts": ("", ""),
+        "schema-migrations": ("", ""),
+        "v4-durable-streaming": (
+            "redis:7.4-alpine",
+            "redis://127.0.0.1:6379/15",
+        ),
+        "release-governance-policy": ("", ""),
+        "release-governance-readiness": ("", ""),
+        "release-governance-authority": ("", ""),
+    }
+    assert actual_postgres == {
+        "sandbox-runtime": ("", ""),
+        "repository-worker-streaming": (
+            "postgres:16-alpine",
+            "postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform",
+        ),
+        "model-control-plane": ("", ""),
+        "run-control-contracts": ("", ""),
+        "schema-migrations": (
+            "postgres:16-alpine",
+            "postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform",
+        ),
+        "v4-durable-streaming": (
+            "postgres:16-alpine",
+            "postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform",
+        ),
         "release-governance-policy": ("", ""),
         "release-governance-readiness": ("", ""),
         "release-governance-authority": ("", ""),
     }
     all_selectors = [selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors]
-    assert len(all_selectors) == len(set(all_selectors)) == 49
+    assert len(all_selectors) == len(set(all_selectors)) == 70
     assert "image: ${{ matrix.redis_image }}" in tests_job
+    assert "image: ${{ matrix.postgres_image }}" in tests_job
+    assert '"54329:5432"' in tests_job
     assert '"6379:6379"' in tests_job
     assert '--health-cmd "redis-cli ping"' in tests_job
     assert (
         "AI_PLATFORM_SSE_REDIS_TEST_URL: ${{ matrix.redis_url }}" in tests_job
     )
+    assert "AI_PLATFORM_S0A_SCHEMA_TEST_DSN: ${{ matrix.postgres_url }}" in tests_job
     pytest_step = tests_job.split("- name: Run backend test shard", 1)[1]
     assert pytest_step.index("mkdir -p .pytest-tmp") < pytest_step.index("timeout --signal")
     assert "timeout --signal=TERM --kill-after=30s 10m" in pytest_step
@@ -208,6 +268,13 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert "-vv" in pytest_step
     assert "--tb=short" in pytest_step
     assert "-o faulthandler_timeout=120" in pytest_step
+    assert '--junitxml ".pytest-tmp/${{ matrix.shard }}.xml"' in pytest_step
+    assert (
+        'if [[ "${{ matrix.shard }}" =~ '
+        '^(repository-worker-streaming|run-control-contracts|schema-migrations|v4-durable-streaming)$ ]]'
+        in pytest_step
+    )
+    assert "tools/require_zero_junit_skips.py" in pytest_step
     assert '--basetemp ".pytest-tmp/${{ matrix.shard }}"' in pytest_step
     assert "--collect-only" not in pytest_step
     assert "--ignore" not in pytest_step
@@ -217,7 +284,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
         "needs: [backend-validation, backend-tests, agent-skill-contracts, backend-image]"
         in required_job
     )
-    assert "VALIDATION_RESULT: ${{ needs.backend-validation.result }}" in required_job
+    assert "V4_DURABLE_RESULT" not in required_job
     assert "BACKEND_TESTS_RESULT: ${{ needs.backend-tests.result }}" in required_job
     assert 'test "$VALIDATION_RESULT" = "success"' in required_job
     assert 'test "$BACKEND_TESTS_RESULT" = "success"' in required_job
@@ -330,10 +397,7 @@ def test_agent_skill_contract_job_is_bounded_and_required():
         "needs: [backend-validation, backend-tests, agent-skill-contracts, backend-image]"
         in required_job
     )
-    assert (
-        "AGENT_SKILL_RESULT: ${{ needs.agent-skill-contracts.result }}"
-        in required_job
-    )
+    assert "V4_DURABLE_RESULT" not in required_job
     assert 'test "$AGENT_SKILL_RESULT" = "success"' in required_job
     assert re.search(r"(?m)^\s*continue-on-error\s*:", required_job) is None
 
@@ -1064,6 +1128,8 @@ def test_backend_image_job_builds_only_affected_pull_request_candidates_and_chec
     assert "import app.main, claude_agent_sdk" in image_job
     assert "http://127.0.0.1:18020/api/ai/health" in image_job
     assert "python - <<'PY'" not in startup_step
+    assert "os.urandom(32)" in startup_step
+    assert '--env AI_SESSION_SECRET="$session_secret"' in startup_step
     assert 'BACKEND_HEALTH_FILE="$RUNNER_TEMP/backend-health.json" python -c' in startup_step
     assert "backend_container_state=" in startup_step
     assert "docker logs --tail 80" in startup_step

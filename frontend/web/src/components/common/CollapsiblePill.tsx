@@ -209,6 +209,7 @@ export function CollapsiblePill({
     <div className="my-1 min-w-0 max-w-full">
       <button
         onClick={handleToggle}
+        aria-expanded={canExpand ? isExpanded : undefined}
         className={clsx(
           "inline-flex items-center gap-2 px-2.5 py-2 rounded-full text-xs font-medium max-w-full",
           "transition-colors",

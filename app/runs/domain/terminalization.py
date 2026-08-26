@@ -9,6 +9,16 @@ from typing import Any
 TERMINAL_RUN_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
 
 
+@dataclass(frozen=True, slots=True)
+class RunTerminalEventFact:
+    """Current Run facts required by durable public terminal projection."""
+
+    status: str
+    terminal_reason: str
+    error_code: str | None
+    trace_ref: str | None
+
+
 @dataclass(frozen=True)
 class RunTerminalizationProgress:
     """Describe one bounded terminalization attempt and transition ownership."""

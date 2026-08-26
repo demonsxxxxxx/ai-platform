@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -109,8 +110,9 @@ def test_dedicated_agent_run_restores_session_and_delegates_without_client_selec
         observed["session_read"] = (tenant_id, user_id, session_id)
         return {"workspace_id": "finance", "agent_id": "agt_support"}
 
-    async def chat_stream(request, *, agent_id, principal):
+    async def chat_stream(request, http_request, *, agent_id, principal):
         observed["chat_request"] = request.model_dump(mode="python")
+        observed["http_request"] = http_request
         observed["chat_agent"] = agent_id
         observed["chat_user"] = principal.user_id
         return ChatStreamResponse(
@@ -143,6 +145,7 @@ def test_dedicated_agent_run_restores_session_and_delegates_without_client_selec
     assert response.status_code == 200
     assert response.json()["run_id"] == "run-agent"
     assert observed["session_read"] == ("default", "user-a", "ses_support")
+    assert isinstance(observed["http_request"], Request)
     assert observed["chat_agent"] == "agt_support"
     assert observed["chat_user"] == "user-a"
     chat_request = observed["chat_request"]

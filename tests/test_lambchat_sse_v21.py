@@ -9,19 +9,22 @@ from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
 from app.routes import lambchat_compat as route
-from app.streaming.api import LiveSubscriptionClosed, live_redis_id_is_after
-from app.streaming.events import STREAM_DESIGN_ID
+from app.streaming.api import (
+    LiveSubscriptionClosed,
+    V4StreamEntry,
+    build_v4_control,
+    live_redis_id_is_after,
+)
+from app.streaming.events import STREAM_DESIGN_ID_V4
 from app.streaming.redis import (
     ResumeDecision,
     SseAuthorityConflictError,
     SseAuthorityLease,
     StreamAuthority,
+    StreamContractError,
     StreamCursor,
-    StreamEntry,
-    StreamEnvelope,
     StreamGap,
     StreamTransportUnavailable,
-    committed_public_stream_event,
 )
 
 
@@ -59,25 +62,58 @@ def lease():
 
 
 def entry(redis_id, event_id, event_type, payload):
-    envelope = StreamEnvelope(
-        event_id,
-        "scope-a",
-        "run-a",
-        "attempt-a",
-        1,
-        event_type,
-        payload,
-        "2026-08-09T00:00:00Z",
-    )
-    return StreamEntry(StreamCursor("run-a", 1, redis_id), envelope)
+    if event_type.startswith("stream."):
+        envelope = build_v4_control(
+            event_id=event_id,
+            tenant_scope="scope-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            stream_incarnation=1,
+            event_type=event_type,
+            payload=payload,
+            source={"kind": "stream_authority", "authority_id": event_id},
+            emitted_at="2026-08-09T00:00:00Z",
+        )
+    else:
+        sequence = int(redis_id.partition("-")[0])
+        message_types = (
+            "message.",
+            "thinking.",
+            "model.",
+            "tool.",
+            "subagent.",
+        )
+        envelope = {
+            "schema": "ai-platform.stream-event.v4",
+            "event_id": event_id,
+            "tenant_scope": "scope-a",
+            "run_id": "run-a",
+            "attempt_id": "attempt-a",
+            "message_id": "msg_run_a" if event_type.startswith(message_types) else None,
+            "seq": sequence,
+            "event_type": event_type,
+            "stream_incarnation": 1,
+            "replayable": True,
+            "trace_ref": None,
+            "causation_event_id": None,
+            "emitted_at": "2026-08-09T00:00:00Z",
+            "projection_version": "public-stream-v4",
+            "payload": payload,
+            "source": {
+                "kind": "run_event",
+                "run_event_id": event_id,
+                "sequence": sequence,
+            },
+        }
+    return V4StreamEntry(StreamCursor("run-a", 1, redis_id), envelope)
 
 
 def open_entry(redis_id="1-0"):
     return entry(
         redis_id,
         "sev-open",
-        "stream_open",
-        {"design_id": STREAM_DESIGN_ID},
+        "stream.open",
+        {"design_id": STREAM_DESIGN_ID_V4},
     )
 
 
@@ -120,10 +156,18 @@ class BlockingSubscription:
 
 
 class FakeBridge:
-    def __init__(self, rows, *, resume=None, resolve_error=None):
+    def __init__(
+        self,
+        rows,
+        *,
+        resume=None,
+        resolve_error=None,
+        replay_error=None,
+    ):
         self.rows = list(rows)
         self.resume = resume
         self.resolve_error = resolve_error
+        self.replay_error = replay_error
         self.calls = []
 
     async def resolve_resume(self, **kwargs):
@@ -142,8 +186,50 @@ class FakeBridge:
         self.calls.append("bounds")
         return self.rows[0], self.rows[-1]
 
+    async def build_gap(self, **kwargs):
+        self.calls.append("gap")
+        requested = kwargs["requested_event_id"]
+        if requested is None:
+            requested_redis_id = None
+        else:
+            try:
+                requested_redis_id = StreamCursor.parse(
+                    requested, run_id="run-a"
+                ).redis_id
+            except StreamContractError:
+                requested_redis_id = requested
+        last = self.rows[-1].cursor.redis_id if self.rows else None
+        envelope = build_v4_control(
+            event_id=kwargs["event_id"],
+            tenant_scope=kwargs["tenant_scope_value"],
+            run_id=kwargs["run_id"],
+            attempt_id=kwargs["attempt_id"],
+            stream_incarnation=kwargs["current_stream_incarnation"],
+            event_type="stream.gap",
+            payload={
+                "reason": kwargs["reason"],
+                "recovery": "reload_durable_state",
+                "requested_event_id": requested_redis_id,
+                "requested_stream_incarnation": kwargs[
+                    "requested_stream_incarnation"
+                ],
+                "current_stream_incarnation": kwargs[
+                    "current_stream_incarnation"
+                ],
+                "earliest_available_event_id": (
+                    self.rows[0].cursor.redis_id if self.rows else None
+                ),
+                "latest_available_event_id": last,
+            },
+            source={"kind": "stream_authority", "authority_id": kwargs["event_id"]},
+            emitted_at="2026-08-09T00:00:00Z",
+        )
+        return envelope, StreamCursor("run-a", 1, last or "0-0").event_id
+
     async def replay_page(self, *, after_redis_id, through_redis_id, **kwargs):
         self.calls.append(f"replay:{after_redis_id}:{through_redis_id}")
+        if self.replay_error is not None:
+            raise self.replay_error
         return tuple(
             row
             for row in self.rows
@@ -199,15 +285,11 @@ def patch_authority(monkeypatch, *, run=None, close_result=True):
     async def close(conn, **kwargs):
         return close_result
 
-    async def get_intent(conn, *, tenant_id, run_id):
-        return None
-
     monkeypatch.setattr(route, "transaction", transaction)
     monkeypatch.setattr(route.repositories, "get_authorized_run", get_run)
     monkeypatch.setattr(route, "get_stream_authority", get_authority)
     monkeypatch.setattr(route, "acquire_sse_authority_lease", acquire)
     monkeypatch.setattr(route, "close_sse_authority_lease", close)
-    monkeypatch.setattr(route, "get_terminal_intent", get_intent)
 
 
 async def connect(bridge, *, last_event_id=None, on_subscribe=None):
@@ -227,18 +309,22 @@ async def connect(bridge, *, last_event_id=None, on_subscribe=None):
 def terminal_rows():
     return (
         open_entry(),
-        entry("2-0", "sev-delta", "assistant_text_delta", {"delta": "hello "}),
+        entry("2-0", "sev-delta", "message.delta", {"delta": "hello "}),
         entry(
             "3-0",
             "sev-terminal",
-            "terminal",
+            "run.succeeded",
             {
-                "event_id": "sev-terminal",
+                "terminal_event_id": "sev-terminal",
                 "hydrate_required": True,
-                "status": "succeeded",
             },
         ),
-        entry("4-0", "sev-end", "end", {"terminal_event_id": "sev-terminal"}),
+        entry(
+            "4-0",
+            "sev-end",
+            "stream.end",
+            {"terminal_event_id": "sev-terminal"},
+        ),
     )
 
 
@@ -263,7 +349,7 @@ async def connect_expect_conflict():
         ("sse_authority_revoked", False),
     ],
 )
-async def test_v3_authority_conflict_has_stable_retry_classification(
+async def test_v4_authority_conflict_has_stable_retry_classification(
     monkeypatch, code, retryable
 ):
     patch_authority(monkeypatch)
@@ -291,7 +377,7 @@ async def test_v3_authority_conflict_has_stable_retry_classification(
         ("succeeded", "sse_run_already_terminal", False),
     ],
 )
-async def test_v3_missing_authority_distinguishes_startup_from_terminal_run(
+async def test_v4_missing_authority_distinguishes_startup_from_terminal_run(
     monkeypatch, run_status, code, retryable
 ):
     patch_authority(
@@ -315,7 +401,7 @@ async def test_v3_missing_authority_distinguishes_startup_from_terminal_run(
 
 
 @pytest.mark.asyncio
-async def test_v3_replay_uses_native_cursor_and_schema_event(monkeypatch):
+async def test_v4_replay_uses_native_cursor_and_schema_event(monkeypatch):
     patch_authority(monkeypatch)
 
     async def forbidden(*args, **kwargs):
@@ -328,13 +414,13 @@ async def test_v3_replay_uses_native_cursor_and_schema_event(monkeypatch):
     assert response.headers["cache-control"] == "no-cache, no-transform"
     assert response.headers["x-accel-buffering"] == "no"
     assert "id: run-a:1:2-0" in body
-    assert '"schema": "ai-platform.public-run-stream-event.v3"' in body
+    assert '"schema": "ai-platform.public-run-stream-event.v4"' in body
     assert '"payload": {"delta": "hello "}' in body
     assert body.index("id: run-a:1:3-0") < body.index("id: run-a:1:4-0")
 
 
 @pytest.mark.asyncio
-async def test_v3_subscribes_before_capturing_replay_tail(monkeypatch):
+async def test_v4_subscribes_before_capturing_replay_tail(monkeypatch):
     patch_authority(monkeypatch)
     bridge = FakeBridge([open_entry()])
 
@@ -345,134 +431,11 @@ async def test_v3_subscribes_before_capturing_replay_tail(monkeypatch):
 
     assert bridge.calls[:3] == ["subscribe", "resolve", "bounds"]
     assert '"delta": "hello "' in body
-    assert "event: end\n" in body
+    assert "event: stream.end\n" in body
 
 
 @pytest.mark.asyncio
-async def test_v3_resume_rebuilds_split_identifier_projection_state(monkeypatch):
-    patch_authority(
-        monkeypatch,
-        run={
-            "id": "run-a",
-            "session_id": "session-a",
-            "status": "running",
-            "agent_id": "qa-word-review",
-            "skill_id": "general-chat",
-        },
-    )
-    rows = (
-        open_entry(),
-        entry("2-0", "safe", "assistant_text_delta", {"delta": "已开始处理，"}),
-        entry("3-0", "prefix", "assistant_text_delta", {"delta": "general-"}),
-        entry(
-            "4-0",
-            "progress",
-            "semantic_stage",
-            {"event": "run_event", "data": {"content": "处理中"}},
-        ),
-        entry("5-0", "suffix", "assistant_text_delta", {"delta": "chat 已完成。"}),
-        entry(
-            "6-0",
-            "terminal-after-resume",
-            "terminal",
-            {
-                "event_id": "terminal-after-resume",
-                "hydrate_required": True,
-                "status": "succeeded",
-            },
-        ),
-        entry(
-            "7-0",
-            "end-after-resume",
-            "end",
-            {"terminal_event_id": "terminal-after-resume"},
-        ),
-    )
-    bridge = FakeBridge(rows)
-    _, body = await connect(bridge, last_event_id="run-a:1:4-0")
-
-    assert "general-chat" not in body
-    assert "qa-word-review" not in body
-    assert "已开始处理" not in body
-    assert '"delta": "general-agent 已完成。"' in body
-
-
-@pytest.mark.asyncio
-async def test_v3_terminal_relies_on_final_hydrate_instead_of_cursor_reuse(monkeypatch):
-    patch_authority(
-        monkeypatch,
-        run={
-            "id": "run-a",
-            "session_id": "session-a",
-            "status": "running",
-            "skill_id": "general-chat",
-        },
-    )
-    rows = (
-        open_entry(),
-        entry("2-0", "safe", "assistant_text_delta", {"delta": "已完成，"}),
-        entry("3-0", "pending", "assistant_text_delta", {"delta": "general-chat"}),
-        entry(
-            "4-0",
-            "terminal-after-pending",
-            "terminal",
-            {
-                "event_id": "terminal-after-pending",
-                "hydrate_required": True,
-                "status": "succeeded",
-            },
-        ),
-        entry(
-            "5-0",
-            "end-after-pending",
-            "end",
-            {"terminal_event_id": "terminal-after-pending"},
-        ),
-    )
-    _, body = await connect(FakeBridge(rows))
-
-    assert "general-chat" not in body
-    assert '"delta": "已完成，"' in body
-    assert body.count("id: run-a:1:3-0") == 0
-    assert '"hydrate_required": true' in body
-
-
-@pytest.mark.asyncio
-async def test_v3_maps_committed_execution_projection(monkeypatch):
-    patch_authority(monkeypatch)
-    projection = committed_public_stream_event(
-        {
-            "id": "evt-execution-1",
-            "run_id": "run-a",
-            "sequence": 11,
-            "event_type": "execution_step",
-            "visible_to_user": True,
-            "created_at": "2026-08-09T00:00:00Z",
-            "payload_json": {
-                "step_id": "pex_execution_1",
-                "kind": "processing",
-                "stage": "execution",
-                "status": "running",
-                "title": "Process request",
-                "summary": "Running controlled processing",
-                "progress": {"current": 0, "total": 1},
-            },
-        }
-    )
-    assert projection is not None
-    envelope_type, payload = projection
-    rows = (open_entry(), entry("2-0", "evt-execution-1", envelope_type, payload))
-    bridge = FakeBridge(rows)
-    _, body = await connect(bridge)
-
-    assert "event: semantic_progress\n" in body
-    assert "id: run-a:1:2-0\n" in body
-    assert '"event_id": "evt-execution-1"' in body
-    assert '"sequence": 11' in body
-
-
-@pytest.mark.asyncio
-async def test_v3_trim_gap_is_idless_and_requests_durable_hydration(monkeypatch):
+async def test_v4_trim_gap_is_control_and_requests_durable_hydration(monkeypatch):
     patch_authority(monkeypatch)
     bridge = FakeBridge(
         [open_entry()],
@@ -482,26 +445,48 @@ async def test_v3_trim_gap_is_idless_and_requests_durable_hydration(monkeypatch)
     )
     _, body = await connect(bridge, last_event_id="run-a:1:1-0")
 
-    assert body.startswith("event: gap\n")
-    assert "id:" not in body
+    assert body.startswith("id: run-a:1:1-0\nevent: stream.gap\n")
+    assert '"schema": "ai-platform.public-run-stream-control.v4"' in body
     assert '"recovery": "reload_durable_state"' in body
 
 
 @pytest.mark.asyncio
-async def test_v3_end_before_terminal_closes_without_synthetic_error(monkeypatch):
+async def test_v4_trim_between_resume_and_replay_emits_gap_instead_of_omitting_rows(
+    monkeypatch,
+):
+    patch_authority(monkeypatch)
+    bridge = FakeBridge(
+        [open_entry()],
+        replay_error=StreamContractError("stream_replay_continuity_unproven"),
+    )
+
+    _, body = await connect(bridge)
+
+    assert "event: stream.gap\n" in body
+    assert '"reason": "stream_continuity_unproven"' in body
+    assert "event: stream.open\n" not in body
+
+
+@pytest.mark.asyncio
+async def test_v4_end_before_terminal_closes_without_synthetic_error(monkeypatch):
     patch_authority(monkeypatch)
     rows = (
         open_entry(),
-        entry("2-0", "sev-end", "end", {"terminal_event_id": "sev-terminal"}),
+        entry(
+            "2-0",
+            "sev-end",
+            "stream.end",
+            {"terminal_event_id": "sev-terminal"},
+        ),
     )
     _, body = await connect(FakeBridge(rows))
 
-    assert "event: end\n" not in body
+    assert "event: stream.end\n" not in body
     assert "event: error\n" not in body
 
 
 @pytest.mark.asyncio
-async def test_v3_redis_admission_outage_fails_before_response(monkeypatch):
+async def test_v4_redis_admission_outage_fails_before_response(monkeypatch):
     patch_authority(monkeypatch)
     bridge = FakeBridge(
         [open_entry()],
@@ -520,7 +505,7 @@ async def test_v3_redis_admission_outage_fails_before_response(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_v3_admitted_terminal_body_records_one_safe_exit_with_lease_result(
+async def test_v4_admitted_terminal_body_records_one_safe_exit_with_lease_result(
     monkeypatch, caplog
 ):
     patch_authority(monkeypatch, close_result=False)
@@ -528,7 +513,7 @@ async def test_v3_admitted_terminal_body_records_one_safe_exit_with_lease_result
 
     response, body = await connect(FakeBridge(terminal_rows()))
 
-    assert "event: end\n" in body
+    assert "event: stream.end\n" in body
     records = [record for record in caplog.records if record.msg == "sse_stream_exit"]
     assert len(records) == 1
     assert records[0].reason == "terminal_completed"
@@ -539,7 +524,7 @@ async def test_v3_admitted_terminal_body_records_one_safe_exit_with_lease_result
 
 
 @pytest.mark.asyncio
-async def test_v3_admitted_body_cancellation_closes_subscription_and_records_once(
+async def test_v4_admitted_body_cancellation_closes_subscription_and_records_once(
     monkeypatch, caplog
 ):
     patch_authority(monkeypatch)
@@ -554,7 +539,7 @@ async def test_v3_admitted_body_cancellation_closes_subscription_and_records_onc
         ),
     )
     iterator = response.body_iterator
-    assert "event: stream_open" in await iterator.__anext__()
+    assert "event: stream.open" in await iterator.__anext__()
     pending = asyncio.create_task(iterator.__anext__())
     await subscription.started.wait()
     pending.cancel()
@@ -568,7 +553,7 @@ async def test_v3_admitted_body_cancellation_closes_subscription_and_records_onc
 
 
 @pytest.mark.asyncio
-async def test_v3_missing_runtime_after_admission_records_setup_exit_and_releases_lease(
+async def test_v4_missing_runtime_after_admission_records_setup_exit_and_releases_lease(
     monkeypatch, caplog
 ):
     patch_authority(monkeypatch)
@@ -592,7 +577,7 @@ async def test_v3_missing_runtime_after_admission_records_setup_exit_and_release
 
 
 @pytest.mark.asyncio
-async def test_v3_generic_setup_failure_records_one_safe_exit(monkeypatch, caplog):
+async def test_v4_generic_setup_failure_records_one_safe_exit(monkeypatch, caplog):
     patch_authority(monkeypatch)
     caplog.set_level(logging.INFO, logger=route.logger.name)
 
@@ -617,7 +602,7 @@ async def test_v3_generic_setup_failure_records_one_safe_exit(monkeypatch, caplo
 
 
 @pytest.mark.asyncio
-async def test_v3_live_source_close_records_bounded_reason_and_cleanup(monkeypatch, caplog):
+async def test_v4_live_source_close_records_bounded_reason_and_cleanup(monkeypatch, caplog):
     patch_authority(monkeypatch)
     caplog.set_level(logging.INFO, logger=route.logger.name)
     subscription = ClosedSubscription()
@@ -630,7 +615,7 @@ async def test_v3_live_source_close_records_bounded_reason_and_cleanup(monkeypat
         ),
     )
     body = "".join([chunk async for chunk in response.body_iterator])
-    assert "event: stream_open" in body
+    assert "event: stream.open" in body
     records = [record for record in caplog.records if record.msg == "sse_stream_exit"]
     assert len(records) == 1
     assert records[0].reason == "live_source_closed"
@@ -639,7 +624,7 @@ async def test_v3_live_source_close_records_bounded_reason_and_cleanup(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_v3_generic_generator_failure_records_transport_exit(monkeypatch, caplog):
+async def test_v4_generic_generator_failure_records_transport_exit(monkeypatch, caplog):
     patch_authority(monkeypatch)
     caplog.set_level(logging.INFO, logger=route.logger.name)
     subscription = FailingSubscription()
@@ -665,7 +650,7 @@ async def test_v3_generic_generator_failure_records_transport_exit(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_v3_cleanup_failure_overrides_exit_reason_without_duplicate_record(
+async def test_v4_cleanup_failure_overrides_exit_reason_without_duplicate_record(
     monkeypatch, caplog
 ):
     patch_authority(monkeypatch)
@@ -683,7 +668,7 @@ async def test_v3_cleanup_failure_overrides_exit_reason_without_duplicate_record
         ),
     )
     body = "".join([chunk async for chunk in response.body_iterator])
-    assert "event: end\n" in body
+    assert "event: stream.end\n" in body
     records = [record for record in caplog.records if record.msg == "sse_stream_exit"]
     assert len(records) == 1
     assert records[0].reason == "stream_cleanup_failure"
@@ -692,7 +677,7 @@ async def test_v3_cleanup_failure_overrides_exit_reason_without_duplicate_record
 
 
 @pytest.mark.asyncio
-async def test_v3_setup_cleanup_failure_is_classified_once(monkeypatch, caplog):
+async def test_v4_setup_cleanup_failure_is_classified_once(monkeypatch, caplog):
     patch_authority(monkeypatch)
     caplog.set_level(logging.INFO, logger=route.logger.name)
     subscription = FailingSubscription(cleanup_error=True)

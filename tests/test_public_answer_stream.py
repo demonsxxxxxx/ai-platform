@@ -270,6 +270,29 @@ def test_verified_capability_release_never_falls_back_to_cumulative_terminal_tex
     assert finished.final_text == ""
 
 
+def test_each_verified_capability_starts_a_fresh_deferred_disclosure_boundary():
+    gate = _gate()
+    gate.defer_until_finish()
+
+    gate.seal({CALL_ID: "tool invocation"})
+    assert gate.accept("first capability answer") == ()
+    gate.release_after_verified_capability()
+    assert gate.accept("first verified answer") == ()
+
+    gate.seal({"second-call": "tool invocation"})
+    assert gate.accept("second capability in-flight text") == ()
+    gate.release_after_verified_capability()
+    assert gate.accept("latest verified answer") == ()
+
+    finished = gate.finish(
+        final_text="first verified answer second capability in-flight text latest verified answer",
+        release=True,
+    )
+
+    assert finished.chunks == ("latest verified answer",)
+    assert finished.final_text == "latest verified answer"
+
+
 def test_over_bound_initial_or_dynamic_private_token_fails_closed():
     initial = PublicAnswerStreamGate(
         private_replacements={"x" * 65: "external tool"},
@@ -313,8 +336,8 @@ def test_deferred_terminal_answer_does_not_inherit_sealed_buffer_limit():
     )
 
     assert gate.failed is False
-    assert finished.final_text == "terminal tool invocation " + ("y" * 256)
-    assert finished.chunks == (finished.final_text,)
+    assert finished.final_text == ""
+    assert finished.chunks == ()
 
 
 def test_unsafe_sanitizer_result_fails_closed_without_raw_text():

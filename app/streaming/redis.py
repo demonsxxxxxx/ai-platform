@@ -55,6 +55,15 @@ _REDIS_PUBLISH_TIMEOUT_SECONDS = 5
 
 _APPEND_WITH_TTL_LUA = """
 local phase=redis.call('HGET',KEYS[2],'phase')
+local request_protocol=ARGV[8]
+if not request_protocol or request_protocol == '' then request_protocol='v3' end
+if phase then
+  local stored_protocol=redis.call('HGET',KEYS[2],'open_protocol')
+  if not stored_protocol or stored_protocol == '' then stored_protocol='v3' end
+  if stored_protocol ~= request_protocol then
+    return redis.error_reply('stream_protocol_conflict')
+  end
+end
 if ARGV[5] == 'stream_open' then
   if phase
      and redis.call('HGET',KEYS[2],'open_event_id') == ARGV[2]
@@ -82,28 +91,46 @@ elseif ARGV[5] == 'end' then
   end
   local terminal_event_id=redis.call('HGET',KEYS[2],'terminal_event_id')
   if phase ~= 'terminal' or terminal_event_id ~= ARGV[7] then return redis.error_reply('stream_end_without_terminal') end
-elseif phase ~= 'open' then
-  return redis.error_reply('stream_terminal_closed')
+else
+  if phase ~= 'open' then return redis.error_reply('stream_terminal_closed') end
+  if request_protocol == 'v4'
+     and redis.call('HGET',KEYS[2],'last_event_id') == ARGV[2] then
+    if redis.call('HGET',KEYS[2],'last_event_digest') ~= ARGV[6] then
+      return redis.error_reply('stream_event_receipt_conflict')
+    end
+    redis.call('PEXPIRE',KEYS[1],ARGV[4]);redis.call('PEXPIRE',KEYS[2],ARGV[4])
+    return redis.call('HGET',KEYS[2],'last_event_redis_id')
+  end
 end
 local id=redis.call('XADD',KEYS[1],'MAXLEN','~',ARGV[1],'*','envelope',ARGV[3])
 if ARGV[5] == 'stream_open' then
-  redis.call('HSET',KEYS[2],'phase','open','open_event_id',ARGV[2],'open_digest',ARGV[6],'open_redis_id',id)
+  if request_protocol == 'v4' then
+    redis.call('HSET',KEYS[2],'phase','open','open_event_id',ARGV[2],'open_digest',ARGV[6],'open_redis_id',id,'open_protocol',request_protocol)
+  else
+    redis.call('HSET',KEYS[2],'phase','open','open_event_id',ARGV[2],'open_digest',ARGV[6],'open_redis_id',id)
+  end
 end
 if ARGV[5] == 'terminal' then
   redis.call('HSET',KEYS[2],'phase','terminal','terminal_event_id',ARGV[2],'terminal_digest',ARGV[6],'terminal_redis_id',id)
 end
 if ARGV[5] == 'end' then
   redis.call('HSET',KEYS[2],'phase','ended','end_event_id',ARGV[2],'end_digest',ARGV[6],'end_redis_id',id)
+elseif request_protocol == 'v4' and ARGV[5] ~= 'stream_open' and ARGV[5] ~= 'terminal' then
+  redis.call('HSET',KEYS[2],'last_event_id',ARGV[2],'last_event_digest',ARGV[6],'last_event_redis_id',id)
 end
 redis.call('PEXPIRE',KEYS[1],ARGV[4]);redis.call('PEXPIRE',KEYS[2],ARGV[4])
-redis.call('PUBLISH',KEYS[3],cjson.encode({redis_id=id,envelope=ARGV[3]}))
+if ARGV[9] ~= 'no_live' then
+  redis.call('PUBLISH',KEYS[3],cjson.encode({redis_id=id,envelope=ARGV[3]}))
+end
 return id
 """.strip()
 
 _SCRIPT_CONTRACT_ERRORS = frozenset(
     {
         "stream_end_without_terminal",
+        "stream_event_receipt_conflict",
         "stream_open_conflict",
+        "stream_protocol_conflict",
         "stream_terminal_closed",
         "stream_terminal_conflict",
     }
@@ -152,6 +179,16 @@ async def publish_committed_stream_event(
     return True
 
 
+@dataclass(frozen=True, slots=True)
+class RedisV4CandidateInspection:
+    """Narrow same-owner readback for one reserved v4 candidate."""
+
+    stream_exists: bool
+    state_exists: bool
+    rows: tuple[tuple[object, Mapping[object, object]], ...]
+    state: Mapping[object, object]
+
+
 class RedisStreamBridge:
     def __init__(self, *, publish_client: Any | None = None) -> None:
         settings = get_settings() if publish_client is None else None
@@ -171,6 +208,117 @@ class RedisStreamBridge:
     async def aclose(self) -> None:
         if self._owns_publish_client:
             await self._publish_client.aclose()
+
+    async def inspect_v4_candidate(
+        self,
+        *,
+        tenant_scope_value: str,
+        run_id: str,
+        stream_incarnation: int,
+    ) -> RedisV4CandidateInspection:
+        """Read one v4 candidate through the bridge's owned Redis client."""
+
+        key = stream_key(
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            stream_incarnation=stream_incarnation,
+        )
+        state_key = f"{key}:state"
+        try:
+            stream_exists = bool(await self._publish_client.exists(key))
+            state_exists = bool(await self._publish_client.exists(state_key))
+            rows = tuple(await self._publish_client.xrange(key, min="-", max="+"))
+            state = dict(await self._publish_client.hgetall(state_key))
+        except Exception as exc:
+            raise StreamTransportUnavailable("stream_candidate_inspection_unavailable") from exc
+        return RedisV4CandidateInspection(
+            stream_exists=stream_exists,
+            state_exists=state_exists,
+            rows=rows,
+            state=state,
+        )
+
+    async def discard_v4_candidate(
+        self,
+        *,
+        tenant_scope_value: str,
+        run_id: str,
+        stream_incarnation: int,
+    ) -> None:
+        """Remove both keys owned by an incomplete dormant v4 candidate."""
+
+        key = stream_key(
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            stream_incarnation=stream_incarnation,
+        )
+        try:
+            await self._publish_client.delete(key, f"{key}:state")
+        except Exception as exc:
+            raise StreamTransportUnavailable("stream_candidate_discard_unavailable") from exc
+
+    async def append_canonical(
+        self,
+        *,
+        tenant_scope_value: str,
+        run_id: str,
+        stream_incarnation: int,
+        event_id: str,
+        event_type: str,
+        envelope_bytes: bytes,
+        terminal_event_id: str = "",
+        protocol: str = "v4",
+        publish_live: bool = True,
+    ) -> str:
+        """Append a validated canonical envelope through the frozen Lua authority."""
+        if protocol not in {"v3", "v4"}:
+            raise StreamContractError("stream_protocol_invalid")
+        if not isinstance(publish_live, bool):
+            raise StreamContractError("stream_live_mode_invalid")
+
+        key = stream_key(
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            stream_incarnation=stream_incarnation,
+        )
+        live_channel = stream_live_channel(
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            stream_incarnation=stream_incarnation,
+        )
+        terminal = event_type in {"terminal", "end", "stream.end", "run.succeeded", "run.cancelled", "run.failed"}
+        transport_type = {
+            "stream.open": "stream_open",
+            "stream.end": "end",
+        }.get(event_type, "terminal" if terminal else event_type)
+        ttl = SSE_STREAM_TERMINAL_TTL_MS if terminal else SSE_STREAM_ACTIVE_IDLE_TTL_MS
+        try:
+            args: list[object] = [
+                _APPEND_WITH_TTL_LUA,
+                3,
+                key,
+                f"{key}:state",
+                live_channel,
+                SSE_STREAM_MAXLEN,
+                event_id,
+                envelope_bytes.decode("utf-8"),
+                ttl,
+                transport_type,
+                _sha256(envelope_bytes),
+                terminal_event_id,
+                protocol,
+            ]
+            if not publish_live:
+                args.append("no_live")
+            redis_id = await self._publish_client.eval(*args)
+            return redis_id.decode() if isinstance(redis_id, bytes) else str(redis_id)
+        except ResponseError as exc:
+            reason = next((value for value in _SCRIPT_CONTRACT_ERRORS if value in str(exc)), None)
+            if reason is not None:
+                raise StreamContractError(reason) from exc
+            raise StreamTransportUnavailable("stream_append_unavailable") from exc
+        except Exception as exc:
+            raise StreamTransportUnavailable("stream_append_unavailable") from exc
 
     async def append(
         self, envelope: StreamEnvelope, *, terminal: bool = False
@@ -587,11 +735,117 @@ async def create_or_get_stream_admission(
     return _authority(row)
 
 
+async def create_or_get_stream_admission_v4(
+    conn: AsyncConnection[dict[str, object]],
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    tenant_scope: str,
+) -> StreamAuthority:
+    """Persist a strict v4 stream.open authority without changing v3 callers."""
+
+    from app.streaming.api import build_v4_control
+
+    result = await conn.execute(
+        "select * from sse_stream_authorities where tenant_id = %s and run_id = %s for update",
+        (tenant_id, run_id),
+    )
+    row = await result.fetchone()
+    if row is not None:
+        current = _authority(row)
+        if current.attempt_id != attempt_id or current.tenant_scope != tenant_scope:
+            raise SseAuthorityConflictError("sse_stream_attempt_conflict")
+        try:
+            from app.streaming.api import validate_internal_envelope_v4
+
+            raw = current.open_payload_bytes
+            if (
+                row.get("design_id") != "ai-platform.redis-streams-sse-event-channel.v4"
+                or row.get("projection_version") != "public-stream-v4"
+                or not raw
+                or _sha256(raw) != current.open_payload_digest
+                or raw != canonical_json_bytes(json.loads(raw)).decode()
+            ):
+                raise ValueError("authority_metadata_mismatch")
+            envelope = validate_internal_envelope_v4(json.loads(raw))
+            if (
+                envelope["event_type"] != "stream.open"
+                or envelope["event_id"] != current.open_event_id
+                or envelope["tenant_scope"] != current.tenant_scope
+                or envelope["run_id"] != current.run_id
+                or envelope["attempt_id"] != current.attempt_id
+                or envelope["stream_incarnation"] != current.stream_incarnation
+                or envelope["projection_version"] != "public-stream-v4"
+                or envelope["payload"]
+                != {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"}
+                or envelope["source"]
+                != {"kind": "stream_authority", "authority_id": current.open_event_id}
+            ):
+                raise ValueError("authority_envelope_mismatch")
+        except Exception as exc:
+            raise SseAuthorityConflictError("sse_stream_protocol_conflict") from exc
+        return current
+    incarnation = 1
+    event_id = _semantic_id(
+        "ai-platform-stream-open-v4", tenant_scope, run_id, attempt_id, incarnation
+    )
+    envelope = build_v4_control(
+        event_id=event_id,
+        tenant_scope=tenant_scope,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        stream_incarnation=incarnation,
+        event_type="stream.open",
+        payload={"design_id": "ai-platform.redis-streams-sse-event-channel.v4"},
+        source={"kind": "stream_authority", "authority_id": event_id},
+    )
+    payload = canonical_json_bytes(envelope).decode()
+    result = await conn.execute(
+        """insert into sse_stream_authorities(tenant_id,run_id,attempt_id,design_id,projection_version,tenant_scope,stream_incarnation,state,open_event_id,open_payload_bytes,open_payload_digest) values (%s,%s,%s,%s,%s,%s,%s,'admission_pending',%s,%s,%s) returning *""",
+        (
+            tenant_id,
+            run_id,
+            attempt_id,
+            "ai-platform.redis-streams-sse-event-channel.v4",
+            "public-stream-v4",
+            tenant_scope,
+            incarnation,
+            event_id,
+            payload,
+            _sha256(payload),
+        ),
+    )
+    row = await result.fetchone()
+    if row is None:
+        raise SseAuthorityConflictError("sse_stream_admission_unavailable")
+    return _authority(row)
+
+
 async def confirm_stream_admission(
     conn: AsyncConnection[dict[str, object]], *, authority: StreamAuthority
 ) -> StreamAuthority:
     result = await conn.execute(
-        """update sse_stream_authorities set state='confirmed',admission_confirmed_at=clock_timestamp(),updated_at=clock_timestamp() where tenant_id=%s and run_id=%s and attempt_id=%s and stream_incarnation=%s and state in ('admission_pending','confirmed') and open_event_id=%s and open_payload_digest=%s returning *""",
+        """update sse_stream_authorities
+           set state = case
+                 when state = 'terminal' then 'terminal'
+                 when exists (
+                   select 1
+                   from sse_terminal_publication_intents as intent
+                   where intent.tenant_id = sse_stream_authorities.tenant_id
+                     and intent.run_id = sse_stream_authorities.run_id
+                     and intent.attempt_id = sse_stream_authorities.attempt_id
+                     and intent.stream_incarnation = sse_stream_authorities.stream_incarnation
+                 ) then 'terminal'
+                 else 'confirmed'
+               end,
+               admission_confirmed_at=clock_timestamp(),
+               updated_at=clock_timestamp()
+           where tenant_id=%s and run_id=%s and attempt_id=%s
+             and stream_incarnation=%s
+             and state in ('admission_pending','confirmed','terminal')
+             and open_event_id=%s and open_payload_digest=%s
+           returning *""",
         (
             authority.tenant_id,
             authority.run_id,
@@ -810,7 +1064,13 @@ async def ensure_run_terminal_intent(
         ),
     )
     await conn.execute(
-        "update sse_stream_authorities set state='terminal',updated_at=clock_timestamp() where tenant_id=%s and run_id=%s and attempt_id=%s",
+        """update sse_stream_authorities
+           set state = case
+                 when state = 'admission_pending' then 'admission_pending'
+                 else 'terminal'
+               end,
+               updated_at=clock_timestamp()
+           where tenant_id=%s and run_id=%s and attempt_id=%s""",
         (tenant_id, run_id, authority.attempt_id),
     )
     return intent

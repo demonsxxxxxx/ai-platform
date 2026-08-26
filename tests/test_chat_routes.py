@@ -4,6 +4,7 @@ import hashlib
 import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -26,7 +27,7 @@ from app.queue_payload_validation import queue_payload_invalid_detail
 from app.repositories import RepositoryConflictError
 from app.runs.api import RunTerminalizationProgress
 from app.routes.chat import (
-    _admit_chat_submission,
+    _admit_chat_submission as _route_admit_chat_submission,
     _audit_capability_denial,
     _canonical_pre_persistence_rejection_fingerprint,
     _chat_submission_http_error,
@@ -34,11 +35,11 @@ from app.routes.chat import (
     _preledger_recovery_fingerprint,
     _submission_code,
     _validate_queue_payload_for_enqueue,
-    chat_stream,
+    chat_stream as _route_chat_stream,
     create_chat_session,
     get_chat_submission,
     list_messages,
-    retry_chat_submission_admission,
+    retry_chat_submission_admission as _route_retry_chat_submission_admission,
 )
 from app.settings import Settings
 
@@ -46,6 +47,50 @@ _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = repository_module.authorize_run_capabilit
 _ORIGINAL_GET_LATEST_AUTHORIZED_SESSION_RUN_INPUT = (
     repository_module.get_latest_authorized_session_run_input
 )
+
+
+class _NoOpPendingAdmissions:
+    async def prepare_pending_authority_in_transaction(
+        self, _conn, *, tenant_id, run_id, attempt_id
+    ):
+        del tenant_id, run_id, attempt_id
+        return object()
+
+
+class _NoOpTerminalEventPersistence:
+    async def append_terminal_row(self, _conn, *, tenant_id, run_id):
+        del tenant_id, run_id
+        return object()
+
+
+_TEST_V4_CAPABILITIES = SimpleNamespace(
+    pending_admissions=_NoOpPendingAdmissions(),
+    event_persistence=_NoOpTerminalEventPersistence(),
+)
+_TEST_STREAM_REQUEST = SimpleNamespace(
+    app=SimpleNamespace(
+        state=SimpleNamespace(
+            run_stream_runtime=SimpleNamespace(
+                worker_capabilities=_TEST_V4_CAPABILITIES,
+            )
+        )
+    )
+)
+
+
+async def _admit_chat_submission(*args, **kwargs):
+    kwargs.setdefault("v4_capabilities", _TEST_V4_CAPABILITIES)
+    return await _route_admit_chat_submission(*args, **kwargs)
+
+
+async def chat_stream(*args, **kwargs):
+    kwargs.setdefault("http_request", _TEST_STREAM_REQUEST)
+    return await _route_chat_stream(*args, **kwargs)
+
+
+async def retry_chat_submission_admission(*args, **kwargs):
+    kwargs.setdefault("request", _TEST_STREAM_REQUEST)
+    return await _route_retry_chat_submission_admission(*args, **kwargs)
 
 
 @asynccontextmanager
@@ -75,6 +120,17 @@ def chat_submission_client(monkeypatch):
     monkeypatch.setattr(
         "app.auth.get_settings",
         lambda: Settings(frontend_poc_auth_enabled=True),
+    )
+    monkeypatch.setattr(
+        "app.main.build_run_stream_runtime",
+        lambda _transaction: SimpleNamespace(
+            worker_capabilities=_TEST_V4_CAPABILITIES,
+            aclose=AsyncMock(),
+        ),
+    )
+    monkeypatch.setattr(
+        "app.main.build_run_cancellation_use_case",
+        object,
     )
     with TestClient(create_app(), raise_server_exceptions=False) as client:
         yield client
@@ -1082,8 +1138,9 @@ async def test_retry_admission_preserves_existing_submission_admission(monkeypat
             "outcome_json": _pending_submission_row()["outcome_json"],
         }, False
 
-    async def admit(*, principal: AuthPrincipal, submission_id: str):
+    async def admit(*, principal: AuthPrincipal, submission_id: str, v4_capabilities):
         assert principal.user_id == "user-a"
+        assert v4_capabilities is _TEST_V4_CAPABILITIES
         admitted.append(submission_id)
         return ChatSubmissionResponse(
             submission_id=submission_id,
@@ -1617,6 +1674,29 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
     async def finalize(conn, **kwargs):
         conn.pending.append(("submission", kwargs["state"]))
 
+    class PendingAdmissions:
+        async def prepare_pending_authority_in_transaction(
+            self, conn, *, tenant_id, run_id, attempt_id
+        ):
+            assert (tenant_id, run_id, attempt_id) == (
+                "tenant-a",
+                "run-durable",
+                "enqueue_failure_run-durable",
+            )
+            conn.pending.append(("authority", run_id))
+            return object()
+
+    class EventPersistence:
+        async def append_terminal_row(self, conn, *, tenant_id, run_id):
+            assert (tenant_id, run_id) == ("tenant-a", "run-durable")
+            conn.pending.append(("terminal_row", run_id))
+            return "row-durable"
+
+    capabilities = SimpleNamespace(
+        pending_admissions=PendingAdmissions(),
+        event_persistence=EventPersistence(),
+    )
+
     monkeypatch.setattr("app.routes.chat.transaction", transaction_with_rollback_tracking)
     monkeypatch.setattr(repository_module, "get_chat_submission", get_submission, raising=False)
     monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
@@ -1630,13 +1710,27 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
         await _admit_chat_submission(
             principal=principal(),
             submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+            v4_capabilities=capabilities,
         )
 
     assert exc_info.value.status_code == 503
-    assert committed == [("run", "run-durable"), ("submission", "enqueue_failed")]
+    assert committed == [
+        ("authority", "run-durable"),
+        ("run", "run-durable"),
+        ("terminal_row", "run-durable"),
+        ("submission", "enqueue_failed"),
+    ]
     assert transaction_outcomes == [
         ("commit", []),
-        ("commit", [("run", "run-durable"), ("submission", "enqueue_failed")]),
+        (
+            "commit",
+            [
+                ("authority", "run-durable"),
+                ("run", "run-durable"),
+                ("terminal_row", "run-durable"),
+                ("submission", "enqueue_failed"),
+            ],
+        ),
     ]
 
 

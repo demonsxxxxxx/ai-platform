@@ -16,6 +16,10 @@ from app.execution.application.executor_reconciliation import (
     restored_sandbox_run_payload,
     sandbox_reconciliation_payload,
 )
+from app.execution.application.claude_agent_events import (
+    ClaudeAgentEventCandidate,
+    ClaudeSdkAgentEventAdapter,
+)
 from app.execution.application.stale_terminalization import (
     stage_stale_run_reconciliation,
 )
@@ -46,6 +50,8 @@ async def resolve_chat_model_selection(
     )
 
 __all__ = [
+    "ClaudeAgentEventCandidate",
+    "ClaudeSdkAgentEventAdapter",
     "RunModelSelection",
     "SkillInvocationEvidenceBinder",
     "WorkerRunCancelled",

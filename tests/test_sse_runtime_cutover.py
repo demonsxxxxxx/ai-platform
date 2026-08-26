@@ -7,6 +7,26 @@ def test_release_atomic_cutover_has_no_pg_live_reader_or_predispatch_sdk():
     assert cutover.check() == []
 
 
+def test_release_atomic_cutover_rejects_generated_v4_contract_drift(monkeypatch):
+    monkeypatch.setattr(
+        cutover.generate_sse_v4_contracts,
+        "generate",
+        lambda *, check: ["generated/publicRunStreamV4.ts differs"] if check else [],
+    )
+
+    assert "public_run_stream_v4:generated/publicRunStreamV4.ts differs" in (
+        cutover.check()
+    )
+
+
+def test_release_atomic_cutover_rejects_optional_v3_runtime_markers():
+    assert cutover._retired_v3_runtime_failures(
+        {"sseConnection.ts": 'import { connect } from "./publicRunStreamV3";'}
+    ) == [
+        "sseConnection.ts:retired_v3_runtime_marker:publicRunStreamV3"
+    ]
+
+
 def test_assistant_delta_ownership_guard_rejects_a_second_worker_ingress():
     valid = {
         "worker_source": "raise WorkerDirectAssistantDeltaError",
@@ -136,6 +156,63 @@ async def producer(transaction_factory):
     assert cutover._redis_append_inside_transaction(node) == [4]
 
 
+def test_checker_detects_active_v4_transport_inside_transaction():
+    node = ast.parse(
+        """
+async def publish_claimed(transaction, transport):
+    async with transaction():
+        await transport.publish(payload)
+"""
+    ).body[0]
+
+    assert cutover._redis_append_inside_transaction(node) == [4]
+
+
+def test_checker_publication_owner_manifest_matches_all_production_callers():
+    owners = cutover._publication_owner_functions(cutover.ROOT)
+
+    assert frozenset(owners) == cutover.V4_PUBLICATION_OWNER_MANIFEST
+    assert cutover._publication_owner_manifest_failures(owners) == []
+
+
+def test_checker_rejects_an_unlisted_publication_owner(tmp_path):
+    app_root = tmp_path / "app"
+    app_root.mkdir()
+    (app_root / "new_owner.py").write_text(
+        """
+async def unsafe_new_owner(transaction, transport):
+    async with transaction():
+        await transport.publish(payload)
+""",
+        encoding="utf-8",
+    )
+
+    owners = cutover._publication_owner_functions(tmp_path)
+
+    assert cutover._publication_owner_manifest_failures(owners) == [
+        "v4_publication_owner_manifest:unlisted:app/new_owner.py:unsafe_new_owner",
+        *[
+            f"v4_publication_owner_manifest:stale:{path}:{name}"
+            for path, name in sorted(cutover.V4_PUBLICATION_OWNER_MANIFEST)
+        ],
+    ]
+    assert cutover._redis_append_inside_transaction(
+        owners[("app/new_owner.py", "unsafe_new_owner")]
+    ) == [4]
+
+
+def test_checker_detects_active_v4_application_publisher_inside_transaction():
+    node = ast.parse(
+        """
+async def callback(transaction):
+    async with transaction():
+        await publish_pending_v4_events(capabilities)
+"""
+    ).body[0]
+
+    assert cutover._redis_append_inside_transaction(node) == [4]
+
+
 def test_checker_requires_dedicated_sse_nginx_contract():
     source = """
 location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/stream$ {
@@ -148,6 +225,26 @@ location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/stream$ {
     assert any("Accept-Encoding" in failure for failure in failures)
     assert any("proxy_buffering off" in failure for failure in failures)
     assert any("proxy_cache off" in failure for failure in failures)
+
+
+def test_checker_rejects_commented_sse_nginx_contract():
+    source = """
+# location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/stream$ {
+#     proxy_set_header Connection "";
+#     proxy_set_header Accept-Encoding "";
+#     proxy_buffering off;
+#     proxy_request_buffering off;
+#     proxy_cache off;
+#     gzip off;
+#     add_header Cache-Control "no-cache, no-transform" always;
+#     proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT};
+#     proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT};
+# }
+"""
+
+    assert cutover._nginx_sse_contract_failures(source) == [
+        "nginx.conf.template:sse_location_missing"
+    ]
 
 
 def test_checker_rejects_the_retired_run_id_path_sse_location():
@@ -170,16 +267,69 @@ location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/runs/[A-Za-z0-9_-]+/stream$ {
     ]
 
 
+def test_worker_admission_guard_accepts_multiple_terminal_branches_with_predispatch_admission():
+    worker = ast.parse(
+        """
+async def process_run_payload():
+    if terminal_before_dispatch:
+        await admit_v4_stream()
+        return
+    await admit_v4_stream()
+    await _submit_run_until_cancelled()
+    if terminal_after_dispatch:
+        await admit_v4_stream()
+"""
+    ).body[0]
+
+    assert cutover._worker_admission_failures(worker) == []
+
+
+def test_worker_admission_guard_rejects_terminal_only_admission_before_dispatch():
+    worker = ast.parse(
+        """
+async def process_run_payload():
+    if terminal_before_dispatch:
+        await admit_v4_stream()
+        return
+    await _submit_run_until_cancelled()
+"""
+    ).body[0]
+
+    assert cutover._worker_admission_failures(worker) == [
+        "worker.py:v4_admission_not_before_sdk_dispatch"
+    ]
+
+
+def test_worker_admission_guard_rejects_only_postdispatch_admission():
+    worker = ast.parse(
+        """
+async def process_run_payload():
+    await _submit_run_until_cancelled()
+    await admit_v4_stream()
+"""
+    ).body[0]
+
+    assert cutover._worker_admission_failures(worker) == [
+        "worker.py:v4_admission_not_before_sdk_dispatch"
+    ]
+
+
 def test_frontend_structure_ignores_noop_markers_outside_the_real_connect_body():
     source = """
-const commitAcceptedStreamEvent = () => {
+const commitTransportCursor = () => {
   fake.acceptedStreamCursorRef.current = null;
 };
 export async function connectToSSE(): Promise<void> {
-  const commitAcceptedStreamEvent = (semanticApplied: boolean) => {
+  const commitTransportCursor = (semanticApplied: boolean) => {
     ctx.acceptedStreamCursorRef.current = accepted;
   };
-  handleStreamEvent(event, commitAcceptedStreamEvent);
+  const commitAcceptedStreamEvent = (semanticApplied: boolean) => {
+    commitTransportCursor(semanticApplied);
+  };
+  handlePublicRunStreamFrameV4({
+    frame,
+    onCommitted: commitAcceptedStreamEvent,
+  });
 }
 """
 
@@ -187,12 +337,36 @@ export async function connectToSSE(): Promise<void> {
         source,
         "export async function connectToSSE",
     )
-    commit = cutover._typescript_function_body(
+    transport_commit = cutover._typescript_function_body(
         connect,
-        "const commitAcceptedStreamEvent",
+        "const commitTransportCursor",
     )
-    calls = cutover._typescript_call_arguments(connect, "handleStreamEvent")
+    calls = cutover._typescript_call_arguments(
+        connect,
+        "handlePublicRunStreamFrameV4",
+    )
 
     assert "fake.acceptedStreamCursorRef" not in connect
-    assert commit.count("ctx.acceptedStreamCursorRef.current =") == 1
-    assert calls == ["event, commitAcceptedStreamEvent"]
+    assert transport_commit.count("ctx.acceptedStreamCursorRef.current =") == 1
+    assert "onCommitted: commitAcceptedStreamEvent" in calls[0]
+    assert cutover._frontend_cursor_commit_failures(source) == []
+
+
+def test_frontend_structure_rejects_cursor_commit_outside_reducer_callback():
+    source = """
+export async function connectToSSE(): Promise<void> {
+  const commitTransportCursor = (semanticApplied: boolean) => {
+    ctx.acceptedStreamCursorRef.current = accepted;
+  };
+  const commitAcceptedStreamEvent = (semanticApplied: boolean) => {};
+  handlePublicRunStreamFrameV4({
+    frame,
+    onCommitted: commitAcceptedStreamEvent,
+  });
+  commitTransportCursor(true);
+}
+"""
+
+    assert cutover._frontend_cursor_commit_failures(source) == [
+        "sseConnection.ts:cursor_not_bound_to_reducer_commit"
+    ]

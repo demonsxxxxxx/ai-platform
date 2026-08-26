@@ -1,6 +1,7 @@
 import base64
 import hashlib
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -8,7 +9,21 @@ from fastapi import HTTPException
 from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.models import ChatStreamRequest
-from app.routes.chat import chat_stream
+from app.routes.chat import chat_stream as _route_chat_stream
+
+
+_TEST_STREAM_REQUEST = SimpleNamespace(
+    app=SimpleNamespace(
+        state=SimpleNamespace(
+            run_stream_runtime=SimpleNamespace(worker_capabilities=object())
+        )
+    )
+)
+
+
+async def chat_stream(*args, **kwargs):
+    kwargs.setdefault("http_request", _TEST_STREAM_REQUEST)
+    return await _route_chat_stream(*args, **kwargs)
 
 
 @asynccontextmanager

@@ -4,11 +4,13 @@ import gc
 import hashlib
 import io
 import json
+import os
 import shutil
 import threading
 import time
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from xml.etree import ElementTree
 
 import httpx
@@ -16,11 +18,13 @@ import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
+from app.execution.api import ClaudeAgentEventCandidate
 from app.executors.claude_agent_sdk_runner import build_skill_prompt
 from app.file_parser_contracts import (
     build_attachment_preprocessing_contract,
 )
 from app.public_execution import PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
+from app.platform.public_payload import sanitize_public_payload
 from app.required_tool_contract import (
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     REQUIRED_CAPABILITY_EVIDENCE_KEY,
@@ -33,6 +37,7 @@ from app.required_tool_contract import (
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox import executor_app
 from app.runtime.sandbox.contracts import (
+    ExecutorCallbackEvent,
     ExecutorTaskRequest,
     executor_callback_receipt_event_count,
 )
@@ -2340,8 +2345,15 @@ def test_executor_runs_real_staged_qa_entrypoint_with_minimal_environment(tmp_pa
     write_minimal_docx(workspace / "source.docx")
     skills_root = Path(__file__).parents[1] / "skills"
     staged_skills = workspace / ".claude" / "skills"
-    shutil.copytree(skills_root / "qa-file-reviewer", staged_skills / "qa-file-reviewer")
-    shutil.copytree(skills_root / "minimax-docx", staged_skills / "minimax-docx")
+
+    def copy_skill(source: Path, target: Path) -> None:
+        if os.name == "nt":
+            shutil.copytree(f"\\\\?\\{source.resolve()}", f"\\\\?\\{target.resolve()}")
+        else:
+            shutil.copytree(source, target)
+
+    copy_skill(skills_root / "qa-file-reviewer", staged_skills / "qa-file-reviewer")
+    copy_skill(skills_root / "minimax-docx", staged_skills / "minimax-docx")
 
     async def sdk_must_not_run(**_kwargs):
         raise AssertionError("the real staged QA Skill must not be left to SDK discretion")
@@ -3256,6 +3268,10 @@ async def test_executor_deadline_waits_for_runner_cleanup_before_terminal_respon
                 "message": "late",
                 "payload": {"delta": "late"},
                 "admin_only": False,
+                "event_id": None,
+                "run_id": None,
+                "message_id": None,
+                "causation_event_id": None,
             }
         ]
         assert not callbacks[-1].get("events")
@@ -3390,6 +3406,71 @@ def test_executor_execute_allows_runner_with_larger_fractional_deadline(tmp_path
     assert response.json()["status"] == "completed"
     assert [item["status"] for item in callbacks] == ["running", "running"]
     assert callbacks[-1]["state_patch"]["stage"] == "executor_finished"
+
+
+@pytest.mark.asyncio
+async def test_default_executor_runner_seals_when_agent_event_emit_is_rejected(tmp_path, monkeypatch):
+    request = ExecutorTaskRequest.model_validate(task_payload())
+    emitted = []
+
+    async def emit_event(event):
+        emitted.append(event)
+        return not isinstance(event, ExecutorCallbackEvent)
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        candidate = ClaudeAgentEventCandidate(
+            run_id=request.run_id,
+            event_id="evt-delta",
+            event_type="message.delta",
+            message_id="msg-1",
+            causation_event_id=None,
+            payload={"delta": "safe"},
+            payload_sanitizer=sanitize_public_payload,
+        )
+        assert await kwargs["on_agent_event"]((candidate,)) is False
+        return SimpleNamespace(
+            used_sdk=True,
+            error=None,
+            received_structured_terminal=True,
+            message="safe",
+            session_id="sdk-session",
+            terminal_reason="end_turn",
+            usage={},
+            used_skills=[],
+            used_skills_source="",
+            turn_diagnostics={},
+        )
+
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    monkeypatch.setattr(
+        executor_app,
+        "get_settings",
+        lambda: SimpleNamespace(
+            claude_agent_sdk_enabled=True,
+            claude_agent_sdk_skills="",
+            claude_agent_sdk_max_turns=4,
+            claude_agent_sdk_timeout_seconds=10,
+            claude_agent_sdk_max_thinking_tokens=128,
+            claude_agent_sdk_effort="high",
+            claude_agent_permission_mode="dontAsk",
+            claude_agent_allowed_tools="Read",
+            claude_agent_disallowed_tools="",
+            claude_agent_sdk_model="model-a",
+            anthropic_model="",
+            anthropic_base_url="",
+            anthropic_auth_token="",
+            openai_api_key="",
+        ),
+    )
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "agent_event_callback_not_acknowledged"
+    assert result["message"] == ""
+    callback_batches = [event for event in emitted if isinstance(event, ExecutorCallbackEvent)]
+    assert len(callback_batches) == 1
+    assert [event.type for event in callback_batches[0].events] == ["message.delta"]
 
 
 def test_executor_execute_does_not_rewrite_runner_timeout_error_as_deadline(tmp_path):

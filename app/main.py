@@ -8,8 +8,9 @@ from app.bootstrap.model_services import (
     build_model_management_router,
     configure_model_services,
 )
+from app.bootstrap.run_lifecycle import build_run_cancellation_use_case
 from app.bootstrap.streaming import build_run_stream_runtime
-from app.db import close_pool
+from app.db import close_pool, transaction
 from app.redis_client import close_redis_client
 from app.routes.agent_profiles import router as agent_profiles_router
 from app.routes.admin_runtime import router as admin_runtime_router
@@ -48,8 +49,9 @@ def _cors_origins(raw_value: str) -> list[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    run_stream_runtime = build_run_stream_runtime()
+    run_stream_runtime = build_run_stream_runtime(transaction)
     app.state.run_stream_runtime = run_stream_runtime
+    app.state.run_cancellation_use_case = build_run_cancellation_use_case()
     try:
         yield
     finally:

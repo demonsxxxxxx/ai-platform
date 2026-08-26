@@ -8,7 +8,6 @@ import json
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Literal
 
 from app.control_plane_contracts import EVENT_ENVELOPE_SCHEMA_VERSION
 from app.public_execution import (
@@ -18,10 +17,14 @@ from app.public_execution import (
 )
 from app.run_projection import CHAT_PUBLIC_PROJECTION_VERSION
 from app.streaming.api import (
-    REDIS_ID_PATTERN as _REDIS_ID_RE,
     RUN_ID_PATTERN as _RUN_ID_RE,
+    STREAM_GAP_SCHEMA as STREAM_GAP_SCHEMA,
     TENANT_SCOPE_PATTERN as _TENANT_SCOPE_RE,
+    ResumeDecision as ResumeDecision,
     StreamContractError,
+    StreamCursor,
+    StreamGap as StreamGap,
+    canonical_json_bytes,
 )
 from app.streaming.events import (
     INTERNAL_STREAM_EVENT_SCHEMA,
@@ -31,7 +34,6 @@ from app.streaming.events import (
 )
 
 STREAM_EVENT_SCHEMA = INTERNAL_STREAM_EVENT_SCHEMA
-STREAM_GAP_SCHEMA = "ai-platform.stream-gap.v3"
 STREAM_PROJECTION_VERSION = GENERATED_STREAM_PROJECTION_VERSION
 STREAM_DESIGN_ID = GENERATED_STREAM_DESIGN_ID
 PUBLIC_EVENT_TYPES = PUBLIC_STREAM_EVENT_TYPES
@@ -76,38 +78,6 @@ _WRAPPED_PUBLIC_EVENTS = {
 
 class StreamProjectionError(ValueError):
     pass
-
-
-@dataclass(frozen=True, slots=True)
-class StreamCursor:
-    run_id: str
-    stream_incarnation: int
-    redis_id: str
-
-    def __post_init__(self) -> None:
-        if (
-            not _RUN_ID_RE.fullmatch(self.run_id)
-            or isinstance(self.stream_incarnation, bool)
-            or self.stream_incarnation < 1
-            or not _REDIS_ID_RE.fullmatch(self.redis_id)
-        ):
-            raise StreamContractError("stream_cursor_invalid")
-
-    @property
-    def event_id(self) -> str:
-        return f"{self.run_id}:{self.stream_incarnation}:{self.redis_id}"
-
-    @classmethod
-    def parse(cls, value: str, *, run_id: str) -> StreamCursor:
-        if not isinstance(value, str) or not value or value != value.strip():
-            raise StreamContractError("stream_cursor_invalid")
-        prefix, separator, redis_id = value.rpartition(":")
-        parsed_run, separator2, incarnation = prefix.rpartition(":")
-        if separator != ":" or separator2 != ":" or parsed_run != run_id:
-            raise StreamContractError("stream_cursor_foreign_run")
-        if not incarnation.isdecimal() or incarnation.startswith("0"):
-            raise StreamContractError("stream_cursor_incarnation_invalid")
-        return cls(run_id, int(incarnation), redis_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,58 +139,6 @@ class StreamEnvelope:
 class StreamEntry:
     cursor: StreamCursor
     envelope: StreamEnvelope
-
-
-@dataclass(frozen=True, slots=True)
-class StreamGap:
-    reason: Literal[
-        "retained_history_unavailable",
-        "stream_missing",
-        "stream_continuity_unproven",
-        "stream_incarnation_mismatch",
-    ]
-    requested_event_id: str | None
-    requested_stream_incarnation: int | None
-    current_stream_incarnation: int
-    earliest_available_event_id: str | None = None
-    latest_available_event_id: str | None = None
-
-    def as_public_dict(self) -> dict[str, object]:
-        result = {
-            "schema": STREAM_GAP_SCHEMA,
-            "reason": self.reason,
-            "current_stream_incarnation": self.current_stream_incarnation,
-            "recovery": "reload_durable_state",
-        }
-        result.update(
-            {
-                key: value
-                for key, value in asdict(self).items()
-                if key != "reason"
-                and key != "current_stream_incarnation"
-                and value is not None
-            }
-        )
-        return result
-
-
-@dataclass(frozen=True, slots=True)
-class ResumeDecision:
-    after_redis_id: str | None
-    gap: StreamGap | None
-
-
-def canonical_json_bytes(value: object) -> bytes:
-    try:
-        return json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode()
-    except (TypeError, ValueError, UnicodeEncodeError) as exc:
-        raise StreamContractError("stream_json_not_canonicalizable") from exc
 
 
 def tenant_scope(tenant_id: str, *, secret: str) -> str:

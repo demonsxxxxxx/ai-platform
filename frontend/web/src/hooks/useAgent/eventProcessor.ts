@@ -9,6 +9,7 @@
  */
 
 import type {
+  Message,
   MessagePart,
   MessageAttachment,
   ToolCall,
@@ -119,11 +120,84 @@ const CHAT_PUBLIC_COMMENTARY_EVENT_TYPES: ReadonlySet<string> = new Set(
 );
 const CHAT_PUBLIC_STATUS_EVENT_TYPES: ReadonlySet<string> = new Set([
   ...CHAT_PUBLIC_COMMENTARY_EVENT_TYPES,
+  "public_activity",
   "error",
 ]);
 const MAX_PUBLIC_ACTIVITY_TIMELINE_PARTS = 12;
 const ACTIONABLE_PUBLIC_STATUS_PATTERN =
   /error|failed|failure|denied|blocked|forbidden|unauthori[sz]ed|cancel/i;
+
+function stableTextLogicalId(
+  data: EventData,
+  messageId: string | undefined,
+  depth: number,
+  agentId: string | undefined,
+  segmentOrdinal: number,
+): string {
+  const owner = data.message_id || messageId || "assistant";
+  return `${owner}:text:${segmentOrdinal}:${depth}:${agentId || "root"}`;
+}
+
+function rootTextSegmentCount(parts: MessagePart[]): number {
+  return parts.filter((part) => part.type === "text" && !part.depth).length;
+}
+
+export function normalizeMessageTextLogicalIds(
+  message: Message,
+  rootTextOwnerId: string = message.id,
+): Message {
+  const textSegmentCounts = new Map<string, number>();
+  let changed = false;
+
+  const normalizeParts = (
+    parts: MessagePart[],
+    inheritedDepth = 0,
+    inheritedAgentId = "root",
+  ): MessagePart[] =>
+    parts.map((part) => {
+      if (part.type === "text") {
+        const depth = part.depth ?? inheritedDepth;
+        const agentId = part.agent_id || inheritedAgentId;
+        const scope = `${depth}:${agentId}`;
+        const segmentOrdinal = textSegmentCounts.get(scope) ?? 0;
+        textSegmentCounts.set(scope, segmentOrdinal + 1);
+        const fallbackLogicalId =
+          `${message.id}:text:${segmentOrdinal}:${depth}:${agentId}`;
+        const logicalId =
+          `${rootTextOwnerId}:text:${segmentOrdinal}:${depth}:${agentId}`;
+        if (
+          part.logical_id &&
+          (part.logical_id !== fallbackLogicalId || part.logical_id === logicalId)
+        ) {
+          return part;
+        }
+        changed = true;
+        return {
+          ...part,
+          logical_id: logicalId,
+        };
+      }
+      if (part.type === "subagent" && part.parts?.length) {
+        const normalizedParts = normalizeParts(
+          part.parts,
+          part.depth + 1,
+          part.agent_id,
+        );
+        if (
+          normalizedParts.some(
+            (nestedPart, index) => nestedPart !== part.parts?.[index],
+          )
+        ) {
+          changed = true;
+          return { ...part, parts: normalizedParts };
+        }
+      }
+      return part;
+    });
+
+  const parts = normalizeParts(message.parts || []);
+  return changed ? { ...message, parts } : message;
+}
 
 /**
  * Unified message event processor.
@@ -251,7 +325,17 @@ export function processMessageEvent(
         data.projection_kind === "assistant_final"
       ) {
         if (depth > 0) break;
-        result.parts = replaceAssistantTextWithFinal(parts, chunkContent);
+        result.parts = replaceAssistantTextWithFinal(
+          parts,
+          chunkContent,
+          stableTextLogicalId(
+            data,
+            messageId,
+            depth,
+            agentId,
+            rootTextSegmentCount(parts),
+          ),
+        );
         result.content = chunkContent;
         break;
       }
@@ -260,6 +344,13 @@ export function processMessageEvent(
         const textPart = {
           type: "text" as const,
           content: chunkContent,
+          logical_id: stableTextLogicalId(
+            data,
+            messageId,
+            depth,
+            agentId,
+            0,
+          ),
           depth,
           agent_id: agentId,
         };
@@ -278,9 +369,28 @@ export function processMessageEvent(
           newParts[newParts.length - 1] = {
             ...lastPart,
             content: lastPart.content + chunkContent,
+            logical_id:
+              lastPart.logical_id ||
+              stableTextLogicalId(
+                data,
+                messageId,
+                depth,
+                agentId,
+                Math.max(0, rootTextSegmentCount(parts) - 1),
+              ),
           };
         } else {
-          newParts.push({ type: "text" as const, content: chunkContent });
+          newParts.push({
+            type: "text" as const,
+            content: chunkContent,
+            logical_id: stableTextLogicalId(
+              data,
+              messageId,
+              depth,
+              agentId,
+              rootTextSegmentCount(parts),
+            ),
+          });
         }
         result.parts = newParts;
         result.content = content + chunkContent;
@@ -450,6 +560,21 @@ export function processMessageEvent(
           break;
         }
       }
+      if (data.event_type === "public_tool_activity") {
+        const toolPart = createPublicToolPart(data);
+        if (toolPart) {
+          result.parts = upsertPublicToolPart(parts, toolPart);
+          break;
+        }
+      }
+      if (data.event_type === "public_subagent_activity") {
+        const subagentPart = createPublicSubagentPart(data, depth, parts);
+
+        if (subagentPart) {
+          result.parts = upsertPublicSubagentPart(parts, subagentPart);
+          break;
+        }
+      }
       if (!shouldProjectRunStatus(data)) {
         break;
       }
@@ -593,9 +718,229 @@ export function processMessageEvent(
   return result;
 }
 
-// ============================================
-// Internal helpers
-// ============================================
+function createPublicToolPart(data: EventData): Extract<MessagePart, { type: "tool" }> | null {
+  const operationId = typeof data.operation_id === "string" ? data.operation_id : "";
+  const displayName = typeof data.display_name === "string" ? data.display_name : "";
+  const category = typeof data.category === "string" ? data.category : "";
+  const status = typeof data.status === "string" ? data.status : "";
+  if (
+    !operationId ||
+    !displayName ||
+    !category ||
+    !status ||
+    !["started", "completed", "failed", "denied"].includes(status)
+  ) return null;
+  const failed = status === "failed" || status === "denied";
+  return {
+    type: "tool",
+    id: operationId,
+    name: displayName,
+    args: { category },
+    result: typeof data.result_summary === "string" ? data.result_summary : undefined,
+    status: status as "started" | "completed" | "failed" | "denied",
+    success: failed ? false : status === "completed" ? true : undefined,
+    error: undefined,
+    isPending: status === "started",
+    cancelled: false,
+    depth: typeof data.depth === "number" ? data.depth : 0,
+    agent_id: typeof data.agent_id === "string" ? data.agent_id : undefined,
+    public_operation_id: operationId,
+    public_category: category,
+    duration_ms: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
+    evidence_refs: Array.isArray(data.evidence_refs) ? data.evidence_refs : undefined,
+    artifact_refs: Array.isArray(data.artifact_refs) ? data.artifact_refs : undefined,
+    event_id: typeof data.event_id === "string" ? data.event_id : undefined,
+    causation_event_id: data.causation_event_id ?? null,
+  };
+}
+
+function upsertPublicToolPart(
+  parts: MessagePart[],
+  next: Extract<MessagePart, { type: "tool" }>,
+): MessagePart[] {
+  const index = parts.findIndex(
+    (part) => part.type === "tool" && part.public_operation_id === next.public_operation_id,
+  );
+  if (index < 0) return [...parts, next];
+  const updated = [...parts];
+  const current = updated[index];
+  if (current?.type !== "tool") return parts;
+  updated[index] = { ...current, ...next };
+  return updated;
+}
+
+function acceptedSubagentForEvent(
+  parts: MessagePart[],
+  parentEventId: string,
+): Extract<MessagePart, { type: "subagent" }> | undefined {
+  for (const part of parts) {
+    if (
+      part.type === "subagent" &&
+      (part.origin_event_id === parentEventId || part.event_id === parentEventId)
+    ) {
+      return part;
+    }
+    if (part.type === "subagent" && part.parts) {
+      const nested = acceptedSubagentForEvent(part.parts, parentEventId);
+      if (nested) return nested;
+    }
+  }
+  return undefined;
+}
+
+const PUBLIC_SUBAGENT_CATEGORIES = new Set([
+  "skill",
+  "mcp",
+  "read",
+  "write",
+  "edit",
+  "search",
+  "execute",
+]);
+
+function boundedSubagentDuration(value: unknown): number | undefined {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= 86_400_000
+    ? value
+    : undefined;
+}
+
+function boundedSubagentProgress(value: unknown): number | undefined {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= 100
+    ? value
+    : undefined;
+}
+
+function boundedSubagentCategory(value: unknown): string | undefined {
+  return typeof value === "string" && PUBLIC_SUBAGENT_CATEGORIES.has(value)
+    ? value
+    : undefined;
+}
+
+function createPublicSubagentPart(
+  data: EventData,
+  depth: number,
+  parts: MessagePart[],
+): Extract<MessagePart, { type: "subagent" }> | null {
+  const agentId = typeof data.subagent_id === "string" ? data.subagent_id : "";
+  const agentName = typeof data.display_name === "string" ? data.display_name : "";
+  const status = typeof data.status === "string" ? data.status : "";
+  if (!agentId || !agentName || !status) return null;
+  const terminal = status === "completed" || status === "failed" || status === "cancelled";
+  const causationEventId = typeof data.causation_event_id === "string"
+    ? data.causation_event_id
+    : null;
+  const parent = causationEventId
+    ? acceptedSubagentForEvent(parts, causationEventId)
+    : undefined;
+  const parentAgentId = parent?.public_operation_id || parent?.agent_id;
+  const durationMs = boundedSubagentDuration(data.duration_ms);
+  const progressPercent = boundedSubagentProgress(data.progress_percent);
+  const currentCategory = boundedSubagentCategory(data.current_category);
+  return {
+    type: "subagent",
+    agent_id: agentId,
+    agent_name: agentName,
+    input: "",
+    isPending: !terminal,
+    status: status === "progress" ? "running" : status === "started" ? "running" : status === "completed" ? "complete" : status === "cancelled" ? "cancelled" : "error",
+    depth: parent
+      ? parent.depth + 1
+      : typeof data.depth === "number"
+        ? data.depth
+        : depth,
+    parts: [],
+    startedAt: typeof data.timestamp === "string" ? Date.parse(data.timestamp) : undefined,
+    completedAt: terminal && typeof data.timestamp === "string" ? Date.parse(data.timestamp) : undefined,
+    error: status === "failed" && typeof data.failure_category === "string" ? data.failure_category : undefined,
+    parent_agent_id: parentAgentId,
+    public_operation_id: agentId,
+    duration_ms: durationMs,
+    progress_percent: progressPercent,
+    current_category: currentCategory,
+    origin_event_id: typeof data.event_id === "string" ? data.event_id : undefined,
+    event_id: typeof data.event_id === "string" ? data.event_id : undefined,
+    causation_event_id: causationEventId,
+  };
+}
+
+function updateSubagentTree(
+  parts: MessagePart[],
+  next: Extract<MessagePart, { type: "subagent" }>,
+): { parts: MessagePart[]; found: boolean } {
+  let found = false;
+  const updated = parts.map((part) => {
+    if (part.type !== "subagent") return part;
+    if (
+      part.agent_id === next.agent_id &&
+      part.public_operation_id === next.public_operation_id
+    ) {
+      found = true;
+      return {
+        ...part,
+        ...next,
+        depth: part.depth,
+        parent_agent_id: part.parent_agent_id,
+        origin_event_id: part.origin_event_id,
+        causation_event_id: part.causation_event_id,
+        parts: part.parts ?? [],
+        startedAt: part.startedAt ?? next.startedAt,
+      };
+    }
+    if (part.parts) {
+      const nested = updateSubagentTree(part.parts, next);
+      if (nested.found) {
+        found = true;
+        return { ...part, parts: nested.parts };
+      }
+    }
+    return part;
+  });
+  return { parts: updated, found };
+}
+
+function appendSubagentToParent(
+  parts: MessagePart[],
+  next: Extract<MessagePart, { type: "subagent" }>,
+): { parts: MessagePart[]; found: boolean } {
+  let found = false;
+  const updated = parts.map((part) => {
+    if (part.type !== "subagent") return part;
+    if (part.public_operation_id === next.parent_agent_id) {
+      found = true;
+      return { ...part, parts: [...(part.parts || []), next] };
+    }
+    if (part.parts) {
+      const nested = appendSubagentToParent(part.parts, next);
+      if (nested.found) {
+        found = true;
+        return { ...part, parts: nested.parts };
+      }
+    }
+    return part;
+  });
+  return { parts: updated, found };
+}
+
+function upsertPublicSubagentPart(
+  parts: MessagePart[],
+  next: Extract<MessagePart, { type: "subagent" }>,
+): MessagePart[] {
+  const updated = updateSubagentTree(parts, next);
+  if (updated.found) return updated.parts;
+  if (next.parent_agent_id) {
+    const nested = appendSubagentToParent(parts, next);
+    if (nested.found) return nested.parts;
+  }
+  return [...parts, next];
+}
+
+
 
 /** Replace existing sandbox part or append if none exists. */
 function upsertSandboxPart(
@@ -698,16 +1043,8 @@ function createExecutionTimelinePart(
     kind: publicEvent.kind,
     presentation_kind: publicEvent.presentation_kind,
     stage: publicEvent.stage,
-    title:
-      typeof publicEvent.title === "string"
-        ? publicEvent.title
-        : typeof publicEvent.safe_label === "string"
-          ? publicEvent.safe_label
-          : undefined,
-    summary:
-      typeof publicEvent.summary === "string"
-        ? publicEvent.summary
-        : undefined,
+    title: undefined,
+    summary: undefined,
     status: publicEvent.status,
     progress: publicEvent.progress,
     safe_file_name: safePublicExecutionFileName(publicEvent.safe_file_name),
@@ -824,6 +1161,7 @@ function shouldProjectRunStatus(data: EventData): boolean {
 function replaceAssistantTextWithFinal(
   parts: MessagePart[],
   content: string,
+  logicalId?: string,
 ): MessagePart[] {
   let replacedText = false;
   const converged = parts.flatMap((part): MessagePart[] => {
@@ -843,7 +1181,12 @@ function replaceAssistantTextWithFinal(
     replacedText = true;
     return [{ ...part, content }];
   });
-  return replacedText ? converged : [...converged, { type: "text", content }];
+  return replacedText
+    ? converged
+    : [
+        ...converged,
+        { type: "text", content, logical_id: logicalId },
+      ];
 }
 
 /** Replace an existing platform artifact card by artifact id. */

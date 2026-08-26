@@ -42,6 +42,14 @@ async def _transaction():
     yield _Connection()
 
 
+class _EventPersistence:
+    async def append_terminal_row(self, _conn, *, tenant_id, run_id):
+        return None
+
+
+_TEST_V4_CAPABILITIES = SimpleNamespace(event_persistence=_EventPersistence())
+
+
 def _lease_row() -> dict[str, object]:
     return {
         "id": "lease-a",
@@ -925,6 +933,7 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(mon
         {"id": "lease-a", "tenant_id": "tenant-a", "run_id": "run-a"},
         claim_token="claim-a",
         logger=logging.getLogger(__name__),
+        v4_capabilities=_TEST_V4_CAPABILITIES,
     )
 
     fail_call = next(value for name, value in calls if name == "fail_run")
@@ -971,6 +980,7 @@ async def test_terminal_reconciliation_failure_cannot_mutate_run_after_claim_los
             {"id": "lease-a", "tenant_id": "tenant-a", "run_id": "run-a"},
             claim_token="stale-claim",
             logger=logging.getLogger(__name__),
+            v4_capabilities=_TEST_V4_CAPABILITIES,
         )
 
     assert calls == ["has_claim"]
@@ -1001,6 +1011,7 @@ async def test_failed_reconciliation_quarantines_only_unverifiable_runtime(monke
         claim_token="claim-a",
         error_code="executor_reconciliation_runtime_handle_invalid",
         logger=logging.getLogger(__name__),
+        v4_capabilities=_TEST_V4_CAPABILITIES,
     )
 
     assert calls == [
@@ -1065,6 +1076,7 @@ async def test_verified_runtime_stop_failure_remains_eligible_for_cleanup(monkey
         claim_token="claim-a",
         error_code="RuntimeError",
         logger=logging.getLogger(__name__),
+        v4_capabilities=_TEST_V4_CAPABILITIES,
     )
 
     assert calls == [

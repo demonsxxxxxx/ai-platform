@@ -1,155 +1,106 @@
-# Redis Streams SSE v3 Wire Protocol
+# Redis Streams SSE v4 Wire Protocol
 
-Status: normative contract for `ai-platform.redis-streams-sse-event-channel.v3`; External Acceptance pending
+Status: normative contract for `ai-platform.redis-streams-sse-event-channel.v4`; External Acceptance pending
 
 Index: [Redis Streams SSE Event Channel](redis-streams-sse-event-channel.md)
 
 ## Scope
 
-This document exclusively owns callback batch identity, Redis envelope and key
-format, atomic retention, public SSE framing, cursor validation, replay gaps, and
-frontend cursor acceptance. It does not own execution/revocation policy or
-release operations.
+This document exclusively owns the active v4 internal/public envelopes, Redis
+key and replay/live framing, callback-protocol separation, cursor validation,
+strict gap/end controls, and frontend cursor acceptance. Execution,
+authorization, publication claims, successor activation, and release operations
+remain with their dedicated owners.
 
 ## Generated protocol authority
 
-`schemas/public_run_stream.v3.schema.json` is the only definition source for the
-v3 Redis envelope and browser-visible `PublicRunStreamEventV3` discriminated
-union. The repository generator emits checked-in Python and TypeScript types;
+`schemas/public_run_stream.v4.schema.json` is the only definition source for the
+v4 internal envelope and the browser-visible application/control discriminated
+unions. The repository generator emits checked-in Python and TypeScript types;
 CI regenerates both and fails on a diff. Handwritten envelope field lists,
 event enums, and frontend protocol unions are prohibited.
 
-The Redis envelope may contain keyed tenant scope and attempt identity required
-for trusted validation. Its `public_event` member is the bounded generated value
-sent to the browser. Internal-only fields are never copied into that member.
+The internal envelope contains tenant scope, current Attempt identity,
+projection version, and strict source metadata required for trusted validation.
+The browser projection excludes tenant, Attempt, source, and every other
+infrastructure-only field.
 
-## Deterministic executor callback batch
+## Executor callback boundary
 
-An executor callback request carries an authenticated envelope:
-
-```json
-{
-  "schema": "ai-platform.executor-callback-batch.v3",
-  "run_id": "run_...",
-  "attempt_id": "attempt_...",
-  "batch_id": "opaque-stable-batch-id",
-  "projection_version": "public-stream-v3",
-  "items": [
-    {
-      "item_index": 0,
-      "event_type": "assistant_text_delta",
-      "payload": {"delta": "bounded public text"}
-    }
-  ]
-}
-```
-
-Rules:
-
-- Authentication still binds the callback token to tenant, run, and the exact
-  active attempt/runtime lease. Payload fields cannot widen that authority.
-- `batch_id` is immutable inside one attempt. `item_index` is zero-based,
-  contiguous, unique, and ordered as received from the executor adapter.
-- `source_sequence` is deterministic for the attempt/batch/item and is never a
-  PostgreSQL live cursor. The callback producer must preserve executor order
-  when allocating batch IDs; retry never allocates another sequence.
-- `event_id` is a URL-safe base64url or hexadecimal digest of a domain-separated
-  canonical tuple containing design ID, projection version, tenant scope,
-  run ID, attempt ID, batch ID, and item index. It is stable across HTTP and
-  Redis retries and cannot include plaintext tenant/user data.
-- The canonical batch digest covers schema, projection version, ordered item
-  count, item indices, public event types, and canonical projected payload bytes.
-  The receipt persists the digest before acknowledging the batch.
-- An exact duplicate returns the original receipt. Reuse of the batch identity
-  with a different digest/count/order/attempt is `409 callback_batch_conflict`.
-- A receipt records `event_ids`, first/through source sequence, callback received
-  time, and durable commit time. It may store required semantic/tool/audit facts,
-  but it never stores each `assistant_text_delta` payload in `run_events`.
-- A response lost after receipt or Redis publication is resolved by submitting
-  the same batch. Neither side mints a replacement batch/event ID.
+The authenticated callback protocol remains independently versioned at v2.1.
+It binds tenant, Run, current Attempt, runtime lease, callback index, and ordered
+batch items. The v4 platform adapter validates every item before receipt,
+assigns deterministic safe identities, and commits canonical public `run_events`
+plus the receipt atomically. Exact retries reuse the same rows and identities;
+a conflicting receipt fails closed. Callback transport fields and engine SDK
+objects are never browser wire fields.
 
 ## Internal Redis envelope
 
-Every Redis entry contains one canonical JSON value:
+Every Redis entry contains one canonical JSON value shaped by
+`InternalStreamEnvelopeV4`:
 
 ```json
 {
-  "schema": "ai-platform.stream-event.v3",
-  "event_id": "sev_...",
+  "schema": "ai-platform.stream-event.v4",
+  "event_id": "evt4_...",
   "tenant_scope": "keyed-nonreversible-scope",
   "run_id": "run_...",
   "attempt_id": "attempt_...",
-  "stream_incarnation": 1,
-  "event_type": "assistant_text_delta",
+  "message_id": "msg4_...",
+  "seq": 12,
+  "event_type": "message.delta",
+  "stream_incarnation": 3,
+  "replayable": true,
+  "trace_ref": null,
+  "causation_event_id": null,
   "emitted_at": "RFC3339 UTC",
-  "projection_version": "public-stream-v3",
+  "projection_version": "public-stream-v4",
   "payload": {"delta": "bounded public text"},
-  "public_event": {
-    "schema": "ai-platform.public-run-stream-event.v3",
-    "event_id": "sev_...",
-    "run_id": "run_...",
-    "stream_incarnation": 1,
-    "event_type": "assistant_text_delta",
-    "emitted_at": "RFC3339 UTC",
-    "payload": {"delta": "bounded public text"}
-  }
+  "source": {"kind": "run_event", "run_event_id": "evt4_...", "sequence": 12}
 }
 ```
 
-Required fields are exact; unknown top-level fields fail closed until a new
-schema is accepted. `public_event` must be the exact generated safe projection
-of the internal envelope identity and payload. JSON bytes use UTF-8, sorted
-object keys, no insignificant whitespace, and the same canonical number/string
-rules used by the payload digest. Unknown schema/projection/event types, invalid
-UTF-8, oversize payloads, mismatched public projection, or mismatched
-scope/run/attempt/incarnation fail before Redis append.
+Required fields are exact. JSON bytes use UTF-8, sorted object keys, no
+insignificant whitespace, and the canonical number/string rules used by the
+persisted digest. Invalid UTF-8, bounds, schema/projection/event values,
+identity/source binding, or scope/Run/Attempt/incarnation fail before Redis
+append.
 
-`event_id` is semantic idempotency. The Redis ID is transport ordering inside
-one proven incarnation. An unknown `XADD` outcome retries the same envelope
-bytes and semantic ID. Duplicate Redis entries are permitted; readers advance
-through them and reducers apply the semantic event once.
+`event_id` is semantic idempotency; committed application `seq` is Run-local
+business order; Redis ID is transport order inside one proven incarnation.
+Unknown publication outcomes retry the same canonical bytes and semantic ID.
+Readers may encounter transport duplicates and advance through them, while the
+frontend applies each semantic event once.
 
 ## Public event types
 
-| Type | Required authority before projection | Coalescing |
-| --- | --- | --- |
-| `stream_open` | committed admitted run/attempt/incarnation | no |
-| `assistant_text_delta` | public answer text projector | bounded, same identity boundary only |
-| `semantic_stage` | committed PostgreSQL platform-phase row projected after commit | no |
-| `semantic_progress` | committed PostgreSQL strict `execution_step*` row projected after commit | no |
-| `terminal` | committed terminal transaction and frozen intent | no |
-| `end` | committed terminal and frozen end intent | no |
+The closed Agent-kernel application registry is:
 
-V3 does not define Redis or public `tool_lifecycle`, `approval_required`,
-`artifact_ready`, `run_status`, or `reasoning_delta` envelope types. Skill and
-tool execution are shown only through the strict `execution_step*` projection
-carried by `semantic_progress`. Approval is not a runtime Streaming authority;
-artifact and authoritative Run status remain durable API/hydrate facts until a
-separately reviewed committed producer exists. Consumer support alone is never
-evidence that a producer exists.
+- `message.started`, `message.delta`, `message.completed`;
+- `thinking.started`, `thinking.completed`, `model.completed`;
+- `tool.started`, `tool.completed`, `tool.failed`, `tool.denied`;
+- `subagent.started`, `subagent.progress`, `subagent.completed`,
+  `subagent.failed`, `subagent.cancelled`;
+- `artifact.created`, `artifact.ready`, `artifact.failed`;
+- `policy.checking`, `policy.allowed`, `policy.denied`;
+- `run.cancel_requested`, `run.succeeded`, `run.cancelled`, `run.failed`.
 
-For `semantic_stage` and `semantic_progress`, the envelope semantic `event_id`,
-the public `sequence`, and `emitted_at` come from the committed `run_events` row
-(`id`, PostgreSQL run sequence, and `created_at`). The worker refreshes the
-current run/attempt/incarnation authority in a new transaction after that row
-commits, closes the transaction, and only then calls Redis. Retry reuses the
-same row-derived envelope. Executor-originated arbitrary tool lifecycle or
-label payloads are not promoted directly to this channel.
+The closed transport controls are `stream.open`, `stream.heartbeat`,
+`stream.gap`, and `stream.end`. Controls have null `message_id`, `seq`, and
+`trace_ref`; they do not consume business order. `stream.gap` always requests
+`reload_durable_state`, and `stream.end` references the observed terminal event.
 
-There is no public `assistant_reasoning_delta`. Claude hidden reasoning,
-chain-of-thought, raw intermediate messages, and any similarly private model
-channel are dropped. A safe explanation is a server-authored `semantic_stage` or
-bounded summary with no raw model reasoning.
-
-Raw command strings, tool arguments/results, prompts, credentials, authorization
-headers, URLs with secrets, local/runtime paths, storage keys, private trace IDs,
-and unclassified objects are prohibited. Projection uses event-specific
-allowlists and byte/depth/count bounds before coalescing and Redis publication.
+Hidden reasoning, raw SDK objects, commands, arguments, outputs, credentials,
+paths, storage keys, private trace values, and unclassified objects are
+prohibited. The strict event-specific projector applies identity, byte, depth,
+and count bounds before a canonical public row can be committed.
 
 ## Key and stream incarnation
 
 PostgreSQL allocates a positive, monotonically increasing
-`stream_incarnation` for the current attempt. The Redis key is:
+`stream_incarnation` for the current attempt. The physical key prefix remains the existing `v3` Redis namespace because v4
+reuses the single transport plane rather than creating a parallel stack:
 
 ```text
 ai-platform:sse:v3:{<tenant_scope>:<run_id>}:<stream_incarnation>:events
@@ -163,15 +114,17 @@ incarnation is current. The key, every envelope, the terminal intent, and every
 cursor must agree. A missing/unprovable current key is never recreated under an
 already-issued incarnation; rebuild first increments PostgreSQL authority.
 
-`stream_open` is the first entry. Its stable semantic ID and canonical bytes bind
-the admitted attempt/incarnation/projection version. Redis admission is proven
-only when that exact first entry exists; a mismatched first entry fails closed.
+`stream.open` is the first entry. Its stable semantic ID and canonical bytes
+bind the admitted Attempt/incarnation/projection version. Redis admission is
+proven only when that exact first entry exists; a mismatched first entry fails
+closed.
 
 ## Atomic append and retention
 
 All appends run through one reviewed Lua script:
 
-1. validate the expected key state when publishing `stream_open` or terminal;
+1. validate the expected key state and open protocol when publishing
+   `stream.open`, an application event, or a terminal pair;
 2. `XADD key MAXLEN ~ <configured_maxlen> * envelope <canonical-bytes>`;
 3. `PEXPIRE` the Stream and state keys with the selected TTL;
 4. `PUBLISH` a bounded wrapper containing the returned native Redis ID and the
@@ -232,14 +185,14 @@ data object:
 ```text
 id: <run_id>:<stream_incarnation>:<redis-milliseconds>-<redis-sequence>
 event: <public-event-type>
-data: <canonical PublicRunStreamEventV3 JSON>
+data: <canonical PublicRunStreamEventV4 or PublicStreamControlV4 JSON>
 
 ```
 
-The public value omits tenant scope, attempt ID, Redis key, credentials, and
-private identifiers. The event header must equal `data.event_type`. `terminal`
-and `end` each have Redis-backed IDs; `end` references the terminal semantic
-event ID.
+The public value omits tenant scope, Attempt ID, Redis key, credentials, and
+private identifiers. The event header equals `data.event_type`. Run-terminal
+and `stream.end` each have Redis-backed IDs; `stream.end` references the
+observed terminal semantic event ID.
 
 Heartbeat is a comment frame and has no `id:` or payload event:
 
@@ -248,8 +201,10 @@ Heartbeat is a comment frame and has no `id:` or payload event:
 
 ```
 
-`stream_replay_gap` has `event:` and `data:` but no `id:` and then closes.
-Neither heartbeat nor gap can advance a browser cursor.
+`stream.gap` is a strict v4 control frame with a server-supplied cursor. It is
+not committed as chat state; the client invokes authorized durable hydrate and
+does not persist the gap cursor as application progress. Heartbeat remains an
+id-less comment.
 
 Response headers are fixed:
 
@@ -280,71 +235,70 @@ Validation results:
 
 - malformed form, foreign run, zero/negative/future incarnation, or Redis ID
   later than the proven tail: fail closed as an invalid request without reset;
-- valid same-run older incarnation: id-less gap without reading either stream;
+- valid same-Run older incarnation: emit strict `stream.gap` without reading
+  either old stream;
 - valid current incarnation whose exact entry was trimmed/missing or whose
-  continuity cannot be proven: id-less gap;
-- no header: read from the earliest retained entry only when the exact current
-  `stream_open` is still the origin; otherwise gap.
+  continuity cannot be proven: emit strict `stream.gap`;
+- no header: read from the earliest retained entry only when exact current
+  `stream.open` is still the origin; otherwise emit `stream.gap`.
 
 Native Redis IDs may overlap across incarnations. They never establish
 continuity. Public clients never send `$`.
 
 ## Gap and durable hydrate
 
-The bounded gap payload is:
+The gap is a complete `PublicStreamControlV4` envelope. Its payload is:
 
 ```json
 {
-  "schema": "ai-platform.stream-gap.v3",
   "reason": "stream_incarnation_mismatch",
-  "requested_event_id": "run_...:7:1700000000000-0",
+  "requested_event_id": "1700000000000-0",
   "requested_stream_incarnation": 7,
   "current_stream_incarnation": 8,
-  "earliest_available_event_id": "run_...:8:1700000000100-0",
-  "latest_available_event_id": "run_...:8:1700000000200-0",
+  "earliest_available_event_id": "1700000000100-0",
+  "latest_available_event_id": "1700000000200-0",
   "recovery": "reload_durable_state"
 }
 ```
 
-Allowed reasons are `retained_history_unavailable`, `stream_missing`,
-`stream_continuity_unproven`, and `stream_incarnation_mismatch`. Bounds may be
-omitted when unprovable. The client closes the live fold, discards incomplete
-text as a complete answer, and performs authorized durable hydrate. A terminal
-hydrate replaces the fold. An active hydrate may return a server-issued covered
-cursor; otherwise the UI remains honestly degraded and does not invent progress.
+The payload IDs are native Redis IDs; the SSE `id:` carries the complete
+Run/incarnation/Redis cursor. Bounds are null when Redis has none. A missing
+terminal stream is recovered into a fresh successor before replay. A
+nonterminal missing stream emits the truthful null-bounds gap with the current
+incarnation start cursor and requires durable hydrate.
 
 ## Frontend accepted cursor
 
 The browser keeps one accepted cursor per authorized run/incarnation. Event
 processing order is:
 
-1. parse SSE and require a transport `id` for every non-heartbeat/non-gap event;
-2. validate schema, run, incarnation, public event type, and payload bounds;
-3. deduplicate by semantic `event_id` while still accepting later transport
-   order for a duplicate entry;
-4. apply the reducer/event processor and commit visible/client state;
-5. only after successful commit, store the transport ID as accepted cursor.
+1. parse SSE and require a valid transport `id` for every non-heartbeat frame;
+2. validate schema, Run, incarnation, public event type, and payload bounds;
+3. classify semantic duplicates as transport-only acceptance while preserving
+   chat state;
+4. apply the one public-event adapter and reducer;
+5. store the cursor only after reducer acceptance. Run-terminal and an
+   immediately matching `stream.end` both wait for successful terminal hydrate.
 
-Reducer failure leaves the previous cursor unchanged so reconnect replays the
-event. Missing IDs fail closed; no UUID transport fallback exists. Durable
-PostgreSQL sequence/history/status values cannot become a Redis cursor, reset a
-live reconnect budget, or enter the live reducer. Reconnect sends only the last
-accepted cursor in the `Last-Event-ID` header. Final hydrate replaces rather than
+Reducer or hydrate failure leaves the previous cursor unchanged so reconnect
+replays the event. Missing IDs fail closed; no UUID transport fallback exists.
+Durable PostgreSQL sequence/history/status values cannot become a Redis cursor,
+reset a reconnect budget, or enter the live reducer. Reconnect sends only the
+last accepted cursor in `Last-Event-ID`. Final hydrate replaces rather than
 appends the live answer.
 
 ## Required focused tests
 
-- deterministic callback response loss, exact duplicate receipt, conflicting
-  duplicate, item order, and duplicate semantic IDs;
-- committed semantic projection identity/sequence/time, transaction rollback,
-  post-commit authority refresh, and no Redis call inside a PostgreSQL
-  transaction;
-- atomic TTL refresh, terminal TTL switch, long-active stream, and publish pool
-  cleanup;
-- malformed/foreign/future cursor, trim/missing/rebuild gap, overlapping native
-  IDs across incarnations, and two independent readers;
-- Redis admission/outage and unknown `XADD` outcome without memory or PG-delta
-  fallback;
-- heartbeat/gap with no ID, missing payload ID fail closed, accepted cursor only
-  after reducer commit, duplicate event cursor advancement, and final hydrate
-  replacement.
+- callback response loss, exact duplicate receipt, conflicting duplicate,
+  ordered canonical rows, and stable semantic IDs;
+- transaction-scoped admission before public/terminal commit, claim commit
+  before Redis, no PostgreSQL locks during Redis I/O, receipt-fenced disposition,
+  and indexed retry;
+- atomic TTL refresh, ordinary and terminal duplicate receipts, terminal-pair
+  ordering, and publish-pool cleanup;
+- malformed/foreign/future cursor, trim gap, nonterminal missing-stream gap,
+  exclusive successor rebuild, stale-token/fingerprint rejection, and atomic
+  activation;
+- schema-valid v4 gap, semantic duplicate transport acceptance, accepted cursor
+  only after reducer or terminal-hydrate commit, matching `stream.end` fence,
+  incarnation rejection, and final hydrate replacement.

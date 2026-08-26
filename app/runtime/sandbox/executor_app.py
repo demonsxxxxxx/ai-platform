@@ -249,7 +249,7 @@ class _PlatformExecutionPhaseFact(NamedTuple):
         ]
 
 
-ExecutorEvent = AgentEvent | _PrivateExecutionFact | _PlatformExecutionPhaseFact
+ExecutorEvent = AgentEvent | ExecutorCallbackEvent | _PrivateExecutionFact | _PlatformExecutionPhaseFact
 ExecutorEventEmitter = Callable[[ExecutorEvent], Awaitable[bool]]
 
 
@@ -1383,6 +1383,7 @@ async def _default_executor_runner(
     *,
     callback_sender: CallbackSender = _default_callback_sender,
 ) -> dict[str, Any]:
+    callback_batch_ids = _CallbackBatchIdFactory()
     try:
         system_prompt = _server_owned_system_prompt(request)
     except _ServerOwnedSystemPromptError as exc:
@@ -1475,6 +1476,39 @@ async def _default_executor_runner(
         if not delta or capability_evidence_error["code"]:
             return
         await emit_event(AgentEvent(type="assistant_delta", message=delta, payload={"delta": delta}))
+
+    async def on_agent_event(candidates: tuple[Any, ...]) -> bool:
+        if capability_evidence_error["code"] or not candidates:
+            return False
+        try:
+            events = [AgentEvent(**candidate.as_agent_event_fields()) for candidate in candidates]
+        except Exception:  # noqa: BLE001
+            events = []
+        if not events:
+            reject_capability_evidence("agent_event_callback_not_acknowledged")
+            return False
+        callback_event = ExecutorCallbackEvent(
+            session_id=request.session_id,
+            run_id=request.run_id,
+            attempt_id=request.attempt_id,
+            callback_token_id=request.callback_token_id,
+            batch_id=callback_batch_ids.next_id(),
+            status="running",
+            progress=20,
+            state_patch={"stage": "agent_event"},
+            sdk_session_id=request.sdk_session_id,
+            events=events,
+        )
+        try:
+            acknowledged = await emit_event(callback_event)
+        except Exception:  # noqa: BLE001
+            acknowledged = False
+        if acknowledged is not True:
+            reject_capability_evidence("agent_event_callback_not_acknowledged")
+            if isinstance(emit_event, _SealableExecutorEventEmitter):
+                emit_event.seal_capability_failure()
+            return False
+        return True
 
     async def on_skill_use(skill_name: str, metadata: dict[str, Any]) -> None:
         del skill_name, metadata
@@ -1696,6 +1730,9 @@ async def _default_executor_runner(
             "context_retrieval": context_retrieval,
             "context_retrieval_identity": context_retrieval_identity,
             "on_text": on_text,
+            "on_agent_event": on_agent_event,
+            "run_id": request.run_id,
+            "attempt_id": request.attempt_id,
             "on_skill_use": on_skill_use,
             "on_capability_evidence": on_capability_evidence,
             "on_tool_lifecycle": on_tool_lifecycle,
@@ -2032,6 +2069,8 @@ def create_executor_app(
             nonlocal artifact_upload_latency_ms, executor_first_token_latency_ms, executor_tool_call_latency_ms
             if capability_callback_failed["value"] or not runner_events_open["value"]:
                 return False
+            if isinstance(event, ExecutorCallbackEvent):
+                return await dispatch_callback_event(event)
             if isinstance(event, _PrivateExecutionFact):
                 agent_event = event.public_event
                 agent_events = event.public_events(public_execution_projector)
@@ -2067,6 +2106,10 @@ def create_executor_app(
                     message=agent_event.message,
                     payload=raw_payload,
                     admin_only=agent_event.admin_only,
+                    event_id=agent_event.event_id,
+                    run_id=agent_event.run_id,
+                    message_id=agent_event.message_id,
+                    causation_event_id=agent_event.causation_event_id,
                 )]
                 event_type = agent_event.type
             if event_type == "assistant_delta" and executor_first_token_latency_ms is None:

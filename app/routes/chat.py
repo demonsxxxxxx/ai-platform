@@ -90,10 +90,10 @@ from app.required_tool_contract import (
 )
 from app.run_admission_policy import (
     PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
-    contains_persisted_platform_multi_agent_control,
     contains_platform_multi_agent_control,
 )
-from app.run_admission_terminalization import terminalize_retired_platform_multi_agent_run
+from app.run_admission_terminalization import reject_chat_submission_for_retired_platform_multi_agent, terminalize_enqueue_failure_with_v4
+from app.streaming.api import WorkerV4Capabilities
 from app.settings import get_settings
 from app.skills.lifecycle import is_user_runnable_status
 from app.skills.pinning import (
@@ -538,6 +538,7 @@ async def _admit_chat_submission(
     *,
     principal: AuthPrincipal,
     submission_id: str,
+    v4_capabilities: WorkerV4Capabilities,
 ) -> ChatSubmissionResponse:
     """Admit one already-persisted run without replaying chat creation work."""
 
@@ -576,28 +577,16 @@ async def _admit_chat_submission(
         execution_snapshot: dict[str, Any] | None = None
         if str(run.get("status") or "") == "queued":
             execution_snapshot = repositories.copied_run_execution_snapshot(run.get("input_json"))
-        retired_control_rejected = (
-            str(run.get("error_code") or "") == PLATFORM_MULTI_AGENT_NOT_SUPPORTED
-            or (
-                execution_snapshot is not None
-                and contains_persisted_platform_multi_agent_control(run.get("input_json"))
-            )
-        )
-        if retired_control_rejected:
-            if str(run.get("error_code") or "") != PLATFORM_MULTI_AGENT_NOT_SUPPORTED:
-                await terminalize_retired_platform_multi_agent_run(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    run_id=run_id,
-                )
-            await repositories.finalize_chat_submission(
-                conn,
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
-                submission_id=submission_id,
-                state="admission_rejected",
-                rejection_code=PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
-            )
+        if await reject_chat_submission_for_retired_platform_multi_agent(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            submission_id=submission_id,
+            run_id=run_id,
+            run=run,
+            execution_snapshot=execution_snapshot,
+            v4_capabilities=v4_capabilities,
+        ):
             return ChatSubmissionResponse(
                 submission_id=submission_id,
                 state="admission_rejected",
@@ -672,8 +661,7 @@ async def _admit_chat_submission(
                 if profile_enqueue_error is not None and _is_definitive_chat_queue_rejection(
                     profile_enqueue_error
                 ):
-                    await repositories.mark_run_enqueue_failed(
-                        conn,
+                    await terminalize_enqueue_failure_with_v4(v4_capabilities, conn,
                         tenant_id=principal.tenant_id,
                         user_id=principal.user_id,
                         run_id=run_id,
@@ -760,8 +748,7 @@ async def _admit_chat_submission(
             # Only the queue module's deterministic pre-admission rejection
             # can produce enqueue_failed.  This transaction is distinct from
             # planning and commits before the HTTP error.
-            await repositories.mark_run_enqueue_failed(
-                conn,
+            await terminalize_enqueue_failure_with_v4(v4_capabilities, conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
                 run_id=run_id,
@@ -1349,6 +1336,7 @@ async def list_messages(
 @router.post("/chat/stream", response_model=ChatStreamResponse)
 async def chat_stream(
     request: ChatStreamRequest,
+    http_request: Request,
     agent_id: str | None = Query(None),
     principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
 ) -> ChatStreamResponse:
@@ -2520,7 +2508,11 @@ async def chat_stream(
     if submission_id is not None:
         try:
             admitted = _require_chat_submission_admitted(
-                await _admit_chat_submission(principal=principal, submission_id=submission_id)
+                await _admit_chat_submission(
+                principal=principal,
+                submission_id=submission_id,
+                v4_capabilities=http_request.app.state.run_stream_runtime.worker_capabilities,
+            )
             )
         except HTTPException:
             raise
@@ -2538,8 +2530,8 @@ async def chat_stream(
         queue_admission = await _enqueue_chat_run(queue_payload)
     except Exception as exc:
         async with transaction() as conn:
-            await repositories.mark_run_enqueue_failed(
-                conn,
+            await terminalize_enqueue_failure_with_v4(
+                http_request.app.state.run_stream_runtime.worker_capabilities, conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
                 run_id=run_id,
@@ -2596,6 +2588,7 @@ async def get_chat_submission(
 
 async def retry_chat_submission_admission(
     submission_id: UUID,
+    request: Request,
     response: Response,
     principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
 ) -> ChatSubmissionResponse | ChatSubmissionPreLedgerAbsenceResponse:
@@ -2610,7 +2603,11 @@ async def retry_chat_submission_admission(
         if isinstance(resolved, ChatSubmissionPreLedgerAbsenceResponse):
             return resolved
         return _require_chat_submission_admitted(
-            await _admit_chat_submission(principal=principal, submission_id=str(submission_id))
+            await _admit_chat_submission(
+            principal=principal,
+            submission_id=str(submission_id),
+            v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
+        )
         )
     except HTTPException as exc:
         headers = {**(exc.headers or {}), "Cache-Control": _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL}
