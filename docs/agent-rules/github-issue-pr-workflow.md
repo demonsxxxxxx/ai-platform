@@ -124,6 +124,10 @@ Stable invariants:
 - Authority provenance is verified before candidate-owned code or configuration
   executes. The governance decision is sealed first, and authority integrity is
   checked again after candidate checks.
+- Candidate responsibility tests run through the accepted authority Git
+  object's `tools/run_test_stage.py`, with the candidate worktree and selectors
+  bound into its lock, timeout, JUnit, evidence, and process-tree cleanup
+  contract. The candidate copy of that runner is never execution authority.
 - Checks stay bounded to the changed risk. Changed backend test modules are
   regression evidence regardless of filename stem; when the effective suite is
   unchanged, declare it with repeatable `--regression-test-suite` paths. A

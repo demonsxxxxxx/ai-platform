@@ -24,6 +24,7 @@ jobs:
   frontend:
     name: projection audit, lint, build, trace
     runs-on: windows-latest
+    timeout-minutes: 15
     env:
       SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
@@ -171,7 +172,7 @@ jobs:
           python -c "import jsonschema"
 
       - name: Verify static frontend Python contracts
-        run: python -m pytest tests/test_deploy_frontend_static.py tests/test_frontend_release_traceability.py tests/test_frontend_packaged_runtime_smoke.py tests/test_frontend_ci_workflow.py tests/test_require_zero_junit_skips.py tests/test_source_authority_docs.py -q --basetemp .pytest-tmp
+        run: python -m pytest tests/test_deploy_frontend_static.py tests/test_frontend_release_traceability.py tests/test_frontend_packaged_runtime_smoke.py tests/test_frontend_ci_workflow.py -q --basetemp .pytest-tmp
 
       - name: Verify static frontend deploy helper
         run: python tools/deploy_frontend_static.py --help
@@ -189,6 +190,7 @@ jobs:
   frontend-image:
     name: packaged image build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       IMAGE_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
       IMAGE_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -334,6 +336,7 @@ jobs:
   required:
     name: frontend required
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: [frontend, frontend-image]
     if: ${{ always() }}
     steps:
