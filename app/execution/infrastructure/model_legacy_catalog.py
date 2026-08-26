@@ -41,7 +41,7 @@ class LegacyModelCatalogAdapter:
         return self._build_catalog(settings)
 
     def resolve(self, selection: dict[str, str] | None) -> RunModelSelection:
-        model_id = selection.get("id") if selection else None
+        model_id = (selection.get("id") or selection.get("value")) if selection else None
         settings = self._settings_provider()
         if selection is None:
             try:

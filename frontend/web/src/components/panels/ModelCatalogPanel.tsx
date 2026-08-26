@@ -142,6 +142,19 @@ export function ModelCatalogPanel() {
     [query, state?.models],
   );
   const providerCount = state?.providers.length ?? 0;
+  const panelHeader = (
+    <PanelHeader
+      title={t("models.title", "模型")}
+      subtitle={t(
+        "models.subtitle",
+        "查看平台公共模型；管理员可配置兼容地址、同步目录并控制启用状态。",
+      )}
+      icon={<DatabaseZap size={20} className="text-theme-text-secondary" />}
+      searchValue={searchQuery}
+      onSearchChange={setSearchQuery}
+      searchPlaceholder={t("models.searchPlaceholder", "搜索模型、供应商或能力")}
+    />
+  );
 
   if (isLoading) {
     return (
@@ -153,16 +166,24 @@ export function ModelCatalogPanel() {
 
   if (!state && loadError) {
     return (
-      <div className={workbenchSurface.statePage}>
-        <WorkbenchStateSurface
-          state="degraded"
-          surface="model-public-projection"
-          title={t("models.catalogUnavailable", "模型目录暂不可用")}
-          description={t(
-            "models.catalogUnavailableDescription",
-            "模型目录暂时无法读取。目录恢复前，新的模型选择会 fail closed。",
-          )}
-        />
+      <div
+        data-model-catalog-shell
+        data-frontend-governance-state="degraded"
+        className={workbenchSurface.page}
+      >
+        {panelHeader}
+        <ModelAdminControl canManage={canAdminModels} />
+        <div className={workbenchSurface.statePage}>
+          <WorkbenchStateSurface
+            state="degraded"
+            surface="model-public-projection"
+            title={t("models.catalogUnavailable", "模型目录暂不可用")}
+            description={t(
+              "models.catalogUnavailableDescription",
+              "模型目录暂时无法读取。目录恢复前，新的模型选择会 fail closed。",
+            )}
+          />
+        </div>
       </div>
     );
   }
@@ -175,17 +196,7 @@ export function ModelCatalogPanel() {
       }
       className={workbenchSurface.page}
     >
-      <PanelHeader
-        title={t("models.title", "模型")}
-        subtitle={t(
-          "models.subtitle",
-          "查看平台公共模型；管理员可配置兼容地址、同步目录并控制启用状态。",
-        )}
-        icon={<DatabaseZap size={20} className="text-theme-text-secondary" />}
-        searchValue={searchQuery}
-        onSearchChange={setSearchQuery}
-        searchPlaceholder={t("models.searchPlaceholder", "搜索模型、供应商或能力")}
-      />
+      {panelHeader}
 
       <ModelAdminControl canManage={canAdminModels} />
 

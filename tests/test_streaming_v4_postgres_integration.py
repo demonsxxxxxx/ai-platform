@@ -3244,6 +3244,13 @@ async def test_migration_applies_exact_scoped_constraint_and_index_then_rolls_ba
                     (schema_migrations.V4_SUCCESSOR_REBUILD_SCHEMA_VERSION,),
                 )
                 assert await schema_ledger.fetchone() is None
+                successor_ledger = await conn.execute(
+                    "select checksum_sha256 from schema_migrations where version = %s",
+                    (schema_migrations.TARGET_SCHEMA_VERSION,),
+                )
+                assert await successor_ledger.fetchone() == {
+                    "checksum_sha256": schema_migrations.schema_checksum()
+                }
                 index_ledger = await conn.execute(
                     """
                     select index_name from schema_index_migrations
@@ -3257,6 +3264,11 @@ async def test_migration_applies_exact_scoped_constraint_and_index_then_rolls_ba
                 assert await index_ledger.fetchall() == []
                 fact = await conn.execute("select id, sequence from run_events where id = 'evt4_migration_fact'")
                 assert await fact.fetchone() == {"id": "evt4_migration_fact", "sequence": 1}
+                # Reconstruct a predecessor ledger only after proving rollback preserved the successor.
+                await conn.execute(
+                    "delete from schema_migrations where version = %s",
+                    (schema_migrations.TARGET_SCHEMA_VERSION,),
+                )
         await schema_migrations.apply_migrations(
             transaction_factory=lambda: _connection_factory(dsn, schema_name),
             index_connection_factory=lambda: _index_connection(dsn, schema_name),

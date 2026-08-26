@@ -294,6 +294,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         if key.lower() in ("content-type", "cache-control"):
                             self.send_header(key, str(item))
                     self.send_header("content-length", str(len(data)))
+                    response_started = True
                     self.end_headers()
                     self.wfile.write(data)
                     completed = True

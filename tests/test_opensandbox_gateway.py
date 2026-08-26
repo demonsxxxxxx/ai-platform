@@ -1494,7 +1494,7 @@ def test_exact_dispatch_uses_accept_time_total_budget_not_ingress_phase_cap() ->
     class DispatchApp:
         def handle(self, request: Request) -> Response:
             observed.append(operation_deadline(1.0).remaining())
-            time.sleep(0.12)
+            time.sleep(0.3)
             return Response.json(200, {"ok": True})
 
     class Handler(_GatewayHandler):
@@ -1505,8 +1505,8 @@ def test_exact_dispatch_uses_accept_time_total_budget_not_ingress_phase_cap() ->
         ("127.0.0.1", 0),
         Handler,
         1,
-        request_deadline_seconds=0.05,
-        dispatch_deadline_seconds=0.4,
+        request_deadline_seconds=0.2,
+        dispatch_deadline_seconds=0.7,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -1521,7 +1521,7 @@ def test_exact_dispatch_uses_accept_time_total_budget_not_ingress_phase_cap() ->
         while chunk := client.recv(4096):
             response += chunk
         assert b"200 OK" in response and b'{"ok":true}' in response
-        assert observed and 0.15 < observed[0] <= 0.4
+        assert observed and 0.35 < observed[0] <= 0.7
     finally:
         client.close()
         server.shutdown()
@@ -2379,6 +2379,52 @@ def test_mailbox_request_inode_change_fails_closed(monkeypatch) -> None:
     broker = MailboxBroker(SimpleNamespace(), SimpleNamespace(targets={}), 1.0, 1024)
     with pytest.raises(GatewayError, match="broker_request_changed"):
         broker._process(6, "0" * 32 + ".json")
+
+
+def test_claimed_model_request_streams_to_canonical_response_name(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_adapters.os, "O_NOFOLLOW", 0x20000, raising=False)
+    monkeypatch.setattr(gateway_adapters.os, "getgid", lambda: 4321, raising=False)
+    request_id = "a" * 32
+    claim_name = f"{request_id}.json.{'b' * 32}.claim"
+    raw = json.dumps(
+        {
+            "version": 1,
+            "method": "POST",
+            "path": "/model/openai/chat/completions",
+            "headers": {},
+            "body": base64.b64encode(b'{"model":"openai/gpt-5"}').decode("ascii"),
+            "created_at_unix_seconds": time.time(),
+            "timeout_seconds": 30.0,
+        }
+    ).encode()
+    evidence = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o640,
+        st_uid=1000,
+        st_gid=4321,
+        st_size=len(raw),
+        st_dev=1,
+        st_ino=2,
+        st_mtime_ns=3,
+        st_ctime_ns=4,
+    )
+    chunks = iter((raw, b""))
+    monkeypatch.setattr(gateway_adapters.os, "open", lambda *_, **__: 7)
+    monkeypatch.setattr(gateway_adapters.os, "fstat", lambda _: evidence)
+    monkeypatch.setattr(gateway_adapters.os, "read", lambda *_: next(chunks))
+    monkeypatch.setattr(gateway_adapters.os, "close", lambda _: None)
+    broker = MailboxBroker(SimpleNamespace(), SimpleNamespace(targets={}), 1.0, 1024)
+    published: list[tuple[int, str]] = []
+
+    def capture_stream(response_fd: int, name: str):
+        published.append((response_fd, name))
+        raise GatewayError(418, "stop_after_response_name")
+
+    monkeypatch.setattr(broker, "_start_stream_response", capture_stream)
+
+    with pytest.raises(GatewayError, match="stop_after_response_name"):
+        broker._process(6, claim_name, response_fd=5)
+
+    assert published == [(5, f"{request_id}.json")]
 
 
 def test_mailbox_forwards_callback_token_only_to_callback_and_context_targets(monkeypatch) -> None:
@@ -3491,6 +3537,99 @@ def test_relay_model_complete_error_frame_is_prompt(tmp_path) -> None:
                     pass
 
 
+def test_relay_marks_non_model_response_started_before_header_flush_or_body_write() -> None:
+    assert (
+        'self.send_header("content-length", str(len(data)))\n'
+        "                    response_started = True\n"
+        "                    self.end_headers()\n"
+        "                    self.wfile.write(data)"
+    ) in RELAY_SOURCE
+    assert (
+        "if response_started:\n"
+        "                self.close_connection = True\n"
+        "            else:\n"
+        "                try:\n"
+        "                    self.send_error(502)"
+    ) in RELAY_SOURCE
+
+
+@pytest.mark.skipif(os.name != "posix", reason="relay dirfd behavior requires POSIX")
+def test_relay_header_flush_failure_does_not_send_second_error(tmp_path) -> None:
+    import http.server
+    import math
+
+    requests = tmp_path / "requests"
+    responses = tmp_path / "responses"
+    requests.mkdir()
+    responses.mkdir()
+    request_id = "a" * 32
+    response_path = responses / f"{request_id}.json"
+    response_path.write_text(
+        json.dumps(
+            {
+                "status": 200,
+                "headers": {"content-type": "application/json"},
+                "body": base64.b64encode(b'{}').decode("ascii"),
+            },
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    os.chmod(response_path, 0o444)
+    request_fd = os.open(requests, os.O_RDONLY | os.O_DIRECTORY)
+    response_fd = os.open(responses, os.O_RDONLY | os.O_DIRECTORY)
+    cancellations: list[str] = []
+    tokens = iter((request_id, "b" * 32))
+    handler_source = "class Handler" + RELAY_SOURCE.split("class Handler", 1)[1].split(
+        "class BoundedServer", 1
+    )[0]
+    namespace = {
+        "base64": base64,
+        "http": http,
+        "json": json,
+        "math": math,
+        "os": os,
+        "secrets": SimpleNamespace(token_hex=lambda _: next(tokens)),
+        "select": __import__("select"),
+        "socket": socket,
+        "stat": stat,
+        "time": time,
+        "threading": threading,
+        "BROKER_UID": os.getuid(),
+        "BROKER_GID": os.getgid(),
+        "REQ_FD": request_fd,
+        "RESP_FD": response_fd,
+        "STREAM_ARTIFACT_MAX_BYTES": 16 * 1024 * 1024,
+        "REQUEST_WAIT_SECONDS": 1.0,
+        "DISPATCH_WAIT_SECONDS": 1.0,
+        "publish_cancellation": cancellations.append,
+    }
+    try:
+        exec(handler_source, namespace)
+        handler = object.__new__(namespace["Handler"])
+        handler.path = "/callback"
+        handler.command = "POST"
+        handler.headers = {"content-length": "0"}
+        handler.rfile = SimpleNamespace(read=lambda _: b"")
+        handler.connection = SimpleNamespace(settimeout=lambda _: None)
+        handler.close_connection = False
+        handler._cancel_if_disconnected = lambda _: None
+        handler.send_response = lambda _: None
+        handler.send_header = lambda *_: None
+        handler.end_headers = lambda: (_ for _ in ()).throw(OSError("header flush failed"))
+        sent_errors: list[int] = []
+        handler.send_error = sent_errors.append
+
+        handler._run()
+
+        assert handler.close_connection is True
+        assert sent_errors == []
+        assert cancellations == [request_id]
+    finally:
+        os.close(request_fd)
+        os.close(response_fd)
+
+
 @pytest.mark.skipif(
     os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() != 0,
     reason="real relay owner/mode and streaming delivery require a root-capable POSIX release gate",
@@ -3518,6 +3657,7 @@ def test_relay_streams_first_model_chunk_before_upstream_finishes(tmp_path) -> N
     )
     client = None
     request_name = None
+    claim_name = None
     worker = None
     request_fd = response_fd = None
     release = threading.Event()
@@ -3606,11 +3746,13 @@ def test_relay_streams_first_model_chunk_before_upstream_finishes(tmp_path) -> N
         broker._upstream_connection = lambda *_args: FakeConnection()
 
         def process_request() -> None:
-            nonlocal request_fd, response_fd
+            nonlocal request_fd, response_fd, claim_name
             try:
+                claim_name = f"{request_name}.0123456789abcdef0123456789abcdef.claim"
+                (requests / request_name).replace(requests / claim_name)
                 request_fd = os.open(requests, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
                 response_fd = os.open(responses, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-                broker._process(request_fd, request_name, record=record, response_fd=response_fd)
+                broker._process(request_fd, claim_name, record=record, response_fd=response_fd)
             except BaseException as exc:
                 errors.append(exc)
             finally:
@@ -3667,6 +3809,7 @@ def test_relay_streams_first_model_chunk_before_upstream_finishes(tmp_path) -> N
             request_id = MailboxBroker._request_id_from_name(request_name)
             for path in (
                 requests / request_name,
+                requests / claim_name if claim_name is not None else requests / "unused.claim",
                 requests / f"{request_id}.cancel" if request_id is not None else requests / "unused.cancel",
                 responses / request_name,
             ):
@@ -4197,10 +4340,15 @@ def test_installer_snapshot_restores_upgrade_state_and_switches_last(tmp_path) -
         chown() {{ :; }}
         stat() {{
           if test "$1" = -c; then
-            case "${{@: -1}}" in
-              "$DEPLOY_STATE") echo 0:0:700 ;;
-              "$AUTHORITY_SHA_STATE"|"$AUTHORITY_EVIDENCE_STATE") echo 0:0:600 ;;
-              *) echo 0 ;;
+            target=${{@: -1}}
+            case "$target" in
+              "$DEPLOY_STATE") echo 0:0:700; return ;;
+              "$AUTHORITY_SHA_STATE"|"$AUTHORITY_EVIDENCE_STATE") echo 0:0:600; return ;;
+            esac
+            case "$2" in
+              %u) echo 0 ;;
+              %u:%g:%a) printf '0:0:%s\n' "$(command stat -c %a "$target")" ;;
+              *) command stat "$@" ;;
             esac
             return
           fi
@@ -4477,6 +4625,7 @@ def test_rollback_restores_first_install_absence_from_root_only_snapshot(tmp_pat
         s72_atomic_fsync_path() { :; }
         s72_atomic_advance_transaction() { :; }
         s72_atomic_prepare_workspace() { mkdir -p "$1/work"; printf '%s\n' "$1/work"; }
+        chown() { :; }
         install() { if test "$1" = -d; then mkdir -p "${@: -1}"; else cp "${@: -2:1}" "${@: -1}"; fi; }
         setfacl() { cp "${1#--restore=}" "$ROOT/acl.current"; }
         systemctl() {

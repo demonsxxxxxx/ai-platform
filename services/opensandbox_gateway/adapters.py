@@ -1385,7 +1385,15 @@ class MailboxBroker:
         if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"} or len(body) > 1024 * 1024 or local.scheme or local.netloc or ".." in local.path.split("/"):
             raise GatewayError(400, "broker_request_invalid")
         kind, suffix = self._route(local.path)
-        stream = self._start_stream_response(response_fd, name) if kind in {"openai", "anthropic"} and response_fd is not None else None
+        request_id = self._request_id_from_name(name)
+        if request_id is None:
+            raise GatewayError(400, "broker_request_invalid")
+        response_name = f"{request_id}.json"
+        stream = (
+            self._start_stream_response(response_fd, response_name)
+            if kind in {"openai", "anthropic"} and response_fd is not None
+            else None
+        )
         try:
             base, ips = self.policy.targets[kind]
             target = urllib.parse.urlsplit(base + suffix)

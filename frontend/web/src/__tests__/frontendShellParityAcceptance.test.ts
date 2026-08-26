@@ -652,6 +652,10 @@ test("model catalog route is a governed public-projection workbench page", () =>
   assert.match(modelCatalog, /WorkbenchStateSurface/);
   assert.match(modelCatalog, /data-model-admin-governance/);
   assert.match(modelCatalog, /canAdminModels/);
+  assert.match(
+    modelCatalog,
+    /if \(!state && loadError\)[\s\S]*data-frontend-governance-state="degraded"[\s\S]*<ModelAdminControl canManage=\{canAdminModels\} \/>/,
+  );
   assert.match(modelAdminControl, /type="password"/);
   assert.match(modelAdminControl, /connection\.configured/);
   assert.match(modelAdminApi, /\/api\/ai\/admin\/models\/connection/);

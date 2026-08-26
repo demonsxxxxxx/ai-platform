@@ -86,6 +86,7 @@ async def get_run_connection(
           on model_gateway_revisions.revision = runs.model_gateway_revision
         join sandbox_leases
           on sandbox_leases.run_id = runs.id
+         and sandbox_leases.tenant_id = runs.tenant_id
         where runs.id = %s
           and sandbox_leases.attempt_id = %s
           and runs.model_value = %s
@@ -257,7 +258,7 @@ async def resolve_run_model(
     model_id: str | None,
     model_value: str | None,
 ) -> RunModelSelection | None:
-    await conn.execute("select pg_advisory_xact_lock(%s)", (_CONNECTION_LOCK_KEY,))
+    await conn.execute("select pg_advisory_xact_lock_shared(%s)", (_CONNECTION_LOCK_KEY,))
     cursor = await conn.execute(
         """
         with active_gateway as (

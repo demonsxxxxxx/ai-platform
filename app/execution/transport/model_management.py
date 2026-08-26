@@ -16,14 +16,16 @@ PrincipalDependency = Callable[..., Any]
 AdminPredicate = Callable[[Any], bool]
 
 class ModelConnectionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
 
-    base_url: str = Field(min_length=1, max_length=2048)
+    base_url: Any = None
     credential: Any = None
     deprecated_api_key: Any = Field(default=None, alias="api_key", exclude=True)
 
 
 class ModelCatalogEntryPatch(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     display_name: str | None = Field(default=None, max_length=160)
     enabled: bool | None = None
     is_default: bool | None = None
@@ -72,10 +74,16 @@ async def configure_model_connection(
     is_admin: AdminPredicate,
 ) -> dict[str, Any]:
     _require_admin(principal, is_admin=is_admin)
-    if "deprecated_api_key" in payload.model_fields_set:
+    extra_fields = set(payload.model_extra or ())
+    if "deprecated_api_key" in payload.model_fields_set or "apiKey" in extra_fields:
         raise HTTPException(
             status_code=422,
             detail="model_connection_credential_field_invalid",
+        )
+    if extra_fields:
+        raise HTTPException(
+            status_code=422,
+            detail="model_connection_request_invalid",
         )
     if payload.credential is not None and (
         not isinstance(payload.credential, str) or len(payload.credential) > 4096
@@ -83,6 +91,15 @@ async def configure_model_connection(
         raise HTTPException(
             status_code=422,
             detail="model_connection_credential_field_invalid",
+        )
+    if (
+        not isinstance(payload.base_url, str)
+        or not payload.base_url
+        or len(payload.base_url) > 2048
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="model_connection_endpoint_invalid",
         )
     try:
         return await configured_model_control_plane().configure_connection(
@@ -116,6 +133,11 @@ async def patch_model_catalog_entry(
     is_admin: AdminPredicate,
 ) -> dict[str, Any]:
     _require_admin(principal, is_admin=is_admin)
+    if payload.model_extra:
+        raise HTTPException(
+            status_code=422,
+            detail="model_catalog_patch_request_invalid",
+        )
     try:
         model = await configured_model_control_plane().patch_catalog(
             model_id=model_id,

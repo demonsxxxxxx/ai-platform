@@ -215,7 +215,9 @@ class ModelControlPlaneService:
     ) -> RuntimeProxyResponse:
         settings = self._settings_provider()
         expected_token = str(settings.model_proxy_internal_token or "")
-        if not expected_token or not hmac.compare_digest(internal_token, expected_token):
+        if not expected_token or not hmac.compare_digest(
+            internal_token.encode("utf-8"), expected_token.encode("utf-8")
+        ):
             raise PermissionError("model_proxy_forbidden")
         if not attempt_id:
             raise PermissionError("model_proxy_attempt_required")

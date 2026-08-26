@@ -85,6 +85,9 @@ def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) ->
 
     credential_marker = "controlled-write-only-value"
     legacy_marker = "deprecated-write-only-value"
+    camel_legacy_marker = "deprecated-camel-write-only-value"
+    unknown_marker = "unknown-write-only-value"
+    catalog_marker = "catalog-write-only-value"
     oversized_marker = "oversized-write-only-value"
     with TestClient(app) as client:
         accepted = client.get("/api/ai/admin/models")
@@ -99,12 +102,36 @@ def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) ->
             "/api/ai/admin/models/connection",
             json={"base_url": "https://gateway.example", "api_key": legacy_marker},
         )
+        rejected_camel_legacy_field = client.put(
+            "/api/ai/admin/models/connection",
+            json={"base_url": "https://gateway.example", "apiKey": camel_legacy_marker},
+        )
+        rejected_unknown_field = client.put(
+            "/api/ai/admin/models/connection",
+            json={"base_url": "https://gateway.example", "credentail": unknown_marker},
+        )
+        rejected_legacy_without_base = client.put(
+            "/api/ai/admin/models/connection",
+            json={"api_key": legacy_marker},
+        )
+        rejected_unknown_with_invalid_base = client.put(
+            "/api/ai/admin/models/connection",
+            json={"base_url": 7, "credentail": unknown_marker},
+        )
+        rejected_credential_without_base = client.put(
+            "/api/ai/admin/models/connection",
+            json={"credential": credential_marker},
+        )
         rejected_oversized_credential = client.put(
             "/api/ai/admin/models/connection",
             json={
                 "base_url": "https://gateway.example",
                 "credential": oversized_marker + ("x" * 4097),
             },
+        )
+        rejected_catalog_field = client.patch(
+            "/api/ai/admin/models/mdl_gpt",
+            json={"api_key": catalog_marker},
         )
         authorized["value"] = False
         denied = client.get("/api/ai/admin/models")
@@ -125,11 +152,41 @@ def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) ->
         "detail": "model_connection_credential_field_invalid"
     }
     assert legacy_marker not in rejected_legacy_field.text
+    assert rejected_camel_legacy_field.status_code == 422
+    assert rejected_camel_legacy_field.json() == {
+        "detail": "model_connection_credential_field_invalid"
+    }
+    assert camel_legacy_marker not in rejected_camel_legacy_field.text
+    assert rejected_unknown_field.status_code == 422
+    assert rejected_unknown_field.json() == {
+        "detail": "model_connection_request_invalid"
+    }
+    assert unknown_marker not in rejected_unknown_field.text
+    assert rejected_legacy_without_base.status_code == 422
+    assert rejected_legacy_without_base.json() == {
+        "detail": "model_connection_credential_field_invalid"
+    }
+    assert legacy_marker not in rejected_legacy_without_base.text
+    assert rejected_unknown_with_invalid_base.status_code == 422
+    assert rejected_unknown_with_invalid_base.json() == {
+        "detail": "model_connection_request_invalid"
+    }
+    assert unknown_marker not in rejected_unknown_with_invalid_base.text
+    assert rejected_credential_without_base.status_code == 422
+    assert rejected_credential_without_base.json() == {
+        "detail": "model_connection_endpoint_invalid"
+    }
+    assert credential_marker not in rejected_credential_without_base.text
     assert rejected_oversized_credential.status_code == 422
     assert rejected_oversized_credential.json() == {
         "detail": "model_connection_credential_field_invalid"
     }
     assert oversized_marker not in rejected_oversized_credential.text
+    assert rejected_catalog_field.status_code == 422
+    assert rejected_catalog_field.json() == {
+        "detail": "model_catalog_patch_request_invalid"
+    }
+    assert catalog_marker not in rejected_catalog_field.text
     assert denied.status_code == 403
     assert denied.json() == {"detail": "model_admin_required"}
 
@@ -553,7 +610,7 @@ async def test_run_model_resolution_uses_enabled_available_catalog_and_pins_revi
     assert selection.model_value == "openai/gpt-5"
     assert selection.connection_revision == 9
     assert len(conn.calls) == 2
-    assert "pg_advisory_xact_lock" in conn.calls[0][0]
+    assert "pg_advisory_xact_lock_shared" in conn.calls[0][0]
     model_query, params = conn.calls[1]
     assert "catalog.enabled = true" in model_query
     assert "catalog.upstream_available = true" in model_query
@@ -597,12 +654,42 @@ async def test_chat_model_resolution_uses_environment_default_until_control_plan
         resolve_legacy_model=legacy_catalog,
     )
 
-    assert "pg_advisory_xact_lock" in conn.calls[0][0]
+    assert "pg_advisory_xact_lock_shared" in conn.calls[0][0]
     assert selection == RunModelSelection(
         model_id="legacy-default",
         model_value="legacy-default",
         connection_revision=None,
     )
+
+
+def test_legacy_catalog_resolves_value_only_selection_when_catalog_id_differs(monkeypatch) -> None:
+    settings = SimpleNamespace()
+    monkeypatch.setattr(
+        model_legacy_catalog,
+        "upstream_model_cache_snapshot",
+        lambda: ([], None),
+    )
+    observed: list[str] = []
+
+    def resolve_selection(selector, _settings, *, upstream_ids=None):
+        observed.append(selector)
+        assert upstream_ids is None
+        if selector != "openai/gpt-5":
+            raise ValueError("unknown")
+        return {"id": "mdl_public", "value": "openai/gpt-5"}
+
+    legacy_catalog = model_legacy_catalog.LegacyModelCatalogAdapter(
+        settings_provider=lambda: settings,
+        build_catalog=lambda _settings: {"default_model_id": "mdl_default"},
+        resolve_selection=resolve_selection,
+    )
+
+    assert legacy_catalog.resolve({"value": "openai/gpt-5"}) == RunModelSelection(
+        model_id="mdl_public",
+        model_value="openai/gpt-5",
+        connection_revision=None,
+    )
+    assert observed == ["openai/gpt-5"]
 
 
 @pytest.mark.asyncio
@@ -631,6 +718,8 @@ async def test_run_connection_lookup_requires_active_status_and_exact_model_valu
     sql, params = conn.calls[0]
     assert "runs.status in ('queued', 'running')" in sql
     assert "runs.model_gateway_revision" in sql
+    assert "sandbox_leases.run_id = runs.id" in sql
+    assert "sandbox_leases.tenant_id = runs.tenant_id" in sql
     assert "sandbox_leases.attempt_id = %s" in sql
     assert "sandbox_leases.status = 'active'" in sql
     assert "sandbox_leases.released_at is null" in sql
@@ -676,6 +765,7 @@ async def test_run_connection_lookup_fails_closed_without_current_exact_attempt(
     sql, params = conn.calls[0]
     assert "join sandbox_leases" in sql
     assert "sandbox_leases.run_id = runs.id" in sql
+    assert "sandbox_leases.tenant_id = runs.tenant_id" in sql
     assert params == ("run_123", attempt_id, "openai/gpt-5")
 
 
@@ -885,6 +975,63 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
     )
     assert outbound["authorization"] == "Bearer run-pinned-secret"
     assert "x-ai-platform-internal-token" not in outbound
+
+
+@pytest.mark.asyncio
+async def test_internal_runtime_proxy_rejects_non_ascii_token_before_database(monkeypatch) -> None:
+    @asynccontextmanager
+    async def forbidden_transaction():
+        raise AssertionError("invalid token reached database")
+        yield
+
+    service = ModelControlPlaneService(
+        transaction_factory=forbidden_transaction,
+        settings_provider=lambda: SimpleNamespace(
+            model_proxy_internal_token="internal-token",
+        ),
+        repository=SimpleNamespace(),
+        legacy_catalog=SimpleNamespace(),
+        security=SimpleNamespace(),
+        upstream=SimpleNamespace(),
+    )
+
+    async def receive():
+        return {
+            "type": "http.request",
+            "body": b'{"model":"openai/gpt-5"}',
+            "more_body": False,
+        }
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/proxy",
+            "query_string": b"",
+            "headers": [],
+            "server": ("api", 8020),
+        },
+        receive,
+    )
+    monkeypatch.setattr(
+        model_routes,
+        "configured_model_control_plane",
+        lambda: service,
+    )
+
+    with pytest.raises(HTTPException) as captured:
+        await model_routes.proxy_model_request(
+            "openai",
+            "v1/chat/completions",
+            request,
+            x_ai_platform_run_id="run-123",
+            x_ai_platform_attempt_id="attempt-123",
+            x_ai_platform_internal_token="令牌",
+        )
+
+    assert captured.value.status_code == 403
+    assert captured.value.detail == "model_proxy_forbidden"
 
 
 @pytest.mark.asyncio
