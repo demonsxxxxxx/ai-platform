@@ -708,6 +708,49 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
         finally:
             await contender.close()
 
+        await conn.execute(
+            """
+            insert into runs(
+              id, tenant_id, workspace_id, session_id, user_id, agent_id, status,
+              started_at
+            ) values (
+              'run-b', 'tenant-a', 'workspace-a', 'session-a', 'user-a',
+              'agent-a', 'running', now()
+            )
+            """
+        )
+        await conn.execute(
+            """
+            insert into sandbox_leases(
+              id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
+              sandbox_mode, provider, status, lease_payload_json, executor_status,
+              executor_terminal_json, executor_terminal_received_at,
+              executor_reconciliation_context_json, executor_reconciliation_status,
+              expires_at
+            ) values (
+              'lease-b', 'tenant-a', 'workspace-a', 'user-a', 'session-a',
+              'run-b', 'attempt-b', 'ephemeral', 'fake', 'active', '{}'::jsonb,
+              'completed', '{"run_id":"run-b","status":"succeeded"}'::jsonb,
+              now(), '{}'::jsonb, 'pending', now() + interval '1 minute'
+            )
+            """
+        )
+        async with conn.transaction():
+            pending_rows = await sandbox_lease_repository.claim_sandbox_executor_reconciliations(
+                conn,
+                claim_token="pending-claim",
+                limit=1,
+                stale_after_seconds=300,
+            )
+        assert [row["id"] for row in pending_rows] == ["lease-b"]
+        async with conn.transaction():
+            assert await sandbox_lease_repository.quarantine_sandbox_executor_reconciliation(
+                conn,
+                lease_id="lease-b",
+                claim_token="pending-claim",
+                error="test_pending_priority_complete",
+            )
+
         @asynccontextmanager
         async def test_transaction():
             async with conn.transaction():
