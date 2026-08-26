@@ -323,6 +323,63 @@ def test_v4_controls_reject_malformed_expanded_and_private_payloads() -> None:
         assert project_public_envelope_v4(invalid) is None
 
 
+def test_v4_decode_normalizes_mapping_and_lua_field_value_list() -> None:
+    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=FakeRedis()))
+    envelope = control(
+        "stream.open", {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"}
+    )
+    raw = canonical_json_bytes(envelope).decode()
+
+    for fields in (
+        {"envelope": raw},
+        ["envelope", raw],
+        ("envelope", raw),
+    ):
+        decoded = bridge._decode(
+            ("1-0", fields),
+            tenant_scope_value="scope-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            stream_incarnation=2,
+        )
+        assert decoded.envelope == envelope
+
+
+def test_v4_decode_rejects_malformed_redis_rows_and_fields() -> None:
+    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=FakeRedis()))
+    envelope = control(
+        "stream.open", {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"}
+    )
+    raw = canonical_json_bytes(envelope).decode()
+    invalid_fields = (
+        (["envelope"], "v4_stream_fields_invalid"),
+        (["envelope", raw, "envelope", raw], "v4_stream_fields_duplicate"),
+        (["envelope", raw, 1, raw], "v4_stream_fields_invalid"),
+        ({"envelope": b"not-text"}, "v4_stream_fields_invalid"),
+        (["other", raw], "v4_stream_envelope_missing"),
+    )
+
+    for fields, error in invalid_fields:
+        with pytest.raises(StreamContractError, match=error):
+            bridge._decode(
+                ("1-0", fields),
+                tenant_scope_value="scope-a",
+                run_id="run-a",
+                attempt_id="attempt-a",
+                stream_incarnation=2,
+            )
+
+    for malformed_row in ((), ("1-0",), ("1-0", {}, "extra"), "1-0"):
+        with pytest.raises(StreamContractError, match="v4_stream_row_invalid"):
+            bridge._decode(
+                malformed_row,
+                tenant_scope_value="scope-a",
+                run_id="run-a",
+                attempt_id="attempt-a",
+                stream_incarnation=2,
+            )
+
+
 def test_v4_live_decode_rejects_corrupt_cross_version_and_cursor_identity() -> None:
     bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=FakeRedis()))
     valid = control(
