@@ -63,6 +63,26 @@ from app.streaming.redis import (
 )
 
 
+def _normalize_redis_fields(fields: object) -> dict[str, str]:
+    if isinstance(fields, Mapping):
+        pairs = fields.items()
+    elif isinstance(fields, (list, tuple)):
+        if len(fields) % 2:
+            raise StreamContractError("v4_stream_fields_invalid")
+        pairs = zip(fields[::2], fields[1::2], strict=True)
+    else:
+        raise StreamContractError("v4_stream_fields_invalid")
+
+    normalized: dict[str, str] = {}
+    for key, value in pairs:
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise StreamContractError("v4_stream_fields_invalid")
+        if key in normalized:
+            raise StreamContractError("v4_stream_fields_duplicate")
+        normalized[key] = value
+    return normalized
+
+
 @dataclass(frozen=True, slots=True)
 class V4Publication:
     event_id: str
@@ -813,18 +833,20 @@ class V4RedisStreamBridge:
 
     def _decode(
         self,
-        row: tuple[object, Mapping[str, object]],
+        row: object,
         *,
         tenant_scope_value: str,
         run_id: str,
         attempt_id: str,
         stream_incarnation: int,
     ) -> V4StreamEntry:
+        if not isinstance(row, (list, tuple)) or len(row) != 2:
+            raise StreamContractError("v4_stream_row_invalid")
         redis_id = str(row[0])
         _redis_id_tuple(redis_id)
-        fields = row[1]
+        fields = _normalize_redis_fields(row[1])
         raw = fields.get("envelope")
-        if not isinstance(raw, str):
+        if raw is None:
             raise StreamContractError("v4_stream_envelope_missing")
         try:
             envelope = _validate_internal_envelope(json.loads(raw))
