@@ -85,7 +85,6 @@ from app.skills.catalog import (
     AuthorizedSkillCatalogResolution,
     load_runtime_authorized_skill_catalog,
 )
-from app.skills.dependencies import skill_dependency_ids, with_skill_dependencies
 from app.skills.pinning import (
     MAX_SKILL_SNAPSHOT_FILE_BYTES,
     MAX_SKILL_SNAPSHOT_TOTAL_BYTES,
@@ -2441,7 +2440,7 @@ def _allowed_skill_names(
     pinned_manifests = _pinned_skill_manifests(payload)
     if pinned_manifests:
         return _with_pinned_manifest_dependencies(selected, pinned_manifests)
-    return _with_skill_dependencies(selected, available)
+    return selected
 
 
 def _with_pinned_manifest_dependencies(selected: list[str], pins: dict[str, dict[str, Any]]) -> list[str]:
@@ -2471,7 +2470,7 @@ def _inferred_used_skill_names(payload: RunPayload, staged_skill_names: list[str
         if pinned_manifests and payload.skill_id in pinned_manifests:
             dependency_ids = _string_list(pinned_manifests[payload.skill_id].get("dependency_ids"))
         else:
-            dependency_ids = skill_dependency_ids(payload.skill_id, staged)
+            dependency_ids = []
         for dependency_id in dependency_ids:
             if dependency_id in staged and dependency_id not in used:
                 used.append(dependency_id)
@@ -2719,7 +2718,7 @@ def _skill_manifests(selected_skills, *, used_skill_names: list[str], pins: dict
                 if dependency_id in staged
             ]
         else:
-            dependency_ids = _skill_dependency_ids(skill.name, staged)
+            dependency_ids = []
         manifests.append(
             {
                 "skill_id": skill.name,
@@ -2734,14 +2733,6 @@ def _skill_manifests(selected_skills, *, used_skill_names: list[str], pins: dict
             }
         )
     return manifests
-
-
-def _skill_dependency_ids(skill_name: str, available: set[str]) -> list[str]:
-    return skill_dependency_ids(skill_name, available)
-
-
-def _with_skill_dependencies(selected: list[str], available: set[str]) -> list[str]:
-    return with_skill_dependencies(selected, available)
 
 
 def _artifact_content_type(filename: str) -> str:

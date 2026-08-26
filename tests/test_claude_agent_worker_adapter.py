@@ -13,7 +13,6 @@ import pytest
 from openpyxl import Workbook
 
 import app.executors.claude_agent_sdk_runner as sdk_runner
-import app.skills.dependencies as dependency_policy
 import app.worker as worker_module
 from app.context.file_content import ContextFileContentError
 from app.executors import claude_agent_worker
@@ -1514,44 +1513,34 @@ async def test_harness_chat_cannot_enter_multi_agent_skill_resume_path(
 
 
 
-def test_qa_file_reviewer_includes_minimax_docx_dependency_when_available():
+def test_qa_file_reviewer_does_not_infer_dependency_from_skill_id():
     selected = _allowed_skill_names(
         types.SimpleNamespace(skill_id="qa-file-reviewer", input={}, skill_manifests=[]),
         ["qa-file-reviewer", "minimax-docx", "baoyu-translate"],
     )
 
-    assert selected == ["qa-file-reviewer", "minimax-docx"]
+    assert selected == ["qa-file-reviewer"]
 
 
-def test_ctd_stability_template_fill_includes_reference_fact_dependency_when_available():
+def test_ctd_stability_template_fill_does_not_infer_dependency_from_skill_id():
     selected = _allowed_skill_names(
         types.SimpleNamespace(skill_id="ctd-32s73-stability-template-fill", input={}, skill_manifests=[]),
         ["ctd-32s73-stability-template-fill", "reference-fact-extraction", "general-chat"],
     )
 
-    assert selected == ["ctd-32s73-stability-template-fill", "reference-fact-extraction"]
+    assert selected == ["ctd-32s73-stability-template-fill"]
 
 
-def test_inferred_used_skill_names_uses_shared_dependency_helper(monkeypatch):
-    calls = []
-
-    def fake_dependency_ids(skill_id, available):
-        calls.append((skill_id, available))
-        return ["custom-dependency"] if skill_id == "qa-file-reviewer" else []
-
-    monkeypatch.setattr("app.executors.claude_agent_worker.skill_dependency_ids", fake_dependency_ids)
-
+def test_inferred_used_skill_names_does_not_infer_unpinned_dependency():
     used = _inferred_used_skill_names(
         types.SimpleNamespace(skill_id="qa-file-reviewer", input={}, skill_manifests=[]),
         ["qa-file-reviewer", "custom-dependency"],
     )
 
-    assert used == ["qa-file-reviewer", "custom-dependency"]
-    assert calls == [("qa-file-reviewer", {"qa-file-reviewer", "custom-dependency"})]
+    assert used == ["qa-file-reviewer"]
 
 
-def test_allowed_skill_names_prefers_pinned_manifest_dependency_graph(monkeypatch):
-    monkeypatch.setattr(dependency_policy, "SKILL_DEPENDENCIES", {})
+def test_allowed_skill_names_prefers_pinned_manifest_dependency_graph():
 
     selected = _allowed_skill_names(
         payload(
@@ -1892,11 +1881,11 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
     assert result.status == "succeeded"
     assert result.result["sdk_used"] is True
     assert result.result["delegate_used"] is False
-    assert result.result["allowed_skills"] == ["qa-file-reviewer", "minimax-docx"]
-    assert result.result["staged_skills"] == ["qa-file-reviewer", "minimax-docx"]
+    assert result.result["allowed_skills"] == ["qa-file-reviewer"]
+    assert result.result["staged_skills"] == ["qa-file-reviewer"]
     assert result.result["used_skills"] == ["qa-file-reviewer"]
     assert result.executor_payload["used_skills_source"] == "executor_hook"
-    assert result.executor_payload["inferred_used_skills"] == ["qa-file-reviewer", "minimax-docx"]
+    assert result.executor_payload["inferred_used_skills"] == ["qa-file-reviewer"]
     manifest = result.executor_payload["skill_manifests"][0]
     assert manifest["skill_id"] == "qa-file-reviewer"
     assert manifest["version"]
@@ -1907,9 +1896,9 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
     assert manifest["used"] is True
     runtime_request = runtime_requests[0]
     workspace = sandbox_workspace_path(current_settings)
-    assert runtime_request.skill_ids == ["qa-file-reviewer", "minimax-docx"]
+    assert runtime_request.skill_ids == ["qa-file-reviewer"]
     assert (workspace / ".claude" / "skills" / "qa-file-reviewer" / "SKILL.md").is_file()
-    assert (workspace / ".claude" / "skills" / "minimax-docx" / "SKILL.md").is_file()
+    assert not (workspace / ".claude" / "skills" / "minimax-docx").exists()
     assert "Skill: qa-file-reviewer" not in runtime_request.input_message
     assert "Office context pack:" in runtime_request.input_message
     assert "Context pack: 1 message(s), 1 file(s), 1 artifact(s), 0 long-term memory record(s)" in runtime_request.input_message
@@ -3272,12 +3261,12 @@ async def test_agent_run_clears_stale_workspace_before_sdk(monkeypatch, tmp_path
     assert runtime_requests
     assert not (stale_workspace / "output" / "stale.txt").exists()
     assert (stale_workspace / ".claude" / "skills" / "qa-file-reviewer" / "SKILL.md").is_file()
-    assert (stale_workspace / ".claude" / "skills" / "minimax-docx" / "SKILL.md").is_file()
+    assert not (stale_workspace / ".claude" / "skills" / "minimax-docx").exists()
     assert result.result["artifact_count"] == 0
 
 
 @pytest.mark.asyncio
-async def test_qa_file_reviewer_manifest_records_available_dependency(monkeypatch, tmp_path):
+async def test_qa_file_reviewer_manifest_does_not_infer_available_dependency(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills", name="qa-file-reviewer")
     write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
@@ -3302,15 +3291,14 @@ async def test_qa_file_reviewer_manifest_records_available_dependency(monkeypatc
     )
 
     assert "skill_manifests" not in result.result
-    assert result.result["allowed_skills"] == ["qa-file-reviewer", "minimax-docx"]
+    assert result.result["allowed_skills"] == ["qa-file-reviewer"]
     manifests = {item["skill_id"]: item for item in result.executor_payload["skill_manifests"]}
-    assert manifests["qa-file-reviewer"]["dependency_ids"] == ["minimax-docx"]
+    assert manifests["qa-file-reviewer"]["dependency_ids"] == []
     assert result.result["used_skills"] == ["qa-file-reviewer"]
     assert result.executor_payload["used_skills_source"] == "executor_hook"
-    assert result.executor_payload["inferred_used_skills"] == ["qa-file-reviewer", "minimax-docx"]
+    assert result.executor_payload["inferred_used_skills"] == ["qa-file-reviewer"]
     assert manifests["qa-file-reviewer"]["used"] is True
-    assert manifests["minimax-docx"]["dependency_ids"] == []
-    assert manifests["minimax-docx"]["used"] is False
+    assert "minimax-docx" not in manifests
 
 
 @pytest.mark.asyncio
@@ -3351,9 +3339,9 @@ async def test_agent_run_prefers_sdk_reported_used_skills_over_inference(monkeyp
     assert result.result["used_skills"] == ["qa-file-reviewer"]
     assert "used_skills_source" not in result.result
     assert result.executor_payload["used_skills_source"] == "executor_hook"
-    assert result.executor_payload["inferred_used_skills"] == ["qa-file-reviewer", "minimax-docx"]
+    assert result.executor_payload["inferred_used_skills"] == ["qa-file-reviewer"]
     assert manifests["qa-file-reviewer"]["used"] is True
-    assert manifests["minimax-docx"]["used"] is False
+    assert "minimax-docx" not in manifests
 
 
 @pytest.mark.asyncio
@@ -3399,7 +3387,7 @@ async def test_agent_run_preserves_sdk_reported_used_skills_on_sdk_error(monkeyp
     assert "used_skills_source" not in result.result
     assert result.executor_payload["used_skills_source"] == "executor_hook"
     assert manifests["qa-file-reviewer"]["used"] is True
-    assert manifests["minimax-docx"]["used"] is False
+    assert "minimax-docx" not in manifests
 
 
 @pytest.mark.asyncio
@@ -3434,7 +3422,7 @@ async def test_agent_run_stages_pinned_skill_snapshot_after_filesystem_drift(mon
 
     staged_skill = sandbox_workspace_path(current_settings) / ".claude" / "skills" / "qa-file-reviewer"
     assert result.status == "succeeded"
-    assert runtime_requests[0].skill_ids == ["qa-file-reviewer", "minimax-docx"]
+    assert runtime_requests[0].skill_ids == ["qa-file-reviewer"]
     assert "Review Word documents." in (staged_skill / "SKILL.md").read_text(encoding="utf-8")
     assert (staged_skill / "references" / "guide.md").read_text(encoding="utf-8") == "review guide"
     assert result.executor_payload["skill_manifests"][0]["content_hash"] == pins[0]["content_hash"]
@@ -3451,6 +3439,7 @@ async def test_agent_run_fails_closed_when_dependency_pin_is_missing(monkeypatch
         builtin_skills=BuiltinSkillRegistry(tmp_path / "skills").list_builtin_skills(),
     )
     primary_pin = [item for item in pins if item["skill_id"] == "qa-file-reviewer"]
+    primary_pin[0]["dependency_ids"] = ["minimax-docx"]
     async def no_files(payload, workspace):
         return []
 
