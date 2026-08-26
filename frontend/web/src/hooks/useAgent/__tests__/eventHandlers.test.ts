@@ -38,6 +38,7 @@ function createContext(
       current: { sessionId: null, runId: null, eventId: null },
     },
     v4TerminalEventIdsRef: { current: new Set<string>() },
+    v4MessageCandidateRef: { current: null },
     lastHistoryTimestampRef: { current: lastHistoryTimestamp },
     activeSubagentStackRef: { current: [] },
     streamVersionRef: { current: 0 },
@@ -1388,6 +1389,80 @@ test("v4 assistant final and artifact events share the run-local sequence fence"
   } as StreamEvent, "assistant-sequence", "cursor-23", undefined, ctx), false);
   assert.match(ctx.messages()[0]?.content || "", /accepted final/);
   assert.deepEqual(ctx.messages()[0]?.parts?.map((part) => part.type), ["text", "artifact"]);
+});
+
+test("v4 accepts correlated activity before message owner is declared", () => {
+  const ctx = createContext([
+    {
+      id: "run-owner",
+      runId: "run-owner",
+      role: "assistant",
+      content: "",
+      timestamp: new Date("2026-01-01T00:00:00Z"),
+      parts: [],
+      isStreaming: true,
+    },
+  ], null);
+  ctx.currentRunIdRef.current = "run-owner";
+  ctx.v4MessageOwnerRef = { current: null };
+  ctx.v4MessageCandidateRef = { current: null };
+  const frame = (
+    eventType:
+      | "thinking.started"
+      | "thinking.completed"
+      | "message.started"
+      | "message.delta",
+    messageId: string,
+    sequence: number,
+  ) => ({
+    eventHeader: eventType,
+    transportCursor: `run-owner:2:${sequence}-0`,
+    generation: 7,
+    value: {
+      schema: "ai-platform.public-run-stream-event.v4",
+      event_id: `event-${sequence}`,
+      run_id: "run-owner",
+      message_id: messageId,
+      seq: sequence,
+      event_type: eventType,
+      stream_incarnation: 2,
+      replayable: true,
+      trace_ref: null,
+      causation_event_id: null,
+      emitted_at: "2026-01-01T00:00:00Z",
+      payload: eventType === "message.delta" ? { delta: "accepted" } : {},
+    },
+  });
+  const accept = (candidate: ReturnType<typeof frame>) =>
+    handlePublicRunStreamFrameV4({
+      frame: candidate as never,
+      adapterBinding: { runId: "run-owner", streamIncarnation: 2, generation: 7 },
+      messageId: "run-owner",
+      ctx,
+      binding: {
+        sessionId: "session-1",
+        runId: "run-owner",
+        streamVersion: 0,
+        streamIncarnation: 2,
+        generation: 7,
+      },
+      currentGeneration: 7,
+    });
+
+  assert.equal(accept(frame("thinking.started", "message-1", 1)), true);
+  assert.deepEqual(ctx.v4MessageCandidateRef.current, {
+    sessionId: "session-1",
+    runId: "run-owner",
+    streamVersion: 0,
+    streamIncarnation: 2,
+    protocolMessageId: "message-1",
+  });
+  assert.equal(accept(frame("thinking.completed", "message-1", 2)), true);
+  assert.equal(accept(frame("thinking.completed", "message-2", 3)), false);
+  assert.equal(accept(frame("message.started", "message-1", 3)), true);
+  assert.equal(ctx.v4MessageCandidateRef.current, null);
+  assert.equal(accept(frame("message.delta", "message-1", 4)), true);
+  assert.equal(ctx.messages()[0]?.content, "accepted");
 });
 
 test("v4 message ownership survives reconnect and rejects a second protocol identity", () => {

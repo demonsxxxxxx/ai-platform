@@ -81,6 +81,7 @@ import {
   type AcceptedRunEventSequence,
   type AcceptedStreamCursor,
   type EventHandlerContext,
+  type V4MessageCandidate,
   type V4MessageOwner,
   type V4TerminalFence,
 } from "./useAgent/eventHandlers";
@@ -725,6 +726,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const v4TerminalEventIdsRef = useRef<Set<string>>(new Set());
   const v4TerminalFenceRef = useRef<V4TerminalFence | null>(null);
   const v4MessageOwnerRef = useRef<V4MessageOwner | null>(null);
+  const v4MessageCandidateRef = useRef<V4MessageCandidate | null>(null);
 
   // Track last event timestamp from history
   const lastHistoryTimestampRef = useRef<Date | null>(null);
@@ -899,6 +901,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     terminalHydrationOwnerRef.current = null;
     replayGapRecoveryRef.current = null;
     v4MessageOwnerRef.current = null;
+    v4MessageCandidateRef.current = null;
   }, []);
 
   useLayoutEffect(() => {
@@ -1344,6 +1347,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       v4TerminalEventIdsRef,
       v4TerminalFenceRef,
       v4MessageOwnerRef,
+      v4MessageCandidateRef,
       lastHistoryTimestampRef,
       activeSubagentStackRef,
       streamVersionRef,
