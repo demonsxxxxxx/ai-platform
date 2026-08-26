@@ -223,6 +223,16 @@ def _safe_id(value: str, field_name: str) -> str:
     return value
 
 
+def _upstream_model_id(value: str) -> str:
+    if (
+        value != value.strip()
+        or len(value.encode("utf-8")) > 512
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
+        raise ExecutionSpecError("execution_spec_model_value_invalid")
+    return value
+
+
 def _safe_principal_user_id(value: str) -> str:
     if (
         _SAFE_PRINCIPAL_USER_ID_PATTERN.fullmatch(value) is None
@@ -336,11 +346,10 @@ def _normalize_execution_spec(payload: Mapping[str, Any]) -> dict[str, Any]:
         raise ExecutionSpecError("execution_spec_context_snapshot_identity_mismatch")
     normalized["context_snapshot_id"] = context_snapshot_id
 
-    for field_name in ("model_id", "model_value"):
-        value = _optional_string(payload, field_name)
-        if value:
-            value = _safe_id(value, field_name)
-        normalized[field_name] = value
+    model_id = _optional_string(payload, "model_id")
+    normalized["model_id"] = _safe_id(model_id, "model_id") if model_id else model_id
+    model_value = _optional_string(payload, "model_value")
+    normalized["model_value"] = _upstream_model_id(model_value) if model_value else model_value
 
     if execution_kind == _RUN_EXECUTION_KIND_HARNESS_CHAT:
         if run_payload_schema_version != _RUN_PAYLOAD_SCHEMA_VERSION_V2:

@@ -114,6 +114,14 @@ async def resume_run(*args, **kwargs):
 
 
 @pytest.fixture(autouse=True)
+def default_run_model_inheritance(monkeypatch):
+    async def inherit_run_model(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runs_module, "inherit_run_model", inherit_run_model)
+
+
+@pytest.fixture(autouse=True)
 def default_create_run_workspace_guard(monkeypatch):
     async def ensure_workspace_belongs_to_tenant(conn, *, tenant_id, workspace_id):
         return {"id": workspace_id, "tenant_id": tenant_id, "status": "active"}
@@ -5707,6 +5715,7 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
     }
 
     async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+        calls["copy_conn"] = conn
         return {
             "session_id": "ses_copy",
             "run_id": "run_copy",
@@ -5721,6 +5730,20 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
             "skill_manifests": repository_module.skill_manifest_refs(source_skill_manifests),
             "model_id": "model-catalog-copy",
             "model_value": "provider-model-copy",
+        }
+
+    async def fake_inherit_run_model(
+        conn,
+        *,
+        tenant_id,
+        source_run_id,
+        child_run_id,
+    ):
+        calls["model_inheritance"] = {
+            "conn": conn,
+            "tenant_id": tenant_id,
+            "source_run_id": source_run_id,
+            "child_run_id": child_run_id,
         }
 
     async def fake_update_run_input_execution_snapshot(
@@ -5768,6 +5791,7 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
+    monkeypatch.setattr("app.routes.runs.inherit_run_model", fake_inherit_run_model)
     monkeypatch.setattr(
         "app.routes.runs.repositories.update_run_input_execution_snapshot",
         fake_update_run_input_execution_snapshot,
@@ -5782,6 +5806,12 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
     response = await copy_run("run_source", principal=principal())
 
     assert response.run_id == "run_copy"
+    assert calls["model_inheritance"] == {
+        "conn": calls["copy_conn"],
+        "tenant_id": "tenant-a",
+        "source_run_id": "run_source",
+        "child_run_id": "run_copy",
+    }
     assert calls["update"]["execution_snapshot"] == repository_module.copied_run_execution_snapshot(calls["queue"])
     assert calls["update"]["execution_snapshot"]["release_decision"] == source_release_decision
     assert calls["update"]["execution_snapshot"]["skill_manifests"] == repository_module.skill_manifest_refs(

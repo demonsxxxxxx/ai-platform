@@ -48,8 +48,7 @@ from app.intent_router import (
     fallback_to_general_chat,
     route_intent,
 )
-from app.model_catalog import resolve_model_selection
-from app.platform.model_upstream import upstream_model_cache_snapshot
+from app.execution.api import RunModelSelection, parse_requested_model_selection, resolve_chat_model_selection
 from app.models import (
     CapabilitySuggestionResponse,
     ChatMessageResponse,
@@ -65,6 +64,7 @@ from app.models import (
     SelectedAgentProfileRequest,
     SelectedSkillRequest,
 )
+from app.runs.api import bind_run_model
 from app.product_events import initial_run_event_specs, intent_event_specs
 from app.projection_redaction import (
     capability_id_from_skill,
@@ -1030,27 +1030,6 @@ def _has_legacy_client_mcp_selector(value: object) -> bool:
     return "mcp_tool_ids" in value or "mcpToolIds" in value
 
 
-def _requested_model_selection(request: ChatStreamRequest) -> dict[str, str] | None:
-    agent_options = request.agent_options if isinstance(request.agent_options, dict) else {}
-    raw_model_id = agent_options.get("model_id")
-    if raw_model_id is None:
-        return None
-    if not isinstance(raw_model_id, str):
-        raise HTTPException(status_code=400, detail="model_id_not_available")
-    try:
-        upstream_ids = None
-        upstream_models, _ = upstream_model_cache_snapshot()
-        if upstream_models:
-            upstream_ids = {str(model["id"]) for model in upstream_models}
-        return resolve_model_selection(
-            raw_model_id,
-            get_settings(),
-            upstream_ids=upstream_ids,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="model_id_not_available") from exc
-
-
 def _file_ids_for_intent_lookup(request: ChatStreamRequest) -> list[str]:
     file_ids: list[str] = []
     for value in request.file_ids:
@@ -1459,9 +1438,9 @@ async def chat_stream(
         allow_raw_skill_agent_id=is_ai_admin(principal),
     )
     try:
-        requested_model_selection = _requested_model_selection(request)
-    except HTTPException as exc:
-        code = _submission_code(exc.detail)
+        requested_model_selection = parse_requested_model_selection(request.agent_options)
+    except ValueError as exc:
+        code = str(exc)
         await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
@@ -1472,10 +1451,12 @@ async def chat_stream(
             code=code,
         )
         if submission_id is not None:
-            raise _chat_submission_http_error(status_code=exc.status_code, code=code) from exc
-        raise
-    requested_model_id = requested_model_selection["id"] if requested_model_selection is not None else None
-    requested_model_value = requested_model_selection["value"] if requested_model_selection is not None else None
+            raise _chat_submission_http_error(status_code=400, code=code) from exc
+        raise HTTPException(status_code=400, detail=code) from exc
+    requested_model_id = requested_model_selection.get("id") if requested_model_selection else None
+    requested_model_value = requested_model_selection.get("value") if requested_model_selection else None
+    selected_model: RunModelSelection | None = None
+
     requested_file_ids = _file_ids_from_request(request)
     if allowed and _has_legacy_client_mcp_selector(request.input):
         code = "selected_mcp_tool_ids_required"
@@ -1727,10 +1708,18 @@ async def chat_stream(
                     expected_version=str(admitted_agent_profile.skill["skill_version"]),
                 )
                 selected_mcp_tool_ids_for_execution = list(admitted_agent_profile.mcp_tool_ids)
-                requested_model_id = admitted_agent_profile.model["id"]
-                requested_model_value = admitted_agent_profile.model["value"]
                 run_input["mcp_tool_ids"] = list(admitted_agent_profile.mcp_tool_ids)
 
+            try:
+                selected_model = await resolve_chat_model_selection(
+                    conn,
+                    selection=requested_model_selection,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if selected_model is not None:
+                requested_model_id = selected_model.model_id
+                requested_model_value = selected_model.model_value
             if (
                 request.session_id
                 and request.selected_mcp_tool_ids is None
@@ -2242,6 +2231,15 @@ async def chat_stream(
                     }
                 )
             run_id = await repositories.create_run(conn, **run_create_kwargs)
+            if selected_model is not None:
+                await bind_run_model(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    run_id=run_id,
+                    model_id=selected_model.model_id,
+                    model_value=selected_model.model_value,
+                    connection_revision=selected_model.connection_revision,
+                )
             if execution_kind == RUN_EXECUTION_KIND_SKILL:
                 await repositories.insert_run_skill_snapshots_at_creation(
                     conn,

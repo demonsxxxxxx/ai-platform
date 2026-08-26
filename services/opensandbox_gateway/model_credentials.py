@@ -136,14 +136,11 @@ def authorize_model_request(
     body: bytes,
     created_at: float,
     now: float,
-    credential: str,
 ) -> tuple[str, str]:
-    """Consume one receipt and return the host-owned provider auth header."""
+    """Consume one receipt and return a non-secret internal auth marker."""
 
     if query:
         raise GatewayError(403, "model_route_path_not_allowed")
-    if not credential:
-        raise GatewayError(503, "model_provider_credential_unavailable")
     try:
         payload = json.loads(body)
         if not isinstance(payload, dict) or not isinstance(payload.get("model"), str) or not payload["model"]:
@@ -167,7 +164,8 @@ def authorize_model_request(
         request_limit=MODEL_ROUTE_REQUEST_LIMIT,
         attempt_id=record.scope.get("attempt_id"),
     )
-    return ("authorization", f"Bearer {credential}") if provider == "openai" else ("x-api-key", credential)
+    marker = "model-proxy-internal"
+    return ("authorization", f"Bearer {marker}") if provider == "openai" else ("x-api-key", marker)
 
 
 def _record_and_binding(record: LeaseRecord | None, **request: Any) -> tuple[LeaseRecord, ModelRouteBinding]:

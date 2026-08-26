@@ -1087,7 +1087,7 @@ s72_atomic_prepare_workspace() {
   printf '%s\n' "$workspace"
 }
 
-s72_atomic_file_matches() {
+s72_atomic_file_matches() (
   live=$1
   source=$2
   expected_mode=${3:-$(stat -c %a "$source")}
@@ -1095,9 +1095,9 @@ s72_atomic_file_matches() {
   test -f "$source" && test ! -L "$source" || return 1
   cmp -s "$live" "$source" || return 1
   test "$(stat -c %u:%g:%a "$live")" = "0:0:$expected_mode"
-}
+)
 
-s72_atomic_directory_matches() {
+s72_atomic_directory_matches() (
   live=$1
   source=$2
   test -d "$live" && test ! -L "$live" || return 1
@@ -1105,7 +1105,7 @@ s72_atomic_directory_matches() {
   live_metadata=$(capture_config_metadata "$live") || return 1
   source_metadata=$(capture_config_metadata "$source") || return 1
   test "$live_metadata" = "$source_metadata"
-}
+)
 
 s72_atomic_apply_file() {
   live=$1

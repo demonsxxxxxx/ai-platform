@@ -109,9 +109,12 @@ the browser.
 - Agent Conversations are created only after explicit user action and remain
   pinned to `agent_id`, immutable Revision, and `content_hash`.
 - Every run, retry, resume, and copy reauthorizes ownership, tenant,
-  publication, ACL, model, Skill version, and MCP capability server-side.
-- Browser requests cannot override private instructions, model, Skill, MCP,
-  ACL, revision hash, or execution identity.
+  publication, ACL, the Run-pinned model, Skill version, and MCP capability
+  server-side.
+- Browser requests may select only an administrator-enabled public model. They
+  cannot override private instructions, Skill, MCP, ACL, revision hash, or
+  execution identity; the backend resolves and freezes the selected model and
+  active connection revision when admitting the Run.
 - Agent Profile `instructions` stay in private execution input and the executor
   system prompt. They never become user content or a safe public field.
 - Expert Agents continue to require at least one exact governed Skill in their
@@ -147,7 +150,8 @@ the browser.
   `agentProfileApi.createConversation` with `selected_agent_profile` and one
   operation identity.
 - Builder can save a draft with the four core field groups and safe defaults for
-  presentation fields. Missing any core field still blocks save.
+  presentation fields without choosing a model. Missing any core field still
+  blocks save.
 - Public Agent payloads contain no `instructions`, raw Skill identity, MCP IDs,
   model ID, ACL details, or content hash.
 - Single and batch Skill archive behavior matches the server-confirmed result.
@@ -161,8 +165,9 @@ the browser.
   cards and recovery actions remain usable, and no generic Chat entry appears.
 - Builder initially shows the four core fields; every progressive section can
   be opened with keyboard and retains entered values.
-- Agent Workspace shows expert identity, task examples, task history, and a
-  task-oriented composer without exposing capability selectors.
+- Agent Workspace shows expert identity, task examples, task history, the shared
+  enabled-model selector, and a task-oriented composer without exposing the
+  other capability selectors.
 - Skill Admin archive confirmation, loading state, success removal, failure
   recovery, and batch partial failure are visually and semantically clear.
 
@@ -194,5 +199,7 @@ reintroduce mandatory Skill invocation, per-Agent file-type gates,
   history, file, SSE, and composer behavior.
 - Hard-deleting Skills: immutable release, Run, snapshot, and audit references
   require retained evidence.
-- Letting the Builder browser infer model, Skill, MCP, or ACL defaults: those are
-  server-authorized definition fields, not presentation defaults.
+- Letting the Builder browser infer Skill, MCP, or ACL defaults: those are
+  server-authorized definition fields, not presentation defaults. Models are
+  intentionally selected from the shared governed catalog at Run admission and
+  are not Agent Profile definition fields.

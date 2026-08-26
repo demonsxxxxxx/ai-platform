@@ -18,6 +18,14 @@ from app.routes.runs import (
 from app.worker import _ensure_worker_context_snapshot
 
 
+@pytest.fixture(autouse=True)
+def _stub_run_model_inheritance_for_route_fakes(monkeypatch):
+    async def inherit_run_model(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.routes.runs.inherit_run_model", inherit_run_model)
+
+
 @asynccontextmanager
 async def _fake_transaction():
     yield object()

@@ -85,7 +85,7 @@ test("expert management follows the directory and first-class configuration layo
   assert.match(workbenchSource, /专家目录/);
   assert.match(workbenchSource, /aria-label="搜索专家"/);
   assert.match(workbenchSource, /AgentIdentityAvatar/);
-  assert.match(workbenchSource, /完成下面 4 项即可保存/);
+  assert.match(workbenchSource, /完成下面 3 项即可保存/);
   assert.match(workbenchSource, /Agent\.md 初始指令/);
   assert.match(workbenchSource, /data-agent-builder-agent-md/);
   assert.match(enterpriseFieldsSource, /data-agent-builder-market-settings/);

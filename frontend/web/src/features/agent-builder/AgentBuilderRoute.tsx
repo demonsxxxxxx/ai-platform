@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 
 import { useAuth } from "../../hooks/useAuth";
 import { useSkills } from "../../hooks/useSkills";
 import { useTools } from "../../hooks/useTools";
-import { modelPublicApi, type ModelOption } from "../../services/api/modelPublic";
 import { AgentBuilderWorkbench } from "./AgentBuilderWorkbench";
 import { AgentBuilderShell } from "./AgentBuilderShell";
 import {
@@ -13,13 +12,9 @@ import {
 
 const BUILDER_CATALOG_LOAD_ERROR = "暂时无法加载授权目录，请稍后刷新后重试。";
 
-/** Admin route bridge for current model, Skill, and MCP catalog projections. */
+/** Admin route bridge for the current Skill and MCP authorization catalogs. */
 export function AgentBuilderRoute() {
   const { user } = useAuth();
-  const [models, setModels] = useState<ModelOption[]>([]);
-  const [modelsLoading, setModelsLoading] = useState(true);
-  const [modelsError, setModelsError] = useState<string | null>(null);
-  const [modelRequestRevision, setModelRequestRevision] = useState(0);
   const {
     skills,
     catalogReadResolved,
@@ -35,38 +30,11 @@ export function AgentBuilderRoute() {
     refreshTools,
   } = useTools({ enabled: true });
 
-  useEffect(() => {
-    const controller = new AbortController();
-    let current = true;
-    setModelsLoading(true);
-    setModelsError(null);
-
-    void modelPublicApi
-      .listAvailable({ signal: controller.signal })
-      .then((response) => {
-        if (current) setModels(response.models);
-      })
-      .catch(() => {
-        if (!current || controller.signal.aborted) return;
-        setModels([]);
-        setModelsError(BUILDER_CATALOG_LOAD_ERROR);
-      })
-      .finally(() => {
-        if (current) setModelsLoading(false);
-      });
-
-    return () => {
-      current = false;
-      controller.abort();
-    };
-  }, [modelRequestRevision]);
-
   const retryCatalog = useCallback(() => {
     void fetchSkills();
     void refreshTools();
-    setModelRequestRevision((revision) => revision + 1);
   }, [fetchSkills, refreshTools]);
-  const catalogError = skillsError || toolsError || modelsError
+  const catalogError = skillsError || toolsError
     ? BUILDER_CATALOG_LOAD_ERROR
     : null;
 
@@ -78,12 +46,10 @@ export function AgentBuilderRoute() {
         effectivePermissionsKnown,
       }),
       tools: mapSafeBuilderMcpTools(tools),
-      models,
       skillsResolved: catalogReadResolved,
       mcpToolsResolved: !toolsLoading && toolsError === null,
-      modelsResolved: !modelsLoading && modelsError === null,
       effectivePermissionsKnown,
-      isLoading: skillsLoading || toolsLoading || modelsLoading,
+      isLoading: skillsLoading || toolsLoading,
       error: catalogError,
       retry: retryCatalog,
     }),
@@ -91,9 +57,6 @@ export function AgentBuilderRoute() {
       catalogReadResolved,
       catalogError,
       effectivePermissionsKnown,
-      models,
-      modelsError,
-      modelsLoading,
       retryCatalog,
       skills,
       skillsLoading,

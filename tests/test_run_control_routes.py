@@ -138,6 +138,14 @@ def _install_test_run_stream_runtime(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _stub_run_model_inheritance_for_route_fakes(monkeypatch):
+    async def inherit_run_model(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.routes.runs.inherit_run_model", inherit_run_model)
+
+
+@pytest.fixture(autouse=True)
 def _stub_permission_terminalization_for_run_control_mocks(monkeypatch):
     """Keep legacy route fakes focused on route-side cancel effects, not batch SQL internals."""
 
@@ -1020,9 +1028,10 @@ def test_copy_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
 
 
 def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
-    calls = {"retry": [], "enqueue": [], "step": [], "execution_snapshot": []}
+    calls = {"retry": [], "inherit": [], "enqueue": [], "step": [], "execution_snapshot": []}
 
     async def fake_retry_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+        calls["retry_conn"] = conn
         calls["retry"].append((tenant_id, user_id, run_id))
         return {
             "session_id": "ses-old",
@@ -1060,6 +1069,9 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
             "model_value": "provider-model-retry",
         }
 
+    async def fake_inherit_run_model(conn, **kwargs):
+        calls["inherit"].append((conn, kwargs))
+
     async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
         assert skill_id == "general-chat"
         assert input_payload["copied_from_run_id"] == "run-failed"
@@ -1096,6 +1108,7 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr("app.routes.runs.repositories.retry_run_as_new_task", fake_retry_run_as_new_task, raising=False)
+    monkeypatch.setattr("app.routes.runs.inherit_run_model", fake_inherit_run_model)
     monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_initial_context_snapshot)
     monkeypatch.setattr(
@@ -1119,6 +1132,16 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
     assert response.json()["operation_id"] == RUN_CONTROL_OPERATION_ID
     assert response.json()["queue_position"] == 3
     assert calls["retry"] == [("default", "user-a", "run-failed")]
+    assert calls["inherit"] == [
+        (
+            calls["retry_conn"],
+            {
+                "tenant_id": "default",
+                "source_run_id": "run-failed",
+                "child_run_id": "run-retry",
+            },
+        )
+    ]
     assert calls["active_limit"] == ("default", "user-a", 3)
     assert calls["enqueue"][0]["run_id"] == "run-retry"
     assert calls["enqueue"][0]["context_snapshot_id"] == "ctx-retry"
@@ -1783,10 +1806,12 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
         "context": [],
         "step": [],
         "execution_snapshot": [],
+        "inherit": [],
         "order": [],
     }
 
     async def fake_resume_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+        calls["resume_conn"] = conn
         calls["order"].append("resume")
         calls["resume"].append((tenant_id, user_id, run_id))
         return {
@@ -1824,6 +1849,9 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
             "model_id": "model-catalog-resume",
             "model_value": "provider-model-resume",
         }
+
+    async def fake_inherit_run_model(conn, **kwargs):
+        calls["inherit"].append((conn, kwargs))
 
     async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
         assert skill_id == "general-chat"
@@ -1872,6 +1900,7 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
     )
     monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", reauthorize, raising=False)
     monkeypatch.setattr("app.routes.runs.repositories.resume_run_as_new_task", fake_resume_run_as_new_task, raising=False)
+    monkeypatch.setattr("app.routes.runs.inherit_run_model", fake_inherit_run_model)
     monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
     monkeypatch.setattr(
         "app.routes.runs.repositories.update_run_input_execution_snapshot",
@@ -1899,6 +1928,16 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
         "queue_insight": {"tenant_id": "default", "reason": "workers_busy"},
     }
     assert calls["resume"] == [("default", "user-a", "run-failed")]
+    assert calls["inherit"] == [
+        (
+            calls["resume_conn"],
+            {
+                "tenant_id": "default",
+                "source_run_id": "run-failed",
+                "child_run_id": "run-resume-new",
+            },
+        )
+    ]
     assert calls["active_limit"] == ("default", "user-a", 3)
     assert calls["order"] == [
         "user_lock",

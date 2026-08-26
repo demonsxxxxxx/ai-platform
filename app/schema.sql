@@ -518,6 +518,45 @@ alter table sessions drop constraint if exists chk_sessions_title_source;
 alter table sessions add constraint chk_sessions_title_source
   check (title_source in ('initial', 'generated', 'user'));
 
+create table if not exists model_gateway_revisions (
+  revision bigint primary key,
+  base_url text not null,
+  api_key_ciphertext bytea not null,
+  key_fingerprint text not null,
+  active boolean not null default false,
+  created_by text not null,
+  created_at timestamptz not null default now(),
+  constraint chk_model_gateway_revision_positive check (revision > 0),
+  constraint chk_model_gateway_base_url check (length(base_url) between 1 and 2048),
+  constraint chk_model_gateway_key_fingerprint check (key_fingerprint ~ '^[0-9a-f]{16}$')
+);
+create unique index if not exists uq_model_gateway_active
+  on model_gateway_revisions(active) where active = true;
+
+create table if not exists model_catalog_entries (
+  model_id text primary key,
+  upstream_model_id text not null unique,
+  display_name text not null,
+  provider text not null default 'custom',
+  enabled boolean not null default false,
+  upstream_available boolean not null default true,
+  is_default boolean not null default false,
+  display_order integer not null default 0,
+  first_seen_revision bigint not null references model_gateway_revisions(revision),
+  last_seen_revision bigint not null references model_gateway_revisions(revision),
+  first_seen_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now(),
+  constraint chk_model_catalog_id check (model_id ~ '^[A-Za-z0-9_.:-]{1,128}$'),
+  constraint chk_model_catalog_upstream_id check (
+    length(upstream_model_id) between 1 and 512
+    and upstream_model_id = btrim(upstream_model_id)
+  ),
+  constraint chk_model_catalog_display_name check (length(display_name) between 1 and 160),
+  constraint chk_model_catalog_default_enabled check (not is_default or enabled)
+);
+create unique index if not exists uq_model_catalog_default
+  on model_catalog_entries(is_default) where is_default = true;
+
 create table if not exists runs (
   id text primary key,
   tenant_id text not null references tenants(id),
@@ -538,6 +577,9 @@ create table if not exists runs (
   authority_checked_at timestamptz,
   admitted_agent_profile_revision bigint,
   admitted_agent_profile_hash text,
+  model_id text,
+  model_value text,
+  model_gateway_revision bigint,
   status text not null,
   input_json jsonb not null default '{}'::jsonb,
   context_snapshot_id text,
@@ -847,6 +889,9 @@ create index if not exists idx_sessions_agent_conversation_history
   where status = 'active' and admitted_agent_profile_revision is not null;
 alter table runs add column if not exists admitted_agent_profile_revision bigint;
 alter table runs add column if not exists admitted_agent_profile_hash text;
+alter table runs add column if not exists model_id text;
+alter table runs add column if not exists model_value text;
+alter table runs add column if not exists model_gateway_revision bigint;
 alter table agent_profile_revisions add column if not exists published_from_revision bigint;
 alter table agent_profile_revisions add column if not exists withdrawn_from_revision bigint;
 alter table agent_profile_revisions add column if not exists revision_status text;
@@ -1550,6 +1595,10 @@ begin
     alter table runs add constraint fk_runs_agent_profile_pin
       foreign key (tenant_id, agent_id, admitted_agent_profile_revision)
       references agent_profile_revisions(tenant_id, agent_id, revision);
+  end if;
+  if not exists (select 1 from pg_constraint where conrelid = 'runs'::regclass and conname = 'fk_runs_model_gateway_revision') then
+    alter table runs add constraint fk_runs_model_gateway_revision
+      foreign key (model_gateway_revision) references model_gateway_revisions(revision);
   end if;
 end $$;
 

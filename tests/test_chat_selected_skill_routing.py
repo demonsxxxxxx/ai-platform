@@ -31,6 +31,18 @@ async def fake_transaction():
     yield object()
 
 
+@pytest.fixture
+def stub_unselected_model(monkeypatch):
+    async def resolve_model(_conn, *, selection):
+        assert selection is None
+        return None
+
+    monkeypatch.setattr(
+        "app.routes.chat.resolve_chat_model_selection",
+        resolve_model,
+    )
+
+
 def principal(**overrides):
     values = {"user_id": "user-a", "display_name": "User A", "tenant_id": "tenant-a"}
     values.update(overrides)
@@ -155,7 +167,10 @@ def default_chat_stream_dependencies(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_explicit_selected_skill_survives_scoped_negative_prompt(monkeypatch):
+async def test_chat_stream_explicit_selected_skill_survives_scoped_negative_prompt(
+    monkeypatch,
+    stub_unselected_model,
+):
     calls = {}
     manifests = {
         skill_id: snapshot_manifest(skill_id)
@@ -287,7 +302,10 @@ async def test_chat_stream_explicit_selected_skill_survives_scoped_negative_prom
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_explicit_selected_skill_denial_precedes_side_effects(monkeypatch):
+async def test_chat_stream_explicit_selected_skill_denial_precedes_side_effects(
+    monkeypatch,
+    stub_unselected_model,
+):
     calls = []
 
     async def deny_selected(*_args, **kwargs):

@@ -1044,14 +1044,10 @@ def _agent_profile_snapshot_matches_authority(
     admission: object,
 ) -> bool:
     private_execution_input = getattr(admission, "private_execution_input", None)
-    authority_model = getattr(admission, "model", None)
     authority_mcp_tool_ids = getattr(admission, "mcp_tool_ids", None)
     if (
         not isinstance(private_execution_input, dict)
-        or not isinstance(authority_model, dict)
         or not isinstance(authority_mcp_tool_ids, tuple)
-        or payload.model_id != authority_model.get("id")
-        or payload.model_value != authority_model.get("value")
     ):
         return False
     try:
