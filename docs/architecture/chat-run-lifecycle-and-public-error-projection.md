@@ -118,11 +118,14 @@ and cancellation cleanup may stop or release only leases with no terminal receip
 a `finalized` receipt; the release CAS repeats that fence to close
 callback-versus-cleanup races. Reconciliation may claim a historical `released` lease
 only when that durable receipt is `pending`, `retry`, or stale-`claimed`. Primary
-reconciliation also claims one receipt per transaction and retains that row lock
-through workspace recovery, worker side effects, provider stop, and terminal
-persistence, so stale reclamation cannot overlap an active owner. Worker database
-scopes reuse nested savepoints on that claim-owning connection, including with a
-single-connection pool; runtime callbacks that touch both authorities lock the exact
+reconciliation claims one receipt in a short transaction and releases its row lock
+before workspace or provider work. Every later database transition rechecks the exact
+claim token. One 240-second ownership deadline covers workspace recovery, provider
+collection, terminal persistence and publication, provider stop, and lease
+finalization; it remains below the 300-second stale-claim interval, so cooperative
+provider work is cancelled and the receipt is claim-fenced for retry before takeover
+can overlap a live owner. Provider stop also retains its narrower cleanup timeout.
+Runtime callbacks that touch both authorities lock the exact
 attempt lease before the Run and then revalidate the Run identity. Before workspace
 preparation, collection, worker reconstruction, or primary terminal cleanup, the
 restored tenant, workspace, user, session, Run, and attempt identity must exactly

@@ -662,6 +662,88 @@ async def test_reconciler_requeues_receipt_after_transient_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_reconciler_times_out_work_before_stale_claim_takeover(monkeypatch):
+    from app import executor_reconciler
+
+    assert (
+        executor_reconciler._RECONCILIATION_WORK_TIMEOUT_SECONDS
+        < executor_reconciler._RECONCILIATION_CLAIM_STALE_SECONDS
+    )
+    transaction_active = False
+    collection_cancelled = asyncio.Event()
+    retried = []
+
+    @asynccontextmanager
+    async def fenced_transaction():
+        nonlocal transaction_active
+        assert transaction_active is False
+        transaction_active = True
+        try:
+            yield _Connection()
+        finally:
+            transaction_active = False
+
+    async def claim(_conn, **_kwargs):
+        assert transaction_active is True
+        return [_lease_row()]
+
+    async def get_run(_conn, **_kwargs):
+        assert transaction_active is True
+        return {"id": "run-a", "status": "running"}
+
+    async def collect(_lease_row, **_kwargs):
+        assert transaction_active is False
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            collection_cancelled.set()
+            raise
+
+    async def retry(_conn, **kwargs):
+        assert transaction_active is True
+        retried.append(kwargs)
+        return True
+
+    monkeypatch.setattr(executor_reconciler, "transaction", fenced_transaction)
+    monkeypatch.setattr(
+        executor_reconciler,
+        "_RECONCILIATION_WORK_TIMEOUT_SECONDS",
+        0.001,
+    )
+    monkeypatch.setattr(
+        executor_reconciler.sandbox_lease_repository,
+        "claim_sandbox_executor_reconciliations",
+        claim,
+    )
+    monkeypatch.setattr(executor_reconciler.repositories, "get_run", get_run)
+    monkeypatch.setattr(executor_reconciler, "_collect_workspace_and_convert_result", collect)
+    monkeypatch.setattr(
+        executor_reconciler.sandbox_lease_repository,
+        "retry_sandbox_executor_reconciliation",
+        retry,
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "reconcile_executor_terminal_result",
+        lambda **_kwargs: pytest.fail("timed-out collection must not terminalize the Run"),
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "_release_reconciled_lease",
+        lambda *_args, **_kwargs: pytest.fail("timed-out collection must not release the lease"),
+    )
+
+    processed = await reconcile_pending_executor_terminals_once(worker_id="worker-a")
+
+    assert processed == 1
+    assert collection_cancelled.is_set()
+    assert transaction_active is False
+    assert len(retried) == 1
+    assert retried[0]["lease_id"] == "lease-a"
+    assert retried[0]["error"] == "TimeoutError"
+
+
+@pytest.mark.asyncio
 async def test_reconciler_scans_postgres_when_redis_wakeup_is_unavailable(monkeypatch):
     stop_event = __import__("asyncio").Event()
     calls = []

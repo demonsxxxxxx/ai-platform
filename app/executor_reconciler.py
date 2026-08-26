@@ -44,6 +44,7 @@ from app.worker import (
 
 _RECONCILIATION_BATCH_SIZE = 1
 _RECONCILIATION_CLAIM_STALE_SECONDS = 300
+_RECONCILIATION_WORK_TIMEOUT_SECONDS = 240.0
 _RECONCILIATION_IDLE_SECONDS = 30.0
 _EXECUTOR_HEARTBEAT_STALE_SECONDS = 45
 _EXECUTOR_PROBE_FAILURE_LIMIT = 3
@@ -628,6 +629,9 @@ async def reconcile_pending_executor_terminals_once(
     limit: int = _RECONCILIATION_BATCH_SIZE,
 ) -> int:
     claim_token = uuid.uuid4().hex
+    reconciliation_deadline = (
+        asyncio.get_running_loop().time() + _RECONCILIATION_WORK_TIMEOUT_SECONDS
+    )
     async with transaction() as conn:
         claimed = await sandbox_lease_repository.claim_sandbox_executor_reconciliations(
             conn,
@@ -640,55 +644,60 @@ async def reconcile_pending_executor_terminals_once(
     adapter_registry = registry or AdapterRegistry()
     for lease_row in claimed:
         try:
-            async with transaction() as conn:
-                claimed_current = await sandbox_lease_repository.has_sandbox_executor_reconciliation_claim(
-                    conn,
-                    lease_id=str(lease_row["id"]),
-                    claim_token=claim_token,
-                )
-                if not claimed_current:
-                    raise RuntimeError("executor_reconciliation_claim_lost")
-                run = await repositories.get_run(
-                    conn,
-                    tenant_id=str(lease_row["tenant_id"]),
-                    run_id=str(lease_row["run_id"]),
-                    for_update=False,
-                )
-            if run is None:
-                raise ValueError("executor_reconciliation_run_missing")
-            if str(run.get("status") or "") in _TERMINAL_RUN_STATUSES:
-                context, _terminal_result, run_payload = _context_and_payload(lease_row)
-                request = _reconciliation_request(lease_row, run_payload)
-                workspace = SandboxWorkspaceManager().prepare(request)
-                lease = container_lease_from_persisted_row(lease_row)
-                if lease is None:
-                    raise _permanent_reconciliation_error(
-                        "executor_reconciliation_runtime_handle_invalid"
+            async with asyncio.timeout_at(reconciliation_deadline):
+                async with transaction() as conn:
+                    claimed_current = (
+                        await sandbox_lease_repository.has_sandbox_executor_reconciliation_claim(
+                            conn,
+                            lease_id=str(lease_row["id"]),
+                            claim_token=claim_token,
+                        )
                     )
-                lease = lease.model_copy(update={"workspace_host_path": workspace.workspace_host_path})
-                provider = _container_provider_for_lease(lease)
-            else:
-                result, provider, lease = await _collect_workspace_and_convert_result(
+                    if not claimed_current:
+                        raise RuntimeError("executor_reconciliation_claim_lost")
+                    run = await repositories.get_run(
+                        conn,
+                        tenant_id=str(lease_row["tenant_id"]),
+                        run_id=str(lease_row["run_id"]),
+                        for_update=False,
+                    )
+                if run is None:
+                    raise ValueError("executor_reconciliation_run_missing")
+                if str(run.get("status") or "") in _TERMINAL_RUN_STATUSES:
+                    context, _terminal_result, run_payload = _context_and_payload(lease_row)
+                    request = _reconciliation_request(lease_row, run_payload)
+                    workspace = SandboxWorkspaceManager().prepare(request)
+                    lease = container_lease_from_persisted_row(lease_row)
+                    if lease is None:
+                        raise _permanent_reconciliation_error(
+                            "executor_reconciliation_runtime_handle_invalid"
+                        )
+                    lease = lease.model_copy(
+                        update={"workspace_host_path": workspace.workspace_host_path}
+                    )
+                    provider = _container_provider_for_lease(lease)
+                else:
+                    result, provider, lease = await _collect_workspace_and_convert_result(
+                        lease_row,
+                        registry=adapter_registry,
+                        claim_token=claim_token,
+                    )
+                    await reconcile_executor_terminal_result(
+                        lease_row=lease_row,
+                        result=result,
+                        registry=adapter_registry,
+                        worker_id=worker_id,
+                        claim_token=claim_token,
+                        transaction_factory=transaction,
+                        v4_capabilities=v4_capabilities,
+                    )
+                await _release_reconciled_lease(
                     lease_row,
-                    registry=adapter_registry,
-                    claim_token=claim_token,
-                )
-                await reconcile_executor_terminal_result(
-                    lease_row=lease_row,
-                    result=result,
-                    registry=adapter_registry,
-                    worker_id=worker_id,
+                    provider=provider,
+                    lease=lease,
                     claim_token=claim_token,
                     transaction_factory=transaction,
-                    v4_capabilities=v4_capabilities,
                 )
-            await _release_reconciled_lease(
-                lease_row,
-                provider=provider,
-                lease=lease,
-                claim_token=claim_token,
-                transaction_factory=transaction,
-            )
         except asyncio.CancelledError:
             await _release_claimed_terminal_batch(claimed, claim_token)
             raise
