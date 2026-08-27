@@ -11,10 +11,14 @@ Use the structure:
 docs/release-evidence/<gate>/<commit_sha>/<evidence_id>.json
 ```
 
-An entry uses `ai-platform.release-evidence-entry.v1`, is added only after
-redaction and review, and contains no credentials, raw environment values,
+An entry uses `ai-platform.release-evidence-entry.v1`, is added only when a
+formal release, controlled runtime acceptance, or durable audit requirement
+needs a reviewed record, and contains no credentials, raw environment values,
 private executor payloads, storage keys, sandbox work directories, or absolute
-private paths. Evidence ingestion and safe-index behavior are implemented by:
+private paths. Ordinary pull requests, local tests, CI jobs, and review comments
+store their transient output in GitHub checks or Actions artifacts instead of
+adding repository evidence. Evidence ingestion and safe-index behavior are
+implemented by:
 
 ```powershell
 python tools/release_evidence_readiness.py --format json

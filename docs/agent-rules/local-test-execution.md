@@ -9,8 +9,7 @@ Delivery authority: [`github-issue-pr-workflow.md`](github-issue-pr-workflow.md)
 
 This procedure makes local pytest execution bounded, observable, and tied to
 one explicit Git worktree. It does not select tests automatically and does not
-replace required CI, exact-ref pre-push readiness, deployment checks, or
-External Acceptance.
+replace required CI, deployment checks, or External Acceptance.
 
 The only direct-pytest exception is the runner's introducing change. That
 bootstrap records the exact command and target worktree, first creates
@@ -91,8 +90,8 @@ observed risk:
 4. **Integration.** Run a real dependency only in its owned local or CI lane.
 5. **Static checks.** Run only relevant compile, Ruff, schema, TypeScript, or
    frontend checks.
-6. **Fixed-SHA readiness.** After an authorized commit, invoke the immutable
-   authority procedure in `github-issue-pr-workflow.md`.
+6. **Required CI.** Push the candidate only after the bounded local checks pass;
+   GitHub owns trusted-base governance and exact candidate verification.
 
 Do not run full-repository pytest as a routine confidence step. It requires an
 explicit user decision tied to a named risk and does not replace focused proof.
@@ -178,4 +177,4 @@ Do not:
 - rerun the same hanging command without first narrowing the active node;
 - infer success from partial output or a terminated parent process;
 - keep an invalid test as a permanent deselection; or
-- use this local helper as a substitute for immutable pre-push authority.
+- use local evidence as a substitute for required CI.

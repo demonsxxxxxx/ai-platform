@@ -121,7 +121,6 @@ BACKEND_TEST_SHARDS = {
         "tests/test_architecture_governance.py",
         "tests/test_backend_ci_workflow.py",
         "tests/test_code_governance.py",
-        "tests/test_pr_review_record.py",
         "tests/test_source_authority_docs.py",
         "tests/test_ci_image_scope.py",
         "tests/test_require_zero_junit_skips.py",
@@ -130,9 +129,6 @@ BACKEND_TEST_SHARDS = {
         "tests/test_packaging_publish_workflow.py",
         "tests/test_trivy_failure_evidence.py",
         "tests/test_release_image_manifest.py",
-    ),
-    "release-governance-readiness": (
-        "tests/test_pre_push_readiness.py",
     ),
     "release-governance-authority": (
         "tests/test_s72_atomic_recovery_authority.py",
@@ -227,7 +223,6 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
             "redis://127.0.0.1:6379/15",
         ),
         "release-governance-policy": ("", ""),
-        "release-governance-readiness": ("", ""),
         "release-governance-authority": ("", ""),
     }
     assert actual_postgres == {
@@ -247,11 +242,10 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
             "postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform",
         ),
         "release-governance-policy": ("", ""),
-        "release-governance-readiness": ("", ""),
         "release-governance-authority": ("", ""),
     }
     all_selectors = [selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors]
-    assert len(all_selectors) == len(set(all_selectors)) == 71
+    assert len(all_selectors) == len(set(all_selectors)) == 69
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job
@@ -290,29 +284,6 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert 'test "$VALIDATION_RESULT" = "success"' in required_job
     assert 'test "$BACKEND_TESTS_RESULT" = "success"' in required_job
     assert "if: ${{ always() }}" in required_job
-
-
-def test_code_governance_authority_uses_its_sibling_pr_review_record_validator():
-    workflow = WORKFLOW.read_text(encoding="utf-8")
-    validation_job = _workflow_job_block(workflow, "backend-validation")
-    authority = CODE_GOVERNANCE.read_text(encoding="utf-8")
-
-    assert "validate_pr_review_record.py" not in validation_job
-    assert (
-        'os.environ.get("GITHUB_EVENT_NAME") not in {"pull_request", "pull_request_target"}'
-        in authority
-    )
-    assert 'os.environ.get("GITHUB_EVENT_PATH")' in authority
-    assert 'Path(__file__).resolve().with_name("validate_pr_review_record.py")' in authority
-    assert '"-P",' in authority
-    assert '"--expected-head",' in authority
-    assert "review_record_event_missing" in authority
-    assert "review_record_authority_context_invalid" in authority
-    assert "review_record_validator_unavailable" in authority
-    assert "review_record_invalid" in authority
-    assert "tests/test_code_governance.py" in workflow
-    assert "tests/test_pr_review_record.py" in workflow
-    assert "tests/test_source_authority_docs.py" in workflow
 
 
 def test_agent_skill_contract_job_is_bounded_and_required():
@@ -1171,24 +1142,24 @@ def test_backend_image_job_builds_only_affected_pull_request_candidates_and_chec
     assert "IMAGE_DISPOSITION" not in required_job
 
 
-def test_backend_required_contract_preserves_high_risk_design_triggers():
-    guidance = "\n".join(
-        [
-            AGENT_RULES.read_text(encoding="utf-8"),
-            ISSUE_WORKFLOW.read_text(encoding="utf-8"),
-        ]
+def test_backend_required_contract_preserves_high_risk_design_boundaries():
+    guidance = " ".join(
+        "\n".join(
+            [
+                AGENT_RULES.read_text(encoding="utf-8"),
+                ISSUE_WORKFLOW.read_text(encoding="utf-8"),
+            ]
+        ).split()
     )
 
-    for trigger in [
-        "security",
-        "auth",
-        "tenant isolation",
-        "release",
-        "deployment",
-        "runtime",
-    ]:
-        assert re.search(
-            r"Create a separate design for.{0,160}" + re.escape(trigger),
-            guidance,
-            re.IGNORECASE | re.DOTALL,
-        ), trigger
+    assert "Use a bounded Change Contract for goal-sized work" in guidance
+    for boundary in (
+        "authentication, authorization, tenant or workspace isolation",
+        "secrets, credentials, or ordinary-user projection redaction",
+        "destructive lifecycle, retention, schema migration",
+        "sandbox, command, tool, Skill, MCP, or executor admission",
+        "public API, callback, event, or streaming protocols",
+        "workflow, image, release, deployment, or rollback authority",
+    ):
+        assert boundary in guidance
+    assert "A separate ADR or design is required only" in guidance
