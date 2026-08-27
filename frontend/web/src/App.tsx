@@ -257,6 +257,15 @@ function ModelsPage() {
   return <AppContent key="models" activeTab="models" />;
 }
 
+function RunsPage() {
+  useSEO({
+    title: "seo.runs.title",
+    description: "seo.runs.description",
+    path: "/runs",
+  });
+  return <AppContent key="runs" activeTab="runs" />;
+}
+
 function NotificationsPage() {
   useSEO({
     title: "seo.notifications.title",
@@ -477,6 +486,14 @@ function App() {
               element={
                 <ProtectedRoute requireAdmin redirectTo={APP_ROUTE_PATHS.agentMarket}>
                   <ModelsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path={APP_ROUTE_PATHS.runs}
+              element={
+                <ProtectedRoute requireAdmin redirectTo={APP_ROUTE_PATHS.agentMarket}>
+                  <RunsPage />
                 </ProtectedRoute>
               }
             />

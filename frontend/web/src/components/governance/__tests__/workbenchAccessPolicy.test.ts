@@ -26,6 +26,7 @@ const adminOnlyItems: WorkbenchAccessKey[] = [
   "roles",
   "settings",
   "models",
+  "runs",
   "feedback",
 ];
 
@@ -52,6 +53,8 @@ test("admin identity is fail closed unless the signed projection is explicitly t
 
 test("path policy covers nested management URLs and leaves public unknown paths alone", () => {
   assert.equal(canAccessWorkbenchPath(ordinaryUser, "/users"), false);
+  assert.equal(canAccessWorkbenchPath(ordinaryUser, "/runs"), false);
+  assert.equal(canAccessWorkbenchPath(adminUser, "/runs"), true);
   assert.equal(canAccessWorkbenchPath(ordinaryUser, "/mcp"), true);
   assert.equal(canAccessWorkbenchPath(ordinaryUser, "/agent-builder"), true);
   assert.equal(canAccessWorkbenchPath(ordinaryUser, "/shared/example"), true);
