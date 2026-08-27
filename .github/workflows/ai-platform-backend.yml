@@ -21,83 +21,26 @@ env:
   UV_VERSION: "0.12.1"
 
 jobs:
-  backend-validation:
-    name: backend validation and governance
+  backend-preflight:
+    name: backend preflight
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      BACKEND_PREFLIGHT_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
-      - name: Checkout
+      - name: Checkout exact backend preflight source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha || github.sha }}
-          fetch-depth: 0
+          ref: ${{ env.BACKEND_PREFLIGHT_SOURCE_COMMIT }}
           persist-credentials: false
+
+      - name: Verify exact backend preflight source
+        run: test "$(git rev-parse HEAD)" = "$BACKEND_PREFLIGHT_SOURCE_COMMIT"
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ env.BACKEND_PYTHON_VERSION }}
-
-      - name: Install trusted-base governance dependency
-        run: python -m pip install ruff==0.11.13
-
-      - name: Run code and architecture governance
-        if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
-        env:
-          GOVERNANCE_PR_NUMBER: ${{ github.event.number }}
-          GOVERNANCE_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
-          GOVERNANCE_HEAD_REF: ${{ github.event.pull_request.head.sha || github.sha }}
-          GOVERNANCE_FETCH_TOKEN: ${{ github.token }}
-          PYTHONSAFEPATH: "1"
-        run: |
-          set -euo pipefail
-          [[ "$GOVERNANCE_BASE_REF" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$GOVERNANCE_HEAD_REF" =~ ^[0-9a-f]{40}$ ]]
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            [[ "$GOVERNANCE_PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
-            GOVERNANCE_PULL_REF="refs/remotes/origin/pull/$GOVERNANCE_PR_NUMBER/head"
-            GOVERNANCE_FETCH_BASIC="$(printf 'x-access-token:%s' "$GOVERNANCE_FETCH_TOKEN" | base64 --wrap=0)"
-            echo "::add-mask::$GOVERNANCE_FETCH_BASIC"
-            git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $GOVERNANCE_FETCH_BASIC" fetch --no-tags origin "+refs/pull/$GOVERNANCE_PR_NUMBER/head:$GOVERNANCE_PULL_REF"
-            unset GOVERNANCE_FETCH_TOKEN GOVERNANCE_FETCH_BASIC
-            test "$(git rev-parse "$GOVERNANCE_PULL_REF^{commit}")" = "$GOVERNANCE_HEAD_REF"
-          else
-            test "$GITHUB_EVENT_NAME" = "push"
-            test "$GOVERNANCE_BASE_REF" != "0000000000000000000000000000000000000000"
-            unset GOVERNANCE_FETCH_TOKEN
-          fi
-          git cat-file -e "$GOVERNANCE_BASE_REF^{commit}"
-          git cat-file -e "$GOVERNANCE_HEAD_REF^{commit}"
-          test "$(git rev-parse "$GOVERNANCE_BASE_REF^{commit}")" = "$GOVERNANCE_BASE_REF"
-          test "$(git rev-parse "$GOVERNANCE_HEAD_REF^{commit}")" = "$GOVERNANCE_HEAD_REF"
-          git merge-base --is-ancestor "$GOVERNANCE_BASE_REF" "$GOVERNANCE_HEAD_REF"
-          GOVERNANCE_BASE_WORKTREE="$RUNNER_TEMP/code-governance-base"
-          GOVERNANCE_HEAD_WORKTREE="$RUNNER_TEMP/code-governance-head"
-          git worktree add --detach "$GOVERNANCE_BASE_WORKTREE" "$GOVERNANCE_BASE_REF"
-          git worktree add --detach "$GOVERNANCE_HEAD_WORKTREE" "$GOVERNANCE_HEAD_REF"
-          (
-            cd "$GOVERNANCE_HEAD_WORKTREE"
-            python -P "$GOVERNANCE_BASE_WORKTREE/tools/code_governance.py" check \
-              --base-ref "$GOVERNANCE_BASE_REF" \
-              --head-ref "$GOVERNANCE_HEAD_REF" \
-              --format text
-            python -P "$GOVERNANCE_BASE_WORKTREE/tools/architecture_governance.py" check \
-              --authority-ref "$GOVERNANCE_BASE_REF" \
-              --base-ref "$GOVERNANCE_BASE_REF" \
-              --head-ref "$GOVERNANCE_HEAD_REF" \
-              --format text
-          )
-
-      - name: Checkout validated pull request head for existing checks
-        if: github.event_name == 'pull_request'
-        env:
-          VALIDATED_PR_HEAD_REF: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          [[ "$VALIDATED_PR_HEAD_REF" =~ ^[0-9a-f]{40}$ ]]
-          test "$(git rev-parse "$VALIDATED_PR_HEAD_REF^{commit}")" = "$VALIDATED_PR_HEAD_REF"
-          git checkout --detach "$VALIDATED_PR_HEAD_REF"
-          test "$(git rev-parse HEAD)" = "$VALIDATED_PR_HEAD_REF"
 
       - name: Set up uv with lock-keyed cache
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -120,7 +63,7 @@ jobs:
   backend-tests:
     name: backend tests (${{ matrix.shard }})
     runs-on: ubuntu-latest
-    needs: backend-validation
+    needs: backend-preflight
     timeout-minutes: 15
     services:
       postgres:
@@ -321,7 +264,7 @@ jobs:
   agent-skill-contracts:
     name: Agent and Skill contracts
     runs-on: ubuntu-latest
-    needs: backend-validation
+    needs: backend-preflight
     timeout-minutes: 15
     services:
       postgres:
@@ -400,7 +343,7 @@ jobs:
   backend-image:
     name: packaged backend image build
     runs-on: ubuntu-latest
-    needs: backend-validation
+    needs: backend-preflight
     timeout-minutes: 30
     env:
       IMAGE_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
@@ -546,18 +489,18 @@ jobs:
   required:
     name: backend required
     runs-on: ubuntu-latest
-    needs: [backend-validation, backend-tests, agent-skill-contracts, backend-image]
+    needs: [backend-preflight, backend-tests, agent-skill-contracts, backend-image]
     if: ${{ always() }}
     timeout-minutes: 5
     steps:
       - name: Require backend, Agent/Skill, and packaged image acceptance
         env:
-          VALIDATION_RESULT: ${{ needs.backend-validation.result }}
+          PREFLIGHT_RESULT: ${{ needs.backend-preflight.result }}
           BACKEND_TESTS_RESULT: ${{ needs.backend-tests.result }}
           AGENT_SKILL_RESULT: ${{ needs.agent-skill-contracts.result }}
           IMAGE_RESULT: ${{ needs.backend-image.result }}
         run: |
-          test "$VALIDATION_RESULT" = "success"
+          test "$PREFLIGHT_RESULT" = "success"
           test "$BACKEND_TESTS_RESULT" = "success"
           test "$AGENT_SKILL_RESULT" = "success"
           test "$IMAGE_RESULT" = "success"

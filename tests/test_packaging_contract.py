@@ -108,7 +108,7 @@ def test_packaged_image_jobs_have_no_publish_deploy_or_secret_authority():
         assert "paths:" not in workflow.split("workflow_dispatch:", 1)[0]
 
     backend_image = backend.split("  backend-image:", 1)[1].split("  required:", 1)[0]
-    backend_validation = backend.split("  backend-validation:", 1)[1].split(
+    backend_preflight = backend.split("  backend-preflight:", 1)[1].split(
         "  backend-tests:", 1
     )[0]
     backend_tests = backend.split("  backend-tests:", 1)[1].split(
@@ -121,7 +121,7 @@ def test_packaged_image_jobs_have_no_publish_deploy_or_secret_authority():
         0
     ]
     for backend_job in (
-        backend_validation,
+        backend_preflight,
         backend_tests,
         agent_skill_contracts,
         backend_image,
