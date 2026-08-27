@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib.util
 import json
 import re
@@ -11,15 +10,11 @@ import subprocess
 import sys
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-REPORT_SCHEMA_VERSION = "ai-platform.code-governance-report.v1"
-EXCEPTION_SCHEMA_VERSION = "ai-platform.code-governance-exception.v2"
-EXCEPTION_PATH = ".code-governance-exception.json"
+REPORT_SCHEMA_VERSION = "ai-platform.code-governance-report.v2"
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
-SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 
 PRODUCTION_FILE_LIMIT = 12
 PRODUCTION_NET_LOC_LIMIT = 800
@@ -40,11 +35,10 @@ DOCUMENTATION_SUFFIXES = frozenset({
     ".bmp", ".gif", ".jpeg", ".jpg", ".md", ".pdf", ".png", ".rst",
     ".svg", ".txt", ".webp",
 })
-NON_EXEMPTIBLE_CODES = {"ruff_failed", "ruff_unavailable"}
 
 
 class GovernanceError(RuntimeError):
-    """Describe an input, repository, or exception-contract failure."""
+    """Describe an input, repository, or evaluation failure."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -74,14 +68,6 @@ class _CommandRunner:
             errors="replace",
         )
         return _CommandResult(completed.returncode, completed.stdout, completed.stderr)
-
-    def run_bytes(self, command: Sequence[str], *, cwd: Path) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.run(
-            list(command),
-            cwd=cwd,
-            check=False,
-            capture_output=True,
-        )
 
 
 @dataclass(frozen=True)
@@ -203,10 +189,8 @@ class Evaluation:
     changes: tuple[_ChangedFile, ...]
     metrics: dict[str, Any]
     ruff: dict[str, Any]
-    exception: dict[str, Any]
     violations: tuple[Violation, ...]
     advisories: tuple[Violation, ...]
-    exempted_violations: tuple[Violation, ...]
 
     @property
     def exit_code(self) -> int:
@@ -217,8 +201,6 @@ class Evaluation:
             "base_ref": self.base_ref,
             "advisories": [item.as_dict() for item in self.advisories],
             "changes": [change.as_dict() for change in self.changes],
-            "exception": self.exception,
-            "exempted_violations": [item.as_dict() for item in self.exempted_violations],
             "head_ref": self.head_ref,
             "metrics": self.metrics,
             "mode": self.mode,
@@ -300,40 +282,6 @@ class _GitChangeReader:
             changes=tuple(sorted(changes, key=lambda item: (item.path, item.old_path or "", item.status))),
         )
 
-    def load_exception(self, head: str) -> dict[str, Any] | None:
-        probe = self.runner.run(["git", "cat-file", "-e", f"{head}:{EXCEPTION_PATH}"], cwd=self.repo_root)
-        if probe.returncode != 0:
-            return None
-        content = self._git("show", f"{head}:{EXCEPTION_PATH}").stdout
-        try:
-            return json.loads(content)
-        except json.JSONDecodeError as exc:
-            raise GovernanceError("invalid_exception", f"{EXCEPTION_PATH} is not valid JSON: {exc.msg}") from exc
-
-    def exception_scope_sha256(self, base: str, head: str) -> str:
-        """Bind an exception to every non-exception tree change in the exact range."""
-
-        command = (
-            "git",
-            "-c",
-            "core.quotepath=false",
-            "diff",
-            "--raw",
-            "--no-abbrev",
-            "-z",
-            "--no-renames",
-            base,
-            head,
-            "--",
-            ".",
-            f":(exclude){EXCEPTION_PATH}",
-        )
-        scope = self.runner.run_bytes(command, cwd=self.repo_root)
-        if scope.returncode != 0:
-            message = scope.stderr.decode("utf-8", errors="replace").strip()
-            raise GovernanceError("git_failed", message or "git diff failed")
-        return hashlib.sha256(scope.stdout).hexdigest()
-
     def _resolve_full_commit(self, value: str, label: str) -> str:
         if FULL_SHA.fullmatch(value) is None:
             raise GovernanceError("invalid_ref", f"{label} must be a full 40-hex commit id")
@@ -363,18 +311,16 @@ class _GitChangeReader:
 
 
 class CodeGovernanceEvaluator:
-    """Hide Git, classification, size, exception, and Ruff mechanics behind evaluate()."""
+    """Hide Git, classification, size, and Ruff mechanics behind evaluate()."""
 
     def __init__(
         self,
         repo_root: Path,
         *,
         runner: _CommandRunner | None = None,
-        today: date | None = None,
     ) -> None:
         self._repo_root = repo_root.resolve()
         self._runner = runner or _CommandRunner()
-        self._today = today or datetime.now(UTC).date()
         self._git_reader = _GitChangeReader(self._repo_root, self._runner)
 
     def evaluate(self, base_ref: str, head_ref: str) -> Evaluation:
@@ -389,32 +335,17 @@ class CodeGovernanceEvaluator:
 
         ordered = _sort_violations(violations)
         ordered_advisories = _sort_violations(advisories)
-        exception_contract = self._git_reader.load_exception(git_range.head)
-        if exception_contract is not None:
-            _validate_exception_payload(exception_contract, self._today)
-            _validate_exception_candidate(
-                exception_contract["candidate"],
-                base_ref=git_range.base,
-                scope_sha256=self._git_reader.exception_scope_sha256(git_range.base, git_range.head),
-            )
-        active, exempted, exception_summary = self._apply_exception(
-            ordered,
-            ordered_advisories,
-            exception_contract,
-        )
         mode = _evaluation_mode(changes)
         return Evaluation(
             base_ref=git_range.base,
             head_ref=git_range.head,
-            status="pass" if not active else "violation",
+            status="pass" if not ordered else "violation",
             mode=mode,
             changes=changes,
             metrics=metrics,
             ruff=ruff,
-            exception=exception_summary,
-            violations=tuple(active),
+            violations=tuple(ordered),
             advisories=tuple(ordered_advisories),
-            exempted_violations=tuple(exempted),
         )
 
     def _assert_repository(self) -> None:
@@ -614,43 +545,6 @@ class CodeGovernanceEvaluator:
             ),
         )
 
-    def _apply_exception(
-        self,
-        violations: Sequence[Violation],
-        advisories: Sequence[Violation],
-        payload: dict[str, Any] | None,
-    ) -> tuple[list[Violation], list[Violation], dict[str, Any]]:
-        if payload is None:
-            return list(violations), [], {"path": EXCEPTION_PATH, "status": "absent"}
-        requested = {(item["code"], item["path"]) for item in payload["violations"]}
-        blocked = sorted(code for code, _path in requested if code in NON_EXEMPTIBLE_CODES)
-        if blocked:
-            raise GovernanceError("invalid_exception", f"non-exemptible violation codes requested: {', '.join(blocked)}")
-        exempted = [item for item in violations if (item.code, item.path) in requested]
-        active = [item for item in violations if (item.code, item.path) not in requested]
-        acknowledged_advisories = [
-            item for item in advisories if (item.code, item.path) in requested
-        ]
-        matched = {(item.code, item.path) for item in exempted}
-        matched.update((item.code, item.path) for item in acknowledged_advisories)
-        unused = sorted(requested - matched, key=lambda item: (item[0], item[1] or ""))
-        if unused:
-            rendered = ", ".join(f"{code}:{path or '<global>'}" for code, path in unused)
-            raise GovernanceError("invalid_exception", f"exception entries must match current violations exactly: {rendered}")
-        summary = {
-            "candidate": payload["candidate"],
-            "acknowledged_advisories": [
-                item.as_dict() for item in acknowledged_advisories
-            ],
-            "expires_on": payload["expires_on"],
-            "owner": payload["owner"],
-            "path": EXCEPTION_PATH,
-            "reason": payload["reason"],
-            "schema_version": payload["schema_version"],
-            "status": "applied",
-        }
-        return active, exempted, summary
-
 
 def _parse_name_status(output: str) -> list[tuple[str, str | None, str | None]]:
     tokens = iter(filter(None, output.split("\0")))
@@ -712,7 +606,7 @@ def _is_test_path(path: str) -> bool:
 
 def _is_production_path(path: str) -> bool:
     pure = PurePosixPath(path)
-    if path == EXCEPTION_PATH or _is_test_path(path):
+    if _is_test_path(path):
         return False
     if pure.parts and pure.parts[0].lower() in {"assets", "docs"}:
         return False
@@ -792,70 +686,6 @@ def _policy_as_dict() -> dict[str, Any]:
     }
 
 
-def _validate_exception_payload(payload: Any, today: date) -> None:
-    if not isinstance(payload, dict):
-        raise GovernanceError("invalid_exception", "exception payload must be a JSON object")
-    expected = {"schema_version", "candidate", "expires_on", "owner", "reason", "violations"}
-    if set(payload) != expected:
-        raise GovernanceError("invalid_exception", f"exception keys must be exactly: {', '.join(sorted(expected))}")
-    if payload["schema_version"] != EXCEPTION_SCHEMA_VERSION:
-        raise GovernanceError("invalid_exception", f"schema_version must equal {EXCEPTION_SCHEMA_VERSION}")
-    for key in ("owner", "reason"):
-        if not isinstance(payload[key], str) or not payload[key].strip():
-            raise GovernanceError("invalid_exception", f"{key} must be a non-empty string")
-    expiry = _exception_expiry(payload["expires_on"])
-    if expiry < today:
-        raise GovernanceError("invalid_exception", "exception has expired")
-    entries = payload["violations"]
-    if not isinstance(entries, list) or not entries:
-        raise GovernanceError("invalid_exception", "violations must be a non-empty list")
-    seen: set[tuple[str, str | None]] = set()
-    for entry in entries:
-        key = _exception_key(entry)
-        if key in seen:
-            raise GovernanceError("invalid_exception", "exception violation entries must be unique")
-        seen.add(key)
-
-
-def _validate_exception_candidate(candidate: Any, *, base_ref: str, scope_sha256: str) -> None:
-    if not isinstance(candidate, dict) or set(candidate) != {"base_ref", "scope_sha256"}:
-        raise GovernanceError(
-            "invalid_exception",
-            "candidate binding must contain exactly base_ref and scope_sha256",
-        )
-    candidate_base = candidate["base_ref"]
-    candidate_scope = candidate["scope_sha256"]
-    if not isinstance(candidate_base, str) or FULL_SHA.fullmatch(candidate_base) is None or candidate_base != candidate_base.lower():
-        raise GovernanceError("invalid_exception", "candidate base_ref must be a lowercase full 40-hex commit id")
-    if not isinstance(candidate_scope, str) or SHA256_HEX.fullmatch(candidate_scope) is None:
-        raise GovernanceError("invalid_exception", "candidate scope_sha256 must be a lowercase 64-hex digest")
-    if candidate_base != base_ref or candidate_scope != scope_sha256:
-        raise GovernanceError(
-            "invalid_exception",
-            "exception candidate binding does not match the evaluated base and non-exception patch",
-        )
-
-
-def _exception_expiry(value: Any) -> date:
-    if not isinstance(value, str):
-        raise GovernanceError("invalid_exception", "expires_on must be an ISO date string")
-    try:
-        return date.fromisoformat(value)
-    except ValueError as exc:
-        raise GovernanceError("invalid_exception", "expires_on must be an ISO date string") from exc
-
-
-def _exception_key(entry: Any) -> tuple[str, str | None]:
-    if not isinstance(entry, dict) or set(entry) != {"code", "path"}:
-        raise GovernanceError("invalid_exception", "each violation exception must contain exactly code and path")
-    code, path = entry["code"], entry["path"]
-    if not isinstance(code, str) or not code.strip():
-        raise GovernanceError("invalid_exception", "exception violation code must be a non-empty string")
-    if path is not None and (not isinstance(path, str) or not path.strip() or "\\" in path):
-        raise GovernanceError("invalid_exception", "exception violation path must be null or a non-empty POSIX path")
-    return code, path
-
-
 def _command_failure(label: str, result: _CommandResult) -> str:
     detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
     return f"{label} failed: {detail}"
@@ -898,9 +728,6 @@ def _render_text(evaluation: Evaluation) -> str:
     lines.extend(_violation_text(item) for item in evaluation.advisories)
     lines.append("violations:" if evaluation.violations else "violations: none")
     lines.extend(_violation_text(item) for item in evaluation.violations)
-    if evaluation.exempted_violations:
-        lines.append("exempted violations:")
-        lines.extend(_violation_text(item) for item in evaluation.exempted_violations)
     return "\n".join(lines)
 
 
