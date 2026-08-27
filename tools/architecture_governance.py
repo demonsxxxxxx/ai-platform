@@ -2304,6 +2304,14 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
                 function_child = direct_child(call, current)
                 if function_child in current.body:
                     return True
+            elif isinstance(current, ast.Lambda):
+                parent = parents.get(current)
+                if not (isinstance(parent, ast.Call) and parent.func is current):
+                    return True
+            elif isinstance(current, ast.GeneratorExp) and not is_within(
+                call, current.generators[0].iter
+            ):
+                return True
             current = parents.get(current)
         return False
 
