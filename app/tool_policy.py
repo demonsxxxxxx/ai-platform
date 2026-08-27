@@ -10,8 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.mcp.identifiers import is_safe_mcp_id
-from app.mcp.tool_references import is_valid_mcp_public_tool_name
+from app.mcp.api import is_safe_mcp_id, is_valid_mcp_public_tool_name
 
 RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
 

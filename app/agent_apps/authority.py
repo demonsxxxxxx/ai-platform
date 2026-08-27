@@ -15,7 +15,8 @@ from app.agent_apps.api import safe_agent_avatar_seed
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
-from app.mcp.tool_references import parse_mcp_tool_reference
+from app.mcp import api as mcp_api
+from app.mcp.api import parse_mcp_tool_reference
 from app.models import (
     AgentConversationIdentity,
     AgentProfileAdminProjection,
@@ -830,7 +831,7 @@ class AgentProfileAuthority:
                 ]
             )
             for server_id in server_ids:
-                server = await repositories.get_mcp_server_registry_entry(
+                server = await mcp_api.get_mcp_server_registry_entry(
                     conn,
                     tenant_id=principal.tenant_id,
                     name=server_id,

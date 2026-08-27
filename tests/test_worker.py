@@ -29,6 +29,8 @@ from app.executors.base import (
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
+from app.mcp.infrastructure import postgres as mcp_postgres
+from app.mcp.infrastructure import runtime as mcp_runtime
 from app.principal_authority import CURRENT_PRINCIPAL_DENIAL_REASON, PrincipalAuthorityDenied
 from app.repositories import (
     RepositoryConflictError,
@@ -206,14 +208,14 @@ async def test_worker_injects_current_jwt_into_existing_mcp_capability_plan(monk
         assert (tenant_id, server_name) == ("tenant-a", "gateway")
         return {"transport": "streamable_http", "credential_envelope": "sealed"}
 
-    monkeypatch.setattr(worker_module, "get_mcp_principal_jwt_store", lambda: JwtStore())
+    monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: JwtStore())
     monkeypatch.setattr(
-        worker_module.mcp_repository,
+        mcp_postgres,
         "get_mcp_server_runtime_target",
         runtime_target,
     )
     monkeypatch.setattr(
-        worker_module,
+        mcp_runtime,
         "open_mcp_server_credentials",
         lambda **_kwargs: (
             "https://gateway.example/mcp",
@@ -242,22 +244,6 @@ async def test_worker_injects_current_jwt_into_existing_mcp_capability_plan(monk
         source="company-login",
     )
 
-    configs = await worker_module._runtime_mcp_server_configs(
-        object(),
-        principal=principal,
-        tool_policy_subjects=[subject],
-    )
-
-    assert configs == {
-        "gateway": {
-            "type": "http",
-            "url": "https://gateway.example/mcp",
-            "headers": {
-                "X-Static-Key": "configured",
-                "JWT-Authorization": "Bearer current.jwt",
-            },
-        }
-    }
     payload = RunPayload(
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -272,9 +258,21 @@ async def test_worker_injects_current_jwt_into_existing_mcp_capability_plan(monk
         execution_kind=RUN_EXECUTION_KIND_HARNESS_CHAT,
         schema_version=RUN_PAYLOAD_SCHEMA_VERSION_V2,
     )
-    injected = worker_module._run_payload_with_mcp_server_configs(payload, configs)
+    injected = await mcp_runtime.attach_mcp_server_configs(
+        object(), principal=principal, run_payload=payload
+    )
+    expected_config = {
+        "gateway": {
+            "type": "http",
+            "url": "https://gateway.example/mcp",
+            "headers": {
+                "X-Static-Key": "configured",
+                "JWT-Authorization": "Bearer current.jwt",
+            },
+        }
+    }
     injected_subject = injected.input["_runtime_tool_policy_subjects"][0]
-    assert injected_subject["mcp_server_config"] == configs["gateway"]
+    assert injected_subject["mcp_server_config"] == expected_config["gateway"]
     assert "mcp_server_config" not in subject
 
     persisted = sandbox_reconciliation_payload(injected)
@@ -1230,7 +1228,7 @@ def default_cancel_not_requested(monkeypatch):
                 "risk_level": str(policy.get("risk_level") or "low"),
                 "allowed_tools": ["query"],
                 "transport_type": "streamable_http",
-                "endpoint": "https://mcp.example.test/v1",
+                "endpoint": "",
                 "auth_mode": "none",
             }
         return {
@@ -1245,7 +1243,7 @@ def default_cancel_not_requested(monkeypatch):
             "risk_level": "low",
             "allowed_tools": ["query"],
             "transport_type": "streamable_http",
-            "endpoint": "https://mcp.example.test/v1",
+            "endpoint": "",
             "auth_mode": "none",
         }
 
@@ -1260,9 +1258,13 @@ def default_cancel_not_requested(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(
-        "app.worker.repositories.get_mcp_tool_registry_entry",
+        "app.worker.mcp_api.get_mcp_tool_registry_entry",
         get_mcp_tool_registry_entry,
         raising=False,
+    )
+    monkeypatch.setattr(
+        "app.worker.mcp_api.mcp_runtime_metadata_usable",
+        mcp_postgres.mcp_runtime_metadata_usable,
     )
     monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log, raising=False)
 
@@ -2227,7 +2229,7 @@ async def test_registry_entry_returns_tenant_scoped_external_mcp_runtime_metadat
             assert "mcp_tools" not in query
             return Cursor()
 
-    entry = await repository_module.get_mcp_tool_registry_entry(
+    entry = await mcp_postgres.get_mcp_tool_registry_entry(
         Connection(), tenant_id="tenant-a", tool_id="corp-search::query"
     )
 
@@ -9358,7 +9360,7 @@ def _install_task6_worker_fakes(
         raising=False,
     )
     monkeypatch.setattr(
-        "app.worker.repositories.get_mcp_tool_registry_entry",
+        "app.worker.mcp_api.get_mcp_tool_registry_entry",
         get_mcp_tool_registry_entry,
         raising=False,
     )
@@ -9371,19 +9373,34 @@ def _install_task6_worker_fakes(
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
-    monkeypatch.setattr(worker_module, "get_mcp_principal_jwt_store", lambda: JwtStore())
+    monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: JwtStore())
     monkeypatch.setattr(
-        worker_module.mcp_repository,
+        mcp_postgres,
         "get_mcp_server_runtime_target",
         get_mcp_server_runtime_target,
     )
     monkeypatch.setattr(
-        worker_module,
+        mcp_runtime,
         "open_mcp_server_credentials",
         lambda **kwargs: (
             f"https://{kwargs['server_id']}.example/mcp",
             {"X-Static": "configured"},
         ),
+    )
+    monkeypatch.setattr(
+        worker_module.mcp_api,
+        "get_mcp_tool_registry_entry",
+        get_mcp_tool_registry_entry,
+    )
+    monkeypatch.setattr(
+        worker_module.mcp_api,
+        "mcp_runtime_metadata_usable",
+        mcp_postgres.mcp_runtime_metadata_usable,
+    )
+    monkeypatch.setattr(
+        worker_module.mcp_api,
+        "attach_mcp_server_configs",
+        mcp_runtime.attach_mcp_server_configs,
     )
 
     raw = base_payload(

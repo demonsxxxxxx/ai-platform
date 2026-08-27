@@ -28,8 +28,7 @@ from app.skills.release_policy import (
     validate_release_decision_payload,
 )
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
-from app.mcp.tool_references import assert_mcp_tool_reference
-
+from app.mcp.api import assert_mcp_tool_reference
 from app.validation import (
     MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
     assert_safe_id,

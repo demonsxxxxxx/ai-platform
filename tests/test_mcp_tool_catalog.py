@@ -4,15 +4,15 @@ import json
 import httpx
 import pytest
 
-from app.mcp import catalog
-from app.mcp.catalog import (
+from app.mcp.infrastructure import catalog
+from app.mcp.infrastructure.catalog import (
     MCP_TOOL_ANNOTATION_READ_ONLY,
     MCP_TOOL_ANNOTATION_UNKNOWN,
     MCP_TOOL_ANNOTATION_WRITE_CAPABLE,
     McpToolDiscoveryError,
     StreamableHttpMcpToolDiscoveryAdapter,
 )
-from app.mcp.errors import McpRuntimeContextError
+from app.mcp.domain.errors import McpRuntimeContextError
 
 
 async def _resolved(*addresses):

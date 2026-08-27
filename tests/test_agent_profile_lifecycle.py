@@ -201,7 +201,7 @@ async def test_profile_definition_validates_stable_mcp_reference_and_server_exis
         authorize_skill,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_mcp_server_registry_entry",
+        "app.agent_apps.authority.mcp_api.get_mcp_server_registry_entry",
         get_server,
     )
 

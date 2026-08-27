@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Response
@@ -20,27 +19,18 @@ from app.capability_distribution import (
 )
 from app.control_plane_contracts import sanitize_public_payload, standard_trace_id
 from app.db import transaction
-from app.mcp import repository as mcp_repository
-from app.mcp.catalog import (
-    StreamableHttpMcpToolDiscoveryAdapter,
-    read_gateway_cache_revisions,
-)
-from app.mcp.errors import McpRuntimeContextError
-from app.mcp.headers import normalize_static_mcp_headers
-from app.mcp.live_catalog import (
+from app.mcp import api as mcp_repository
+from app.mcp.api import (
     GatewayRevisions,
-    LiveMcpCatalogService,
     LiveMcpServerResult,
     MCP_CACHE_INVALIDATION_TOKEN_HEADER,
+    McpRuntimeContextError,
+    get_live_mcp_catalog,
+    get_mcp_principal_jwt_store,
+    normalize_static_mcp_headers,
+    seal_mcp_server_credentials,
     service_token_matches,
 )
-from app.mcp.runtime import (
-    McpContextPrincipal,
-    get_mcp_principal_jwt_store,
-    open_mcp_server_credentials,
-    seal_mcp_server_credentials,
-)
-from app.redis_client import get_redis_client
 from app.settings import get_settings
 from app.validation import assert_safe_id
 
@@ -51,44 +41,7 @@ MCP_LIFECYCLE_CONTRACT_VERSION = "ai-platform.mcp-lifecycle.v1"
 MCP_CHAT_DISCOVERY_CONCURRENCY = 8
 
 
-@dataclass(frozen=True)
-class _LiveMcpTarget:
-    endpoint: str
-    static_headers: dict[str, str]
-
-
-async def _resolve_live_mcp_target(tenant_id: str, server_id: str) -> _LiveMcpTarget:
-    async with transaction() as conn:
-        row = await mcp_repository.get_mcp_server_runtime_target(
-            conn,
-            tenant_id=tenant_id,
-            server_name=server_id,
-        )
-    if row is None:
-        raise McpRuntimeContextError("mcp_server_not_available", status_code=503)
-    endpoint, static_headers = open_mcp_server_credentials(
-        tenant_id=tenant_id,
-        server_id=server_id,
-        envelope=str(row.get("credential_envelope") or ""),
-    )
-    if not endpoint:
-        raise McpRuntimeContextError("mcp_server_not_available", status_code=503)
-    return _LiveMcpTarget(endpoint=endpoint, static_headers=static_headers)
-
-
-async def _read_live_mcp_revisions(endpoint: str) -> object | None:
-    return await read_gateway_cache_revisions(
-        endpoint,
-        service_token=str(get_settings().mcp_gateway_service_token),
-    )
-
-
-LIVE_MCP_CATALOG = LiveMcpCatalogService(
-    redis_provider=get_redis_client,
-    target_resolver=_resolve_live_mcp_target,
-    revision_reader=_read_live_mcp_revisions,
-    discovery=StreamableHttpMcpToolDiscoveryAdapter(),
-)
+LIVE_MCP_CATALOG = get_live_mcp_catalog()
 
 
 def _mcp_runtime_http_error(exc: McpRuntimeContextError) -> HTTPException:
@@ -513,9 +466,7 @@ async def _chat_tool_catalog(principal: AuthPrincipal) -> tuple[list[dict[str, A
     if not server_ids:
         return [], []
     try:
-        jwt = await get_mcp_principal_jwt_store().get(
-            McpContextPrincipal.from_principal(principal)
-        )
+        jwt = await get_mcp_principal_jwt_store().get(principal)
     except McpRuntimeContextError:
         return [], [{"label": server_id, "reason": "authorization_required"} for server_id in server_ids]
     semaphore = asyncio.Semaphore(MCP_CHAT_DISCOVERY_CONCURRENCY)
@@ -955,9 +906,7 @@ async def discover_mcp_tools(
     safe_name = _safe_name(name)
     await _public_server_access(principal=principal, name=safe_name)
     try:
-        jwt = await get_mcp_principal_jwt_store().get(
-            McpContextPrincipal.from_principal(principal)
-        )
+        jwt = await get_mcp_principal_jwt_store().get(principal)
     except McpRuntimeContextError as exc:
         raise _mcp_runtime_http_error(exc) from exc
     result = await LIVE_MCP_CATALOG.list_server_tools(

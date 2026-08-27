@@ -9,21 +9,21 @@ import pytest
 
 from app.main import create_app
 from app.auth import AuthPrincipal
-from app.mcp.catalog import McpToolDiscoveryError
-from app.mcp.errors import McpRuntimeContextError
-from app.mcp.headers import normalize_static_mcp_headers
-from app.mcp.live_catalog import (
+from app.mcp.application.live_catalog import (
     GatewayRevisions,
     LiveMcpCatalogService,
     LiveMcpServerResult,
     LiveMcpTool,
 )
-from app.mcp.runtime import (
+from app.mcp.domain.errors import McpRuntimeContextError
+from app.mcp.domain.headers import normalize_static_mcp_headers
+from app.mcp.domain.tool_references import build_mcp_tool_reference
+from app.mcp.infrastructure.catalog import McpToolDiscoveryError
+from app.mcp.infrastructure.runtime import (
     McpPrincipalJwtStore,
     open_mcp_server_credentials,
     seal_mcp_server_credentials,
 )
-from app.mcp.tool_references import build_mcp_tool_reference
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.settings import Settings
 
@@ -68,14 +68,14 @@ def _install_mcp_test_keyring(monkeypatch) -> None:
         mcp_encryption_keys_json=json.dumps({"current": "11" * 32}),
         mcp_encryption_current_key_id="current",
     )
-    monkeypatch.setattr("app.mcp.runtime.get_settings", lambda: settings)
+    monkeypatch.setattr("app.mcp.infrastructure.runtime.get_settings", lambda: settings)
 
 
 @pytest.mark.asyncio
 async def test_principal_jwt_store_encrypts_overwrites_and_uses_jwt_exp(monkeypatch):
     _install_mcp_test_keyring(monkeypatch)
     backend = _McpTestRedisBackend()
-    monkeypatch.setattr("app.mcp.runtime.get_redis_client", backend.client)
+    monkeypatch.setattr("app.mcp.infrastructure.runtime.get_redis_client", backend.client)
     now = [2_000_000_000]
     store = McpPrincipalJwtStore(clock=lambda: now[0])
     principal = AuthPrincipal(

@@ -23,8 +23,7 @@ from app.auth_sessions import (
     principal_snapshot,
 )
 from app.db import transaction
-from app.mcp.errors import McpRuntimeContextError
-from app.mcp.runtime import get_mcp_principal_jwt_store
+from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
 from app.models import AuthContextBootstrapRequest, LoginRequest, OAuthCallbackRequest, PrincipalResponse
 from app.principal_authority import (
     PrincipalAuthorityDenied,

@@ -59,14 +59,7 @@ from app.executors.base import (
 )
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
-from app.mcp import repository as mcp_repository
-from app.mcp.errors import McpRuntimeContextError
-from app.mcp.headers import MCP_JWT_AUTHORIZATION_HEADER
-from app.mcp.runtime import (
-    McpContextPrincipal,
-    get_mcp_principal_jwt_store,
-    open_mcp_server_credentials,
-)
+from app.mcp import api as mcp_api
 from app.principal_authority import (
     CURRENT_PRINCIPAL_DENIAL_REASON,
     resolve_current_principal,
@@ -1099,7 +1092,7 @@ def _mcp_capability_subject(tool: dict[str, Any], distribution: CapabilityAccess
     server_id = str(tool.get("server_id") or "")
     tool_id = str(tool.get("tool_id") or "")
     allowed_tools = tool.get("allowed_tools")
-    if not repositories.mcp_runtime_metadata_usable(tool):
+    if not mcp_api.mcp_runtime_metadata_usable(tool):
         return None
     tool_identifier = allowed_tools[0]
     subject: dict[str, Any] = {
@@ -1121,80 +1114,6 @@ def _mcp_capability_subject(tool: dict[str, Any], distribution: CapabilityAccess
     }
     subject.update(capability_id=tool_id)
     return subject
-
-
-async def _runtime_mcp_server_configs(
-    conn: Any,
-    *,
-    principal: AuthPrincipal,
-    tool_policy_subjects: object,
-) -> dict[str, dict[str, Any]]:
-    if not isinstance(tool_policy_subjects, list):
-        return {}
-    server_ids = sorted(
-        {
-            str(subject.get("mcp_server") or "")
-            for subject in tool_policy_subjects
-            if isinstance(subject, dict)
-            and str(subject.get("identity") or "").startswith("mcp__")
-            and str(subject.get("mcp_server") or "")
-            and str(subject.get("mcp_server") or "") != "ai-platform-context"
-        }
-    )
-    if not server_ids:
-        return {}
-    jwt = await get_mcp_principal_jwt_store().get(
-        McpContextPrincipal.from_principal(principal)
-    )
-    configs: dict[str, dict[str, Any]] = {}
-    for server_id in server_ids:
-        row = await mcp_repository.get_mcp_server_runtime_target(
-            conn,
-            tenant_id=principal.tenant_id,
-            server_name=server_id,
-        )
-        if row is None:
-            raise McpRuntimeContextError("mcp_server_not_available", status_code=503)
-        endpoint, static_headers = open_mcp_server_credentials(
-            tenant_id=principal.tenant_id,
-            server_id=server_id,
-            envelope=str(row.get("credential_envelope") or ""),
-        )
-        if not endpoint:
-            raise McpRuntimeContextError("mcp_server_not_available", status_code=503)
-        configs[server_id] = {
-            "type": "sse" if str(row.get("transport") or "").lower() == "sse" else "http",
-            "url": endpoint,
-            "headers": {
-                **static_headers,
-                MCP_JWT_AUTHORIZATION_HEADER: f"Bearer {jwt}",
-            },
-        }
-    return configs
-
-
-def _run_payload_with_mcp_server_configs(
-    run_payload: RunPayload,
-    configs: dict[str, dict[str, Any]],
-) -> RunPayload:
-    if not configs:
-        return run_payload
-    rebuilt_input = dict(run_payload.input)
-    raw_subjects = rebuilt_input.get("_runtime_tool_policy_subjects")
-    if not isinstance(raw_subjects, list):
-        raise McpRuntimeContextError("mcp_runtime_subjects_missing", status_code=503)
-    subjects: list[object] = []
-    for raw_subject in raw_subjects:
-        if not isinstance(raw_subject, dict):
-            subjects.append(raw_subject)
-            continue
-        subject = dict(raw_subject)
-        server_id = str(subject.get("mcp_server") or "")
-        if server_id in configs:
-            subject["mcp_server_config"] = configs[server_id]
-        subjects.append(subject)
-    rebuilt_input["_runtime_tool_policy_subjects"] = subjects
-    return replace(run_payload, input=rebuilt_input)
 
 
 def _canonical_authorized_mcp_scope(
@@ -1258,7 +1177,7 @@ async def _reauthorize_mcp_capabilities(
     allowed_entries: list[dict[str, Any]] = []
     tool_policy_audits: list[_WorkerToolPolicyAudit] = []
     for tool_id in requested_tool_ids:
-        tool = await repositories.get_mcp_tool_registry_entry(
+        tool = await mcp_api.get_mcp_tool_registry_entry(
             conn,
             tenant_id=run_identity["tenant_id"],
             tool_id=tool_id,
@@ -2549,46 +2468,22 @@ async def process_run_payload(
                     execution_spec,
                     attempt_id=attempt_id,
                 )
-                runtime_mcp_configs = await _runtime_mcp_server_configs(
-                    conn,
-                    principal=capability_authorization.principal,
-                    tool_policy_subjects=run_payload.input.get(
-                        "_runtime_tool_policy_subjects"
-                    ),
-                )
-                run_payload = _run_payload_with_mcp_server_configs(
-                    run_payload,
-                    runtime_mcp_configs,
-                )
-            except McpRuntimeContextError as exc:
-                terminal_after_transaction = await _fail_worker_pre_dispatch_error(
-                    conn,
-                    payload=payload,
-                    run_identity=run_identity,
-                    error_code=exc.code,
-                    error_message="MCP runtime configuration is unavailable",
-                    event_stage="authorization",
-                    event_payload={
-                        "visible_to_user": True,
-                        "severity": "error",
-                        "error_code": exc.code,
-                    },
-                    is_multi_agent_child=_locked_run_is_multi_agent_child(locked),
-                )
-                return terminal_after_transaction.outcome
-            except ValueError:
+                run_payload = await mcp_api.attach_mcp_server_configs(conn, principal=capability_authorization.principal, run_payload=run_payload)
+            except ValueError as exc:
+                mcp_error = exc if isinstance(exc, mcp_api.McpRuntimeContextError) else None
+                error_code = mcp_error.code if mcp_error else "execution_spec_invalid"
                 terminal_after_transaction = await _fail_worker_pre_dispatch_error(
                     conn,
                     payload=payload,
                     run_identity=run_identity,
                     v4_capabilities=v4_capabilities,
-                    error_code="execution_spec_invalid",
-                    error_message="Execution specification is invalid",
-                    event_stage="worker",
+                    error_code=error_code,
+                    error_message="MCP runtime configuration is unavailable" if mcp_error else "Execution specification is invalid",
+                    event_stage="authorization" if mcp_error else "worker",
                     event_payload={
-                        "visible_to_user": False,
+                        "visible_to_user": bool(mcp_error),
                         "severity": "error",
-                        "error_code": "execution_spec_invalid",
+                        "error_code": error_code,
                     },
                     is_multi_agent_child=_locked_run_is_multi_agent_child(locked),
                 )

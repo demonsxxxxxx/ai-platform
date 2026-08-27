@@ -4014,7 +4014,7 @@ async def test_create_run_queues_skillless_harness_without_skill_authority(monke
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "get_agent", active_harness_agent)
-    monkeypatch.setattr(repository_module, "authorize_selected_chat_mcp_tools", authorize_mcp)
+    monkeypatch.setattr(runs_module, "authorize_selected_chat_mcp_tools", authorize_mcp)
     monkeypatch.setattr(repository_module, "authorize_run_capabilities", fail_skill_path)
     monkeypatch.setattr(repository_module, "authorize_selected_run_capabilities", fail_skill_path)
     monkeypatch.setattr(repository_module, "insert_run_skill_snapshots_at_creation", fail_skill_path)

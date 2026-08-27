@@ -607,7 +607,10 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "authorize_run_capabilities", authorize_run)
-    monkeypatch.setattr(repository_module, "authorize_selected_chat_mcp_tools", authorize_tools)
+    monkeypatch.setattr(
+        "app.routes.chat.authorize_selected_chat_mcp_tools",
+        authorize_tools,
+    )
     monkeypatch.setattr(repository_module, "ensure_user", noop)
     monkeypatch.setattr(repository_module, "create_session", create_session)
     monkeypatch.setattr(repository_module, "create_run", create_run)
@@ -872,8 +875,7 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
         raising=False,
     )
     monkeypatch.setattr(
-        repository_module,
-        "authorize_selected_chat_mcp_tools",
+        "app.routes.chat.authorize_selected_chat_mcp_tools",
         authorize_tools,
     )
     monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission)
@@ -2676,8 +2678,7 @@ async def test_chat_stream_unauthorized_structured_mcp_selection_fails_before_cr
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(
-        repository_module,
-        "authorize_selected_chat_mcp_tools",
+        "app.routes.chat.authorize_selected_chat_mcp_tools",
         deny_selection,
     )
     monkeypatch.setattr(repository_module, "create_run", fail_create_run)
@@ -2728,7 +2729,10 @@ async def test_keyed_unauthorized_structured_mcp_rejection_persists_only_safe_le
         )
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "authorize_selected_chat_mcp_tools", deny_selection)
+    monkeypatch.setattr(
+        "app.routes.chat.authorize_selected_chat_mcp_tools",
+        deny_selection,
+    )
     monkeypatch.setattr(repository_module, "ensure_submission_principal", provision_principal)
     monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission)
     monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize_submission)
@@ -5098,7 +5102,7 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
     )
     monkeypatch.setattr("app.routes.chat.resolve_bound_profile_for_submission", bound_profile)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.authorize_selected_chat_mcp_tools",
+        "app.routes.chat.authorize_selected_chat_mcp_tools",
         authorize_transport_mcp_defaults,
     )
     monkeypatch.setattr(

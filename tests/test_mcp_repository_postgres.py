@@ -7,7 +7,7 @@ from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
 
-from app.mcp import repository as mcp_repository
+from app.mcp.infrastructure import postgres as mcp_repository
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_MCP_CATALOG_TEST_DSN"

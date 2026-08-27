@@ -6,25 +6,51 @@ import json
 import secrets
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field
-from typing import Any, Protocol
+from dataclasses import dataclass, field, replace
+from typing import Any, Callable, Protocol
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from app.mcp.errors import McpRuntimeContextError
-from app.mcp.headers import normalize_static_mcp_headers
-from app.mcp.identifiers import (
+from app.mcp.domain.errors import McpRuntimeContextError
+from app.mcp.domain.headers import (
+    MCP_JWT_AUTHORIZATION_HEADER,
+    normalize_static_mcp_headers,
+)
+from app.mcp.domain.identifiers import (
     assert_safe_mcp_id,
     assert_safe_mcp_principal_user_id,
 )
-from app.redis_client import get_redis_client
-from app.settings import get_settings
+from app.mcp.infrastructure import postgres as mcp_postgres
 
 
 MCP_PRINCIPAL_JWT_KEY_PREFIX = "ai-platform:mcp:principal-jwt:v1:"
 _MCP_PRINCIPAL_JWT_AAD_PREFIX = b"ai-platform:mcp-principal-jwt:v1:"
 _MCP_SERVER_CREDENTIAL_AAD_PREFIX = b"ai-platform:mcp-server-credential:v1:"
+_settings_provider: Callable[[], Any] | None = None
+_redis_provider: Callable[[], Any] | None = None
+
+
+def configure_runtime_dependencies(
+    *,
+    settings_provider: Callable[[], Any],
+    redis_provider: Callable[[], Any],
+) -> None:
+    global _settings_provider, _redis_provider
+    _settings_provider = settings_provider
+    _redis_provider = redis_provider
+
+
+def get_settings() -> Any:
+    if _settings_provider is None:
+        raise McpRuntimeContextError("mcp_runtime_not_configured", status_code=503)
+    return _settings_provider()
+
+
+def get_redis_client() -> Any:
+    if _redis_provider is None:
+        raise McpRuntimeContextError("mcp_runtime_not_configured", status_code=503)
+    return _redis_provider()
 
 
 class McpPrincipal(Protocol):
@@ -143,6 +169,69 @@ def get_mcp_principal_jwt_store() -> McpPrincipalJwtStore:
     if _DEFAULT_PRINCIPAL_JWT_STORE is None:
         _DEFAULT_PRINCIPAL_JWT_STORE = McpPrincipalJwtStore()
     return _DEFAULT_PRINCIPAL_JWT_STORE
+
+
+async def attach_mcp_server_configs(
+    conn: Any,
+    *,
+    principal: McpPrincipal,
+    run_payload: Any,
+) -> Any:
+    """Attach current JWT and encrypted Server targets to process-local subjects."""
+
+    raw_subjects = run_payload.input.get("_runtime_tool_policy_subjects")
+    if not isinstance(raw_subjects, list):
+        return run_payload
+    server_ids = sorted(
+        {
+            str(subject.get("mcp_server") or "")
+            for subject in raw_subjects
+            if isinstance(subject, dict)
+            and str(subject.get("identity") or "").startswith("mcp__")
+            and str(subject.get("mcp_server") or "")
+            and str(subject.get("mcp_server") or "") != "ai-platform-context"
+        }
+    )
+    if not server_ids:
+        return run_payload
+    jwt = await get_mcp_principal_jwt_store().get(principal)
+    configs: dict[str, dict[str, Any]] = {}
+    for server_id in server_ids:
+        row = await mcp_postgres.get_mcp_server_runtime_target(
+            conn,
+            tenant_id=principal.tenant_id,
+            server_name=server_id,
+        )
+        if row is None:
+            raise McpRuntimeContextError("mcp_server_not_available", status_code=503)
+        endpoint, static_headers = open_mcp_server_credentials(
+            tenant_id=principal.tenant_id,
+            server_id=server_id,
+            envelope=str(row.get("credential_envelope") or ""),
+        )
+        if not endpoint:
+            raise McpRuntimeContextError("mcp_server_not_available", status_code=503)
+        configs[server_id] = {
+            "type": "sse" if str(row.get("transport") or "").lower() == "sse" else "http",
+            "url": endpoint,
+            "headers": {
+                **static_headers,
+                MCP_JWT_AUTHORIZATION_HEADER: f"Bearer {jwt}",
+            },
+        }
+    subjects: list[object] = []
+    for raw_subject in raw_subjects:
+        if not isinstance(raw_subject, dict):
+            subjects.append(raw_subject)
+            continue
+        subject = dict(raw_subject)
+        server_id = str(subject.get("mcp_server") or "")
+        if server_id in configs:
+            subject["mcp_server_config"] = configs[server_id]
+        subjects.append(subject)
+    rebuilt_input = dict(run_payload.input)
+    rebuilt_input["_runtime_tool_policy_subjects"] = subjects
+    return replace(run_payload, input=rebuilt_input)
 
 
 def _b64url_encode(value: bytes) -> str:

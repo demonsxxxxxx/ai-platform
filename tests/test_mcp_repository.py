@@ -1,6 +1,7 @@
 import pytest
 
-from app.mcp import repository as mcp_repository
+from app import repositories
+from app.mcp.infrastructure import postgres as mcp_repository
 
 
 class _Cursor:
@@ -97,7 +98,6 @@ async def test_builtin_ragflow_keeps_strict_code_owned_registry_path(monkeypatch
             )
             return _Cursor(row)
 
-    repositories = mcp_repository._repositories()
     monkeypatch.setattr(
         repositories,
         "_tool_policy_projection",
@@ -110,7 +110,7 @@ async def test_builtin_ragflow_keeps_strict_code_owned_registry_path(monkeypatch
             "visible_to_user": True,
         },
     )
-    entry = await mcp_repository.get_mcp_tool_registry_entry(
+    entry = await repositories.get_mcp_tool_registry_entry(
         Connection(),
         tenant_id="tenant-a",
         tool_id="ragflow-knowledge-search",
