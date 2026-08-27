@@ -490,7 +490,9 @@ def _inspection_profile_manifest(profile: str) -> dict[str, Any]:
         "primary_skill": authorized_skill,
         "authorized_implicit_skill": authorized_skill,
         "primary_execution_strategy": (
-            "sdk_native" if profile == "sdk-native" else "platform_controlled"
+            "sandbox_full_local"
+            if profile == "sdk-native"
+            else "platform_controlled"
         ),
         "authorized_skill_count": 1,
         "native_sidecar_expected": native_expected,
@@ -707,7 +709,24 @@ def _inspection_pinned_manifest(skill_id: str, *, files: dict[str, str]) -> dict
 
 def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
     from app.capability_distribution import CapabilityAccessDecision
+    from app.execution_boundary import (
+        ExecutionBoundaryDecision,
+        REAL_SANDBOX_EVIDENCE_CLASS,
+        REAL_SANDBOX_EVIDENCE_SOURCE,
+        SANDBOX_BROKERED_PERMISSION_POLICY,
+    )
     from app.models import QueueRunPayload
+    from app.required_tool_contract import (
+        CANONICAL_REQUIRED_TOOL_IDENTITY,
+        SANDBOX_LOCAL_TOOL_IDENTITIES,
+        with_boundary_sandbox_local_tool_subjects,
+    )
+    from app.skills.execution_profiles import (
+        NATIVE_COMMAND_ISOLATION,
+        SANDBOX_FULL_LOCAL,
+        SKILL_WORKSPACE_CONTRACT_VERSION,
+        effective_skill_execution_profile,
+    )
     from app.skills.pinning import build_skill_manifest_ref
     from app.skills.release_policy import RELEASE_DECISION_SCHEMA_VERSION
     from app.worker import _builtin_capability_subjects
@@ -754,20 +773,40 @@ def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
         authorized_skill_manifests=[authorized_manifest],
         authorized_skill_names=[authorized_skill],
     )
+    if profile == "sdk-native":
+        subjects = with_boundary_sandbox_local_tool_subjects(
+            subjects,
+            decision=ExecutionBoundaryDecision(
+                requires_real_sandbox=True,
+                accepted_providers=frozenset({"docker"}),
+                permission_policy=SANDBOX_BROKERED_PERMISSION_POLICY,
+                evidence_source=REAL_SANDBOX_EVIDENCE_SOURCE,
+                evidence_class=REAL_SANDBOX_EVIDENCE_CLASS,
+                local_sdk_allowed=False,
+                fail_closed=False,
+                reason="deterministic_verifier_fixture",
+            ),
+            sandbox_provider="docker",
+        )
     by_identity = {
         str(subject.get("identity") or ""): subject
         for subject in subjects
         if isinstance(subject, dict)
     }
-    authorized_profile = authorized_manifest["execution_profile"]
-    declared_builtins = list(authorized_profile["builtin_tool_identities"])
-    expected_identities = {"Skill", *declared_builtins}
+    persisted_profile = authorized_manifest["execution_profile"]
+    runtime_profile = effective_skill_execution_profile(authorized_manifest)
+    declared_builtins = list(persisted_profile["builtin_tool_identities"])
+    expected_identities = (
+        {"Skill", *declared_builtins}
+        if profile == "platform-controlled"
+        else {"Skill", *SANDBOX_LOCAL_TOOL_IDENTITIES}
+    )
     if set(by_identity) != expected_identities or len(subjects) != len(by_identity):
         raise _InspectionCheckFailed("authoritative catalog subject aggregation mismatch")
     skill_subject = by_identity.get("Skill", {})
     if (
         skill_subject.get("allowed_skill_names") != [authorized_skill]
-        or skill_subject.get("execution_strategy") != authorized_profile["strategy"]
+        or skill_subject.get("execution_strategy") != runtime_profile["strategy"]
         or any(subject.get("declared_identities") != [identity] for identity, subject in by_identity.items())
         or any(
             subject.get(key) is not True
@@ -776,19 +815,51 @@ def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
         )
     ):
         raise _InspectionCheckFailed("authoritative catalog Skill subject mismatch")
-    for identity in declared_builtins:
+    runtime_builtins = (
+        declared_builtins
+        if profile == "platform-controlled"
+        else list(SANDBOX_LOCAL_TOOL_IDENTITIES)
+    )
+    for identity in runtime_builtins:
         subject = by_identity.get(identity, {})
+        expected_subject_strategy = (
+            runtime_profile["strategy"]
+            if profile == "platform-controlled"
+            else SANDBOX_FULL_LOCAL
+        )
+        expected_subject_isolation = (
+            runtime_profile["command_isolation"]
+            if profile == "platform-controlled"
+            else (
+                NATIVE_COMMAND_ISOLATION
+                if identity == CANONICAL_REQUIRED_TOOL_IDENTITY
+                else "sandbox-process-v1"
+            )
+        )
+        expected_workspace_contract = (
+            runtime_profile["workspace_contract"]
+            if profile == "platform-controlled"
+            else SKILL_WORKSPACE_CONTRACT_VERSION
+        )
         if (
-            subject.get("execution_strategy") != authorized_profile["strategy"]
-            or subject.get("command_isolation") != authorized_profile["command_isolation"]
-            or subject.get("workspace_contract") != authorized_profile["workspace_contract"]
+            subject.get("execution_strategy") != expected_subject_strategy
+            or subject.get("command_isolation") != expected_subject_isolation
+            or subject.get("workspace_contract") != expected_workspace_contract
         ):
             raise _InspectionCheckFailed("authoritative catalog builtin subject mismatch")
-    expected_strategy = "platform_controlled" if profile == "platform-controlled" else "sdk_native"
-    expected_isolation = "minimal-environment-v1" if profile == "platform-controlled" else "sibling-tool-sandbox-v1"
+    expected_strategy = (
+        "platform_controlled"
+        if profile == "platform-controlled"
+        else SANDBOX_FULL_LOCAL
+    )
+    expected_isolation = (
+        "minimal-environment-v1"
+        if profile == "platform-controlled"
+        else "real-sandbox-boundary-v1"
+    )
     if (
-        authorized_profile["strategy"] != expected_strategy
-        or authorized_profile["command_isolation"] != expected_isolation
+        runtime_profile["strategy"] != expected_strategy
+        or runtime_profile["command_isolation"] != expected_isolation
         or decision.admin_bypass
     ):
         raise _InspectionCheckFailed("authoritative catalog execution profile mismatch")

@@ -16,9 +16,11 @@ from typing import Any
 
 from app.execution_boundary import ExecutionBoundaryDecision
 from app.skills.execution_profiles import (
+    LEGACY_SYNTHETIC_CHAT_SKILL_ID,
     NATIVE_COMMAND_ISOLATION,
     OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION,
-    SDK_NATIVE,
+    PLATFORM_CONTROLLED,
+    SANDBOX_FULL_LOCAL,
     SKILL_WORKSPACE_CONTRACT_VERSION,
 )
 from app.tool_policy import evaluate_tool_policy
@@ -760,13 +762,31 @@ def builtin_capability_subjects(
             else []
         )
     primary_manifest = manifests_by_id.get(run_identity["skill_id"])
-    primary_identities = _declared_builtin_identities(primary_manifest, canonical_identities)
-    primary_profile = canonical_manifest(primary_manifest) if isinstance(primary_manifest, dict) else None
+    primary_profile = (
+        canonical_manifest(primary_manifest)
+        if isinstance(primary_manifest, dict)
+        else None
+    )
+    if str(run_identity.get("skill_id") or "") == LEGACY_SYNTHETIC_CHAT_SKILL_ID:
+        for manifest in authorized_skill_manifests or []:
+            candidate_profile = canonical_manifest(manifest)
+            if str(candidate_profile.get("strategy") or "") == SANDBOX_FULL_LOCAL:
+                primary_profile = candidate_profile
+                break
+    primary_identities = _runtime_declared_builtin_identities(
+        primary_manifest,
+        profile=primary_profile,
+        canonical_identities=canonical_identities,
+    )
     profiles_by_identity: dict[str, list[dict[str, Any]]] = {}
     identities: set[str] = set()
     for manifest in manifests_by_id.values():
         profile = canonical_manifest(manifest)
-        for identity in _declared_builtin_identities(manifest, canonical_identities):
+        for identity in _runtime_declared_builtin_identities(
+            manifest,
+            profile=profile,
+            canonical_identities=canonical_identities,
+        ):
             identities.add(identity)
             profiles_by_identity.setdefault(identity, []).append(profile)
     if authorized_skill_names:
@@ -811,8 +831,17 @@ def builtin_capability_subjects(
     )
 
 
-def _declared_builtin_identities(manifest: object, canonical_identities: Any) -> set[str]:
-    if not isinstance(manifest, dict):
+def _runtime_declared_builtin_identities(
+    manifest: object,
+    *,
+    profile: Mapping[str, Any] | None,
+    canonical_identities: Any,
+) -> set[str]:
+    if (
+        not isinstance(manifest, dict)
+        or not isinstance(profile, Mapping)
+        or str(profile.get("strategy") or "") != PLATFORM_CONTROLLED
+    ):
         return set()
     return set(canonical_identities(manifest))
 
@@ -886,7 +915,7 @@ def with_sandbox_local_tool_capability_subjects(
             required_parameter_keys=required_keys,
             allowed_skill_names=[],
             profile={
-                "strategy": SDK_NATIVE,
+                "strategy": SANDBOX_FULL_LOCAL,
                 "command_isolation": (
                     command_isolation
                     if identity == CANONICAL_REQUIRED_TOOL_IDENTITY

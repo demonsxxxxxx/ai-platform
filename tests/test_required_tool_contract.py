@@ -133,6 +133,13 @@ def test_real_sandbox_replaces_local_tool_authority_once():
         "Edit",
         "NotebookEdit",
     ]
+    assert all(
+        subject["execution_strategy"] == "sandbox_full_local"
+        for subject in subjects
+    )
+    assert not {"Agent", "WebFetch", "WebSearch"} & {
+        subject["identity"] for subject in subjects
+    }
     bash_subject = next(subject for subject in subjects if subject["identity"] == "Bash")
     assert bash_subject["registered"] is True
     assert bash_subject["active"] is True
@@ -164,7 +171,7 @@ def test_sandbox_local_tools_use_credential_free_docker_sibling_for_bash():
     bash_subject = next(subject for subject in subjects if subject["identity"] == "Bash")
 
     assert bash_subject["command_isolation"] == "sibling-tool-sandbox-v1"
-    assert bash_subject["execution_strategy"] == "sdk_native"
+    assert bash_subject["execution_strategy"] == "sandbox_full_local"
 
 
 def test_sandbox_local_tool_subjects_reject_non_real_provider():

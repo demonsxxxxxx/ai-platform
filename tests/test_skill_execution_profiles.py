@@ -5,14 +5,13 @@ import pytest
 from app.skills.execution_profiles import (
     CONTROLLED_COMMAND_ISOLATION,
     NATIVE_COMMAND_ISOLATION,
-    OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION,
-    OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE,
     PLATFORM_CONTROLLED,
+    SANDBOX_FULL_LOCAL,
     SDK_NATIVE,
     SDK_RESTRICTED,
     canonical_skill_execution_profile,
+    effective_skill_execution_profile,
     resolve_skill_execution_profile,
-    sdk_skill_tool_admission_for_execution_profile,
 )
 from app.skills.pinning import build_skill_version_manifest_pin
 from app import worker
@@ -53,19 +52,19 @@ def _worker_subjects(manifest: dict[str, object]) -> dict[str, dict[str, object]
     return {str(subject["identity"]): subject for subject in subjects}
 
 
-def test_explicit_builtin_pin_grants_only_native_bash_to_worker_subject():
+def test_explicit_builtin_v1_pin_keeps_snapshot_profile_but_runtime_uses_full_local():
     manifest = build_skill_version_manifest_pin(_builtin_skill_version("rollout-script-runner"))
 
     profile = canonical_skill_execution_profile(manifest)
+    runtime_profile = effective_skill_execution_profile(manifest)
     subjects = _worker_subjects(manifest)
 
     assert profile["strategy"] == SDK_NATIVE
     assert profile["builtin_tool_identities"] == ["Bash"]
     assert profile["command_isolation"] == NATIVE_COMMAND_ISOLATION
-    assert set(subjects) == {"Bash", "Skill"}
-    assert subjects["Bash"]["execution_strategy"] == SDK_NATIVE
-    assert subjects["Bash"]["command_isolation"] == NATIVE_COMMAND_ISOLATION
-    assert not {"Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch", "Agent"} & set(subjects)
+    assert runtime_profile["strategy"] == SANDBOX_FULL_LOCAL
+    assert set(subjects) == {"Skill"}
+    assert subjects["Skill"]["execution_strategy"] == SANDBOX_FULL_LOCAL
 
 
 def test_legacy_no_profile_builtin_dependency_keeps_pre_rollout_authority():
@@ -77,17 +76,21 @@ def test_legacy_no_profile_builtin_dependency_keeps_pre_rollout_authority():
 
     legacy_profile = canonical_skill_execution_profile(legacy_dependency)
     new_profile = canonical_skill_execution_profile(newly_built_pin)
+    legacy_runtime_profile = effective_skill_execution_profile(legacy_dependency)
+    new_runtime_profile = effective_skill_execution_profile(newly_built_pin)
 
     assert legacy_profile["strategy"] == SDK_RESTRICTED
     assert legacy_profile["builtin_tool_identities"] == []
     assert legacy_profile["command_isolation"] == "none"
+    assert legacy_runtime_profile["strategy"] == SDK_RESTRICTED
     assert new_profile["strategy"] == SDK_NATIVE
     assert new_profile["builtin_tool_identities"] == ["Bash"]
     assert new_profile["command_isolation"] == NATIVE_COMMAND_ISOLATION
+    assert new_runtime_profile["strategy"] == SANDBOX_FULL_LOCAL
 
 
 @pytest.mark.parametrize("lifecycle_status", ["released", "reviewed", "active"])
-def test_trusted_explicit_builtin_lifecycle_grants_native_bash(lifecycle_status: str):
+def test_trusted_explicit_builtin_lifecycle_keeps_v1_native_snapshot(lifecycle_status: str):
     profile = resolve_skill_execution_profile(
         skill_id="rollout-script-runner",
         source_kind="builtin",
@@ -111,7 +114,7 @@ def test_platform_controlled_builtin_retains_controlled_strategy_and_existing_to
     assert profile["command_isolation"] == CONTROLLED_COMMAND_ISOLATION
 
 
-def test_reviewed_uploaded_skill_retains_native_bash_isolation():
+def test_reviewed_uploaded_skill_keeps_v1_native_snapshot():
     profile = resolve_skill_execution_profile(
         skill_id="reviewed-upload",
         source_kind="uploaded",
@@ -121,28 +124,6 @@ def test_reviewed_uploaded_skill_retains_native_bash_isolation():
     assert profile["strategy"] == SDK_NATIVE
     assert profile["builtin_tool_identities"] == ["Read", "Glob", "LS", "Bash", "Write", "Edit", "Grep"]
     assert profile["command_isolation"] == NATIVE_COMMAND_ISOLATION
-
-
-def test_governed_opensandbox_admits_file_tools_only_for_the_selected_authorized_skill():
-    admission = sdk_skill_tool_admission_for_execution_profile(
-        execution_profile=OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE,
-        selected_skill_id="reviewed-upload",
-        staged_skill_ids=["reviewed-upload"],
-        authorized_skill_ids={"reviewed-upload"},
-    )
-
-    assert admission is not None
-    assert admission.tool_names == ("Read", "Glob", "LS", "Bash", "Write", "Edit", "Grep")
-    assert admission.command_isolation == OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION
-    assert (
-        sdk_skill_tool_admission_for_execution_profile(
-            execution_profile="opensandbox_trusted_internal",
-            selected_skill_id="reviewed-upload",
-            staged_skill_ids=["reviewed-upload"],
-            authorized_skill_ids={"reviewed-upload"},
-        )
-        is None
-    )
 
 
 @pytest.mark.parametrize(
