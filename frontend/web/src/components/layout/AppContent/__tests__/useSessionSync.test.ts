@@ -90,6 +90,16 @@ test("preserves an accepted generic session when its URL is canonicalized", () =
 
 test("clears and reloads when external navigation selects another session", () => {
   assert.equal(
+    getSessionRouteSyncAction({
+      activeTab: "chat",
+      pathname: "/chat/session-b",
+      sessionId: null,
+      urlSessionId: "session-b",
+      externalNavigate: false,
+    }),
+    null,
+  );
+  assert.equal(
     shouldClearConversationOnRouteIdentityChange({
       hasAgentWorkspace: false,
       routeSessionId: "session-b",
