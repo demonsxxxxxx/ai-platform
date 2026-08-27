@@ -86,23 +86,30 @@ roadmap or Controller Current rather than this durable entry file.
 
 ## Change Control
 
-- Before non-mechanical edits, record the Change Contract required by
-  `docs/agent-rules/github-issue-pr-workflow.md` in the issue or persistent
-  task; the PR links and reconciles that prior record. Read-only exploration may
-  fill missing fields, but coding waits for a
-  known owner, bounded paths, invariants, acceptance, regression proof, evidence
-  ceiling, and stop conditions.
-- Revise the contract before expanding scope. Every behavior change needs a
-  falsifiable owning test; claim assembled or runtime behavior only after
-  observing that path. Template text and Agent self-report are not evidence.
+- A focused ordinary change may use its pull request as the complete change
+  record. Before editing a goal-sized or high-risk change, record a bounded
+  Change Contract in the persistent task, design, or pull request. High-risk
+  changes include authentication, authorization, tenant or workspace isolation;
+  secrets, credentials, or ordinary-user projection redaction; destructive
+  lifecycle, retention, schema migration, or irreversible data compatibility;
+  sandbox, command, tool, Skill, MCP, or executor admission; public API,
+  callback, event, or streaming protocols; and workflow, image, release,
+  deployment, or rollback authority.
+- A Change Contract names the owner, bounded paths, reached invariants,
+  acceptance, falsifiable regression proof, evidence ceiling, rollback when
+  relevant, and stop conditions. Revise it before expanding scope.
+- Every behavior change needs a falsifiable owning test. Claim assembled or
+  runtime behavior only after observing that path. Template text and Agent
+  self-report are not evidence.
 - `AGENTS.md` is repository coding authority. Product Agent.md content belongs
   to the Agent Profile/Workspace domain and is not implementation authority.
 
 ## Delivery Workflow
 
-Use GitHub issues and pull requests as the default closure loop for goal-sized
-work, gate closures, and newly discovered defects. The detailed issue, review,
-fixed-SHA verification, and closure rules live only in
+Use a focused pull request for ordinary changes. Use a separate design and the
+full issue-to-release closure loop only for goal-sized work, high-risk changes,
+gate closures, and defects that need independent lifecycle tracking. The review,
+verification, and release rules live in
 `docs/agent-rules/github-issue-pr-workflow.md`.
 
 `docs/agent-rules/multi-agent-context-workflow.md` is the single source for task

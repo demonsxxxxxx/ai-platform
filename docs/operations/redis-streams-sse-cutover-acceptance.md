@@ -14,7 +14,7 @@ External Acceptance. The application release procedure remains exclusively owned
 
 ## Implementation and commit groups
 
-One issue and Draft PR may contain reviewable commits in this order:
+One coherent change may contain reviewable commits in this order:
 
 1. **Documentation and protocol:** ADR 0012, authority index, v4 wire,
    execution control, generated schema/types, and this operations contract.
@@ -64,10 +64,10 @@ behaviors remains:
 
 Release preparation verifies the exact source SHA, immutable API/worker and
 frontend image digests, generated v4 protocol artifacts, required workflow
-results, and configuration fingerprint. `tools/pre_push_readiness.py`, the
-dedicated negative checker, CI, and release preparation own those separate
-facts. Intermediate main commits may exist only when production admission is
-provably dormant and release verification rejects incomplete evidence.
+results, and configuration fingerprint. The dedicated negative checker, CI, and
+release preparation own those separate facts. Intermediate main commits may
+exist only when production admission is provably dormant and release
+verification rejects incomplete evidence.
 
 Rollback is an immutable prior reviewed image. The current image contains no
 hidden legacy runtime flag. Active v4 work must drain, safely pause, or
@@ -164,9 +164,7 @@ pytest for bounded suites. Required affected gates include:
 - callback response-loss and Redis unknown-outcome fault injection;
 - negative cutover checker and its structural fixture tests;
 - frontend SSE parser/handler/reducer tests, scoped lint, TypeScript check,
-  projection audit, and production build;
-- immutable pre-push readiness from fetched `origin/main` authority for each
-  pushed candidate.
+  projection audit, and production build.
 
 CI must run the backend streaming/callback suites and frontend SSE suites for
 changes to their production paths. It must verify generated v4 protocol
@@ -216,12 +214,12 @@ the exact deployed subject and cannot be inferred from frontend tests.
 | --- | --- |
 | `local partial` | named focused local checks passed on an exact SHA |
 | `PR ready` | Draft candidate and named CI evidence are available for review; not merged/deployed |
-| `reviewed` | independent fixed-SHA findings are resolved or explicitly accepted under repository policy |
+| `reviewed` | applicable independent findings are resolved or explicitly accepted under repository policy |
 | `External Acceptance pending` | real topology/proxy/browser/load evidence not yet observed |
 | `runtime verified` | exact deployed subject passed the separately authorized controlled-host procedure and required runtime checks |
 
 Never promote one state to another without observing the additional evidence.
-No issue auto-closes merely because the Draft PR exists or local tests pass.
+A pull request or local test does not establish deployment or runtime status.
 
 ## External Acceptance record
 
