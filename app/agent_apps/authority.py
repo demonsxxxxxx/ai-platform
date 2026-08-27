@@ -800,6 +800,16 @@ class AgentProfileAuthority:
                 or int(avatar_asset.get("size_bytes") or 0) > 5 * 1024 * 1024
             ):
                 raise HTTPException(status_code=400, detail="agent_profile_avatar_asset_invalid")
+        server_ids: list[str] = []
+        for tool_reference in definition.mcp_tool_ids:
+            try:
+                server_id, _public_tool_name = parse_mcp_tool_reference(tool_reference)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail="agent_profile_mcp_reference_invalid",
+                ) from exc
+            server_ids.append(server_id)
         try:
             skills = tuple(
                 [
@@ -819,8 +829,7 @@ class AgentProfileAuthority:
                     for selected_skill in definition.skill_set
                 ]
             )
-            for tool_reference in definition.mcp_tool_ids:
-                server_id, _public_tool_name = parse_mcp_tool_reference(tool_reference)
+            for server_id in server_ids:
                 server = await repositories.get_mcp_server_registry_entry(
                     conn,
                     tenant_id=principal.tenant_id,
@@ -831,11 +840,6 @@ class AgentProfileAuthority:
                         status_code=403,
                         detail="agent_profile_capability_not_available",
                     )
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail="agent_profile_mcp_reference_invalid",
-            ) from exc
         except repositories.RepositoryConflictError as exc:
             raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
         except repositories.RepositoryAuthorizationError as exc:

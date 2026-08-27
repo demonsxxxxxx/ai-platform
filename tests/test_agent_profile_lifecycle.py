@@ -181,6 +181,70 @@ def _seal_profile_row(row: dict[str, object]) -> dict[str, object]:
 
 
 @pytest.mark.asyncio
+async def test_profile_definition_validates_stable_mcp_reference_and_server_existence(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+    from app.agent_apps.authority import _draft_from_row
+
+    row = _profile_row()
+    row["mcp_tool_ids"] = ["gateway::search"]
+    observed: list[tuple[str, str]] = []
+
+    async def authorize_skill(*_args, **_kwargs):
+        return {"skill_id": "general-chat", "skill_version": "version-a"}
+
+    async def get_server(*_args, **kwargs):
+        observed.append((kwargs["tenant_id"], kwargs["name"]))
+        return {"name": kwargs["name"], "status": "active"}
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.authorize_selected_run_capabilities",
+        authorize_skill,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_mcp_server_registry_entry",
+        get_server,
+    )
+
+    skills, _model = await AgentProfileAuthority()._validate_definition(
+        object(),
+        principal=_principal(),
+        agent_id="agt_support",
+        definition=_draft_from_row(row),
+    )
+
+    assert skills[0]["skill_id"] == "general-chat"
+    assert observed == [("tenant-a", "gateway")]
+
+
+@pytest.mark.asyncio
+async def test_profile_definition_preserves_repository_authorization_status(monkeypatch):
+    from app import repositories
+    from app.agent_apps import AgentProfileAuthority
+    from app.agent_apps.authority import _draft_from_row
+
+    async def deny_skill(*_args, **_kwargs):
+        raise repositories.RepositoryAuthorizationError("denied")
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.authorize_selected_run_capabilities",
+        deny_skill,
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        await AgentProfileAuthority()._validate_definition(
+            object(),
+            principal=_principal(),
+            agent_id="agt_support",
+            definition=_draft_from_row(_profile_row()),
+        )
+
+    assert (caught.value.status_code, caught.value.detail) == (
+        403,
+        "agent_profile_capability_not_available",
+    )
+
+
+@pytest.mark.asyncio
 async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggregate_access(monkeypatch):
     """Record call order without claiming PostgreSQL lock-manager coverage."""
 
