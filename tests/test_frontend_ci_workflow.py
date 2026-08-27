@@ -158,7 +158,10 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert required["if"] == "${{ always() }}"
     image_job = workflow.split("  frontend-image:", 1)[1].split("  required:", 1)[0]
     required_job = workflow.split("  required:", 1)[1]
-    assert "IMAGE_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}" in image_job
+    assert (
+        "IMAGE_BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.sha }}"
+        in image_job
+    )
     assert "fetch-depth: 0" in image_job
     assert "- name: Determine frontend image impact" in image_job
     assert "python tools/ci_image_scope.py" in image_job
@@ -166,10 +169,21 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert '--role frontend' in image_job
     assert '--base-ref "$IMAGE_BASE_COMMIT"' in image_job
     assert '--head-ref "$IMAGE_SOURCE_COMMIT"' in image_job
-    assert "- name: Report frontend image validation not affected" in image_job
+    assert "- name: Report frontend image build disposition" in image_job
     assert "if: steps.image-scope.outputs.build != 'true'" in image_job
-    assert "reason=packaged_inputs_unchanged" in image_job
+    assert (
+        "IMAGE_DISPOSITION: ${{ steps.image-scope.outputs.disposition }}"
+        in image_job
+    )
+    assert 'case "$IMAGE_DISPOSITION" in' in image_job
+    assert "not_affected)" in image_job
+    assert "packaging_owned)" in image_job
+    assert 'test "$GITHUB_EVENT_NAME" = "pull_request"' in image_job
+    assert 'test "$GITHUB_EVENT_NAME" != "pull_request"' in image_job
+    assert "frontend_image_validation=not_affected" in image_job
+    assert "frontend_image_build=delegated owner=ai-platform-packaging-publish" in image_job
     assert "base_commit=%s head_commit=%s" in image_job
+    assert "unexpected_disposition" in image_job
     for step_name in [
         "Set up Python for Linux contracts",
         "Install Linux contract test dependencies",

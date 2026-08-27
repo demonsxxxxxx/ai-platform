@@ -813,7 +813,10 @@ def test_backend_image_job_builds_only_affected_pull_request_candidates_and_chec
     assert "paths:" not in workflow
     assert "needs: backend-preflight" in image_job
     assert "timeout-minutes: 30" in image_job
-    assert "IMAGE_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}" in image_job
+    assert (
+        "IMAGE_BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.sha }}"
+        in image_job
+    )
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in image_job
     assert "fetch-depth: 0" in image_job
     assert "persist-credentials: false" in image_job
@@ -824,10 +827,21 @@ def test_backend_image_job_builds_only_affected_pull_request_candidates_and_chec
     assert '--role backend' in image_job
     assert '--base-ref "$IMAGE_BASE_COMMIT"' in image_job
     assert '--head-ref "$IMAGE_SOURCE_COMMIT"' in image_job
-    assert "- name: Report backend image validation not affected" in image_job
+    assert "- name: Report backend image build disposition" in image_job
     assert "if: steps.image-scope.outputs.build != 'true'" in image_job
-    assert "reason=packaged_inputs_unchanged" in image_job
+    assert (
+        "IMAGE_DISPOSITION: ${{ steps.image-scope.outputs.disposition }}"
+        in image_job
+    )
+    assert 'case "$IMAGE_DISPOSITION" in' in image_job
+    assert "not_affected)" in image_job
+    assert "packaging_owned)" in image_job
+    assert 'test "$GITHUB_EVENT_NAME" = "pull_request"' in image_job
+    assert 'test "$GITHUB_EVENT_NAME" != "pull_request"' in image_job
+    assert "backend_image_validation=not_affected" in image_job
+    assert "backend_image_build=delegated owner=ai-platform-packaging-publish" in image_job
     assert "base_commit=%s head_commit=%s" in image_job
+    assert "unexpected_disposition" in image_job
     for step_name in [
         "Resolve image source repository",
         "Build backend image",
