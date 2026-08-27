@@ -921,6 +921,7 @@ def test_literal_dynamic_imports_use_existing_dependency_rules(
         'import importlib\ndef invoke():\n    global importlib\n    importlib = object()\n    return importlib.import_module("app.runs.domain.secret")\n',
         'def outer():\n    import importlib\n    def invoke():\n        nonlocal importlib\n        importlib = object()\n        return importlib.import_module("app.runs.domain.secret")\n',
         'import importlib\ndef invoke(value=(lambda importlib: importlib.import_module("app.runs.domain.secret"))(object())):\n    return value\n',
+        'import importlib\nclass FakeLoader:\n    def import_module(self, name):\n        return name\nvalues = [(importlib := FakeLoader()) for _ in [0]]\nvalue = importlib.import_module("app.runs.domain.secret")\n',
     ],
 )
 def test_shadowed_dynamic_import_names_do_not_create_edges(
