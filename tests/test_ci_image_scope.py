@@ -20,10 +20,12 @@ from tools.ci_image_scope import (
         ("backend", "app/main.py"),
         ("backend", "tools/release.py"),
         ("backend", "docs/release-evidence/schema.json"),
+        ("backend", ".github/workflows/ai-platform-packaging-publish.yml"),
         ("frontend", "frontend/web/src/main.tsx"),
         ("frontend", "frontend/web/Dockerfile"),
         ("frontend", "tools/frontend_release_traceability.py"),
         ("frontend", "tests/test_frontend_linux_contracts.py"),
+        ("frontend", ".github/workflows/ai-platform-packaging-publish.yml"),
     ],
 )
 def test_image_inputs_affected_for_packaged_inputs(role: str, path: str) -> None:
@@ -42,14 +44,23 @@ def test_policy_only_pull_request_does_not_affect_images(role: str) -> None:
 
 @pytest.mark.parametrize("event_name", ["push", "workflow_dispatch"])
 @pytest.mark.parametrize("role", ["backend", "frontend"])
-def test_non_pull_request_events_always_build_images(
+def test_non_pull_request_image_builds_are_owned_by_packaging(
     event_name: str, role: str
 ) -> None:
     assert image_validation_disposition(
         event_name=event_name,
         role=role,
         changed_paths=(),
-    ) == (True, "required_event")
+    ) == (False, "packaging_owned")
+
+
+def test_unknown_event_fails_closed() -> None:
+    with pytest.raises(ValueError, match="unsupported image validation event"):
+        image_validation_disposition(
+            event_name="schedule",
+            role="backend",
+            changed_paths=(),
+        )
 
 
 def _local_docker_copy_sources(dockerfile: Path) -> tuple[str, ...]:
