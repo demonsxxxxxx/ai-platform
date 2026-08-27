@@ -11,6 +11,7 @@ import argparse
 import ast
 import copy
 import hashlib
+import importlib.util
 import json
 import keyword
 import re
@@ -2086,6 +2087,358 @@ def _python_modules(paths: Sequence[str]) -> set[str]:
     }
 
 
+def _enclosing_import_scope(
+    node: ast.AST,
+    parents: dict[ast.AST, ast.AST],
+    *,
+    include_self: bool = True,
+) -> ast.AST | None:
+    scope_types = (
+        ast.Module,
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+        ast.Lambda,
+        ast.ClassDef,
+        ast.ListComp,
+        ast.SetComp,
+        ast.DictComp,
+        ast.GeneratorExp,
+    )
+    current = node if include_self else parents.get(node)
+    while current is not None:
+        if isinstance(current, scope_types):
+            return current
+        current = parents.get(current)
+    return None
+
+
+def _dynamic_import_scope(
+    node: ast.AST,
+    parents: dict[ast.AST, ast.AST],
+) -> ast.AST | None:
+    original = node
+    scope = _enclosing_import_scope(node, parents, include_self=False)
+    while scope is not None:
+        child = node
+        while parents.get(child) is not scope:
+            child = parents[child]
+        if isinstance(scope, ast.Module):
+            return scope
+        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if child in scope.body:
+                return scope
+        elif isinstance(scope, ast.Lambda):
+            if child is scope.body:
+                return scope
+        else:
+            first_iter = scope.generators[0].iter
+            current: ast.AST | None = original
+            while current is not None and current is not first_iter:
+                current = parents.get(current)
+            if current is None:
+                return scope
+        node = scope
+        scope = _enclosing_import_scope(scope, parents, include_self=False)
+    return None
+
+
+def _literal_call_argument(call: ast.Call, position: int, name: str) -> ast.expr | None:
+    if len(call.args) > position:
+        return call.args[position]
+    return next((keyword.value for keyword in call.keywords if keyword.arg == name), None)
+
+
+def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
+    nodes = tuple(ast.walk(tree))
+    parents = {
+        child: node
+        for node in nodes
+        for child in ast.iter_child_nodes(node)
+    }
+    bindings: dict[
+        ast.AST, dict[str, list[tuple[int, int, str, ast.AST | None]]]
+    ] = {}
+    delegated: dict[ast.AST, dict[str, str]] = {}
+    comprehension_scopes = (
+        ast.ListComp,
+        ast.SetComp,
+        ast.DictComp,
+        ast.GeneratorExp,
+    )
+    function_scopes = (
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+        ast.Lambda,
+        *comprehension_scopes,
+    )
+
+    def bind(
+        scope: ast.AST | None,
+        name: str | None,
+        identity: str,
+        node: ast.AST,
+        *,
+        after: ast.AST | None = None,
+        origin: ast.AST | None = None,
+    ) -> None:
+        if scope is not None and name:
+            position = after or node
+            line_attribute = "end_lineno" if after is not None else "lineno"
+            column_attribute = "end_col_offset" if after is not None else "col_offset"
+            bindings.setdefault(scope, {}).setdefault(name, []).append(
+                (
+                    getattr(position, line_attribute, 0),
+                    getattr(position, column_attribute, 0),
+                    identity,
+                    origin,
+                )
+            )
+
+    for node in nodes:
+        scope = _enclosing_import_scope(node, parents)
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                name = alias.asname or alias.name.split(".", 1)[0]
+                bind(
+                    scope,
+                    name,
+                    "importlib"
+                    if alias.name == "importlib"
+                    or (alias.asname is None and alias.name.startswith("importlib."))
+                    else "other",
+                    alias,
+                )
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                identity = (
+                    "import_module"
+                    if node.level == 0
+                    and node.module == "importlib"
+                    and alias.name == "import_module"
+                    else "other"
+                )
+                bind(scope, alias.asname or alias.name, identity, alias)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            parent = parents.get(node)
+            if (
+                isinstance(parent, ast.AnnAssign)
+                and parent.value is None
+                and not isinstance(scope, function_scopes)
+            ):
+                continue
+            binding_scope = scope
+            assignment = parent
+            while isinstance(assignment, (ast.List, ast.Starred, ast.Tuple)):
+                assignment = parents.get(assignment)
+            if isinstance(parent, ast.NamedExpr):
+                binding_scope = _dynamic_import_scope(node, parents)
+                while isinstance(binding_scope, comprehension_scopes):
+                    binding_scope = _dynamic_import_scope(binding_scope, parents)
+            after = None
+            if isinstance(assignment, (ast.AnnAssign, ast.Assign, ast.AugAssign, ast.NamedExpr)):
+                after = assignment.value
+            elif isinstance(assignment, (ast.AsyncFor, ast.For)):
+                after = assignment.iter
+            bind(
+                binding_scope,
+                node.id,
+                "other",
+                node,
+                after=after,
+                origin=assignment if after is not None else None,
+            )
+        elif isinstance(node, ast.arg):
+            bind(scope, node.arg, "other", node)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bind(
+                _enclosing_import_scope(node, parents, include_self=False),
+                node.name,
+                "other",
+                node,
+                origin=node,
+            )
+        elif isinstance(node, ast.ExceptHandler):
+            bind(scope, node.name, "other", node)
+        elif isinstance(node, ast.Global) and scope is not None:
+            delegated.setdefault(scope, {}).update(
+                (name, "global") for name in node.names
+            )
+        elif isinstance(node, ast.Nonlocal) and scope is not None:
+            delegated.setdefault(scope, {}).update(
+                (name, "nonlocal") for name in node.names
+            )
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)):
+            bind(scope, node.name, "other", node)
+        elif isinstance(node, ast.MatchMapping):
+            bind(scope, node.rest, "other", node)
+
+    def direct_child(node: ast.AST, ancestor: ast.AST) -> ast.AST | None:
+        current = node
+        while parents.get(current) is not ancestor:
+            current = parents.get(current)
+            if current is None:
+                return None
+        return current
+
+    def is_within(node: ast.AST, ancestor: ast.AST) -> bool:
+        current: ast.AST | None = node
+        while current is not None:
+            if current is ancestor:
+                return True
+            current = parents.get(current)
+        return False
+
+    def definition_is_bound(definition: ast.AST, call: ast.Call) -> bool:
+        child = direct_child(call, definition)
+        if child is None:
+            return True
+        if isinstance(definition, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return child in definition.body
+        if child not in definition.body:
+            return False
+        current: ast.AST | None = call
+        while current is not None and current is not definition:
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                function_child = direct_child(call, current)
+                if function_child in current.body:
+                    return True
+            elif isinstance(current, ast.Lambda):
+                parent = parents.get(current)
+                lambda_child = direct_child(call, current)
+                if lambda_child is current.body and not (
+                    isinstance(parent, ast.Call) and parent.func is current
+                ):
+                    return True
+            elif isinstance(current, ast.GeneratorExp) and not is_within(
+                call, current.generators[0].iter
+            ):
+                return True
+            current = parents.get(current)
+        return False
+
+    def event_is_visible(
+        event: tuple[int, int, str, ast.AST | None],
+        call: ast.Call,
+        *,
+        limit_position: bool,
+    ) -> bool:
+        line, column, _identity, origin = event
+        if isinstance(origin, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if not definition_is_bound(origin, call):
+                return False
+        if (
+            isinstance(origin, ast.AnnAssign)
+            and origin.value is not None
+            and is_within(call, origin.annotation)
+        ):
+            return True
+        return not limit_position or (line, column) <= (call.lineno, call.col_offset)
+
+    def latest_identity(
+        events: list[tuple[int, int, str, ast.AST | None]],
+    ) -> str | None:
+        position = max(event[:2] for event in events)
+        identities = {
+            identity
+            for line, column, identity, _origin in events
+            if (line, column) == position
+        }
+        return next(iter(identities)) if len(identities) == 1 else None
+
+    def resolve(call: ast.Call, name: str) -> str | None:
+        scope = _dynamic_import_scope(call, parents)
+        current_scope = scope
+        inside_function = False
+        while scope is not None:
+            if not (inside_function and isinstance(scope, ast.ClassDef)):
+                events = bindings.get(scope, {}).get(name, [])
+                declaration = delegated.get(scope, {}).get(name)
+                visible = [
+                    event
+                    for event in events
+                    if event_is_visible(
+                        event,
+                        call,
+                        limit_position=scope is current_scope or declaration is not None,
+                    )
+                ]
+                if declaration is not None:
+                    if visible:
+                        return latest_identity(visible)
+                    if isinstance(scope, function_scopes):
+                        inside_function = True
+                    if declaration == "global":
+                        scope = tree
+                    else:
+                        scope = _dynamic_import_scope(scope, parents)
+                    continue
+                if events:
+                    if visible:
+                        if scope is current_scope or isinstance(scope, ast.Module):
+                            return latest_identity(visible)
+                        identities = {
+                            identity for _line, _column, identity, _origin in visible
+                        }
+                        return (
+                            next(iter(identities)) if len(identities) == 1 else None
+                        )
+                    if isinstance(scope, function_scopes):
+                        return None
+            if isinstance(scope, function_scopes):
+                inside_function = True
+            scope = _dynamic_import_scope(scope, parents)
+        return "__import__" if name == "__import__" else None
+
+    edges: list[_ImportEdge] = []
+    for node in nodes:
+        if not isinstance(node, ast.Call):
+            continue
+        loader: str | None = None
+        if isinstance(node.func, ast.Name):
+            loader = resolve(node, node.func.id)
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "import_module"
+            and isinstance(node.func.value, ast.Name)
+            and resolve(node, node.func.value.id) == "importlib"
+        ):
+            loader = "import_module"
+        if loader not in {"__import__", "import_module"}:
+            continue
+        target_argument = _literal_call_argument(node, 0, "name")
+        if not (
+            isinstance(target_argument, ast.Constant)
+            and isinstance(target_argument.value, str)
+        ):
+            continue
+        target = target_argument.value
+        if loader == "__import__":
+            level_argument = _literal_call_argument(node, 4, "level")
+            if level_argument is not None and not (
+                isinstance(level_argument, ast.Constant)
+                and isinstance(level_argument.value, int)
+                and level_argument.value == 0
+            ):
+                continue
+            if target.startswith("."):
+                continue
+        elif target.startswith("."):
+            package_argument = _literal_call_argument(node, 1, "package")
+            if not (
+                isinstance(package_argument, ast.Constant)
+                and isinstance(package_argument.value, str)
+            ):
+                continue
+            try:
+                target = importlib.util.resolve_name(target, package_argument.value)
+            except ImportError:
+                continue
+        edges.append(_ImportEdge(target, node.lineno))
+    return tuple(edges)
+
+
 def _import_edges(
     tree: ast.Module,
     path: str,
@@ -2093,7 +2446,7 @@ def _import_edges(
     known_modules: set[str] | None = None,
 ) -> tuple[_ImportEdge, ...]:
     package_parts = list(PurePosixPath(path).with_suffix("").parts[:-1])
-    edges: list[_ImportEdge] = []
+    edges: list[_ImportEdge] = list(_literal_dynamic_import_edges(tree))
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             edges.extend(_ImportEdge(alias.name, node.lineno) for alias in node.names)
@@ -2200,7 +2553,6 @@ def _new_edge_finding(policy: dict[str, Any], source_path: str, edge: _ImportEdg
             details={"target": edge.target},
         )
     target = _module_location(edge.target, policy)
-    contexts = set(policy["bounded_contexts"])
     public = set(policy["public_cross_domain_modules"])
     non_exemptible = {"exemptible": False, "details": {"target": edge.target}}
 
@@ -2224,10 +2576,13 @@ def _new_edge_finding(policy: dict[str, Any], source_path: str, edge: _ImportEdg
             edge.line,
             **non_exemptible,
         )
-    if source.package == "platform" and target.package in contexts | {"bootstrap", "compat"}:
+    if (
+        source.package == "platform"
+        and target.package not in {None, "kernel", "platform"}
+    ):
         return Finding(
             "platform_product_import",
-            "platform technical clients cannot import a product context",
+            "platform technical clients cannot import product or composition packages",
             source_path,
             edge.line,
             **non_exemptible,
@@ -2298,6 +2653,18 @@ def _new_edge_finding(policy: dict[str, Any], source_path: str, edge: _ImportEdg
                         edge.line,
                         **non_exemptible,
                     )
+            if (
+                source.layer is not None
+                and target.layer is None
+                and target.boundary is None
+            ):
+                return Finding(
+                    "layer_dependency_forbidden",
+                    "canonical layers cannot import unlayered same-context legacy modules",
+                    source_path,
+                    edge.line,
+                    **non_exemptible,
+                )
             return None
         if target.package == "kernel":
             return None
