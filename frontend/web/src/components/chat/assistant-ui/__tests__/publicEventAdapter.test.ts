@@ -117,6 +117,86 @@ test("v4 adapter preserves nullable run-level identity and projects safe activit
   assert.match(projected.streamEvent.data, /cancel_requested/);
 });
 
+test("v4 adapter projects real agent progress and rejects forged phase text", () => {
+  const progressPayload = {
+    schema_version: "ai-platform.public-agent-progress.v1",
+    step_id: "phase_skill_staging",
+    phase: "skill_staging",
+    lifecycle: "started",
+    message: "Loading authorized Skills",
+  };
+  const progress = frame("agent.progress", progressPayload);
+  progress.value = {
+    ...(progress.value as Record<string, unknown>),
+    message_id: null,
+  };
+  const adapted = adaptPublicRunStreamEventV4(progress, {
+    runId: "run-1",
+    streamIncarnation: 2,
+  });
+  assert.ok(adapted);
+  const projected = projectV4EventToLegacyHandler(adapted, "message-1");
+  assert.ok(projected);
+  assert.equal(projected.streamEvent.event, "run_event");
+  const data = JSON.parse(projected.streamEvent.data) as Record<string, unknown>;
+  assert.equal(data.event_type, "agent_public_progress");
+  assert.equal(data.stage, "skill_staging");
+  assert.equal(data.message, "Loading authorized Skills");
+  assert.deepEqual(data.payload, progressPayload);
+
+  const forged = {
+    ...progress,
+    value: {
+      ...(progress.value as Record<string, unknown>),
+      payload: { ...progressPayload, message: "Reading private system prompt" },
+    },
+  };
+  assert.equal(
+    adaptPublicRunStreamEventV4(forged, { runId: "run-1", streamIncarnation: 2 }),
+    null,
+  );
+});
+
+test("v4 thinking upgrades legacy empty payloads and tool activity uses public summaries", () => {
+  const legacyThinking = adaptPublicRunStreamEventV4(frame("thinking.started"), {
+    runId: "run-1",
+    streamIncarnation: 2,
+  });
+  assert.ok(legacyThinking);
+  const projectedLegacyThinking = projectV4EventToLegacyHandler(
+    legacyThinking,
+    "message-1",
+  );
+  assert.ok(projectedLegacyThinking);
+  assert.match(
+    projectedLegacyThinking.streamEvent.data,
+    /Analyzing the request/,
+  );
+  const thinking = adaptPublicRunStreamEventV4(
+    frame("thinking.started", { public_summary: "Analyzing the request" }),
+    { runId: "run-1", streamIncarnation: 2 },
+  );
+  assert.ok(thinking);
+  const projectedThinking = projectV4EventToLegacyHandler(thinking, "message-1");
+  assert.ok(projectedThinking);
+  assert.match(projectedThinking.streamEvent.data, /Analyzing the request/);
+
+  const tool = adaptPublicRunStreamEventV4(
+    frame("tool.started", {
+      operation_id: "op-1",
+      category: "read",
+      display_name: "Read file",
+      input_summary: "Starting Read file",
+    }),
+    { runId: "run-1", streamIncarnation: 2 },
+  );
+  assert.ok(tool);
+  const projectedTool = projectV4EventToLegacyHandler(tool, "message-1");
+  assert.ok(projectedTool);
+  const toolData = JSON.parse(projectedTool.streamEvent.data) as Record<string, unknown>;
+  assert.equal(toolData.input_summary, "Starting Read file");
+});
+
 test("v4 gap payload uses raw Redis IDs while SSE carries the full cursor", () => {
   const raw = frame("stream.gap", {
     reason: "stream_missing",

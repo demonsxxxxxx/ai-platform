@@ -280,8 +280,8 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
         "message.started": set(),
         "message.delta": {"delta"},
         "message.completed": {"content"},
-        "thinking.started": set(),
-        "thinking.completed": set(),
+        "thinking.started": {"public_summary"},
+        "thinking.completed": {"public_summary"},
         "model.completed": {"duration_ms", "turn_count", "stop_category"},
         "tool.started": {"operation_id", "category", "display_name"},
         "tool.completed": {"operation_id", "category", "display_name", "duration_ms"},
@@ -323,6 +323,7 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
         "delta": (1, _MAX_DELTA),
         "content": (0, _MAX_TEXT),
         "display_name": (1, _MAX_DISPLAY),
+        "public_summary": (1, _MAX_SUMMARY),
         "input_summary": (0, _MAX_SUMMARY),
         "result_summary": (0, _MAX_RESULT_SUMMARY),
         "filename": (1, _MAX_FILENAME),
@@ -367,6 +368,13 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
             if value is not None and not isinstance(value, str):
                 raise ValueError("invalid detail")
 
+    if "public_summary" in payload:
+        expected_summary = {
+            "thinking.started": "Analyzing the request",
+            "thinking.completed": "Analysis step completed",
+        }.get(event_type)
+        if payload["public_summary"] != expected_summary:
+            raise ValueError("invalid public_summary")
     if "category" in payload and payload["category"] not in _ALLOWED_CATEGORIES:
         raise ValueError("invalid category")
     if "current_category" in payload and payload["current_category"] not in _ALLOWED_CATEGORIES:
@@ -595,8 +603,16 @@ class ClaudeSdkAgentEventAdapter:
             self._thinking_indices.add(key)
             identity = f"thinking:{scope!s}:{key[1]!s}"
             return (
-                self._candidate("thinking.started", {}, identity=identity),
-                self._candidate("thinking.completed", {}, identity=f"{identity}:completed"),
+                self._candidate(
+                    "thinking.started",
+                    {"public_summary": "Analyzing the request"},
+                    identity=identity,
+                ),
+                self._candidate(
+                    "thinking.completed",
+                    {"public_summary": "Analysis step completed"},
+                    identity=f"{identity}:completed",
+                ),
             )
         if name == "ToolUseBlock":
             identity = _safe_private_identity(getattr(block, "id", None))
@@ -731,7 +747,12 @@ class ClaudeSdkAgentEventAdapter:
             return (
                 self._candidate(
                     "tool.started",
-                    {"operation_id": _opaque("op", self.run_id, "tool", call_id), "category": category, "display_name": label},
+                    {
+                        "operation_id": _opaque("op", self.run_id, "tool", call_id),
+                        "category": category,
+                        "display_name": label,
+                        "input_summary": f"Starting {label}",
+                    },
                     identity=f"started:{call_id}",
                 ),
             )
@@ -752,7 +773,13 @@ class ClaudeSdkAgentEventAdapter:
         return (
             self._candidate(
                 "tool.completed",
-                {"operation_id": operation_id, "category": category, "display_name": label, "duration_ms": duration},
+                {
+                    "operation_id": operation_id,
+                    "category": category,
+                    "display_name": label,
+                    "duration_ms": duration,
+                    "result_summary": f"{label} completed",
+                },
                 identity=f"completed:{call_id}",
             ),
         )

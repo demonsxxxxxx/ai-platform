@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+import hashlib
+
+from app.public_execution import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.contracts import ContainerLease, ExecutorCallbackEvent
 
@@ -34,6 +39,27 @@ def _compatibility_message_delta(new_message: dict[str, object] | None) -> str |
     return None
 
 
+def _bind_public_progress_identity(
+    callback: ExecutorCallbackEvent,
+    event: AgentEvent,
+    *,
+    source_index: int,
+) -> AgentEvent:
+    if event.type != PUBLIC_AGENT_PROGRESS_EVENT_TYPE or callback.batch_id is None:
+        return event
+    digest = hashlib.sha256(
+        f"agent-progress-v4:{callback.run_id}:{callback.batch_id}:{source_index}".encode()
+    ).hexdigest()
+    return event.model_copy(
+        update={
+            "event_id": f"progress_{digest}",
+            "run_id": callback.run_id,
+            "message_id": None,
+            "causation_event_id": None,
+        }
+    )
+
+
 def callback_event_to_run_events(callback: ExecutorCallbackEvent) -> list[AgentEvent]:
     events: list[AgentEvent] = []
     mirrored_delta: str | None = None
@@ -63,7 +89,7 @@ def callback_event_to_run_events(callback: ExecutorCallbackEvent) -> list[AgentE
     # The executor has no authority to publish a run terminal fact.  The
     # worker emits one only after its final repository transaction succeeds.
     mirror_consumed = False
-    for event in callback.events:
+    for source_index, event in enumerate(callback.events):
         if event.type in {"run_completed", "run_failed", "run_cancelled"}:
             continue
         if (
@@ -76,5 +102,11 @@ def callback_event_to_run_events(callback: ExecutorCallbackEvent) -> list[AgentE
         ):
             mirror_consumed = True
             continue
-        events.append(event)
+        events.append(
+            _bind_public_progress_identity(
+                callback,
+                event,
+                source_index=source_index,
+            )
+        )
     return events

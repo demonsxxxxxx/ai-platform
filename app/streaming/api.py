@@ -82,6 +82,7 @@ from app.streaming.domain.public_events_v4 import (
     successor_stream_open_event_id,
     strip_internal_envelope as strip_internal_envelope,
     validate_internal_envelope_v4,
+    validate_public_application_payload_v4,
 )
 from app.streaming.domain.transport import (
     STREAM_GAP_SCHEMA,
@@ -142,6 +143,7 @@ __all__ = [
     "stream_end_event_id",
     "successor_stream_open_event_id",
     "validate_internal_envelope_v4",
+    "validate_public_application_payload_v4",
     "ResumeDecision",
     "RunStreamHub",
     "StreamContractError",

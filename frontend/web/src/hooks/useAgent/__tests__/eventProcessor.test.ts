@@ -2027,24 +2027,34 @@ test("fails closed for malformed, unknown, or step-id-less public execution even
 test("projects v4 tool lifecycle into stable typed statuses", () => {
   const started = processMessageEvent(
     "run_event",
-    { event_type: "public_tool_activity", operation_id: "op-read-1", category: "read", display_name: "Read authorized files", status: "started" },
+    { event_type: "public_tool_activity", operation_id: "op-search-1", category: "search", display_name: "Search authorized sources", status: "started", input_summary: "Query: stability evidence" },
     [], "", [], 0, [], true, "message-1",
   );
   assert.equal(started.parts[0]?.type, "tool");
   if (started.parts[0]?.type !== "tool") throw new Error("expected typed tool part");
-  assert.equal(started.parts[0].public_operation_id, "op-read-1");
-  assert.equal(started.parts[0].name, "Read authorized files");
+  assert.equal(started.parts[0].public_operation_id, "op-search-1");
+  assert.equal(started.parts[0].name, "Search authorized sources");
+  assert.equal(started.parts[0].public_input_summary, "Query: stability evidence");
+  assert.deepEqual(started.parts[0].args, {
+    category: "search",
+    summary: "Query: stability evidence",
+  });
   assert.equal(started.parts[0].status, "started");
 
   const completed = processMessageEvent(
     "run_event",
-    { event_type: "public_tool_activity", operation_id: "op-read-1", category: "read", display_name: "Read authorized files", status: "completed", result_summary: "safe summary" },
+    { event_type: "public_tool_activity", operation_id: "op-search-1", category: "search", display_name: "Search authorized sources", status: "completed", result_summary: "safe summary" },
     started.parts, "", [], 0, [], true, "message-1",
   );
   assert.equal(completed.parts.length, 1);
   if (completed.parts[0]?.type !== "tool") throw new Error("expected typed tool part");
   assert.equal(completed.parts[0].isPending, false);
   assert.equal(completed.parts[0].result, "safe summary");
+  assert.equal(completed.parts[0].public_input_summary, "Query: stability evidence");
+  assert.deepEqual(completed.parts[0].args, {
+    category: "search",
+    summary: "Query: stability evidence",
+  });
   assert.equal(completed.parts[0].status, "completed");
 
   const failed = processMessageEvent(

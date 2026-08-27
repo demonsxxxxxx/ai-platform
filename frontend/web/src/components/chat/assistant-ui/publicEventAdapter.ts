@@ -2,7 +2,10 @@ import {
   PUBLIC_STREAM_EVENT_TYPES,
   type PublicRunStreamEventV4,
 } from "../../../generated/publicRunStreamV4";
-import type { StreamEvent } from "../../../hooks/useAgent/types";
+import {
+  isPublicAgentProgressPayload,
+  type StreamEvent,
+} from "../../../hooks/useAgent/types";
 
 export type V4ApplicationEventType = (typeof PUBLIC_STREAM_EVENT_TYPES)[number];
 export type V4ControlEventType =
@@ -52,8 +55,9 @@ const PAYLOAD_KEYS: Record<string, readonly string[]> = {
   "message.started": [],
   "message.delta": ["delta"],
   "message.completed": ["content"],
-  "thinking.started": [],
-  "thinking.completed": [],
+  "thinking.started": ["public_summary"],
+  "thinking.completed": ["public_summary"],
+  "agent.progress": ["schema_version", "step_id", "phase", "lifecycle", "message"],
   "model.completed": ["duration_ms", "turn_count", "stop_category"],
   "tool.started": ["operation_id", "category", "display_name", "input_summary", "evidence_refs"],
   "tool.completed": ["operation_id", "category", "display_name", "duration_ms", "result_summary", "evidence_refs", "artifact_refs"],
@@ -83,6 +87,7 @@ const PAYLOAD_KEYS: Record<string, readonly string[]> = {
 const REQUIRED_PAYLOAD_KEYS: Record<string, readonly string[]> = {
   "message.delta": ["delta"],
   "message.completed": ["content"],
+  "agent.progress": ["schema_version", "step_id", "phase", "lifecycle", "message"],
   "model.completed": ["duration_ms", "turn_count", "stop_category"],
   "tool.started": ["operation_id", "category", "display_name"],
   "tool.completed": ["operation_id", "category", "display_name", "duration_ms"],
@@ -152,6 +157,9 @@ const PAYLOAD_ENUMS: Record<string, ReadonlySet<string>> = {
   decision_code: new Set(["allowed", "capability_not_authorized", "policy_denied"]),
   design_id: new Set(["ai-platform.redis-streams-sse-event-channel.v4"]),
   projection_version: new Set(["ai-platform.chat-public-projection.v1"]),
+  schema_version: new Set(["ai-platform.public-agent-progress.v1"]),
+  phase: new Set(["attachment_materialization", "skill_staging", "sandbox_preparation", "sandbox_submission", "model_wait", "artifact_validation", "artifact_recovery"]),
+  lifecycle: new Set(["started", "progress", "completed", "failed"]),
 };
 const EVENT_PAYLOAD_ENUMS: Record<string, ReadonlySet<string>> = {
   "artifact.created.status": new Set(["created"]),
@@ -165,12 +173,15 @@ const EVENT_PAYLOAD_ENUMS: Record<string, ReadonlySet<string>> = {
   "tool.failed.failure_category": new Set(["invalid_input", "not_found", "permission_denied", "timeout", "unavailable", "execution_failed"]),
   "subagent.failed.failure_category": new Set(["subagent_failed"]),
   "artifact.failed.failure_category": new Set(["artifact_failed", "unavailable"]),
+  "thinking.started.public_summary": new Set(["Analyzing the request"]),
+  "thinking.completed.public_summary": new Set(["Analysis step completed"]),
 };
 const PAYLOAD_STRING_MAX: Record<string, number> = {
-  delta: 8192, content: 262144, display_name: 128, input_summary: 512,
-  result_summary: 2048, media_type: 128, default_message: 1024, detail: 2048, code: 128,
+  delta: 8192, content: 262144, display_name: 128, public_summary: 512,
+  input_summary: 512, result_summary: 2048, message: 128, media_type: 128,
+  default_message: 1024, detail: 2048, code: 128,
 };
-const NON_EMPTY_PAYLOAD_STRINGS = new Set(["delta", "display_name", "media_type", "code", "default_message"]);
+const NON_EMPTY_PAYLOAD_STRINGS = new Set(["delta", "display_name", "public_summary", "message", "media_type", "code", "default_message"]);
 const PAYLOAD_NUMBER_MAX: Record<string, number> = {
   duration_ms: 86400000, turn_count: 10000, progress_percent: 100, size_bytes: 1099511627776,
 };
@@ -234,7 +245,7 @@ function isSafeFilename(value: unknown): value is string {
   });
 }
 function isPayloadRefKey(key: string): boolean {
-  return ["operation_id", "artifact_id", "decision_id", "subagent_id", "terminal_event_id"].includes(key);
+  return ["operation_id", "artifact_id", "decision_id", "subagent_id", "terminal_event_id", "step_id"].includes(key);
 }
 
 function isNullableSafeRef(value: unknown): boolean {
@@ -259,6 +270,9 @@ function payloadIsValid(eventType: string, payload: unknown, _runId: string, inc
   if (!allowed || !hasOnlyKeys(payload, allowed)) return false;
   for (const key of REQUIRED_PAYLOAD_KEYS[eventType] || []) {
     if (!Object.hasOwn(payload, key)) return false;
+  }
+  if (eventType === "agent.progress" && !isPublicAgentProgressPayload(payload)) {
+    return false;
   }
   for (const [key, value] of Object.entries(payload)) {
     const enumValues = EVENT_PAYLOAD_ENUMS[`${eventType}.${key}`] || PAYLOAD_ENUMS[key];
@@ -458,9 +472,19 @@ export function projectV4EventToLegacyHandler(event: V4PublicEvent, fallbackMess
     case "message.completed":
       return { streamEvent: { event: "message:chunk", data: JSON.stringify({ ...base, content: payload.content, projection_version: "ai-platform.chat-public-projection.v1", projection_kind: "assistant_final" }) }, messageId: messageTarget };
     case "thinking.started":
-      return { streamEvent: activity("thinking_started", "Thinking", "info"), messageId: messageTarget };
+      return { streamEvent: activity("thinking_started", typeof payload.public_summary === "string" ? payload.public_summary : "Analyzing the request", "info"), messageId: messageTarget };
     case "thinking.completed":
-      return { streamEvent: activity("thinking_completed", "Thinking complete", "info"), messageId: messageTarget };
+      return { streamEvent: activity("thinking_completed", typeof payload.public_summary === "string" ? payload.public_summary : "Analysis step completed", "info"), messageId: messageTarget };
+    case "agent.progress":
+      return { streamEvent: { event: "run_event", data: JSON.stringify({
+        ...base,
+        event_type: "agent_public_progress",
+        projection_version: "ai-platform.chat-public-projection.v1",
+        stage: payload.phase,
+        status: payload.lifecycle,
+        message: payload.message,
+        payload,
+      }) }, messageId: fallbackMessageId };
     case "model.completed":
       return { streamEvent: activity("model_completed", "Model response complete", "info"), messageId: messageTarget };
     case "tool.started":
