@@ -2205,8 +2205,15 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
                 )
                 bind(scope, alias.asname or alias.name, identity, node)
         elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            parent = parents.get(node)
+            if (
+                isinstance(parent, ast.AnnAssign)
+                and parent.value is None
+                and not isinstance(scope, function_scopes)
+            ):
+                continue
             binding_scope = scope
-            if isinstance(parents.get(node), ast.NamedExpr):
+            if isinstance(parent, ast.NamedExpr):
                 binding_scope = _dynamic_import_scope(node, parents)
                 while isinstance(binding_scope, comprehension_scopes):
                     binding_scope = _dynamic_import_scope(binding_scope, parents)
