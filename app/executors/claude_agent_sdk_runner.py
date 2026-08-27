@@ -25,8 +25,6 @@ from app.control_plane_contracts import (
 )
 from app.executors.claude.capability_policy import (
     CapabilityExecutionPlan,
-    _BUILTIN_PARAMETER_KEYS,
-    _BUILTIN_REQUIRED_PARAMETER_KEYS,
     _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX,
     _SDK_INTERNAL_CONTEXT_TOOLS,
     _authorized_parameter_keys as _authorized_parameter_keys,
