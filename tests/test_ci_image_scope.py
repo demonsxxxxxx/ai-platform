@@ -42,14 +42,23 @@ def test_policy_only_pull_request_does_not_affect_images(role: str) -> None:
 
 @pytest.mark.parametrize("event_name", ["push", "workflow_dispatch"])
 @pytest.mark.parametrize("role", ["backend", "frontend"])
-def test_non_pull_request_events_always_build_images(
+def test_non_pull_request_image_builds_are_owned_by_packaging(
     event_name: str, role: str
 ) -> None:
     assert image_validation_disposition(
         event_name=event_name,
         role=role,
         changed_paths=(),
-    ) == (True, "required_event")
+    ) == (False, "packaging_owned")
+
+
+def test_unknown_event_fails_closed() -> None:
+    with pytest.raises(ValueError, match="unsupported image validation event"):
+        image_validation_disposition(
+            event_name="schedule",
+            role="backend",
+            changed_paths=(),
+        )
 
 
 def _local_docker_copy_sources(dockerfile: Path) -> tuple[str, ...]:

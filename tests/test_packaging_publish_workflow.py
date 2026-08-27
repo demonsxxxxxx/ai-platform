@@ -9,6 +9,8 @@ from tests.support.yaml_contracts import load_unique_yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-packaging-publish.yml"
+BACKEND_WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-backend.yml"
+FRONTEND_WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-frontend.yml"
 WORKFLOW_ROOT = ROOT / ".github" / "workflows"
 
 
@@ -55,6 +57,53 @@ def test_publish_is_reachable_only_from_trusted_main_events():
     assert "github.head_ref" not in text
     assert "github.event.inputs.ref" not in text
     assert "github.event.pull_request" not in text
+
+
+def test_required_workflows_delegate_main_image_builds_to_packaging():
+    packaging = _workflow()
+    packaging_steps = packaging["jobs"]["publish"]["steps"]
+    packaging_build = next(
+        step
+        for step in packaging_steps
+        if step.get("name") == "Build and push immutable image"
+    )
+    assert packaging_build["with"]["push"] == "true"
+
+    for path, job_id, role in (
+        (BACKEND_WORKFLOW, "backend-image", "backend"),
+        (FRONTEND_WORKFLOW, "frontend-image", "frontend"),
+    ):
+        workflow = _workflow(path)
+        assert workflow["on"]["push"] == {"branches": ["main"]}
+        image_job = workflow["jobs"][job_id]
+        steps = image_job["steps"]
+        scope = next(
+            step
+            for step in steps
+            if step.get("name") == f"Determine {role} image impact"
+        )
+        report = next(
+            step
+            for step in steps
+            if step.get("name") == f"Report {role} image build disposition"
+        )
+        build = next(
+            step
+            for step in steps
+            if step.get("name") == f"Build {role} image"
+        )
+
+        assert image_job["env"]["IMAGE_BASE_COMMIT"] == (
+            "${{ github.event.pull_request.base.sha || github.sha }}"
+        )
+        assert '--event-name "$GITHUB_EVENT_NAME"' in scope["run"]
+        assert report["if"] == "steps.image-scope.outputs.build != 'true'"
+        assert report["env"] == {
+            "IMAGE_DISPOSITION": "${{ steps.image-scope.outputs.disposition }}"
+        }
+        assert "packaging_owned)" in report["run"]
+        assert "owner=ai-platform-packaging-publish" in report["run"]
+        assert build["if"] == "steps.image-scope.outputs.build == 'true'"
 
 
 def test_publish_permissions_are_job_scoped_and_environment_protected():

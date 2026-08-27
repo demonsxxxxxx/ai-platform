@@ -46,11 +46,13 @@ def image_inputs_affected(role: str, changed_paths: Iterable[str]) -> bool:
 def image_validation_disposition(
     *, event_name: str, role: str, changed_paths: Iterable[str]
 ) -> tuple[bool, str]:
-    if event_name != "pull_request":
-        return True, "required_event"
-    if image_inputs_affected(role, changed_paths):
-        return True, "affected"
-    return False, "not_affected"
+    if event_name == "pull_request":
+        if image_inputs_affected(role, changed_paths):
+            return True, "affected"
+        return False, "not_affected"
+    if event_name in {"push", "workflow_dispatch"}:
+        return False, "packaging_owned"
+    raise ValueError(f"unsupported image validation event: {event_name}")
 
 
 def changed_paths(base_ref: str, head_ref: str) -> tuple[str, ...]:
@@ -76,7 +78,7 @@ def changed_paths(base_ref: str, head_ref: str) -> tuple[str, ...]:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Decide whether a pull request changes packaged image inputs."
+        description="Decide whether a required workflow must build a candidate image."
     )
     parser.add_argument("--event-name", required=True)
     parser.add_argument("--role", choices=sorted(_EXACT_INPUTS), required=True)
