@@ -13,6 +13,7 @@ export type WorkbenchAccessKey =
   | "roles"
   | "settings"
   | "models"
+  | "runs"
   | "feedback";
 
 const ADMIN_ONLY_ITEMS = new Set<WorkbenchAccessKey>([
@@ -20,6 +21,7 @@ const ADMIN_ONLY_ITEMS = new Set<WorkbenchAccessKey>([
   "roles",
   "settings",
   "models",
+  "runs",
   "feedback",
 ]);
 
@@ -37,6 +39,7 @@ const PATH_ACCESS_KEYS: Array<[RegExp, WorkbenchAccessKey]> = [
   [/^\/roles(?:\/|$)/, "roles"],
   [/^\/settings(?:\/|$)/, "settings"],
   [/^\/models(?:\/|$)/, "models"],
+  [/^\/runs(?:\/|$)/, "runs"],
   [/^\/feedback(?:\/|$)/, "feedback"],
 ];
 
