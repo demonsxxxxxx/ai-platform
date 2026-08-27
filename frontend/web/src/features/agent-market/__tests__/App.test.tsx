@@ -10,6 +10,5 @@ test("App protects the Builder for administrators and exposes the ordinary-user 
   assert.match(source, /path=\{APP_ROUTE_PATHS\.agentMarket\}/);
   assert.match(source, /path=\{APP_ROUTE_PATHS\.agentMarketDetail\}/);
   assert.match(source, /path=\{APP_ROUTE_PATHS\.agentMarketWorkspace\}/);
-  assert.doesNotMatch(source, /McpAuthHandoffLifecycle/);
   assert.doesNotMatch(source, /APP_ROUTE_PATHS\.agentMarketChat/);
 });

@@ -31,8 +31,8 @@ from app.executors.claude.capability_policy import (
     _SDK_INTERNAL_CONTEXT_TOOLS,
     _authorized_parameter_keys as _authorized_parameter_keys,
     _canonical_tool_policy_subjects,
-    _dynamic_mcp_server_options,
     _extract_skill_names_from_tool_input,
+    _mcp_server_options,
     _parameters_match_subject,
     internal_context_tool_policy_subjects,
 )
@@ -926,8 +926,6 @@ async def run_claude_agent_sdk(
     execution_profile: str = "",
     public_skill_metadata: dict[str, dict[str, str]] | None = None,
     require_selected_skill_invocation: bool = True,
-    mcp_relay_url: str = "",
-    mcp_broker_capability: str = "",
 ) -> ClaudeAgentSdkRunResult:
     settings = get_settings()
     max_turns = max(1, int(getattr(settings, "claude_agent_sdk_max_turns", 128)))
@@ -1159,32 +1157,14 @@ async def run_claude_agent_sdk(
             full_access=full_access,
         )
     )
-    external_mcp_selected = any(
-        identity.startswith("mcp__")
-        and subject.get("mcp_server") != "ai-platform-context"
-        for identity, subject in authorized_subjects.items()
-    )
     try:
-        if sandbox_brokered and external_mcp_selected:
-            if not mcp_relay_url or not mcp_broker_capability:
-                raise ValueError("MCP relay capability is required")
-            mcp_servers = _dynamic_mcp_server_options(
-                authorized_subjects,
-                relay_url=mcp_relay_url,
-                capability=mcp_broker_capability,
-            )
-        else:
-            mcp_servers = {}
+        mcp_servers = _mcp_server_options(authorized_subjects) if sandbox_brokered else {}
     except ValueError:
         return ClaudeAgentSdkRunResult(used_sdk=True, error=_SDK_TOOL_ADMISSION_FAILED, turn_diagnostics=turn_diagnostics(_SDK_TOOL_ADMISSION_FAILED))
     if context_retrieval_server is not None and (not sandbox_brokered or internal_context_subjects):
         mcp_servers["ai-platform-context"] = context_retrieval_server
     capability_plan = CapabilityExecutionPlan.from_tool_policy_subjects(
-        (
-            list(authorized_subjects.values())
-            if sandbox_brokered and external_mcp_selected
-            else tool_policy_subjects
-        ),
+        tool_policy_subjects,
         required_skill_identity=(selected_sdk_skill if require_selected_skill_invocation else None),
         available_skill_identities=(
             allowed_skill_names if not require_selected_skill_invocation else ()

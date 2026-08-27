@@ -314,12 +314,12 @@ async function loadReactHarness({
       await loginAs(userId, tenantId, false);
     },
     async dispatchProductionAuthIncarnation(incarnation: string) {
-      const { BROWSER_AUTH_INCARNATION_EVENT } = await import(
+      const { BROWSER_AUTH_INCARCINATION_EVENT } = await import(
         "../../browserAuthCoordinator.ts"
       );
       await React.act(async () => {
         dom.window.dispatchEvent(
-          new CustomEvent(BROWSER_AUTH_INCARNATION_EVENT, {
+          new CustomEvent(BROWSER_AUTH_INCARCINATION_EVENT, {
             detail: { incarnation },
           }) as unknown as { type: string; [key: string]: unknown },
         );
@@ -1596,7 +1596,7 @@ test("useAgent keeps generic, network, malformed, legacy, mismatched-ID, and unk
 });
 
 test("useAgent preserves a durable A fence when an option getter publishes then throws", async () => {
-  const { BROWSER_AUTH_INCARNATION_EVENT } = await import(
+  const { BROWSER_AUTH_INCARCINATION_EVENT } = await import(
     "../../browserAuthCoordinator.ts"
   );
   const { sessionApi } = await import("../../../services/api/session.ts");
@@ -1613,7 +1613,7 @@ test("useAgent preserves a durable A fence when an option getter publishes then 
         if (!firedIncarnation) {
           firedIncarnation = true;
           dom.window.dispatchEvent(
-            new CustomEvent(BROWSER_AUTH_INCARNATION_EVENT, {
+            new CustomEvent(BROWSER_AUTH_INCARCINATION_EVENT, {
               detail: { incarnation: "reentrant-submit-fence" },
             }) as unknown as { type: string; [key: string]: unknown },
           );
@@ -6170,7 +6170,7 @@ test("useAgent synchronously aborts a deferred run-control GET from the producti
 test("useAgent synchronously retires an active Chat SSE from the production auth-incarnation event", async () => {
   let restoreToastDismiss: (() => void) | null = null;
   const harness = await loadReactHarness();
-  const { BROWSER_AUTH_INCARNATION_EVENT } = await import(
+  const { BROWSER_AUTH_INCARCINATION_EVENT } = await import(
     "../../browserAuthCoordinator.ts"
   );
   const { sessionApi } = await import("../../../services/api/session.ts");
@@ -6226,7 +6226,7 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
     restoreToastDismiss = () => { toast.dismiss = originalDismiss; };
     await harness.act(async () => {
       const dispatched = dom.window.dispatchEvent(
-        new CustomEvent(BROWSER_AUTH_INCARNATION_EVENT, {
+        new CustomEvent(BROWSER_AUTH_INCARCINATION_EVENT, {
           detail: { incarnation: "incarnation-retire-chat-sse" },
         }) as unknown as { type: string; [key: string]: unknown },
       );
@@ -6269,7 +6269,7 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
 
 test("useAgent fences the old owner before login's deferred principal GET resolves", async () => {
   const harness = await loadReactHarness();
-  const { BROWSER_AUTH_INCARNATION_EVENT } = await import(
+  const { BROWSER_AUTH_INCARCINATION_EVENT } = await import(
     "../../browserAuthCoordinator.ts"
   );
   const { authApi } = await import("../../../services/api/auth.ts");
@@ -6294,7 +6294,7 @@ test("useAgent fences the old owner before login's deferred principal GET resolv
     incarnationEvents += 1;
   };
   dom.window.addEventListener(
-    BROWSER_AUTH_INCARNATION_EVENT,
+    BROWSER_AUTH_INCARCINATION_EVENT,
     countIncarnationEvent,
   );
   authApi.login = (async () => {}) as typeof authApi.login;
@@ -6374,7 +6374,7 @@ test("useAgent fences the old owner before login's deferred principal GET resolv
     authApi.login = originalAuthLogin;
     authApi.getCurrentUser = originalAuthGetCurrentUser;
     dom.window.removeEventListener(
-      BROWSER_AUTH_INCARNATION_EVENT,
+      BROWSER_AUTH_INCARCINATION_EVENT,
       countIncarnationEvent,
     );
     sessionApi.get = originalGet;

@@ -56,8 +56,8 @@ def tool_policy_row(**overrides):
 
 
 @pytest.mark.asyncio
-async def test_admin_catalog_policy_mutation_refuses_foreign_opaque_tool_id():
-    """A global mcp_tools row is insufficient without the caller tenant's current catalog row."""
+async def test_admin_builtin_policy_mutation_refuses_foreign_dynamic_tool_id():
+    """Dynamic Gateway tools are not mutable through the retained builtin policy table."""
 
     class Cursor:
         async def fetchone(self):
@@ -87,13 +87,13 @@ async def test_admin_catalog_policy_mutation_refuses_foreign_opaque_tool_id():
             updated_by="tool-admin",
         )
 
-    assert "catalog_entry.tenant_id = %s" in conn.sql
-    assert "catalog_entry.catalog_generation = catalog_server.catalog_generation" in conn.sql
+    assert "ragflow-knowledge-search" in conn.sql
+    assert "mcp_tool_catalog_entries" not in conn.sql
     assert conn.params[-1] == "tenant-a"
 
 
 @pytest.mark.asyncio
-async def test_admin_catalog_policy_mutation_refuses_unknown_legacy_tool_id():
+async def test_admin_builtin_policy_mutation_refuses_unknown_legacy_tool_id():
     class Cursor:
         async def fetchone(self):
             return None
@@ -121,12 +121,11 @@ async def test_admin_catalog_policy_mutation_refuses_unknown_legacy_tool_id():
         )
 
     assert "ragflow-knowledge-search" in conn.sql
-    assert "catalog_entry.tenant_id = %s" in conn.sql
-    assert "catalog_any" not in conn.sql
+    assert "mcp_tool_catalog_entries" not in conn.sql
 
 
 @pytest.mark.asyncio
-async def test_admin_catalog_policy_list_excludes_foreign_or_stale_catalog_rows():
+async def test_admin_policy_list_contains_only_retained_code_owned_builtin_rows():
     class Cursor:
         async def fetchall(self):
             return []
@@ -151,9 +150,8 @@ async def test_admin_catalog_policy_list_excludes_foreign_or_stale_catalog_rows(
 
     assert rows == []
     assert "ragflow-knowledge-search" in conn.sql
-    assert "catalog_any" not in conn.sql
-    assert "catalog_entry.tenant_id = %s" in conn.sql
-    assert "catalog_entry.status = 'active'" in conn.sql
+    assert "mcp_tool_catalog_entries" not in conn.sql
+    assert "mcp_tools.server_id = 'ragflow'" in conn.sql
     assert conn.params == ("tenant-a", "tenant-a", True, 25)
 
 

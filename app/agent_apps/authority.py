@@ -16,7 +16,7 @@ from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
 from app.model_catalog import resolve_model_selection
-from app.mcp.api import parse_mcp_tool_reference
+from app.mcp.tool_references import parse_mcp_tool_reference
 from app.models import (
     AgentConversationIdentity,
     AgentProfileAdminProjection,
@@ -838,7 +838,10 @@ class AgentProfileAuthority:
                         detail="agent_profile_capability_not_available",
                     )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail="agent_profile_mcp_reference_invalid") from exc
+            raise HTTPException(
+                status_code=400,
+                detail="agent_profile_mcp_reference_invalid",
+            ) from exc
         except repositories.RepositoryConflictError as exc:
             raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
         except repositories.RepositoryAuthorizationError as exc:

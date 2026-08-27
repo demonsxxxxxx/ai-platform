@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from app.mcp.domain.tool_references import build_mcp_tool_reference
+from app.mcp.tool_references import build_mcp_tool_reference
 
 
 MCP_CACHE_INVALIDATION_TOKEN_HEADER = "X-AI-Platform-Callback-Token"

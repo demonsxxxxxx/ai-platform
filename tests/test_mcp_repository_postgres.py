@@ -1,144 +1,111 @@
+import os
 from pathlib import Path
+import uuid
 
+import psycopg
+from psycopg import sql
+from psycopg.rows import dict_row
 import pytest
 
-from app.bootstrap.mcp import _McpRuntimeServices
-from app.mcp.infrastructure import postgres as mcp_postgres
+from app.mcp import repository as mcp_repository
 
 
-class _Cursor:
-    def __init__(self, rows=()):
-        self._rows = list(rows)
-
-    async def fetchall(self):
-        return list(self._rows)
-
-    async def fetchone(self):
-        return self._rows[0] if self._rows else None
+POSTGRES_DSN_ENV = "AI_PLATFORM_MCP_CATALOG_TEST_DSN"
 
 
-class _RelayConnection:
-    def __init__(self, row):
-        self.row = row
-        self.sql = ""
-        self.params = None
-
-    async def execute(self, statement, params=None):
-        self.sql = " ".join(str(statement).split()).lower()
-        self.params = params
-        return _Cursor([self.row] if self.row is not None else [])
-
-
-def test_fresh_schema_and_repository_have_no_gateway_catalog_persistence_path():
-    root = Path(__file__).resolve().parents[1]
-    schema = (root / "app" / "schema.sql").read_text(encoding="utf-8").lower()
-    repository = (root / "app" / "mcp" / "repository.py").read_text(encoding="utf-8").lower()
-
-    assert "mcp_tool_catalog_entries" not in schema
-    assert "mcp_tool_catalog_entries" not in repository
-    assert "publish_mcp_tool_catalog" not in repository
-    assert "begin_mcp_catalog_sync" not in repository
+def _postgres_dsn() -> str:
+    dsn = os.getenv(POSTGRES_DSN_ENV, "").strip()
+    if not dsn:
+        pytest.skip(f"{POSTGRES_DSN_ENV} is not configured")
+    return dsn
 
 
 @pytest.mark.asyncio
-async def test_mcp_distribution_upsert_reuses_platform_lifecycle_authority(monkeypatch):
-    observed = {}
-
-    async def upsert(conn, **kwargs):
-        observed.update(conn=conn, kwargs=kwargs)
-        return {"capability_id": kwargs["capability_id"], "status": kwargs["status"]}
-
-    monkeypatch.setattr(
-        "app.repositories.upsert_capability_distribution_row",
-        upsert,
+async def test_postgres_keeps_only_server_credentials_and_lightweight_tool_refs():
+    dsn = _postgres_dsn()
+    schema_name = f"mcp_runtime_test_{uuid.uuid4().hex}"
+    schema_source = Path("app/schema.sql").read_text(encoding="utf-8")
+    conn = await psycopg.AsyncConnection.connect(
+        dsn,
+        autocommit=True,
+        row_factory=dict_row,
     )
-    result = await _McpRuntimeServices.upsert_distribution(
-        object(),
-        "connection",
-        tenant_id="tenant-a",
-        capability_id="gateway",
-        status="active",
-        visible_to_user=True,
-        scope_mode="allowlist",
-        department_ids=[],
-        allowed_roles=[],
-        metadata_json={},
-        updated_by="admin-a",
-    )
+    try:
+        await conn.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await conn.execute(
+            sql.SQL("set search_path to {}").format(sql.Identifier(schema_name))
+        )
+        await conn.execute(schema_source)
+        await conn.execute(
+            "insert into tenants(id, name) values ('tenant-mcp', 'MCP Test')"
+        )
+        await conn.execute(
+            """
+            insert into users(id, tenant_id, display_name)
+            values ('user-mcp', 'tenant-mcp', 'MCP User')
+            """
+        )
+        await conn.execute(
+            """
+            insert into mcp_servers(
+              id, tenant_id, name, transport, status, endpoint_redacted,
+              credential_state, updated_by
+            ) values (
+              'server-mcp', 'tenant-mcp', 'gateway', 'streamable_http',
+              'active', '', 'configured', 'user-mcp'
+            )
+            """
+        )
+        await conn.execute(
+            """
+            insert into tenant_capability_distributions(
+              tenant_id, capability_kind, capability_id, status,
+              visible_to_user, scope_mode, updated_by
+            ) values (
+              'tenant-mcp', 'mcp_server', 'gateway', 'active',
+              true, 'allowlist', 'user-mcp'
+            )
+            """
+        )
+        await conn.execute(
+            """
+            insert into mcp_server_credentials(
+              id, tenant_id, server_name, credential_fingerprint,
+              credential_envelope, updated_by
+            ) values (
+              'credential-mcp', 'tenant-mcp', 'gateway', 'fingerprint',
+              'sealed-envelope', 'user-mcp'
+            )
+            """
+        )
 
-    assert result == {"capability_id": "gateway", "status": "active"}
-    assert observed["conn"] == "connection"
-    assert observed["kwargs"]["capability_kind"] == "mcp_server"
+        runtime_target = await mcp_repository.get_mcp_server_runtime_target(
+            conn,
+            tenant_id="tenant-mcp",
+            server_name="gateway",
+        )
+        tool = await mcp_repository.get_mcp_tool_registry_entry(
+            conn,
+            tenant_id="tenant-mcp",
+            tool_id="gateway::pmm.query_projects",
+        )
+        catalog_table = await (
+            await conn.execute("select to_regclass('mcp_tool_catalog_entries') as relation")
+        ).fetchone()
 
-
-@pytest.mark.asyncio
-async def test_run_identity_reader_returns_only_grant_cleanup_identity():
-    conn = _RelayConnection(
-        {"tenant_id": "tenant-a", "user_id": "user-a", "run_id": "run-a"}
-    )
-
-    identity = await mcp_postgres.get_run_mcp_identity(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-a",
-    )
-
-    assert identity == {"tenant_id": "tenant-a", "user_id": "user-a", "run_id": "run-a"}
-    assert conn.sql == (
-        "select tenant_id, user_id, id as run_id from runs "
-        "where tenant_id = %s and id = %s"
-    )
-    assert conn.params == ("tenant-a", "run-a")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("credential_envelope", [None, ""])
-async def test_record_mcp_server_credential_normalizes_empty_envelope(credential_envelope):
-    conn = _RelayConnection(None)
-
-    await mcp_postgres.record_mcp_server_credential(
-        conn,
-        tenant_id="tenant-a",
-        server_name="command-only",
-        credential_fingerprint="",
-        metadata={},
-        credential_envelope=credential_envelope,
-        updated_by="admin-a",
-    )
-
-    assert "insert into mcp_server_credentials" in conn.sql
-    assert conn.params == (
-        "tenant-a",
-        "command-only",
-        "",
-        "{}",
-        "",
-        "admin-a",
-    )
-
-
-@pytest.mark.asyncio
-async def test_mcp_relay_target_does_not_read_platform_tool_catalog():
-    conn = _RelayConnection(
-        {
+        assert runtime_target == {
+            "transport": "streamable_http",
             "credential_envelope": "sealed-envelope",
-            "metadata_json": {},
-            "active_tool_names": ["remote-search"],
         }
-    )
-
-    target = await mcp_postgres.get_mcp_relay_target(
-        conn,
-        tenant_id="tenant-a",
-        server_name="gateway",
-    )
-
-    assert target == {
-        "credential_envelope": "sealed-envelope",
-        "metadata_json": {},
-        "active_tool_names": [],
-    }
-    assert "mcp_tool_catalog_entries" not in conn.sql
-    assert "mcp_tools" not in conn.sql
-    assert "tool_policies" not in conn.sql
-    assert conn.params == ("tenant-a", "gateway")
+        assert tool is not None
+        assert tool["tool_id"] == "gateway::pmm.query_projects"
+        assert tool["endpoint"] == ""
+        assert catalog_table["relation"] is None
+    finally:
+        try:
+            await conn.execute("set search_path to public")
+            await conn.execute(
+                sql.SQL("drop schema {} cascade").format(sql.Identifier(schema_name))
+            )
+        finally:
+            await conn.close()

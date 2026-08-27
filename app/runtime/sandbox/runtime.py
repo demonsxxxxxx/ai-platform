@@ -790,12 +790,6 @@ class SandboxRuntime:
                 task_config["context_manifest"] = dict(request.context_manifest)
             if request.context_retrieval_scope is not None:
                 task_config["context_retrieval_scope"] = request.context_retrieval_scope.model_dump()
-            if request.mcp_broker_capability:
-                # The relay endpoint is a path on the already validated
-                # callback target. Never accept an independently configured
-                # URL from the worker request.
-                task_config["mcp_relay_url"] = trusted_callback_target.mcp_relay_url
-                task_config["mcp_broker_capability"] = request.mcp_broker_capability
             if request.system_prompt:
                 # The executor treats this as server-owned configuration, never as user input.
                 task_config["system_prompt"] = request.system_prompt

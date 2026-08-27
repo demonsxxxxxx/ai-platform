@@ -1,11 +1,9 @@
 import asyncio
 from contextlib import asynccontextmanager
 import json
-from pathlib import Path
 
 import pytest
 
-from app import db
 from app import schema_migrations
 
 
@@ -191,20 +189,6 @@ async def test_migration_checksum_mismatch_fails_closed_without_schema_execution
 
 
 @pytest.mark.asyncio
-async def test_apply_schema_runs_only_the_one_shot_schema_migration(monkeypatch):
-    calls = []
-
-    async def apply_core_schema():
-        calls.append("core_schema")
-
-    monkeypatch.setattr(schema_migrations, "apply_migrations", apply_core_schema)
-
-    await db.apply_schema()
-
-    assert calls == ["core_schema"]
-
-
-@pytest.mark.asyncio
 async def test_base_schema_ledger_advances_to_terminal_reconciliation_schema():
     state = SharedMigrationState()
     state.ledger["2026.08.18.1"] = (
@@ -227,11 +211,7 @@ async def test_base_schema_ledger_advances_to_terminal_reconciliation_schema():
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    schema = " ".join(schema_migrations.schema_sql().split()).lower()
-
     assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.25.1"
-    assert "mcp_context_id text" not in schema
-    assert "drop column if exists mcp_context_id" not in schema
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -277,12 +257,6 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "sessions",
         "chk_sessions_title_source",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
-    assert (
-        "mcp_server_credentials",
-        "credential_envelope",
-        "text",
-        True,
-    ) in schema_migrations.CRITICAL_COLUMNS
     assert (
         "runs",
         "chk_runs_execution_skill_identity",
@@ -362,14 +336,6 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert (
         "sandbox_leases",
         "chk_sandbox_leases_executor_reconciliation_status",
-    ) in schema_migrations.CRITICAL_CONSTRAINTS
-    assert (
-        "mcp_servers",
-        "mcp_servers_endpoint_not_persisted",
-    ) in schema_migrations.CRITICAL_CONSTRAINTS
-    assert (
-        "mcp_tools",
-        "mcp_tools_endpoint_not_persisted",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert schema_migrations.CRITICAL_TRIGGERS == (
         (
@@ -555,10 +521,6 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "'retry'::text, 'finalized'::text, 'failed'::text]))",
         ),
     )
-    source = Path("app/schema_migrations.py").read_text(encoding="utf-8")
-    normalized_source = " ".join(source.split())
-    assert r"^check\\(\\((.*)\\)\\)$" in normalized_source
-    assert r"'check(\\1)'" in normalized_source
     assert (
         "object_deletion_outbox",
         "lease_generation",

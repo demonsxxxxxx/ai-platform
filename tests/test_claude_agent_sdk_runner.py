@@ -4,97 +4,18 @@ import types
 
 import pytest
 
-from app.executors.claude.capability_policy import _parameters_match_subject
 from app.executors.claude_agent_sdk_runner import (
     _sdk_run_timeout_seconds,
     run_claude_agent_sdk,
+)
+from app.executors.claude.capability_policy import (
+    _canonical_tool_policy_subjects,
+    _mcp_server_options,
 )
 from app.required_tool_contract import (
     parse_required_tool_declaration,
     with_sandbox_local_tool_capability_subjects,
 )
-
-
-def test_mcp_schema_additional_properties_controls_parameter_key_fence():
-    base_subject = {
-        "mcp_tool_schema": {
-            "type": "object",
-            "properties": {"query": {"type": "string"}},
-        },
-        "required_parameter_keys": [],
-    }
-
-    assert _parameters_match_subject(
-        base_subject,
-        "mcp__inventory__search",
-        {"query": "value", "page": 2},
-    )
-    assert not _parameters_match_subject(
-        {
-            **base_subject,
-            "mcp_tool_schema": {
-                **base_subject["mcp_tool_schema"],
-                "additionalProperties": False,
-            },
-        },
-        "mcp__inventory__search",
-        {"query": "value", "page": 2},
-    )
-
-
-def test_external_mcp_parameter_delegation_allows_only_exact_selected_identity():
-    subject = {
-        "identity": "mcp__inventory__read_file",
-        "mcp_server": "inventory",
-        "mcp_tool": "read_file",
-        "parameter_delegation": "external_mcp",
-    }
-
-    assert _parameters_match_subject(
-        subject,
-        "mcp__inventory__read_file",
-        {"path": "/reports/current.csv", "limit": 25},
-    )
-    assert not _parameters_match_subject(
-        subject,
-        "mcp__inventory__unselected_tool",
-        {"path": "/reports/current.csv", "limit": 25},
-    )
-
-
-@pytest.mark.parametrize(
-    ("subject", "tool_name", "tool_input"),
-    [
-        (
-            {
-                "identity": "mcp__ai-platform-context__search_memory",
-                "mcp_server": "ai-platform-context",
-                "mcp_tool": "search_memory",
-                "parameter_delegation": "external_mcp",
-                "allowed_parameter_keys": ["query", "limit", "max_tokens"],
-                "required_parameter_keys": [],
-            },
-            "search_memory",
-            {"path": "/private"},
-        ),
-        (
-            {
-                "identity": "Read",
-                "parameter_delegation": "external_mcp",
-                "allowed_parameter_keys": ["file_path"],
-                "required_parameter_keys": [],
-            },
-            "Read",
-            {"path": "/private"},
-        ),
-    ],
-)
-def test_external_mcp_parameter_delegation_cannot_bypass_closed_parameter_fences(
-    subject,
-    tool_name,
-    tool_input,
-):
-    assert not _parameters_match_subject(subject, tool_name, tool_input)
 
 
 def test_sdk_timeout_is_unbounded_by_default_and_bounded_when_configured():
@@ -143,16 +64,11 @@ def _settings():
     )
 
 
-_MCP_RUNTIME_KWARGS = {
-    "mcp_relay_url": "https://platform.example/api/ai/mcp/relay",
-    "mcp_broker_capability": "mcpbrk:mcpctx-test:attempt-token",
-}
-
-
 def _subject(
     *,
     server_id="tenant-server",
     tool_name="search",
+    endpoint="https://private.example/mcp",
     public_tool_label="Tenant Search",
 ):
     return {
@@ -171,11 +87,30 @@ def _subject(
         "risk_level": "low",
         "write_capable": False,
         "public_tool_label": public_tool_label,
+        "mcp_server_config": {
+            "type": "http",
+            "url": endpoint,
+        },
     }
 
 
-def _relay_endpoint(server_id="tenant-server"):
-    return f"{_MCP_RUNTIME_KWARGS['mcp_relay_url']}/{server_id}"
+def test_mcp_server_options_preserve_runtime_static_and_jwt_headers():
+    subject = _subject()
+    subject["mcp_server_config"]["headers"] = {
+        "X-Static-Key": "configured",
+        "JWT-Authorization": "Bearer current.jwt",
+    }
+
+    servers = _mcp_server_options(_canonical_tool_policy_subjects([subject]))
+
+    assert servers["tenant-server"] == {
+        "type": "http",
+        "url": "https://private.example/mcp",
+        "headers": {
+            "X-Static-Key": "configured",
+            "JWT-Authorization": "Bearer current.jwt",
+        },
+    }
 
 
 def _skill_subject(skill_name="qa-review"):
@@ -1097,7 +1032,6 @@ async def test_prior_mcp_completion_does_not_publish_before_bash_failure_termina
         on_capability_evidence=_acknowledge_capability_evidence,
         on_tool_lifecycle=acknowledge_tool_lifecycle,
         on_text=deltas.append,
-        **_MCP_RUNTIME_KWARGS,
     )
 
     assert result.error is None
@@ -1502,7 +1436,6 @@ async def test_sdk_pretool_denies_when_invocation_evidence_is_not_acknowledged(
         execution_policy="sandbox_brokered",
         tool_policy_subjects=subjects,
         on_capability_evidence=None if callback_outcome == "missing" else acknowledge,
-        **(_MCP_RUNTIME_KWARGS if capability_kind == "mcp" else {}),
     )
 
     pretool_output = captured["hook_results"][0][1]["hookSpecificOutput"]
@@ -1536,7 +1469,6 @@ async def test_sdk_profile_system_prompt_appends_to_claude_code_without_entering
         skill_id="general-chat",
         execution_policy=execution_policy,
         tool_policy_subjects=[_subject()],
-        **_MCP_RUNTIME_KWARGS,
     )
 
     assert captured["system_prompt"] == {
@@ -1661,7 +1593,7 @@ async def test_sdk_available_external_mcp_streams_without_forced_prompt_or_hooks
     captured, deltas = {}, []
     subjects = [
         _subject(server_id="tenant__server", tool_name="search"),
-        _subject(server_id="other-server", tool_name="fetch"),
+        _subject(server_id="other-server", tool_name="fetch", endpoint="https://other.private.example/mcp"),
     ]
     current_settings = _settings()
     monkeypatch.setitem(
@@ -1681,7 +1613,6 @@ async def test_sdk_available_external_mcp_streams_without_forced_prompt_or_hooks
         execution_policy="sandbox_brokered",
         tool_policy_subjects=subjects,
         on_text=deltas.append,
-        **_MCP_RUNTIME_KWARGS,
     )
 
     assert result.error is None
@@ -1711,7 +1642,6 @@ async def test_sdk_registers_only_exact_authorized_external_mcp_subjects(monkeyp
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
         tool_policy_subjects=[valid, denied, malformed],
-        **_MCP_RUNTIME_KWARGS,
     )
 
     assert result.error is None
@@ -1719,83 +1649,6 @@ async def test_sdk_registers_only_exact_authorized_external_mcp_subjects(monkeyp
     assert valid["identity"] in captured["allowed_tools"]
     assert denied["identity"] not in captured["allowed_tools"]
     assert malformed["identity"] not in captured["allowed_tools"]
-
-
-@pytest.mark.asyncio
-async def test_dynamic_runtime_registers_one_relay_per_selected_mcp_server(monkeypatch, tmp_path):
-    captured = {}
-    inventory = _subject(server_id="inventory-mcp", tool_name="search")
-    project = _subject(server_id="project-mcp", tool_name="get-project")
-
-    monkeypatch.setitem(
-        sys.modules,
-        "claude_agent_sdk",
-        _fake_sdk(captured, hook_invocations=[]),
-    )
-    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
-
-    result = await run_claude_agent_sdk(
-        prompt="search inventory and project",
-        cwd=tmp_path,
-        skill_id="general-chat",
-        execution_policy="sandbox_brokered",
-        tool_policy_subjects=[inventory, project],
-        **_MCP_RUNTIME_KWARGS,
-    )
-
-    assert result.error is None
-    assert set(captured["mcp_servers"]) == {"inventory-mcp", "project-mcp"}
-    assert captured["mcp_servers"]["inventory-mcp"]["url"] == _relay_endpoint(
-        "inventory-mcp"
-    )
-    assert captured["mcp_servers"]["project-mcp"]["url"] == _relay_endpoint(
-        "project-mcp"
-    )
-    assert all(
-        config["headers"] == {
-            "X-MCP-Broker-Capability": _MCP_RUNTIME_KWARGS[
-                "mcp_broker_capability"
-            ]
-        }
-        for config in captured["mcp_servers"].values()
-    )
-    assert inventory["identity"] in captured["allowed_tools"]
-    assert project["identity"] in captured["allowed_tools"]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "runtime_kwargs",
-    [
-        {},
-        {"mcp_relay_url": _MCP_RUNTIME_KWARGS["mcp_relay_url"]},
-        {"mcp_broker_capability": _MCP_RUNTIME_KWARGS["mcp_broker_capability"]},
-    ],
-)
-async def test_external_mcp_fails_closed_without_complete_relay_capability(
-    monkeypatch,
-    tmp_path,
-    runtime_kwargs,
-):
-    captured = {}
-    monkeypatch.setitem(
-        sys.modules,
-        "claude_agent_sdk",
-        _fake_sdk(captured, hook_invocations=[]),
-    )
-    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
-
-    result = await run_claude_agent_sdk(
-        prompt="search",
-        cwd=tmp_path,
-        skill_id="general-chat",
-        execution_policy="sandbox_brokered",
-        tool_policy_subjects=[_subject()],
-        **runtime_kwargs,
-    )
-
-    assert result.error == "claude_agent_sdk_tool_admission_failed"
-    assert "mcp_servers" not in captured
 
 
 def _actual_mcp_steps(outcome, subjects, text, probe):
@@ -1826,8 +1679,8 @@ def _actual_mcp_steps(outcome, subjects, text, probe):
 async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
     captured, acknowledged, deltas, sealed_probe = {}, [], [], []
     first = _subject()
-    subjects = [first, _subject(server_id="other-server", tool_name="fetch")]
-    private_text = f"Safe answer via {first['identity']} with mcp-call-1 at {_relay_endpoint()}."
+    subjects = [first, _subject(server_id="other-server", tool_name="fetch", endpoint="https://other.private.example/mcp")]
+    private_text = f"Safe answer via {first['identity']} with mcp-call-1 at {first['mcp_server_config']['url']}."
     text = "x" * 4_097 if outcome == "overflow" else private_text if outcome == "success" else "must stay sealed"
     steps = _actual_mcp_steps(outcome, subjects, text, lambda: sealed_probe.extend(deltas))
 
@@ -1845,7 +1698,6 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
         prompt="search", cwd=tmp_path, skill_id="general-chat", execution_policy="sandbox_brokered",
         tool_policy_subjects=subjects, on_text=deltas.append,
         on_capability_evidence=None if outcome == "missing" else acknowledge,
-        **_MCP_RUNTIME_KWARGS,
     )
 
     assert sealed_probe == []
@@ -1856,7 +1708,7 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
             assert result.capability_evidence == acknowledged
             assert [item["lifecycle_phase"] for item in acknowledged] == ["invocation_requested", "completed"]
             assert not {"tool_input", "tool_response", "arguments", "error"} & set().union(*(item.keys() for item in acknowledged))
-            for private_value in (first["identity"], "mcp-call-1", _relay_endpoint()):
+            for private_value in (first["identity"], "mcp-call-1", first["mcp_server_config"]["url"]):
                 assert private_value not in result.message
     else:
         expected = "claude_agent_sdk_tool_admission_failed" if outcome == "overflow" else "required_tool_completion_evidence_mismatch"
@@ -1899,7 +1751,6 @@ async def test_sdk_projects_known_mcp_identity_defers_suffix_until_terminal_and_
         tool_policy_subjects=[subject],
         on_text=deltas.append,
         on_capability_evidence=_acknowledge_capability_evidence,
-        **_MCP_RUNTIME_KWARGS,
     )
 
     assert published_before_hook == []
@@ -1912,7 +1763,7 @@ async def test_sdk_projects_known_mcp_identity_defers_suffix_until_terminal_and_
     assert result.message == "Before external tool. After tool invocation."
     for private_value in (
         subject["identity"],
-        _relay_endpoint(),
+        subject["mcp_server_config"]["url"],
         call_id,
         "safe-synthetic-value",
     ):
@@ -2000,7 +1851,6 @@ async def test_sdk_mcp_discards_sealed_pre_capability_terminal_text(monkeypatch,
         tool_policy_subjects=[subject],
         on_text=deltas.append,
         on_capability_evidence=_acknowledge_capability_evidence,
-        **_MCP_RUNTIME_KWARGS,
     )
 
     assert observed_before_result == ["Verified MCP final answer streams "]
@@ -2041,7 +1891,6 @@ async def test_sdk_selected_skill_remains_required_with_unused_available_mcp(mon
         tool_policy_subjects=[_skill_subject(skill_name), _subject()],
         on_text=deltas.append,
         on_capability_evidence=_acknowledge_capability_evidence,
-        **_MCP_RUNTIME_KWARGS,
     )
 
     sdk_prompt = _captured_sdk_prompt(captured)
@@ -2419,7 +2268,6 @@ async def test_sdk_mcp_selection_or_authorization_without_valid_pre_tool_use_nev
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
         tool_policy_subjects=[_subject()],
-        **_MCP_RUNTIME_KWARGS,
     )
 
     assert not result.capability_evidence
@@ -2463,7 +2311,6 @@ async def test_sdk_mcp_pre_tool_use_requires_exact_internal_and_hook_allow(
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
         tool_policy_subjects=[_subject()],
-        **_MCP_RUNTIME_KWARGS,
     )
 
     assert result.capability_evidence == []
@@ -2497,7 +2344,6 @@ async def test_sdk_mcp_hook_omits_unknown_or_missing_tool_call_identity(monkeypa
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
         tool_policy_subjects=[_subject()],
-        **_MCP_RUNTIME_KWARGS,
     )
 
     assert result.capability_evidence == []

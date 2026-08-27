@@ -2,15 +2,19 @@ from typing import Any, ClassVar, Literal
 from uuid import RFC_4122, UUID
 
 from pydantic import (
-    AliasChoices, BaseModel,
-    ConfigDict, Field,
-    PrivateAttr, field_validator,
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
     model_validator,
 )
 
 from app.control_plane_contracts import (
     HARNESS_CHAT_EXECUTOR_TYPE,
-    RUN_EXECUTION_KIND_HARNESS_CHAT, RUN_EXECUTION_KIND_SKILL,
+    RUN_EXECUTION_KIND_HARNESS_CHAT,
+    RUN_EXECUTION_KIND_SKILL,
     RUN_PAYLOAD_SCHEMA_VERSION,
     RUN_PAYLOAD_SCHEMA_VERSION_V2,
     SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS,
@@ -20,10 +24,11 @@ from app.agent_apps.api import (
     normalize_agent_avatar_seed, normalize_agent_profile_display_items, normalize_agent_skill_set,
 )
 from app.skills.release_policy import (
-    validate_release_decision_lock, validate_release_decision_payload,
+    validate_release_decision_lock,
+    validate_release_decision_payload,
 )
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
-from app.mcp.api import assert_mcp_tool_reference
+from app.mcp.tool_references import assert_mcp_tool_reference
 
 from app.validation import (
     MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
@@ -391,6 +396,7 @@ class AgentAppRunRequest(BaseModel):
         if len(normalized) != len(set(normalized)):
             raise ValueError("file_ids contains duplicates")
         return normalized
+
 
 class AgentProfilePublicProjection(BaseModel):
     """Ordinary-user market projection without executable configuration."""

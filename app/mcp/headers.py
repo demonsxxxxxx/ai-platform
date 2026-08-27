@@ -1,7 +1,7 @@
 import re
 from collections.abc import Mapping
 
-from app.mcp.domain.errors import McpRuntimeContextError
+from app.mcp.errors import McpRuntimeContextError
 
 
 MCP_JWT_AUTHORIZATION_HEADER = "JWT-Authorization"

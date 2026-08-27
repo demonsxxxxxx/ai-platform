@@ -947,7 +947,6 @@ test("Agent starter prompts draft before explicit first-message submission", asy
       agent_id: profile.agent_id,
       expected_revision: profile.expected_revision,
     });
-    assert.equal(submissions[expectedCount - 1]?.length, 11);
   }
 
   try {

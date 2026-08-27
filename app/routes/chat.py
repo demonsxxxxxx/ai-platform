@@ -3,8 +3,8 @@ import binascii
 import hashlib
 import json
 import logging
+import re
 from datetime import datetime
-from functools import partial
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
@@ -30,7 +30,6 @@ from app.capability_distribution import (
     CapabilityAuthorizationDenial,
 )
 from app.chat_session_projection import session_response
-from app.conversations import api as conversation_api
 from app.context_builder import record_initial_context_snapshot
 from app.context.file_continuity import select_authorized_run_file_snapshot
 from app.control_plane_contracts import (
@@ -124,7 +123,35 @@ _REQUIRED_CAPABILITY_UNAVAILABLE_CODE = "required_capability_unavailable"
 _CHAT_SUBMISSION_INTERNAL_ERROR_CODE = "chat_submission_internal_error"
 _QUEUE_PAYLOAD_INVALID_CODE = "queue_payload_invalid"
 _SAFE_SUBMISSION_DETAIL_CODES = frozenset({_REQUIRED_CAPABILITY_UNAVAILABLE_CODE})
+_SAFE_SUBMISSION_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _MESSAGE_CURSOR_VERSION = 1
+
+
+def _safe_submission_code(value: object, fallback: str = "chat_submission_rejected") -> str:
+    return value if isinstance(value, str) and _SAFE_SUBMISSION_CODE_PATTERN.fullmatch(value) else fallback
+
+
+def _new_submission_diagnostic_id() -> str:
+    return f"diag_{uuid4().hex[:16]}"
+
+
+def _log_safe_submission_exception(
+    *,
+    phase: str,
+    diagnostic_id: str,
+    exc: BaseException,
+) -> None:
+    frames: list[str] = []
+    traceback_cursor = exc.__traceback__
+    while traceback_cursor is not None:
+        module_name = str(traceback_cursor.tb_frame.f_globals.get("__name__") or "unknown")
+        if module_name == "app" or module_name.startswith("app."):
+            frames.append(f"{module_name}:{traceback_cursor.tb_lineno}:{traceback_cursor.tb_frame.f_code.co_name}")
+        traceback_cursor = traceback_cursor.tb_next
+    logger.error(
+        "chat submission failure diagnostic_id=%s phase=%s exception_type=%s frames=%s",
+        diagnostic_id, phase, type(exc).__name__, ",".join(frames[-8:]) or "none",
+    )
 
 
 def _submission_error_detail(
@@ -133,7 +160,7 @@ def _submission_error_detail(
     rejected_before_persist: bool,
     diagnostic_id: str | None = None,
 ) -> dict[str, str]:
-    detail = {"code": conversation_api.safe_submission_code(code)}
+    detail = {"code": _safe_submission_code(code)}
     if rejected_before_persist:
         detail["submission_disposition"] = "rejected_before_persist"
     if diagnostic_id is not None:
@@ -192,9 +219,8 @@ class _ChatSubmissionNoStoreRoute(APIRoute):
             except RequestValidationError as exc:
                 response = await request_validation_exception_handler(request, exc)
             except Exception as exc:
-                diagnostic_id = conversation_api.new_submission_diagnostic_id()
-                conversation_api.log_safe_submission_exception(
-                    logger,
+                diagnostic_id = _new_submission_diagnostic_id()
+                _log_safe_submission_exception(
                     phase="resolver",
                     diagnostic_id=diagnostic_id,
                     exc=exc,
@@ -219,7 +245,7 @@ def _chat_submission_http_error(
 ) -> HTTPException:
     """Return the sole server-controlled pre-persistence rejection signal."""
 
-    safe_code = conversation_api.safe_submission_code(code)
+    safe_code = _safe_submission_code(code)
     detail = _submission_error_detail(
         code=safe_code,
         rejected_before_persist=True,
@@ -235,11 +261,11 @@ def _chat_submission_http_error(
 
 def _submission_code(detail: object, fallback: str = "chat_submission_rejected") -> str:
     if isinstance(detail, dict) and isinstance(detail.get("code"), str):
-        return conversation_api.safe_submission_code(detail["code"], fallback)
+        return _safe_submission_code(detail["code"], fallback)
     if isinstance(detail, dict) and detail.get("detail_code") in _SAFE_SUBMISSION_DETAIL_CODES:
-        return conversation_api.safe_submission_code(detail["detail_code"], fallback)
+        return _safe_submission_code(detail["detail_code"], fallback)
     if isinstance(detail, str):
-        return conversation_api.safe_submission_code(detail, fallback)
+        return _safe_submission_code(detail, fallback)
     return fallback
 
 
@@ -432,35 +458,80 @@ async def _recover_preledger_chat_submission(
         return _chat_submission_resolution(row)
 
 
-_SUBMISSION_REJECTION_PORTS = conversation_api.SubmissionRejectionPorts(
-    transaction=lambda: transaction(),
-    ensure_submission_principal=lambda *args, **kwargs: repositories.ensure_submission_principal(
-        *args, **kwargs
-    ),
-    get_authorized_session=lambda *args, **kwargs: repositories.get_authorized_session(
-        *args, **kwargs
-    ),
-    claim_chat_submission=lambda *args, **kwargs: repositories.claim_chat_submission(
-        *args, **kwargs
-    ),
-    finalize_chat_submission=lambda *args, **kwargs: repositories.finalize_chat_submission(
-        *args, **kwargs
-    ),
-    canonical_fingerprint=lambda **kwargs: _canonical_pre_persistence_rejection_fingerprint(
-        **kwargs
-    ),
-    is_preledger_tombstone=lambda row, **kwargs: _is_preledger_recovery_tombstone(
-        row, **kwargs
-    ),
-    submission_error=lambda **kwargs: _chat_submission_http_error(**kwargs),
-    conflict_error=lambda **kwargs: HTTPException(**kwargs),
-)
-_persist_pre_persistence_rejection = partial(
-    conversation_api.persist_pre_persistence_rejection,
-    ports=_SUBMISSION_REJECTION_PORTS,
-    preledger_rejection_code=_PRELEDGER_RECOVERY_REJECTION_CODE,
-    required_capability_unavailable_code=_REQUIRED_CAPABILITY_UNAVAILABLE_CODE,
-)
+async def _persist_pre_persistence_rejection(
+    *,
+    request: ChatStreamRequest,
+    principal: AuthPrincipal,
+    submission_id: str | None,
+    query_agent_id: str | None,
+    workspace_id: str | None,
+    session_id: str | None,
+    code: str,
+) -> None:
+    """Record a deterministic rejection after the mutation transaction rolled back."""
+
+    if submission_id is None:
+        return
+    request_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+        request=request,
+        principal=principal,
+        query_agent_id=query_agent_id,
+        code=code,
+    )
+    async with transaction() as conn:
+        await repositories.ensure_submission_principal(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            display_name=principal.display_name,
+        )
+        effective_workspace_id = workspace_id
+        if session_id:
+            continuation_session = await repositories.get_authorized_session(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                session_id=session_id,
+            )
+            saved_workspace_id = continuation_session.get("workspace_id") if continuation_session else None
+            if isinstance(saved_workspace_id, str) and saved_workspace_id:
+                effective_workspace_id = saved_workspace_id
+        row, created = await repositories.claim_chat_submission(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            submission_id=submission_id,
+            workspace_id=effective_workspace_id,
+            request_fingerprint_sha256=request_fingerprint,
+        )
+        if not created and _is_preledger_recovery_tombstone(row, principal=principal):
+            raise _chat_submission_http_error(
+                status_code=409,
+                code=_PRELEDGER_RECOVERY_REJECTION_CODE,
+            )
+        if not created and row.get("request_fingerprint_sha256") != request_fingerprint:
+            raise HTTPException(status_code=409, detail="submission_payload_mismatch")
+        if not created and row.get("state") == "rejected_before_persist":
+            if (
+                code == _REQUIRED_CAPABILITY_UNAVAILABLE_CODE
+                and row.get("rejection_code") == code
+            ):
+                return
+            raise _chat_submission_http_error(
+                status_code=409,
+                code=str(row.get("rejection_code") or "chat_submission_rejected"),
+            )
+        if created or row.get("state") == "resolving":
+            await repositories.finalize_chat_submission(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                submission_id=submission_id,
+                state="rejected_before_persist",
+                workspace_id=effective_workspace_id,
+                submission_disposition="rejected_before_persist",
+                rejection_code=code,
+            )
 
 
 async def _admit_chat_submission(
@@ -1961,10 +2032,7 @@ async def chat_stream(
                         actor_department_id=principal.department_id,
                         actor_roles=principal.roles,
                         capability_kind="mcp_tool",
-                        capability_id=(
-                            repositories.extract_run_mcp_tool_ids(run_input)
-                            or ["mcp_tool"]
-                        )[0],
+                        capability_id=repositories.extract_run_mcp_tool_ids(run_input)[0],
                     ),
                 )
             file_selection = await select_authorized_run_file_snapshot(
@@ -2050,11 +2118,11 @@ async def chat_stream(
                 release_decision_payload = {}
                 skill_manifests = []
             skill_manifest_transport = repositories.skill_manifest_refs(skill_manifests)
-            agent_profile_execution_input = (
-                dict(admitted_agent_profile.private_execution_input)
-                if admitted_agent_profile is not None
-                else None
-            )
+            agent_profile_execution_input = None
+            if admitted_agent_profile is not None:
+                agent_profile_execution_input = {
+                    **admitted_agent_profile.private_execution_input,
+                }
             session_id = request.session_id or repositories.new_id("ses")
             run_id = repositories.new_id("run")
             queue_payload = _validate_queue_payload_for_enqueue(
@@ -2415,9 +2483,8 @@ async def chat_stream(
             raise _chat_submission_http_error(status_code=409, code=code) from exc
         raise HTTPException(status_code=409, detail=code) from exc
     except Exception as exc:
-        diagnostic_id = conversation_api.new_submission_diagnostic_id()
-        conversation_api.log_safe_submission_exception(
-            logger,
+        diagnostic_id = _new_submission_diagnostic_id()
+        _log_safe_submission_exception(
             phase="admission_transaction",
             diagnostic_id=diagnostic_id,
             exc=exc,
@@ -2433,8 +2500,7 @@ async def chat_stream(
                 code=_CHAT_SUBMISSION_INTERNAL_ERROR_CODE,
             )
         except Exception as persistence_exc:
-            conversation_api.log_safe_submission_exception(
-                logger,
+            _log_safe_submission_exception(
                 phase="rejection_ledger",
                 diagnostic_id=diagnostic_id,
                 exc=persistence_exc,

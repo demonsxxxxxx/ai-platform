@@ -72,7 +72,6 @@ test("preserves legacy session get while adding safe authoritative recovery", as
         agent_id: "agt_support",
         title: "支持助手",
         agent_conversation: {
-          ...defaultEnterpriseProjection,
           agent_id: "agt_support",
           revision: 7,
           name: "支持助手",
@@ -99,7 +98,6 @@ test("preserves legacy session get while adding safe authoritative recovery", as
       name: "支持助手",
       description: "处理已授权的支持请求。",
       avatar_ref: "builtin:assistant",
-      avatar_seed: "agt_support",
       category: "support",
     });
     assert.equal("selected_skill" in authoritative.agent_conversation!, false);
@@ -231,51 +229,6 @@ test("run-control mutations use the shared cookie-session transport and forward 
   }
 });
 
-test("MCP retry uses one server-authorized operation without a browser context", async () => {
-  const originalFetch = globalThis.fetch;
-  const controller = new AbortController();
-  const calls: Array<{
-    url: string;
-    body?: string | null;
-    signal?: AbortSignal | null;
-    jwt?: string | null;
-  }> = [];
-  globalThis.fetch = (async (input, init) => {
-    calls.push({
-      url: String(input),
-      body: typeof init?.body === "string" ? init.body : null,
-      signal: init?.signal,
-      jwt: new Headers(init?.headers).get("JWT-Authorization"),
-    });
-    return new Response(
-      JSON.stringify({
-        run_id: "run-child",
-        session_id: "session-a",
-        status: "queued",
-      }),
-    );
-  }) as typeof fetch;
-
-  try {
-    const operationId = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4";
-    const result = await sessionApi.retryRun("run-parent", operationId, {
-      signal: controller.signal,
-    });
-
-    assert.equal(result.run_id, "run-child");
-    assert.equal(calls.length, 1);
-    assert.equal(
-      calls[0]?.url,
-      "/api/ai/runs/run-parent/retry?operation_id=7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
-    );
-    assert.equal(calls[0]?.body, null);
-    assert.equal(calls[0]?.jwt, null);
-    assert.ok(calls.every((call) => call.signal === controller.signal));
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
 test("includes trace_id when looking up a specific run by trace", () => {
   assert.equal(
     buildSessionRunsUrl("session-1", { trace_id: "trace-123" }),
@@ -317,19 +270,6 @@ test("preserves MCP selection tri-state in the structured Chat request", () => {
   assert.equal("selected_mcp_tool_ids" in omitted, false);
   assert.deepEqual(cleared.selected_mcp_tool_ids, []);
   assert.deepEqual(selected.selected_mcp_tool_ids, ["tenant-search"]);
-});
-
-test("carries selected platform MCP references without any credential field", () => {
-  const body = buildSubmitChatBody({
-    message: "use an MCP tool",
-    selectedMcpToolIds: ["inventory-read"],
-  });
-
-  assert.deepEqual(body.selected_mcp_tool_ids, ["inventory-read"]);
-  assert.equal("mcp_gateway_tool_names" in body, false);
-  assert.equal("jwt" in body, false);
-  assert.equal("token" in body, false);
-  assert.equal("authorization" in body, false);
 });
 
 test("carries an opaque submission id and resolves its exact status route", () => {
@@ -541,7 +481,6 @@ test("pinned Agent conversations submit only through the dedicated selector-free
     assert.equal(calls[0]?.body.message, "Review this");
     assert.equal(calls[0]?.body.submission_id, "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4");
     assert.deepEqual(calls[0]?.body.file_ids, []);
-    assert.equal("mcp_context_id" in calls[0]!.body, false);
     for (const forbidden of [
       "agent_options",
       "selected_agent_profile",

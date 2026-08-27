@@ -1702,8 +1702,6 @@ async def _default_executor_runner(
             "tool_policy_subjects": _task_tool_policy_subjects(request),
             "execution_policy": "sandbox_brokered",
             "execution_profile": str(request.config.get("sdk_execution_profile") or ""),
-            "mcp_relay_url": str(request.config.get("mcp_relay_url") or ""),
-            "mcp_broker_capability": str(request.config.get("mcp_broker_capability") or ""),
             "require_selected_skill_invocation": request.config.get(
                 "require_selected_skill_invocation", True
             ) is not False,

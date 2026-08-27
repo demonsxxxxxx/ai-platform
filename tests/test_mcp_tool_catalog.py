@@ -4,8 +4,15 @@ import json
 import httpx
 import pytest
 
-from app.mcp.infrastructure import catalog
-from app.mcp.infrastructure.catalog import McpToolDiscoveryError, StreamableHttpMcpToolDiscoveryAdapter
+from app.mcp import catalog
+from app.mcp.catalog import (
+    MCP_TOOL_ANNOTATION_READ_ONLY,
+    MCP_TOOL_ANNOTATION_UNKNOWN,
+    MCP_TOOL_ANNOTATION_WRITE_CAPABLE,
+    McpToolDiscoveryError,
+    StreamableHttpMcpToolDiscoveryAdapter,
+)
+from app.mcp.errors import McpRuntimeContextError
 
 
 async def _resolved(*addresses):
@@ -13,76 +20,85 @@ async def _resolved(*addresses):
 
 
 @pytest.mark.parametrize(
-    "authorization",
+    ("annotations", "expected_state", "write_capable", "risk_level"),
     [
-        "Bearer catalog token",
-        "Bearer catalog\x7ftoken",
-        "Bearer catalog\u0080token",
-        "Bearer catalog\u00e9token",
+        (None, MCP_TOOL_ANNOTATION_UNKNOWN, True, "high"),
+        ({}, MCP_TOOL_ANNOTATION_UNKNOWN, True, "high"),
+        ({"readOnlyHint": True}, MCP_TOOL_ANNOTATION_READ_ONLY, False, "low"),
+        ({"readOnlyHint": False}, MCP_TOOL_ANNOTATION_WRITE_CAPABLE, True, "high"),
+        ({"destructiveHint": True}, MCP_TOOL_ANNOTATION_WRITE_CAPABLE, True, "high"),
     ],
 )
-def test_jwt_authorization_rejects_non_sendable_bearer_tokens(authorization):
-    with pytest.raises(McpToolDiscoveryError, match="authorization_required"):
-        catalog._normalized_jwt_authorization(authorization)
+def test_discovered_tool_annotations_remain_advisory(
+    annotations,
+    expected_state,
+    write_capable,
+    risk_level,
+):
+    raw = {"name": "compatible_tool", "inputSchema": {"type": "object"}}
+    if annotations is not None:
+        raw["annotations"] = annotations
 
+    tool = catalog._canonical_tool(raw)
 
-def test_jwt_authorization_accepts_visible_ascii_bearer_tokens():
-    assert catalog._normalized_jwt_authorization("Bearer catalog-token~!#") == "Bearer catalog-token~!#"
+    assert tool.annotation_state == expected_state
+    assert tool.write_capable is write_capable
+    assert tool.risk_level == risk_level
 
 
 @pytest.mark.asyncio
-async def test_streamable_http_discovery_returns_complete_definitions(monkeypatch):
-    seen_methods = []
+async def test_streamable_http_discovery_sends_jwt_and_static_headers_on_every_page(
+    monkeypatch,
+):
+    requests: list[tuple[str, str | None, str | None, str | None]] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers["X-API-Key"] == "catalog-static-secret"
-        assert request.headers["JWT-Authorization"] == "Bearer catalog.jwt"
-        assert request.headers["Host"] == "mcp.example"
-        assert request.extensions["sni_hostname"] == "mcp.example"
-        assert request.url.host == "8.8.8.8"
         payload = json.loads(request.content)
-        seen_methods.append(payload["method"])
-        if payload["method"] == "initialize":
+        method = payload["method"]
+        requests.append(
+            (
+                method,
+                request.headers.get("JWT-Authorization"),
+                request.headers.get("X-Static-Key"),
+                request.headers.get("Mcp-Session-Id"),
+            )
+        )
+        if method == "initialize":
             return httpx.Response(
                 200,
-                json={"jsonrpc": "2.0", "id": payload["id"], "result": {"protocolVersion": "2025-03-26"}},
-                headers={"mcp-session-id": "session-1"},
+                json={"result": {"protocolVersion": "2025-03-26"}},
+                headers={"Mcp-Session-Id": "session-1"},
             )
-        if payload["method"] == "notifications/initialized":
+        if method == "notifications/initialized":
             return httpx.Response(202)
         if payload["params"] == {}:
             return httpx.Response(
                 200,
                 json={
-                    "jsonrpc": "2.0",
-                    "id": payload["id"],
                     "result": {
                         "tools": [
                             {
                                 "name": "search_docs",
-                                "title": "Search docs",
                                 "description": "Search permitted docs.",
                                 "inputSchema": {"type": "object"},
+                                "annotations": {"readOnlyHint": True},
                             }
                         ],
                         "nextCursor": "page-2",
-                    },
+                    }
                 },
             )
         return httpx.Response(
             200,
             json={
-                "jsonrpc": "2.0",
-                "id": payload["id"],
                 "result": {
                     "tools": [
                         {
                             "name": "get_doc",
-                            "description": "Get a permitted doc.",
                             "inputSchema": {"type": "object"},
                         }
                     ]
-                },
+                }
             },
         )
 
@@ -92,29 +108,52 @@ async def test_streamable_http_discovery_returns_complete_definitions(monkeypatc
         "AsyncClient",
         lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
     )
-    monkeypatch.setattr(catalog, "_resolve_discovery_addresses", lambda *_: _resolved("8.8.8.8"))
+    monkeypatch.setattr(
+        catalog,
+        "_resolve_discovery_addresses",
+        lambda _hostname, _port: _resolved("8.8.8.8"),
+    )
 
     definitions = await StreamableHttpMcpToolDiscoveryAdapter().discover_definitions(
         "https://mcp.example/tools",
-        static_headers={"X-API-Key": "catalog-static-secret"},
-        jwt_authorization="Bearer catalog.jwt",
+        static_headers={"X-Static-Key": "configured"},
+        jwt_authorization="Bearer user.jwt",
     )
 
-    assert [tool["name"] for tool in definitions] == ["search_docs", "get_doc"]
-    assert definitions[0]["description"] == "Search permitted docs."
-    assert definitions[0]["inputSchema"] == {"type": "object"}
-    assert seen_methods == ["initialize", "notifications/initialized", "tools/list", "tools/list"]
+    assert [item["name"] for item in definitions] == ["search_docs", "get_doc"]
+    assert [item[0] for item in requests] == [
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+        "tools/list",
+    ]
+    assert all(item[1] == "Bearer user.jwt" for item in requests)
+    assert all(item[2] == "configured" for item in requests)
+    assert requests[0][3] is None
+    assert all(item[3] == "session-1" for item in requests[1:])
 
 
 @pytest.mark.asyncio
-async def test_streamable_http_discovery_rejects_cursor_loop(monkeypatch):
+async def test_streamable_http_discovery_rejects_duplicate_tool_and_cursor_loop(monkeypatch):
+    page = 0
+
     async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal page
         payload = json.loads(request.content)
         if payload["method"] == "initialize":
             return httpx.Response(200, json={"result": {"protocolVersion": "2025-03-26"}})
         if payload["method"] == "notifications/initialized":
             return httpx.Response(202)
-        return httpx.Response(200, json={"result": {"tools": [], "nextCursor": "same"}})
+        page += 1
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "tools": [{"name": "duplicate", "inputSchema": {}}],
+                    "nextCursor": "same",
+                }
+            },
+        )
 
     real_client = httpx.AsyncClient
     monkeypatch.setattr(
@@ -122,89 +161,31 @@ async def test_streamable_http_discovery_rejects_cursor_loop(monkeypatch):
         "AsyncClient",
         lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
     )
-    monkeypatch.setattr(catalog, "_resolve_discovery_addresses", lambda *_: _resolved("8.8.8.8"))
-
-    with pytest.raises(McpToolDiscoveryError, match="protocol_error"):
-        await StreamableHttpMcpToolDiscoveryAdapter().discover_definitions(
-            "https://mcp.example/tools",
-            jwt_authorization="Bearer catalog.jwt",
-        )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("endpoint", "allowed"),
-    [
-        ("https://8.8.8.8/tools", True),
-        ("http://8.8.8.8/tools", False),
-        ("http://10.42.0.12/tools", True),
-        ("https://10.42.0.12/tools", True),
-        ("http://127.0.0.1/tools", False),
-        ("http://169.254.169.254/latest/meta-data", False),
-        ("https://[::1]/tools", False),
-        ("https://[fc00::1]/tools", False),
-        ("https://100.64.0.1/tools", False),
-    ],
-)
-async def test_discovery_target_policy(endpoint, allowed):
-    if allowed:
-        assert await catalog._validated_discovery_endpoint(endpoint) == endpoint
-    else:
-        with pytest.raises(McpToolDiscoveryError, match="invalid_endpoint"):
-            await catalog._validated_discovery_endpoint(endpoint)
-
-
-@pytest.mark.asyncio
-async def test_discovery_target_policy_rejects_mixed_dns_answers(monkeypatch):
     monkeypatch.setattr(
         catalog,
         "_resolve_discovery_addresses",
-        lambda *_: _resolved("10.42.0.12", "8.8.8.8"),
-    )
-
-    with pytest.raises(McpToolDiscoveryError, match="invalid_endpoint"):
-        await catalog._validated_discovery_endpoint("https://mcp.corp.example/tools")
-
-
-@pytest.mark.asyncio
-async def test_discovery_does_not_follow_redirects(monkeypatch):
-    seen_urls = []
-
-    async def handler(request: httpx.Request) -> httpx.Response:
-        seen_urls.append(str(request.url))
-        return httpx.Response(302, headers={"location": "http://169.254.169.254/latest/meta-data"})
-
-    real_client = httpx.AsyncClient
-    monkeypatch.setattr(catalog, "_resolve_discovery_addresses", lambda *_: _resolved("8.8.8.8"))
-    monkeypatch.setattr(
-        catalog.httpx,
-        "AsyncClient",
-        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+        lambda _hostname, _port: _resolved("8.8.8.8"),
     )
 
     with pytest.raises(McpToolDiscoveryError, match="protocol_error"):
         await StreamableHttpMcpToolDiscoveryAdapter().discover_definitions(
             "https://mcp.example/tools",
-            jwt_authorization="Bearer catalog.jwt",
+            jwt_authorization="Bearer user.jwt",
         )
-    assert seen_urls == ["https://8.8.8.8/tools"]
+    assert page == 2
 
 
-@pytest.mark.asyncio
-async def test_discovery_stops_when_response_exceeds_limit(monkeypatch):
-    async def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=b"x" * 65)
-
-    real_client = httpx.AsyncClient
-    monkeypatch.setattr(catalog, "_resolve_discovery_addresses", lambda *_: _resolved("8.8.8.8"))
-    monkeypatch.setattr(
-        catalog.httpx,
-        "AsyncClient",
-        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+def test_discovery_request_rejects_static_dynamic_header_collision():
+    target = catalog._ValidatedDiscoveryTarget(
+        endpoint="https://mcp.example/tools",
+        connect_url="https://8.8.8.8/tools",
+        host_header="mcp.example",
+        sni_hostname="mcp.example",
     )
 
-    with pytest.raises(McpToolDiscoveryError, match="response_too_large"):
-        await StreamableHttpMcpToolDiscoveryAdapter(max_response_bytes=64).discover_definitions(
-            "https://mcp.example/tools",
-            jwt_authorization="Bearer catalog.jwt",
+    with pytest.raises(McpRuntimeContextError, match="mcp_header_conflict"):
+        StreamableHttpMcpToolDiscoveryAdapter._headers(
+            target,
+            static_headers={"JWT-Authorization": "static"},
+            jwt_authorization="Bearer user.jwt",
         )

@@ -40,7 +40,7 @@ import { feedbackApi } from "../services/api/feedback";
 import { getAccessToken } from "../services/api/token";
 import { useAuth } from "../hooks/useAuth";
 import {
-  BROWSER_AUTH_INCARNATION_EVENT,
+  BROWSER_AUTH_INCARCINATION_EVENT,
   getBrowserAuthIncarnation,
 } from "./browserAuthCoordinator";
 import { Permission } from "../types/auth";
@@ -947,12 +947,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       setBrowserAuthIncarnation(incarnation);
     };
     window.addEventListener(
-      BROWSER_AUTH_INCARNATION_EVENT,
+      BROWSER_AUTH_INCARCINATION_EVENT,
       handleAuthIncarnationChange,
     );
     return () =>
       window.removeEventListener(
-        BROWSER_AUTH_INCARNATION_EVENT,
+        BROWSER_AUTH_INCARCINATION_EVENT,
         handleAuthIncarnationChange,
       );
   }, [
@@ -2103,24 +2103,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           return { status: "failed" };
         }
 
-        if (
-          submissionTokenRef.current !== submissionToken ||
-          submissionAuthIncarnationFenceRef.current !== null ||
-          authScopeRef.current !== submissionOwner ||
-          !isCurrentRequestSession()
-        ) {
-          handoffActivePreAdmissionSubmission({
-            expectedToken: submissionToken,
-            requireCurrentToken: true,
-          });
-          setConnectionStatus("disconnected");
-          setIsInitializingSandbox(false);
-          setIsLoading(false);
-          if (submissionTokenRef.current === submissionToken) {
-            isSendingRef.current = false;
-          }
-          return { status: "failed" };
-        }
         const submitData: ChatStreamResponse = await sessionApi.submitChat(
           content,
           requestSessionId ?? undefined,

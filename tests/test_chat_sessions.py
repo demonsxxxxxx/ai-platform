@@ -32,14 +32,6 @@ def chat_submission_client(monkeypatch):
         "app.auth.get_settings",
         lambda: Settings(frontend_poc_auth_enabled=True),
     )
-
-    async def require_schema_current():
-        return {"ready": True}
-
-    monkeypatch.setattr(
-        "app.main.require_schema_current",
-        require_schema_current,
-    )
     with TestClient(create_app(), raise_server_exceptions=False) as client:
         yield client
 

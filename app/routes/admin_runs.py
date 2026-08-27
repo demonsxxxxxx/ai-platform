@@ -6,7 +6,6 @@ from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
 from app.models import AdminRunDetailResponse, AdminRunListResponse, RunControlResponse
-from app.mcp.api import release_committed_terminal_mcp_run_grant
 from app.queue import get_queue_insight, get_run_queue_position, remove_queued_run
 from app.routes.sandbox_runtime_cleanup import (
     SandboxRuntimeCleanupError,
@@ -138,13 +137,6 @@ async def admin_run_cancel(
             run_id=run_id,
         )
     if result is not None:
-        if result["status"] in {"succeeded", "failed", "cancelled"}:
-            await release_committed_terminal_mcp_run_grant(
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
-                status=result["status"],
-                transaction_factory=transaction,
-            )
         initial_progress = result.pop("_permission_terminalization_progress", None)
         if initial_progress is not None:
             await reconcile_terminalized_permission_run(
@@ -165,13 +157,6 @@ async def admin_run_cancel(
                 "cancelled",
             }:
                 result["status"] = progressed_status
-        if result["status"] in {"succeeded", "failed", "cancelled"}:
-            await release_committed_terminal_mcp_run_grant(
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
-                status=result["status"],
-                transaction_factory=transaction,
-            )
         await reconcile_terminalized_permission_run(
             tenant_id=principal.tenant_id,
             run_id=run_id,

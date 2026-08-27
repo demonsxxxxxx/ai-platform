@@ -42,19 +42,9 @@ from app.control_plane_contracts import (
 )
 from app.db import transaction
 from app.execution.api import (
-    WorkerCapabilityAuthorization as _WorkerCapabilityAuthorization,
-    WorkerCapabilityDecision as _WorkerCapabilityDecision,
-    WorkerCapabilityPorts as _WorkerCapabilityPorts,
-    WorkerRunCancelled,
-    denied_capability_decision,
-    mcp_capability_subject,
-    payload_with_authorized_mcp_registration,
-    reauthorize_mcp_capabilities,
-    restored_sandbox_run_payload as _restored_run_payload,
+    WorkerRunCancelled, restored_sandbox_run_payload as _restored_run_payload,
     submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
     time,
-    worker_capability_context,
-    worker_capability_record as _worker_capability_record,
 )
 from app.execution_boundary import (
     decide_worker_execution_boundary as _worker_execution_boundary_decision,
@@ -69,21 +59,19 @@ from app.executors.base import (
 )
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
-from app.mcp.api import (
-    McpRuntimeContextError,
-    get_mcp_run_capability_manager,
-    mcp_targets_from_policy_subjects,
-    mcp_targets_from_reconciliation_snapshot,
-    parse_mcp_tool_reference,
-    read_cached_live_mcp_tool,
-    release_terminal_mcp_run_grant,
+from app.mcp import repository as mcp_repository
+from app.mcp.errors import McpRuntimeContextError
+from app.mcp.headers import MCP_JWT_AUTHORIZATION_HEADER
+from app.mcp.runtime import (
+    McpContextPrincipal,
+    get_mcp_principal_jwt_store,
+    open_mcp_server_credentials,
 )
 from app.principal_authority import (
     CURRENT_PRINCIPAL_DENIAL_REASON,
     resolve_current_principal,
 )
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
-from app.redis_client import get_redis_client
 from app.runs.api import RunTerminalizationProgress, compile_execution_spec_for_dispatch
 from app.required_tool_contract import (
     RequiredCapabilityDecision,
@@ -131,61 +119,6 @@ from app.worker_principal_authority import (
 )
 
 
-async def _get_live_mcp_tool_metadata(*, tenant_id: str, user_id: str, tool_id: str):
-    try:
-        server_id, public_tool_name = parse_mcp_tool_reference(tool_id)
-    except ValueError:
-        return None
-    return await read_cached_live_mcp_tool(
-        redis_provider=get_redis_client,
-        tenant_id=tenant_id,
-        user_id=user_id,
-        server_id=server_id,
-        public_tool_name=public_tool_name,
-    )
-
-_WORKER_CAPABILITY_PORTS = _WorkerCapabilityPorts(
-    capability_access_context=CapabilityAccessContext,
-    capability_access_decision=CapabilityAccessDecision,
-    capability_distribution_subject=CapabilityDistributionSubject,
-    evaluate_tool_policy=evaluate_tool_policy,
-    get_capability_distribution_row=lambda *args, **kwargs: repositories.get_capability_distribution_row(
-        *args, **kwargs
-    ),
-    get_mcp_tool_registry_entry=lambda *args, **kwargs: repositories.get_mcp_tool_registry_entry(
-        *args, **kwargs
-    ),
-    get_live_mcp_tool_metadata=lambda **kwargs: _get_live_mcp_tool_metadata(**kwargs),
-    is_ai_admin=is_ai_admin,
-    mcp_runtime_metadata_usable=repositories.mcp_runtime_metadata_usable,
-    repository_conflict_error=repositories.RepositoryConflictError,
-    resolve_capability_access=resolve_capability_access,
-    sanitize_public_text=sanitize_public_text,
-)
-_worker_capability_context = _partial(
-    worker_capability_context,
-    ports=_WORKER_CAPABILITY_PORTS,
-)
-_denied_capability_decision = _partial(
-    denied_capability_decision,
-    ports=_WORKER_CAPABILITY_PORTS,
-)
-_mcp_capability_subject = _partial(
-    mcp_capability_subject,
-    ports=_WORKER_CAPABILITY_PORTS,
-)
-_reauthorize_mcp_capabilities = _partial(
-    reauthorize_mcp_capabilities,
-    ports=_WORKER_CAPABILITY_PORTS,
-)
-_payload_with_authorized_mcp_registration = payload_with_authorized_mcp_registration
-_builtin_capability_subjects = _partial(
-    builtin_capability_subjects,
-    canonical_manifest=canonical_skill_execution_profile,
-    canonical_identities=repositories.canonical_builtin_tool_identities,
-)
-
-
 _submit_run_until_cancelled = _partial(
     _submit_run_until_cancelled_with_owner,
     owner_factory=RunExecutionOwner,
@@ -222,22 +155,39 @@ class _WorkerExecutorReconciliation:
     claim_token: str
 
 
-def _reconciliation_mcp_grant_may_exist(
-    reconciliation: _WorkerExecutorReconciliation | None,
-) -> bool:
-    if reconciliation is None:
-        return False
-    context = reconciliation.lease_row.get("executor_reconciliation_context_json")
-    run_payload = context.get("run_payload") if isinstance(context, dict) else None
-    return bool(mcp_targets_from_reconciliation_snapshot(run_payload))
-
-
 @dataclass(frozen=True)
 class _WorkerRuntimeSandboxLease:
     lease_id: str
     tenant_id: str
     user_id: str
     run_id: str
+
+
+@dataclass(frozen=True)
+class _WorkerCapabilityDecision:
+    capability_kind: str
+    capability_id: str
+    decision: CapabilityAccessDecision
+
+
+@dataclass(frozen=True)
+class _WorkerToolPolicyAudit:
+    tool_id: str
+    allowed: bool
+    reason: str
+    risk_level: str
+    write_capable: bool
+    decision: str
+
+
+@dataclass(frozen=True)
+class _WorkerCapabilityAuthorization:
+    payload: QueueRunPayload
+    principal: AuthPrincipal
+    decisions: tuple[_WorkerCapabilityDecision, ...]
+    denial: _WorkerCapabilityDecision | None = None
+    tool_policy_audits: tuple[_WorkerToolPolicyAudit, ...] = ()
+    required_tool_decision: RequiredCapabilityDecision | None = None
 
 
 @dataclass(frozen=True)
@@ -248,22 +198,6 @@ class _WorkerAdminBypassAudit:
     target_id: str
     trace_id: str
     payload_json: dict[str, Any]
-
-
-async def _release_terminal_mcp_grant(
-    payload: QueueRunPayload,
-    outcome: WorkerOutcome,
-    *,
-    grant_may_exist: bool,
-) -> None:
-    if not grant_may_exist:
-        return
-    await release_terminal_mcp_run_grant(
-        tenant_id=payload.tenant_id,
-        user_id=payload.user_id,
-        run_id=payload.run_id,
-        status=outcome.status,
-    )
 
 
 _EXECUTOR_ERROR_REQUEST_ID_RE = re.compile(
@@ -295,8 +229,6 @@ def _executor_exception_failure(exc: Exception) -> tuple[str, str]:
 
     if isinstance(exc, NativeToolAdmissionError):
         return exc.error_code, "Native tool sandbox admission failed"
-    if isinstance(exc.__cause__, McpRuntimeContextError):
-        return exc.__cause__.code, "MCP runtime capability is unavailable"
     if isinstance(exc, SandboxExecutorHttpError):
         return exc.error_code, exc.public_message
     if isinstance(exc, WorkerDirectAssistantDeltaError):
@@ -1113,7 +1045,7 @@ def _payload_from_locked_run(
         candidate["skill_id"] = None
     try:
         return QueueRunPayload.model_validate(candidate)
-    except (TypeError, ValueError, ValidationError):
+    except ValidationError:
         return None
 
 
@@ -1235,6 +1167,370 @@ def _locked_run_is_multi_agent_child(locked_run: object) -> bool:
     input_json = locked_run.get("input_json")
     input_payload = input_json.get("input") if isinstance(input_json, dict) else None
     return isinstance(input_payload, dict) and isinstance(input_payload.get("multi_agent_dispatch"), dict)
+
+
+def _worker_capability_context(principal: AuthPrincipal) -> CapabilityAccessContext:
+    return CapabilityAccessContext(
+        tenant_id=principal.tenant_id,
+        department_id=principal.department_id,
+        roles=principal.roles,
+        is_admin=is_ai_admin(principal),
+        permissions=principal.permissions,
+    )
+
+
+def _denied_capability_decision(
+    reason: str,
+    *,
+    source: CapabilityAccessDecision | None = None,
+) -> CapabilityAccessDecision:
+    return CapabilityAccessDecision(
+        visible=False,
+        usable=False,
+        manageable=False,
+        admin_bypass=False,
+        decision_reason=reason,
+        department_scope_ids=list(source.department_scope_ids) if source is not None else [],
+        role_scope_ids=list(source.role_scope_ids) if source is not None else [],
+        scope_mode=source.scope_mode if source is not None else "allowlist",
+    )
+
+
+def _worker_capability_record(
+    capability_kind: str,
+    capability_id: str,
+    decision: CapabilityAccessDecision,
+) -> _WorkerCapabilityDecision:
+    return _WorkerCapabilityDecision(
+        capability_kind=capability_kind,
+        capability_id=capability_id,
+        decision=decision,
+    )
+
+
+def _mcp_tool_lifecycle_status(tool: dict[str, Any]) -> str:
+    if (
+        str(tool.get("effective_status") or "disabled") == "active"
+        and str(tool.get("server_status") or "disabled") == "active"
+        and bool(tool.get("visible_to_user", True))
+    ):
+        return "active"
+    return "disabled"
+
+
+_builtin_capability_subjects = _partial(
+    builtin_capability_subjects,
+    canonical_manifest=canonical_skill_execution_profile,
+    canonical_identities=repositories.canonical_builtin_tool_identities,
+)
+
+
+def _mcp_capability_subject(tool: dict[str, Any], distribution: CapabilityAccessDecision) -> dict[str, Any] | None:
+    server_id = str(tool.get("server_id") or "")
+    tool_id = str(tool.get("tool_id") or "")
+    allowed_tools = tool.get("allowed_tools")
+    if not repositories.mcp_runtime_metadata_usable(tool):
+        return None
+    tool_identifier = allowed_tools[0]
+    subject: dict[str, Any] = {
+        "identity": f"mcp__{server_id}__{tool_identifier}",
+        "mcp_server": server_id,
+        "mcp_tool": tool_identifier,
+        "public_tool_label": (sanitize_public_text(tool.get("name")) or tool_id)[:120],
+        "public_tool_category": "mcp",
+        "registered": True,
+        "declared": True,
+        "active": all(str(tool.get(key) or "") == "active" for key in ("registry_status", "policy_status", "server_status")),
+        "distributed": distribution.usable,
+        "identity_authorized": True,
+        "object_authorized": True,
+        "parameters_authorized": True,
+        "risk_level": str(tool.get("risk_level") or "low"),
+        "write_capable": bool(tool.get("write_capable")),
+        "parameter_delegation": "external_mcp",
+    }
+    subject.update(capability_id=tool_id)
+    return subject
+
+
+async def _runtime_mcp_server_configs(
+    conn: Any,
+    *,
+    principal: AuthPrincipal,
+    tool_policy_subjects: object,
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(tool_policy_subjects, list):
+        return {}
+    server_ids = sorted(
+        {
+            str(subject.get("mcp_server") or "")
+            for subject in tool_policy_subjects
+            if isinstance(subject, dict)
+            and str(subject.get("identity") or "").startswith("mcp__")
+            and str(subject.get("mcp_server") or "")
+            and str(subject.get("mcp_server") or "") != "ai-platform-context"
+        }
+    )
+    if not server_ids:
+        return {}
+    jwt = await get_mcp_principal_jwt_store().get(
+        McpContextPrincipal.from_principal(principal)
+    )
+    configs: dict[str, dict[str, Any]] = {}
+    for server_id in server_ids:
+        row = await mcp_repository.get_mcp_server_runtime_target(
+            conn,
+            tenant_id=principal.tenant_id,
+            server_name=server_id,
+        )
+        if row is None:
+            raise McpRuntimeContextError("mcp_server_not_available", status_code=503)
+        endpoint, static_headers = open_mcp_server_credentials(
+            tenant_id=principal.tenant_id,
+            server_id=server_id,
+            envelope=str(row.get("credential_envelope") or ""),
+        )
+        if not endpoint:
+            raise McpRuntimeContextError("mcp_server_not_available", status_code=503)
+        configs[server_id] = {
+            "type": "sse" if str(row.get("transport") or "").lower() == "sse" else "http",
+            "url": endpoint,
+            "headers": {
+                **static_headers,
+                MCP_JWT_AUTHORIZATION_HEADER: f"Bearer {jwt}",
+            },
+        }
+    return configs
+
+
+def _run_payload_with_mcp_server_configs(
+    run_payload: RunPayload,
+    configs: dict[str, dict[str, Any]],
+) -> RunPayload:
+    if not configs:
+        return run_payload
+    rebuilt_input = dict(run_payload.input)
+    raw_subjects = rebuilt_input.get("_runtime_tool_policy_subjects")
+    if not isinstance(raw_subjects, list):
+        raise McpRuntimeContextError("mcp_runtime_subjects_missing", status_code=503)
+    subjects: list[object] = []
+    for raw_subject in raw_subjects:
+        if not isinstance(raw_subject, dict):
+            subjects.append(raw_subject)
+            continue
+        subject = dict(raw_subject)
+        server_id = str(subject.get("mcp_server") or "")
+        if server_id in configs:
+            subject["mcp_server_config"] = configs[server_id]
+        subjects.append(subject)
+    rebuilt_input["_runtime_tool_policy_subjects"] = subjects
+    return replace(run_payload, input=rebuilt_input)
+
+
+def _canonical_authorized_mcp_scope(
+    container: dict[str, Any],
+    *,
+    allowed_tool_ids: set[str],
+) -> dict[str, Any]:
+    rebuilt = dict(container)
+    requested: list[str] = []
+    selector_present = False
+    for key in ("mcp_tool_ids", "mcpToolIds"):
+        if key not in container:
+            continue
+        selector_present = True
+        for value in container[key]:
+            tool_id = str(value).strip()
+            if tool_id and tool_id in allowed_tool_ids and tool_id not in requested:
+                requested.append(tool_id)
+        rebuilt.pop(key, None)
+    if selector_present:
+        rebuilt["mcp_tool_ids"] = requested
+    return rebuilt
+
+
+def _payload_with_authorized_mcp_registration(
+    payload: QueueRunPayload,
+    *,
+    allowed_entries: list[dict[str, Any]],
+    tool_policy_subjects: list[dict[str, Any]],
+) -> QueueRunPayload:
+    allowed_tool_ids = {
+        str(entry.get("tool_id") or "").strip()
+        for entry in allowed_entries
+        if str(entry.get("tool_id") or "").strip()
+    }
+    rebuilt_input = _canonical_authorized_mcp_scope(payload.input, allowed_tool_ids=allowed_tool_ids)
+    steps = rebuilt_input.get("multi_agent_steps")
+    if isinstance(steps, list):
+        rebuilt_input["multi_agent_steps"] = [
+            _canonical_authorized_mcp_scope(step, allowed_tool_ids=allowed_tool_ids)
+            if isinstance(step, dict)
+            else step
+            for step in steps
+        ]
+    rebuilt_input["_runtime_tool_policy_subjects"] = tool_policy_subjects
+    return payload.model_copy(update={"input": rebuilt_input})
+
+
+async def _reauthorize_mcp_capabilities(
+    conn,
+    *,
+    payload: QueueRunPayload,
+    run_identity: dict[str, str],
+    principal: AuthPrincipal,
+    context: CapabilityAccessContext,
+    decisions: list[_WorkerCapabilityDecision],
+    requested_tool_ids: list[str],
+    tool_policy_subjects: list[dict[str, Any]],
+    required_tool_decision: RequiredCapabilityDecision,
+) -> _WorkerCapabilityAuthorization:
+    allowed_entries: list[dict[str, Any]] = []
+    tool_policy_audits: list[_WorkerToolPolicyAudit] = []
+    for tool_id in requested_tool_ids:
+        tool = await repositories.get_mcp_tool_registry_entry(
+            conn,
+            tenant_id=run_identity["tenant_id"],
+            tool_id=tool_id,
+        )
+        if tool is None or str(tool.get("tool_id") or "").strip() != tool_id:
+            denial = _worker_capability_record(
+                "mcp_tool",
+                tool_id,
+                _denied_capability_decision("distribution_missing"),
+            )
+            return _WorkerCapabilityAuthorization(
+                payload, principal, tuple(decisions), denial
+            )
+        server_id = str(tool.get("server_id") or "").strip()
+        if not server_id:
+            denial = _worker_capability_record(
+                "mcp_tool",
+                tool_id,
+                _denied_capability_decision("distribution_inheritance_missing"),
+            )
+            return _WorkerCapabilityAuthorization(
+                payload, principal, tuple(decisions), denial
+            )
+        try:
+            server_distribution = await repositories.get_capability_distribution_row(
+                conn,
+                tenant_id=run_identity["tenant_id"],
+                capability_kind="mcp_server",
+                capability_id=server_id,
+            )
+        except repositories.RepositoryConflictError:
+            denial = _worker_capability_record(
+                "mcp_tool",
+                tool_id,
+                _denied_capability_decision("distribution_scope_invalid"),
+            )
+            return _WorkerCapabilityAuthorization(
+                payload, principal, tuple(decisions), denial
+            )
+        distribution_decision = resolve_capability_access(
+            context,
+            CapabilityDistributionSubject(
+                capability_kind="mcp_tool",
+                capability_id=tool_id,
+                lifecycle_status=_mcp_tool_lifecycle_status(tool),
+                distribution=server_distribution,
+                inherited_distribution_source=f"mcp_server:{server_id}",
+            ),
+            intent="use",
+        )
+        tool_record = _worker_capability_record(
+            "mcp_tool", tool_id, distribution_decision
+        )
+        decisions.append(tool_record)
+        if not distribution_decision.usable:
+            return _WorkerCapabilityAuthorization(
+                payload, principal, tuple(decisions), tool_record
+            )
+
+        mcp_subject = _mcp_capability_subject(tool, distribution_decision)
+        if mcp_subject is None:
+            denial = _worker_capability_record(
+                "mcp_tool",
+                tool_id,
+                _denied_capability_decision(
+                    "mcp_runtime_metadata_invalid",
+                    source=distribution_decision,
+                ),
+            )
+            return _WorkerCapabilityAuthorization(
+                payload, principal, tuple(decisions), denial
+            )
+
+        tool_gate = evaluate_tool_policy(
+            tool={
+                "requested_identity": mcp_subject["identity"],
+                "declared_identities": [mcp_subject["identity"]],
+                "registered": mcp_subject["registered"],
+                "declared": mcp_subject["declared"],
+                "active": mcp_subject["active"],
+                "distributed": mcp_subject["distributed"],
+                "identity_authorized": mcp_subject["identity_authorized"],
+                "object_authorized": mcp_subject["object_authorized"],
+                "parameters_authorized": mcp_subject["parameters_authorized"],
+                "risk_level": mcp_subject["risk_level"],
+                "write_capable": mcp_subject["write_capable"],
+            }
+        )
+        tool_policy_audits.append(
+            _WorkerToolPolicyAudit(
+                tool_id=tool_id,
+                allowed=tool_gate.allowed,
+                reason=tool_gate.reason,
+                risk_level=tool_gate.risk_level,
+                write_capable=tool_gate.write_capable,
+                decision=tool_gate.outcome,
+            )
+        )
+        if not tool_gate.allowed:
+            denial = _worker_capability_record(
+                "mcp_tool",
+                tool_id,
+                _denied_capability_decision(
+                    tool_gate.reason, source=distribution_decision
+                ),
+            )
+            return _WorkerCapabilityAuthorization(
+                payload,
+                principal,
+                tuple(decisions),
+                denial,
+                tool_policy_audits=tuple(tool_policy_audits),
+            )
+        allowed_entries.append(tool)
+        tool_policy_subjects.append(mcp_subject)
+
+    if allowed_entries and payload.executor_type != "claude-agent-worker":
+        denial = _worker_capability_record(
+            "mcp_tool",
+            str(allowed_entries[0].get("tool_id") or "mcp_tool"),
+            _denied_capability_decision("mcp_sandbox_executor_required"),
+        )
+        return _WorkerCapabilityAuthorization(
+            payload,
+            principal,
+            tuple(decisions),
+            denial,
+            tool_policy_audits=tuple(tool_policy_audits),
+        )
+
+    authorized_payload = _payload_with_authorized_mcp_registration(
+        payload,
+        allowed_entries=allowed_entries,
+        tool_policy_subjects=tool_policy_subjects,
+    )
+    return _WorkerCapabilityAuthorization(
+        authorized_payload,
+        principal,
+        tuple(decisions),
+        tool_policy_audits=tuple(tool_policy_audits),
+        required_tool_decision=required_tool_decision,
+    )
 
 
 def _authorized_skill_catalog_binding(
@@ -2012,17 +2308,12 @@ async def process_run_payload(
     run_identity = _payload_identity(payload)
     runtime_sandbox_lease: _WorkerRuntimeSandboxLease | None = None
     runtime_sandbox_lease_released = False
-    mcp_broker_capability_token = ""
-    reconciliation_mcp_grant_may_exist = False
     runtime_sandbox_execution_detached = False
 
     terminal_after_transaction: _WorkerTerminalAfterTransaction | None = None
     capability_authorization: _WorkerCapabilityAuthorization | None = None
     admin_bypass_audits: tuple[_WorkerAdminBypassAudit, ...] = ()
     try:
-        reconciliation_mcp_grant_may_exist = _reconciliation_mcp_grant_may_exist(
-            reconciliation
-        )
         current_principal = await _resolve_current_principal_before_dispatch(
             payload,
             transaction_factory=transaction,
@@ -2356,6 +2647,33 @@ async def process_run_payload(
                     execution_spec,
                     attempt_id=attempt_id,
                 )
+                runtime_mcp_configs = await _runtime_mcp_server_configs(
+                    conn,
+                    principal=capability_authorization.principal,
+                    tool_policy_subjects=run_payload.input.get(
+                        "_runtime_tool_policy_subjects"
+                    ),
+                )
+                run_payload = _run_payload_with_mcp_server_configs(
+                    run_payload,
+                    runtime_mcp_configs,
+                )
+            except McpRuntimeContextError as exc:
+                terminal_after_transaction = await _fail_worker_pre_dispatch_error(
+                    conn,
+                    payload=payload,
+                    run_identity=run_identity,
+                    error_code=exc.code,
+                    error_message="MCP runtime configuration is unavailable",
+                    event_stage="authorization",
+                    event_payload={
+                        "visible_to_user": True,
+                        "severity": "error",
+                        "error_code": exc.code,
+                    },
+                    is_multi_agent_child=_locked_run_is_multi_agent_child(locked),
+                )
+                return terminal_after_transaction.outcome
             except ValueError:
                 terminal_after_transaction = await _fail_worker_pre_dispatch_error(
                     conn,
@@ -2383,30 +2701,17 @@ async def process_run_payload(
                     trace_id=trace_id,
                     worker_id=worker_id,
                 )
-    except BaseException:
-        # Deferred terminal side effects are valid only after transaction exit
-        # proves that the child terminal write committed.
-        terminal_after_transaction = None
-        raise
     finally:
         if terminal_after_transaction is not None:
-            try:
-                await _finalize_multi_agent_parent_after_child_commit(
-                    transaction,
-                    terminal_after_transaction.payload,
-                    terminal_after_transaction.reconciled_parent,
-                )
-                await publish_pending_run_terminal(
-                    transaction,
-                    tenant_id=terminal_after_transaction.payload.tenant_id,
-                    run_id=terminal_after_transaction.payload.run_id,
-                )
-            finally:
-                await _release_terminal_mcp_grant(
-                    payload,
-                    terminal_after_transaction.outcome,
-                    grant_may_exist=reconciliation_mcp_grant_may_exist,
-                )
+            await _finalize_multi_agent_parent_after_child_commit(
+                transaction, terminal_after_transaction.payload,
+                terminal_after_transaction.reconciled_parent,
+            )
+            await publish_pending_run_terminal(
+                transaction,
+                tenant_id=terminal_after_transaction.payload.tenant_id,
+                run_id=terminal_after_transaction.payload.run_id,
+            )
 
     stream_publisher = RunStreamPublisher(
         run_payload.tenant_id,
@@ -2458,25 +2763,6 @@ async def process_run_payload(
             return
 
     try:
-        mcp_targets = mcp_targets_from_policy_subjects(
-            run_payload.input.get("_runtime_tool_policy_subjects")
-        )
-        if mcp_targets:
-            try:
-                capability = await get_mcp_run_capability_manager().claim_attempt_lease(
-                    tenant_id=run_payload.tenant_id,
-                    user_id=run_payload.user_id,
-                    run_id=run_payload.run_id,
-                    attempt_id=attempt_id,
-                    targets=mcp_targets,
-                )
-            except McpRuntimeContextError as exc:
-                raise RuntimeError(exc.code) from exc
-            run_payload = replace(
-                run_payload,
-                mcp_broker_capability=capability.token,
-            )
-            mcp_broker_capability_token = capability.token
         if adapter is None:
             raise RuntimeError("executor_adapter_not_resolved")
 
@@ -2583,22 +2869,7 @@ async def process_run_payload(
                 result_json=cancel_result,
             )
             await release_runtime_sandbox_lease(conn, reason="run_cancelled")
-        try:
-            await finalize_parent_and_publish(
-                transaction,
-                _finalize_multi_agent_parent_after_child_commit,
-                payload,
-                reconciled_parent,
-            )
-        finally:
-            await _release_terminal_mcp_grant(
-                payload,
-                WorkerOutcome("cancelled", payload.run_id),
-                grant_may_exist=(
-                    bool(mcp_broker_capability_token)
-                    or reconciliation_mcp_grant_may_exist
-                ),
-            )
+        await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
         return WorkerOutcome("cancelled", payload.run_id)
     except Exception as exc:  # noqa: BLE001 - worker boundary terminalizes all failures.
         await stream_publisher.aclose()
@@ -2663,22 +2934,7 @@ async def process_run_payload(
                         },
                     )
                     await release_runtime_sandbox_lease(conn, reason="run_failed")
-        try:
-            await finalize_parent_and_publish(
-                transaction,
-                _finalize_multi_agent_parent_after_child_commit,
-                payload,
-                reconciled_parent,
-            )
-        finally:
-            await _release_terminal_mcp_grant(
-                payload,
-                outcome_after_exception,
-                grant_may_exist=(
-                    bool(mcp_broker_capability_token)
-                    or reconciliation_mcp_grant_may_exist
-                ),
-            )
+        await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
         return outcome_after_exception
 
     observability = _executor_observability(result.executor_payload, latency_ms=latency_ms)
@@ -3178,10 +3434,6 @@ async def process_run_payload(
                 )
     finally:
         await cleanup_runtime_sandbox_lease_after_interruption()
-        if mcp_broker_capability_token and not runtime_sandbox_execution_detached:
-            await get_mcp_run_capability_manager().release_attempt_lease(
-                token=mcp_broker_capability_token,
-            )
     if terminal_outcome.status == "skipped":
         terminalization_progress = await drain_run_tool_permission_terminalization(
             tenant_id=payload.tenant_id,
@@ -3208,22 +3460,7 @@ async def process_run_payload(
                     terminal_outcome.error_code if final_status == "failed" else None,
                     terminal_outcome.error_message if final_status == "failed" else None,
                 )
-    try:
-        await finalize_parent_and_publish(
-            transaction,
-            _finalize_multi_agent_parent_after_child_commit,
-            payload,
-            reconciled_parent,
-        )
-    finally:
-        await _release_terminal_mcp_grant(
-            payload,
-            terminal_outcome,
-            grant_may_exist=(
-                bool(mcp_broker_capability_token)
-                or reconciliation_mcp_grant_may_exist
-            ),
-        )
+    await finalize_parent_and_publish(transaction, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
     return terminal_outcome
 
 

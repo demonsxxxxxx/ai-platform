@@ -31,6 +31,19 @@ def _non_secret_agent_profile(profile: object) -> dict[str, Any]:
     }
 
 
+def _non_secret_tool_policy_subjects(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    projected: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        subject = dict(item)
+        subject.pop("mcp_server_config", None)
+        projected.append(subject)
+    return projected
+
+
 def sandbox_reconciliation_payload(payload: Any) -> dict[str, Any]:
     """Persist a versioned snapshot with execution fields separated from metadata."""
 
@@ -48,9 +61,20 @@ def sandbox_reconciliation_payload(payload: Any) -> dict[str, Any]:
             "skill_id": payload.skill_id,
             "file_ids": [],
             "input": {
-                key: source_input[key]
-                for key in ("_runtime_tool_policy_subjects", "platform_model_id")
-                if key in source_input
+                **(
+                    {
+                        "_runtime_tool_policy_subjects": _non_secret_tool_policy_subjects(
+                            source_input.get("_runtime_tool_policy_subjects")
+                        )
+                    }
+                    if "_runtime_tool_policy_subjects" in source_input
+                    else {}
+                ),
+                **(
+                    {"platform_model_id": source_input["platform_model_id"]}
+                    if "platform_model_id" in source_input
+                    else {}
+                ),
             },
             "execution_kind": payload.execution_kind,
             "trace_id": payload.trace_id,

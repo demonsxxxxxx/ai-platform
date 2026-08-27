@@ -919,7 +919,6 @@ def install_company_login(monkeypatch, *, gate_a: threading.Event | None = None,
             "workId": username,
             "userName": username,
             "cnName": username.title(),
-            "token": "company.header.signature",
         }
 
     async def fake_user_info(work_id: str):
@@ -927,12 +926,8 @@ def install_company_login(monkeypatch, *, gate_a: threading.Event | None = None,
         # when the current user-info response binds itself to the login work ID.
         return {"workId": work_id, "roles": ["user"]}
 
-    async def fake_store_mcp_principal_jwt(_principal, _jwt):
-        return None
-
     monkeypatch.setattr("app.routes.auth.call_existing_login", fake_login)
     monkeypatch.setattr("app.routes.auth.call_existing_user_info", fake_user_info)
-    monkeypatch.setattr("app.routes.auth.store_mcp_principal_jwt", fake_store_mcp_principal_jwt)
 
 
 def test_bootstrap_concurrent_and_late_requests_set_one_stable_context_cookie(monkeypatch):

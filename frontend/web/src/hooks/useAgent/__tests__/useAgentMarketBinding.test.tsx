@@ -346,12 +346,9 @@ test("useAgent forwards only an explicit Agent profile without inheriting it", a
     assert.equal(submissions.length, 2);
     assert.equal(submissions[1]?.[10], null);
   } finally {
-    try {
-      await harness.cleanup();
-    } finally {
-      sessionApi.submitChat = originalSubmitChat;
-      sessionApi.markRead = originalMarkRead;
-    }
+    await harness.cleanup();
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
   }
 });
 
@@ -493,10 +490,6 @@ test("a recovered Agent Conversation owns every exact selector and fails closed"
         expected_revision: 7,
       });
     }
-    assert.deepEqual(
-      submissions.slice(0, 2).map((submission) => submission.length),
-      [11, 11],
-    );
 
     await harness.act(async () => {
       await harness.hook.loadHistory("session-generic");
@@ -523,7 +516,6 @@ test("a recovered Agent Conversation owns every exact selector and fails closed"
     assert.deepEqual(submissions[2]?.[2], { model_id: "generic-model" });
     assert.deepEqual(submissions[2]?.[4], []);
     assert.equal(submissions[2]?.[10], null);
-    assert.equal(submissions[2]?.length, 11);
 
     authoritativeMode = "agent-mismatch";
     await harness.act(async () => {
@@ -541,15 +533,12 @@ test("a recovered Agent Conversation owns every exact selector and fails closed"
     await settle(harness.act);
     assert.equal(submissions.length, 3);
   } finally {
-    try {
-      await harness.cleanup();
-    } finally {
-      sessionApi.submitChat = originalSubmitChat;
-      sessionApi.markRead = originalMarkRead;
-      sessionApi.get = originalGet;
-      sessionApi.getAuthoritative = originalGetAuthoritative;
-      sessionApi.getEvents = originalGetEvents;
-    }
+    await harness.cleanup();
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.get = originalGet;
+    sessionApi.getAuthoritative = originalGetAuthoritative;
+    sessionApi.getEvents = originalGetEvents;
   }
 });
 

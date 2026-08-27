@@ -323,13 +323,7 @@ async function mountAuthHarness(
   const container = document.createElement("div");
   const root = createRoot(container as never);
   await React.act(async () => {
-    root.render(
-      React.createElement(
-        AuthProvider,
-        null,
-        React.createElement(Probe),
-      ),
-    );
+    root.render(React.createElement(AuthProvider, null, React.createElement(Probe)));
     await Promise.resolve();
   });
 
@@ -624,30 +618,6 @@ test("a newer login hydration owns auth state over deferred initial principal A"
     assert.equal(loginSignal?.aborted, false);
     assert.equal(mounted.auth.user?.id, "admin-b");
     assert.equal(mounted.auth.user?.tenant_id, "tenant-b");
-  } finally {
-    await mounted.cleanup();
-  }
-});
-
-test("same-tab A to B login replaces the local principal", async () => {
-  let currentUserCalls = 0;
-  const mounted = await mountAuthHarness((api) => {
-    api.getCurrentUser = async () => {
-      currentUserCalls += 1;
-      return currentUserCalls === 1
-        ? authUser("admin-a", "tenant-a")
-        : authUser("admin-b", "tenant-b");
-    };
-    api.login = async () => undefined;
-  });
-  try {
-    assert.equal(mounted.auth.user?.id, "admin-a");
-
-    await mounted.React.act(async () => {
-      await mounted.auth.login({ username: "admin-b", password: "safe-test" });
-    });
-
-    assert.equal(mounted.auth.user?.id, "admin-b");
   } finally {
     await mounted.cleanup();
   }

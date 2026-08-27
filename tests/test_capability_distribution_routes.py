@@ -279,7 +279,12 @@ def test_admin_updates_mcp_distribution_only_for_tenant_registry_server(monkeypa
         "list_mcp_server_registry_names",
         fake_list_names,
     )
-    monkeypatch.setattr(route_module, "upsert_mcp_distribution", fake_upsert)
+    patch_repository(
+        monkeypatch,
+        route_module,
+        "upsert_capability_distribution_row",
+        fake_upsert,
+    )
     patch_repository(monkeypatch, route_module, "append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 

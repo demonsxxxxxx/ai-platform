@@ -12,7 +12,7 @@ export const BROWSER_AUTH_CONTEXT_V2_DB_NAME =
   "ai-platform-browser-auth-context-v2";
 export const BROWSER_AUTH_CONTEXT_V2_STORE_NAME = "coordination";
 /** Same-tab notification that the authenticated browser principal changed. */
-export const BROWSER_AUTH_INCARNATION_EVENT = "ai-platform:auth-incarnation";
+export const BROWSER_AUTH_INCARCINATION_EVENT = "ai-platform:auth-incarnation";
 
 const BROWSER_AUTH_CONTEXT_V2_RECORD_KEY = "current";
 const BROWSER_AUTH_CONTEXT_V2_DB_VERSION = 1;
@@ -162,7 +162,7 @@ export function publishBrowserAuthIncarnationChange(): void {
     return;
   }
   window.dispatchEvent(
-    new CustomEvent(BROWSER_AUTH_INCARNATION_EVENT, {
+    new CustomEvent(BROWSER_AUTH_INCARCINATION_EVENT, {
       detail: { incarnation: getBrowserAuthIncarnation() },
     }),
   );

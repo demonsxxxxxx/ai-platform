@@ -13,17 +13,9 @@ from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.capability_distribution import CapabilityAuthorizationDenial
 from app.file_preview_contracts import XlsxPreviewResponse
-from app.models import (
-    AgentAppRunRequest,
-    ChatStreamRequest,
-    ChatStreamResponse,
-    CreateRunRequest,
-    QueueRunPayload,
-    SandboxLeaseRequest,
-)
+from app.models import ChatStreamRequest, CreateRunRequest, QueueRunPayload, SandboxLeaseRequest
 from app.repositories import RepositoryConflictError
 from app.routes import lambchat_compat as lambchat_module
-from app.routes import agent_profiles as agent_profiles_module
 from app.routes import runs as runs_module
 from app.routes.health import admin_status
 from app.routes.files import (
@@ -82,18 +74,6 @@ def default_create_run_workspace_guard(monkeypatch):
     )
 
 
-@pytest.fixture(autouse=True)
-def default_replay_source_mcp_lookup(monkeypatch):
-    async def no_source_run(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr(
-        "app.routes.runs.repositories.get_authorized_run",
-        no_source_run,
-        raising=False,
-    )
-
-
 @asynccontextmanager
 async def fake_transaction():
     yield object()
@@ -120,53 +100,6 @@ def principal(**overrides):
     }
     values.update(overrides)
     return AuthPrincipal(**values)
-
-
-@pytest.mark.asyncio
-async def test_dedicated_agent_run_uses_server_owned_mcp_credentials(monkeypatch):
-    observed: dict[str, object] = {}
-
-    async def get_session(_conn, **_kwargs):
-        return {"workspace_id": "workspace-a", "agent_id": "agent-a"}
-
-    async def chat_stream(request, *, agent_id, principal):
-        observed["request"] = request
-        observed["agent_id"] = agent_id
-        observed["user_id"] = principal.user_id
-        return ChatStreamResponse(
-            session_id=request.session_id,
-            run_id="run-a",
-            status="queued",
-            submission_id=str(request.submission_id),
-        )
-
-    monkeypatch.setattr(agent_profiles_module, "transaction", fake_transaction)
-    monkeypatch.setattr(
-        agent_profiles_module.repositories,
-        "get_authorized_session_projection",
-        get_session,
-    )
-    monkeypatch.setattr("app.routes.chat.chat_stream", chat_stream)
-
-    response = await agent_profiles_module._submit_dedicated_agent_run(
-        agent_id="agent-a",
-        session_id="session-a",
-        request=AgentAppRunRequest(
-            message="Use the selected MCP tool",
-            submission_id="11111111-1111-4111-8111-111111111111",
-        ),
-        principal=principal(),
-    )
-
-    request = observed["request"]
-    assert isinstance(request, ChatStreamRequest)
-    assert not hasattr(request, "mcp_context_id")
-    assert observed == {
-        "request": request,
-        "agent_id": "agent-a",
-        "user_id": "user-a",
-    }
-    assert response.run_id == "run-a"
 
 
 def test_selected_skill_contract_is_shared_nested_and_strict():
@@ -2349,10 +2282,7 @@ def test_get_run_http_projection_returns_null_skill_id_for_ordinary_user(monkeyp
             "agent_id": "general-agent",
             "skill_id": "general-chat",
             "status": "succeeded",
-            "input_json": {
-                "message": "run with MCP",
-                "mcp_context_id": "mcpctx-private",
-            },
+            "input_json": {},
             "result_json": {"message": "done"},
             "error_code": None,
             "error_message": None,
@@ -2391,8 +2321,6 @@ def test_get_run_http_projection_returns_null_skill_id_for_ordinary_user(monkeyp
     assert payload["skill_id"] is None
     assert "executor_schema_version" not in payload or payload["executor_schema_version"] is None
     assert payload["capability_id"] == "general_chat"
-    assert payload["input"] == {"message": "run with MCP"}
-    assert "mcp_context_id" not in payload["input"]
 
 
 @pytest.mark.asyncio
@@ -3823,10 +3751,6 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
     )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
-    monkeypatch.setattr(
-        "app.routes.runs.repositories.run_mcp_tool_ids_for_skill",
-        lambda *_args, **_kwargs: ["legacy-static-tool"],
-    )
 
     response = await create_run(
         CreateRunRequest(
@@ -3881,7 +3805,7 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
             committed.append(list(state.pending))
 
     async def resolve_skill(_conn, **_kwargs):
-        return skill(backing_mcp_tool_id="inventory-search")
+        return skill()
 
     async def ensure_user(_conn, **_kwargs):
         return None
@@ -4039,16 +3963,12 @@ async def test_create_run_file_admission_denial_precedes_identity_and_run_writes
     async def deny_files(*args, **kwargs):
         raise RepositoryConflictError("file_scope_mismatch")
 
-    async def authorize_mcp(*_args, **_kwargs):
-        return [{"tool_id": "inventory-search"}]
-
     async def record_write(*args, **kwargs):
         writes.append(kwargs)
         raise AssertionError("file admission must precede writes")
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "get_agent", active_harness_agent)
-    monkeypatch.setattr(repository_module, "authorize_selected_chat_mcp_tools", authorize_mcp)
     monkeypatch.setattr(repository_module, "authorize_files_for_run", deny_files, raising=False)
     monkeypatch.setattr(repository_module, "ensure_user", record_write)
     monkeypatch.setattr(repository_module, "create_session", record_write)
@@ -4061,7 +3981,6 @@ async def test_create_run_file_admission_denial_precedes_identity_and_run_writes
                 agent_id="general-agent",
                 capability_id="general_chat",
                 file_ids=["file-forged"],
-                input={"mcp_tool_ids": ["inventory-search"]},
             ),
             principal=principal(),
         )

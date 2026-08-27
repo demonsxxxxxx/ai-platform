@@ -360,16 +360,6 @@ export function buildAgentAppRunBody({
   };
 }
 
-async function mutateRunControl(
-  url: string,
-  options: { signal?: AbortSignal },
-): Promise<RunControlChildResponse> {
-  return authFetch(url, {
-    method: "POST",
-    signal: options.signal,
-  });
-}
-
 export function buildChatSubmissionUrl(submissionId: string): string {
   return `${API_BASE}/api/chat/submissions/${encodeURIComponent(submissionId)}`;
 }
@@ -562,7 +552,10 @@ export const sessionApi = {
     operationId: string,
     options: { signal?: AbortSignal } = {},
   ): Promise<RunControlChildResponse> {
-    return mutateRunControl(buildRunRetryUrl(runId, operationId), options);
+    return authFetch(buildRunRetryUrl(runId, operationId), {
+      method: "POST",
+      signal: options.signal,
+    });
   },
 
   /** Create or resolve one checkpoint-resume child under an opaque operation id. */
@@ -571,7 +564,10 @@ export const sessionApi = {
     operationId: string,
     options: { signal?: AbortSignal } = {},
   ): Promise<RunControlChildResponse> {
-    return mutateRunControl(buildRunResumeUrl(runId, operationId), options);
+    return authFetch(buildRunResumeUrl(runId, operationId), {
+      method: "POST",
+      signal: options.signal,
+    });
   },
 
   /** Linearize with POST and resolve its exact durable child or safe absence. */

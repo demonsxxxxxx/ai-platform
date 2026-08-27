@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+from dataclasses import dataclass
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app import repositories
@@ -19,26 +20,27 @@ from app.capability_distribution import (
 )
 from app.control_plane_contracts import sanitize_public_payload, standard_trace_id
 from app.db import transaction
-from app.mcp.api import (
+from app.mcp import repository as mcp_repository
+from app.mcp.catalog import (
+    StreamableHttpMcpToolDiscoveryAdapter,
+    read_gateway_cache_revisions,
+)
+from app.mcp.errors import McpRuntimeContextError
+from app.mcp.headers import normalize_static_mcp_headers
+from app.mcp.live_catalog import (
     GatewayRevisions,
+    LiveMcpCatalogService,
     LiveMcpServerResult,
     MCP_CACHE_INVALIDATION_TOKEN_HEADER,
-    McpRuntimeContextError,
-    create_host_mcp_relay,
-    delete_mcp_server_registry,
-    get_mcp_relay_auth_failure_limiter,
-    get_mcp_run_capability_manager,
-    get_live_mcp_catalog,
-    list_mcp_server_registry,
-    normalize_static_mcp_headers,
-    read_mcp_principal_jwt,
-    record_mcp_server_credential,
-    seal_mcp_server_credentials,
     service_token_matches,
-    toggle_mcp_server_registry,
-    upsert_mcp_distribution,
-    upsert_mcp_server_registry,
 )
+from app.mcp.runtime import (
+    McpContextPrincipal,
+    get_mcp_principal_jwt_store,
+    open_mcp_server_credentials,
+    seal_mcp_server_credentials,
+)
+from app.redis_client import get_redis_client
 from app.settings import get_settings
 from app.validation import assert_safe_id
 
@@ -49,10 +51,44 @@ MCP_LIFECYCLE_CONTRACT_VERSION = "ai-platform.mcp-lifecycle.v1"
 MCP_CHAT_DISCOVERY_CONCURRENCY = 8
 
 
-LIVE_MCP_CATALOG = get_live_mcp_catalog()
-MCP_RUN_CAPABILITY_MANAGER = get_mcp_run_capability_manager()
-MCP_RELAY_AUTH_FAILURE_LIMITER = get_mcp_relay_auth_failure_limiter()
-HostMcpRelay = create_host_mcp_relay
+@dataclass(frozen=True)
+class _LiveMcpTarget:
+    endpoint: str
+    static_headers: dict[str, str]
+
+
+async def _resolve_live_mcp_target(tenant_id: str, server_id: str) -> _LiveMcpTarget:
+    async with transaction() as conn:
+        row = await mcp_repository.get_mcp_server_runtime_target(
+            conn,
+            tenant_id=tenant_id,
+            server_name=server_id,
+        )
+    if row is None:
+        raise McpRuntimeContextError("mcp_server_not_available", status_code=503)
+    endpoint, static_headers = open_mcp_server_credentials(
+        tenant_id=tenant_id,
+        server_id=server_id,
+        envelope=str(row.get("credential_envelope") or ""),
+    )
+    if not endpoint:
+        raise McpRuntimeContextError("mcp_server_not_available", status_code=503)
+    return _LiveMcpTarget(endpoint=endpoint, static_headers=static_headers)
+
+
+async def _read_live_mcp_revisions(endpoint: str) -> object | None:
+    return await read_gateway_cache_revisions(
+        endpoint,
+        service_token=str(get_settings().mcp_gateway_service_token),
+    )
+
+
+LIVE_MCP_CATALOG = LiveMcpCatalogService(
+    redis_provider=get_redis_client,
+    target_resolver=_resolve_live_mcp_target,
+    revision_reader=_read_live_mcp_revisions,
+    discovery=StreamableHttpMcpToolDiscoveryAdapter(),
+)
 
 
 def _mcp_runtime_http_error(exc: McpRuntimeContextError) -> HTTPException:
@@ -392,7 +428,7 @@ async def _public_server_access(
     name: str,
 ) -> tuple[dict[str, Any], dict[str, Any], CapabilityAccessDecision]:
     async with transaction() as conn:
-        registry_rows = await list_mcp_server_registry(
+        registry_rows = await mcp_repository.list_mcp_server_registry(
             conn,
             tenant_id=principal.tenant_id,
             include_disabled=True,
@@ -413,7 +449,7 @@ async def _public_server_access(
 
 async def _public_projected_servers(principal: AuthPrincipal) -> list[dict[str, Any]]:
     async with transaction() as conn:
-        rows = await list_mcp_server_registry(
+        rows = await mcp_repository.list_mcp_server_registry(
             conn,
             tenant_id=principal.tenant_id,
             include_disabled=True,
@@ -456,7 +492,7 @@ async def _chat_tool_catalog(principal: AuthPrincipal) -> tuple[list[dict[str, A
     """Fetch the current user's effective tools from every usable MCP server."""
 
     async with transaction() as conn:
-        rows = await list_mcp_server_registry(
+        rows = await mcp_repository.list_mcp_server_registry(
             conn,
             tenant_id=principal.tenant_id,
             include_disabled=False,
@@ -477,7 +513,9 @@ async def _chat_tool_catalog(principal: AuthPrincipal) -> tuple[list[dict[str, A
     if not server_ids:
         return [], []
     try:
-        jwt = await read_mcp_principal_jwt(principal)
+        jwt = await get_mcp_principal_jwt_store().get(
+            McpContextPrincipal.from_principal(principal)
+        )
     except McpRuntimeContextError:
         return [], [{"label": server_id, "reason": "authorization_required"} for server_id in server_ids]
     semaphore = asyncio.Semaphore(MCP_CHAT_DISCOVERY_CONCURRENCY)
@@ -549,7 +587,7 @@ async def _write_server(
                 capability_kind="mcp_server",
                 capability_id=name,
             )
-            row = await upsert_mcp_server_registry(
+            row = await mcp_repository.upsert_mcp_server_registry(
                 conn,
                 tenant_id=principal.tenant_id,
                 name=name,
@@ -565,9 +603,10 @@ async def _write_server(
                 credential_fingerprint=fingerprint,
                 updated_by=principal.user_id,
             )
-            distribution = await upsert_mcp_distribution(
+            distribution = await repositories.upsert_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
+                capability_kind="mcp_server",
                 capability_id=name,
                 status="active" if request.enabled else "disabled",
                 visible_to_user=bool(
@@ -589,7 +628,7 @@ async def _write_server(
                 ),
                 updated_by=principal.user_id,
             )
-            await record_mcp_server_credential(
+            await mcp_repository.record_mcp_server_credential(
                 conn,
                 tenant_id=principal.tenant_id,
                 server_name=name,
@@ -730,66 +769,6 @@ async def invalidate_mcp_tool_cache(
     }
 
 
-@router.post("/mcp/relay/{server_id}", response_model=None)
-@router.post("/ai/mcp/relay/{server_id}", response_model=None)
-async def relay_mcp_jsonrpc(
-    server_id: str,
-    request: Request,
-    response: Response,
-    payload: dict[str, Any] = Body(...),
-    capability: str | None = Header(default=None, alias="X-MCP-Broker-Capability"),
-) -> dict[str, Any] | Response:
-    """Relay sandbox JSON-RPC to one capability-bound registered MCP."""
-
-    source_fingerprint = hashlib.sha256(
-        str(request.client.host if request.client is not None else "unknown").encode(
-            "utf-8"
-        )
-    ).hexdigest()
-    capability_fingerprint = hashlib.sha256((capability or "").encode("utf-8")).hexdigest()
-    try:
-        await MCP_RELAY_AUTH_FAILURE_LIMITER.ensure_allowed(
-            source_fingerprint=source_fingerprint,
-            capability_fingerprint=capability_fingerprint,
-        )
-        relay = HostMcpRelay(capability_manager=MCP_RUN_CAPABILITY_MANAGER)
-        result = await relay.forward(
-            capability_token=capability or "",
-            server_id=server_id,
-            payload=payload,
-            incoming_headers=request.headers,
-            response_headers=response.headers,
-        )
-    except McpRuntimeContextError as exc:
-        if exc.status_code in {401, 403}:
-            try:
-                failure_counts = await MCP_RELAY_AUTH_FAILURE_LIMITER.record_failure(
-                    source_fingerprint=source_fingerprint,
-                    capability_fingerprint=capability_fingerprint,
-                )
-            except McpRuntimeContextError as limiter_exc:
-                raise _mcp_runtime_http_error(limiter_exc) from limiter_exc
-            logger.warning(
-                "mcp_relay_auth_failure",
-                extra={
-                    "mcp_source_sha256": source_fingerprint,
-                    "mcp_capability_sha256": capability_fingerprint,
-                    "mcp_error_code": exc.code,
-                    "mcp_source_failure_count": failure_counts.source,
-                    "mcp_capability_failure_count": failure_counts.capability,
-                },
-            )
-        raise _mcp_runtime_http_error(exc) from exc
-    response.headers["Cache-Control"] = "no-store"
-    if result is None:
-        headers = {"Cache-Control": "no-store"}
-        session_id = response.headers.get("Mcp-Session-Id")
-        if session_id:
-            headers["Mcp-Session-Id"] = session_id
-        return Response(status_code=204, headers=headers)
-    return result
-
-
 @router.post("/mcp/")
 @router.post("/mcp")
 async def create_mcp_server(
@@ -888,7 +867,7 @@ async def delete_mcp_server(
     safe_name = _safe_name(name)
     try:
         async with transaction() as conn:
-            row = await delete_mcp_server_registry(
+            row = await mcp_repository.delete_mcp_server_registry(
                 conn,
                 tenant_id=principal.tenant_id,
                 name=safe_name,
@@ -931,7 +910,7 @@ async def toggle_mcp_server(
     request = _request_model(McpServerToggleRequest, payload)
     try:
         async with transaction() as conn:
-            row = await toggle_mcp_server_registry(
+            row = await mcp_repository.toggle_mcp_server_registry(
                 conn,
                 tenant_id=principal.tenant_id,
                 name=safe_name,
@@ -976,7 +955,9 @@ async def discover_mcp_tools(
     safe_name = _safe_name(name)
     await _public_server_access(principal=principal, name=safe_name)
     try:
-        jwt = await read_mcp_principal_jwt(principal)
+        jwt = await get_mcp_principal_jwt_store().get(
+            McpContextPrincipal.from_principal(principal)
+        )
     except McpRuntimeContextError as exc:
         raise _mcp_runtime_http_error(exc) from exc
     result = await LIVE_MCP_CATALOG.list_server_tools(
@@ -1072,7 +1053,7 @@ async def delete_admin_mcp_server(
     safe_name = _safe_name(name)
     try:
         async with transaction() as conn:
-            row = await delete_mcp_server_registry(
+            row = await mcp_repository.delete_mcp_server_registry(
                 conn,
                 tenant_id=principal.tenant_id,
                 name=safe_name,

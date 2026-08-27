@@ -5,7 +5,6 @@ from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.mcp.api import assert_mcp_tool_reference
 from app.runtime.kernel_contracts import AgentEvent
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
 from app.validation import (
@@ -22,7 +21,6 @@ EXECUTOR_AUTH_HEADER = "X-AI-Platform-Executor-Credential"
 EXECUTOR_CALLBACK_PATH = "/api/ai/runtime/callbacks/executor"
 EXECUTOR_TOOL_PERMISSION_CALLBACK_PATH = "/api/ai/runtime/callbacks/tool-permission"
 EXECUTOR_CONTEXT_RETRIEVAL_CALLBACK_PATH = "/api/ai/runtime/callbacks/context-retrieval"
-MCP_RELAY_CALLBACK_PATH = "/api/ai/mcp/relay"
 _TRUSTED_CALLBACK_HOSTS = {
     "localhost",
     "127.0.0.1",
@@ -56,7 +54,6 @@ class TrustedCallbackTarget:
     callback_url: str
     tool_permission_url: str
     context_retrieval_url: str
-    mcp_relay_url: str
     host: str
 
 
@@ -125,7 +122,6 @@ def build_trusted_callback_target(
         callback_url=f"{normalized_base_url}{EXECUTOR_CALLBACK_PATH}",
         tool_permission_url=f"{normalized_base_url}{EXECUTOR_TOOL_PERMISSION_CALLBACK_PATH}",
         context_retrieval_url=f"{normalized_base_url}{EXECUTOR_CONTEXT_RETRIEVAL_CALLBACK_PATH}",
-        mcp_relay_url=f"{normalized_base_url}{MCP_RELAY_CALLBACK_PATH}",
         host=host,
     )
 
@@ -181,8 +177,6 @@ class SandboxRuntimeRequest(BaseModel):
     context_manifest: dict[str, Any] = Field(default_factory=dict)
     context_retrieval_scope: ContextRetrievalScope | None = None
     sdk_session_id: str | None = None
-    mcp_relay_url: str = ""
-    mcp_broker_capability: str = Field(default="", repr=False)
     governed_permission_wait: bool = False
     require_selected_skill_invocation: bool = True
     reconciliation_context: dict[str, Any] = Field(default_factory=dict)
@@ -197,15 +191,10 @@ class SandboxRuntimeRequest(BaseModel):
     def validate_user_id(cls, value: str):
         return assert_safe_principal_user_id(value)
 
-    @field_validator("skill_ids", "file_ids")
+    @field_validator("skill_ids", "mcp_tool_ids", "file_ids")
     @classmethod
     def validate_list_ids(cls, values: list[str], info):
         return [assert_safe_id(value, info.field_name) for value in values]
-
-    @field_validator("mcp_tool_ids")
-    @classmethod
-    def validate_mcp_tool_ids(cls, values: list[str]):
-        return [assert_mcp_tool_reference(value, "mcp_tool_ids") for value in values]
 
     @field_validator("trace_id")
     @classmethod

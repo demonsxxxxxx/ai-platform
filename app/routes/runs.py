@@ -3,7 +3,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import UUID4, BaseModel, ConfigDict
+from pydantic import UUID4
 
 from app import repositories
 from app.agent_profiles import reauthorize_pinned_run_for_replay
@@ -54,7 +54,6 @@ from app.queue import (
     remove_queued_run,
 )
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
-from app.mcp.api import release_committed_terminal_mcp_run_grant
 from app.run_projection import (
     artifact_card,
     executor_result_schema_version,
@@ -102,12 +101,6 @@ from app.skills.pinning import (
 from app.skills.release_policy import release_decision_payload_for_locked_version, resolve_rollout_skill_decision
 from app.skills.registry import BuiltinSkillRegistry
 from app.validation import assert_safe_principal_user_id
-
-
-class RunControlMutationRequest(BaseModel):
-    """Strict body reserved for future server-owned Run control options."""
-
-    model_config = ConfigDict(extra="forbid")
 
 router = APIRouter()
 RUN_PLAYBACK_CONTRACT_VERSION = "ai-platform.run-playback.v1"
@@ -1131,7 +1124,6 @@ async def create_run(
 @router.post("/runs/{run_id}/copy", response_model=RunControlResponse)
 async def copy_run(
     run_id: str,
-    request: RunControlMutationRequest | None = None,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlResponse:
     _validate_principal_user_id_for_route(principal)
@@ -1303,74 +1295,74 @@ async def _mutate_run_control_child(
     copied: dict[str, Any] | None = None
     try:
         async with transaction() as conn:
-                # Global order: operation advisory -> user admission advisory ->
-                # source-run row. The resolver takes the same first lock.
-                await repositories.acquire_run_control_operation_lock(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    user_id=principal.user_id,
-                    source_run_id=run_id,
-                    action=action,
-                    operation_id=normalized_operation_id,
+            # Global order: operation advisory -> user admission advisory ->
+            # source-run row. The resolver takes the same first lock.
+            await repositories.acquire_run_control_operation_lock(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                source_run_id=run_id,
+                action=action,
+                operation_id=normalized_operation_id,
+            )
+            copied = await repositories.get_run_control_operation(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                source_run_id=run_id,
+                action=action,
+                operation_id=normalized_operation_id,
+            )
+            if copied is not None:
+                retired_control_rejected = contains_persisted_platform_multi_agent_control(
+                    copied.get("input_json")
                 )
-                copied = await repositories.get_run_control_operation(
+                if retired_control_rejected:
+                    child_run_id = str(copied["run_id"])
+                    await terminalize_retired_platform_multi_agent_run(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        run_id=child_run_id,
+                    )
+            if copied is None:
+                await enforce_user_active_run_limit(
                     conn,
                     tenant_id=principal.tenant_id,
                     user_id=principal.user_id,
-                    source_run_id=run_id,
-                    action=action,
-                    operation_id=normalized_operation_id,
+                )
+                await reauthorize_pinned_run_for_replay(
+                    conn,
+                    principal=principal,
+                    run_id=run_id,
+                )
+                mutation = (
+                    repositories.retry_run_as_new_task
+                    if action == "retry"
+                    else repositories.resume_run_as_new_task
+                )
+                copied = await mutation(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    run_id=run_id,
                 )
                 if copied is not None:
-                    retired_control_rejected = contains_persisted_platform_multi_agent_control(
-                        copied.get("input_json")
-                    )
-                    if retired_control_rejected:
-                        child_run_id = str(copied["run_id"])
-                        await terminalize_retired_platform_multi_agent_run(
-                            conn,
-                            tenant_id=principal.tenant_id,
-                            run_id=child_run_id,
-                        )
-                if copied is None:
-                    await enforce_user_active_run_limit(
+                    queue_payload = await prepare_copied_run_for_queue(
                         conn,
-                        tenant_id=principal.tenant_id,
-                        user_id=principal.user_id,
-                    )
-                    await reauthorize_pinned_run_for_replay(
-                        conn,
+                        copied=copied,
                         principal=principal,
-                        run_id=run_id,
+                        source=f"{action}_run",
+                        authorized_source_run_id=run_id,
                     )
-                    mutation = (
-                        repositories.retry_run_as_new_task
-                        if action == "retry"
-                        else repositories.resume_run_as_new_task
-                    )
-                    copied = await mutation(
+                    await repositories.record_run_control_operation(
                         conn,
                         tenant_id=principal.tenant_id,
-                        user_id=principal.user_id,
-                        run_id=run_id,
+                        source_run_id=run_id,
+                        child_run_id=str(copied["run_id"]),
+                        action=action,
+                        operation_id=normalized_operation_id,
                     )
-                    if copied is not None:
-                        queue_payload = await prepare_copied_run_for_queue(
-                            conn,
-                            copied=copied,
-                            principal=principal,
-                            source=f"{action}_run",
-                            authorized_source_run_id=run_id,
-                        )
-                        await repositories.record_run_control_operation(
-                            conn,
-                            tenant_id=principal.tenant_id,
-                            source_run_id=run_id,
-                            child_run_id=str(copied["run_id"]),
-                            action=action,
-                            operation_id=normalized_operation_id,
-                        )
-                        created = True
+                    created = True
     except HTTPException as exc:
         await _audit_wrapped_capability_denial(principal, exc, source=f"{action}_run")
         raise
@@ -1436,7 +1428,6 @@ async def _mutate_run_control_child(
 async def retry_run(
     run_id: str,
     operation_id: UUID4 | None = None,
-    request: RunControlMutationRequest | None = None,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlMutationResponse:
     """Queue or resolve one idempotent retry operation."""
@@ -1454,7 +1445,6 @@ async def retry_run(
 async def resume_run(
     run_id: str,
     operation_id: UUID4 | None = None,
-    request: RunControlMutationRequest | None = None,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlMutationResponse:
     """Queue or resolve one idempotent checkpoint-resume operation."""
@@ -1651,13 +1641,6 @@ async def cancel_run(
             run_id=run_id,
         )
     if result is not None:
-        if result["status"] in {"succeeded", "failed", "cancelled"}:
-            await release_committed_terminal_mcp_run_grant(
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
-                status=result["status"],
-                transaction_factory=transaction,
-            )
         initial_progress = result.pop("_permission_terminalization_progress", None)
         if initial_progress is not None:
             await reconcile_terminalized_permission_run(
@@ -1678,13 +1661,6 @@ async def cancel_run(
                 "cancelled",
             }:
                 result["status"] = progressed_status
-        if result["status"] in {"succeeded", "failed", "cancelled"}:
-            await release_committed_terminal_mcp_run_grant(
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
-                status=result["status"],
-                transaction_factory=transaction,
-            )
         await reconcile_terminalized_permission_run(
             tenant_id=principal.tenant_id,
             run_id=run_id,

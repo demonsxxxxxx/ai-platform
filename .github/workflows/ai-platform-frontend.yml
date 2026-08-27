@@ -255,7 +255,6 @@ jobs:
           docker build \
             --build-arg AI_PLATFORM_BUILD_COMMIT="$IMAGE_SOURCE_COMMIT" \
             --build-arg AI_PLATFORM_BUILD_DIRTY=false \
-            --build-arg VITE_MCP_AUTH_SOURCE_ORIGIN="${{ vars.MCP_AUTH_SOURCE_ORIGIN }}" \
             --build-arg AI_PLATFORM_BUILD_REPOSITORY="$IMAGE_SOURCE_REPOSITORY" \
             -t "ai-platform-frontend:$IMAGE_SOURCE_COMMIT" \
             -f frontend/web/Dockerfile \

@@ -2025,7 +2025,7 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
         ({"modelId": "model-b"}, None),
         ({"disabled_skills": ["other-skill"]}, None),
         ({"enabled_skills": ["other-skill"]}, None),
-        ({"disabled_mcp_tools": ["gateway::other-tool"]}, None),
+        ({"disabled_mcp_tools": ["other-tool"]}, None),
         ({"selected_mcp_tool_ids": ["gateway::other-tool"]}, None),
         ({"agent_options": {"temperature": 0.2}}, None),
         ({"agent_options": {"enable_thinking": "high"}}, None),
@@ -2043,7 +2043,7 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
         ({"confirmed_capability_id": "general_chat"}, None),
         ({"input": {"model": "model-b"}}, None),
         ({"input": {"multi_agent_steps": [{"skillIds": ["other-skill"]}]}}, None),
-        ({"input": {"multi_agent_steps": [{"tools": [{"mcpToolIds": ["gateway::other-tool"]}]}]}}, None),
+        ({"input": {"multi_agent_steps": [{"tools": [{"mcpToolIds": ["other-tool"]}]}]}}, None),
         ({"input": {"multiAgentSteps": [{"mcpServerIds": ["other-server"]}]}}, None),
         (
             {

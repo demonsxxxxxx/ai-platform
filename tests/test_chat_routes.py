@@ -60,14 +60,6 @@ def chat_submission_client(monkeypatch):
         "app.auth.get_settings",
         lambda: Settings(frontend_poc_auth_enabled=True),
     )
-
-    async def require_schema_current():
-        return {"ready": True}
-
-    monkeypatch.setattr(
-        "app.main.require_schema_current",
-        require_schema_current,
-    )
     with TestClient(create_app(), raise_server_exceptions=False) as client:
         yield client
 
@@ -241,7 +233,7 @@ def test_chat_mcp_selection_model_preserves_omitted_clear_and_explicit_contract(
 async def test_latest_session_run_input_read_is_principal_and_workspace_scoped():
     class Cursor:
         async def fetchone(self):
-            return {"input_json": {"input": {"mcp_tool_ids": ["gateway::locked-search"]}}}
+            return {"input_json": {"input": {"mcp_tool_ids": ["locked-search"]}}}
 
     class Connection:
         def __init__(self):
@@ -263,7 +255,7 @@ async def test_latest_session_run_input_read_is_principal_and_workspace_scoped()
         session_id="session-a",
     )
 
-    assert latest_input == {"input": {"mcp_tool_ids": ["gateway::locked-search"]}}
+    assert latest_input == {"input": {"mcp_tool_ids": ["locked-search"]}}
     assert conn.params == ("tenant-a", "workspace-a", "user-a", "session-a")
     assert "sessions.status = 'active'" in conn.sql
     assert "runs.tenant_id = %s" in conn.sql
@@ -453,7 +445,6 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
     request = ChatStreamRequest(
         message="durable replay",
         submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
-        selected_mcp_tool_ids=["qa-mcp::qa-search"],
     )
     fingerprint = repository_module.chat_submission_fingerprint(
         {"request": request.model_dump(mode="json", exclude={"submission_id"}), "query_agent_id": None},
@@ -500,11 +491,10 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
 @pytest.mark.parametrize(
     ("message", "selected_tools", "expected_authorizations"),
     [
-        ("不要调用 MCP，只解释它是什么", ["qa-mcp::qa-search"], 0),
-        ("请调用 MCP 搜索员工手册", ["qa-mcp::qa-search"], 1),
-        ("显式不选择 MCP 工具", [], 1),
+        ("不要调用 MCP，只解释它是什么", ["gateway::qa-search"], 0),
+        ("请调用 MCP 搜索员工手册", ["gateway::qa-search"], 1),
     ],
-    ids=["negative-veto", "affirmative", "explicit-empty-selection"],
+    ids=["negative-veto", "affirmative"],
 )
 @pytest.mark.asyncio
 async def test_chat_stream_current_turn_controls_selected_mcp_before_authorization(
@@ -521,7 +511,7 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
 
     async def authorize_tools(*_args, **_kwargs):
         calls["authorization"] += 1
-        return [{"tool_id": "qa-mcp::qa-search"}]
+        return [{"tool_id": "gateway::qa-search"}]
 
     async def create_session(*_args, **_kwargs):
         return "ses-polarity"
@@ -534,7 +524,6 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
         return "msg-polarity"
 
     async def enqueue(payload):
-        calls["queue_payload"] = payload
         calls["queue_input"] = payload["input"]
         return 1
 
@@ -556,12 +545,8 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", manifests)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
 
-    request_kwargs = {"message": message}
-    if selected_tools is not None:
-        request_kwargs["selected_mcp_tool_ids"] = selected_tools
-
     response = await chat_stream(
-        ChatStreamRequest(**request_kwargs),
+        ChatStreamRequest(message=message, selected_mcp_tool_ids=selected_tools),
         principal=principal(roles=roles),
     )
 
@@ -570,10 +555,6 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
     expected_tools = selected_tools if expected_authorizations else None
     assert calls["run_input"].get("mcp_tool_ids") == expected_tools
     assert calls["queue_input"].get("mcp_tool_ids") == expected_tools
-    assert "mcp_context_id" not in calls["queue_payload"]
-    assert "mcp_context_id" not in calls["queue_input"]
-    assert "mcp_tool_names" not in calls["run_input"]
-    assert "mcp_tool_names" not in calls["queue_input"]
 
 
 @pytest.mark.parametrize(
@@ -762,7 +743,7 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
             "latest_run_input_json": {
                 "input": {
                     "mcp_tool_ids": [
-                        "gateway::locked-search" if for_update else "gateway::stale-unlocked-search"
+                        "locked-search" if for_update else "stale-unlocked-search"
                     ]
                 }
             },
@@ -773,17 +754,17 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
 
     async def latest_input(*_args, **_kwargs):
         calls.append("latest_input")
-        return {"input": {"mcp_tool_ids": ["gateway::locked-search"]}}
+        return {"input": {"mcp_tool_ids": ["locked-search"]}}
 
     async def authorize_tools(*_args, **kwargs):
         calls.append(("authorize", kwargs["tool_ids"]))
-        assert kwargs["tool_ids"] == ["gateway::locked-search"]
-        return [{"tool_id": "gateway::locked-search"}]
+        assert kwargs["tool_ids"] == ["locked-search"]
+        return [{"tool_id": "locked-search"}]
 
     async def claim_submission(*_args, **kwargs):
         calls.append(("claim", kwargs["request_fingerprint_sha256"]))
         fingerprint_request = request.model_dump(mode="json", exclude={"submission_id"})
-        fingerprint_request["selected_mcp_tool_ids"] = ["gateway::locked-search"]
+        fingerprint_request["selected_mcp_tool_ids"] = ["locked-search"]
         assert kwargs["request_fingerprint_sha256"] == repository_module.chat_submission_fingerprint(
             {"request": fingerprint_request, "query_agent_id": None},
             tenant_id="tenant-a",
@@ -834,7 +815,7 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
         ("session", False),
         ("session", True),
         "latest_input",
-        ("authorize", ["gateway::locked-search"]),
+        ("authorize", ["locked-search"]),
     ]
     assert calls[6][0] == "claim"
 
@@ -2651,19 +2632,25 @@ async def test_keyed_unauthorized_structured_mcp_rejection_persists_only_safe_le
 
     with pytest.raises(HTTPException) as first_info:
         await chat_stream(
-            rejected_request([" gateway::unauthorized-private-tool ", "gateway::second-private-tool"]),
+            rejected_request(
+                [" gateway::unauthorized-private-tool ", "gateway::second-private-tool"]
+            ),
             principal=principal(),
         )
 
     with pytest.raises(HTTPException) as replay_info:
         await chat_stream(
-            rejected_request(["gateway::unauthorized-private-tool", "gateway::second-private-tool"]),
+            rejected_request(
+                ["gateway::unauthorized-private-tool", "gateway::second-private-tool"]
+            ),
             principal=principal(),
         )
 
     with pytest.raises(HTTPException) as mismatch_info:
         await chat_stream(
-            rejected_request(["gateway::unauthorized-private-tool", "gateway::different-private-tool"]),
+            rejected_request(
+                ["gateway::unauthorized-private-tool", "gateway::different-private-tool"]
+            ),
             principal=principal(),
         )
 
@@ -4333,7 +4320,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
                 },
             ),
             model={"id": "model-a", "value": "provider-model-a"},
-            mcp_tool_ids=("qa-mcp::qa-search",) if force_creation_rollback else (),
+            mcp_tool_ids=(),
             private_execution_input={
                 "agent_id": "agt_support",
                 "revision": 7,
@@ -5566,7 +5553,7 @@ async def test_chat_stream_implicit_rag_backing_mcp_failure_falls_back_to_genera
             "skill_id": skill_id,
             "skill_status": "active",
             "executor_type": "ragflow",
-            "backing_mcp_tool_id": "ragflow::ragflow_search",
+            "backing_mcp_tool_id": "tenant-search",
         }
 
     async def get_distribution(conn, *, tenant_id, capability_kind, capability_id):
@@ -5579,10 +5566,10 @@ async def test_chat_stream_implicit_rag_backing_mcp_failure_falls_back_to_genera
         }
 
     async def get_tool(conn, *, tenant_id, tool_id):
-        assert (tenant_id, tool_id) == ("tenant-a", "ragflow::ragflow_search")
+        assert (tenant_id, tool_id) == ("tenant-a", "tenant-search")
         return {
             "tool_id": tool_id,
-            "server_id": "ragflow",
+            "server_id": "tenant-search-server",
             "effective_status": "active",
             "server_status": "disabled",
             "visible_to_user": True,

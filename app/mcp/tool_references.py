@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from app.mcp.domain.identifiers import MCP_SAFE_ID_PATTERN
+from app.mcp.identifiers import MCP_SAFE_ID_PATTERN
 
 
 MCP_TOOL_REFERENCE_SEPARATOR = "::"

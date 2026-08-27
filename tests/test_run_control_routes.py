@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import json
+
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -129,7 +130,7 @@ def stub_run_event_append(monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _stub_run_control_route_dependencies(monkeypatch):
+def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypatch):
     async def update_auth_snapshot(*_args, **_kwargs):
         return None
 
@@ -173,11 +174,6 @@ def _stub_run_control_route_dependencies(monkeypatch):
 
     async def record_run_control_operation(*_args, **_kwargs):
         return "evt-control-operation"
-
-    # Autouse fixtures run before each test body, so a test-specific stub can
-    # replace this neutral default when it needs an authorized source row.
-    async def get_authorized_run(*_args, **_kwargs):
-        return None
 
     monkeypatch.setattr(
         "app.routes.runs.repositories.update_run_auth_snapshot",
@@ -232,11 +228,6 @@ def _stub_run_control_route_dependencies(monkeypatch):
     monkeypatch.setattr(
         "app.routes.runs.repositories.record_run_control_operation",
         record_run_control_operation,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.routes.runs.repositories.get_authorized_run",
-        get_authorized_run,
         raising=False,
     )
 
@@ -3287,7 +3278,6 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
             "session_id": "ses_old",
             "agent_id": "qa-word-review",
             "skill_id": "qa-file-reviewer",
-            "mcp_context_id": "mcpctx-source",
             "input_json": {
                 "skillIds": ["qa-file-reviewer"],
                 "allowedSkills": ["qa-file-reviewer"],
@@ -3355,7 +3345,6 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
     assert copied["release_policy_version"] == ""
     assert copied["model_id"] == "model-catalog-a"
     assert copied["model_value"] == "provider-model-a"
-    assert "_requires_fresh_mcp_context" not in copied
     assert "executor_type" not in copied["input"]
     assert "skill_ids" not in copied["input"]
     assert "skillIds" not in copied["input"]
@@ -3377,7 +3366,6 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
     assert "/home/xinlin.jiang/qa-review-queue-runtime" not in persisted_json
     assert "/var/lib/ai-platform" not in persisted_json
     persisted_input = json.loads(persisted_json)
-    assert "mcp_context_id" not in persisted_input
     assert persisted_input["model_id"] == "model-catalog-a"
     assert persisted_input["model_value"] == "provider-model-a"
     persisted_snapshot = repositories.copied_run_execution_snapshot(persisted_input)
@@ -5692,7 +5680,6 @@ def test_cancel_routes_reconcile_only_the_final_typed_terminalization_progress(
     """Both cancellation routes consume initial and drained typed progress without duplicate reconciliation."""
 
     reconciled = []
-    invalidated = []
 
     async def fake_request_cancel(_conn, **_kwargs):
         return {
@@ -5712,16 +5699,11 @@ def test_cancel_routes_reconcile_only_the_final_typed_terminalization_progress(
     async def remove_queued_run(**_kwargs):
         return 0
 
-    async def invalidate(*, tenant_id, run_id, status, transaction_factory):
-        assert transaction_factory is not None
-        invalidated.append((tenant_id, run_id, status))
-
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr(f"{module_path}.transaction", fake_transaction)
     monkeypatch.setattr(f"{module_path}.repositories.{cancel_name}", fake_request_cancel)
     monkeypatch.setattr(f"{module_path}.drain_run_tool_permission_terminalization", drain)
     monkeypatch.setattr(f"{module_path}.reconcile_terminalized_permission_run", reconcile)
-    monkeypatch.setattr(f"{module_path}.release_committed_terminal_mcp_run_grant", invalidate)
     monkeypatch.setattr(f"{module_path}.remove_queued_run", remove_queued_run, raising=False)
 
     response = TestClient(create_app()).post(path, headers=admin_headers() if is_admin else headers())
@@ -5729,63 +5711,6 @@ def test_cancel_routes_reconcile_only_the_final_typed_terminalization_progress(
     assert response.status_code == 200
     assert response.json()["status"] == expected_status
     assert reconciled == ([('default', 'run_active', 'cancelled')] if expected_calls else [])
-    assert invalidated == (
-        [("default", "run_active", "cancelled")]
-        if expected_status == "cancelled"
-        else []
-    )
-
-
-@pytest.mark.parametrize(
-    ("module_path", "cancel_name", "path", "is_admin"),
-    [
-        ("app.routes.runs", "request_run_cancel", "/api/ai/runs/run_active/cancel", False),
-        (
-            "app.routes.admin_runs",
-            "request_admin_run_cancel",
-            "/api/ai/admin/runs/run_active/cancel",
-            True,
-        ),
-    ],
-    ids=["owner", "admin"],
-)
-def test_cancel_routes_preserve_mcp_run_grant_when_terminal_commit_fails(
-    monkeypatch,
-    module_path,
-    cancel_name,
-    path,
-    is_admin,
-):
-    invalidated = []
-
-    class CommitFailingTransaction:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            if exc_type is None:
-                raise RuntimeError("cancel commit failed")
-            return False
-
-    async def fake_request_cancel(_conn, **_kwargs):
-        return {
-            "run_id": "run_active",
-            "status": "cancelled",
-        }
-
-    async def invalidate(**kwargs):
-        invalidated.append(kwargs)
-
-    monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr(f"{module_path}.transaction", CommitFailingTransaction)
-    monkeypatch.setattr(f"{module_path}.repositories.{cancel_name}", fake_request_cancel)
-    monkeypatch.setattr(f"{module_path}.release_committed_terminal_mcp_run_grant", invalidate)
-
-    client = TestClient(create_app())
-    with pytest.raises(RuntimeError, match="cancel commit failed"):
-        client.post(path, headers=admin_headers() if is_admin else headers())
-
-    assert invalidated == []
 
 
 

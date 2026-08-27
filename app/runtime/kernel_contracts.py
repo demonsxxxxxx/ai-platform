@@ -2,7 +2,6 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.mcp.api import assert_mcp_tool_reference
 from app.validation import assert_safe_id, assert_safe_principal_user_id
 
 SUPPORTED_AGENT_EVENT_TYPES = {
@@ -74,15 +73,10 @@ class RunContext(BaseModel):
     def validate_user_id(cls, value: str):
         return assert_safe_principal_user_id(value)
 
-    @field_validator("skill_ids", "file_ids")
+    @field_validator("skill_ids", "mcp_tool_ids", "file_ids")
     @classmethod
     def validate_list_ids(cls, values: list[str], info):
         return [assert_safe_id(value, info.field_name) for value in values]
-
-    @field_validator("mcp_tool_ids")
-    @classmethod
-    def validate_mcp_tool_ids(cls, values: list[str]):
-        return [assert_mcp_tool_reference(value, "mcp_tool_ids") for value in values]
 
     @field_validator("model_gateway")
     @classmethod

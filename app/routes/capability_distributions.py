@@ -12,7 +12,6 @@ from app.capability_distribution import (
 )
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
-from app.mcp.api import toggle_mcp_distribution, upsert_mcp_distribution
 from app.department_directory import (
     MAX_DISTRIBUTION_DEPARTMENTS,
     DepartmentDirectoryError,
@@ -170,40 +169,28 @@ async def _write_distribution(
                 display_name=principal.display_name or principal.user_id,
             )
             if isinstance(request, CapabilityDistributionAuthorityUpdateRequest):
-                writer = (
-                    upsert_mcp_distribution
-                    if capability_kind == "mcp_server"
-                    else repositories.upsert_capability_distribution_row
+                row = await repositories.upsert_capability_distribution_row(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    capability_kind=capability_kind,
+                    capability_id=capability_id,
+                    status=request.status,
+                    visible_to_user=request.visible_to_user,
+                    scope_mode=request.scope_mode,
+                    department_ids=department_ids,
+                    allowed_roles=request.allowed_roles,
+                    metadata_json=request.metadata,
+                    updated_by=principal.user_id,
                 )
-                values = {
-                    "tenant_id": principal.tenant_id,
-                    "capability_id": capability_id,
-                    "status": request.status,
-                    "visible_to_user": request.visible_to_user,
-                    "scope_mode": request.scope_mode,
-                    "department_ids": department_ids,
-                    "allowed_roles": request.allowed_roles,
-                    "metadata_json": request.metadata,
-                    "updated_by": principal.user_id,
-                }
-                if capability_kind != "mcp_server":
-                    values["capability_kind"] = capability_kind
-                row = await writer(conn, **values)
             else:
-                writer = (
-                    toggle_mcp_distribution
-                    if capability_kind == "mcp_server"
-                    else repositories.toggle_capability_distribution_row
+                row = await repositories.toggle_capability_distribution_row(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    capability_kind=capability_kind,
+                    capability_id=capability_id,
+                    enabled=request.requested_enabled(),
+                    updated_by=principal.user_id,
                 )
-                values = {
-                    "tenant_id": principal.tenant_id,
-                    "capability_id": capability_id,
-                    "enabled": request.requested_enabled(),
-                    "updated_by": principal.user_id,
-                }
-                if capability_kind != "mcp_server":
-                    values["capability_kind"] = capability_kind
-                row = await writer(conn, **values)
             audit_id = await repositories.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
