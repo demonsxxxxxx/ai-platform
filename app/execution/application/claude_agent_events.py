@@ -17,6 +17,7 @@ from typing import Any, Callable
 from app.streaming.events import PUBLIC_APPLICATION_EVENT_TYPES_V4
 
 _APPLICATION_EVENT_TYPES = PUBLIC_APPLICATION_EVENT_TYPES_V4
+_THINKING_SUMMARY_EVENT_TYPE = "claude_sdk_thinking_summary"
 _TOOL_CATEGORIES = frozenset({"skill", "mcp", "read", "write", "edit", "search", "execute"})
 _BUILTIN_TOOL_CATEGORIES = {
     "Read": "read",
@@ -273,6 +274,47 @@ class ClaudeAgentEventCandidate:
         }
 
 
+@dataclass(frozen=True)
+class ClaudeSdkThinkingSummaryCandidate:
+    """One private executor fact awaiting server-owned public projection."""
+
+    run_id: str
+    event_id: str
+    message_id: str
+    summary: str
+    sanitizer: InitVar[Callable[[object], str]]
+
+    def __post_init__(self, sanitizer: Callable[[object], str]) -> None:
+        _assert_run_id(self.run_id)
+        _assert_event_id(self.event_id)
+        _assert_safe_ref(self.message_id, "message_id")
+        if not self.summary or len(self.summary) > _MAX_TEXT:
+            raise ValueError("invalid summarized thinking bound")
+        if sanitizer(self.summary) != self.summary:
+            raise ValueError("summarized thinking is not sanitized")
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "run_id": self.run_id,
+            "event_id": self.event_id,
+            "event_type": _THINKING_SUMMARY_EVENT_TYPE,
+            "message_id": self.message_id,
+            "summary": self.summary,
+        }
+
+    def as_agent_event_fields(self) -> dict[str, object]:
+        return {
+            "type": _THINKING_SUMMARY_EVENT_TYPE,
+            "message": "",
+            "payload": {"summary": self.summary},
+            "event_id": self.event_id,
+            "run_id": self.run_id,
+            "message_id": self.message_id,
+            "causation_event_id": None,
+            "admin_only": True,
+        }
+
+
 def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
     if not isinstance(payload, dict) or len(payload) > 64:
         raise ValueError("event payload must be an object")
@@ -280,8 +322,9 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
         "message.started": set(),
         "message.delta": {"delta"},
         "message.completed": {"content"},
-        "thinking.started": {"public_summary"},
-        "thinking.completed": {"public_summary"},
+        "thinking.started": {"thinking_id"},
+        "thinking.delta": {"thinking_id", "delta"},
+        "thinking.completed": {"thinking_id"},
         "model.completed": {"duration_ms", "turn_count", "stop_category"},
         "tool.started": {"operation_id", "category", "display_name"},
         "tool.completed": {"operation_id", "category", "display_name", "duration_ms"},
@@ -338,7 +381,7 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
         "progress_percent": (0, 100),
         "size_bytes": (0, _MAX_SIZE_BYTES),
     }
-    ref_fields = {"operation_id", "subagent_id", "artifact_id", "decision_id", "terminal_event_id", "evidence_ref"}
+    ref_fields = {"thinking_id", "operation_id", "subagent_id", "artifact_id", "decision_id", "terminal_event_id", "evidence_ref"}
     array_fields = {"evidence_refs", "artifact_refs"}
     for key, value in payload.items():
         if key in string_bounds:
@@ -439,6 +482,7 @@ class ClaudeSdkAgentEventAdapter:
         public_skill_metadata: Mapping[str, Mapping[str, str]] | None = None,
         sanitizer: Callable[[object], object],
         payload_sanitizer: Callable[[object], object],
+        reasoning_sanitizer: Callable[[object], str] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         _assert_run_id(run_id)
@@ -447,6 +491,7 @@ class ClaudeSdkAgentEventAdapter:
         self.attempt_id = attempt_id
         self._clock = clock
         self._sanitizer = sanitizer
+        self._reasoning_sanitizer = reasoning_sanitizer or sanitizer
         self._payload_sanitizer = payload_sanitizer
         self._sealed = False
         self._message_id = _opaque("msg", run_id, "assistant", attempt_id)
@@ -585,6 +630,42 @@ class ClaudeSdkAgentEventAdapter:
         self._answer_content = content
         return (self._candidate("message.completed", {"content": content}, identity="message.completed"),)
 
+    def accept_thinking_summary(
+        self,
+        value: object,
+        *,
+        block_index: object,
+        message_identity: object,
+    ) -> tuple[ClaudeSdkThinkingSummaryCandidate, ...]:
+        if self._sealed or not isinstance(value, str) or not value or len(value) > _MAX_TEXT:
+            return ()
+        key = (message_identity, block_index)
+        if key in self._thinking_indices:
+            return ()
+        sanitized = self._reasoning_sanitizer(value)
+        if not isinstance(sanitized, str) or not sanitized or len(sanitized) > _MAX_TEXT:
+            return ()
+        identity = f"thinking:{message_identity!s}:{block_index!s}"
+        event_id = _opaque(
+            "evt",
+            self.run_id,
+            _THINKING_SUMMARY_EVENT_TYPE,
+            identity,
+        )
+        if event_id in self._seen_events:
+            return ()
+        self._thinking_indices.add(key)
+        self._seen_events.add(event_id)
+        return (
+            ClaudeSdkThinkingSummaryCandidate(
+                run_id=self.run_id,
+                event_id=event_id,
+                message_id=self._message_id,
+                summary=sanitized,
+                sanitizer=self._reasoning_sanitizer,
+            ),
+        )
+
     def accept_content_block(
         self,
         block: object,
@@ -592,28 +673,10 @@ class ClaudeSdkAgentEventAdapter:
         block_index: object = None,
         message_identity: object = None,
     ) -> tuple[ClaudeAgentEventCandidate, ...]:
+        del block_index, message_identity
         if self._sealed:
             return ()
         name = type(block).__name__
-        if name == "ThinkingBlock":
-            scope = message_identity if message_identity is not None else id(block)
-            key = (scope, block_index if block_index is not None else id(block))
-            if key in self._thinking_indices:
-                return ()
-            self._thinking_indices.add(key)
-            identity = f"thinking:{scope!s}:{key[1]!s}"
-            return (
-                self._candidate(
-                    "thinking.started",
-                    {"public_summary": "Analyzing the request"},
-                    identity=identity,
-                ),
-                self._candidate(
-                    "thinking.completed",
-                    {"public_summary": "Analysis step completed"},
-                    identity=f"{identity}:completed",
-                ),
-            )
         if name == "ToolUseBlock":
             identity = _safe_private_identity(getattr(block, "id", None))
             tool_name = getattr(block, "name", None)

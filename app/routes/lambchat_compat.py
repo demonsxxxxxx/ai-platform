@@ -208,10 +208,13 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
         "active",
     ),
     "thinking.started": _ChatPublicRunEventProjection(
-        "public_activity", "thinking", "Analyzing the request", "active"
+        "public_activity", "thinking_started", "", "active"
+    ),
+    "thinking.delta": _ChatPublicRunEventProjection(
+        "public_activity", "thinking_delta", "", "active"
     ),
     "thinking.completed": _ChatPublicRunEventProjection(
-        "public_activity", "thinking", "Analysis step completed", "completed"
+        "public_activity", "thinking_completed", "", "completed"
     ),
     "tool.started": _ChatPublicRunEventProjection(
         "public_tool_activity", "tool", "Tool execution started", "active"
@@ -567,6 +570,7 @@ def _strict_v4_execution_history_payload(
     if event_type not in {
         "agent.progress",
         "thinking.started",
+        "thinking.delta",
         "thinking.completed",
         "tool.started",
         "tool.completed",
@@ -607,6 +611,7 @@ def _public_run_event_envelope(
     if raw_event_type in {
         "agent.progress",
         "thinking.started",
+        "thinking.delta",
         "thinking.completed",
         "tool.started",
         "tool.completed",
@@ -671,6 +676,12 @@ def _public_run_event_envelope(
             if public_progress["lifecycle"] == "completed"
             else "active",
         )
+    if raw_event_type.startswith("thinking.") and strict_v4_payload is not None:
+        thinking_message = strict_v4_payload.get("delta")
+        if not isinstance(thinking_message, str):
+            thinking_message = strict_v4_payload.get("public_summary")
+        message = thinking_message if isinstance(thinking_message, str) else ""
+        stage = raw_event_type.replace(".", "_")
     if raw_event_type == "error":
         terminal = public_chat_terminal_projection(
             {"status": "failed", "error_code": event.get("error_code")}

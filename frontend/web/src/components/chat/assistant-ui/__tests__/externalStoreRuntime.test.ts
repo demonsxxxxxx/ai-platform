@@ -107,25 +107,25 @@ test("external message conversion preserves public subagent identity and parent 
   }]);
 });
 
-test("external message conversion keeps stable ids and hides thinking payload", () => {
+test("external message conversion keeps stable ids and redacts unvalidated reasoning content", () => {
   const converted = toAssistantUiMessage({
     id: "message-1",
     role: "assistant",
     content: "answer",
     timestamp: new Date("2026-01-01T00:00:00Z"),
     parts: [
-      { type: "thinking", content: "private thinking", isStreaming: true },
+      { type: "thinking", content: "public model reasoning", isStreaming: true },
       { type: "text", content: "answer" },
     ],
   });
   assert.equal(converted.id, "message-1");
   assert.deepEqual(converted.content, [
-    { type: "reasoning", text: "", status: { type: "running" } },
+    { type: "reasoning", text: "Thinking", status: { type: "running" } },
     { type: "text", text: "answer" },
   ]);
 });
 
-test("external message conversion exposes only fixed public thinking summaries", () => {
+test("external message conversion preserves model-provided public reasoning", () => {
   const converted = toAssistantUiMessage({
     id: "message-public-thinking",
     role: "assistant",
@@ -134,13 +134,22 @@ test("external message conversion exposes only fixed public thinking summaries",
     parts: [
       { type: "thinking", content: "Analyzing the request", isStreaming: true },
       { type: "thinking", content: "Analysis step completed", isStreaming: false },
-      { type: "thinking", content: "Unreviewed reasoning", isStreaming: false },
+      {
+        type: "thinking",
+        content: "Compare the public evidence before answering.",
+        public_reasoning: true,
+        isStreaming: false,
+      },
     ],
   });
 
   assert.deepEqual(converted.content, [
     { type: "reasoning", text: "Analyzing the request", status: { type: "running" } },
     { type: "reasoning", text: "Analysis step completed", status: { type: "complete" } },
-    { type: "reasoning", text: "", status: { type: "complete" } },
+    {
+      type: "reasoning",
+      text: "Compare the public evidence before answering.",
+      status: { type: "complete" },
+    },
   ]);
 });

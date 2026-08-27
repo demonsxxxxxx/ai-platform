@@ -4895,7 +4895,11 @@ async def test_sdk_runner_requires_exact_selected_skill_despite_user_override(mo
     assert result.error == "claude_agent_sdk_selected_skill_not_invoked"
     assert captured["max_turns"] == 12
     assert captured["effort"] == "xhigh"
-    assert captured["max_thinking_tokens"] == 16384
+    assert captured["thinking"] == {
+        "type": "enabled",
+        "budget_tokens": 16384,
+        "display": "summarized",
+    }
     assert captured["session_id"] == "existing-sdk-session"
     assert captured["prompt_is_stream"] is True
     expected_prompt = (

@@ -76,7 +76,7 @@
         "event_type": {
           "enum": [
             "message.started", "message.delta", "message.completed",
-            "thinking.started", "thinking.completed", "model.completed", "agent.progress",
+            "thinking.started", "thinking.delta", "thinking.completed", "model.completed", "agent.progress",
             "tool.started", "tool.completed", "tool.failed", "tool.denied",
             "subagent.started", "subagent.progress", "subagent.completed",
             "subagent.failed", "subagent.cancelled", "artifact.created",
@@ -102,7 +102,7 @@
           "event_type": {
             "enum": [
               "message.started", "message.delta", "message.completed",
-              "thinking.started", "thinking.completed", "model.completed",
+              "thinking.started", "thinking.delta", "thinking.completed", "model.completed",
               "tool.started", "tool.completed", "tool.failed", "tool.denied",
               "subagent.started", "subagent.progress", "subagent.completed",
               "subagent.failed", "subagent.cancelled"
@@ -224,13 +224,19 @@
     "ThinkingStartedEventV4": {
       "allOf": [
         { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
-        { "type": "object", "properties": { "event_type": { "const": "thinking.started" }, "payload": { "type": "object", "properties": { "public_summary": { "const": "Analyzing the request" } }, "required": [], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+        { "type": "object", "properties": { "event_type": { "const": "thinking.started" }, "payload": { "type": "object", "properties": { "thinking_id": { "$ref": "#/$defs/SafeRefV4" }, "public_summary": { "const": "Analyzing the request" } }, "required": [], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+      ], "unevaluatedProperties": false
+    },
+    "ThinkingDeltaEventV4": {
+      "allOf": [
+        { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
+        { "type": "object", "properties": { "event_type": { "const": "thinking.delta" }, "payload": { "type": "object", "properties": { "thinking_id": { "$ref": "#/$defs/SafeRefV4" }, "delta": { "type": "string", "minLength": 1, "maxLength": 8192 } }, "required": ["thinking_id", "delta"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
       ], "unevaluatedProperties": false
     },
     "ThinkingCompletedEventV4": {
       "allOf": [
         { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
-        { "type": "object", "properties": { "event_type": { "const": "thinking.completed" }, "payload": { "type": "object", "properties": { "public_summary": { "const": "Analysis step completed" } }, "required": [], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+        { "type": "object", "properties": { "event_type": { "const": "thinking.completed" }, "payload": { "type": "object", "properties": { "thinking_id": { "$ref": "#/$defs/SafeRefV4" }, "public_summary": { "const": "Analysis step completed" } }, "required": [], "additionalProperties": false } }, "required": ["event_type", "payload"] }
       ], "unevaluatedProperties": false
     },
     "AgentProgressEventV4": {
@@ -362,7 +368,7 @@
     "PublicApplicationEventV4": {
       "oneOf": [
         { "$ref": "#/$defs/MessageStartedEventV4" }, { "$ref": "#/$defs/MessageDeltaEventV4" }, { "$ref": "#/$defs/MessageCompletedEventV4" },
-        { "$ref": "#/$defs/ThinkingStartedEventV4" }, { "$ref": "#/$defs/ThinkingCompletedEventV4" }, { "$ref": "#/$defs/ModelCompletedEventV4" }, { "$ref": "#/$defs/AgentProgressEventV4" },
+        { "$ref": "#/$defs/ThinkingStartedEventV4" }, { "$ref": "#/$defs/ThinkingDeltaEventV4" }, { "$ref": "#/$defs/ThinkingCompletedEventV4" }, { "$ref": "#/$defs/ModelCompletedEventV4" }, { "$ref": "#/$defs/AgentProgressEventV4" },
         { "$ref": "#/$defs/ToolStartedEventV4" }, { "$ref": "#/$defs/ToolCompletedEventV4" }, { "$ref": "#/$defs/ToolFailedEventV4" }, { "$ref": "#/$defs/ToolDeniedEventV4" },
         { "$ref": "#/$defs/SubagentStartedEventV4" }, { "$ref": "#/$defs/SubagentProgressEventV4" }, { "$ref": "#/$defs/SubagentCompletedEventV4" }, { "$ref": "#/$defs/SubagentFailedEventV4" }, { "$ref": "#/$defs/SubagentCancelledEventV4" },
         { "$ref": "#/$defs/ArtifactCreatedEventV4" }, { "$ref": "#/$defs/ArtifactReadyEventV4" }, { "$ref": "#/$defs/ArtifactFailedEventV4" },
@@ -410,7 +416,7 @@
         "message_id": { "$ref": "#/$defs/NullableSafeRefV4" },
         "seq": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
         "event_type": { "enum": [
-          "message.started", "message.delta", "message.completed", "thinking.started", "thinking.completed", "model.completed", "agent.progress",
+          "message.started", "message.delta", "message.completed", "thinking.started", "thinking.delta", "thinking.completed", "model.completed", "agent.progress",
           "tool.started", "tool.completed", "tool.failed", "tool.denied", "subagent.started", "subagent.progress", "subagent.completed", "subagent.failed", "subagent.cancelled",
           "artifact.created", "artifact.ready", "artifact.failed", "policy.checking", "policy.allowed", "policy.denied", "run.cancel_requested", "run.succeeded", "run.cancelled", "run.failed",
           "stream.open", "stream.heartbeat", "stream.gap", "stream.end"
@@ -436,7 +442,7 @@
       "allOf": [
         {
           "if": { "properties": { "event_type": { "enum": [
-            "message.started", "message.delta", "message.completed", "thinking.started", "thinking.completed", "model.completed",
+            "message.started", "message.delta", "message.completed", "thinking.started", "thinking.delta", "thinking.completed", "model.completed",
             "tool.started", "tool.completed", "tool.failed", "tool.denied", "subagent.started", "subagent.progress", "subagent.completed", "subagent.failed", "subagent.cancelled"
           ] } }, "required": ["event_type"] },
           "then": { "properties": {
@@ -485,6 +491,10 @@
         {
           "if": { "properties": { "event_type": { "const": "thinking.started" } }, "required": ["event_type"] },
           "then": { "properties": { "payload": { "$ref": "#/$defs/ThinkingStartedEventV4/allOf/1/properties/payload" } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "thinking.delta" } }, "required": ["event_type"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/ThinkingDeltaEventV4/allOf/1/properties/payload" } } }
         },
         {
           "if": { "properties": { "event_type": { "const": "thinking.completed" } }, "required": ["event_type"] },

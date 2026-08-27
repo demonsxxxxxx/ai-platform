@@ -23,6 +23,7 @@ from app.control_plane_contracts import (
     sanitize_public_payload,
     sanitize_public_text,
 )
+from app.platform.public_payload import sanitize_public_reasoning_text
 from app.executors.claude.capability_policy import (
     CapabilityExecutionPlan,
     _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX,
@@ -960,6 +961,7 @@ async def run_claude_agent_sdk(
         TaskProgressMessage = getattr(sdk, "TaskProgressMessage", ())
         TaskNotificationMessage = getattr(sdk, "TaskNotificationMessage", ())
         TaskUpdatedMessage = getattr(sdk, "TaskUpdatedMessage", ())
+        ThinkingBlock = getattr(sdk, "ThinkingBlock", ())
         ToolPermissionContext = getattr(sdk, "ToolPermissionContext", ())
         TextBlock = sdk.TextBlock
         HookMatcher = getattr(sdk, "HookMatcher", None)
@@ -1230,6 +1232,7 @@ async def run_claude_agent_sdk(
             public_skill_metadata=public_skill_metadata,
             sanitizer=sanitize_public_text,
             payload_sanitizer=sanitize_public_payload,
+            reasoning_sanitizer=sanitize_public_reasoning_text,
         )
         if run_id and attempt_id and on_agent_event is not None
         else None
@@ -1803,7 +1806,11 @@ async def run_claude_agent_sdk(
         skills=configured_skills,
         session_id=session_id,
         max_turns=max_turns,
-        max_thinking_tokens=max(1, int(getattr(settings, "claude_agent_sdk_max_thinking_tokens", 16384))),
+        thinking={
+            "type": "enabled",
+            "budget_tokens": max(1, int(getattr(settings, "claude_agent_sdk_max_thinking_tokens", 16384))),
+            "display": "summarized",
+        },
         effort=str(getattr(settings, "claude_agent_sdk_effort", "xhigh") or "xhigh"),
         can_use_tool=can_use_tool,
         hooks=hooks,
@@ -1920,18 +1927,25 @@ async def run_claude_agent_sdk(
                 continue
             if isinstance(message, AssistantMessage):
                 diagnostic_counters["assistant_messages"] += 1
+                assistant_message_identity = (
+                    f"assistant_{diagnostic_counters['assistant_messages']}"
+                )
                 assistant_text_blocks = []
                 for block_index, block in enumerate(message.content):
-                    if agent_event_adapter is not None:
+                    if agent_event_adapter is not None and isinstance(block, ThinkingBlock):
+                        await publish_agent_candidates(
+                            agent_event_adapter.accept_thinking_summary(
+                                block.thinking,
+                                block_index=block_index,
+                                message_identity=assistant_message_identity,
+                            )
+                        )
+                    elif agent_event_adapter is not None:
                         await publish_agent_candidates(
                             agent_event_adapter.accept_content_block(
                                 block,
                                 block_index=block_index,
-                                message_identity=(
-                                    getattr(message, "message_id", None)
-                                    or getattr(message, "uuid", None)
-                                    or getattr(message, "session_id", None)
-                                ),
+                                message_identity=assistant_message_identity,
                             )
                         )
                     if isinstance(block, TextBlock):

@@ -252,13 +252,24 @@ export function reconstructMessagesFromEvents(
   // artifact/final payload, then its synthetic terminal. Across runs, retain
   // the backend's authoritative creation-order grouping: completion timestamps
   // from an older overlapping run are not a run-generation signal.
+  // Deduplicate one authoritative history response before ordering. Live-event
+  // identity tracking cannot be reused here because history reconstructs state
+  // from scratch and may legitimately contain events already seen live.
+  const seenHistoryEventIds = new Set<string>();
+  const uniqueEvents = events.filter((event) => {
+    if (event.id === undefined || event.id === null) return true;
+    const eventId = event.id.toString();
+    if (seenHistoryEventIds.has(eventId)) return false;
+    seenHistoryEventIds.add(eventId);
+    return true;
+  });
   const runOrder = new Map<string, number>();
-  events.forEach((event) => {
+  uniqueEvents.forEach((event) => {
     if (event.run_id && !runOrder.has(event.run_id)) {
       runOrder.set(event.run_id, runOrder.size);
     }
   });
-  const sortedEvents = events.map((event, index) => ({ event, index })).sort((a, b) => {
+  const sortedEvents = uniqueEvents.map((event, index) => ({ event, index })).sort((a, b) => {
     const runOrderA = a.event.run_id
       ? (runOrder.get(a.event.run_id) ?? a.index)
       : runOrder.size + a.index;

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+import hashlib
 
 from app.streaming.domain.public_events_v4 import (
+    MAX_PUBLIC_THINKING_DELTA_CODEPOINTS,
     V4ProjectionError,
     _CALLBACK_EVENT_TYPES,
     _MESSAGE_EVENT_TYPES,
@@ -96,3 +98,88 @@ def callback_item_to_v4(
         source_event_id=source_event_id,
         source_run_id=source_run_id,
     )
+
+
+def callback_thinking_summary_to_v4(
+    event: Mapping[str, object],
+    *,
+    callback_index: int,
+    first_batch_index: int,
+    callback_batch_id: str,
+    expected_event_type: str,
+    sanitizer: Callable[[object], str],
+) -> tuple[V4CallbackItem, ...]:
+    """Project one complete authenticated SDK summary after whole-block sanitization."""
+
+    if (
+        event.get("type") != expected_event_type
+        or event.get("admin_only") is not True
+        or event.get("message") not in {None, ""}
+        or event.get("causation_event_id") is not None
+    ):
+        return ()
+    payload = event.get("payload")
+    if not isinstance(payload, Mapping) or set(payload) != {"summary"}:
+        return ()
+    source_event_id = event.get("event_id")
+    source_run_id = event.get("run_id")
+    message_id = event.get("message_id")
+    raw_summary = payload.get("summary")
+    if (
+        not isinstance(source_event_id, str)
+        or not isinstance(source_run_id, str)
+        or not isinstance(message_id, str)
+        or not isinstance(callback_batch_id, str)
+        or not isinstance(raw_summary, str)
+        or not raw_summary
+        or len(raw_summary) > 262_144
+    ):
+        return ()
+    try:
+        _safe_ref(source_event_id, name="source_event_id")
+        _safe_ref(source_run_id, name="source_run_id")
+        _safe_ref(message_id, name="message_id")
+        _safe_ref(callback_batch_id, name="callback_batch_id")
+    except V4ProjectionError:
+        return ()
+    thinking_id = "thinking_" + hashlib.sha256(
+        f"{source_run_id}:{callback_batch_id}:{callback_index}".encode("utf-8")
+    ).hexdigest()[:24]
+    summary = sanitizer(raw_summary)
+    if (
+        not isinstance(summary, str)
+        or not summary
+        or len(summary) > 262_144
+        or sanitizer(summary) != summary
+    ):
+        return ()
+    chunks = tuple(
+        summary[offset : offset + MAX_PUBLIC_THINKING_DELTA_CODEPOINTS]
+        for offset in range(0, len(summary), MAX_PUBLIC_THINKING_DELTA_CODEPOINTS)
+    )
+    payloads: tuple[tuple[str, dict[str, object]], ...] = (
+        ("thinking.started", {"thinking_id": thinking_id}),
+        *(
+            ("thinking.delta", {"thinking_id": thinking_id, "delta": chunk})
+            for chunk in chunks
+        ),
+        ("thinking.completed", {"thinking_id": thinking_id}),
+    )
+    items: list[V4CallbackItem] = []
+    for offset, (event_type, public_payload) in enumerate(payloads):
+        try:
+            _validate_payload(event_type, public_payload)
+        except V4ProjectionError:
+            return ()
+        items.append(
+            V4CallbackItem(
+                callback_index=callback_index,
+                batch_index=first_batch_index + offset,
+                event_type=event_type,
+                payload=public_payload,
+                message_id=message_id,
+                source_event_id=source_event_id,
+                source_run_id=source_run_id,
+            )
+        )
+    return tuple(items)
