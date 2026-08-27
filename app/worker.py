@@ -904,6 +904,29 @@ def _payload_from_locked_run(
         **run_identity,
         **{field: input_json[field] for field in LOCKED_RUN_SNAPSHOT_FIELDS if field in input_json},
     }
+    durable_model_id = locked_run.get("model_id")
+    durable_model_value = locked_run.get("model_value")
+    durable_gateway_revision = locked_run.get("model_gateway_revision")
+    if any(
+        value is not None
+        for value in (durable_model_id, durable_model_value, durable_gateway_revision)
+    ):
+        if not (
+            isinstance(durable_model_id, str)
+            and durable_model_id
+            and isinstance(durable_model_value, str)
+            and durable_model_value
+        ):
+            return None
+        candidate["model_id"] = durable_model_id
+        candidate["model_value"] = durable_model_value
+    elif not (
+        isinstance(input_json.get("model_id"), str)
+        and input_json["model_id"]
+        and isinstance(input_json.get("model_value"), str)
+        and input_json["model_value"]
+    ):
+        return None
     if (
         candidate.get("execution_kind") == RUN_EXECUTION_KIND_HARNESS_CHAT
         and candidate.get("skill_id") == ""

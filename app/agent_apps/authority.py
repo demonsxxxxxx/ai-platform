@@ -31,6 +31,7 @@ _AVATAR_REFS = {"builtin:agent", "builtin:assistant", "builtin:document", "built
 _CATEGORIES = {"general", "support", "writing", "research", "operations"}
 _VISIBILITIES = {"tenant", "restricted"}
 _ROLLING_LEGACY_SUPPORTED_INPUT_TYPES = ["text", "file"]
+_PROFILE_MODEL_COMPATIBILITY_SENTINEL = "platform-selected"
 _ROLLING_LEGACY_SUPPORTED_FILE_TYPES = [
     "application/*",
     "audio/*",
@@ -85,7 +86,6 @@ class AgentProfileAdmission:
     revision: int
     content_hash: str
     skill: dict[str, Any]
-    model: dict[str, str]
     mcp_tool_ids: tuple[str, ...]
     private_execution_input: dict[str, Any]
     public_identity: AgentConversationIdentity
@@ -249,7 +249,7 @@ def _revision_hash(definition: AgentProfileDraftRequest) -> str:
         "expected_outputs": definition.expected_outputs,
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,
-        "model_id": definition.model_id,
+        "model_id": definition._legacy_model_id,
         "skill_set": [skill.model_dump(mode="json") for skill in definition.skill_set],
         "mcp_tool_ids": definition.mcp_tool_ids,
         "avatar_ref": definition.avatar_ref,
@@ -285,7 +285,7 @@ def _legacy_skill_set_revision_hash(
         "expected_outputs": definition.expected_outputs,
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,
-        "model_id": definition.model_id,
+        "model_id": definition._legacy_model_id,
         "skill_set": [skill.model_dump(mode="json") for skill in definition.skill_set],
         "mcp_tool_ids": definition.mcp_tool_ids,
         "avatar_ref": definition.avatar_ref,
@@ -324,7 +324,7 @@ def _omitted_file_type_skill_set_revision_hash(
         "expected_outputs": definition.expected_outputs,
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,
-        "model_id": definition.model_id,
+        "model_id": definition._legacy_model_id,
         "skill_set": [skill.model_dump(mode="json") for skill in definition.skill_set],
         "mcp_tool_ids": definition.mcp_tool_ids,
         "avatar_ref": definition.avatar_ref,
@@ -367,7 +367,7 @@ def _legacy_revision_hash(
         "expected_outputs": definition.expected_outputs,
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,
-        "model_id": definition.model_id,
+        "model_id": definition._legacy_model_id,
         "skill_id": primary.skill_id,
         "skill_version": primary.expected_version,
         "mcp_tool_ids": definition.mcp_tool_ids,
@@ -403,7 +403,7 @@ def _pre_avatar_seed_skill_set_revision_hash(
         "expected_outputs": definition.expected_outputs,
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,
-        "model_id": definition.model_id,
+        "model_id": definition._legacy_model_id,
         "skill_set": [skill.model_dump(mode="json") for skill in definition.skill_set],
         "mcp_tool_ids": definition.mcp_tool_ids,
         "avatar_ref": definition.avatar_ref,
@@ -428,7 +428,7 @@ def _lifecycle_revision_hash(definition: AgentProfileDraftRequest) -> str:
         "name": definition.name,
         "description": definition.description,
         "instructions": definition.instructions,
-        "model_id": definition.model_id,
+        "model_id": definition._legacy_model_id,
         "skill_id": primary.skill_id,
         "skill_version": primary.expected_version,
         "mcp_tool_ids": definition.mcp_tool_ids,
@@ -453,7 +453,7 @@ def _mvp_revision_hash(definition: AgentProfileDraftRequest) -> str:
         "name": definition.name,
         "description": definition.description,
         "instructions": definition.instructions,
-        "model_id": definition.model_id,
+        "model_id": definition._legacy_model_id,
         "skill_id": primary.skill_id,
         "skill_version": primary.expected_version,
         "mcp_tool_ids": definition.mcp_tool_ids,
@@ -671,7 +671,7 @@ def _revision_hash_matches(row: dict[str, Any], content_hash: str) -> bool:
 
 
 def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
-    return AgentProfileDraftRequest(
+    definition = AgentProfileDraftRequest(
         name=str(row["name"]),
         description=str(row.get("description") or ""),
         welcome_message=str(row.get("welcome_message") or ""),
@@ -684,7 +684,6 @@ def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
             row.get("permissions_and_data_access_notice") or ""
         ),
         instructions=str(row["instructions"]),
-        model_id=str(row["model_id"]),
         skill_set=_skill_set(row),
         mcp_tool_ids=_mcp_tool_ids(row),
         avatar_ref=_safe_avatar_ref(row.get("avatar_ref")),
@@ -697,6 +696,8 @@ def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
         allowed_user_ids=_safe_string_list(row.get("allowed_user_ids")),
         expected_draft_revision=int(row["revision"]),
     )
+    definition._legacy_model_id = str(row["model_id"])
+    return definition
 
 
 def _merge_omitted_profile_fields(
@@ -737,7 +738,6 @@ def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
             row.get("permissions_and_data_access_notice") or ""
         ),
         instructions=str(row["instructions"]),
-        model_id=str(row["model_id"]),
         skill_set=_skill_set(row),
         selected_skill=_skill_set(row)[0],
         mcp_tool_ids=_mcp_tool_ids(row),
@@ -782,7 +782,7 @@ class AgentProfileAuthority:
         principal: AuthPrincipal,
         agent_id: str,
         definition: AgentProfileDraftRequest,
-    ) -> tuple[tuple[dict[str, Any], ...], dict[str, str]]:
+    ) -> tuple[dict[str, Any], ...]:
         """Revalidate current Skill and MCP authorization for a definition."""
 
         if definition.avatar_asset_id:
@@ -831,10 +831,7 @@ class AgentProfileAuthority:
             raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
         except repositories.RepositoryAuthorizationError as exc:
             raise HTTPException(status_code=403, detail="agent_profile_capability_not_available") from exc
-        return skills, {
-            "id": definition.model_id,
-            "value": definition.model_id,
-        }
+        return skills
 
     async def save_draft(
         self,
@@ -885,7 +882,7 @@ class AgentProfileAuthority:
             name=definition.name,
             description=definition.description,
             instructions=definition.instructions,
-            model_id=definition.model_id,
+            legacy_model_id=_PROFILE_MODEL_COMPATIBILITY_SENTINEL,
             skill_id=definition.skill_set[0].skill_id,
             skill_version=definition.skill_set[0].expected_version,
             skill_set=[skill.model_dump(mode="json") for skill in definition.skill_set],
@@ -964,6 +961,7 @@ class AgentProfileAuthority:
         self._require_revision_integrity(draft_row)
         definition = _draft_from_row(draft_row)
         await self._validate_definition(conn, principal=principal, agent_id=agent_id, definition=definition)
+        definition._legacy_model_id = _PROFILE_MODEL_COMPATIBILITY_SENTINEL
         row = await repositories.create_agent_profile_revision(
             conn,
             tenant_id=principal.tenant_id,
@@ -972,7 +970,7 @@ class AgentProfileAuthority:
             name=definition.name,
             description=definition.description,
             instructions=definition.instructions,
-            model_id=definition.model_id,
+            legacy_model_id=_PROFILE_MODEL_COMPATIBILITY_SENTINEL,
             skill_id=definition.skill_set[0].skill_id,
             skill_version=definition.skill_set[0].expected_version,
             skill_set=[skill.model_dump(mode="json") for skill in definition.skill_set],
@@ -1083,7 +1081,7 @@ class AgentProfileAuthority:
             name=definition.name,
             description=definition.description,
             instructions=definition.instructions,
-            model_id=definition.model_id,
+            legacy_model_id=str(authoring_row["model_id"]),
             skill_id=definition.skill_set[0].skill_id,
             skill_version=definition.skill_set[0].expected_version,
             skill_set=[skill.model_dump(mode="json") for skill in definition.skill_set],
@@ -1266,7 +1264,7 @@ class AgentProfileAuthority:
         *,
         principal: AuthPrincipal,
         row: dict[str, Any],
-    ) -> tuple[dict[str, Any], dict[str, str]]:
+    ) -> tuple[dict[str, Any], ...]:
         self._require_revision_integrity(row)
         if not profile_acl_allows(row, principal=principal):
             raise HTTPException(status_code=403, detail="agent_profile_not_authorized")
@@ -1407,7 +1405,7 @@ class AgentProfileAuthority:
             self._require_revision_integrity(current_acl_row)
         if not profile_acl_allows(current_acl_row, principal=principal):
             raise HTTPException(status_code=403, detail="agent_profile_not_authorized")
-        validated_skills, model = await self._validate_definition(
+        validated_skills = await self._validate_definition(
             conn,
             principal=principal,
             agent_id=str(row["agent_id"]),
@@ -1431,7 +1429,6 @@ class AgentProfileAuthority:
             content_hash=content_hash,
             skill=skills[0],
             skills=skills,
-            model=model,
             mcp_tool_ids=effective_mcp_tool_ids,
             private_execution_input={
                 "agent_id": agent_id,

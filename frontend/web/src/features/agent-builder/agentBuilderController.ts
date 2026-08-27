@@ -89,9 +89,6 @@ function safeErrorCopy(
   if (code === "agent_profile_capability_not_available") {
     return "所选 Skill 或 MCP 工具已不可用，请刷新目录后重新选择。";
   }
-  if (code === "agent_profile_model_not_available") {
-    return "所选模型已不可用，请刷新目录后重新选择。";
-  }
   if (code === "not_ai_admin" || status === 403) {
     return "当前账号没有管理专家的权限。";
   }

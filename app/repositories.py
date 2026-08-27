@@ -9574,7 +9574,8 @@ async def mark_run_running(conn: AsyncConnection, *, tenant_id: str, run_id: str
           and sessions.agent_id = runs.agent_id
         returning runs.id, runs.tenant_id, runs.workspace_id, runs.user_id,
                   runs.session_id, runs.agent_id, runs.execution_kind,
-                  runs.skill_id, runs.trace_id,
+                  runs.skill_id, runs.model_id, runs.model_value,
+                  runs.model_gateway_revision, runs.trace_id,
                   runs.principal_roles, runs.principal_department_id, runs.auth_source,
                   runs.admitted_agent_profile_revision,
                   runs.admitted_agent_profile_hash,

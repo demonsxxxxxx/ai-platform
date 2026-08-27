@@ -315,7 +315,6 @@ test("uses the current admin profile contract without retired file-type transpor
     expected_outputs: [],
     permissions_and_data_access_notice: "",
     instructions: "Keep answers concise.",
-    model_id: "model-a",
     selected_skill: { skill_id: "general-chat", expected_version: "version-a" },
     skill_set: [{ skill_id: "general-chat", expected_version: "version-a" }],
     mcp_tool_ids: [],
