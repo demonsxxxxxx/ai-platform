@@ -20,6 +20,7 @@ from app.control_plane_contracts import (
     SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS,
 )
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
+from app.agent_apps.api import discard_legacy_agent_profile_model_id
 from app.agent_apps.api import (
     normalize_agent_avatar_seed, normalize_agent_profile_display_items, normalize_agent_skill_set,
 )
@@ -256,10 +257,7 @@ class AgentProfileDraftRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def discard_legacy_model_id(cls, value):
-        if isinstance(value, dict) and "model_id" in value:
-            value = dict(value)
-            value.pop("model_id")
-        return value
+        return discard_legacy_agent_profile_model_id(value)
 
     @field_validator("welcome_message", "capability_summary", "permissions_and_data_access_notice")
     @classmethod

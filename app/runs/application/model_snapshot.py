@@ -6,6 +6,14 @@ from typing import Any, Protocol
 
 
 class RunModelSnapshotRepository(Protocol):
+    async def load(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_id: str,
+    ) -> dict[str, Any]: ...
+
     async def bind(
         self,
         conn: Any,
@@ -31,6 +39,9 @@ class RunModelSnapshotService:
     def __init__(self, repository: RunModelSnapshotRepository) -> None:
         self._repository = repository
 
+    async def load(self, conn: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._repository.load(conn, **kwargs)
+
     async def bind(self, conn: Any, **kwargs: Any) -> None:
         await self._repository.bind(conn, **kwargs)
 
@@ -50,6 +61,10 @@ def _configured_service() -> RunModelSnapshotService:
     if _service is None:
         raise RuntimeError("run_model_snapshot_service_not_configured")
     return _service
+
+
+async def load_run_model_snapshot(conn: Any, **kwargs: Any) -> dict[str, Any]:
+    return await _configured_service().load(conn, **kwargs)
 
 
 async def bind_run_model(conn: Any, **kwargs: Any) -> None:

@@ -558,6 +558,29 @@ async def _stage_run_tool_permission_terminalization(
     return await cursor.fetchone()
 
 
+async def load_run_model_snapshot(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+) -> dict[str, Any]:
+    """Lock and return the Run-owned model snapshot used for dispatch."""
+
+    cursor = await conn.execute(
+        """
+        select model_id, model_value, model_gateway_revision
+        from runs
+        where tenant_id = %s and id = %s
+        for update
+        """,
+        (tenant_id, run_id),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise ValueError("run_model_snapshot_missing")
+    return dict(row)
+
+
 async def bind_run_model(
     conn: AsyncConnection,
     *,
@@ -696,6 +719,9 @@ async def inherit_run_model(
 
 
 class PostgresRunModelSnapshotRepository:
+    async def load(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, Any]:
+        return await load_run_model_snapshot(conn, **kwargs)
+
     async def bind(self, conn: AsyncConnection, **kwargs: Any) -> None:
         await bind_run_model(conn, **kwargs)
 

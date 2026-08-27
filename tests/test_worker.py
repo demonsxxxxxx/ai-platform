@@ -2629,9 +2629,6 @@ async def test_mark_run_running_projects_distinct_run_and_session_profile_pins()
             normalized = " ".join(sql.split())
             assert "runs.admitted_agent_profile_revision" in normalized
             assert "runs.admitted_agent_profile_hash" in normalized
-            assert "runs.model_id" in normalized
-            assert "runs.model_value" in normalized
-            assert "runs.model_gateway_revision" in normalized
             assert (
                 "sessions.admitted_agent_profile_revision as "
                 "session_admitted_agent_profile_revision"
@@ -6020,9 +6017,6 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
             "session_admitted_agent_profile_revision": None,
             "session_admitted_agent_profile_hash": None,
             "skill_id": "general-chat",
-            "model_id": "platform-default",
-            "model_value": "provider/default",
-            "model_gateway_revision": None,
             "trace_id": "trace_run_a",
             "input_json": {
                 "input": {"mode": "db", "message": "authoritative"},
@@ -6034,6 +6028,14 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
                 "context_snapshot_id": "ctx-db",
                 "context_snapshot": {"context_snapshot_id": "ctx-db"},
             },
+        }
+
+    async def load_run_model_snapshot(conn, *, tenant_id, run_id):
+        calls.append(("model_snapshot", conn, tenant_id, run_id))
+        return {
+            "model_id": "platform-default",
+            "model_value": "provider/default",
+            "model_gateway_revision": None,
         }
 
     async def append_event(conn, **kwargs):
@@ -6065,6 +6067,7 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_run_model_snapshot)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
@@ -6093,6 +6096,8 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
     assert captured["payload"].skill_version == version
     assert captured["payload"].release_decision == release_decision(version)
     assert captured["payload"].model_id == "platform-default"
+    model_snapshot_call = next(item for item in calls if item[0] == "model_snapshot")
+    assert model_snapshot_call[2:] == ("tenant-a", "run-a")
     assert captured["payload"].context_snapshot_id == "ctx-db"
 
 

@@ -13,8 +13,10 @@ from app.execution.application.context_file_diagnostics import (
     validated_context_file_diagnostic,
 )
 from app.execution.application.executor_reconciliation import (
+    payload_from_locked_run,
     restored_sandbox_run_payload,
     sandbox_reconciliation_payload,
+    with_locked_run_model_snapshot,
 )
 from app.execution.application.claude_agent_events import (
     ClaudeAgentEventCandidate,
@@ -64,7 +66,9 @@ __all__ = [
     "submit_run_until_cancelled",
     "list_public_models",
     "parse_requested_model_selection",
+    "payload_from_locked_run",
     "resolve_chat_model_selection",
     "time",
     "validated_context_file_diagnostic",
+    "with_locked_run_model_snapshot",
 ]

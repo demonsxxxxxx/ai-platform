@@ -36,7 +36,11 @@ from app.execution.infrastructure.model_upstream import (
 )
 from app.execution.transport import model_management as model_routes
 from app.model_catalog import build_model_catalog, resolve_model_selection
-from app.runs.infrastructure.postgres import bind_run_model, inherit_run_model
+from app.runs.infrastructure.postgres import (
+    bind_run_model,
+    inherit_run_model,
+    load_run_model_snapshot,
+)
 
 
 def _key() -> str:
@@ -307,6 +311,34 @@ class _RunModelMutationConnection:
     async def execute(self, sql, params=None):
         self.calls.append((sql, params))
         return _Cursor(row=next(self.rows))
+
+
+@pytest.mark.asyncio
+async def test_load_run_model_snapshot_locks_exact_run_for_dispatch() -> None:
+    conn = _RunModelMutationConnection(
+        [
+            {
+                "model_id": "model-public",
+                "model_value": "openai/gpt-5",
+                "model_gateway_revision": 7,
+            }
+        ]
+    )
+
+    snapshot = await load_run_model_snapshot(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+    )
+
+    sql, params = conn.calls[0]
+    assert "for update" in sql.lower()
+    assert params == ("tenant-a", "run-a")
+    assert snapshot == {
+        "model_id": "model-public",
+        "model_value": "openai/gpt-5",
+        "model_gateway_revision": 7,
+    }
 
 
 @pytest.mark.asyncio

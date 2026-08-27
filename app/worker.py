@@ -42,9 +42,12 @@ from app.control_plane_contracts import (
 )
 from app.db import transaction
 from app.execution.api import (
-    WorkerRunCancelled, restored_sandbox_run_payload as _restored_run_payload,
+    WorkerRunCancelled,
+    payload_from_locked_run as _execution_payload_from_locked_run,
+    restored_sandbox_run_payload as _restored_run_payload,
     submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
     time,
+    with_locked_run_model_snapshot as _with_locked_run_model_snapshot,
 )
 from app.execution_boundary import (
     decide_worker_execution_boundary as _worker_execution_boundary_decision,
@@ -64,7 +67,11 @@ from app.principal_authority import (
     resolve_current_principal,
 )
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
-from app.runs.api import RunTerminalizationProgress, compile_execution_spec_for_dispatch
+from app.runs.api import (
+    RunTerminalizationProgress,
+    compile_execution_spec_for_dispatch,
+    load_run_model_snapshot as _load_run_model_snapshot,
+)
 from app.required_tool_contract import (
     RequiredCapabilityDecision,
     builtin_capability_subjects,
@@ -874,68 +881,16 @@ def _dependency_ids_from_manifest(item: dict[str, Any]) -> list[str]:
     return [str(value) for value in raw]
 
 
-LOCKED_RUN_SNAPSHOT_FIELDS = (
-    "file_ids",
-    "input",
-    "executor_type",
-    "skill_version",
-    "release_decision",
-    "skill_manifests",
-    "context_snapshot_id",
-    "context_snapshot",
-    "model_id",
-    "model_value",
-    "agent_profile",
-    "schema_version",
-)
-
-
 def _payload_from_locked_run(
     locked_run: object,
     *,
     run_identity: dict[str, str],
 ) -> QueueRunPayload | None:
-    if not isinstance(locked_run, dict):
-        return None
-    input_json = locked_run.get("input_json")
-    if not isinstance(input_json, dict) or not isinstance(input_json.get("input"), dict):
-        return None
-    candidate = {
-        **run_identity,
-        **{field: input_json[field] for field in LOCKED_RUN_SNAPSHOT_FIELDS if field in input_json},
-    }
-    durable_model_id = locked_run.get("model_id")
-    durable_model_value = locked_run.get("model_value")
-    durable_gateway_revision = locked_run.get("model_gateway_revision")
-    if any(
-        value is not None
-        for value in (durable_model_id, durable_model_value, durable_gateway_revision)
-    ):
-        if not (
-            isinstance(durable_model_id, str)
-            and durable_model_id
-            and isinstance(durable_model_value, str)
-            and durable_model_value
-        ):
-            return None
-        candidate["model_id"] = durable_model_id
-        candidate["model_value"] = durable_model_value
-    elif not (
-        isinstance(input_json.get("model_id"), str)
-        and input_json["model_id"]
-        and isinstance(input_json.get("model_value"), str)
-        and input_json["model_value"]
-    ):
-        return None
-    if (
-        candidate.get("execution_kind") == RUN_EXECUTION_KIND_HARNESS_CHAT
-        and candidate.get("skill_id") == ""
-    ):
-        candidate["skill_id"] = None
-    try:
-        return QueueRunPayload.model_validate(candidate)
-    except ValidationError:
-        return None
+    return _execution_payload_from_locked_run(
+        locked_run,
+        run_identity=run_identity,
+        run_payload_factory=QueueRunPayload,
+    )
 
 
 def _locked_agent_profile_identity_valid(
@@ -2262,6 +2217,12 @@ async def process_run_payload(
                     },
                 )
                 return terminal_after_transaction.outcome
+            locked = await _with_locked_run_model_snapshot(
+                locked,
+                conn=conn,
+                run_identity=run_identity,
+                load_run_model_snapshot=_load_run_model_snapshot,
+            )
             trace_id = _locked_run_trace_id(payload, locked)
             locked_payload = _payload_from_locked_run(
                 locked,
