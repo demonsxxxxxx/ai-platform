@@ -1,4 +1,129 @@
-import type { ExecutionTimelinePart, MessagePart } from "../../types/message";
+import type {
+  ExecutionTimelineKind,
+  ExecutionTimelinePart,
+  MessagePart,
+  ThinkingPart,
+} from "../../types/message";
+import {
+  CHAT_PUBLIC_PROJECTION_VERSION,
+  isPublicAgentProgressEvent,
+  type EventData,
+} from "./types";
+
+const PUBLIC_AGENT_PROGRESS_KINDS: Readonly<Record<string, ExecutionTimelineKind>> = {
+  attachment_materialization: "file_read",
+  skill_staging: "capability",
+  sandbox_preparation: "processing",
+  sandbox_submission: "processing",
+  model_wait: "analysis",
+  artifact_validation: "verification",
+  artifact_recovery: "artifact",
+};
+
+const PUBLIC_THINKING_SUMMARIES = {
+  started: "Analyzing the request",
+  completed: "Analysis step completed",
+} as const;
+
+/** Project only a schema-validated, server-owned Run phase into the existing timeline. */
+export function projectPublicAgentProgress(
+  data: EventData,
+): ExecutionTimelinePart | null {
+  if (
+    !isPublicAgentProgressEvent(data) ||
+    typeof data.sequence !== "number" ||
+    !Number.isSafeInteger(data.sequence) ||
+    data.sequence < 0
+  ) {
+    return null;
+  }
+  const payload = data.payload as Record<string, unknown>;
+  const phase = String(payload.phase);
+  const lifecycle = String(payload.lifecycle);
+  const kind = PUBLIC_AGENT_PROGRESS_KINDS[phase];
+  if (!kind) return null;
+  return {
+    type: "execution_step",
+    sequence: data.sequence,
+    step_id: String(payload.step_id),
+    kind,
+    stage: phase,
+    title: String(payload.message),
+    status:
+      lifecycle === "completed"
+        ? "completed"
+        : lifecycle === "failed"
+          ? "failed"
+          : "running",
+    progress: {
+      current: lifecycle === "completed" ? 1 : 0,
+      total: 1,
+    },
+    safe_file_name: null,
+  };
+}
+
+/** Accept fixed public Thinking summaries from live v4 or strict history projection. */
+export function projectPublicThinkingActivity(
+  data: EventData,
+  isStreaming: boolean,
+): ThinkingPart | null {
+  if (
+    data.projection_version !== CHAT_PUBLIC_PROJECTION_VERSION ||
+    data.event_type !== "public_activity" ||
+    typeof data.event_id !== "string" ||
+    data.event_id.length === 0
+  ) {
+    return null;
+  }
+  const isStarted =
+    data.message === PUBLIC_THINKING_SUMMARIES.started &&
+    ((data.stage === "thinking_started" && data.status === "thinking_started") ||
+      (data.stage === "thinking" && data.progress_kind === "active"));
+  const isCompleted =
+    data.message === PUBLIC_THINKING_SUMMARIES.completed &&
+    ((data.stage === "thinking_completed" && data.status === "thinking_completed") ||
+      (data.stage === "thinking" && data.progress_kind === "completed"));
+  if (!isStarted && !isCompleted) return null;
+  return {
+    type: "thinking",
+    content: isStarted
+      ? PUBLIC_THINKING_SUMMARIES.started
+      : PUBLIC_THINKING_SUMMARIES.completed,
+    thinking_id: data.event_id,
+    isStreaming: isStarted && isStreaming,
+  };
+}
+
+export function upsertPublicThinkingActivity(
+  parts: MessagePart[],
+  activity: ThinkingPart,
+): MessagePart[] {
+  const exactIndex = parts.findIndex(
+    (part) =>
+      part.type === "thinking" && part.thinking_id === activity.thinking_id,
+  );
+  if (exactIndex >= 0) {
+    return parts.map((part, index) => (index === exactIndex ? activity : part));
+  }
+  if (!activity.isStreaming && activity.content === PUBLIC_THINKING_SUMMARIES.completed) {
+    let startedIndex = -1;
+    for (let index = parts.length - 1; index >= 0; index -= 1) {
+      const part = parts[index];
+      if (
+        part?.type === "thinking" &&
+        part.content === PUBLIC_THINKING_SUMMARIES.started
+      ) {
+        startedIndex = index;
+        break;
+      }
+    }
+    if (startedIndex >= 0) {
+      return parts.map((part, index) => (index === startedIndex ? activity : part));
+    }
+  }
+  return [...parts, activity];
+}
 
 export const EXECUTION_PROGRESS_MIN_INTERVAL_MS = 250;
 

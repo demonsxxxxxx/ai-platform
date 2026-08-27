@@ -29,14 +29,31 @@ function definedData(values: Record<string, unknown>): Record<string, unknown> |
 
 type AssistantUiContentPart = Exclude<ThreadMessageLike["content"], string>[number];
 
+function publicThinkingText(content: string): string {
+  return content === "Analyzing the request" || content === "Analysis step completed"
+    ? content
+    : "";
+}
+
 function convertPart(part: MessagePart, index: number): AssistantUiContentPart | null {
   switch (part.type) {
     case "text":
       return { type: "text", text: part.content };
     case "thinking":
-      return { type: "reasoning", text: "", status: part.isStreaming ? { type: "running" } : { type: "complete" } };
+      return {
+        type: "reasoning",
+        text: publicThinkingText(part.content),
+        status: part.isStreaming ? { type: "running" } : { type: "complete" },
+      };
     case "tool": {
       const data = definedData({
+        inputSummary: part.public_operation_id
+          ? part.public_input_summary
+          : undefined,
+        resultSummary:
+          part.public_operation_id && typeof part.result === "string"
+            ? part.result
+            : undefined,
         durationMs: part.duration_ms,
         evidenceRefs: part.evidence_refs,
         artifactRefs: part.artifact_refs,
@@ -48,9 +65,17 @@ function convertPart(part: MessagePart, index: number): AssistantUiContentPart |
         toolCallId: part.public_operation_id || `tool-${index}`,
         toolName: part.public_operation_id ? part.name : "Tool",
         args: part.public_operation_id && part.public_category
-          ? { category: part.public_category }
+          ? {
+              category: part.public_category,
+              ...(part.public_input_summary
+                ? { summary: part.public_input_summary }
+                : {}),
+            }
           : {},
-        argsText: "",
+        argsText:
+          part.public_operation_id && part.public_input_summary
+            ? part.public_input_summary
+            : "",
         isError: part.success === false,
         ...(data ? { data } : {}),
       } as AssistantUiContentPart;

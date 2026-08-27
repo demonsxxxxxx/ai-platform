@@ -1361,7 +1361,7 @@ def test_heartbeat_callback_renews_lease_with_settings_ttl(monkeypatch):
     assert heartbeat_calls[0]["executor_status"] == "running"
 
 
-def test_executor_callback_uses_real_adapter_lifecycle_and_excludes_platform_events(monkeypatch):
+def test_executor_callback_publishes_real_adapter_lifecycle_and_platform_progress(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     persisted = []
     v4_rows = []
@@ -1420,6 +1420,17 @@ def test_executor_callback_uses_real_adapter_lifecycle_and_excludes_platform_eve
     artifact = adapter.accept_artifact_reference(
         {"artifact_id": "artifact-1", "filename": "report.txt", "media_type": "text/plain", "size_bytes": 4, "status": "ready"}
     )
+    progress_event = AgentEvent(
+        type="agent_public_progress",
+        message="",
+        payload={
+            "schema_version": "ai-platform.public-agent-progress.v1",
+            "step_id": "phase_skill_staging",
+            "phase": "skill_staging",
+            "lifecycle": "started",
+            "message": "Loading authorized Skills",
+        },
+    )
     run_event = AgentEvent(
         type="run.succeeded",
         event_id="run-event-1",
@@ -1429,7 +1440,7 @@ def test_executor_callback_uses_real_adapter_lifecycle_and_excludes_platform_eve
     candidates = (*thinking, *tool_events, *subagent, *model, *policy, *artifact)
     events = tuple(
         AgentEvent(**candidate.as_agent_event_fields()) if hasattr(candidate, "as_agent_event_fields") else candidate
-        for candidate in (*candidates, run_event)
+        for candidate in (*candidates, progress_event, run_event)
     )
 
     authority = SimpleNamespace(attempt_id="attempt-a", state="confirmed")
@@ -1465,11 +1476,102 @@ def test_executor_callback_uses_real_adapter_lifecycle_and_excludes_platform_eve
         "subagent.started",
         "subagent.completed",
         "model.completed",
+        "agent.progress",
     }
+    progress_item = next(
+        item for item in v4_rows[0]["items"] if item.event_type == "agent.progress"
+    )
+    assert progress_item.message_id is None
+    assert progress_item.source_run_id == "run-a"
+    assert progress_item.source_event_id.startswith("progress_")
+    assert progress_item.payload["message"] == "Loading authorized Skills"
     assert not {"artifact.ready", "policy.checking", "policy.allowed", "run.succeeded"} & {
         item.event_type for item in v4_rows[0]["items"]
     }
     assert response.json()["accepted"] is True
+
+
+@pytest.mark.parametrize(
+    ("event_type", "payload", "summary_field", "valid_summary"),
+    [
+        (
+            "tool.started",
+            {
+                "operation_id": "operation-read-1",
+                "category": "read",
+                "display_name": "Read authorized file",
+            },
+            "input_summary",
+            "Starting Read authorized file",
+        ),
+        (
+            "tool.completed",
+            {
+                "operation_id": "operation-read-1",
+                "category": "read",
+                "display_name": "Read authorized file",
+                "duration_ms": 12,
+            },
+            "result_summary",
+            "Read authorized file completed",
+        ),
+    ],
+)
+def test_callback_v4_rejects_untrusted_tool_summaries(
+    event_type, payload, summary_field, valid_summary
+):
+    from app.streaming.api import callback_item_to_v4
+
+    item = {
+        "event_type": event_type,
+        "event_id": f"event-{event_type.replace('.', '-')}",
+        "run_id": "run-a",
+        "payload": {**payload, summary_field: valid_summary},
+    }
+    assert callback_item_to_v4(
+        item, callback_index=0, batch_index=0, message_id="message-a"
+    ) is not None
+
+    item["payload"] = {**payload, summary_field: "Untrusted callback text"}
+    assert callback_item_to_v4(
+        item, callback_index=0, batch_index=0, message_id="message-a"
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_executor_callback_requires_batch_identity_for_public_progress() -> None:
+    from fastapi import HTTPException
+
+    from app.routes import runtime_callbacks
+    from app.runtime.kernel_contracts import AgentEvent
+
+    progress = AgentEvent(
+        type="agent_public_progress",
+        message="",
+        payload={
+            "schema_version": "ai-platform.public-agent-progress.v1",
+            "step_id": "phase_skill_staging",
+            "phase": "skill_staging",
+            "lifecycle": "started",
+            "message": "Loading authorized Skills",
+        },
+    )
+    callback = ExecutorCallbackEvent.model_validate(
+        callback_payload(
+            new_message=None,
+            state_patch={},
+            events=[progress.model_dump()],
+        )
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await runtime_callbacks.record_executor_callback(
+            callback,
+            capabilities=callback_event_capabilities(),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "callback_batch_id_required"
 
 
 @pytest.mark.asyncio

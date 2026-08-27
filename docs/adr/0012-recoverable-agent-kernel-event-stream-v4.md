@@ -43,12 +43,14 @@ committed business `seq`, stream incarnation, replayability, trace reference,
 commit time, and a strict event payload. Application `seq` is the committed
 Run-local business order and is separate from the Redis SSE cursor and semantic
 `event_id`. Message, thinking, model, tool, and subagent events require a
-non-null public `message_id`; artifact, policy, and Run events may use null.
+non-null public `message_id`; Agent progress, artifact, policy, and Run events
+may use null.
 
 The closed Agent-kernel registry is:
 
 - `message.started`, `message.delta`, `message.completed`;
 - `thinking.started`, `thinking.completed`, `model.completed`;
+- `agent.progress` for fixed, server-owned execution-phase lifecycle;
 - `tool.started`, `tool.completed`, `tool.failed`, `tool.denied`;
 - `subagent.started`, `subagent.progress`, `subagent.completed`,
   `subagent.failed`, `subagent.cancelled`;
@@ -57,11 +59,15 @@ The closed Agent-kernel registry is:
 - `run.cancel_requested`, `run.succeeded`, `run.cancelled`, `run.failed`.
 
 Every payload is bounded and closed. Public identifiers use disclosure-safe
-patterns; summaries, final content, durations, turns, progress, artifact
-metadata, and reference arrays have explicit size bounds. Hidden reasoning,
-raw SDK fields, commands, paths, arguments, outputs, exceptions, and raw
-capability or task identifiers are not protocol fields. Render families are
-registry metadata only in this phase: `text`, `thinking_state`,
+patterns; fixed public reasoning summaries, server-owned phase messages,
+fixed Tool start/result summaries, final content, durations, turns, progress,
+artifact metadata, and reference arrays have explicit size bounds. Newly
+emitted thinking rows include their fixed summary; legacy v4 rows with an empty
+thinking payload remain replayable and the public frontend derives the same fixed
+summary. Hidden reasoning, raw SDK fields, commands, paths, arguments, outputs,
+exceptions, and raw capability or task identifiers are not protocol fields.
+Render families are registry
+metadata only in this phase: `text`, `thinking_state`, `agent_progress`,
 `tool_activity`, `subagent_activity`, `artifact`, `policy_result`,
 `public_error`, `cancelled`, and `terminal`.
 

@@ -718,6 +718,163 @@ test("reconstructMessagesFromEvents keeps cancelled partial output visibly termi
   );
 });
 
+test("failed history retains canonical public execution activity through terminal hydration", () => {
+  const progressPayload = {
+    schema_version: "ai-platform.public-agent-progress.v1",
+    step_id: "phase_sandbox_preparation",
+    phase: "sandbox_preparation",
+    lifecycle: "completed",
+    message: "Controlled execution is ready",
+  };
+  const messages = reconstructMessagesFromEvents(
+    [
+      {
+        id: "failed-progress",
+        sequence: 1,
+        event_type: "agent_public_progress",
+        run_id: "run-failed-public-activity",
+        timestamp: "2026-08-20T01:13:40.000Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          event_id: "failed-progress",
+          event_type: "agent_public_progress",
+          stage: "sandbox_preparation",
+          message: "Controlled execution is ready",
+          severity: "info",
+          progress_kind: "completed",
+          payload: progressPayload,
+        },
+      },
+      {
+        id: "failed-thinking",
+        sequence: 2,
+        event_type: "public_activity",
+        run_id: "run-failed-public-activity",
+        timestamp: "2026-08-20T01:13:41.000Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          event_id: "failed-thinking",
+          event_type: "public_activity",
+          stage: "thinking",
+          message: "Analyzing the request",
+          severity: "info",
+          progress_kind: "active",
+        },
+      },
+      {
+        id: "failed-thinking-completed",
+        sequence: 3,
+        event_type: "public_activity",
+        run_id: "run-failed-public-activity",
+        timestamp: "2026-08-20T01:13:42.000Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          event_id: "failed-thinking-completed",
+          event_type: "public_activity",
+          stage: "thinking",
+          message: "Analysis step completed",
+          severity: "info",
+          progress_kind: "completed",
+        },
+      },
+      {
+        id: "failed-forged-thinking",
+        sequence: 4,
+        event_type: "public_activity",
+        run_id: "run-failed-public-activity",
+        timestamp: "2026-08-20T01:13:42.000Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          event_id: "failed-forged-thinking",
+          event_type: "public_activity",
+          stage: "thinking",
+          message: "Hidden reasoning must not render",
+          severity: "info",
+          progress_kind: "active",
+        },
+      },
+      {
+        id: "failed-tool-started",
+        sequence: 4,
+        event_type: "public_tool_activity",
+        run_id: "run-failed-public-activity",
+        timestamp: "2026-08-20T01:13:43.000Z",
+        data: {
+          event_id: "failed-tool-started",
+          event_type: "public_tool_activity",
+          operation_id: "operation-search-1",
+          category: "search",
+          display_name: "Search authorized sources",
+          status: "started",
+          input_summary: "Starting Search authorized sources",
+        },
+      },
+      {
+        id: "failed-tool-completed",
+        sequence: 5,
+        event_type: "public_tool_activity",
+        run_id: "run-failed-public-activity",
+        timestamp: "2026-08-20T01:13:44.000Z",
+        data: {
+          event_id: "failed-tool-completed",
+          event_type: "public_tool_activity",
+          operation_id: "operation-search-1",
+          category: "search",
+          display_name: "Search authorized sources",
+          status: "completed",
+          result_summary: "Search authorized sources completed",
+        },
+      },
+      {
+        id: "run-failed-public-activity:final",
+        event_type: "final_detail",
+        run_id: "run-failed-public-activity",
+        timestamp: "2026-08-20T01:13:49.000Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          detail_kind: "failed",
+          detail_code: "claude_agent_sdk_tool_admission_failed",
+        },
+      },
+      {
+        id: "run-failed-public-activity:terminal:failed",
+        event_type: "done",
+        run_id: "run-failed-public-activity",
+        timestamp: "2026-08-20T01:13:49.000Z",
+        data: { run_id: "run-failed-public-activity", status: "failed" },
+      },
+    ] satisfies HistoryEvent[],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  assert.equal(messages.length, 1);
+  const visibleParts = getVisibleMessageParts(messages[0]?.parts || []);
+  assert.deepEqual(
+    visibleParts.map((part) => part.type),
+    ["execution_process", "thinking", "tool", "run_status"],
+  );
+  const process = visibleParts[0];
+  assert.equal(process?.type, "execution_process");
+  if (process?.type !== "execution_process") throw new Error("expected execution process");
+  assert.equal(process.steps[0]?.title, "Controlled execution is ready");
+  const thinking = visibleParts[1];
+  assert.equal(thinking?.type, "thinking");
+  if (thinking?.type !== "thinking") throw new Error("expected thinking part");
+  assert.equal(thinking.content, "Analysis step completed");
+  assert.equal(thinking.isStreaming, false);
+  const tool = visibleParts[2];
+  assert.equal(tool?.type, "tool");
+  if (tool?.type !== "tool") throw new Error("expected tool part");
+  assert.equal(tool.public_input_summary, "Starting Search authorized sources");
+  assert.equal(tool.result, "Search authorized sources completed");
+  const terminal = visibleParts[3];
+  assert.equal(terminal?.type, "run_status");
+  if (terminal?.type !== "run_status") throw new Error("expected failed terminal status");
+  assert.match(terminal.event_type, /failed/);
+  assert.doesNotMatch(JSON.stringify(messages), /Hidden reasoning must not render/);
+});
+
 test("reconstructMessagesFromEvents replays a production outer permission event through the compatibility envelope", () => {
   const messages = reconstructMessagesFromEvents(
     [

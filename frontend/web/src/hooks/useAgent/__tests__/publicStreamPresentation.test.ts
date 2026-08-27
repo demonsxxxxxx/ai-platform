@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   EXECUTION_PROGRESS_MIN_INTERVAL_MS,
   PublicStreamPresentation,
+  upsertPublicThinkingActivity,
   type PublicStreamPresentationClock,
   type PublicStreamPresentationOwner,
 } from "../publicStreamPresentation.ts";
@@ -212,4 +213,26 @@ test("throttles same-step progress and lets terminal updates supersede pending p
     }),
     false,
   );
+});
+
+test("public Thinking completion closes the preceding started activity", () => {
+  const started = {
+    type: "thinking" as const,
+    content: "Analyzing the request",
+    thinking_id: "thinking-started",
+    isStreaming: true,
+  };
+  const completed = {
+    type: "thinking" as const,
+    content: "Analysis step completed",
+    thinking_id: "thinking-completed",
+    isStreaming: false,
+  };
+
+  const parts = upsertPublicThinkingActivity(
+    upsertPublicThinkingActivity([], started),
+    completed,
+  );
+
+  assert.deepEqual(parts, [completed]);
 });

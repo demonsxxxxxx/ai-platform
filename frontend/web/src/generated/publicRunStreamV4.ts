@@ -10,6 +10,7 @@ export const PUBLIC_STREAM_EVENT_TYPES = [
   "thinking.started",
   "thinking.completed",
   "model.completed",
+  "agent.progress",
   "tool.started",
   "tool.completed",
   "tool.failed",
@@ -63,7 +64,7 @@ export type PublicApplicationEnvelopeV4 = {
   "run_id": RunIdV4;
   "message_id": NullableSafeRefV4;
   "seq": number;
-  "event_type": "message.started" | "message.delta" | "message.completed" | "thinking.started" | "thinking.completed" | "model.completed" | "tool.started" | "tool.completed" | "tool.failed" | "tool.denied" | "subagent.started" | "subagent.progress" | "subagent.completed" | "subagent.failed" | "subagent.cancelled" | "artifact.created" | "artifact.ready" | "artifact.failed" | "policy.checking" | "policy.allowed" | "policy.denied" | "run.cancel_requested" | "run.succeeded" | "run.cancelled" | "run.failed";
+  "event_type": "message.started" | "message.delta" | "message.completed" | "thinking.started" | "thinking.completed" | "model.completed" | "agent.progress" | "tool.started" | "tool.completed" | "tool.failed" | "tool.denied" | "subagent.started" | "subagent.progress" | "subagent.completed" | "subagent.failed" | "subagent.cancelled" | "artifact.created" | "artifact.ready" | "artifact.failed" | "policy.checking" | "policy.allowed" | "policy.denied" | "run.cancel_requested" | "run.succeeded" | "run.cancelled" | "run.failed";
   "stream_incarnation": number;
   "replayable": true;
   "trace_ref": NullableTraceRefV4;
@@ -150,12 +151,27 @@ export type MessageCompletedEventV4 = PublicMessageApplicationEnvelopeV4 & {
 
 export type ThinkingStartedEventV4 = PublicMessageApplicationEnvelopeV4 & {
   "event_type": "thinking.started";
-  "payload": EmptyPayloadV4;
+  "payload": {
+  "public_summary"?: "Analyzing the request";
+};
 };
 
 export type ThinkingCompletedEventV4 = PublicMessageApplicationEnvelopeV4 & {
   "event_type": "thinking.completed";
-  "payload": EmptyPayloadV4;
+  "payload": {
+  "public_summary"?: "Analysis step completed";
+};
+};
+
+export type AgentProgressEventV4 = PublicApplicationEnvelopeV4 & {
+  "event_type": "agent.progress";
+  "payload": {
+  "schema_version": "ai-platform.public-agent-progress.v1";
+  "step_id": SafeRefV4;
+  "phase": "attachment_materialization" | "skill_staging" | "sandbox_preparation" | "sandbox_submission" | "model_wait" | "artifact_validation" | "artifact_recovery";
+  "lifecycle": "started" | "progress" | "completed" | "failed";
+  "message": string;
+};
 };
 
 export type ModelCompletedEventV4 = PublicMessageApplicationEnvelopeV4 & {
@@ -361,7 +377,7 @@ export type RunFailedEventV4 = PublicApplicationEnvelopeV4 & {
 };
 };
 
-export type PublicApplicationEventV4 = MessageStartedEventV4 | MessageDeltaEventV4 | MessageCompletedEventV4 | ThinkingStartedEventV4 | ThinkingCompletedEventV4 | ModelCompletedEventV4 | ToolStartedEventV4 | ToolCompletedEventV4 | ToolFailedEventV4 | ToolDeniedEventV4 | SubagentStartedEventV4 | SubagentProgressEventV4 | SubagentCompletedEventV4 | SubagentFailedEventV4 | SubagentCancelledEventV4 | ArtifactCreatedEventV4 | ArtifactReadyEventV4 | ArtifactFailedEventV4 | PolicyCheckingEventV4 | PolicyAllowedEventV4 | PolicyDeniedEventV4 | RunCancelRequestedEventV4 | RunSucceededEventV4 | RunCancelledEventV4 | RunFailedEventV4;
+export type PublicApplicationEventV4 = MessageStartedEventV4 | MessageDeltaEventV4 | MessageCompletedEventV4 | ThinkingStartedEventV4 | ThinkingCompletedEventV4 | ModelCompletedEventV4 | AgentProgressEventV4 | ToolStartedEventV4 | ToolCompletedEventV4 | ToolFailedEventV4 | ToolDeniedEventV4 | SubagentStartedEventV4 | SubagentProgressEventV4 | SubagentCompletedEventV4 | SubagentFailedEventV4 | SubagentCancelledEventV4 | ArtifactCreatedEventV4 | ArtifactReadyEventV4 | ArtifactFailedEventV4 | PolicyCheckingEventV4 | PolicyAllowedEventV4 | PolicyDeniedEventV4 | RunCancelRequestedEventV4 | RunSucceededEventV4 | RunCancelledEventV4 | RunFailedEventV4;
 
 export type PublicTransportControlEventV4 = StreamOpenControlV4 | StreamHeartbeatControlV4 | StreamGapControlV4 | StreamEndControlV4;
 
