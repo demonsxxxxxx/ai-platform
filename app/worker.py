@@ -89,6 +89,7 @@ from app.streaming.api import (
     publish_pending_run_terminal,
 )
 from app.streaming.worker_projection import persist_worker_failure_event
+from app.skills.api import restore_admitted_skill_manifest_authority
 from app.skills.catalog import (
     RUNTIME_AUTHORIZED_SKILL_CATALOG_KEY,
     RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY,
@@ -836,88 +837,14 @@ def _skill_manifests_from_result(result: ExecutorResult) -> list[dict[str, Any]]
     return manifests
 
 
-def _skill_manifests_for_persistence(result: ExecutorResult, payload: QueueRunPayload) -> list[dict[str, Any]]:
-    return _attach_payload_snapshot_governance(_skill_manifests_from_result(result), payload)
-
-
-def _payload_snapshot_governance_by_skill(payload: QueueRunPayload) -> dict[str, dict[str, Any]]:
-    by_skill: dict[str, dict[str, Any]] = {}
-    for item in payload.skill_manifests:
-        if not isinstance(item, dict):
-            continue
-        skill_id = str(item.get("skill_id") or "").strip()
-        governance = item.get("snapshot_governance")
-        if skill_id and isinstance(governance, dict):
-            by_skill[skill_id] = governance
-    return by_skill
-
-
-def _payload_skill_manifest_by_skill(payload: QueueRunPayload) -> dict[str, dict[str, Any]]:
-    by_skill: dict[str, dict[str, Any]] = {}
-    for item in payload.skill_manifests:
-        if not isinstance(item, dict):
-            continue
-        skill_id = str(item.get("skill_id") or "").strip()
-        if skill_id:
-            by_skill[skill_id] = item
-    return by_skill
-
-
-def _attach_payload_snapshot_governance(
-    manifests: list[dict[str, Any]],
+def _skill_manifests_for_persistence(
+    result: ExecutorResult,
     payload: QueueRunPayload,
 ) -> list[dict[str, Any]]:
-    payload_manifests_by_skill = _payload_skill_manifest_by_skill(payload)
-    governance_by_skill = _payload_snapshot_governance_by_skill(payload)
-    attached: list[dict[str, Any]] = []
-    for item in manifests:
-        manifest = dict(item)
-        skill_id = str(manifest.get("skill_id") or "").strip()
-        payload_manifest = payload_manifests_by_skill.get(skill_id)
-        if not isinstance(payload_manifest, dict):
-            continue
-        for key in ("version", "skill_version", "content_hash"):
-            manifest.pop(key, None)
-        payload_version = ""
-        payload_hash = ""
-        if isinstance(payload_manifest, dict):
-            payload_version = str(
-                payload_manifest.get("version")
-                or payload_manifest.get("skill_version")
-                or payload_manifest.get("content_hash")
-                or ""
-            ).strip()
-            payload_hash = str(payload_manifest.get("content_hash") or payload_version).strip()
-        if payload_version:
-            manifest["version"] = payload_version
-            manifest["skill_version"] = payload_version
-        if payload_hash:
-            manifest["content_hash"] = payload_hash
-        for field in (
-            "source",
-            "files",
-            "dependency_ids",
-            "mcp_tool_ids",
-            "builtin_tool_identities",
-            "execution_profile",
-        ):
-            payload_value = payload_manifest.get(field)
-            if isinstance(payload_value, (dict, list)):
-                manifest[field] = payload_value
-            else:
-                manifest.pop(field, None)
-        payload_lifecycle_status = payload_manifest.get("lifecycle_status")
-        if isinstance(payload_lifecycle_status, str):
-            manifest["lifecycle_status"] = payload_lifecycle_status
-        else:
-            manifest.pop("lifecycle_status", None)
-        payload_governance = governance_by_skill.get(skill_id)
-        if isinstance(payload_governance, dict):
-            manifest["snapshot_governance"] = payload_governance
-        else:
-            manifest.pop("snapshot_governance", None)
-        attached.append(manifest)
-    return attached
+    return restore_admitted_skill_manifest_authority(
+        _skill_manifests_from_result(result),
+        admitted_manifests=payload.skill_manifests,
+    )
 
 
 def _source_json_from_skill_manifest(

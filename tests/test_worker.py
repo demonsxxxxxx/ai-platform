@@ -6183,6 +6183,113 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_worker_terminal_snapshots_keep_each_admitted_skill_release_decision(monkeypatch):
+    primary_decision = {
+        **release_decision("hash-anysearch"),
+        "policy_active": True,
+        "selected_track": "current",
+        "current_version": "hash-anysearch",
+        "previous_version": "hash-anysearch-old",
+        "rollout_percent": 50,
+        "bucket": 1,
+    }
+    secondary_decision = {
+        **release_decision("hash-sop"),
+        "policy_active": True,
+        "selected_track": "previous",
+        "current_version": "hash-sop-next",
+        "previous_version": "hash-sop",
+        "rollout_percent": 50,
+        "bucket": 99,
+    }
+    admitted_manifests = [
+        {
+            **primary_manifest("anysearch", "hash-anysearch"),
+            "release_decision": primary_decision,
+        },
+        {
+            **primary_manifest("sop-compliance-reviewer", "hash-sop"),
+            "release_decision": secondary_decision,
+        },
+    ]
+    expected_sources = {
+        manifest["skill_id"]: repository_module.run_skill_snapshot_source_json(manifest)
+        for manifest in admitted_manifests
+    }
+    snapshots = []
+
+    class MultiSkillAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="test-adapter/1",
+                executor_type="fake",
+                executor_version="test-executor/1",
+                capabilities={"skills": True},
+                result={"message": "done"},
+                executor_payload={
+                    "used_skills": ["anysearch", "sop-compliance-reviewer"],
+                    "used_skills_source": "executor_hook",
+                    "skill_manifests": [
+                        {
+                            "skill_id": skill_id,
+                            "version": "executor-controlled",
+                            "content_hash": "executor-controlled",
+                            "source": {"kind": "uploaded"},
+                            "release_decision": primary_decision,
+                            "allowed": True,
+                            "staged": True,
+                        }
+                        for skill_id in ("anysearch", "sop-compliance-reviewer")
+                    ],
+                },
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        return "evt-a"
+
+    async def complete_run(conn, **kwargs):
+        return True
+
+    async def upsert_run_skill_snapshot(conn, **kwargs):
+        assert kwargs["source_json"] == expected_sources[kwargs["skill_id"]]
+        snapshots.append(kwargs)
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr(
+        "app.worker.repositories.upsert_run_skill_snapshot",
+        upsert_run_skill_snapshot,
+    )
+
+    outcome = await process_run_payload(
+        base_payload(
+            skill_id="anysearch",
+            skill_version="hash-anysearch",
+            release_decision=primary_decision,
+            skill_manifests=admitted_manifests,
+        ),
+        AdapterRegistry({"fake": MultiSkillAdapter()}),
+    )
+
+    assert outcome.status == "succeeded"
+    assert {snapshot["skill_id"] for snapshot in snapshots} == {
+        "anysearch",
+        "sop-compliance-reviewer",
+    }
+    assert (
+        expected_sources["anysearch"]["release_decision_sha256"]
+        != expected_sources["sop-compliance-reviewer"]["release_decision_sha256"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_worker_persists_reviewed_uploaded_skill_with_complete_governance_identity(monkeypatch):
     snapshots = []
     version = "hash-native-review"
