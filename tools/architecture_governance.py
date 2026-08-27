@@ -2093,8 +2093,23 @@ def _import_edges(
     known_modules: set[str] | None = None,
 ) -> tuple[_ImportEdge, ...]:
     package_parts = list(PurePosixPath(path).with_suffix("").parts[:-1])
+    nodes = tuple(ast.walk(tree))
+    importlib_names = {
+        alias.asname or alias.name
+        for node in nodes
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if alias.name == "importlib"
+    }
+    import_module_names = {
+        alias.asname or alias.name
+        for node in nodes
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == "importlib"
+        for alias in node.names
+        if alias.name == "import_module"
+    }
     edges: list[_ImportEdge] = []
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, ast.Import):
             edges.extend(_ImportEdge(alias.name, node.lineno) for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
@@ -2126,6 +2141,29 @@ def _import_edges(
                     )
                 else:
                     edges.append(_ImportEdge(target, node.lineno))
+        elif isinstance(node, ast.Call):
+            target_argument = (
+                node.args[0]
+                if node.args
+                else next(
+                    (keyword.value for keyword in node.keywords if keyword.arg == "name"),
+                    None,
+                )
+            )
+            if not (
+                isinstance(target_argument, ast.Constant)
+                and isinstance(target_argument.value, str)
+            ):
+                continue
+            if (
+                isinstance(node.func, ast.Name)
+                and (node.func.id == "__import__" or node.func.id in import_module_names)
+                or isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in importlib_names
+                and node.func.attr == "import_module"
+            ):
+                edges.append(_ImportEdge(target_argument.value, node.lineno))
     unique = {(edge.target, edge.line): edge for edge in edges}
     return tuple(sorted(unique.values(), key=lambda item: (item.target, item.line)))
 
@@ -2200,7 +2238,6 @@ def _new_edge_finding(policy: dict[str, Any], source_path: str, edge: _ImportEdg
             details={"target": edge.target},
         )
     target = _module_location(edge.target, policy)
-    contexts = set(policy["bounded_contexts"])
     public = set(policy["public_cross_domain_modules"])
     non_exemptible = {"exemptible": False, "details": {"target": edge.target}}
 
@@ -2224,10 +2261,13 @@ def _new_edge_finding(policy: dict[str, Any], source_path: str, edge: _ImportEdg
             edge.line,
             **non_exemptible,
         )
-    if source.package == "platform" and target.package in contexts | {"bootstrap", "compat"}:
+    if (
+        source.package == "platform"
+        and target.package not in {None, "kernel", "platform"}
+    ):
         return Finding(
             "platform_product_import",
-            "platform technical clients cannot import a product context",
+            "platform technical clients cannot import product or composition packages",
             source_path,
             edge.line,
             **non_exemptible,
@@ -2298,6 +2338,18 @@ def _new_edge_finding(policy: dict[str, Any], source_path: str, edge: _ImportEdg
                         edge.line,
                         **non_exemptible,
                     )
+            if (
+                source.layer is not None
+                and target.layer is None
+                and target.boundary is None
+            ):
+                return Finding(
+                    "layer_dependency_forbidden",
+                    "canonical layers cannot import unlayered same-context legacy modules",
+                    source_path,
+                    edge.line,
+                    **non_exemptible,
+                )
             return None
         if target.package == "kernel":
             return None

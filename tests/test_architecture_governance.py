@@ -868,6 +868,49 @@ def test_mixed_public_and_internal_import_does_not_hide_internal_edge(
     assert finding.details == {"target": "app.runs.secret_internal"}
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import importlib\nvalue = importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\nvalue = importlib.import_module(name="app.runs.domain.secret")\n',
+        'import importlib as loader\nvalue = loader.import_module("app.runs.domain.secret")\n',
+        'from importlib import import_module\nvalue = import_module("app.runs.domain.secret")\n',
+        'from importlib import import_module as loader\nvalue = loader("app.runs.domain.secret")\n',
+        'value = __import__("app.runs.domain.secret")\n',
+        'value = __import__(name="app.runs.domain.secret")\n',
+    ],
+)
+def test_literal_dynamic_imports_use_existing_dependency_rules(
+    governance_repo: tuple[Path, str], source: str
+) -> None:
+    repo, authority = governance_repo
+    _write(repo, "app/skills/application/publish.py", source)
+    head = _commit(repo, "literal dynamic cross-domain import")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    finding = next(item for item in evaluation.findings if item.code == "cross_domain_internal_import")
+    assert finding.exemptible is False
+    assert finding.details == {"target": "app.runs.domain.secret"}
+
+
+def test_computed_dynamic_import_target_does_not_create_a_static_edge(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(
+        repo,
+        "app/skills/application/publish.py",
+        'import importlib\nmodule_name = "app.runs.domain.secret"\nvalue = importlib.import_module(module_name)\n',
+    )
+    head = _commit(repo, "computed dynamic import")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.findings == ()
+
+
 def test_rename_rechecks_edges_against_the_new_source_context(
     governance_repo: tuple[Path, str],
 ) -> None:
@@ -896,6 +939,36 @@ def test_layer_inversion_is_rejected(governance_repo: tuple[Path, str]) -> None:
     evaluation = _evaluate(repo, authority, authority, head)
 
     assert "layer_dependency_forbidden" in _codes(evaluation)
+
+
+def test_canonical_layer_cannot_import_same_context_legacy_module(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(repo, "app/runs/legacy.py", "LEGACY = True\n")
+    base = _commit(repo, "legacy same-context module")
+    _write(repo, "app/runs/domain/attempt.py", "from app.runs import legacy\n")
+    head = _commit(repo, "canonical layer imports legacy module")
+
+    evaluation = _evaluate(repo, authority, base, head)
+
+    finding = next(item for item in evaluation.findings if item.code == "layer_dependency_forbidden")
+    assert finding.exemptible is False
+    assert finding.details == {"target": "app.runs.legacy"}
+
+
+def test_platform_cannot_import_legacy_app_root_module(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(repo, "app/platform/postgres/client.py", "import app.auth\n")
+    head = _commit(repo, "platform imports legacy root module")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    finding = next(item for item in evaluation.findings if item.code == "platform_product_import")
+    assert finding.exemptible is False
+    assert finding.details == {"target": "app.auth"}
 
 
 def test_domain_third_party_dependency_is_rejected(
