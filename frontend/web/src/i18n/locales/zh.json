@@ -1405,6 +1405,7 @@
     "mcp": "MCP 工具",
     "memory": "记忆",
     "models": "模型",
+    "runs": "运行监控",
     "more": "更多",
     "notifications": "通知公告",
     "roles": "角色治理",
@@ -1423,6 +1424,7 @@
     "mcp": "管理 MCP 服务器连接",
     "memory": "查看和管理 AI 记忆内容",
     "models": "配置和管理 AI 模型",
+    "runs": "查看最近 Chat、Run 与 Worker 状态",
     "notifications": "管理系统公告通知",
     "roles": "角色治理与审批",
     "settings": "应用和系统设置",
@@ -1640,6 +1642,10 @@
     "models": {
       "description": "管理大语言模型配置。连接和切换 Claude、GPT、Gemini 等模型，统一 API 抽象层。",
       "title": "模型管理"
+    },
+    "runs": {
+      "description": "查看当前租户最近的 Chat、Run 和 Worker 生命周期状态。",
+      "title": "运行监控"
     },
     "notifications": {
       "description": "管理系统公告和通知。获取平台新闻、警报和重要消息的实时更新。",

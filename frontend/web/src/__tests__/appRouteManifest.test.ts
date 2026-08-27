@@ -25,6 +25,8 @@ test("appRouteManifest separates the admin Builder from the ordinary-user Agent 
     resolveAppRoute("/agent-market/agt_support/4/chat/session-1"),
     "agentMarketWorkspace",
   );
+  assert.equal(APP_ROUTE_PATHS.runs, "/runs");
+  assert.equal(resolveAppRoute("/runs"), "runs");
   assert.equal("files" in APP_ROUTE_PATHS, false);
   assert.equal(resolveAppRoute("/chat"), "chat");
   assert.equal(resolveAppRoute("/agents"), "notFound");

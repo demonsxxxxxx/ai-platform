@@ -18,6 +18,7 @@ export const APP_ROUTE_PATHS = {
   settings: "/settings",
   feedback: "/feedback",
   models: "/models",
+  runs: "/runs",
   notifications: "/notifications",
   memory: "/memory",
   oauthCallback: "/auth/callback",
