@@ -874,10 +874,17 @@ def test_mixed_public_and_internal_import_does_not_hide_internal_edge(
         'import importlib\nvalue = importlib.import_module("app.runs.domain.secret")\n',
         'import importlib\nvalue = importlib.import_module(name="app.runs.domain.secret")\n',
         'import importlib as loader\nvalue = loader.import_module("app.runs.domain.secret")\n',
+        'import importlib\ndef invoke():\n    return importlib.import_module("app.runs.domain.secret")\n',
         'from importlib import import_module\nvalue = import_module("app.runs.domain.secret")\n',
+        'from importlib import import_module\ndef invoke():\n    return import_module("app.runs.domain.secret")\n',
         'from importlib import import_module as loader\nvalue = loader("app.runs.domain.secret")\n',
+        'import importlib\nvalue = importlib.import_module(".domain.secret", package="app.runs")\n',
+        'import importlib\nvalue = importlib.import_module("app.runs.domain.secret")\nimportlib = object()\n',
+        'importlib = object()\nimport importlib\nvalue = importlib.import_module("app.runs.domain.secret")\n',
         'value = __import__("app.runs.domain.secret")\n',
         'value = __import__(name="app.runs.domain.secret")\n',
+        'value = __import__("app.runs.domain.secret", level=0)\n',
+        'value = __import__("app.runs.domain.secret")\ndef __import__(name):\n    return name\n',
     ],
 )
 def test_literal_dynamic_imports_use_existing_dependency_rules(
@@ -892,6 +899,50 @@ def test_literal_dynamic_imports_use_existing_dependency_rules(
     finding = next(item for item in evaluation.findings if item.code == "cross_domain_internal_import")
     assert finding.exemptible is False
     assert finding.details == {"target": "app.runs.domain.secret"}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'def invoke(__import__):\n    return __import__("app.runs.domain.secret")\n',
+        'import importlib\ndef invoke(importlib):\n    return importlib.import_module("app.runs.domain.secret")\n',
+        'from importlib import import_module\ndef invoke(import_module):\n    return import_module("app.runs.domain.secret")\n',
+        'import importlib\nimportlib = object()\nvalue = importlib.import_module("app.runs.domain.secret")\n',
+        'from importlib import import_module\ndef invoke():\n    import_module = lambda name: name\n    return import_module("app.runs.domain.secret")\n',
+    ],
+)
+def test_shadowed_dynamic_import_names_do_not_create_edges(
+    governance_repo: tuple[Path, str], source: str
+) -> None:
+    repo, authority = governance_repo
+    _write(repo, "app/skills/application/publish.py", source)
+    head = _commit(repo, "shadowed dynamic import name")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.findings == ()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import importlib\nvalue = importlib.import_module(".domain.policy", package="app.runs")\n',
+        'import importlib\npackage = "app.runs"\nvalue = importlib.import_module(".domain.policy", package=package)\n',
+        'value = __import__("domain.policy", globals(), locals(), [], 1)\n',
+    ],
+)
+def test_unresolved_relative_dynamic_imports_do_not_create_false_edges(
+    governance_repo: tuple[Path, str], source: str
+) -> None:
+    repo, authority = governance_repo
+    _write(repo, "app/runs/application/publish.py", source)
+    head = _commit(repo, "relative dynamic import")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.findings == ()
 
 
 def test_computed_dynamic_import_target_does_not_create_a_static_edge(
