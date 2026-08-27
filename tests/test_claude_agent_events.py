@@ -581,14 +581,19 @@ def test_thinking_is_sanitized_as_one_summary_before_callback_publication():
 
 
 @pytest.mark.parametrize(
-    "private_path",
+    ("private_path", "private_fragment"),
     [
-        r"C:\Users\Alice Smith\plan.txt",
-        r"C:\Users\Alice\quarterly plan.txt",
+        (r"C:\Users\Alice Smith\plan.txt", r"Alice Smith\plan.txt"),
+        (r"C:\Users\Alice\quarterly plan.txt", "quarterly plan.txt"),
+        (
+            r"C:\Users\Alice Smith\Alice's secrets\plan.txt",
+            r"Alice's secrets\plan.txt",
+        ),
     ],
 )
-def test_thinking_sanitizer_redacts_complete_windows_paths_with_spaces(
+def test_thinking_sanitizer_redacts_complete_windows_paths(
     private_path,
+    private_fragment,
 ):
     sanitized = sanitize_public_reasoning_text(
         f"Review {private_path}\nContinue with the public evidence."
@@ -597,8 +602,7 @@ def test_thinking_sanitizer_redacts_complete_windows_paths_with_spaces(
     assert sanitized == (
         "Review [redacted-path]\nContinue with the public evidence."
     )
-    assert "Alice Smith" not in sanitized
-    assert "quarterly plan.txt" not in sanitized
+    assert private_fragment not in sanitized
 
 
 def test_callback_projects_whole_summaries_with_server_owned_identity_and_chunks():

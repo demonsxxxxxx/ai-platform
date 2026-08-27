@@ -98,7 +98,7 @@ FORBIDDEN_PUBLIC_KEYS = {
 }
 WINDOWS_DRIVE_PATH_PATTERN = re.compile(r"(?i)(?:^|[\s\"'({\[,=:])(?:[a-z]:[\\/])")
 _WINDOWS_PUBLIC_PATH_FRAGMENT_PATTERN = re.compile(
-    r"(?i)(?<![A-Za-z0-9_])[A-Za-z]:[\\/][^\r\n\"'<>]*"
+    r'(?i)(?<![A-Za-z0-9_])[A-Za-z]:[\\/][^\r\n"<>]*'
 )
 _FORBIDDEN_PUBLIC_FRAGMENT_PATTERNS = tuple(
     re.compile(rf"\S*{re.escape(marker)}\S*") for marker in FORBIDDEN_PUBLIC_MARKERS

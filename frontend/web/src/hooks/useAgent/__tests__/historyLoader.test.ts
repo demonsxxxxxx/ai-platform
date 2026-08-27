@@ -902,10 +902,22 @@ test("reconstructMessagesFromEvents deduplicates repeated public thinking event 
       },
     },
   };
-  const processedEventIds = new Set<string>();
+  const repeatedDelta: HistoryEvent = {
+    ...duplicateDelta,
+    data: {
+      ...duplicateDelta.data,
+      message: "This repeated event must not replace the first occurrence.",
+      payload: {
+        thinking_id: "thinking-public-once",
+        delta: "This repeated event must not replace the first occurrence.",
+      },
+    },
+  };
+  // History remains authoritative even when this ID was already accepted live.
+  const processedEventIds = new Set<string>(["thinking-delta-once"]);
 
   const messages = reconstructMessagesFromEvents(
-    [duplicateDelta, { ...duplicateDelta }],
+    [duplicateDelta, repeatedDelta],
     processedEventIds,
     { activeSubagentStack: [] },
   );
