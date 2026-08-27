@@ -8,8 +8,8 @@ does not represent deployed runtime state.
 - `../AGENTS.md` defines repository-local operating constraints.
 - `agent-rules/multi-agent-context-workflow.md` defines ownership, leases, and
   handoff.
-- `agent-rules/github-issue-pr-workflow.md` defines issue, PR, review, and
-  closure evidence.
+- `agent-rules/github-issue-pr-workflow.md` defines risk-scaled PR scope,
+  review, verification, and evidence language.
 - `agent-rules/local-test-execution.md` defines the bounded, observable,
   worktree-safe procedure for local pytest stages and their failure taxonomy.
 - `architecture/runtime-authorities.md` maps each runtime capability to its
@@ -25,8 +25,8 @@ does not represent deployed runtime state.
   and strangler migration contract. ADR 0006 records the decision and rejected
   alternatives.
 - `architecture/ci-test-readiness-governance.md` defines evidence levels,
-  required-test ownership, runtime/offline readiness boundaries, and the
-  disposition ledger for obsolete tests and historical evidence.
+  required-test ownership, runtime/offline readiness boundaries, and retirement
+  rules for obsolete checks.
 - `architecture/single-enterprise-data-lifecycle.md` defines the fixed
   single-enterprise identity scope, datastore ownership, versioned schema
   lifecycle, bounded reads, retention workflow, and PostgreSQL payload limits.

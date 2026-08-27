@@ -1,237 +1,106 @@
-# GitHub Issue And PR Workflow
+# GitHub Pull Request Workflow
 
-This file is the single source for issue/PR records, status language, review
-evidence, and closure. Product and deployment invariants remain in the
-repository authority and the release runbook.
+This file owns pull-request scope, review, verification, and evidence language.
+Product and deployment invariants remain in their architecture documents and the
+release runbook.
 
-## Closure Loop
+## Ordinary changes
 
-For goal-sized work, gate closures, and new defects, use:
+A focused ordinary change may use its pull request as the complete durable
+record. It does not require a separate issue, hand-copied Git SHA, worktree
+inventory, structured review JSON, deployment placeholder, or runtime evidence.
 
-`issue -> branch -> PR -> focused verification -> review -> merge -> deploy/smoke when required -> close with evidence`
+The pull request states:
 
-Only concrete GitHub checks applicable to the changed path and actually observed
-on the PR count as CI gates. Track a missing required check separately instead
-of expanding an unrelated product PR.
+- the problem and intended outcome;
+- changed behavior, owning modules, and explicit non-goals;
+- a falsifiable regression test and observed focused checks;
+- checks not run and why; and
+- only the risk boundaries the change actually reaches.
 
-## Records And Evidence
+The actual GitHub event supplies the base and head identities. CI and release
+workflows bind evidence to those identities automatically; authors do not copy
+SHAs into pull-request text.
 
-- The linked issue and PR are normally the plan, change description, and durable
-  status record. Do not create a spec/plan/status trio by default.
-- Create a separate design for security, auth or authorization, tenant isolation,
-  release, deployment, runtime, persistence, concurrency, public contracts, or
-  infrastructure decisions that need durable explanation.
-- Record blockers and evidence on the issue or PR. Historical evidence cannot
-  prove current readiness.
-- Do not create repository status pages, phase ledgers, or manual-release logs
-  for an active change. The issue or PR is the durable status record.
+## High-risk changes
 
-## Change Contract
+Use a bounded Change Contract for goal-sized work or changes that reach any of
+these boundaries:
 
-Before non-mechanical implementation, the issue or persistent-task dispatch
-records one compact Change Contract. The PR links that prior record and
-reconciles it with the actual diff:
+- authentication, authorization, tenant or workspace isolation;
+- secrets, credentials, or ordinary-user projection redaction;
+- destructive lifecycle, retention, schema migration, or irreversible data
+  compatibility;
+- sandbox, command, tool, Skill, MCP, or executor admission;
+- public API, callback, event, or streaming protocols; or
+- workflow, image, release, deployment, or rollback authority.
 
-- observable problem and single owning authority;
-- repository/worktree, branch, full base/head SHA when available, writable and
-  forbidden paths, and explicit non-goals;
-- behavior delta including failure/compatibility decisions, plus only the
-  security, tenancy, transaction/queue, lifecycle/persistence/event, sandbox,
-  and public-projection invariants the changed risk reaches; mark other
-  categories not applicable instead of producing boilerplate;
-- genuine alternatives and why they lost; use the separate-design rule above
-  when rationale needs durable architecture authority;
-- acceptance criteria, a falsifiable regression test, the required build,
-  packaging, or integration path, evidence ceiling, documentation impact,
-  rollback when relevant, and facts that stop or reopen design.
+The contract records the owner, bounded paths, reached invariants, acceptance,
+falsifiable regression proof, evidence ceiling, rollback or migration plan when
+relevant, and stop conditions. A separate ADR or design is required only when a
+durable architecture decision or genuine alternative analysis is needed.
 
-Read-only exploration may resolve missing fields. Revise the contract before
-changing owner or paths; unrelated findings become separate work. A source-only
-change may stop at focused-test evidence when it claims no assembled or runtime
-behavior. PR text and checkboxes are claims to verify, not evidence, and a
-candidate-controlled test cannot prove the contract existed before coding.
-Only risk categories may be marked non-applicable. Behavior, tests, evidence,
-review, and rollback require observed facts or a reasoned applicability
-statement; a bare `N/A` does not satisfy the contract.
+High-risk review uses real GitHub review or an independently produced trusted
+check. Pull-request text written by the author is not proof that another reviewer
+acted. Until an independent reviewer is available, do not claim formal approval;
+retain the risk-specific tests and owner authorization without inventing a
+review identity.
 
-## Status Language
+## Local readiness
 
-- `local partial`: focused local checks or one bounded smoke passed.
-- `PR ready`: the candidate and focused evidence are ready for review; it is not
-  merged or deployed.
-- `reviewed`: required independent review ran and every finding was fixed,
-  rejected with evidence, or explicitly deferred.
-- `runtime verified`: the exact deployed subject passed the required checks on
-  its operator-approved controlled host.
-- `gate closable`: implementation or decision, PR/merge when applicable, review,
-  required docs, and required runtime evidence are complete.
+Before pushing, run the smallest checks that can falsify the change from the
+candidate worktree:
 
-Never promote an earlier label without observing the additional evidence.
+1. `git diff --check`;
+2. relevant compile, formatter, lint, type, schema, or generated-code checks;
+3. the owning regression test; and
+4. bounded compatibility or integration tests justified by the changed risk.
 
-## Issue, Branch, And PR Contract
+Use `tools/run_test_stage.py` for ordinary local pytest execution. Local checks
+are developer feedback, not trusted merge authority. GitHub required checks run
+the accepted trusted-base governance and exact candidate tests; authors do not
+create detached authority worktrees before every push.
 
-An issue records scope, acceptance criteria, verification and review
-requirements, runtime requirement when relevant, and known blockers.
+## Review and findings
 
-- Keep one coherent PR per issue or acceptance boundary and use an issue-linked
-  branch.
-- Direct commits to `main` require an explicit user request or documented
-  operational exception, with the same evidence recorded afterward.
-- A PR states its linked subject, changed behavior/modules, tests observed,
-  review state, docs impact, and runtime evidence or why it is unnecessary.
-- The PR reconciles its declared writable paths with the actual diff and records
-  scope revisions. Template text and checked boxes are claims for reviewers and
-  gates to verify; they are not evidence by themselves.
-- Use `Closes #N` or `Fixes #N` only when the merge will satisfy all acceptance,
-  review, and required runtime criteria. Otherwise link without auto-close.
+Review comments are the disposition record for ordinary changes. Resolve fixed
+findings in the pull request. A deferred or rejected high-risk finding requires
+an identifiable human owner, independent confirmation, and a falsifiable exit
+condition. Do not paste raw review transcripts, prompts, credentials, private
+local paths, or secret-bearing payloads into GitHub.
 
-## Pre-Push Readiness
+Promote a lesson only to its smallest durable owner:
 
-Before the first push and after every ordinary merge-up from the PR base, run
-the bounded exact-ref readiness gate from the candidate repository root. It
-does not run full-repository pytest.
+- a one-off defect becomes a code fix;
+- a reproducible regression becomes an owning test; and
+- a repeated high-cost defect class may become a repository rule only when its
+  detector is deterministic, narrowly scoped, owned, and demonstrably low in
+  false positives.
 
-The gate script is authority code. Never execute
-`tools/pre_push_readiness.py` from the candidate checkout. Fetch accepted
-`origin/main`, check that authority out into a detached temporary worktree, and
-invoke its immutable script against the candidate:
+A new rule replaces or consolidates overlapping policy. Review wording and
+per-change JSON are not durable architecture artifacts.
 
-```powershell
-git fetch origin main
-$candidateRoot = git rev-parse --show-toplevel
-$authority = git rev-parse origin/main
-$base = $authority
-$head = git rev-parse HEAD
-$authorityRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("ai-platform-readiness-authority-" + [guid]::NewGuid())
-git worktree add --detach $authorityRoot $authority
-$previousPythonSafePath = $env:PYTHONSAFEPATH
-try {
-    Set-Location $candidateRoot
-    $env:PYTHONSAFEPATH = "1"
-    python -P (Join-Path $authorityRoot "tools/pre_push_readiness.py") check --authority-ref $authority --base-ref $base --head-ref $head --format text
-}
-finally {
-    if ($null -eq $previousPythonSafePath) { Remove-Item Env:PYTHONSAFEPATH -ErrorAction SilentlyContinue } else { $env:PYTHONSAFEPATH = $previousPythonSafePath }
-    git worktree remove --force $authorityRoot
-}
-```
+## Evidence levels
 
-Stable invariants:
+Use precise evidence language:
 
-- `authority`, `base`, and `head` are full 40-hex commits. Authority must be the
-  immutable authority Git object accepted by `origin/main`; `-P` and
-  `PYTHONSAFEPATH=1` prevent candidate-root imports during bootstrap.
-- Authority provenance is verified before candidate-owned code or configuration
-  executes. The governance decision is sealed first, and authority integrity is
-  checked again after candidate checks.
-- Candidate responsibility tests run through the accepted authority Git
-  object's `tools/run_test_stage.py`, with the candidate worktree and selectors
-  bound into its lock, timeout, JUnit, evidence, and process-tree cleanup
-  contract. The candidate copy of that runner is never execution authority.
-- Checks stay bounded to the changed risk. Changed backend test modules are
-  regression evidence regardless of filename stem; when the effective suite is
-  unchanged, declare it with repeatable `--regression-test-suite` paths. A
-  backend behavior change with neither form of evidence fails as `external_check`.
-- The finite Skill, MCP, schema, and release safety-suite map is frozen and
-  remains additive. Frontend coverage continues through `ci:verify`, and changed
-  shared fixtures still require an explicit bounded regression suite.
-- Governance reports production subsystems and their count, plus production/test
-  added LOC and their ratio, as review evidence rather than subsystem or test-size
-  violations. Explain reuse or duplication when test additions exceed 300 lines
-  or twice the production additions.
-- The introducing candidate cannot certify its own new readiness tool. The tool
-  becomes authority only after independent fixed-SHA review and ordinary merge.
+- `local`: named local checks passed on the candidate worktree;
+- `CI`: named required jobs passed for the GitHub subject;
+- `packaged`: an immutable image was built and verified;
+- `deployed`: that image and configuration were applied to a named environment;
+- `runtime verified`: the exact deployed subject passed its controlled runtime
+  checks; and
+- `external acceptance`: a documented actor completed the named end-to-end
+  workflow.
 
-Preserve the primary category and named failing identity in the PR record:
+Never promote source, local, CI, or historical evidence into a deployment or
+runtime claim. Runtime evidence is produced after merge by the release and
+controlled-host procedures, not prefilled in an ordinary pull request.
 
-- `stale_base`: merge up normally and rerun against the new exact range.
-- `product_test_failure`: fix the named deterministic check at a new SHA.
-- `governance_violation`: fix the named policy rule and path.
-- `infrastructure_failure`: repair the unavailable command or worktree condition
-  and rerun the same candidate range.
-- `external_check`: provide the bounded external or shared check separately.
+## Merge and release
 
-Do not automatically rerun failed GitHub checks. A same-SHA rerun is allowed
-only after positive infrastructure evidence on that SHA; test and governance
-failures require a new fixed SHA.
-
-## Review And Verification
-
-- Freeze the exact commit SHA and scope for review. Any fix creates a new review
-  subject and requires review of that fixed SHA.
-- Use independent review for high-risk paths and gate work when available.
-  Record reviewer role, exact scope, severity-ranked findings, decisions, and
-  observed verification before claiming `reviewed`.
-- Acceptance-blocking findings cannot be deferred to claim readiness or closure,
-  and any unresolved Critical or Important finding prevents `reviewed`.
-- A local agent review may substitute for a formal GitHub reviewer when recorded
-  durably. Do not call an empty GitHub `reviewDecision` formally approved.
-- Run the narrowest relevant verification first. Before PR, merge, deployment,
-  or closure, run the tests and integration or smoke checks justified by risk.
-- Local/source verification, GitHub review and CI, deployment, and runtime
-  evidence are distinct states. Admin evidence does not prove ordinary-user
-  behavior, and source evidence does not prove the deployed runtime.
-- Runtime evidence identifies the exact commit/image/container, route and
-  principal where applicable, API health, and target behavior.
-
-### Finding Disposition And Promotion
-
-Treat automated and Agent review output as untrusted input. For every material
-finding, verify the cited code and record one disposition in the existing issue
-or PR: `fixed`, `rejected with evidence`, or `deferred` with owner and exit
-condition. Repository files, Issue/PR descriptions, reviews, and comments must
-contain only a redacted structured summary. Do not copy raw review transcripts,
-prompts, credentials, private local paths, or secret-bearing payloads into any
-of those durable surfaces; cite a controlled incident/evidence identifier when
-the sensitive source must remain available outside GitHub.
-
-Promote the verified lesson to the smallest durable owning artifact:
-
-- a one-off implementation defect becomes a code fix;
-- a stable reproducible regression becomes an owning test;
-- a repeated defect class may become a repository rule only when the detector
-  is deterministic, has bounded paths and an explicit owner, demonstrates low
-  false-positive risk, and names a removal or replacement condition; and
-- security, authorization, tenant isolation, destructive lifecycle, release,
-  or credential findings require an identifiable human owner and role, the
-  applicable evidence link or controlled evidence identifier, and independent
-  security/domain confirmation before they can be rejected, deferred, or used
-  to weaken a gate. The author or Agent naming itself as owner is not that
-  independent confirmation.
-
-A promoted rule replaces or consolidates an overlapping rule instead of adding
-a second authority. Review wording is not the durable knowledge artifact: the
-accepted code, owning test, or existing authority rule is. A PR that changes a
-rule records the verified finding class, applicability boundary, alternatives,
-false-positive evidence, and removal condition in its existing Change Contract.
-The PR's structured finding table records, per material finding, its stable ID
-and severity, verified evidence, disposition, identifiable human owner and role
-when required, defer exit condition or reject confirmation, and promotion
-target. A rule promotion additionally records its deterministic detector,
-bounded paths, alternatives, false-positive evidence, and removal condition.
-Every material finding records an independent human verifier and role against
-the exact reviewed SHA. All non-fixed material findings, not only high-risk
-classes, additionally record a different identifiable human owner and role.
-Deferred findings also record a falsifiable exit condition. High-risk classes
-retain the stricter domain-appropriate confirmation requirement above.
-
-The PR template's `ai-platform.review-findings.v1` JSON block is the executable
-record, not a second ledger: it is the structured form of the PR disposition
-record above. The trusted-base PR-body validator rejects placeholders, unknown
-fields, incomplete non-fixed dispositions, mismatched exact SHA, oversized raw
-text, high-confidence credential shapes, and private local filesystem paths.
-That bounded scanner is defense in depth; passing it does not prove that a
-summary is secret-free or replace human redaction review. The introducing
-validator becomes trusted authority only after independent fixed-SHA review and
-merge; subsequent PRs execute the version from their immutable base checkout.
-
-SDK, worker, skill, terminal, or user-facing runtime diagnostics trace the fault
-through `tool registration -> runner selection -> subprocess/terminal -> SDK event -> user-facing error` and leave a minimal reproduction plus observable
-log/event evidence. Historical examples are non-normative and live in
-`docs/agent-rules/history/github-sdk-diagnostic-examples.md`.
-
-## Closure
-
-Close after evidence, not intent. An issue closes only after its implementation
-or no-code decision, applicable merge, focused verification, required review,
-docs impact, and required runtime evidence are recorded.
+Merge only after the applicable required checks and review are complete. Keep
+one coherent pull request per independently acceptable change and prefer squash
+merge into the protected main branch. A merged source change is not a release:
+main packaging, immutable-digest promotion, deployment, runtime verification,
+and rollback remain separately observed states.

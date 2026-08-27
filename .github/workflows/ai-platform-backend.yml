@@ -249,7 +249,6 @@ jobs:
               tests/test_architecture_governance.py
               tests/test_backend_ci_workflow.py
               tests/test_code_governance.py
-              tests/test_pr_review_record.py
               tests/test_source_authority_docs.py
               tests/test_ci_image_scope.py
               tests/test_require_zero_junit_skips.py
@@ -258,13 +257,6 @@ jobs:
               tests/test_packaging_publish_workflow.py
               tests/test_trivy_failure_evidence.py
               tests/test_release_image_manifest.py
-          - shard: release-governance-readiness
-            postgres_image: ""
-            postgres_url: ""
-            redis_image: ""
-            redis_url: ""
-            test_files: >-
-              tests/test_pre_push_readiness.py
           - shard: release-governance-authority
             postgres_image: ""
             postgres_url: ""
