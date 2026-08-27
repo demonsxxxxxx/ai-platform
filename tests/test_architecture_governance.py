@@ -885,6 +885,12 @@ def test_mixed_public_and_internal_import_does_not_hide_internal_edge(
         'value = __import__(name="app.runs.domain.secret")\n',
         'value = __import__("app.runs.domain.secret", level=0)\n',
         'value = __import__("app.runs.domain.secret")\ndef __import__(name):\n    return name\n',
+        'def invoke():\n    global importlib\n    import importlib\n    return importlib.import_module("app.runs.domain.secret")\n',
+        'def outer():\n    importlib = object()\n    def invoke():\n        nonlocal importlib\n        import importlib\n        return importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\ndef invoke(importlib=importlib.import_module("app.runs.domain.secret")):\n    return importlib\n',
+        'import importlib\ninvoke = lambda importlib=importlib.import_module("app.runs.domain.secret"): importlib\n',
+        'import importlib\n@importlib.import_module("app.runs.domain.secret")\ndef invoke(importlib):\n    return importlib\n',
+        'import importlib\nvalues = [item for importlib in importlib.import_module("app.runs.domain.secret")]\n',
     ],
 )
 def test_literal_dynamic_imports_use_existing_dependency_rules(
@@ -909,6 +915,8 @@ def test_literal_dynamic_imports_use_existing_dependency_rules(
         'from importlib import import_module\ndef invoke(import_module):\n    return import_module("app.runs.domain.secret")\n',
         'import importlib\nimportlib = object()\nvalue = importlib.import_module("app.runs.domain.secret")\n',
         'from importlib import import_module\ndef invoke():\n    import_module = lambda name: name\n    return import_module("app.runs.domain.secret")\n',
+        'import importlib\ndef invoke():\n    global importlib\n    importlib = object()\n    return importlib.import_module("app.runs.domain.secret")\n',
+        'def outer():\n    import importlib\n    def invoke():\n        nonlocal importlib\n        importlib = object()\n        return importlib.import_module("app.runs.domain.secret")\n',
     ],
 )
 def test_shadowed_dynamic_import_names_do_not_create_edges(

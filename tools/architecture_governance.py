@@ -2112,6 +2112,36 @@ def _enclosing_import_scope(
     return None
 
 
+def _dynamic_import_scope(
+    node: ast.AST,
+    parents: dict[ast.AST, ast.AST],
+) -> ast.AST | None:
+    original = node
+    scope = _enclosing_import_scope(node, parents)
+    while scope is not None:
+        child = node
+        while parents.get(child) is not scope:
+            child = parents[child]
+        if isinstance(scope, ast.Module):
+            return scope
+        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if child in scope.body:
+                return scope
+        elif isinstance(scope, ast.Lambda):
+            if child is scope.body:
+                return scope
+        else:
+            first_iter = scope.generators[0].iter
+            current: ast.AST | None = original
+            while current is not None and current is not first_iter:
+                current = parents.get(current)
+            if current is None:
+                return scope
+        node = scope
+        scope = _enclosing_import_scope(scope, parents, include_self=False)
+    return None
+
+
 def _literal_call_argument(call: ast.Call, position: int, name: str) -> ast.expr | None:
     if len(call.args) > position:
         return call.args[position]
@@ -2126,7 +2156,7 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
         for child in ast.iter_child_nodes(node)
     }
     bindings: dict[ast.AST, dict[str, list[tuple[int, int, str]]]] = {}
-    delegated: dict[ast.AST, set[str]] = {}
+    delegated: dict[ast.AST, dict[str, str]] = {}
 
     def bind(
         scope: ast.AST | None,
@@ -2175,8 +2205,14 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
             )
         elif isinstance(node, ast.ExceptHandler):
             bind(scope, node.name, "other", node)
-        elif isinstance(node, (ast.Global, ast.Nonlocal)) and scope is not None:
-            delegated.setdefault(scope, set()).update(node.names)
+        elif isinstance(node, ast.Global) and scope is not None:
+            delegated.setdefault(scope, {}).update(
+                (name, "global") for name in node.names
+            )
+        elif isinstance(node, ast.Nonlocal) and scope is not None:
+            delegated.setdefault(scope, {}).update(
+                (name, "nonlocal") for name in node.names
+            )
         elif isinstance(node, (ast.MatchAs, ast.MatchStar)):
             bind(scope, node.name, "other", node)
         elif isinstance(node, ast.MatchMapping):
@@ -2193,42 +2229,63 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
     )
 
     def resolve(call: ast.Call, name: str) -> str | None:
-        scope = _enclosing_import_scope(call, parents)
+        scope = _dynamic_import_scope(call, parents)
         current_scope = scope
         inside_function = False
         call_position = (call.lineno, call.col_offset)
         while scope is not None:
             if not (inside_function and isinstance(scope, ast.ClassDef)):
-                if name not in delegated.get(scope, set()):
-                    events = bindings.get(scope, {}).get(name, [])
-                    if events:
-                        if scope is current_scope:
-                            prior = [event for event in events if event[:2] <= call_position]
-                            if not prior:
-                                if isinstance(scope, function_scopes):
-                                    return None
-                                scope = _enclosing_import_scope(
-                                    scope,
-                                    parents,
-                                    include_self=False,
-                                )
-                                continue
-                            position = max(event[:2] for event in prior)
-                            identities = {
-                                identity
-                                for line, column, identity in prior
-                                if (line, column) == position
-                            }
-                        elif isinstance(scope, ast.Module):
-                            position = max(event[:2] for event in events)
-                            identities = {
-                                identity
-                                for line, column, identity in events
-                                if (line, column) == position
-                            }
-                        else:
-                            identities = {identity for _line, _column, identity in events}
+                events = bindings.get(scope, {}).get(name, [])
+                declaration = delegated.get(scope, {}).get(name)
+                if declaration is not None:
+                    prior = [event for event in events if event[:2] <= call_position]
+                    if prior:
+                        position = max(event[:2] for event in prior)
+                        identities = {
+                            identity
+                            for line, column, identity in prior
+                            if (line, column) == position
+                        }
                         return next(iter(identities)) if len(identities) == 1 else None
+                    if isinstance(scope, function_scopes):
+                        inside_function = True
+                    if declaration == "global":
+                        scope = tree
+                    else:
+                        scope = _enclosing_import_scope(
+                            scope,
+                            parents,
+                            include_self=False,
+                        )
+                    continue
+                if events:
+                    if scope is current_scope:
+                        prior = [event for event in events if event[:2] <= call_position]
+                        if not prior:
+                            if isinstance(scope, function_scopes):
+                                return None
+                            scope = _enclosing_import_scope(
+                                scope,
+                                parents,
+                                include_self=False,
+                            )
+                            continue
+                        position = max(event[:2] for event in prior)
+                        identities = {
+                            identity
+                            for line, column, identity in prior
+                            if (line, column) == position
+                        }
+                    elif isinstance(scope, ast.Module):
+                        position = max(event[:2] for event in events)
+                        identities = {
+                            identity
+                            for line, column, identity in events
+                            if (line, column) == position
+                        }
+                    else:
+                        identities = {identity for _line, _column, identity in events}
+                    return next(iter(identities)) if len(identities) == 1 else None
             if isinstance(scope, function_scopes):
                 inside_function = True
             scope = _enclosing_import_scope(scope, parents, include_self=False)
