@@ -22,6 +22,7 @@ from app.streaming.domain.transport import StreamCursor, canonical_json_bytes
 V4_METADATA_KEY = "__stream_v4"
 V4_PUBLIC_STAGE = "agent_kernel"
 V4_METADATA_VERSION = 1
+MAX_PUBLIC_THINKING_DELTA_CODEPOINTS = 8_192
 _V4_PUBLISHER_MUTABLE_METADATA_FIELDS = frozenset(
     {"publication_state", "publication_attempts", "suppression_reason"}
 )
@@ -64,6 +65,7 @@ _MESSAGE_EVENT_TYPES = {
     "message.delta",
     "message.completed",
     "thinking.started",
+    "thinking.delta",
     "thinking.completed",
     "model.completed",
     "tool.started",
@@ -81,6 +83,7 @@ _REQUIRED_PAYLOAD_KEYS: dict[str, frozenset[str]] = {
     "message.delta": frozenset({"delta"}),
     "message.completed": frozenset({"content"}),
     "thinking.started": frozenset(),
+    "thinking.delta": frozenset({"thinking_id", "delta"}),
     "thinking.completed": frozenset(),
     "agent.progress": frozenset(
         {"schema_version", "step_id", "phase", "lifecycle", "message"}
@@ -254,11 +257,15 @@ _PAYLOAD_FIELDS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "message.completed": (frozenset({"content"}), frozenset({"content"})),
     "thinking.started": (
         frozenset(),
-        frozenset({"public_summary"}),
+        frozenset({"thinking_id", "public_summary"}),
+    ),
+    "thinking.delta": (
+        frozenset({"thinking_id", "delta"}),
+        frozenset({"thinking_id", "delta"}),
     ),
     "thinking.completed": (
         frozenset(),
-        frozenset({"public_summary"}),
+        frozenset({"thinking_id", "public_summary"}),
     ),
     "agent.progress": (
         frozenset({"schema_version", "step_id", "phase", "lifecycle", "message"}),
@@ -340,7 +347,10 @@ _PAYLOAD_FIELDS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     ),
 }
 _MESSAGE_EVENT_TYPES = frozenset(_MESSAGE_EVENT_TYPES)
-_CALLBACK_EVENT_TYPES = _MESSAGE_EVENT_TYPES | frozenset({"agent.progress"})
+_CALLBACK_EVENT_TYPES = (
+    _MESSAGE_EVENT_TYPES
+    - frozenset({"thinking.started", "thinking.delta", "thinking.completed"})
+) | frozenset({"agent.progress"})
 
 
 def _validate_control_payload(event_type: str, payload: object) -> dict[str, object]:
@@ -552,7 +562,7 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
         if not isinstance(key, str) or key.startswith("__"):
             raise V4ProjectionError("v4_payload_unknown_key")
     for key, value in result.items():
-        if key in {"operation_id", "subagent_id", "artifact_id", "decision_id", "terminal_event_id"}:
+        if key in {"thinking_id", "operation_id", "subagent_id", "artifact_id", "decision_id", "terminal_event_id"}:
             _safe_ref(value, name=key)
         elif key in {"evidence_ref"}:
             _nullable_safe_ref(value, name=key)
@@ -567,7 +577,12 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
         elif key == "media_type":
             _bounded_string(value, name=key, maximum=128, minimum=1)
         elif key == "delta":
-            _bounded_string(value, name=key, maximum=8192, minimum=1)
+            _bounded_string(
+                value,
+                name=key,
+                maximum=MAX_PUBLIC_THINKING_DELTA_CODEPOINTS,
+                minimum=1,
+            )
         elif key == "content":
             _bounded_string(value, name=key, maximum=262144)
         elif key == "public_summary":

@@ -141,19 +141,42 @@ def test_lambchat_history_projects_valid_v4_execution_events_and_rejects_raw_fie
         },
         {
             **common,
-            "id": "evt-thinking",
+            "id": "evt-thinking-started",
             "sequence": 2,
             "event_type": "thinking.started",
             "message": "",
             "payload_json": {
-                "public_summary": "Analyzing the request",
+                "thinking_id": "thinking-public-1",
+                "__stream_v4": {"version": "ai-platform.stream-row.v4"},
+            },
+        },
+        {
+            **common,
+            "id": "evt-thinking-delta",
+            "sequence": 3,
+            "event_type": "thinking.delta",
+            "message": "",
+            "payload_json": {
+                "thinking_id": "thinking-public-1",
+                "delta": "Compare the public evidence before answering.",
+                "__stream_v4": {"version": "ai-platform.stream-row.v4"},
+            },
+        },
+        {
+            **common,
+            "id": "evt-thinking-completed",
+            "sequence": 4,
+            "event_type": "thinking.completed",
+            "message": "",
+            "payload_json": {
+                "thinking_id": "thinking-public-1",
                 "__stream_v4": {"version": "ai-platform.stream-row.v4"},
             },
         },
         {
             **common,
             "id": "evt-tool-started",
-            "sequence": 3,
+            "sequence": 5,
             "event_type": "tool.started",
             "message": "",
             "payload_json": {
@@ -167,7 +190,7 @@ def test_lambchat_history_projects_valid_v4_execution_events_and_rejects_raw_fie
         {
             **common,
             "id": "evt-tool-completed",
-            "sequence": 4,
+            "sequence": 6,
             "event_type": "tool.completed",
             "message": "",
             "payload_json": {
@@ -184,7 +207,7 @@ def test_lambchat_history_projects_valid_v4_execution_events_and_rejects_raw_fie
         {
             **common,
             "id": "evt-tool-private",
-            "sequence": 5,
+            "sequence": 7,
             "event_type": "tool.started",
             "message": "",
             "payload_json": {
@@ -202,6 +225,8 @@ def test_lambchat_history_projects_valid_v4_execution_events_and_rejects_raw_fie
     assert [record.history_event["event_type"] for record in records] == [
         "agent_public_progress",
         "public_activity",
+        "public_activity",
+        "public_activity",
         "public_tool_activity",
         "public_tool_activity",
         "final_detail",
@@ -210,10 +235,17 @@ def test_lambchat_history_projects_valid_v4_execution_events_and_rejects_raw_fie
     progress = records[0].history_event["data"]
     assert progress["phase"] == "sandbox_preparation"
     assert progress["message"] == "Controlled execution is ready"
-    started = records[2].history_event["data"]
+    assert [
+        record.history_event["data"]["message"] for record in records[1:4]
+    ] == ["", "Compare the public evidence before answering.", ""]
+    assert [
+        record.history_event["data"]["payload"]["thinking_id"]
+        for record in records[1:4]
+    ] == ["thinking-public-1"] * 3
+    started = records[4].history_event["data"]
     assert started["status"] == "started"
     assert started["input_summary"] == "Starting Search authorized sources"
-    completed = records[3].history_event["data"]
+    completed = records[5].history_event["data"]
     assert completed["status"] == "completed"
     assert completed["result_summary"] == "Search authorized sources completed"
     assert records[-2].history_event["event_type"] == "final_detail"

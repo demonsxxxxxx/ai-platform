@@ -1574,6 +1574,55 @@ def test_v4_projection_preserves_legacy_empty_thinking_payloads() -> None:
     assert current["payload"] == {"public_summary": "Analyzing the request"}
 
 
+def test_v4_projection_preserves_model_reasoning_delta_and_rejects_sdk_signature() -> None:
+    thinking_id = "thinking_public_1"
+    projected = [
+        project_public_v4(
+            _row({"thinking_id": thinking_id}, event_type="thinking.started"),
+            authority=_authority(),
+        ),
+        project_public_v4(
+            _row(
+                {
+                    "thinking_id": thinking_id,
+                    "delta": "Compare the public evidence before answering.",
+                },
+                event_type="thinking.delta",
+            ),
+            authority=_authority(),
+        ),
+        project_public_v4(
+            _row({"thinking_id": thinking_id}, event_type="thinking.completed"),
+            authority=_authority(),
+        ),
+    ]
+
+    assert [event["event_type"] for event in projected if event is not None] == [
+        "thinking.started",
+        "thinking.delta",
+        "thinking.completed",
+    ]
+    assert projected[1] is not None
+    assert projected[1]["payload"]["delta"] == (
+        "Compare the public evidence before answering."
+    )
+    assert project_public_v4(
+        _row(
+            {
+                "thinking_id": thinking_id,
+                "delta": "Compare the public evidence before answering.",
+                "signature": "private-sdk-signature",
+            },
+            event_type="thinking.delta",
+        ),
+        authority=_authority(),
+    ) is None
+    with pytest.raises(V4ProjectionError):
+        validate_public_application_payload_v4(
+            "thinking.delta", {"thinking_id": thinking_id, "delta": ""}
+        )
+
+
 @pytest.mark.parametrize(
     "forged_fields",
     [

@@ -49,7 +49,7 @@ may use null.
 The closed Agent-kernel registry is:
 
 - `message.started`, `message.delta`, `message.completed`;
-- `thinking.started`, `thinking.completed`, `model.completed`;
+- `thinking.started`, `thinking.delta`, `thinking.completed`, `model.completed`;
 - `agent.progress` for fixed, server-owned execution-phase lifecycle;
 - `tool.started`, `tool.completed`, `tool.failed`, `tool.denied`;
 - `subagent.started`, `subagent.progress`, `subagent.completed`,
@@ -59,14 +59,22 @@ The closed Agent-kernel registry is:
 - `run.cancel_requested`, `run.succeeded`, `run.cancelled`, `run.failed`.
 
 Every payload is bounded and closed. Public identifiers use disclosure-safe
-patterns; fixed public reasoning summaries, server-owned phase messages,
+patterns; model-provided public reasoning summaries, server-owned phase messages,
 fixed Tool start/result summaries, final content, durations, turns, progress,
-artifact metadata, and reference arrays have explicit size bounds. Newly
-emitted thinking rows include their fixed summary; legacy v4 rows with an empty
-thinking payload remain replayable and the public frontend derives the same fixed
-summary. Hidden reasoning, raw SDK fields, commands, paths, arguments, outputs,
-exceptions, and raw capability or task identifiers are not protocol fields.
-Render families are registry
+artifact metadata, and reference arrays have explicit size bounds. The Claude SDK
+is configured with `thinking.display = summarized`; the Runner admits only the
+exact SDK `ThinkingBlock` type and extracts only its `thinking` value. That
+complete value is sanitized before it crosses the authenticated callback as one
+internal summary fact. The callback authority, rather than the caller, derives
+an opaque `thinking_id` and creates the ordered `thinking.started` /
+`thinking.delta` / `thinking.completed` sequence with bounded chunks. Sensitive
+fragments are redacted without discarding the remaining public summary. The SDK
+`signature` is never a callback or public field.
+Legacy v4 rows with an empty payload or fixed summary remain replayable, but new
+rows do not synthesize fixed reasoning text. Provider-internal reasoning not
+returned as public summarized thinking, raw SDK fields, commands, paths,
+arguments, outputs, exceptions, and raw capability or task identifiers are not
+protocol fields. Render families are registry
 metadata only in this phase: `text`, `thinking_state`, `agent_progress`,
 `tool_activity`, `subagent_activity`, `artifact`, `policy_result`,
 `public_error`, `cancelled`, and `terminal`.

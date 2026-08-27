@@ -29,11 +29,10 @@ function definedData(values: Record<string, unknown>): Record<string, unknown> |
 
 type AssistantUiContentPart = Exclude<ThreadMessageLike["content"], string>[number];
 
-function publicThinkingText(content: string): string {
-  return content === "Analyzing the request" || content === "Analysis step completed"
-    ? content
-    : "";
-}
+const LEGACY_PUBLIC_THINKING_SUMMARIES = new Set([
+  "Analyzing the request",
+  "Analysis step completed",
+]);
 
 function convertPart(part: MessagePart, index: number): AssistantUiContentPart | null {
   switch (part.type) {
@@ -42,7 +41,11 @@ function convertPart(part: MessagePart, index: number): AssistantUiContentPart |
     case "thinking":
       return {
         type: "reasoning",
-        text: publicThinkingText(part.content),
+        text:
+          part.public_reasoning === true ||
+          LEGACY_PUBLIC_THINKING_SUMMARIES.has(part.content)
+            ? part.content
+            : "Thinking",
         status: part.isStreaming ? { type: "running" } : { type: "complete" },
       };
     case "tool": {

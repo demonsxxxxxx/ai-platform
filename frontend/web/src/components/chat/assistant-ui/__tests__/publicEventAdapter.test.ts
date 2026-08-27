@@ -157,7 +157,7 @@ test("v4 adapter projects real agent progress and rejects forged phase text", ()
   );
 });
 
-test("v4 thinking upgrades legacy empty payloads and tool activity uses public summaries", () => {
+test("v4 thinking preserves model summary, upgrades legacy payloads, and rejects signatures", () => {
   const legacyThinking = adaptPublicRunStreamEventV4(frame("thinking.started"), {
     runId: "run-1",
     streamIncarnation: 2,
@@ -168,10 +168,11 @@ test("v4 thinking upgrades legacy empty payloads and tool activity uses public s
     "message-1",
   );
   assert.ok(projectedLegacyThinking);
-  assert.match(
+  const projectedLegacyThinkingData = JSON.parse(
     projectedLegacyThinking.streamEvent.data,
-    /Analyzing the request/,
-  );
+  ) as Record<string, unknown>;
+  assert.equal(projectedLegacyThinkingData.message, "");
+  assert.deepEqual(projectedLegacyThinkingData.payload, {});
   const thinking = adaptPublicRunStreamEventV4(
     frame("thinking.started", { public_summary: "Analyzing the request" }),
     { runId: "run-1", streamIncarnation: 2 },
@@ -180,6 +181,64 @@ test("v4 thinking upgrades legacy empty payloads and tool activity uses public s
   const projectedThinking = projectV4EventToLegacyHandler(thinking, "message-1");
   assert.ok(projectedThinking);
   assert.match(projectedThinking.streamEvent.data, /Analyzing the request/);
+
+  const reasoning = adaptPublicRunStreamEventV4(
+    frame("thinking.delta", {
+      thinking_id: "thinking-public-1",
+      delta: "Compare the public evidence before answering.",
+    }),
+    { runId: "run-1", streamIncarnation: 2 },
+  );
+  assert.ok(reasoning);
+  const projectedReasoning = projectV4EventToLegacyHandler(
+    reasoning,
+    "message-1",
+  );
+  assert.ok(projectedReasoning);
+  const reasoningData = JSON.parse(projectedReasoning.streamEvent.data) as Record<
+    string,
+    unknown
+  >;
+  assert.equal(
+    reasoningData.message,
+    "Compare the public evidence before answering.",
+  );
+  assert.deepEqual(reasoningData.payload, {
+    thinking_id: "thinking-public-1",
+    delta: "Compare the public evidence before answering.",
+  });
+  assert.equal(
+    adaptPublicRunStreamEventV4(
+      frame("thinking.delta", {
+        thinking_id: "thinking-public-1",
+        delta: "Compare the public evidence before answering.",
+        signature: "private-sdk-signature",
+      }),
+      { runId: "run-1", streamIncarnation: 2 },
+    ),
+    null,
+  );
+
+  assert.equal(
+    adaptPublicRunStreamEventV4(
+      frame("thinking.delta", {
+        thinking_id: "thinking-public-1",
+        delta: "😀".repeat(8_192),
+      }),
+      { runId: "run-1", streamIncarnation: 2 },
+    )?.eventType,
+    "thinking.delta",
+  );
+  assert.equal(
+    adaptPublicRunStreamEventV4(
+      frame("thinking.delta", {
+        thinking_id: "thinking-public-1",
+        delta: "😀".repeat(8_193),
+      }),
+      { runId: "run-1", streamIncarnation: 2 },
+    ),
+    null,
+  );
 
   const tool = adaptPublicRunStreamEventV4(
     frame("tool.started", {

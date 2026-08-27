@@ -55,8 +55,9 @@ const PAYLOAD_KEYS: Record<string, readonly string[]> = {
   "message.started": [],
   "message.delta": ["delta"],
   "message.completed": ["content"],
-  "thinking.started": ["public_summary"],
-  "thinking.completed": ["public_summary"],
+  "thinking.started": ["thinking_id", "public_summary"],
+  "thinking.delta": ["thinking_id", "delta"],
+  "thinking.completed": ["thinking_id", "public_summary"],
   "agent.progress": ["schema_version", "step_id", "phase", "lifecycle", "message"],
   "model.completed": ["duration_ms", "turn_count", "stop_category"],
   "tool.started": ["operation_id", "category", "display_name", "input_summary", "evidence_refs"],
@@ -87,6 +88,7 @@ const PAYLOAD_KEYS: Record<string, readonly string[]> = {
 const REQUIRED_PAYLOAD_KEYS: Record<string, readonly string[]> = {
   "message.delta": ["delta"],
   "message.completed": ["content"],
+  "thinking.delta": ["thinking_id", "delta"],
   "agent.progress": ["schema_version", "step_id", "phase", "lifecycle", "message"],
   "model.completed": ["duration_ms", "turn_count", "stop_category"],
   "tool.started": ["operation_id", "category", "display_name"],
@@ -132,6 +134,21 @@ function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[])
 
 function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
+}
+
+function boundedCodePointString(
+  value: unknown,
+  maximum: number,
+  requireNonEmpty = false,
+): value is string {
+  if (typeof value !== "string") return false;
+  let length = 0;
+  const characters = value[Symbol.iterator]();
+  while (!characters.next().done) {
+    length += 1;
+    if (length > maximum) return false;
+  }
+  return !requireNonEmpty || length > 0;
 }
 
 function safeInteger(value: unknown, minimum = 0, maximum = Number.MAX_SAFE_INTEGER): value is number {
@@ -238,14 +255,14 @@ function isValidTransportCursor(value: unknown, runId: string, incarnation: numb
 }
 
 function isSafeFilename(value: unknown): value is string {
-  if (typeof value !== "string" || value.length === 0 || value.length > 255 || !SAFE_FILENAME_PATTERN.test(value)) return false;
+  if (!boundedCodePointString(value, 255, true) || !SAFE_FILENAME_PATTERN.test(value)) return false;
   return [...value].every((character) => {
     const code = character.charCodeAt(0);
     return code > 0x1f && code !== 0x7f;
   });
 }
 function isPayloadRefKey(key: string): boolean {
-  return ["operation_id", "artifact_id", "decision_id", "subagent_id", "terminal_event_id", "step_id"].includes(key);
+  return ["thinking_id", "operation_id", "artifact_id", "decision_id", "subagent_id", "terminal_event_id", "step_id"].includes(key);
 }
 
 function isNullableSafeRef(value: unknown): boolean {
@@ -284,7 +301,10 @@ function payloadIsValid(eventType: string, payload: unknown, _runId: string, inc
     if (key === "evidence_ref" && !isNullableSafeRef(value)) return false;
     if (key === "detail" && value === null) continue;
     const stringMax = PAYLOAD_STRING_MAX[key];
-    if (stringMax !== undefined && (typeof value !== "string" || value.length > stringMax || (NON_EMPTY_PAYLOAD_STRINGS.has(key) && value.length === 0))) return false;
+    if (
+      stringMax !== undefined &&
+      !boundedCodePointString(value, stringMax, NON_EMPTY_PAYLOAD_STRINGS.has(key))
+    ) return false;
     const numberMax = PAYLOAD_NUMBER_MAX[key];
     if (numberMax !== undefined && !safeInteger(value, 0, numberMax)) return false;
     if (key === "hydrate_required" && value !== true) return false;
@@ -332,7 +352,7 @@ function eventShapeIsValid(value: Record<string, unknown>, eventType: V4EventTyp
   if (isControl) {
     if (value.message_id !== null || value.seq !== null || value.trace_ref !== null || typeof value.replayable !== "boolean") return false;
   } else if (
-    ["message.started", "message.delta", "message.completed", "thinking.started", "thinking.completed", "model.completed", "tool.started", "tool.completed", "tool.failed", "tool.denied", "subagent.started", "subagent.progress", "subagent.completed", "subagent.failed", "subagent.cancelled"].includes(eventType) &&
+    ["message.started", "message.delta", "message.completed", "thinking.started", "thinking.delta", "thinking.completed", "model.completed", "tool.started", "tool.completed", "tool.failed", "tool.denied", "subagent.started", "subagent.progress", "subagent.completed", "subagent.failed", "subagent.cancelled"].includes(eventType) &&
     (!nonEmptyString(value.message_id) || !SAFE_REF_PATTERN.test(value.message_id))
   ) {
     return false;
@@ -410,7 +430,12 @@ export function projectV4EventToLegacyHandler(event: V4PublicEvent, fallbackMess
     causation_event_id: event.causationEventId,
   };
   const messageTarget = fallbackMessageId;
-  const activity = (phase: string, message: string, severity: "info" | "warning" | "error" = "info") => ({
+  const activity = (
+    phase: string,
+    message: string,
+    severity: "info" | "warning" | "error" = "info",
+    activityPayload?: Record<string, unknown>,
+  ) => ({
     event: "run_event" as const,
     data: JSON.stringify({
       ...base,
@@ -420,6 +445,7 @@ export function projectV4EventToLegacyHandler(event: V4PublicEvent, fallbackMess
       status: phase,
       severity,
       message,
+      ...(activityPayload ? { payload: activityPayload } : {}),
     }),
   });
   const publicTool = (status: "started" | "completed" | "failed" | "denied") => ({
@@ -472,9 +498,11 @@ export function projectV4EventToLegacyHandler(event: V4PublicEvent, fallbackMess
     case "message.completed":
       return { streamEvent: { event: "message:chunk", data: JSON.stringify({ ...base, content: payload.content, projection_version: "ai-platform.chat-public-projection.v1", projection_kind: "assistant_final" }) }, messageId: messageTarget };
     case "thinking.started":
-      return { streamEvent: activity("thinking_started", typeof payload.public_summary === "string" ? payload.public_summary : "Analyzing the request", "info"), messageId: messageTarget };
+      return { streamEvent: activity("thinking_started", typeof payload.public_summary === "string" ? payload.public_summary : "", "info", payload), messageId: messageTarget };
+    case "thinking.delta":
+      return { streamEvent: activity("thinking_delta", payload.delta as string, "info", payload), messageId: messageTarget };
     case "thinking.completed":
-      return { streamEvent: activity("thinking_completed", typeof payload.public_summary === "string" ? payload.public_summary : "Analysis step completed", "info"), messageId: messageTarget };
+      return { streamEvent: activity("thinking_completed", typeof payload.public_summary === "string" ? payload.public_summary : "", "info", payload), messageId: messageTarget };
     case "agent.progress":
       return { streamEvent: { event: "run_event", data: JSON.stringify({
         ...base,

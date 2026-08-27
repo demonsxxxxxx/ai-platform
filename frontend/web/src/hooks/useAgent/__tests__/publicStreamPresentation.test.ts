@@ -215,7 +215,44 @@ test("throttles same-step progress and lets terminal updates supersede pending p
   );
 });
 
-test("public Thinking completion closes the preceding started activity", () => {
+test("model reasoning deltas accumulate under one thinking identity and complete", () => {
+  const thinkingId = "thinking:thinking-public-1";
+  let parts = upsertPublicThinkingActivity([], {
+    type: "thinking",
+    content: "",
+    thinking_id: thinkingId,
+    isStreaming: true,
+  });
+  parts = upsertPublicThinkingActivity(parts, {
+    type: "thinking",
+    content: "Compare the public evidence ",
+    thinking_id: thinkingId,
+    isStreaming: true,
+  });
+  parts = upsertPublicThinkingActivity(parts, {
+    type: "thinking",
+    content: "before answering.",
+    thinking_id: thinkingId,
+    isStreaming: true,
+  });
+  parts = upsertPublicThinkingActivity(parts, {
+    type: "thinking",
+    content: "",
+    thinking_id: thinkingId,
+    isStreaming: false,
+  });
+
+  assert.deepEqual(parts, [
+    {
+      type: "thinking",
+      content: "Compare the public evidence before answering.",
+      thinking_id: thinkingId,
+      isStreaming: false,
+    },
+  ]);
+});
+
+test("legacy public Thinking completion still closes the preceding activity", () => {
   const started = {
     type: "thinking" as const,
     content: "Analyzing the request",
