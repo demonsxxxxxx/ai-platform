@@ -2117,7 +2117,7 @@ def _dynamic_import_scope(
     parents: dict[ast.AST, ast.AST],
 ) -> ast.AST | None:
     original = node
-    scope = _enclosing_import_scope(node, parents)
+    scope = _enclosing_import_scope(node, parents, include_self=False)
     while scope is not None:
         child = node
         while parents.get(child) is not scope:
@@ -2252,11 +2252,7 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
                     if declaration == "global":
                         scope = tree
                     else:
-                        scope = _enclosing_import_scope(
-                            scope,
-                            parents,
-                            include_self=False,
-                        )
+                        scope = _dynamic_import_scope(scope, parents)
                     continue
                 if events:
                     if scope is current_scope:
@@ -2264,11 +2260,7 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
                         if not prior:
                             if isinstance(scope, function_scopes):
                                 return None
-                            scope = _enclosing_import_scope(
-                                scope,
-                                parents,
-                                include_self=False,
-                            )
+                            scope = _dynamic_import_scope(scope, parents)
                             continue
                         position = max(event[:2] for event in prior)
                         identities = {
@@ -2288,7 +2280,7 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
                     return next(iter(identities)) if len(identities) == 1 else None
             if isinstance(scope, function_scopes):
                 inside_function = True
-            scope = _enclosing_import_scope(scope, parents, include_self=False)
+            scope = _dynamic_import_scope(scope, parents)
         return "__import__" if name == "__import__" else None
 
     edges: list[_ImportEdge] = []
