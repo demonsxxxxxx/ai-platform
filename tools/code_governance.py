@@ -180,7 +180,7 @@ class Violation:
 
 @dataclass(frozen=True)
 class Evaluation:
-    """Stable additive-v1 result returned across the code-governance seam."""
+    """Stable v2 result returned by code-governance evaluation."""
 
     base_ref: str
     head_ref: str
