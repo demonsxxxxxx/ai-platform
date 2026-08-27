@@ -154,6 +154,7 @@ jobs:
               tests/test_chat_selected_skill_routing.py
               tests/test_claude_agent_events.py
               tests/test_executor_reconciler.py
+              tests/test_file_upload_security.py
               tests/test_issue_511_session_context_gen2.py
               tests/test_platform_multi_agent_retirement.py
               tests/test_routes.py
