@@ -20,10 +20,12 @@ from tools.ci_image_scope import (
         ("backend", "app/main.py"),
         ("backend", "tools/release.py"),
         ("backend", "docs/release-evidence/schema.json"),
+        ("backend", ".github/workflows/ai-platform-packaging-publish.yml"),
         ("frontend", "frontend/web/src/main.tsx"),
         ("frontend", "frontend/web/Dockerfile"),
         ("frontend", "tools/frontend_release_traceability.py"),
         ("frontend", "tests/test_frontend_linux_contracts.py"),
+        ("frontend", ".github/workflows/ai-platform-packaging-publish.yml"),
     ],
 )
 def test_image_inputs_affected_for_packaged_inputs(role: str, path: str) -> None:
