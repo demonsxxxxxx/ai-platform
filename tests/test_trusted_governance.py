@@ -120,7 +120,7 @@ jobs:
     _commit(root, f"{mode} backend")
 
 
-def test_repository_v2_contract_accepts_the_current_legacy_backend(
+def test_repository_v2_contract_accepts_the_current_preflight_backend(
     tmp_path: Path,
 ) -> None:
     root = _copy_contract_root(tmp_path, "current")
@@ -221,6 +221,7 @@ def test_v2_contract_rejects_deleted_candidate_workflow(tmp_path: Path) -> None:
 def test_backend_transition_is_monotonic(tmp_path: Path) -> None:
     legacy = _copy_contract_root(tmp_path, "legacy")
     preflight = _copy_contract_root(tmp_path, "preflight")
+    _write_backend(legacy, "legacy")
     _write_backend(preflight, "preflight")
 
     validate_transition(
@@ -256,8 +257,8 @@ def test_backend_required_dependencies_remain_fail_closed(tmp_path: Path) -> Non
     head = _copy_contract_root(tmp_path, "head")
     _replace(
         head / BACKEND_WORKFLOW_PATH,
-        "needs: [backend-validation, backend-tests, agent-skill-contracts, backend-image]",
-        "needs: [backend-validation]",
+        "needs: [backend-preflight, backend-tests, agent-skill-contracts, backend-image]",
+        "needs: [backend-preflight]",
     )
     _commit(head)
 
