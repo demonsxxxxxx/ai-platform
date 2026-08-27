@@ -192,7 +192,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      IMAGE_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+      IMAGE_BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.sha }}
       IMAGE_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
       IMAGE_SOURCE_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
     steps:
@@ -214,14 +214,30 @@ jobs:
             --head-ref "$IMAGE_SOURCE_COMMIT" \
             >> "$GITHUB_OUTPUT"
 
-      - name: Report frontend image validation not affected
+      - name: Report frontend image build disposition
         if: steps.image-scope.outputs.build != 'true'
+        env:
+          IMAGE_DISPOSITION: ${{ steps.image-scope.outputs.disposition }}
         run: |
           set -euo pipefail
           [[ "$IMAGE_BASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
           [[ "$IMAGE_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
-          printf 'frontend_image_validation=not_affected reason=packaged_inputs_unchanged base_commit=%s head_commit=%s\n' \
-            "$IMAGE_BASE_COMMIT" "$IMAGE_SOURCE_COMMIT"
+          case "$IMAGE_DISPOSITION" in
+            not_affected)
+              test "$GITHUB_EVENT_NAME" = "pull_request"
+              printf 'frontend_image_validation=not_affected base_commit=%s head_commit=%s\n' \
+                "$IMAGE_BASE_COMMIT" "$IMAGE_SOURCE_COMMIT"
+              ;;
+            packaging_owned)
+              test "$GITHUB_EVENT_NAME" != "pull_request"
+              printf 'frontend_image_build=delegated owner=ai-platform-packaging-publish source_commit=%s\n' \
+                "$IMAGE_SOURCE_COMMIT"
+              ;;
+            *)
+              printf 'frontend_image_build=failed reason=unexpected_disposition\n' >&2
+              exit 1
+              ;;
+          esac
 
       - name: Set up Python for Linux contracts
         if: steps.image-scope.outputs.build == 'true'
