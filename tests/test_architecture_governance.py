@@ -874,6 +874,7 @@ def test_mixed_public_and_internal_import_does_not_hide_internal_edge(
         'import importlib\nvalue = importlib.import_module("app.runs.domain.secret")\n',
         'import importlib\nvalue = importlib.import_module(name="app.runs.domain.secret")\n',
         'import importlib as loader\nvalue = loader.import_module("app.runs.domain.secret")\n',
+        'import importlib.util\nvalue = importlib.import_module("app.runs.domain.secret")\n',
         'import importlib\ndef invoke():\n    return importlib.import_module("app.runs.domain.secret")\n',
         'from importlib import import_module\nvalue = import_module("app.runs.domain.secret")\n',
         'from importlib import import_module\ndef invoke():\n    return import_module("app.runs.domain.secret")\n',
@@ -884,6 +885,7 @@ def test_mixed_public_and_internal_import_does_not_hide_internal_edge(
         'value = __import__("app.runs.domain.secret")\n',
         'value = __import__(name="app.runs.domain.secret")\n',
         'value = __import__("app.runs.domain.secret", level=0)\n',
+        'value = __import__("app.runs.domain.secret", level=False)\n',
         'value = __import__("app.runs.domain.secret")\ndef __import__(name):\n    return name\n',
         'def invoke():\n    global importlib\n    import importlib\n    return importlib.import_module("app.runs.domain.secret")\n',
         'def outer():\n    importlib = object()\n    def invoke():\n        nonlocal importlib\n        import importlib\n        return importlib.import_module("app.runs.domain.secret")\n',
@@ -896,6 +898,11 @@ def test_mixed_public_and_internal_import_does_not_hide_internal_edge(
         'import importlib\nvalues = [item for importlib in (lambda: importlib.import_module("app.runs.domain.secret"))()]\n',
         'import importlib\nimportlib: object\nvalue = importlib.import_module("app.runs.domain.secret")\n',
         'import importlib\nclass Holder:\n    importlib: object\n    value = importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\nimportlib = importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\nvalue = (importlib := importlib.import_module("app.runs.domain.secret"))\n',
+        'import importlib\nimportlib: object = importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\nimportlib += importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\nfor importlib in importlib.import_module("app.runs.domain.secret"):\n    pass\n',
     ],
 )
 def test_literal_dynamic_imports_use_existing_dependency_rules(
@@ -947,6 +954,7 @@ def test_shadowed_dynamic_import_names_do_not_create_edges(
         'import importlib\nvalue = importlib.import_module(".domain.policy", package="app.runs")\n',
         'import importlib\npackage = "app.runs"\nvalue = importlib.import_module(".domain.policy", package=package)\n',
         'value = __import__("domain.policy", globals(), locals(), [], 1)\n',
+        'value = __import__("app.runs.domain.policy", level=True)\n',
     ],
 )
 def test_unresolved_relative_dynamic_imports_do_not_create_false_edges(

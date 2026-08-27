@@ -2175,10 +2175,19 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
         name: str | None,
         identity: str,
         node: ast.AST,
+        *,
+        after: ast.AST | None = None,
     ) -> None:
         if scope is not None and name:
+            position = after or node
+            line_attribute = "end_lineno" if after is not None else "lineno"
+            column_attribute = "end_col_offset" if after is not None else "col_offset"
             bindings.setdefault(scope, {}).setdefault(name, []).append(
-                (getattr(node, "lineno", 0), getattr(node, "col_offset", 0), identity)
+                (
+                    getattr(position, line_attribute, 0),
+                    getattr(position, column_attribute, 0),
+                    identity,
+                )
             )
 
     for node in nodes:
@@ -2189,7 +2198,10 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
                 bind(
                     scope,
                     name,
-                    "importlib" if alias.name == "importlib" else "other",
+                    "importlib"
+                    if alias.name == "importlib"
+                    or (alias.asname is None and alias.name.startswith("importlib."))
+                    else "other",
                     node,
                 )
         elif isinstance(node, ast.ImportFrom):
@@ -2213,11 +2225,19 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
             ):
                 continue
             binding_scope = scope
+            assignment = parent
+            while isinstance(assignment, (ast.List, ast.Starred, ast.Tuple)):
+                assignment = parents.get(assignment)
             if isinstance(parent, ast.NamedExpr):
                 binding_scope = _dynamic_import_scope(node, parents)
                 while isinstance(binding_scope, comprehension_scopes):
                     binding_scope = _dynamic_import_scope(binding_scope, parents)
-            bind(binding_scope, node.id, "other", node)
+            after = None
+            if isinstance(assignment, (ast.AnnAssign, ast.Assign, ast.AugAssign, ast.NamedExpr)):
+                after = assignment.value
+            elif isinstance(assignment, (ast.AsyncFor, ast.For)):
+                after = assignment.iter
+            bind(binding_scope, node.id, "other", node, after=after)
         elif isinstance(node, ast.arg):
             bind(scope, node.arg, "other", node)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -2324,7 +2344,7 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
             level_argument = _literal_call_argument(node, 4, "level")
             if level_argument is not None and not (
                 isinstance(level_argument, ast.Constant)
-                and type(level_argument.value) is int
+                and isinstance(level_argument.value, int)
                 and level_argument.value == 0
             ):
                 continue
