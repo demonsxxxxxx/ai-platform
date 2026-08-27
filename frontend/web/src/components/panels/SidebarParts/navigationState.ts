@@ -9,7 +9,8 @@ export type WorkbenchNavItem =
   | "agentBuilder"
   | "skills"
   | "mcp"
-  | "models";
+  | "models"
+  | "runs";
 
 const routeToNavItem: Array<[RegExp, WorkbenchNavItem]> = [
   [/^\/apps(?:\/|$)/, "apps"],
@@ -18,6 +19,7 @@ const routeToNavItem: Array<[RegExp, WorkbenchNavItem]> = [
   [/^\/skills(?:\/|$)/, "skills"],
   [/^\/mcp(?:\/|$)/, "mcp"],
   [/^\/models(?:\/|$)/, "models"],
+  [/^\/runs(?:\/|$)/, "runs"],
 ];
 
 const navItemToPath: Record<WorkbenchNavItem, string> = {
@@ -27,6 +29,7 @@ const navItemToPath: Record<WorkbenchNavItem, string> = {
   skills: "/skills",
   mcp: "/mcp",
   models: "/models",
+  runs: "/runs",
 };
 
 /** Maps authenticated workbench pathnames to their first-level sidebar item. */

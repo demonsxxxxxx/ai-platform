@@ -635,6 +635,14 @@ test("model catalog route is a governed public-projection workbench page", () =>
     join(root, "src/components/panels/ModelCatalogPanel.tsx"),
     "utf8",
   );
+  const modelAdminControl = readFileSync(
+    join(root, "src/components/panels/ModelAdminControl.tsx"),
+    "utf8",
+  );
+  const modelAdminApi = readFileSync(
+    join(root, "src/services/api/modelAdmin.ts"),
+    "utf8",
+  );
   const zhLocale = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
 
   assert.match(tabs, /models:\s*ModelCatalogPanel/);
@@ -643,6 +651,17 @@ test("model catalog route is a governed public-projection workbench page", () =>
   assert.match(modelCatalog, /deriveProviderProjections/);
   assert.match(modelCatalog, /WorkbenchStateSurface/);
   assert.match(modelCatalog, /data-model-admin-governance/);
+  assert.match(modelCatalog, /canAdminModels/);
+  assert.match(
+    modelCatalog,
+    /if \(!state && loadError\)[\s\S]*data-frontend-governance-state="degraded"[\s\S]*<ModelAdminControl canManage=\{canAdminModels\} \/>/,
+  );
+  assert.match(modelAdminControl, /type="password"/);
+  assert.match(modelAdminControl, /connection\.configured/);
+  assert.match(modelAdminApi, /\/api\/ai\/admin\/models\/connection/);
+  assert.match(modelAdminApi, /\/api\/ai\/admin\/models\/sync/);
+  assert.match(modelAdminApi, /encodeURIComponent\(modelId\)/);
+  assert.doesNotMatch(modelAdminApi, /apiKeyConfigured:\s*string/);
   assert.match(modelCatalog, /className=\{workbenchSurface\.page\}/);
   assert.doesNotMatch(modelCatalog, /className="[^"]*bg-\[var\(--theme-workbench-canvas\)\][^"]*"/);
   assert.ok(JSON.parse(zhLocale).models);

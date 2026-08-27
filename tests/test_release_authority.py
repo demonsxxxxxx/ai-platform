@@ -2,9 +2,11 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -613,11 +615,12 @@ def test_env_example_inventory_covers_exact_base_and_opensandbox_required_keys()
     )
     reviewed_colocation_required = {
         "AI_PLATFORM_FRONTEND_IMAGE",
-        "AI_PLATFORM_MODEL_UPSTREAM",
         "AI_PLATFORM_SOURCE_COMMIT",
         "CLAUDE_AGENT_ALLOWED_TOOLS",
         "CLAUDE_AGENT_DISALLOWED_TOOLS",
         "CLAUDE_AGENT_PERMISSION_MODE",
+        "MODEL_CONNECTION_ENCRYPTION_KEY",
+        "MODEL_PROXY_INTERNAL_TOKEN",
         "OPENSANDBOX_API_KEY",
         "OPENSANDBOX_DOMAIN",
         "OPENSANDBOX_EXECUTOR_IMAGE",
@@ -794,10 +797,10 @@ def _prepare_managed_target_checkout(
     managed_root = tmp_path / "m"
     release_root = managed_root / "releases"
     release_root.mkdir(parents=True)
-    staging = release_root / "staging"
-    commit = _init_repo(staging)
+    source = tmp_path / "source"
+    commit = _init_repo(source)
     checkout = release_root / commit
-    staging.rename(checkout)
+    shutil.copytree(source, checkout)
     env_file = managed_root / "deploy" / "ai-platform" / ".env"
     env_file.parent.mkdir(parents=True)
     env_file.write_text("PRIVATE_VALUE=must-not-be-read\n", encoding="utf-8")
@@ -1160,6 +1163,25 @@ def test_managed_env_can_return_the_exact_authority_validated_identity(
     assert resolved == canonical_env
     assert sealed == canonical_env.stat(follow_symlinks=False)
     assert authority_metadata == [sealed]
+
+
+def test_managed_target_checkout_fixture_does_not_rename_live_git_tree(
+    monkeypatch,
+    tmp_path,
+):
+    def forbid_rename(*_args, **_kwargs):
+        raise AssertionError("managed checkout fixture must not rename a live Git tree")
+
+    monkeypatch.setattr(Path, "rename", forbid_rename)
+
+    _, release_root, checkout, _, commit = _prepare_managed_target_checkout(
+        monkeypatch,
+        tmp_path,
+    )
+
+    assert checkout == release_root / commit
+    assert (checkout / ".git").is_dir()
+    assert (checkout / "tracked.txt").read_text(encoding="utf-8") == "baseline\n"
 
 
 def test_managed_target_checkout_accepts_safe_exact_git_tree(monkeypatch, tmp_path):
@@ -4897,12 +4919,22 @@ def test_run_canonical_timeout_cleans_process_before_classification(monkeypatch,
     pid_file = tmp_path / "build-progress-timeout.pid"
     observed: list[tuple[str, int | None]] = []
     original_classify = release_authority._BoundedBuildProgressCapture.classify
+    original_communicate = release_authority._communicate_with_bounded_build_progress
     child_code = (
         "import os, pathlib, sys, time; "
-        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()), encoding='utf-8'); "
         "sys.stdout.buffer.write(b'#6 [runtime 3/8] RUN pip install -r /private/requirements\\n'); "
-        "sys.stdout.buffer.write(b'#6 1.000 downloading 1.0MB / 8.0MB\\n'); sys.stdout.flush(); time.sleep(60)"
+        "sys.stdout.buffer.write(b'#6 1.000 downloading 1.0MB / 8.0MB\\n'); sys.stdout.flush(); "
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()), encoding='utf-8'); "
+        "time.sleep(60)"
     )
+
+    def communicate_after_child_ready(process, **kwargs):
+        deadline = time.monotonic() + 2
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if not pid_file.exists():
+            pytest.fail("controlled child did not start before timeout verification")
+        return original_communicate(process, **kwargs)
 
     def classify_after_cleanup(capture):
         pid = int(pid_file.read_text(encoding="utf-8"))
@@ -4910,6 +4942,11 @@ def test_run_canonical_timeout_cleans_process_before_classification(monkeypatch,
         assert _wait_for_owned_test_process_exit(pid)
         return original_classify(capture)
 
+    monkeypatch.setattr(
+        release_authority,
+        "_communicate_with_bounded_build_progress",
+        communicate_after_child_ready,
+    )
     monkeypatch.setattr(
         release_authority._BoundedBuildProgressCapture,
         "classify",
@@ -5203,6 +5240,38 @@ def _wait_for_owned_test_process_exit(pid: int, *, timeout_seconds: float = 2.0)
     return False
 
 
+def _run_timeout_after_ready_path(
+    command: list[str],
+    *,
+    ready_path: Path,
+    timeout_seconds: float,
+    ready_timeout_seconds: float,
+) -> tuple[subprocess.TimeoutExpired, float]:
+    outcome: list[subprocess.CompletedProcess | BaseException] = []
+
+    def invoke() -> None:
+        try:
+            outcome.append(release_authority._run(command, timeout=timeout_seconds))
+        except BaseException as error:
+            outcome.append(error)
+
+    started = time.monotonic()
+    runner = threading.Thread(target=invoke)
+    runner.start()
+    ready_deadline = time.monotonic() + ready_timeout_seconds
+    while not ready_path.is_file() and time.monotonic() < ready_deadline:
+        time.sleep(0.01)
+    ready_observed_while_running = ready_path.is_file() and runner.is_alive()
+    runner.join(timeout_seconds + 4.0)
+    elapsed = time.monotonic() - started
+
+    assert ready_observed_while_running
+    assert not runner.is_alive()
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], subprocess.TimeoutExpired)
+    return outcome[0], elapsed
+
+
 def test_run_timeout_terminates_owned_descendant_and_bounds_pipe_wait(tmp_path):
     pid_file = tmp_path / "owned-descendant.pid"
     child_code = "import time; time.sleep(60)"
@@ -5212,18 +5281,17 @@ def test_run_timeout_terminates_owned_descendant_and_bounds_pipe_wait(tmp_path):
         f"pathlib.Path({str(pid_file)!r}).write_text(str(child.pid), encoding='utf-8'); "
         "time.sleep(60)"
     )
-    started = time.monotonic()
     child_pid: int | None = None
     try:
-        with pytest.raises(subprocess.TimeoutExpired) as exc_info:
-            release_authority._run(
-                [sys.executable, "-c", parent_code],
-                timeout=0.25,
-            )
-        elapsed = time.monotonic() - started
-        assert elapsed < 3.0
-        assert exc_info.value.output is None
-        assert exc_info.value.stderr is None
+        timeout_error, elapsed = _run_timeout_after_ready_path(
+            [sys.executable, "-c", parent_code],
+            ready_path=pid_file,
+            timeout_seconds=3.0,
+            ready_timeout_seconds=2.0,
+        )
+        assert elapsed < 7.0
+        assert timeout_error.output is None
+        assert timeout_error.stderr is None
         child_pid = int(pid_file.read_text(encoding="utf-8"))
         assert _wait_for_owned_test_process_exit(child_pid)
     finally:
@@ -5264,7 +5332,6 @@ def test_run_timeout_windows_job_kills_pipe_holder_after_direct_parent_exit(monk
         f"pathlib.Path({str(child_pid_file)!r}).write_text(str(child.pid), encoding='utf-8'); "
         f"pathlib.Path({str(parent_done_file)!r}).write_text('done', encoding='utf-8')"
     )
-    started = time.monotonic()
     child_pid: int | None = None
     parent_returncodes: list[int | None] = []
     original_terminate = release_authority._terminate_owned_process_tree
@@ -5275,16 +5342,16 @@ def test_run_timeout_windows_job_kills_pipe_holder_after_direct_parent_exit(monk
 
     monkeypatch.setattr(release_authority, "_terminate_owned_process_tree", observe_parent_exit)
     try:
-        with pytest.raises(subprocess.TimeoutExpired):
-            release_authority._run(
-                [sys.executable, "-c", parent_code],
-                timeout=0.5,
-            )
-        elapsed = time.monotonic() - started
+        _, elapsed = _run_timeout_after_ready_path(
+            [sys.executable, "-c", parent_code],
+            ready_path=parent_done_file,
+            timeout_seconds=3.0,
+            ready_timeout_seconds=2.0,
+        )
         assert parent_done_file.read_text(encoding="utf-8") == "done"
         parent_pid = int(parent_pid_file.read_text(encoding="utf-8"))
         child_pid = int(child_pid_file.read_text(encoding="utf-8"))
-        assert elapsed < 3.0
+        assert elapsed < 7.0
         assert parent_returncodes[0] == 0
         assert _wait_for_owned_test_process_exit(parent_pid)
         assert _wait_for_owned_test_process_exit(child_pid)

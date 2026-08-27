@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -17,6 +18,8 @@ _SDK_INTERNAL_CONTEXT_TOOLS = (
     "search_memory",
 )
 _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX = "mcp__ai-platform-context__"
+_SKILL_INPUT_MAX_BYTES = 64 * 1024
+_SKILL_INPUT_MAX_DEPTH = 16
 _SDK_INTERNAL_CONTEXT_PARAMETER_KEYS = {
     "read_session_messages": ("limit", "offset", "max_tokens"),
     "read_run_artifact": ("artifact_id", "max_bytes"),
@@ -221,49 +224,16 @@ def internal_context_tool_policy_subjects(tool_names: object) -> list[dict[str, 
     return subjects
 
 
-def _normalized_key(value: object) -> str:
-    return "".join(ch for ch in str(value) if ch.isalnum()).lower()
-
-
-def _append_skill_candidate(candidates: list[str], value: object) -> None:
-    if isinstance(value, str):
-        candidate = value.strip()
-        if candidate:
-            candidates.append(candidate)
-        return
-    if isinstance(value, dict):
-        for key, item in value.items():
-            normalized = _normalized_key(key)
-            if normalized in {
-                "skill",
-                "skillid",
-                "skillname",
-                "name",
-                "id",
-                "selectedskill",
-                "selectedskillid",
-                "selectedskillname",
-            }:
-                _append_skill_candidate(candidates, item)
-        return
-    if isinstance(value, list):
-        for item in value:
-            _append_skill_candidate(candidates, item)
-
-
 def _extract_skill_names_from_tool_input(
     tool_input: Any,
     allowed_skill_names: set[str],
 ) -> list[str]:
-    candidates: list[str] = []
-    _append_skill_candidate(candidates, tool_input)
-    names: list[str] = []
-    for candidate in candidates:
-        if candidate not in allowed_skill_names:
-            continue
-        if candidate not in names:
-            names.append(candidate)
-    return names
+    if not isinstance(tool_input, dict):
+        return []
+    skill_name = tool_input.get("skill")
+    if not isinstance(skill_name, str) or skill_name not in allowed_skill_names:
+        return []
+    return [skill_name]
 
 
 def _authorized_parameter_keys(
@@ -298,11 +268,80 @@ def _delegates_external_mcp_parameters(
     )
 
 
+def _skill_input_is_bounded_json(tool_input: object) -> bool:
+    if not isinstance(tool_input, dict) or any(
+        not isinstance(key, str) for key in tool_input
+    ):
+        return False
+    stack: list[tuple[object, int]] = [(tool_input, 1)]
+    seen_containers: set[int] = set()
+    while stack:
+        value, depth = stack.pop()
+        if depth > _SKILL_INPUT_MAX_DEPTH:
+            return False
+        if isinstance(value, dict):
+            container_id = id(value)
+            if container_id in seen_containers:
+                return False
+            seen_containers.add(container_id)
+            if any(not isinstance(key, str) for key in value):
+                return False
+            stack.extend((item, depth + 1) for item in value.values())
+        elif isinstance(value, list):
+            container_id = id(value)
+            if container_id in seen_containers:
+                return False
+            seen_containers.add(container_id)
+            stack.extend((item, depth + 1) for item in value)
+        elif not isinstance(value, (str, int, float, bool, type(None))):
+            return False
+    try:
+        serialized = json.dumps(
+            tool_input,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+        serialized_bytes = serialized.encode("utf-8")
+    except (TypeError, ValueError):
+        return False
+    return len(serialized_bytes) <= _SKILL_INPUT_MAX_BYTES
+
+
+def _skill_parameters_match_subject(
+    subject: dict[str, Any],
+    tool_input: object,
+) -> bool:
+    if not _skill_input_is_bounded_json(tool_input):
+        return False
+    assert isinstance(tool_input, dict)
+    skill_name = tool_input.get("skill")
+    if (
+        not isinstance(skill_name, str)
+        or not skill_name
+        or skill_name != skill_name.strip()
+    ):
+        return False
+    allowed_skill_names = subject.get("allowed_skill_names")
+    identity_allowed = (
+        isinstance(allowed_skill_names, list)
+        and all(isinstance(item, str) and item for item in allowed_skill_names)
+        and skill_name in allowed_skill_names
+    )
+    expected_objects = subject.get("object_constraints")
+    return identity_allowed and (
+        not isinstance(expected_objects, dict)
+        or not any(tool_input.get(key) != value for key, value in expected_objects.items())
+    )
+
+
 def _parameters_match_subject(
     subject: dict[str, Any],
     tool_name: str,
     tool_input: object,
 ) -> bool:
+    if tool_name == "Skill":
+        return _skill_parameters_match_subject(subject, tool_input)
     if not isinstance(tool_input, dict):
         return False
     schema = subject.get("mcp_tool_schema")
@@ -344,13 +383,6 @@ def _parameters_match_subject(
         or not tool_input["command"].strip()
     ):
         return False
-    if tool_name == "Skill":
-        allowed_skill_names = subject.get("allowed_skill_names")
-        requested = _extract_skill_names_from_tool_input(
-            tool_input, set(allowed_skill_names or [])
-        )
-        if not requested:
-            return False
     expected_objects = subject.get("object_constraints")
     return not isinstance(expected_objects, dict) or not any(
         tool_input.get(key) != value for key, value in expected_objects.items()

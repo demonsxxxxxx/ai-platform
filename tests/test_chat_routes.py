@@ -4,6 +4,7 @@ import hashlib
 import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -14,6 +15,7 @@ from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.capability_distribution import CapabilityAuthorizationDenial
 from app.main import create_app
+from app.execution.api import RunModelSelection
 from app.models import (
     ChatSessionRequest,
     ChatStreamRequest,
@@ -25,7 +27,7 @@ from app.queue_payload_validation import queue_payload_invalid_detail
 from app.repositories import RepositoryConflictError
 from app.runs.api import RunTerminalizationProgress
 from app.routes.chat import (
-    _admit_chat_submission,
+    _admit_chat_submission as _route_admit_chat_submission,
     _audit_capability_denial,
     _canonical_pre_persistence_rejection_fingerprint,
     _chat_submission_http_error,
@@ -33,11 +35,11 @@ from app.routes.chat import (
     _preledger_recovery_fingerprint,
     _submission_code,
     _validate_queue_payload_for_enqueue,
-    chat_stream,
+    chat_stream as _route_chat_stream,
     create_chat_session,
     get_chat_submission,
     list_messages,
-    retry_chat_submission_admission,
+    retry_chat_submission_admission as _route_retry_chat_submission_admission,
 )
 from app.settings import Settings
 
@@ -47,9 +49,68 @@ _ORIGINAL_GET_LATEST_AUTHORIZED_SESSION_RUN_INPUT = (
 )
 
 
+class _NoOpPendingAdmissions:
+    async def prepare_pending_authority_in_transaction(
+        self, _conn, *, tenant_id, run_id, attempt_id
+    ):
+        del tenant_id, run_id, attempt_id
+        return object()
+
+
+class _NoOpTerminalEventPersistence:
+    async def append_terminal_row(self, _conn, *, tenant_id, run_id):
+        del tenant_id, run_id
+        return object()
+
+
+_TEST_V4_CAPABILITIES = SimpleNamespace(
+    pending_admissions=_NoOpPendingAdmissions(),
+    event_persistence=_NoOpTerminalEventPersistence(),
+)
+_TEST_STREAM_REQUEST = SimpleNamespace(
+    app=SimpleNamespace(
+        state=SimpleNamespace(
+            run_stream_runtime=SimpleNamespace(
+                worker_capabilities=_TEST_V4_CAPABILITIES,
+            )
+        )
+    )
+)
+
+
+async def _admit_chat_submission(*args, **kwargs):
+    kwargs.setdefault("v4_capabilities", _TEST_V4_CAPABILITIES)
+    return await _route_admit_chat_submission(*args, **kwargs)
+
+
+async def chat_stream(*args, **kwargs):
+    kwargs.setdefault("http_request", _TEST_STREAM_REQUEST)
+    return await _route_chat_stream(*args, **kwargs)
+
+
+async def retry_chat_submission_admission(*args, **kwargs):
+    kwargs.setdefault("request", _TEST_STREAM_REQUEST)
+    return await _route_retry_chat_submission_admission(*args, **kwargs)
+
+
 @asynccontextmanager
 async def fake_transaction():
     yield object()
+
+
+@pytest.fixture(autouse=True)
+def legacy_model_control_plane_stub(monkeypatch):
+    async def no_managed_model(_conn, **_kwargs):
+        return None
+
+    async def no_model_binding(_conn, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.execution.infrastructure.model_management.resolve_run_model",
+        no_managed_model,
+    )
+    monkeypatch.setattr("app.routes.chat.bind_run_model", no_model_binding)
 
 
 @pytest.fixture
@@ -59,6 +120,17 @@ def chat_submission_client(monkeypatch):
     monkeypatch.setattr(
         "app.auth.get_settings",
         lambda: Settings(frontend_poc_auth_enabled=True),
+    )
+    monkeypatch.setattr(
+        "app.main.build_run_stream_runtime",
+        lambda _transaction: SimpleNamespace(
+            worker_capabilities=_TEST_V4_CAPABILITIES,
+            aclose=AsyncMock(),
+        ),
+    )
+    monkeypatch.setattr(
+        "app.main.build_run_cancellation_use_case",
+        object,
     )
     with TestClient(create_app(), raise_server_exceptions=False) as client:
         yield client
@@ -1066,8 +1138,9 @@ async def test_retry_admission_preserves_existing_submission_admission(monkeypat
             "outcome_json": _pending_submission_row()["outcome_json"],
         }, False
 
-    async def admit(*, principal: AuthPrincipal, submission_id: str):
+    async def admit(*, principal: AuthPrincipal, submission_id: str, v4_capabilities):
         assert principal.user_id == "user-a"
+        assert v4_capabilities is _TEST_V4_CAPABILITIES
         admitted.append(submission_id)
         return ChatSubmissionResponse(
             submission_id=submission_id,
@@ -1601,6 +1674,29 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
     async def finalize(conn, **kwargs):
         conn.pending.append(("submission", kwargs["state"]))
 
+    class PendingAdmissions:
+        async def prepare_pending_authority_in_transaction(
+            self, conn, *, tenant_id, run_id, attempt_id
+        ):
+            assert (tenant_id, run_id, attempt_id) == (
+                "tenant-a",
+                "run-durable",
+                "enqueue_failure_run-durable",
+            )
+            conn.pending.append(("authority", run_id))
+            return object()
+
+    class EventPersistence:
+        async def append_terminal_row(self, conn, *, tenant_id, run_id):
+            assert (tenant_id, run_id) == ("tenant-a", "run-durable")
+            conn.pending.append(("terminal_row", run_id))
+            return "row-durable"
+
+    capabilities = SimpleNamespace(
+        pending_admissions=PendingAdmissions(),
+        event_persistence=EventPersistence(),
+    )
+
     monkeypatch.setattr("app.routes.chat.transaction", transaction_with_rollback_tracking)
     monkeypatch.setattr(repository_module, "get_chat_submission", get_submission, raising=False)
     monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
@@ -1614,13 +1710,27 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
         await _admit_chat_submission(
             principal=principal(),
             submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+            v4_capabilities=capabilities,
         )
 
     assert exc_info.value.status_code == 503
-    assert committed == [("run", "run-durable"), ("submission", "enqueue_failed")]
+    assert committed == [
+        ("authority", "run-durable"),
+        ("run", "run-durable"),
+        ("terminal_row", "run-durable"),
+        ("submission", "enqueue_failed"),
+    ]
     assert transaction_outcomes == [
         ("commit", []),
-        ("commit", [("run", "run-durable"), ("submission", "enqueue_failed")]),
+        (
+            "commit",
+            [
+                ("authority", "run-durable"),
+                ("run", "run-durable"),
+                ("terminal_row", "run-durable"),
+                ("submission", "enqueue_failed"),
+            ],
+        ),
     ]
 
 
@@ -2216,9 +2326,13 @@ async def test_list_messages_returns_stable_bounded_cursor(monkeypatch):
 async def test_chat_stream_capability_distribution_creates_run_with_auth_snapshot(monkeypatch):
     calls = []
 
-    def fake_resolve_model_selection(model_id, _settings, **kwargs):
-        assert model_id == "deepseek-v4-pro"
-        return {"id": model_id, "value": model_id}
+    async def fake_resolve_chat_model_selection(_conn, *, selection):
+        assert selection == {"id": "deepseek-v4-pro"}
+        return RunModelSelection(
+            model_id="deepseek-v4-pro",
+            model_value="deepseek-v4-pro",
+            connection_revision=None,
+        )
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         return {
@@ -2311,8 +2425,8 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.chat.resolve_model_selection",
-        fake_resolve_model_selection,
+        "app.routes.chat.resolve_chat_model_selection",
+        fake_resolve_chat_model_selection,
     )
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr(
@@ -2724,6 +2838,14 @@ async def test_chat_stream_rejects_unavailable_model_id_before_side_effects(monk
         calls.append((args, kwargs))
         raise AssertionError("invalid model_id must be rejected before side effects")
 
+    async def reject_model(*_args, **_kwargs):
+        raise ValueError("model_id_not_available")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.execution.infrastructure.model_management.resolve_run_model",
+        reject_model,
+    )
     monkeypatch.setattr("app.routes.chat.repositories.create_session", fail_side_effect)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_side_effect)
     monkeypatch.setattr("app.routes.chat.repositories.append_message", fail_side_effect)
@@ -2794,14 +2916,15 @@ def test_chat_stream_request_rejects_structured_model_id(raw_model_id):
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_maps_catalog_model_id_to_runtime_model_value(monkeypatch):
+async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(monkeypatch):
     calls = []
+    connections = {}
     current_settings = type(
         "S",
         (),
         {
-            "model_catalog_json": '[{"id":"pro-tier","value":"deepseek-v4-pro","label":"Pro tier"}]',
-            "default_model_id": "pro-tier",
+            "model_catalog_json": '[{"id":"legacy","value":"legacy"}]',
+            "default_model_id": "legacy",
             "claude_agent_model": "",
             "anthropic_model": "",
             "openai_model": "",
@@ -2820,8 +2943,13 @@ async def test_chat_stream_maps_catalog_model_id_to_runtime_model_value(monkeypa
         return "ses_model"
 
     async def fake_create_run(conn, **kwargs):
-        calls.append(("create_run_input", kwargs["input_json"]))
+        connections["create_run"] = conn
+        calls.append(("create_run", kwargs))
         return "run_model"
+
+    async def fake_bind_run_model(conn, **kwargs):
+        connections["bind_run_model"] = conn
+        calls.append(("bind_run_model", kwargs))
 
     async def fake_append_message(conn, **kwargs):
         return "msg_model"
@@ -2839,30 +2967,58 @@ async def test_chat_stream_maps_catalog_model_id_to_runtime_model_value(monkeypa
     async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
         return [snapshot_manifest(skill_id)]
 
+    async def fake_resolve_run_model(conn, *, model_id, model_value):
+        assert model_id == "pro-tier"
+        assert model_value == "openai/gpt-5"
+        return RunModelSelection(
+            model_id="pro-tier",
+            model_value="openai/gpt-5",
+            connection_revision=7,
+        )
+
     monkeypatch.setattr("app.routes.chat.get_settings", lambda: current_settings)
+    monkeypatch.setattr(
+        "app.execution.infrastructure.model_management.resolve_run_model",
+        fake_resolve_run_model,
+    )
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr("app.routes.chat.repositories.ensure_user", fake_ensure_user)
     monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
+    monkeypatch.setattr("app.routes.chat.bind_run_model", fake_bind_run_model)
     monkeypatch.setattr("app.routes.chat.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", fake_bind_files_to_run)
     monkeypatch.setattr("app.routes.chat.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     response = await chat_stream(
-        ChatStreamRequest(message="hello", agent_options={"model_id": "pro-tier"}),
+        ChatStreamRequest(
+            message="hello",
+            agent_options={"model_id": "pro-tier", "model": "openai/gpt-5"},
+        ),
         principal=principal(),
     )
 
-    create_run_input = next(item[1] for item in calls if item[0] == "create_run_input")
+    create_run = next(item[1] for item in calls if item[0] == "create_run")
+    bind_run = next(item[1] for item in calls if item[0] == "bind_run_model")
+    create_run_input = create_run["input_json"]
     queue_payload = next(item[1] for item in calls if item[0] == "queue_payload")
     assert response.run_id == "run_model"
+    assert "model_gateway_revision" not in create_run
+    assert bind_run == {
+        "tenant_id": "tenant-a",
+        "run_id": "run_model",
+        "model_id": "pro-tier",
+        "model_value": "openai/gpt-5",
+        "connection_revision": 7,
+    }
+    assert connections["create_run"] is connections["bind_run_model"]
     assert create_run_input["model_id"] == "pro-tier"
-    assert create_run_input["model_value"] == "deepseek-v4-pro"
+    assert create_run_input["model_value"] == "openai/gpt-5"
     assert queue_payload["model_id"] == "pro-tier"
-    assert queue_payload["model_value"] == "deepseek-v4-pro"
+    assert queue_payload["model_value"] == "openai/gpt-5"
 
 
 

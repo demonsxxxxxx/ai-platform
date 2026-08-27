@@ -24,6 +24,7 @@ from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.models import QueueRunPayload
 from app.principal_authority import CURRENT_PRINCIPAL_DENIAL_REASON, PrincipalAuthorityDenied
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
+from app.runs.api import RunTerminalizationProgress
 from app.skills import catalog
 from app.skills.catalog import (
     AuthorizedSkillCatalogBinding,
@@ -38,6 +39,22 @@ from app.worker import (
     _payload_with_authorized_skill_catalog,
     _reauthorize_worker_capabilities,
     process_run_payload,
+)
+
+
+class _DispatchV4PendingAdmissions:
+    async def prepare_pending_authority_in_transaction(self, _conn, **_kwargs):
+        return object()
+
+
+class _DispatchV4EventPersistence:
+    async def append_terminal_row(self, _conn, **_kwargs):
+        return object()
+
+
+_DISPATCH_V4_CAPABILITIES = types.SimpleNamespace(
+    pending_admissions=_DispatchV4PendingAdmissions(),
+    event_persistence=_DispatchV4EventPersistence(),
 )
 
 
@@ -360,6 +377,47 @@ async def test_catalog_fails_closed_when_agent_skill_set_exceeds_catalog_bound(m
                 for row in reversed(rows)
             ],
         )
+
+
+@pytest.mark.asyncio
+async def test_catalog_materializes_manifest_above_legacy_file_limit(monkeypatch):
+    row = _skill_row("large-skill")
+    files = {"SKILL.md": base64.b64decode(row["source"]["files"][0]["content_base64"])}
+    files.update(
+        {
+            f"references/file-{index}.txt": b"x"
+            for index in range(512)
+        }
+    )
+    row["source"]["files"] = [
+        {
+            "relative_path": relative_path,
+            "content_base64": base64.b64encode(content).decode("ascii"),
+            "size_bytes": len(content),
+        }
+        for relative_path, content in files.items()
+    ]
+    row["version"] = _content_hash(files)
+    row["expected_version"] = row["version"]
+
+    resolution, _ = await _resolve(
+        monkeypatch,
+        rows=[row],
+        distributions=[_distribution("large-skill")],
+        binding=_binding(selected_skill_id="large-skill"),
+        pinned_manifests=[_manifest_from_row(row)],
+        skill_set=[{"skill_id": "large-skill", "expected_version": row["version"]}],
+    )
+
+    assert len(row["source"]["files"]) == 513
+    assert resolution.snapshot.materialized_skill_ids == ("large-skill",)
+    assert [manifest["skill_id"] for manifest in resolution.manifests] == [
+        "large-skill"
+    ]
+    materialized_manifest = resolution.manifests[0]
+    materialized_files = materialized_manifest["files"]
+    assert len(materialized_files) == 513
+    assert {file["relative_path"] for file in materialized_files} == set(files)
 
 
 @pytest.mark.asyncio
@@ -709,7 +767,12 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
 
     async def fail_run(_conn, **kwargs):
         calls.append(("fail", kwargs))
-        return True
+        return RunTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=True,
+            needs_reconcile=True,
+        )
 
     async def append_event(_conn, **kwargs):
         calls.append(("event", kwargs))
@@ -731,6 +794,9 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
         calls.append(("reconcile", kwargs))
         return None
 
+    async def no_publication(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr("app.worker.transaction", transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
@@ -742,6 +808,8 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
         materialize_run_skill_manifests,
     )
     monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
+    monkeypatch.setattr("app.worker.admit_v4_stream", no_publication)
+    monkeypatch.setattr("app.worker.publish_pending_run_terminal", no_publication)
 
 
 @pytest.mark.parametrize(
@@ -795,7 +863,11 @@ async def test_every_dispatch_shape_denies_unavailable_current_authority_before_
     monkeypatch.setattr("app.worker._ensure_worker_context_snapshot", forbidden)
     monkeypatch.setattr("app.worker._create_worker_runtime_sandbox_lease", forbidden)
 
-    outcome = await process_run_payload(raw, registry=ForbiddenRegistry())
+    outcome = await process_run_payload(
+        raw,
+        registry=ForbiddenRegistry(),
+        v4_capabilities=_DISPATCH_V4_CAPABILITIES,
+    )
 
     assert outcome.status == "failed"
     assert outcome.error_code == "capability_not_authorized"
@@ -871,7 +943,11 @@ async def test_queued_admin_snapshot_cannot_restore_revoked_current_skill_access
     monkeypatch.setattr("app.worker.repositories.resolve_selected_skill", resolve_selected)
     monkeypatch.setattr("app.worker.repositories.get_capability_distribution_row", get_distribution)
 
-    outcome = await process_run_payload(raw, registry=ForbiddenRegistry())
+    outcome = await process_run_payload(
+        raw,
+        registry=ForbiddenRegistry(),
+        v4_capabilities=_DISPATCH_V4_CAPABILITIES,
+    )
 
     assert locked_run["principal_roles"] == ["admin"]
     assert locked_run["principal_department_id"] == "qa"
@@ -1301,11 +1377,17 @@ async def test_sdk_registers_required_private_dependency_and_denies_unrelated_pr
         captured["prompt"] = messages[0]["message"]["content"]
         captured["required_permission"] = await options.kwargs["can_use_tool"](
             "Skill",
-            {"skill": "reference-fact-extraction"},
+            {
+                "skill": "reference-fact-extraction",
+                "args": "extract only the facts needed for this task",
+            },
         )
         captured["unrelated_permission"] = await options.kwargs["can_use_tool"](
             "Skill",
-            {"skill": "minimax-docx"},
+            {
+                "skill": "minimax-docx",
+                "args": "this cannot expand the authorized Skill Set",
+            },
         )
         for index, skill_id in enumerate((
             "ctd-32s73-stability-template-fill",

@@ -28,10 +28,17 @@ server {
         limit_except POST {
             deny all;
         }
-        proxy_pass ${AI_PLATFORM_MODEL_UPSTREAM}/;
+        proxy_pass ${AI_PLATFORM_API_UPSTREAM}/api/ai/internal/model-proxy/openai/;
         proxy_http_version 1.1;
         proxy_set_header Host $proxy_host;
+        proxy_set_header Authorization "";
+        proxy_set_header X-Api-Key "";
+        proxy_set_header X-AI-Platform-Internal-Token ${MODEL_PROXY_INTERNAL_TOKEN};
         proxy_pass_request_headers on;
+        proxy_buffering off;
+        proxy_cache off;
+        gzip off;
+        proxy_set_header Accept-Encoding "";
         proxy_connect_timeout 3s;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
@@ -41,10 +48,17 @@ server {
         limit_except POST {
             deny all;
         }
-        proxy_pass ${AI_PLATFORM_MODEL_UPSTREAM}/;
+        proxy_pass ${AI_PLATFORM_API_UPSTREAM}/api/ai/internal/model-proxy/anthropic/;
         proxy_http_version 1.1;
         proxy_set_header Host $proxy_host;
+        proxy_set_header Authorization "";
+        proxy_set_header X-Api-Key "";
+        proxy_set_header X-AI-Platform-Internal-Token ${MODEL_PROXY_INTERNAL_TOKEN};
         proxy_pass_request_headers on;
+        proxy_buffering off;
+        proxy_cache off;
+        gzip off;
+        proxy_set_header Accept-Encoding "";
         proxy_connect_timeout 3s;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;

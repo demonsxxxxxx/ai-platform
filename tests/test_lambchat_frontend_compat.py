@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import re
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -516,13 +517,29 @@ async def test_lambchat_agent_repository_exposes_only_canonical_agents():
     assert params == ("default",)
 
 
-def test_frontend_bootstrap_endpoints_match_retained_contracts():
+def test_frontend_bootstrap_endpoints_match_retained_contracts(monkeypatch):
+    model_catalog = AsyncMock(
+        return_value={
+            "models": [
+                {
+                    "id": "model-a",
+                    "value": "upstream/model-a",
+                    "label": "Model A",
+                    "provider": "compatible",
+                }
+            ],
+            "count": 1,
+            "enabled_count": 1,
+            "default_model_id": "model-a",
+        }
+    )
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.lambchat_compat.list_public_models", model_catalog)
     client = TestClient(create_app())
 
     expectations = {
         "/api/auth/oauth/providers": {"registration_enabled": False},
         "/api/auth/permissions": {"groups": list, "all_permissions": list},
-        "/api/agent/models/available": {"default_model_id": "deepseek-v4-flash"},
         "/api/agent/models/": {"enabled_count": 1},
         "/api/roles/?limit=200": {"roles": list, "total": 0, "skip": 0, "limit": 200},
         "/api/settings/": {"settings": {}},
@@ -532,6 +549,9 @@ def test_frontend_bootstrap_endpoints_match_retained_contracts():
         "/api/upload/config": {"categories": ["document"], "enabled": True, "uploadLimits": dict},
         "/api/tools": {"tools": []},
     }
+
+    anonymous_models = client.get("/api/agent/models/available")
+    assert anonymous_models.status_code == 401
 
     for path, expected in expectations.items():
         response = client.get(path)
@@ -547,6 +567,8 @@ def test_frontend_bootstrap_endpoints_match_retained_contracts():
                 assert isinstance(payload[key], dict), path
             else:
                 assert payload[key] == value, path
+
+    model_catalog.assert_awaited_once()
 
 
 def test_upload_config_exposes_canonical_byte_contract_with_legacy_aliases():
@@ -627,10 +649,23 @@ def test_lambchat_model_catalog_comes_from_settings(monkeypatch):
             ),
         },
     )()
-    monkeypatch.setattr("app.routes.lambchat_compat.get_settings", lambda: current_settings)
+    monkeypatch.setattr(
+        "app.bootstrap.model_services.get_settings",
+        lambda: current_settings,
+    )
+    monkeypatch.setattr(
+        "app.execution.infrastructure.model_legacy_catalog.fetch_upstream_openai_models",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "app.execution.infrastructure.model_management.list_public_models",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
     client = TestClient(create_app())
 
-    response = client.get("/api/agent/models/available")
+    response = client.get("/api/agent/models/available", headers=auth_headers())
 
     assert response.status_code == 200
     payload = response.json()
@@ -640,6 +675,48 @@ def test_lambchat_model_catalog_comes_from_settings(monkeypatch):
     assert [model["id"] for model in payload["models"]] == ["deepseek-v4-flash", "deepseek-v4-pro"]
     assert payload["models"][1]["label"] == "DeepSeek V4 Pro"
     assert payload["models"][1]["profile"]["max_input_tokens"] == 128000
+
+
+def test_lambchat_governed_model_catalog_preempts_legacy_upstream_and_preserves_raw_ids(
+    monkeypatch,
+):
+    governed = {
+        "models": [
+            {
+                "id": "mdl_public",
+                "value": "openai/gpt-5",
+                "label": "GPT 5",
+                "provider": "compatible",
+            }
+        ],
+        "count": 1,
+        "enabled_count": 1,
+        "default_model_id": "mdl_public",
+    }
+
+    forbidden_legacy_fetch = AsyncMock(
+        side_effect=AssertionError(
+            "legacy discovery must not run after control-plane activation"
+        )
+    )
+
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.execution.infrastructure.model_management.list_public_models",
+        AsyncMock(return_value=governed),
+    )
+    monkeypatch.setattr(
+        "app.execution.infrastructure.model_legacy_catalog.fetch_upstream_openai_models",
+        forbidden_legacy_fetch,
+    )
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    response = TestClient(create_app()).get(
+        "/api/agent/models/available",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == governed
 
 
 def test_lambchat_upload_file_endpoint_matches_frontend_contract(monkeypatch, tmp_path):
@@ -977,7 +1054,7 @@ def test_lambchat_terminal_answer_identifier_replacement_keeps_private_text_gate
 
 
 
-def test_lambchat_active_history_replays_versioned_deltas_once_in_sequence(monkeypatch):
+def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
     async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
         return {"id": session_id}
 
@@ -1059,10 +1136,10 @@ def test_lambchat_active_history_replays_versioned_deltas_once_in_sequence(monke
 
     assert response.status_code == 200
     events = response.json()["events"]
-    assert [event["event_type"] for event in events] == ["message:chunk", "message:chunk"]
-    assert [event["sequence"] for event in events] == [7, 8]
-    assert [event["payload"]["event_id"] for event in events] == ["evt-delta-7", "evt-delta-8"]
-    assert "".join(event["payload"]["content"] for event in events) == "partial answer"
+    assert [event["event_type"] for event in events] == ["message:chunk"]
+    assert [event["sequence"] for event in events] == [7]
+    assert [event["payload"]["event_id"] for event in events] == ["evt-delta-7"]
+    assert [event["payload"]["content"] for event in events] == ["partial "]
 
 
 

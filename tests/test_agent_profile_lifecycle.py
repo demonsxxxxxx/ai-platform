@@ -1491,12 +1491,29 @@ async def test_worker_dispatch_profile_reauthorization_fails_closed(monkeypatch,
 @pytest.mark.asyncio
 async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_override(monkeypatch):
     from contextlib import asynccontextmanager
+    from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
     from app import repositories
     from app.agent_apps import AgentProfileAdmission, AgentProfileAuthority
+    from app.execution.api import RunModelSelection
+    from app.main import create_app
     from app.models import AgentConversationIdentity, ChatStreamRequest, SelectedAgentProfileRequest
-    from app.routes.chat import chat_stream
+    from app.routes.chat import chat_stream as route_chat_stream
+
+    test_stream_request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                run_stream_runtime=SimpleNamespace(worker_capabilities=object())
+            )
+        )
+    )
+
+    async def chat_stream(*args, **kwargs):
+        kwargs.setdefault("http_request", test_stream_request)
+        return await route_chat_stream(*args, **kwargs)
+
+    create_app()
 
     @asynccontextmanager
     async def transaction():
@@ -1596,6 +1613,16 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
         )
 
     monkeypatch.setattr("app.routes.chat.transaction", transaction)
+    monkeypatch.setattr(
+        "app.execution.infrastructure.model_management.resolve_run_model",
+        AsyncMock(
+            return_value=RunModelSelection(
+                model_id="model-a",
+                model_value="model-a",
+                connection_revision=None,
+            )
+        ),
+    )
     monkeypatch.setattr(repositories, "get_chat_submission", AsyncMock(return_value=None))
     monkeypatch.setattr(repositories, "ensure_submission_principal", noop)
     monkeypatch.setattr(repositories, "get_authorized_session", owned_session)
@@ -1839,8 +1866,8 @@ async def test_profile_authority_accepts_the_exact_canonical_frontend_transport_
         "message": "continue with the published Agent",
         "agent_options": {
             "enable_thinking": "off",
-            "model": "model-a",
-            "model_id": "model-a",
+            "model": "user-model-b",
+            "model_id": "user-model-b",
         },
         "disabled_skills": [],
         "selected_mcp_tool_ids": [],
@@ -2022,15 +2049,12 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
     [
         ({"agent_id": "general-agent"}, None),
         ({"skill_id": "general-chat"}, None),
-        ({"modelId": "model-b"}, None),
         ({"disabled_skills": ["other-skill"]}, None),
         ({"enabled_skills": ["other-skill"]}, None),
         ({"disabled_mcp_tools": ["other-tool"]}, None),
         ({"selected_mcp_tool_ids": ["gateway::other-tool"]}, None),
         ({"agent_options": {"temperature": 0.2}}, None),
         ({"agent_options": {"enable_thinking": "high"}}, None),
-        ({"agent_options": {"model_id": "model-b"}}, None),
-        ({"agent_options": {"model": "model-b", "model_id": "model-a"}}, None),
         (
             {
                 "selected_skill": {
@@ -2041,7 +2065,6 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
             None,
         ),
         ({"confirmed_capability_id": "general_chat"}, None),
-        ({"input": {"model": "model-b"}}, None),
         ({"input": {"multi_agent_steps": [{"skillIds": ["other-skill"]}]}}, None),
         ({"input": {"multi_agent_steps": [{"tools": [{"mcpToolIds": ["other-tool"]}]}]}}, None),
         ({"input": {"multiAgentSteps": [{"mcpServerIds": ["other-server"]}]}}, None),
@@ -2063,18 +2086,14 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
     ids=[
         "top-level-agent",
         "raw-skill-selector",
-        "top-level-model-alias",
         "nonempty-disabled-skill-selector",
         "enabled-skill-selector",
         "disabled-mcp-selector",
         "selected-mcp-selector",
         "unsupported-agent-option",
         "nondefault-thinking-option",
-        "mismatched-model-selector",
-        "mismatched-model-value",
         "selected-skill-selector",
         "confirmed-capability",
-        "nested-model",
         "nested-step-skill-alias",
         "nested-tool-mcp-alias",
         "nested-mcp-server-alias",
@@ -2199,3 +2218,64 @@ def test_session_recovery_projects_only_safe_agent_conversation_identity():
     serialized = str(response)
     for forbidden in ("must never be projected", "private-model", "private-skill", "private-tool", "a" * 64):
         assert forbidden not in serialized
+
+
+@pytest.mark.asyncio
+async def test_dedicated_agent_run_forwards_http_request_to_chat_composition(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from app.models import AgentAppRunRequest
+    from app.routes import agent_profiles
+
+    connection = object()
+    http_request = object()
+    expected_response = object()
+    observed: dict[str, object] = {}
+
+    @asynccontextmanager
+    async def transaction():
+        yield connection
+
+    async def get_session(observed_connection, **kwargs):
+        assert observed_connection is connection
+        assert kwargs == {
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+        }
+        return {"workspace_id": "workspace-a", "agent_id": "agent-a"}
+
+    async def chat_stream(request, observed_http_request, *, agent_id, principal):
+        observed.update(
+            request=request,
+            http_request=observed_http_request,
+            agent_id=agent_id,
+            principal=principal,
+        )
+        return expected_response
+
+    monkeypatch.setattr(agent_profiles, "transaction", transaction)
+    monkeypatch.setattr(
+        agent_profiles.repositories,
+        "get_authorized_session_projection",
+        get_session,
+    )
+    monkeypatch.setattr("app.routes.chat.chat_stream", chat_stream)
+
+    principal = _principal()
+    result = await agent_profiles._submit_dedicated_agent_run(
+        agent_id="agent-a",
+        session_id="session-a",
+        request=AgentAppRunRequest(
+            message="hello",
+            submission_id=UUID("12345678-1234-5678-1234-567812345678"),
+        ),
+        http_request=http_request,
+        principal=principal,
+    )
+
+    assert result is expected_response
+    assert observed["http_request"] is http_request
+    assert observed["agent_id"] == "agent-a"
+    assert observed["principal"] is principal
+    assert observed["request"].session_id == "session-a"

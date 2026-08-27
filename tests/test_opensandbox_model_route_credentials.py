@@ -15,7 +15,6 @@ import pytest
 import services.opensandbox_gateway.adapters as gateway_adapters
 from services.opensandbox_gateway.adapters import InMemoryStateStore, MailboxBroker, SQLiteStateStore
 from services.opensandbox_gateway.gateway import GatewayError, LeaseRecord
-from services.opensandbox_gateway.server import _model_provider_credentials
 
 
 def _record(*, sandbox_id: str = "sandbox-one", attempt_id: str = "attempt-one") -> LeaseRecord:
@@ -186,24 +185,6 @@ def test_model_route_rejects_inactive_or_cross_attempt_lease() -> None:
     assert _receipt_count(store, active.sandbox_id) == 0
 
 
-def test_model_provider_credentials_are_file_only_and_legacy_config_fails_closed(tmp_path) -> None:
-    openai_path = tmp_path / "openai-api-key"
-    anthropic_path = tmp_path / "anthropic-auth-token"
-    openai_path.write_text("host-openai-secret\n", encoding="utf-8")
-    anthropic_path.write_text("host-anthropic-secret\n", encoding="utf-8")
-    env = {
-        "OPENSANDBOX_GATEWAY_OPENAI_API_KEY_FILE": str(openai_path),
-        "OPENSANDBOX_GATEWAY_ANTHROPIC_AUTH_TOKEN_FILE": str(anthropic_path),
-    }
-
-    assert _model_provider_credentials(env) == {
-        "openai": "host-openai-secret",
-        "anthropic": "host-anthropic-secret",
-    }
-    with pytest.raises(ValueError, match="OPENSANDBOX_GATEWAY_ANTHROPIC_AUTH_TOKEN_FILE"):
-        _model_provider_credentials({"OPENSANDBOX_GATEWAY_OPENAI_API_KEY_FILE": str(openai_path)})
-
-
 def test_mailbox_model_route_denials_and_replay_never_add_upstream_dispatch(monkeypatch) -> None:
     store = InMemoryStateStore()
     record = _record()
@@ -283,29 +264,23 @@ def test_mailbox_model_route_denials_and_replay_never_add_upstream_dispatch(monk
         monkeypatch.setattr(gateway_adapters.os, "read", lambda *_: next(chunks))
         broker._process(6, request_id + ".json", record=record)
 
-    trusted = MailboxBroker(
+    broker = MailboxBroker(
         store,
         policy,
         1.0,
         1024,
         upstream_tls_context=tls_context,
-        provider_credentials={"openai": "host-openai-secret", "anthropic": "host-anthropic-secret"},
     )
     with pytest.raises(GatewayError, match="model_route_model_mismatch"):
-        process(trusted, "a" * 32, "cross-attempt-model")
+        process(broker, "a" * 32, "cross-attempt-model")
     assert dispatched == []
 
-    missing = MailboxBroker(store, policy, 1.0, 1024, upstream_tls_context=tls_context)
-    with pytest.raises(GatewayError, match="model_provider_credential_unavailable"):
-        process(missing, "b" * 32, "deepseek-v4-flash")
-    assert dispatched == []
-
-    process(trusted, "c" * 32, "deepseek-v4-flash")
+    process(broker, "c" * 32, "deepseek-v4-flash")
     with pytest.raises(GatewayError, match="model_route_replayed"):
-        process(trusted, "c" * 32, "deepseek-v4-flash")
+        process(broker, "c" * 32, "deepseek-v4-flash")
     assert len(dispatched) == 1
     assert json.loads(dispatched[0][1])["stream"] is True
     assert _receipt_count(store, record.sandbox_id) == 1
     assert "sandbox-secret" not in repr(dispatched)
-    assert "host-openai-secret" not in repr(store.records)
-    assert "host-openai-secret" not in repr(store.denials)
+    assert dispatched[0][2]["authorization"] == "Bearer model-proxy-internal"
+    assert dispatched[0][2]["x-ai-platform-run-id"] == "run-one"

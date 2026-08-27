@@ -48,8 +48,7 @@ from app.intent_router import (
     fallback_to_general_chat,
     route_intent,
 )
-from app.model_catalog import resolve_model_selection
-from app.platform.model_upstream import upstream_model_cache_snapshot
+from app.execution.api import RunModelSelection, parse_requested_model_selection, resolve_chat_model_selection
 from app.models import (
     CapabilitySuggestionResponse,
     ChatMessageResponse,
@@ -65,6 +64,7 @@ from app.models import (
     SelectedAgentProfileRequest,
     SelectedSkillRequest,
 )
+from app.runs.api import bind_run_model
 from app.product_events import initial_run_event_specs, intent_event_specs
 from app.projection_redaction import (
     capability_id_from_skill,
@@ -90,10 +90,10 @@ from app.required_tool_contract import (
 )
 from app.run_admission_policy import (
     PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
-    contains_persisted_platform_multi_agent_control,
     contains_platform_multi_agent_control,
 )
-from app.run_admission_terminalization import terminalize_retired_platform_multi_agent_run
+from app.run_admission_terminalization import reject_chat_submission_for_retired_platform_multi_agent, terminalize_enqueue_failure_with_v4
+from app.streaming.api import WorkerV4Capabilities
 from app.settings import get_settings
 from app.skills.lifecycle import is_user_runnable_status
 from app.skills.pinning import (
@@ -538,6 +538,7 @@ async def _admit_chat_submission(
     *,
     principal: AuthPrincipal,
     submission_id: str,
+    v4_capabilities: WorkerV4Capabilities,
 ) -> ChatSubmissionResponse:
     """Admit one already-persisted run without replaying chat creation work."""
 
@@ -576,28 +577,16 @@ async def _admit_chat_submission(
         execution_snapshot: dict[str, Any] | None = None
         if str(run.get("status") or "") == "queued":
             execution_snapshot = repositories.copied_run_execution_snapshot(run.get("input_json"))
-        retired_control_rejected = (
-            str(run.get("error_code") or "") == PLATFORM_MULTI_AGENT_NOT_SUPPORTED
-            or (
-                execution_snapshot is not None
-                and contains_persisted_platform_multi_agent_control(run.get("input_json"))
-            )
-        )
-        if retired_control_rejected:
-            if str(run.get("error_code") or "") != PLATFORM_MULTI_AGENT_NOT_SUPPORTED:
-                await terminalize_retired_platform_multi_agent_run(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    run_id=run_id,
-                )
-            await repositories.finalize_chat_submission(
-                conn,
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
-                submission_id=submission_id,
-                state="admission_rejected",
-                rejection_code=PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
-            )
+        if await reject_chat_submission_for_retired_platform_multi_agent(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            submission_id=submission_id,
+            run_id=run_id,
+            run=run,
+            execution_snapshot=execution_snapshot,
+            v4_capabilities=v4_capabilities,
+        ):
             return ChatSubmissionResponse(
                 submission_id=submission_id,
                 state="admission_rejected",
@@ -672,8 +661,7 @@ async def _admit_chat_submission(
                 if profile_enqueue_error is not None and _is_definitive_chat_queue_rejection(
                     profile_enqueue_error
                 ):
-                    await repositories.mark_run_enqueue_failed(
-                        conn,
+                    await terminalize_enqueue_failure_with_v4(v4_capabilities, conn,
                         tenant_id=principal.tenant_id,
                         user_id=principal.user_id,
                         run_id=run_id,
@@ -760,8 +748,7 @@ async def _admit_chat_submission(
             # Only the queue module's deterministic pre-admission rejection
             # can produce enqueue_failed.  This transaction is distinct from
             # planning and commits before the HTTP error.
-            await repositories.mark_run_enqueue_failed(
-                conn,
+            await terminalize_enqueue_failure_with_v4(v4_capabilities, conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
                 run_id=run_id,
@@ -1041,27 +1028,6 @@ def _has_legacy_client_mcp_selector(value: object) -> bool:
     if not isinstance(value, dict):
         return False
     return "mcp_tool_ids" in value or "mcpToolIds" in value
-
-
-def _requested_model_selection(request: ChatStreamRequest) -> dict[str, str] | None:
-    agent_options = request.agent_options if isinstance(request.agent_options, dict) else {}
-    raw_model_id = agent_options.get("model_id")
-    if raw_model_id is None:
-        return None
-    if not isinstance(raw_model_id, str):
-        raise HTTPException(status_code=400, detail="model_id_not_available")
-    try:
-        upstream_ids = None
-        upstream_models, _ = upstream_model_cache_snapshot()
-        if upstream_models:
-            upstream_ids = {str(model["id"]) for model in upstream_models}
-        return resolve_model_selection(
-            raw_model_id,
-            get_settings(),
-            upstream_ids=upstream_ids,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="model_id_not_available") from exc
 
 
 def _file_ids_for_intent_lookup(request: ChatStreamRequest) -> list[str]:
@@ -1370,6 +1336,7 @@ async def list_messages(
 @router.post("/chat/stream", response_model=ChatStreamResponse)
 async def chat_stream(
     request: ChatStreamRequest,
+    http_request: Request,
     agent_id: str | None = Query(None),
     principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
 ) -> ChatStreamResponse:
@@ -1471,9 +1438,9 @@ async def chat_stream(
         allow_raw_skill_agent_id=is_ai_admin(principal),
     )
     try:
-        requested_model_selection = _requested_model_selection(request)
-    except HTTPException as exc:
-        code = _submission_code(exc.detail)
+        requested_model_selection = parse_requested_model_selection(request.agent_options)
+    except ValueError as exc:
+        code = str(exc)
         await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
@@ -1484,10 +1451,12 @@ async def chat_stream(
             code=code,
         )
         if submission_id is not None:
-            raise _chat_submission_http_error(status_code=exc.status_code, code=code) from exc
-        raise
-    requested_model_id = requested_model_selection["id"] if requested_model_selection is not None else None
-    requested_model_value = requested_model_selection["value"] if requested_model_selection is not None else None
+            raise _chat_submission_http_error(status_code=400, code=code) from exc
+        raise HTTPException(status_code=400, detail=code) from exc
+    requested_model_id = requested_model_selection.get("id") if requested_model_selection else None
+    requested_model_value = requested_model_selection.get("value") if requested_model_selection else None
+    selected_model: RunModelSelection | None = None
+
     requested_file_ids = _file_ids_from_request(request)
     if allowed and _has_legacy_client_mcp_selector(request.input):
         code = "selected_mcp_tool_ids_required"
@@ -1739,10 +1708,18 @@ async def chat_stream(
                     expected_version=str(admitted_agent_profile.skill["skill_version"]),
                 )
                 selected_mcp_tool_ids_for_execution = list(admitted_agent_profile.mcp_tool_ids)
-                requested_model_id = admitted_agent_profile.model["id"]
-                requested_model_value = admitted_agent_profile.model["value"]
                 run_input["mcp_tool_ids"] = list(admitted_agent_profile.mcp_tool_ids)
 
+            try:
+                selected_model = await resolve_chat_model_selection(
+                    conn,
+                    selection=requested_model_selection,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if selected_model is not None:
+                requested_model_id = selected_model.model_id
+                requested_model_value = selected_model.model_value
             if (
                 request.session_id
                 and request.selected_mcp_tool_ids is None
@@ -2254,6 +2231,15 @@ async def chat_stream(
                     }
                 )
             run_id = await repositories.create_run(conn, **run_create_kwargs)
+            if selected_model is not None:
+                await bind_run_model(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    run_id=run_id,
+                    model_id=selected_model.model_id,
+                    model_value=selected_model.model_value,
+                    connection_revision=selected_model.connection_revision,
+                )
             if execution_kind == RUN_EXECUTION_KIND_SKILL:
                 await repositories.insert_run_skill_snapshots_at_creation(
                     conn,
@@ -2522,7 +2508,11 @@ async def chat_stream(
     if submission_id is not None:
         try:
             admitted = _require_chat_submission_admitted(
-                await _admit_chat_submission(principal=principal, submission_id=submission_id)
+                await _admit_chat_submission(
+                principal=principal,
+                submission_id=submission_id,
+                v4_capabilities=http_request.app.state.run_stream_runtime.worker_capabilities,
+            )
             )
         except HTTPException:
             raise
@@ -2540,8 +2530,8 @@ async def chat_stream(
         queue_admission = await _enqueue_chat_run(queue_payload)
     except Exception as exc:
         async with transaction() as conn:
-            await repositories.mark_run_enqueue_failed(
-                conn,
+            await terminalize_enqueue_failure_with_v4(
+                http_request.app.state.run_stream_runtime.worker_capabilities, conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
                 run_id=run_id,
@@ -2598,6 +2588,7 @@ async def get_chat_submission(
 
 async def retry_chat_submission_admission(
     submission_id: UUID,
+    request: Request,
     response: Response,
     principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
 ) -> ChatSubmissionResponse | ChatSubmissionPreLedgerAbsenceResponse:
@@ -2612,7 +2603,11 @@ async def retry_chat_submission_admission(
         if isinstance(resolved, ChatSubmissionPreLedgerAbsenceResponse):
             return resolved
         return _require_chat_submission_admitted(
-            await _admit_chat_submission(principal=principal, submission_id=str(submission_id))
+            await _admit_chat_submission(
+            principal=principal,
+            submission_id=str(submission_id),
+            v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
+        )
         )
     except HTTPException as exc:
         headers = {**(exc.headers or {}), "Cache-Control": _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL}

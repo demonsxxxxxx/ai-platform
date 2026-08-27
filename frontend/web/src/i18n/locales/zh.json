@@ -1407,6 +1407,7 @@
     "mcp": "MCP 工具",
     "memory": "记忆",
     "models": "模型",
+    "runs": "运行监控",
     "more": "更多",
     "notifications": "通知公告",
     "roles": "角色治理",
@@ -1425,6 +1426,7 @@
     "mcp": "管理 MCP 服务器连接",
     "memory": "查看和管理 AI 记忆内容",
     "models": "配置和管理 AI 模型",
+    "runs": "查看最近 Chat、Run 与 Worker 状态",
     "notifications": "管理系统公告通知",
     "roles": "角色治理与审批",
     "settings": "应用和系统设置",
@@ -1642,6 +1644,10 @@
     "models": {
       "description": "管理大语言模型配置。连接和切换 Claude、GPT、Gemini 等模型，统一 API 抽象层。",
       "title": "模型管理"
+    },
+    "runs": {
+      "description": "查看当前租户最近的 Chat、Run 和 Worker 生命周期状态。",
+      "title": "运行监控"
     },
     "notifications": {
       "description": "管理系统公告和通知。获取平台新闻、警报和重要消息的实时更新。",
@@ -2434,17 +2440,17 @@
   },
   "models": {
     "adminGovernance": "管理写操作",
-    "adminGovernanceDescription": "新增、排序、密钥和网关配置只在具备 model:admin 权限的治理入口开放。",
+    "adminGovernanceDescription": "连接、密钥和模型启停只在具备 model:admin 权限的治理入口开放。",
     "catalogLoadFailed": "模型目录暂不可用",
     "catalogStats": "目录状态",
     "catalogStatsDescription": "已启用 {{enabled}} / {{total}} 个模型，{{providers}} 个供应商。",
     "catalogUnavailable": "模型目录暂不可用",
-    "catalogUnavailableDescription": "公开模型投影没有返回可用数据。聊天页会继续使用已缓存或默认模型，管理写操作保持关闭。",
+    "catalogUnavailableDescription": "模型目录暂时无法读取。目录恢复前，新的模型选择会 fail closed。",
     "contextWindow": "上下文",
     "contextWindowUnknown": "未公开",
     "defaultModelSet": "已设为默认模型",
     "defaultModel": "默认",
-    "emptyDescription": "模型目录来自公开投影。若这里为空，聊天页会 fail-closed 到默认模型配置，并保留管理写操作锁定。",
+    "emptyDescription": "当前没有已启用且上游可用的模型。请管理员同步目录并启用至少一个模型。",
     "loading": "正在加载模型目录",
     "maxPinnedModels": "最多可置顶 {{max}} 个模型",
     "noMatchingModels": "没有匹配的模型",
@@ -2455,7 +2461,7 @@
     "searchPlaceholder": "搜索模型、供应商或能力",
     "pinModel": "置顶",
     "setDefault": "设为默认",
-    "subtitle": "查看当前工作台可用模型，管理写操作按治理策略保持关闭。",
+    "subtitle": "查看平台公共模型；管理员可配置兼容地址、同步目录并控制启用状态。",
     "title": "模型",
     "unpinModel": "取消置顶"
   },

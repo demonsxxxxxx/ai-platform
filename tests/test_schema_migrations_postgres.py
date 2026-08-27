@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+import hashlib
 import os
 from pathlib import Path
 import uuid
@@ -13,6 +14,115 @@ from app import schema_migrations
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
+# Exact 2026.08.27.1 ledger checksum at the remote PR predecessor 829acfcd.
+REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM = (
+    "d474b751d6fb6bff75cbbb8f3c482cb42f38ac462c116313baeccfc2c247fef7"
+)
+REMOTE_DUE_INDEX_SQL = """create index if not exists idx_run_events_v4_due_scope
+  on run_events(tenant_id, run_id, sequence)
+  where visible_to_user = true
+    and payload_json ? '__stream_v4'
+    and stream_publication_state = 'pending';
+
+
+"""
+MODEL_CONTROL_PLANE_SCHEMA_FRAGMENTS = (
+    """create table if not exists model_gateway_revisions (
+  revision bigint primary key,
+  base_url text not null,
+  api_key_ciphertext bytea not null,
+  key_fingerprint text not null,
+  active boolean not null default false,
+  created_by text not null,
+  created_at timestamptz not null default now(),
+  constraint chk_model_gateway_revision_positive check (revision > 0),
+  constraint chk_model_gateway_base_url check (length(base_url) between 1 and 2048),
+  constraint chk_model_gateway_key_fingerprint check (key_fingerprint ~ '^[0-9a-f]{16}$')
+);
+create unique index if not exists uq_model_gateway_active
+  on model_gateway_revisions(active) where active = true;
+
+create table if not exists model_catalog_entries (
+  model_id text primary key,
+  upstream_model_id text not null unique,
+  display_name text not null,
+  provider text not null default 'custom',
+  enabled boolean not null default false,
+  upstream_available boolean not null default true,
+  is_default boolean not null default false,
+  display_order integer not null default 0,
+  first_seen_revision bigint not null references model_gateway_revisions(revision),
+  last_seen_revision bigint not null references model_gateway_revisions(revision),
+  first_seen_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now(),
+  constraint chk_model_catalog_id check (model_id ~ '^[A-Za-z0-9_.:-]{1,128}$'),
+  constraint chk_model_catalog_upstream_id check (
+    length(upstream_model_id) between 1 and 512
+    and upstream_model_id = btrim(upstream_model_id)
+  ),
+  constraint chk_model_catalog_display_name check (length(display_name) between 1 and 160),
+  constraint chk_model_catalog_default_enabled check (not is_default or enabled)
+);
+create unique index if not exists uq_model_catalog_default
+  on model_catalog_entries(is_default) where is_default = true;
+
+""",
+    """  model_id text,
+  model_value text,
+  model_gateway_revision bigint,
+""",
+    """alter table runs add column if not exists model_id text;
+alter table runs add column if not exists model_value text;
+alter table runs add column if not exists model_gateway_revision bigint;
+""",
+    """  if not exists (select 1 from pg_constraint where conrelid = 'runs'::regclass and conname = 'fk_runs_model_gateway_revision') then
+    alter table runs add constraint fk_runs_model_gateway_revision
+      foreign key (model_gateway_revision) references model_gateway_revisions(revision);
+  end if;
+""",
+)
+CONFIRMATION_HISTORY_REPAIR_SQL = """update sse_stream_authorities
+set admission_confirmed_at = coalesce(
+  admission_confirmed_at,
+  admission_created_at,
+  updated_at,
+  clock_timestamp()
+)
+where state <> 'admission_pending'
+  and admission_confirmed_at is null;
+
+update sse_stream_authorities
+set admission_confirmed_at = null
+where state = 'admission_pending'
+  and admission_confirmed_at is not null;
+
+"""
+
+
+def _remote_successor_activation_schema_sql() -> str:
+    current_sql = Path("app/schema.sql").read_text(encoding="utf-8")
+    for fragment in MODEL_CONTROL_PLANE_SCHEMA_FRAGMENTS:
+        assert current_sql.count(fragment) == 1
+        current_sql = current_sql.replace(fragment, "")
+    trace_column_sql = (
+        "alter table run_events add column if not exists trace_id text not null default '';"
+    )
+    assert current_sql.count(trace_column_sql) == 1
+    assert current_sql.count(CONFIRMATION_HISTORY_REPAIR_SQL) == 1
+    remote_sql = current_sql.replace(
+        trace_column_sql,
+        REMOTE_DUE_INDEX_SQL + trace_column_sql,
+    ).replace(CONFIRMATION_HISTORY_REPAIR_SQL, "")
+    remote_index_contract = "\n".join(
+        f"{migration.name}:{migration.checksum_sha256}"
+        for migration in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
+        if migration.name != "idx_run_events_v4_due_scope"
+    )
+    remote_checksum = hashlib.sha256(
+        f"{remote_sql}\n-- concurrent-index-contract\n{remote_index_contract}".encode()
+    ).hexdigest()
+    assert remote_checksum == REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM
+    return remote_sql
 
 
 def _postgres_dsn() -> str:
@@ -84,10 +194,191 @@ async def test_real_postgres_concurrent_migrations_use_one_global_lock_and_ledge
                 "checksum_sha256": schema_migrations.schema_checksum(),
             }
         ]
+        cursor = await admin.execute(
+            """
+            select pg_get_constraintdef(oid, true) as definition
+            from pg_constraint
+            where conrelid = to_regclass(%s)
+              and conname = 'chk_run_attempts_terminal_time'
+            """,
+            (f"{schema_name}.run_attempts",),
+        )
+        row = await cursor.fetchone()
+        assert row is not None
+        assert "status <> ALL" in row["definition"]
+        assert "NOT (status = ANY" not in row["definition"]
         async with factory() as conn:
-            assert (await schema_migrations.schema_status(conn))["ready"] is True
+            status = await schema_migrations.schema_status(conn)
+            definition_mismatches = []
+            if not status["constraint_definitions_current"]:
+                for relation_name, constraint_name, constraint_type, definition in (
+                    schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS
+                ):
+                    cursor = await conn.execute(
+                        """
+                        select constraints.contype::text as constraint_type,
+                               pg_get_constraintdef(constraints.oid, true) as definition
+                        from pg_constraint constraints
+                        where constraints.conrelid = to_regclass(%s)
+                          and constraints.conname = %s
+                        """,
+                        (relation_name, constraint_name),
+                    )
+                    row = await cursor.fetchone()
+                    if (
+                        row is None
+                        or row["constraint_type"] != constraint_type
+                        or "".join(str(row["definition"]).lower().split())
+                        != "".join(definition.lower().split())
+                    ):
+                        definition_mismatches.append(
+                            {
+                                "name": constraint_name,
+                                "actual": None if row is None else row["definition"],
+                            }
+                        )
+            assert status["ready"] is True, "\n".join(
+                f"{item['name']}: {item['actual']}"
+                for item in definition_mismatches
+            )
     finally:
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_upgrade_restores_v4_publication_schema_and_confirmation_history():
+    dsn = _postgres_dsn()
+    schema_name = f"schema_v4_upgrade_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(
+        dsn,
+        autocommit=True,
+        row_factory=dict_row,
+    )
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await admin.execute(
+            sql.SQL("set search_path to {}").format(sql.Identifier(schema_name))
+        )
+        await admin.execute(_remote_successor_activation_schema_sql())
+        await admin.execute(
+            """
+            insert into schema_migrations(version, checksum_sha256)
+            values (%s, %s)
+            """,
+            (
+                schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION,
+                REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM,
+            ),
+        )
+        await admin.execute(
+            "insert into users(id, tenant_id, display_name) values ('v4-user', 'default', 'V4')"
+        )
+        await admin.execute(
+            "insert into agents(id, tenant_id, name, agent_type) values ('v4-agent', 'default', 'V4', 'chat')"
+        )
+        await admin.execute(
+            "insert into skills(id, name, version, executor_type) values ('v4-skill', 'V4', '1', 'fake')"
+        )
+        await admin.execute(
+            """
+            insert into sessions(id, tenant_id, workspace_id, user_id, agent_id, title, status)
+            values ('v4-session', 'default', 'default', 'v4-user', 'v4-agent', 'V4', 'archived')
+            """
+        )
+        await admin.execute(
+            """
+            insert into runs(
+              id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id, status
+            ) values (
+              'v4-run', 'default', 'default', 'v4-session', 'v4-user',
+              'v4-agent', 'v4-skill', 'running'
+            )
+            """
+        )
+        await admin.execute(
+            """
+            insert into sse_stream_authorities(
+              tenant_id, run_id, attempt_id, design_id, projection_version,
+              tenant_scope, stream_incarnation, state, open_event_id,
+              open_payload_bytes, open_payload_digest, admission_confirmed_at
+            ) values (
+              'default', 'v4-run', 'v4-attempt', 'v4', 'public-stream-v4',
+              'scope-v4', 1, 'confirmed', 'open-v4', '{}', repeat('a', 64), now()
+            )
+            """
+        )
+        await admin.execute(
+            "alter table sse_stream_authorities drop constraint chk_sse_stream_authority_pending_confirmation"
+        )
+        await admin.execute(
+            "update sse_stream_authorities set admission_confirmed_at = null where run_id = 'v4-run'"
+        )
+
+        factory = _transaction_factory(dsn, schema_name)
+        result = await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=_index_connection_factory(dsn, schema_name),
+        )
+
+        assert result["status"] == "applied"
+        ledger_rows = await admin.execute(
+            "select version, checksum_sha256 from schema_migrations order by version"
+        )
+        assert await ledger_rows.fetchall() == [
+            {
+                "version": schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION,
+                "checksum_sha256": REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM,
+            },
+            {
+                "version": schema_migrations.TARGET_SCHEMA_VERSION,
+                "checksum_sha256": schema_migrations.schema_checksum(),
+            },
+        ]
+        columns = await admin.execute(
+            """
+            select column_name
+            from information_schema.columns
+            where table_schema = current_schema()
+              and table_name = 'run_events'
+              and column_name like 'stream_publication_%'
+            order by column_name
+            """
+        )
+        assert {row["column_name"] for row in await columns.fetchall()} == {
+            "stream_publication_attempts",
+            "stream_publication_claim_expires_at",
+            "stream_publication_claim_token",
+            "stream_publication_last_error",
+            "stream_publication_next_attempt_at",
+            "stream_publication_redis_id",
+            "stream_publication_state",
+        }
+        index_row = await (
+            await admin.execute(
+                "select to_regclass('idx_run_events_v4_due_scope') is not null as present"
+            )
+        ).fetchone()
+        assert index_row == {"present": True}
+        authority_row = await (
+            await admin.execute(
+                "select admission_confirmed_at is not null as repaired from sse_stream_authorities where run_id = 'v4-run'"
+            )
+        ).fetchone()
+        assert authority_row == {"repaired": True}
+        async with factory() as conn:
+            status = await schema_migrations.schema_status(conn)
+            assert status["ready"] is True, {
+                key: value
+                for key, value in status.items()
+                if key.endswith("_current") and value is not True
+            }
+    finally:
+        await admin.execute(
+            sql.SQL("drop schema if exists {} cascade").format(
+                sql.Identifier(schema_name)
+            )
+        )
         await admin.close()
 
 
@@ -305,6 +596,7 @@ async def test_real_postgres_upgrade_namespaces_every_legacy_file_outbox_state()
     "damage_sql",
     [
         "alter table runs drop column authz_policy_version",
+        "alter table run_events drop constraint chk_run_events_stream_publication_claim",
         "alter table files drop constraint chk_files_lifecycle_state",
         "alter table artifacts drop constraint chk_artifacts_lifecycle_state",
         "alter table object_deletion_outbox drop constraint chk_object_deletion_outbox_target",
@@ -371,6 +663,11 @@ async def test_real_postgres_readiness_rejects_missing_critical_contract(damage_
 @pytest.mark.parametrize(
     "damage_sql",
     [
+        """
+        alter table run_events drop constraint chk_run_events_stream_publication_claim;
+        alter table run_events add constraint chk_run_events_stream_publication_claim
+          check (stream_publication_claim_token is null)
+        """,
         """
         alter table files drop constraint chk_files_lifecycle_state;
         alter table files add constraint chk_files_lifecycle_state

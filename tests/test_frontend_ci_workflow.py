@@ -18,8 +18,6 @@ PYTEST_COMMAND = (
     "tests/test_frontend_release_traceability.py "
     "tests/test_frontend_packaged_runtime_smoke.py "
     "tests/test_frontend_ci_workflow.py "
-    "tests/test_require_zero_junit_skips.py "
-    "tests/test_source_authority_docs.py "
     "-q --basetemp .pytest-tmp"
 )
 LINUX_PYTEST_COMMAND = (
@@ -33,7 +31,9 @@ BACKEND_OWNED_STATIC_SUITES = {
     "tests/test_packaging_publish_workflow.py",
     "tests/test_release_image_manifest.py",
     "tests/test_release_authority.py",
+    "tests/test_require_zero_junit_skips.py",
     "tests/test_runtime_launch_script.py",
+    "tests/test_source_authority_docs.py",
 }
 
 
@@ -146,11 +146,14 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     jobs = contract["jobs"]
     assert isinstance(jobs, dict)
     assert jobs["frontend"]["runs-on"] == "windows-latest"
+    assert jobs["frontend"]["timeout-minutes"] == "15"
     assert jobs["frontend-image"]["runs-on"] == "ubuntu-latest"
+    assert jobs["frontend-image"]["timeout-minutes"] == "30"
     assert "needs" not in jobs["frontend-image"]
     required = jobs["required"]
     assert isinstance(required, dict)
     assert required["name"] == "frontend required"
+    assert required["timeout-minutes"] == "5"
     assert required["needs"] == ["frontend", "frontend-image"]
     assert required["if"] == "${{ always() }}"
     image_job = workflow.split("  frontend-image:", 1)[1].split("  required:", 1)[0]

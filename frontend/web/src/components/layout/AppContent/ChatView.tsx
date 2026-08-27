@@ -9,10 +9,13 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { ListTree } from "lucide-react";
+import { ThreadPrimitive } from "@assistant-ui/react";
 import toast from "react-hot-toast";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../../hooks/useAuth";
 import { ChatMessage } from "../../chat/ChatMessage";
+import { AssistantUiProjection } from "../../chat/assistant-ui/AssistantUiProjection";
+import { AssistantUiMessageFrame } from "../../chat/assistant-ui/MessageFrame";
 import { AttachmentPreviewHost } from "../../chat/AttachmentPreviewHost";
 import { RevealPreviewHost } from "../../chat/ChatMessage/items/RevealPreviewHost";
 import { SessionImageGalleryProvider } from "../../chat/ChatMessage/sessionImageGallery";
@@ -168,6 +171,8 @@ interface ChatViewProps {
   canRetryPendingSubmission: boolean;
   onRetryPendingSubmission: () => Promise<void>;
   onStopGeneration: () => Promise<StopGenerationResult>;
+  onReconnect: () => Promise<unknown>;
+  onLoadHistory: () => Promise<unknown>;
   attachments: MessageAttachment[];
   onAttachmentsChange: React.Dispatch<
     React.SetStateAction<MessageAttachment[]>
@@ -228,6 +233,8 @@ export function ChatView({
   canRetryPendingSubmission,
   onRetryPendingSubmission,
   onStopGeneration,
+  onReconnect,
+  onLoadHistory,
   attachments,
   onAttachmentsChange,
   externalNavigationToken,
@@ -730,16 +737,25 @@ export function ChatView({
 
   const virtuosoItemContent = useCallback(
     (index: number, message: (typeof messages)[number]) => (
-      <ChatMessage
-        message={message}
-        artifactDownloadScopeContext={artifactDownloadScopeContext}
-        sessionId={sessionId ?? undefined}
-        runId={currentRunId ?? undefined}
-        isLastMessage={index === messages.length - 1}
-        activePreview={activePreview}
-        latestAutoPreview={latestAutoPreview}
-        onOpenPreview={handleOpenPreview}
-        onForkMessage={handleForkMessage}
+      <ThreadPrimitive.Unstable_MessageById
+        messageId={message.id}
+        components={{
+          Message: () => (
+            <AssistantUiMessageFrame>
+              <ChatMessage
+          message={message}
+          artifactDownloadScopeContext={artifactDownloadScopeContext}
+          sessionId={sessionId ?? undefined}
+          runId={currentRunId ?? undefined}
+          isLastMessage={index === messages.length - 1}
+          activePreview={activePreview}
+          latestAutoPreview={latestAutoPreview}
+          onOpenPreview={handleOpenPreview}
+          onForkMessage={handleForkMessage}
+              />
+            </AssistantUiMessageFrame>
+          ),
+        }}
       />
     ),
     [
@@ -791,6 +807,16 @@ export function ChatView({
     attachments,
     onAttachmentsChange,
   };
+
+  const assistantUiActions = useMemo(
+    () => ({
+      sendMessage: async (content: string) => onSendMessage(content),
+      cancel: async () => onStopGeneration(),
+      reconnect: onReconnect,
+      loadHistory: onLoadHistory,
+    }),
+    [onLoadHistory, onReconnect, onSendMessage, onStopGeneration],
+  );
 
   const rightPanel = (
     <WorkbenchRightPanel
@@ -891,7 +917,12 @@ export function ChatView({
   );
 
   return (
-    <SessionImageGalleryProvider messages={displayMessages}>
+    <AssistantUiProjection
+      messages={messages}
+      isRunning={sessionRunning}
+      actions={assistantUiActions}
+    >
+      <SessionImageGalleryProvider messages={displayMessages}>
       <WorkbenchShellComponent
         composer={messages.length > 0 ? composer : undefined}
         rightPanel={rightPanel}
@@ -981,6 +1012,7 @@ export function ChatView({
       <AttachmentPreviewHost />
       <PersistentToolPanelHost />
       </WorkbenchShellComponent>
-    </SessionImageGalleryProvider>
+      </SessionImageGalleryProvider>
+    </AssistantUiProjection>
   );
 }

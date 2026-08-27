@@ -1,4 +1,4 @@
-import { Wrench, Globe } from "lucide-react";
+import { Ban, CircleX, Globe, Wrench } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { CollapsiblePill, LoadingSpinner } from "../../common";
 import type { CollapsibleStatus } from "../../common";
@@ -22,6 +22,7 @@ export function ToolCallItem({
   args,
   result,
   success,
+  status: toolStatus,
   isPending,
   cancelled,
 }: {
@@ -29,6 +30,7 @@ export function ToolCallItem({
   args: Record<string, unknown>;
   result?: string | Record<string, unknown>;
   success?: boolean;
+  status?: "started" | "completed" | "failed" | "denied";
   isPending?: boolean;
   cancelled?: boolean;
 }) {
@@ -59,15 +61,36 @@ export function ToolCallItem({
   const hasArgs = Object.keys(displayArgs).length > 0;
 
   let status: CollapsibleStatus = "idle";
-  if (isPending) {
+  const lifecycleStatus =
+    toolStatus ||
+    (isPending ? "started" : cancelled ? "denied" : success ? "completed" : hasResult ? "failed" : undefined);
+  if (lifecycleStatus === "started") {
     status = "loading";
-  } else if (cancelled) {
+  } else if (lifecycleStatus === "denied") {
     status = "cancelled";
-  } else if (success) {
+  } else if (lifecycleStatus === "completed") {
     status = "success";
-  } else if (hasResult) {
+  } else if (lifecycleStatus === "failed") {
     status = "error";
   }
+  const statusLabel = lifecycleStatus === "started"
+    ? t("chat.message.running", { defaultValue: "Running" })
+    : lifecycleStatus === "completed"
+      ? t("chat.message.complete", { defaultValue: "Completed" })
+      : lifecycleStatus === "denied"
+        ? t("chat.publicRun.activities.toolPermissionDenied", {
+            defaultValue: "Not authorized",
+          })
+        : lifecycleStatus === "failed"
+          ? t("chat.message.error", { defaultValue: "Failed" })
+          : null;
+  const ToolIcon = lifecycleStatus === "denied"
+    ? Ban
+    : lifecycleStatus === "failed"
+      ? CircleX
+      : isMcpTool
+        ? Globe
+        : Wrench;
 
   const canExpand = hasArgs || hasResult;
 
@@ -106,18 +129,21 @@ export function ToolCallItem({
     <>
       <CollapsiblePill
         status={status}
-        icon={
-          isMcpTool ? (
-            <Globe size={12} className="shrink-0 opacity-50" />
-          ) : (
-            <Wrench size={12} className="shrink-0 opacity-50" />
-          )
-        }
+        icon={<ToolIcon size={12} aria-hidden="true" className="shrink-0 opacity-70" />}
         label={toolName}
         suffix={
-          serverName ? (
-            <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-white/30 dark:bg-black/20 opacity-70 font-medium truncate max-w-[120px]">
-              {serverName}
+          serverName || statusLabel ? (
+            <span className="flex min-w-0 items-center gap-1.5">
+              {serverName && (
+                <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-white/30 dark:bg-black/20 opacity-70 font-medium truncate max-w-[120px]">
+                  {serverName}
+                </span>
+              )}
+              {statusLabel && (
+                <span role="status" aria-label={statusLabel} className="text-[10px] font-medium">
+                  {statusLabel}
+                </span>
+              )}
             </span>
           ) : undefined
         }
@@ -127,7 +153,7 @@ export function ToolCallItem({
           if (!canExpand) return;
           openPersistentToolPanel({
             title: formattedToolName,
-            icon: isMcpTool ? <Globe size={16} /> : <Wrench size={16} />,
+            icon: <ToolIcon size={16} aria-hidden="true" />,
             status,
             subtitle: serverName || undefined,
             children: panelContent,

@@ -229,6 +229,7 @@ export function MessagePartRenderer({
         args={part.args}
         result={part.result}
         success={part.success}
+        status={part.status}
         isPending={part.isPending}
         cancelled={part.cancelled}
       />
@@ -259,6 +260,10 @@ export function MessagePartRenderer({
         completedAt={part.completedAt}
         status={part.status}
         error={part.error}
+        parent_agent_id={part.parent_agent_id}
+        duration_ms={part.duration_ms}
+        progress_percent={part.progress_percent}
+        current_category={part.current_category}
         artifactDownloadScope={artifactDownloadScope}
       />
     );
@@ -505,8 +510,10 @@ function getMessagePartObjectToken(part: MessagePart): number {
   return token;
 }
 
-function createMessagePartIdentity(part: MessagePart): string {
+function createMessagePartIdentity(part: MessagePart, index: number): string {
   switch (part.type) {
+    case "text":
+      return `${part.type}:${part.logical_id || `index-${index}`}`;
     case "artifact":
       return `${part.type}:${part.artifact_id}`;
     case "tool":
@@ -543,7 +550,7 @@ export function createMessagePartRenderKeys(
   parts: MessagePart[],
 ): string[] {
   return parts.map(
-    (part) => `${messageId}:${createMessagePartIdentity(part)}`,
+    (part, index) => `${messageId}:${createMessagePartIdentity(part, index)}`,
   );
 }
 
@@ -650,6 +657,8 @@ function ArtifactCardItem({
 
   return (
     <div
+      role="group"
+      aria-label={part.label}
       className={clsx(
         "my-1 flex min-w-0 max-w-xl items-center gap-3 rounded-lg border px-3 py-2.5",
         "flex-wrap",

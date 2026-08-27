@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from dataclasses import dataclass
 import json
 import os
@@ -12,7 +13,6 @@ import stat
 import sys
 from types import SimpleNamespace
 from typing import Callable, Mapping, Sequence
-from urllib.parse import urlsplit
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if not __package__:  # pragma: no cover - direct script execution
@@ -42,11 +42,13 @@ RETIRED_CROSS_HOST_KEYS = frozenset(
         "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL",
         "OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL",
         "OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL",
+        "AI_PLATFORM_MODEL_UPSTREAM",
     }
 )
 REQUIRED_KEYS = frozenset(
     {
-        "AI_PLATFORM_MODEL_UPSTREAM",
+        "MODEL_CONNECTION_ENCRYPTION_KEY",
+        "MODEL_PROXY_INTERNAL_TOKEN",
         "AI_PLATFORM_FRONTEND_PORT",
         "WORKER_CLAUDE_AGENT_SDK_ENABLED",
         "CLAUDE_AGENT_PERMISSION_MODE",
@@ -75,6 +77,8 @@ SECRET_KEYS = frozenset(
         "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN",
         "SANDBOX_CALLBACK_TOKEN",
         "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
+        "MODEL_CONNECTION_ENCRYPTION_KEY",
+        "MODEL_PROXY_INTERNAL_TOKEN",
     }
 )
 IDENTITY_SUBJECT_KEYS = frozenset(
@@ -237,25 +241,6 @@ def _csv(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(","))
 
 
-def _validate_model_upstream(value: str) -> None:
-    try:
-        parsed = urlsplit(value)
-        port = parsed.port
-    except ValueError as exc:
-        raise S72ReleaseContractError("model upstream contract is invalid") from exc
-    if (
-        parsed.scheme != "http"
-        or parsed.hostname != "host.docker.internal"
-        or port != 3002
-        or parsed.username
-        or parsed.password
-        or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise S72ReleaseContractError("model upstream contract is invalid")
-
-
 def _validate_secret_authority(values: Mapping[str, str]) -> None:
     for key in SECRET_KEYS:
         value = values[key]
@@ -265,6 +250,16 @@ def _validate_secret_authority(values: Mapping[str, str]) -> None:
             or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
         ):
             raise S72ReleaseContractError("secret authority is invalid")
+    try:
+        encryption_key = base64.b64decode(
+            values["MODEL_CONNECTION_ENCRYPTION_KEY"], validate=True
+        )
+    except ValueError as exc:
+        raise S72ReleaseContractError("model encryption key is invalid") from exc
+    if len(encryption_key) != 32:
+        raise S72ReleaseContractError("model encryption key is invalid")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", values["MODEL_PROXY_INTERNAL_TOKEN"]):
+        raise S72ReleaseContractError("model proxy token is invalid")
 
 
 def _validated_contract(values: Mapping[str, str]) -> ValidatedS72ReleaseContract:
@@ -286,7 +281,6 @@ def _validated_contract(values: Mapping[str, str]) -> ValidatedS72ReleaseContrac
         or values["SANDBOX_SECURITY_PROFILE"] != "governed"
     ):
         raise S72ReleaseContractError("sandbox authority selection is unsafe")
-    _validate_model_upstream(values["AI_PLATFORM_MODEL_UPSTREAM"])
     digest = values["OPENSANDBOX_EXECUTOR_IMAGE_DIGEST"]
     image = values["OPENSANDBOX_EXECUTOR_IMAGE"]
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest) or not IMMUTABLE_IMAGE_RE.fullmatch(image) or not image.endswith(f"@{digest}"):

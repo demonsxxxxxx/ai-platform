@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import uuid
 
 import psycopg
@@ -13,10 +14,29 @@ from psycopg.rows import dict_row
 import pytest
 
 from app import agent_conversation_repository, repositories
+from app.execution.api import RunModelSelection
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_AGENT_PROFILE_TEST_DSN"
 POSTGRES_CONCURRENCY_TIMEOUT_SECONDS = 5
+_TEST_CHAT_STREAM_REQUEST = SimpleNamespace(
+    app=SimpleNamespace(
+        state=SimpleNamespace(
+            run_stream_runtime=SimpleNamespace(worker_capabilities=object()),
+        ),
+    ),
+)
+
+
+async def _resolve_legacy_chat_model(_conn, *, selection):
+    assert selection is None
+    return RunModelSelection(
+        model_id="model-a",
+        model_value="provider-model-a",
+        connection_revision=None,
+    )
+
+
 REQUIRED_SCHEMA_SQL = """
 create table tenants (
   id text primary key,
@@ -1356,8 +1376,8 @@ async def test_postgres_chat_persistence_is_committed_before_profile_queue_dispa
 
         monkeypatch.setattr("app.routes.chat.transaction", admission_transaction)
         monkeypatch.setattr(
-            "app.agent_apps.authority.resolve_model_selection",
-            lambda model_id, _settings: {"id": model_id, "value": "provider-model-a"},
+            "app.routes.chat.resolve_chat_model_selection",
+            _resolve_legacy_chat_model,
         )
         monkeypatch.setattr(repositories, "authorize_selected_run_capabilities", authorize_profile_skill)
         monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", governed_manifest)
@@ -1392,6 +1412,7 @@ async def test_postgres_chat_persistence_is_committed_before_profile_queue_dispa
                     ),
                     submission_id=submission_id,
                 ),
+                http_request=_TEST_CHAT_STREAM_REQUEST,
                 principal=user,
             )
         )
@@ -1540,8 +1561,8 @@ async def test_postgres_profile_queue_dispatch_is_not_emitted_after_producer_rol
 
         monkeypatch.setattr("app.routes.chat.transaction", rolled_back_transaction)
         monkeypatch.setattr(
-            "app.agent_apps.authority.resolve_model_selection",
-            lambda model_id, _settings: {"id": model_id, "value": "provider-model-a"},
+            "app.routes.chat.resolve_chat_model_selection",
+            _resolve_legacy_chat_model,
         )
         monkeypatch.setattr(repositories, "authorize_selected_run_capabilities", authorize_profile_skill)
         monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", governed_manifest)
@@ -1557,6 +1578,7 @@ async def test_postgres_profile_queue_dispatch_is_not_emitted_after_producer_rol
                         expected_revision=1,
                     ),
                 ),
+                http_request=_TEST_CHAT_STREAM_REQUEST,
                 principal=AuthPrincipal(
                     user_id="user-profile-chat",
                     display_name="Profile Chat user",

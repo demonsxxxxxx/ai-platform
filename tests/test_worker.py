@@ -1,6 +1,8 @@
 import asyncio
+import hashlib
 import json
 import types
+from types import SimpleNamespace
 from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -42,14 +44,19 @@ from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.runtime.sandbox.executor_client import SandboxExecutorHttpError
 from app.skills.execution_profiles import resolve_skill_execution_profile
+from app.streaming.application.durable_v4 import V4PendingAdmission
+from app.streaming.application.worker_publication_v4 import WorkerV4Capabilities
+from app.streaming.api import build_v4_control
+from app.streaming.domain.transport import canonical_json_bytes
+
 from app.worker import (
+    process_run_payload as _process_run_payload,
     WorkerOutcome,
     _locked_run_principal,
     _multi_agent_result_summary,
     _payload_from_locked_run,
     _record_run_step_from_event,
     parse_queue_payload,
-    process_run_payload,
 )
 from tests.support.executor_stubs import FailingExecutorStub, SuccessfulExecutorStub
 
@@ -59,25 +66,133 @@ _ORIGINAL_ENSURE_MCP_TOOL_ACTIVE = repository_module.ensure_mcp_tool_active
 _ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS = repository_module.materialize_run_skill_manifests
 
 
-@pytest.fixture(autouse=True)
-def stub_sse_stream_publisher(monkeypatch):
-    class Publisher:
-        def __init__(self, tenant_id, run_id, attempt_id, authority_secret):
-            self.run_id = run_id
+class _FakeWorkerV4Admission:
+    def __init__(self, calls=None):
+        self.calls = calls
 
-        async def prepare(self, conn):
-            return None
+    async def prepare_pending_authority(self, *, tenant_id, run_id, attempt_id):
+        envelope = build_v4_control(
+            event_id=f"open-{run_id}-{attempt_id}",
+            tenant_scope="a" * 64,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            stream_incarnation=1,
+            event_type="stream.open",
+            payload={"design_id": "ai-platform.redis-streams-sse-event-channel.v4"},
+            source={"kind": "stream_authority", "authority_id": f"open-{run_id}-{attempt_id}"},
+        )
+        payload = canonical_json_bytes(envelope)
+        return V4PendingAdmission(
+            tenant_id=tenant_id,
+            tenant_scope="a" * 64,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            stream_incarnation=1,
+            open_event_id=envelope["event_id"],
+            open_payload_bytes=payload,
+            open_payload_digest=hashlib.sha256(payload).hexdigest(),
+        )
 
-        async def open(self):
-            return None
+    async def prepare_pending_authority_in_transaction(
+        self,
+        transaction,
+        *,
+        tenant_id,
+        run_id,
+        attempt_id,
+    ):
+        if self.calls is not None:
+            self.calls.append(("prepare_v4_authority", transaction, tenant_id, run_id, attempt_id))
+        return await self.prepare_pending_authority(
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+        )
 
-        async def confirm(self, conn):
-            return None
+    async def list_pending_admissions(self, *, limit):
+        return ()
 
-        async def aclose(self):
-            return None
+    async def confirm_pending_admission(self, admission, *, redis_id):
+        assert redis_id
+        return SimpleNamespace(
+            tenant_id=admission.tenant_id,
+            run_id=admission.run_id,
+            attempt_id=admission.attempt_id,
+            stream_incarnation=admission.stream_incarnation,
+        )
 
-    monkeypatch.setattr(worker_module, "RunStreamPublisher", Publisher)
+
+class _FakeWorkerV4Authority:
+    async def get(self, *, tenant_id, run_id):
+        return SimpleNamespace(attempt_id="qat-test-attempt", stream_incarnation=1)
+
+
+class _FakeWorkerV4Persistence:
+    async def append_terminal_row(self, _conn, *, tenant_id, run_id):
+        return None
+
+    async def persist_event_and_check_cancel(
+        self,
+        *,
+        run_payload,
+        persist_event,
+        event_type,
+        stage,
+        message,
+        payload,
+        record_run_step,
+    ):
+        async with worker_module.transaction() as conn:
+            if persist_event:
+                merged = {"visible_to_user": True, "severity": "info"}
+                if payload:
+                    merged.update(payload)
+                await repository_module.append_event(
+                    conn,
+                    tenant_id=run_payload.tenant_id,
+                    run_id=run_payload.run_id,
+                    event_type=event_type,
+                    stage=stage,
+                    message=message,
+                    payload=merged,
+                )
+                await record_run_step(
+                    conn,
+                    tenant_id=run_payload.tenant_id,
+                    run_id=run_payload.run_id,
+                    event_type=event_type,
+                    message=message,
+                    payload=payload,
+                )
+            return await repository_module.is_cancel_requested(
+                conn,
+                tenant_id=run_payload.tenant_id,
+                run_id=run_payload.run_id,
+            )
+
+
+class _FakeWorkerV4Claims:
+    async def claim_next(self, **kwargs):
+        return None
+
+
+class _FakeWorkerV4Transport:
+    async def publish(self, canonical_envelope_bytes):
+        return "0-1"
+
+
+_FAKE_WORKER_V4_CAPABILITIES = WorkerV4Capabilities(
+    authority=_FakeWorkerV4Authority(),
+    pending_admissions=_FakeWorkerV4Admission(),
+    event_persistence=_FakeWorkerV4Persistence(),
+    publication_claims=_FakeWorkerV4Claims(),
+    publication_transport=_FakeWorkerV4Transport(),
+)
+
+
+async def process_run_payload(*args, **kwargs):
+    kwargs.setdefault("v4_capabilities", _FAKE_WORKER_V4_CAPABILITIES)
+    return await _process_run_payload(*args, **kwargs)
 
 
 @pytest.mark.asyncio
@@ -530,7 +645,7 @@ def primary_manifest(skill_id: str, version: str) -> dict:
     }
 
 
-def test_worker_projects_reviewed_uploaded_skill_local_tools_from_server_profile():
+def test_worker_ignores_uploaded_v1_local_tool_list_before_sandbox_boundary():
     profile = resolve_skill_execution_profile(
         skill_id="native-review",
         source_kind="uploaded",
@@ -575,20 +690,12 @@ def test_worker_projects_reviewed_uploaded_skill_local_tools_from_server_profile
     )
     by_identity = {subject["identity"]: subject for subject in subjects}
 
-    assert set(by_identity) == {
-        "Skill", "Read", "Glob", "LS", "Bash", "Write", "Edit", "Grep"
-    }
-    assert all(
-        subject["declared_identities"] == [subject["identity"]]
-        for subject in subjects
-    )
-    assert container_provider._native_tool_required(
+    assert set(by_identity) == {"Skill"}
+    assert by_identity["Skill"]["execution_strategy"] == "sandbox_full_local"
+    assert by_identity["Skill"]["allowed_skill_names"] == ["native-review"]
+    assert not container_provider._native_tool_required(
         types.SimpleNamespace(tool_policy_subjects=subjects)
     )
-    assert by_identity["Bash"]["command_isolation"] == "sibling-tool-sandbox-v1"
-    assert by_identity["Bash"]["execution_strategy"] == "sdk_native"
-    assert by_identity["Read"]["required_parameter_keys"] == ["file_path"]
-    assert by_identity["Skill"]["allowed_skill_names"] == ["native-review"]
 
 
 def test_general_chat_catalog_aggregation_drives_mount_and_native_bash_admission():
@@ -626,12 +733,10 @@ def test_general_chat_catalog_aggregation_drives_mount_and_native_bash_admission
     by_identity = {subject["identity"]: subject for subject in subjects}
     runtime_request = types.SimpleNamespace(tool_policy_subjects=subjects)
 
-    assert by_identity["Skill"]["execution_strategy"] == "sdk_restricted"
+    assert set(by_identity) == {"Skill"}
+    assert by_identity["Skill"]["execution_strategy"] == "sandbox_full_local"
     assert by_identity["Skill"]["allowed_skill_names"] == ["minimax-docx"]
-    assert by_identity["Bash"]["execution_strategy"] == "sdk_native"
-    assert by_identity["Bash"]["command_isolation"] == "sibling-tool-sandbox-v1"
-    assert container_provider._staged_skill_mount_required(runtime_request)
-    assert container_provider._native_tool_required(runtime_request)
+    assert not container_provider._native_tool_required(runtime_request)
 
 
 def test_worker_keeps_bash_available_without_required_completion():
@@ -1631,10 +1736,12 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
         worker_id,
         reconciliation,
         transaction_factory,
+        v4_capabilities,
     ):
         del registry, reconciliation
         assert worker_id == "worker-a"
         assert transaction_factory is None
+        assert v4_capabilities is _FAKE_WORKER_V4_CAPABILITIES
         assert raw["_queue_attempt_id"] == "attempt-a"
         queue_payload = QueueRunPayload.model_validate(
             {key: value for key, value in raw.items() if key != "_queue_attempt_id"}
@@ -1681,6 +1788,7 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
         result=result,
         worker_id="worker-a",
         claim_token="claim-a",
+        v4_capabilities=_FAKE_WORKER_V4_CAPABILITIES,
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
@@ -1806,6 +1914,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         worker_id="worker-a",
         claim_token="claim-a",
         transaction_factory=fake_transaction,
+        v4_capabilities=_FAKE_WORKER_V4_CAPABILITIES,
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
@@ -1913,6 +2022,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         registry=AdapterRegistry({"claude-agent-worker": SuccessfulExecutorStub()}),
         worker_id="worker-a",
         claim_token="claim-a",
+        v4_capabilities=_FAKE_WORKER_V4_CAPABILITIES,
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
@@ -2143,6 +2253,9 @@ def locked_run_from_payload(payload):
         "agent_id": validated["agent_id"],
         "execution_kind": validated["execution_kind"],
         "skill_id": validated["skill_id"],
+        "model_id": validated.get("model_id"),
+        "model_value": validated.get("model_value"),
+        "model_gateway_revision": validated.get("model_gateway_revision"),
         "trace_id": f"trace_{validated['run_id']}",
         "principal_roles": [],
         "principal_department_id": "",
@@ -2295,6 +2408,8 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         file_ids=[],
         input={"message": "hello"},
         executor_type="claude-agent-worker",
+        model_id="governed-model",
+        model_value="openai/gpt-5",
         skill_version=None,
         release_decision={},
         skill_manifests=[],
@@ -2315,6 +2430,8 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
     elif pin_change == "session_hash":
         locked_run["session_admitted_agent_profile_hash"] = "b" * 64
 
+    authorized_profile = worker_module.parse_leased_queue_envelope(raw).payload.agent_profile
+
     class CaptureAdapter:
         async def submit_run(self, payload, event_sink=None):
             calls.append(("adapter", payload))
@@ -2334,10 +2451,22 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         calls.append(("event", kwargs))
         return "evt-a"
 
+    async def reauthorize(*_args, **_kwargs):
+        return types.SimpleNamespace(
+            private_execution_input=authorized_profile,
+            skill={"skill_id": "general-chat"},
+            model={"id": "obsolete-profile-model", "value": "obsolete-profile-model"},
+            mcp_tool_ids=(),
+        )
+
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr(
+        "app.worker.reauthorize_bound_profile_for_worker_dispatch",
+        reauthorize,
+    )
 
     outcome = await process_run_payload(
         raw,
@@ -2345,9 +2474,11 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
     )
 
     if pin_change is None:
-        assert outcome.status == "succeeded"
+        assert outcome.status == "succeeded", (outcome, calls)
         assert outcome.error_code is None
         adapter_payload = next(call[1] for call in calls if call[0] == "adapter")
+        assert adapter_payload.model_id == raw["model_id"]
+        assert adapter_payload.model_value == raw["model_value"]
         assert adapter_payload.agent_profile == {
             "agent_id": "agt_support",
             "revision": 7,
@@ -2370,7 +2501,6 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         ("revoked", "profile_not_authorized", "agent_profile", "agent_profile_authority"),
         ("instructions", "profile_snapshot_invalid", "agent_profile", "agent_profile_authority"),
         ("required_skill", "profile_snapshot_invalid", "agent_profile", "agent_profile_authority"),
-        ("model", "profile_snapshot_invalid", "agent_profile", "agent_profile_authority"),
         ("mcp", "profile_snapshot_invalid", "agent_profile", "agent_profile_authority"),
         (
             "principal",
@@ -2443,8 +2573,6 @@ async def test_worker_reauthorizes_pinned_profile_before_adapter(
             authorized["instructions"] = "Current immutable instruction."
         elif authority_change == "required_skill":
             authorized["required_skill_version"] = "version-b"
-        elif authority_change == "model":
-            model = {"id": "model-b", "value": "model-b"}
         elif authority_change == "mcp":
             mcp_tool_ids = ("tool-b",)
         return types.SimpleNamespace(
@@ -2463,21 +2591,32 @@ async def test_worker_reauthorizes_pinned_profile_before_adapter(
         "app.worker.reauthorize_bound_profile_for_worker_dispatch",
         reauthorize,
     )
+    v4_capabilities = _FAKE_WORKER_V4_CAPABILITIES
     if authority_change == "principal":
         async def deny_current_principal(**_kwargs):
             raise PrincipalAuthorityDenied()
 
         monkeypatch.setattr("app.worker.resolve_current_principal", deny_current_principal)
+        v4_capabilities = WorkerV4Capabilities(
+            authority=_FakeWorkerV4Authority(),
+            pending_admissions=_FakeWorkerV4Admission(calls),
+            event_persistence=_FakeWorkerV4Persistence(),
+            publication_claims=_FakeWorkerV4Claims(),
+            publication_transport=_FakeWorkerV4Transport(),
+        )
 
     outcome = await process_run_payload(
         raw,
         AdapterRegistry({"claude-agent-worker": ForbiddenAdapter()}),
+        v4_capabilities=v4_capabilities,
     )
 
     assert outcome.status == "failed"
     assert outcome.error_code == "capability_not_authorized"
     if authority_change == "principal":
         assert not any(item[0] == "reauthorize" for item in calls)
+        call_kinds = [item[0] for item in calls]
+        assert call_kinds.index("prepare_v4_authority") < call_kinds.index("fail")
     else:
         assert calls[0][0] == "reauthorize"
     event = next(item[1] for item in calls if item[0] == "event")
@@ -2911,7 +3050,7 @@ async def test_worker_fails_and_terminalizes_when_a_pending_permission_would_byp
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message))
-        return True
+        return RunTerminalizationProgress(True, "failed", True)
 
     async def complete_run(conn, **kwargs):
         raise AssertionError("a pending permission must prevent complete_run")
@@ -2985,7 +3124,7 @@ async def test_worker_enforces_declared_required_artifact_types(
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", error_code, error_message))
-        return True
+        return RunTerminalizationProgress(True, "failed", True)
 
     async def complete_run(conn, **kwargs):
         calls.append(("complete", kwargs["run_id"]))
@@ -3253,7 +3392,7 @@ async def test_worker_rolls_back_success_visible_writes_when_a_permission_arrive
 
     async def fail_run(conn, **kwargs):
         conn.pending_writes.append(("fail", kwargs["error_code"]))
-        return True
+        return RunTerminalizationProgress(True, "failed", True)
 
     async def classify_success_commit_block(conn, *, tenant_id, run_id):
         return "tool_permission_pending"
@@ -3866,7 +4005,7 @@ async def test_worker_does_not_append_failure_terminal_events_when_run_is_alread
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code))
-        return False
+        return RunTerminalizationProgress(False, None, False)
 
     async def release_sandbox_lease(conn, **kwargs):
         calls.append(("release", kwargs["reason"]))
@@ -4150,7 +4289,7 @@ async def test_worker_does_not_append_cancel_terminal_event_when_cancel_update_i
 
     async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
         calls.append(("cancel", run_id, result_json))
-        return False
+        return RunTerminalizationProgress(False, None, False)
 
     async def fail_run(conn, **kwargs):
         raise AssertionError("accepted cancel must not be overwritten by executor_failure")
@@ -4922,7 +5061,7 @@ async def test_worker_fails_missing_physical_context_snapshot_before_adapter(mon
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs["error_code"], kwargs["error_message"]))
-        return True
+        return RunTerminalizationProgress(True, "failed", True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -5666,7 +5805,7 @@ async def test_worker_fails_invalid_physical_context_binding_before_adapter(monk
 
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs["error_code"]))
-        return True
+        return RunTerminalizationProgress(True, "failed", True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -5799,7 +5938,7 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
             raise AssertionError("scope-invalid queued run must not reach executor")
 
     async def mark_run_running(conn, *, tenant_id, run_id):
-        calls.append(("lock", tenant_id, run_id))
+        calls.append(("lock", conn, tenant_id, run_id))
 
     async def get_run(conn, *, tenant_id, run_id):
         calls.append(("get_run", tenant_id, run_id))
@@ -5834,11 +5973,24 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
     outcome = await process_run_payload(
         base_payload(executor_type="claude-agent-worker"),
         AdapterRegistry({"claude-agent-worker": ForbiddenAdapter()}),
+        v4_capabilities=replace(
+            _FAKE_WORKER_V4_CAPABILITIES,
+            pending_admissions=_FakeWorkerV4Admission(calls),
+        ),
     )
 
     assert outcome.status == "failed"
     assert outcome.error_code == "queue_payload_identity_mismatch"
     assert ("fail", "queue_payload_identity_mismatch", "Queued run identity is invalid") in calls
+    prepare_index = next(
+        index for index, item in enumerate(calls) if item[0] == "prepare_v4_authority"
+    )
+    terminal_event_index = next(
+        index for index, item in enumerate(calls) if item[0] == "event"
+    )
+    lock_index = next(index for index, item in enumerate(calls) if item[0] == "lock")
+    assert prepare_index < terminal_event_index
+    assert calls[prepare_index][1] is calls[lock_index][1]
     assert any(item[0] == "event" and item[1] == "error" for item in calls)
 
 
@@ -6090,6 +6242,113 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
             "inferred_used": False,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_worker_terminal_snapshots_keep_each_admitted_skill_release_decision(monkeypatch):
+    primary_decision = {
+        **release_decision("hash-anysearch"),
+        "policy_active": True,
+        "selected_track": "current",
+        "current_version": "hash-anysearch",
+        "previous_version": "hash-anysearch-old",
+        "rollout_percent": 50,
+        "bucket": 1,
+    }
+    secondary_decision = {
+        **release_decision("hash-sop"),
+        "policy_active": True,
+        "selected_track": "previous",
+        "current_version": "hash-sop-next",
+        "previous_version": "hash-sop",
+        "rollout_percent": 50,
+        "bucket": 99,
+    }
+    admitted_manifests = [
+        {
+            **primary_manifest("anysearch", "hash-anysearch"),
+            "release_decision": primary_decision,
+        },
+        {
+            **primary_manifest("sop-compliance-reviewer", "hash-sop"),
+            "release_decision": secondary_decision,
+        },
+    ]
+    expected_sources = {
+        manifest["skill_id"]: repository_module.run_skill_snapshot_source_json(manifest)
+        for manifest in admitted_manifests
+    }
+    snapshots = []
+
+    class MultiSkillAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="test-adapter/1",
+                executor_type="fake",
+                executor_version="test-executor/1",
+                capabilities={"skills": True},
+                result={"message": "done"},
+                executor_payload={
+                    "used_skills": ["anysearch", "sop-compliance-reviewer"],
+                    "used_skills_source": "executor_hook",
+                    "skill_manifests": [
+                        {
+                            "skill_id": skill_id,
+                            "version": "executor-controlled",
+                            "content_hash": "executor-controlled",
+                            "source": {"kind": "uploaded"},
+                            "release_decision": primary_decision,
+                            "allowed": True,
+                            "staged": True,
+                        }
+                        for skill_id in ("anysearch", "sop-compliance-reviewer")
+                    ],
+                },
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        return "evt-a"
+
+    async def complete_run(conn, **kwargs):
+        return True
+
+    async def upsert_run_skill_snapshot(conn, **kwargs):
+        assert kwargs["source_json"] == expected_sources[kwargs["skill_id"]]
+        snapshots.append(kwargs)
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr(
+        "app.worker.repositories.upsert_run_skill_snapshot",
+        upsert_run_skill_snapshot,
+    )
+
+    outcome = await process_run_payload(
+        base_payload(
+            skill_id="anysearch",
+            skill_version="hash-anysearch",
+            release_decision=primary_decision,
+            skill_manifests=admitted_manifests,
+        ),
+        AdapterRegistry({"fake": MultiSkillAdapter()}),
+    )
+
+    assert outcome.status == "succeeded"
+    assert {snapshot["skill_id"] for snapshot in snapshots} == {
+        "anysearch",
+        "sop-compliance-reviewer",
+    }
+    assert (
+        expected_sources["anysearch"]["release_decision_sha256"]
+        != expected_sources["sop-compliance-reviewer"]["release_decision_sha256"]
+    )
 
 
 @pytest.mark.asyncio

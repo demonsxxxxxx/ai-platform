@@ -11,9 +11,13 @@ const TERMINAL_STATUS_ALIASES: Record<string, TerminalRunStatus> = {
   completed: "succeeded",
   failed: "failed",
   run_cancelled: "cancelled",
+  "run.cancelled": "cancelled",
   run_completed: "succeeded",
+  "run.completed": "succeeded",
   run_failed: "failed",
+  "run.failed": "failed",
   run_succeeded: "succeeded",
+  "run.succeeded": "succeeded",
   succeeded: "succeeded",
 };
 

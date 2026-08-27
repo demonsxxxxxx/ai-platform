@@ -19,7 +19,7 @@ from app.models import (
     PublicSkillImportPreviewResponse,
 )
 from app.settings import get_settings
-from app.skills.dependencies import SkillDependencyPolicyError, skill_dependency_ids, skill_dependency_policy
+from app.skills.dependencies import skill_dependency_policy
 from app.skills.lifecycle import (
     SKILL_VERSION_DEPRECATED,
     SKILL_VERSION_DISABLED,
@@ -260,44 +260,6 @@ async def _mark_superseded_skill_version_deprecated(
     return version
 
 
-def _skill_dependency_ids_or_409(skill_id: str, available_skill_ids: set[str]) -> list[str]:
-    try:
-        return skill_dependency_ids(skill_id, available_skill_ids)
-    except SkillDependencyPolicyError as exc:
-        raise HTTPException(status_code=409, detail="skill_dependency_policy_violation") from exc
-
-
-def _dependency_manifest_snapshots_or_409(
-    dependency_ids: list[str],
-    manifest_by_skill_id: dict[str, dict[str, object]],
-) -> list[dict[str, object]]:
-    snapshots: list[dict[str, object]] = []
-    for dependency_id in dependency_ids:
-        manifest = manifest_by_skill_id.get(dependency_id)
-        if manifest is None:
-            raise HTTPException(status_code=409, detail="skill_version_not_materializable")
-        snapshots.append(deepcopy(manifest))
-    return snapshots
-
-
-def _builtin_dependency_manifest_snapshots(dependency_ids: list[str]) -> list[dict[str, object]]:
-    if not dependency_ids:
-        return []
-    registry = BuiltinSkillRegistry(get_settings().platform_skills_root)
-    try:
-        dependency_pins = build_skill_manifest_pins(
-            skill_id="",
-            input_payload={"skill_ids": dependency_ids},
-            builtin_skills=registry.list_builtin_skills(),
-        )
-    except SkillDependencyPolicyError as exc:
-        raise HTTPException(status_code=409, detail="skill_dependency_policy_violation") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail="skill_version_not_materializable") from exc
-    manifest_by_skill_id = {str(item.get("skill_id") or ""): item for item in dependency_pins}
-    return _dependency_manifest_snapshots_or_409(dependency_ids, manifest_by_skill_id)
-
-
 @router.get("/admin/skills", response_model=AdminSkillListResponse)
 async def admin_list_skills(
     principal: AuthPrincipal = Depends(require_principal),
@@ -329,9 +291,19 @@ async def admin_skill_detail(
             available_skill_ids = set(await repositories.list_skill_ids(conn))
     if detail is None:
         raise HTTPException(status_code=404, detail="skill_not_found")
+    versions = detail.get("versions") if isinstance(detail.get("versions"), list) else []
+    release_policy = detail.get("release_policy") if isinstance(detail.get("release_policy"), dict) else {}
+    current_version = str(release_policy.get("current_version") or "")
+    selected_version = next(
+        (version for version in versions if str(version.get("version") or "") == current_version),
+        versions[0] if versions else {},
+    )
+    dependency_ids = selected_version.get("dependency_ids")
+    if not isinstance(dependency_ids, list) or not all(isinstance(item, str) for item in dependency_ids):
+        dependency_ids = []
     detail = {
         **detail,
-        "dependency_policy": skill_dependency_policy(skill_id, available_skill_ids),
+        "dependency_policy": skill_dependency_policy(skill_id, available_skill_ids, dependency_ids),
     }
     return AdminSkillDetailResponse.model_validate(detail)
 
@@ -351,25 +323,45 @@ async def admin_sync_builtin_skills(
             input_payload={"skill_ids": [skill.name for skill in builtins]},
             builtin_skills=builtins,
         )
-    except SkillDependencyPolicyError as exc:
-        raise HTTPException(status_code=409, detail="skill_dependency_policy_violation") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail="skill_version_not_materializable") from exc
     manifest_by_skill_id = {str(item.get("skill_id") or ""): item for item in manifest_pins}
     synced = []
     async with transaction() as conn:
         for skill in builtins:
-            dependency_ids = _skill_dependency_ids_or_409(skill.name, available_skill_ids)
             manifest = manifest_by_skill_id.get(skill.name)
             if manifest is None:
                 raise HTTPException(status_code=409, detail="skill_version_not_materializable")
-            source_json = dict(skill.source)
-            source_json["files"] = list(manifest.get("files") or [])
-            if dependency_ids:
-                source_json["dependency_manifests"] = _dependency_manifest_snapshots_or_409(
-                    dependency_ids,
-                    manifest_by_skill_id,
+            existing_version = await repositories.get_skill_version(
+                conn,
+                skill_id=skill.name,
+                version=skill.version,
+            )
+            existing_source = (
+                existing_version.get("source")
+                if isinstance(existing_version, dict) and isinstance(existing_version.get("source"), dict)
+                else {}
+            )
+            if isinstance(existing_source.get("files"), list) and existing_source["files"]:
+                try:
+                    validate_skill_version_dependency_policy(
+                        existing_version,
+                        available_skill_ids=available_skill_ids,
+                    )
+                except SkillVersionMaterializationError as exc:
+                    raise HTTPException(status_code=409, detail="skill_version_not_materializable") from exc
+                source_json = deepcopy(existing_source)
+                existing_dependency_ids = existing_version.get("dependency_ids")
+                dependency_ids = (
+                    list(existing_dependency_ids)
+                    if isinstance(existing_dependency_ids, list)
+                    and all(isinstance(item, str) for item in existing_dependency_ids)
+                    else []
                 )
+            else:
+                dependency_ids = []
+                source_json = dict(skill.source)
+                source_json["files"] = list(manifest.get("files") or [])
             await repositories.upsert_skill_version(
                 conn,
                 skill_id=skill.name,
@@ -435,8 +427,7 @@ async def admin_upload_skill_package(
                 raise HTTPException(status_code=403, detail="not_ai_admin")
             if str(skill.get("status") or "") != "active":
                 raise HTTPException(status_code=409, detail="skill_inactive")
-        available_skill_ids = set(await repositories.list_skill_ids(conn))
-        dependency_ids = _skill_dependency_ids_or_409(skill_id, available_skill_ids)
+        dependency_ids: list[str] = []
 
         if is_new_skill:
             try:
@@ -474,7 +465,7 @@ async def admin_upload_skill_package(
                 )
                 return AdminSkillUploadResponse(uploaded=existing)
 
-        dependency_manifests = _builtin_dependency_manifest_snapshots(dependency_ids)
+        dependency_manifests: list[dict[str, object]] = []
         storage_key = f"skills/{skill_id}/versions/{parsed.content_hash}/package.zip"
         stored = ObjectStorage().put_bytes(
             storage_key=storage_key,

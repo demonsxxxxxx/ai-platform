@@ -146,7 +146,6 @@ def _start_broker_runtime(
 ) -> tuple[threading.Event, threading.Thread] | None:
     if not _broker_enabled(environ):
         return None
-    provider_credentials = _model_provider_credentials(environ)
     policy = _load_broker_policy(config, policy_path)
     upstream_tls_context = _load_upstream_tls_context(upstream_ca_path) if upstream_ca_path else None
     broker = MailboxBroker(
@@ -157,7 +156,6 @@ def _start_broker_runtime(
         config.workspace_root,
         config.dispatch_timeout_seconds,
         upstream_tls_context=upstream_tls_context,
-        provider_credentials=provider_credentials,
     )
     stop = threading.Event()
     worker = threading.Thread(
@@ -559,15 +557,6 @@ def _required(env: Mapping[str, str], name: str) -> str:
     if not value or "\x00" in value or len(value) > 4096:
         raise ValueError(f"missing or invalid setting: {name}")
     return value
-
-
-def _model_provider_credentials(env: Mapping[str, str]) -> dict[str, str]:
-    """Load provider secrets only inside the trusted host broker process."""
-
-    return {
-        "openai": _secret(env, "OPENSANDBOX_GATEWAY_OPENAI_API_KEY_FILE"),
-        "anthropic": _secret(env, "OPENSANDBOX_GATEWAY_ANTHROPIC_AUTH_TOKEN_FILE"),
-    }
 
 
 def _secret(env: Mapping[str, str], name: str) -> str:

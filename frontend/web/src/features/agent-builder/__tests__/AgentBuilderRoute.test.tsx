@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-test("AgentBuilderRoute supplies admin authority and public catalogs without owning profile or Chat state", () => {
+test("AgentBuilderRoute supplies admin authority and capability catalogs without owning profile or Chat state", () => {
   const source = readFileSync(
     join(process.cwd(), "src/features/agent-builder/AgentBuilderRoute.tsx"),
     "utf8",
@@ -13,8 +13,8 @@ test("AgentBuilderRoute supplies admin authority and public catalogs without own
   assert.match(source, /useTools\(\{ enabled: true \}\)/);
   assert.match(source, /mapAuthorizedBuilderSkills/);
   assert.match(source, /mapSafeBuilderMcpTools/);
-  assert.match(source, /modelsResolved: !modelsLoading && modelsError === null/);
   assert.match(source, /BUILDER_CATALOG_LOAD_ERROR/);
+  assert.doesNotMatch(source, /modelPublicApi|modelsResolved|modelsLoading/);
   assert.match(source, /canManageProfiles=\{user\?\.is_admin === true\}/);
   assert.match(source, /AgentBuilderShell/);
   assert.doesNotMatch(source, /error instanceof Error \? error\.message/);

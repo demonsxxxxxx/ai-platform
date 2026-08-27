@@ -100,10 +100,8 @@ function catalog(
         description: "Search the authorized knowledge base.",
       },
     ],
-    models: [model],
     skillsResolved: true,
     mcpToolsResolved: true,
-    modelsResolved: true,
     effectivePermissionsKnown: true,
     ...overrides,
   };
@@ -152,7 +150,6 @@ test("hydrates every exact server identity without catalog fallback", () => {
   assert.equal(editor.agentId, "agt_document_review");
   assert.equal(editor.revision, 7);
   assert.equal(editor.status, "draft");
-  assert.equal(editor.modelId, "removed-model");
   assert.deepEqual(editor.selectedSkills, [{
     skill_id: "removed-skill",
     expected_version: "sha256:removed",
@@ -178,7 +175,6 @@ test("materializes create and update requests with the exact optimistic revision
     expectedOutputs: [" 审阅意见 "],
     permissionsAndDataAccessNotice: " 仅访问授权数据 ",
     instructions: "Keep trailing space. ",
-    modelId: model.id,
     selectedSkills: [{
       skill_id: "document-review",
       expected_version: "2026.07.28",
@@ -196,7 +192,6 @@ test("materializes create and update requests with the exact optimistic revision
     expected_outputs: ["审阅意见"],
     permissions_and_data_access_notice: "仅访问授权数据",
     instructions: "Keep trailing space. ",
-    model_id: "model-id",
     selected_skill: {
       skill_id: "document-review",
       expected_version: "2026.07.28",
@@ -236,9 +231,7 @@ test("reports precise missing data and revision reasons", () => {
     validateAgentProfileEditor(withoutInstructions, catalog())?.code,
     "instructions_required",
   );
-  const withoutModel = { ...withoutInstructions, instructions: "System" };
-  assert.equal(validateAgentProfileEditor(withoutModel, catalog())?.code, "model_required");
-  const withoutSkill = { ...withoutModel, modelId: model.id };
+  const withoutSkill = { ...withoutInstructions, instructions: "System" };
   assert.equal(validateAgentProfileEditor(withoutSkill, catalog())?.code, "skill_required");
   const coreOnly = {
     ...withoutSkill,
@@ -250,7 +243,7 @@ test("reports precise missing data and revision reasons", () => {
   assert.equal(
     validateAgentProfileEditor(coreOnly, catalog()),
     null,
-    "name, Agent.md, model, and one Skill are sufficient to save",
+    "name, Agent.md, and one Skill are sufficient to save",
   );
   const withoutRevision = {
     ...hydrateAgentProfileEditor(profile()),
@@ -266,12 +259,8 @@ test("reports precise missing data and revision reasons", () => {
   );
 });
 
-test("preserves and blocks stale model, Skill version, and MCP identities", () => {
+test("preserves and blocks stale Skill version and MCP identities", () => {
   const editor = hydrateAgentProfileEditor(profile());
-  assert.equal(
-    validateAgentProfileEditor(editor, catalog({ models: [] }))?.code,
-    "selected_model_stale",
-  );
   assert.equal(
     validateAgentProfileEditor(editor, catalog({ skills: [skill({ expected_version: "new" })] }))?.code,
     "selected_skill_stale",
@@ -281,7 +270,6 @@ test("preserves and blocks stale model, Skill version, and MCP identities", () =
   assert.deepEqual(mcpIssue?.unavailableMcpToolIds, ["mcp:knowledge:search"]);
   assert.deepEqual(editor.selectedMcpToolIds, ["mcp:knowledge:search"]);
   assert.equal(editor.selectedSkills[0]?.expected_version, "2026.07.28");
-  assert.equal(editor.modelId, "model-id");
 });
 
 test("persists an exact multi-Skill set while keeping the primary compatibility shadow", () => {
@@ -330,10 +318,6 @@ test("rejects more than 32 Skills and duplicate Skill identities across versions
 test("fails closed while selected catalogs are unresolved", () => {
   const editor = hydrateAgentProfileEditor(profile());
   assert.equal(
-    validateAgentProfileEditor(editor, catalog({ modelsResolved: false }))?.code,
-    "catalog_unavailable",
-  );
-  assert.equal(
     validateAgentProfileEditor(editor, catalog({ skillsResolved: false }))?.code,
     "catalog_unavailable",
   );
@@ -348,7 +332,6 @@ test("publish requires one clean successfully saved draft", () => {
     ...createUnsavedAgentEditor(),
     name: "Agent",
     instructions: "System",
-    modelId: model.id,
     selectedSkills: [{
       skill_id: "document-review",
       expected_version: "2026.07.28",

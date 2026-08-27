@@ -724,6 +724,21 @@ test("Agent workspace sidebar consumes the server-paginated session source", () 
   assert.match(source, /composerPlaceholder=\{[\s\S]*agentWorkspace\.name/);
 });
 
+test("Agent workspaces preserve the shared catalog model selector and user choice", () => {
+  const source = readFileSync(
+    new URL("../ChatAppContent.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /const filteredModels = availableModels \?\? null;/);
+  assert.match(source, /availableModels=\{filteredModels \?\? \[\]\}/);
+  assert.doesNotMatch(
+    source,
+    /availableModels=\{[\s\S]{0,80}agentConversationControlsLocked[\s\S]{0,80}\}/,
+  );
+});
+
+
 test("legacy generic Agent sessions redirect to the canonical dedicated route", () => {
   const source = readFileSync(
     new URL("../ChatAppContent.tsx", import.meta.url),

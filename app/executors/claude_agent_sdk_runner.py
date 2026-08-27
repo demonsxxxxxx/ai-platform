@@ -25,8 +25,6 @@ from app.control_plane_contracts import (
 )
 from app.executors.claude.capability_policy import (
     CapabilityExecutionPlan,
-    _BUILTIN_PARAMETER_KEYS,
-    _BUILTIN_REQUIRED_PARAMETER_KEYS,
     _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX,
     _SDK_INTERNAL_CONTEXT_TOOLS,
     _authorized_parameter_keys as _authorized_parameter_keys,
@@ -42,6 +40,7 @@ from app.executors.claude.prompts import (
     translation_target_language as _prompt_translation_target_language,
     with_selected_skill_invocation_requirement as _with_selected_skill_invocation_requirement,
 )
+from app.execution.api import ClaudeSdkAgentEventAdapter
 from app.executors.claude_stream_projection import ClaudeStreamProjector
 from app.executors.public_answer_stream import PublicAnswerStreamGate
 from app.required_tool_contract import (
@@ -61,8 +60,6 @@ from app.settings import get_settings
 from app.skills.execution_profiles import (
     NATIVE_COMMAND_ISOLATION,
     SKILL_WORKSPACE_CONTRACT_VERSION,
-    SdkSkillToolAdmission,
-    sdk_skill_tool_admission_for_execution_profile,
 )
 from app.tool_policy import evaluate_tool_policy
 
@@ -142,7 +139,8 @@ _SDK_TURN_LIMIT_EXCEEDED = "claude_agent_sdk_turn_limit_exceeded"
 _SDK_CANCELLED = "claude_agent_sdk_cancelled"
 _SDK_TIMEOUT = "claude_agent_sdk_timeout"
 _SDK_MISSING_STRUCTURED_TERMINAL = "claude_agent_sdk_missing_structured_terminal"
-_MAX_REQUIRED_ANSWER_TEXT_CHARS = 4_096
+_MAX_REQUIRED_ANSWER_TEXT_CHARS = 262_144
+_MAX_PUBLIC_DELTA_CHARS = 8_192
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
 SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-turn-diagnostics.v1"
@@ -472,40 +470,6 @@ def _sdk_skill_allow_patterns(skill_names: set[str]) -> list[str]:
     """Return exact Claude SDK permission patterns for staged, authorized Skills."""
 
     return [f"Skill({name})" for name in sorted(skill_names)]
-
-
-def _with_execution_profile_skill_tools(
-    subjects: dict[str, dict[str, Any]],
-    *,
-    admission: SdkSkillToolAdmission | None,
-) -> dict[str, dict[str, Any]]:
-    """Project one server-selected SDK profile into complete tool subjects."""
-
-    skill_subject = subjects.get("Skill")
-    if admission is None or not isinstance(skill_subject, dict):
-        return subjects
-    resolved = dict(subjects)
-    for tool_name in admission.tool_names:
-        if tool_name in resolved:
-            continue
-        subject = dict(skill_subject)
-        subject.update(
-            {
-                "identity": tool_name,
-                "declared_identities": [tool_name],
-                "allowed_parameter_keys": list(_BUILTIN_PARAMETER_KEYS[tool_name]),
-                "required_parameter_keys": list(
-                    _BUILTIN_REQUIRED_PARAMETER_KEYS.get(tool_name, ())
-                ),
-                "allowed_skill_names": [],
-                "risk_level": "low" if tool_name in _SDK_LOCAL_READ_ONLY_TOOLS else "high",
-                "write_capable": tool_name not in _SDK_LOCAL_READ_ONLY_TOOLS,
-                "workspace_contract": SKILL_WORKSPACE_CONTRACT_VERSION,
-                "command_isolation": admission.command_isolation,
-            }
-        )
-        resolved[tool_name] = subject
-    return resolved
 
 
 def _sdk_permission_type(sdk: object, name: str):
@@ -921,9 +885,11 @@ async def run_claude_agent_sdk(
     on_skill_use: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     on_capability_evidence: Callable[[dict[str, str]], Awaitable[bool]] | None = None,
     on_tool_lifecycle: Callable[[dict[str, str]], Awaitable[bool]] | None = None,
+    on_agent_event: Callable[[tuple[Any, ...]], Awaitable[bool | None] | bool | None] | None = None,
+    run_id: str | None = None,
+    attempt_id: str | None = None,
     tool_policy_subjects: list[dict[str, Any]] | None = None,
     execution_policy: str = "worker_local_legacy",
-    execution_profile: str = "",
     public_skill_metadata: dict[str, dict[str, str]] | None = None,
     require_selected_skill_invocation: bool = True,
 ) -> ClaudeAgentSdkRunResult:
@@ -990,6 +956,11 @@ async def run_claude_agent_sdk(
         ClaudeAgentOptions = sdk.ClaudeAgentOptions
         ResultMessage = sdk.ResultMessage
         StreamEvent = getattr(sdk, "StreamEvent", ())
+        TaskStartedMessage = getattr(sdk, "TaskStartedMessage", ())
+        TaskProgressMessage = getattr(sdk, "TaskProgressMessage", ())
+        TaskNotificationMessage = getattr(sdk, "TaskNotificationMessage", ())
+        TaskUpdatedMessage = getattr(sdk, "TaskUpdatedMessage", ())
+        ToolPermissionContext = getattr(sdk, "ToolPermissionContext", ())
         TextBlock = sdk.TextBlock
         HookMatcher = getattr(sdk, "HookMatcher", None)
         if query_fn is None:
@@ -1070,15 +1041,6 @@ async def run_claude_agent_sdk(
             if isinstance(name, str) and name in set(configured_skills)
         }
         configured_skills = [name for name in configured_skills if name in allowed_skill_names]
-        authorized_subjects = _with_execution_profile_skill_tools(
-            authorized_subjects,
-            admission=sdk_skill_tool_admission_for_execution_profile(
-                execution_profile=execution_profile,
-                selected_skill_id=selected_sdk_skill,
-                staged_skill_ids=configured_skills,
-                authorized_skill_ids=allowed_skill_names,
-            ),
-        )
         allowed_tools = [
             pattern
             for identity in authorized_subjects
@@ -1246,10 +1208,9 @@ async def run_claude_agent_sdk(
         sanitizer=sanitize_public_text,
         max_sealed_chars=_MAX_REQUIRED_ANSWER_TEXT_CHARS,
     )
-    if sandbox_tool_lifecycle_governed or effectful_mcp_lifecycle_governed:
-        answer_stream_gate.defer_until_finish()
-    elif required_answer_gate:
-        answer_stream_gate.seal()
+    # Do not publish answer prefixes before the structured terminal result has
+    # validated the whole-answer bound; an overflow cannot retract prior SSE.
+    answer_stream_gate.defer_until_finish()
     sdk_prompt = (
         _with_selected_skill_invocation_requirement(prompt, selected_sdk_skill)
         if require_selected_skill_invocation
@@ -1260,6 +1221,48 @@ async def run_claude_agent_sdk(
         sandbox_brokered=sandbox_brokered,
         full_access=full_access,
     )
+
+    agent_event_adapter = (
+        ClaudeSdkAgentEventAdapter(
+            run_id=run_id,
+            attempt_id=attempt_id,
+            tool_policy_subjects=tool_policy_subjects,
+            public_skill_metadata=public_skill_metadata,
+            sanitizer=sanitize_public_text,
+            payload_sanitizer=sanitize_public_payload,
+        )
+        if run_id and attempt_id and on_agent_event is not None
+        else None
+    )
+
+    agent_event_callback_failed = False
+
+    async def publish_agent_candidates(candidates: tuple[Any, ...]) -> bool:
+        nonlocal agent_event_callback_failed
+        if not candidates:
+            return True
+        if agent_event_adapter is None or on_agent_event is None or agent_event_callback_failed:
+            return not agent_event_callback_failed
+        try:
+            callback_result = on_agent_event(candidates)
+            if isawaitable(callback_result):
+                callback_result = await callback_result
+        except asyncio.CancelledError:
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling() > 0:
+                raise
+            callback_result = False
+        except Exception:  # noqa: BLE001
+            callback_result = False
+        if callback_result is not True:
+            agent_event_callback_failed = True
+            seal_agent_candidates("agent_event_callback_not_acknowledged")
+            return False
+        return True
+
+    def seal_agent_candidates(reason: str) -> None:
+        if agent_event_adapter is not None:
+            agent_event_adapter.seal(reason)
 
     def claim_used_skill(skill_name: str) -> bool:
         nonlocal last_public_stage
@@ -1322,9 +1325,6 @@ async def run_claude_agent_sdk(
             capability_evidence.append(evidence)
             if (
                 lifecycle_phase == "completed"
-                and not required_builtin_declarations
-                and not sandbox_tool_lifecycle_governed
-                and not effectful_mcp_lifecycle_governed
                 and capability_completion_error() is None
             ):
                 answer_stream_gate.release_after_verified_capability()
@@ -1428,6 +1428,8 @@ async def run_claude_agent_sdk(
             record_read_only_lifecycle_denial()
             return True
         invocation_states[invocation_key] = lifecycle
+        if lifecycle == "completed" and capability_completion_error() is None:
+            answer_stream_gate.release_after_verified_capability()
         if lifecycle == "failed" and is_required_builtin:
             return reject_governed_lifecycle()
         return True
@@ -1531,6 +1533,13 @@ async def run_claude_agent_sdk(
             }
         )
 
+    def permission_context_tool_use_id(context: object) -> object:
+        if ToolPermissionContext and isinstance(context, ToolPermissionContext):
+            return getattr(context, "tool_use_id", None)
+        if isinstance(context, dict):
+            return context.get("tool_use_id")
+        return None
+
     async def can_use_tool(tool_name: str, tool_input: dict[str, Any], _context=None):
         decision = policy_for_tool(tool_name, tool_input)
         if not decision.allowed:
@@ -1539,12 +1548,24 @@ async def run_claude_agent_sdk(
             diagnostic_counters.setdefault("tool_policy_denials_detail", []).append(
                 {"tool_name": tool_name, "reason": decision.reason}
             )
+            context_tool_use_id = permission_context_tool_use_id(_context)
+            if agent_event_adapter is not None:
+                await publish_agent_candidates(
+                    agent_event_adapter.accept_policy_decision(
+                        tool_name=tool_name,
+                        tool_input=tool_input,
+                        allowed=False,
+                        tool_use_id=context_tool_use_id,
+                    )
+                )
             return PermissionResultDeny(message=decision.reason)
         return PermissionResultAllow()
 
     async def enforce_side_effect_tool_policy(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
+        hook_input_is_mapping = isinstance(hook_input, dict)
+        hook_input = hook_input if hook_input_is_mapping else {}
         tool_name = ""
-        if not isinstance(hook_input, dict):
+        if not hook_input_is_mapping:
             decision = evaluate_tool_policy(tool={})
         else:
             tool_name = str(hook_input.get("tool_name") or "")
@@ -1561,7 +1582,7 @@ async def run_claude_agent_sdk(
             "permissionDecision": decision.outcome,
             "permissionDecisionReason": decision.reason,
         }
-        if decision.allowed and isinstance(hook_input, dict):
+        if decision.allowed:
             tool_name = str(hook_input.get("tool_name") or "")
             identity = adapter_identity(tool_name)
             subject = internal_context_subjects.get(identity) or authorized_subjects.get(identity)
@@ -1576,6 +1597,22 @@ async def run_claude_agent_sdk(
                     output["permissionDecisionReason"] = "native_tool_isolation_unavailable"
                 else:
                     output["updatedInput"] = updated_input
+        resolved_tool_call_id = exact_hook_tool_call_id(hook_input, tool_use_id)
+        if agent_event_adapter is not None:
+            await publish_agent_candidates(
+                agent_event_adapter.accept_policy_decision(
+                    tool_name=tool_name,
+                    tool_input=hook_input.get("tool_input"),
+                    allowed=decision.allowed is True and output["permissionDecision"] == "allow",
+                    tool_use_id=resolved_tool_call_id,
+                )
+            )
+            if decision.allowed is True and output["permissionDecision"] == "allow":
+                await publish_agent_candidates(
+                    agent_event_adapter.accept_hook(
+                        "PreToolUse", hook_input, tool_use_id=resolved_tool_call_id
+                    )
+                )
         if decision.allowed is True and output["permissionDecision"] == "allow" and hook_input:
             tool_name = str(hook_input.get("tool_name") or "")
             identity = adapter_identity(tool_name)
@@ -1643,6 +1680,14 @@ async def run_claude_agent_sdk(
                         "tool_name": "Skill", "tool_use_id": call_id,
                     } if lifecycle_phase == "completed" else None,
                 )
+            if agent_event_adapter is not None:
+                await publish_agent_candidates(
+                    agent_event_adapter.accept_hook(
+                        "PostToolUseFailure" if lifecycle_phase == "failed" else "PostToolUse",
+                        hook_input,
+                        tool_use_id=call_id,
+                    )
+                )
             return {}
         return handler
 
@@ -1662,6 +1707,14 @@ async def run_claude_agent_sdk(
                     tool_call_id=exact_hook_tool_call_id(hook_input, tool_use_id),
                     lifecycle_phase=lifecycle_phase,
                 )
+            if agent_event_adapter is not None:
+                await publish_agent_candidates(
+                    agent_event_adapter.accept_hook(
+                        "PostToolUseFailure" if lifecycle_phase == "failed" else "PostToolUse",
+                        hook_input,
+                        tool_use_id=exact_hook_tool_call_id(hook_input, tool_use_id),
+                    )
+                )
             return {}
         return handler
 
@@ -1674,6 +1727,14 @@ async def run_claude_agent_sdk(
                     tool_name=tool_name,
                     tool_call_id=exact_hook_tool_call_id(hook_input, tool_use_id),
                     lifecycle=lifecycle,
+                )
+            if agent_event_adapter is not None:
+                await publish_agent_candidates(
+                    agent_event_adapter.accept_hook(
+                        "PostToolUseFailure" if lifecycle == "failed" else "PostToolUse",
+                        hook_input,
+                        tool_use_id=exact_hook_tool_call_id(hook_input, tool_use_id),
+                    )
                 )
             return {}
         return handler
@@ -1816,12 +1877,25 @@ async def run_claude_agent_sdk(
             return "required_tool_completion_evidence_mismatch"
         return None
 
-    async def publish_terminal_text(value: str) -> None:
-        if on_text is None or not value:
-            return
+    async def publish_terminal_text(value: str, *, project_agent: bool = True) -> bool:
+        if not value:
+            return True
+        if project_agent and agent_event_adapter is not None:
+            for offset in range(0, len(value), 8_192):
+                acknowledged = await publish_agent_candidates(
+                    agent_event_adapter.accept_answer_text(
+                        value[offset : offset + 8_192],
+                        already_gated=True,
+                    )
+                )
+                if not acknowledged:
+                    return False
+        if on_text is None:
+            return True
         callback_result = on_text(value)
         if isawaitable(callback_result):
             await callback_result
+        return True
 
     async def consume() -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
@@ -1833,6 +1907,12 @@ async def run_claude_agent_sdk(
             ),
             options=options,
         ):
+            if agent_event_adapter is not None and isinstance(
+                message,
+                (TaskStartedMessage, TaskProgressMessage, TaskNotificationMessage, TaskUpdatedMessage),
+            ):
+                await publish_agent_candidates(agent_event_adapter.accept_task_message(message))
+                continue
             if stream_projector is not None and isinstance(message, StreamEvent):
                 for text in stream_projector.accept(message.event):
                     for public_text in answer_stream_gate.accept(text):
@@ -1841,7 +1921,19 @@ async def run_claude_agent_sdk(
             if isinstance(message, AssistantMessage):
                 diagnostic_counters["assistant_messages"] += 1
                 assistant_text_blocks = []
-                for block in message.content:
+                for block_index, block in enumerate(message.content):
+                    if agent_event_adapter is not None:
+                        await publish_agent_candidates(
+                            agent_event_adapter.accept_content_block(
+                                block,
+                                block_index=block_index,
+                                message_identity=(
+                                    getattr(message, "message_id", None)
+                                    or getattr(message, "uuid", None)
+                                    or getattr(message, "session_id", None)
+                                ),
+                            )
+                        )
                     if isinstance(block, TextBlock):
                         diagnostic_counters["text_blocks"] += 1
                         last_public_stage = "message"
@@ -1879,6 +1971,7 @@ async def run_claude_agent_sdk(
                 )
                 if message.is_error:
                     answer_stream_gate.finish(final_text="", release=False)
+                    seal_agent_candidates("result_error")
                     raw_error = (
                         "; ".join(message.errors or [])
                         or message.stop_reason
@@ -1918,6 +2011,7 @@ async def run_claude_agent_sdk(
                 } else None
                 if abnormal_terminal_error is not None:
                     answer_stream_gate.finish(final_text="", release=False)
+                    seal_agent_candidates("abnormal_terminal")
                     return ClaudeAgentSdkRunResult(
                         used_sdk=True,
                         message="",
@@ -1943,21 +2037,51 @@ async def run_claude_agent_sdk(
             if stream_projector.disabled:
                 answer_stream_gate.fail_closed()
         terminal_error = _SDK_MISSING_STRUCTURED_TERMINAL if not received_structured_terminal else None
+        if terminal_error is None and agent_event_callback_failed:
+            terminal_error = "agent_event_callback_not_acknowledged"
         if terminal_error is None and capability_evidence_rejected:
             terminal_error = "required_tool_completion_evidence_mismatch"
         if terminal_error is None:
             terminal_error = selected_skill_hook_error()
         if terminal_error is None:
             terminal_error = capability_completion_error()
+        if terminal_error is None and answer_stream_gate.final_text_exceeds_bound(
+            structured_result_text
+        ):
+            terminal_error = _SDK_TOOL_ADMISSION_FAILED
         finished_answer = answer_stream_gate.finish(
             final_text=structured_result_text,
             release=terminal_error is None,
         )
         if terminal_error is None and answer_stream_gate.failed:
             terminal_error = _SDK_TOOL_ADMISSION_FAILED
-        if terminal_error is None:
+        if terminal_error is None and isinstance(message, ResultMessage):
+            terminal_candidates: list[Any] = []
             for public_text in finished_answer.chunks:
-                await publish_terminal_text(public_text)
+                for offset in range(0, len(public_text), _MAX_PUBLIC_DELTA_CHARS):
+                    terminal_candidates.extend(
+                        agent_event_adapter.accept_answer_text(
+                            public_text[offset : offset + _MAX_PUBLIC_DELTA_CHARS],
+                            already_gated=True,
+                        )
+                        if agent_event_adapter is not None
+                        else ()
+                    )
+            if agent_event_adapter is not None:
+                terminal_candidates.extend(
+                    agent_event_adapter.accept_result(
+                        message,
+                        final_content=finished_answer.final_text,
+                    )
+                )
+                if not await publish_agent_candidates(tuple(terminal_candidates)):
+                    terminal_error = "agent_event_callback_not_acknowledged"
+            if terminal_error is None and on_text is not None and finished_answer.final_text:
+                callback_result = on_text(finished_answer.final_text)
+                if isawaitable(callback_result):
+                    await callback_result
+        if terminal_error is not None:
+            seal_agent_candidates(terminal_error)
         public_structured_result_text = (
             finished_answer.final_text if terminal_error is None else ""
         )
@@ -1975,11 +2099,40 @@ async def run_claude_agent_sdk(
             capability_evidence=list(capability_evidence),
         )
 
+    consume_cancellation: asyncio.CancelledError | None = None
+
+    async def consume_with_cancellation_identity() -> ClaudeAgentSdkRunResult:
+        nonlocal consume_cancellation
+        try:
+            return await consume()
+        except asyncio.CancelledError as exc:
+            consume_cancellation = exc
+            raise
+
+    consume_task = asyncio.create_task(consume_with_cancellation_identity())
     try:
-        return await asyncio.wait_for(consume(), timeout=timeout_seconds)
+        return await asyncio.wait_for(asyncio.shield(consume_task), timeout=timeout_seconds)
     except asyncio.CancelledError:
+        seal_agent_candidates("cancelled")
+        consume_task.cancel()
+        try:
+            await consume_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001
+            pass
+        if consume_cancellation is not None and type(consume_cancellation) is not asyncio.CancelledError:
+            raise consume_cancellation
         raise
     except TimeoutError:
+        seal_agent_candidates("timeout")
+        consume_task.cancel()
+        try:
+            await consume_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001
+            pass
         error_code = _SDK_TIMEOUT
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
@@ -1993,6 +2146,7 @@ async def run_claude_agent_sdk(
             capability_evidence=list(capability_evidence),
         )
     except Exception as exc:  # noqa: BLE001
+        seal_agent_candidates("exception")
         error_code = _canonical_sdk_error(
             exc,
             selected_skill_error=selected_skill_hook_error(),

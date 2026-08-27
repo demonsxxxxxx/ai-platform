@@ -230,7 +230,7 @@ export interface AgentProfileDraftRequest {
   expected_outputs: string[];
   permissions_and_data_access_notice: string;
   instructions: string;
-  model_id: string;
+  model_id?: string;
   selected_skill: SelectedSkillRequest;
   skill_set: SelectedSkillRequest[];
   mcp_tool_ids: string[];

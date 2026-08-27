@@ -25,6 +25,8 @@ from app.platform.postgres.errors import RepositoryConflictError as PlatformRepo
 from app.skills.infrastructure import postgres as skill_persistence
 from app.routes import sandbox_runtime_cleanup
 from app.runs.api import RunTerminalizationProgress
+from app.runs.application.cancellation import RunCancellationUseCase
+from app.runs.infrastructure.postgres import PostgresRunCancellationPersistence
 from app.platform.postgres.sandbox_leases import (
     SandboxExecutorTerminalConflictError,
     SandboxLeaseReleaseScopeMismatchError,
@@ -34,7 +36,7 @@ from app.platform.postgres.sandbox_leases import (
     record_sandbox_executor_heartbeat,
     record_sandbox_executor_terminal,
 )
-from app.streaming import redis as streaming_redis
+from app.streaming.infrastructure import v4 as streaming_v4
 from app.repositories import (
     RepositoryConflictError,
     RepositoryNotFoundError,
@@ -80,6 +82,79 @@ async def _record_noop_event(*_args, **_kwargs):
     return "evt-test"
 
 
+class _CancellationEventWriter:
+    async def prepare_pending_authority(self, _conn, **_kwargs):
+        return None
+
+    async def append_cancel_requested(self, conn, **kwargs):
+        await streaming_v4.append_run_cancel_requested_v4_row(conn, **kwargs)
+
+    async def append_terminal(self, _conn, **_kwargs):
+        return None
+
+
+class _RunAttemptCursor:
+    async def fetchone(self):
+        return {"id": "attempt-a"}
+
+
+class _CancellationTestConnection:
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def execute(self, sql, params):
+        normalized = " ".join(sql.split())
+        if normalized.startswith("select id from run_attempts"):
+            return _RunAttemptCursor()
+        return await self._conn.execute(sql, params)
+
+
+async def _request_owner_cancel(conn, *, tenant_id, user_id, run_id):
+    @asynccontextmanager
+    async def transaction_factory():
+        yield _CancellationTestConnection(conn)
+
+    use_case = RunCancellationUseCase(
+        transaction_factory=transaction_factory,
+        persistence=PostgresRunCancellationPersistence(
+            append_event=repositories.append_event,
+            append_audit_log=repositories.append_audit_log,
+            list_active_sandbox_leases=repositories.list_active_sandbox_leases_for_run,
+        ),
+        event_writer=_CancellationEventWriter(),
+        progress_terminalization=repositories.progress_run_tool_permission_terminalization,
+    )
+    result = await use_case.request_owner_cancel(
+        tenant_id=tenant_id,
+        owner_user_id=user_id,
+        run_id=run_id,
+    )
+    return result.as_route_result() if result is not None else None
+
+
+async def _request_admin_cancel(conn, *, tenant_id, admin_user_id, run_id):
+    @asynccontextmanager
+    async def transaction_factory():
+        yield _CancellationTestConnection(conn)
+
+    use_case = RunCancellationUseCase(
+        transaction_factory=transaction_factory,
+        persistence=PostgresRunCancellationPersistence(
+            append_event=repositories.append_event,
+            append_audit_log=repositories.append_audit_log,
+            list_active_sandbox_leases=repositories.list_active_sandbox_leases_for_run,
+        ),
+        event_writer=_CancellationEventWriter(),
+        progress_terminalization=repositories.progress_run_tool_permission_terminalization,
+    )
+    result = await use_case.request_admin_cancel(
+        tenant_id=tenant_id,
+        admin_user_id=admin_user_id,
+        run_id=run_id,
+    )
+    return result.as_route_result() if result is not None else None
+
+
 def test_repository_facade_binds_agent_profiles_to_one_canonical_module():
     canonical_names = (
         "acquire_agent_profile_lifecycle_lock",
@@ -115,14 +190,6 @@ def test_repository_facade_binds_skill_persistence_to_one_canonical_module():
         assert getattr(repositories, name) is getattr(skill_persistence, name)
 
     assert repositories.RepositoryAuthorizationError is PlatformRepositoryAuthorizationError
-
-
-@pytest.fixture(autouse=True)
-def _isolate_legacy_repository_fakes_from_sse_terminal_extension(monkeypatch):
-    async def no_terminal_intent(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr(streaming_redis, "ensure_run_terminal_intent", no_terminal_intent)
 
 
 def test_chat_submission_fingerprint_is_canonical_and_scope_bound():
@@ -380,6 +447,8 @@ class RecordingConnection:
             return SingleRowCursor({"next_run_generation": 1})
         if "select clock_timestamp() as authority_now" in normalized:
             return SingleRowCursor({"authority_now": datetime(2026, 7, 16, tzinfo=timezone.utc)})
+        if normalized.startswith("select * from sse_stream_authorities"):
+            return SingleRowCursor(None)
         return FakeCursor()
 
 
@@ -4937,6 +5006,8 @@ async def test_cancel_run_closes_non_terminal_run_steps(monkeypatch):
         async def execute(self, sql, params):
             normalized = " ".join(sql.split())
             self.calls.append((normalized, params))
+            if normalized.startswith("select * from sse_stream_authorities"):
+                return SingleRowCursor(None)
             if "set permission_terminalization_target" in normalized:
                 return SingleRowCursor(
                     {
@@ -4995,6 +5066,8 @@ async def test_fail_run_closes_non_terminal_run_steps_without_leaving_stale_prog
         async def execute(self, sql, params):
             normalized = " ".join(sql.split())
             self.calls.append((normalized, params))
+            if normalized.startswith("select * from sse_stream_authorities"):
+                return SingleRowCursor(None)
             if "set permission_terminalization_target" in normalized:
                 return SingleRowCursor(
                     {
@@ -8261,6 +8334,8 @@ async def test_decision_loses_a_barrier_synchronized_cancel_race(monkeypatch):
     monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_active_leases)
     monkeypatch.setattr(repositories, "append_event", no_op_event_or_audit)
     monkeypatch.setattr(repositories, "append_audit_log", no_op_event_or_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_cancel_requested_v4_row", no_op_event_or_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_terminal_v4_row", no_op_event_or_audit)
     conn = DecisionCancelRaceConnection()
 
     decision_task = asyncio.create_task(
@@ -8276,7 +8351,7 @@ async def test_decision_loses_a_barrier_synchronized_cancel_race(monkeypatch):
         )
     )
     cancel_task = asyncio.create_task(
-        repositories.request_run_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
+        _request_owner_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
     )
     decision, cancellation = await asyncio.gather(decision_task, cancel_task)
 
@@ -8335,6 +8410,8 @@ async def test_request_creation_loses_a_barrier_synchronized_cancel_race(monkeyp
     monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_active_leases)
     monkeypatch.setattr(repositories, "append_event", no_op_event_or_audit)
     monkeypatch.setattr(repositories, "append_audit_log", no_op_event_or_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_cancel_requested_v4_row", no_op_event_or_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_terminal_v4_row", no_op_event_or_audit)
     conn = RequestCancelRaceConnection()
 
     request_task = asyncio.create_task(
@@ -8356,7 +8433,7 @@ async def test_request_creation_loses_a_barrier_synchronized_cancel_race(monkeyp
         )
     )
     cancel_task = asyncio.create_task(
-        repositories.request_run_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
+        _request_owner_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
     )
     cancellation = await cancel_task
     with pytest.raises(RepositoryConflictError, match="tool_permission_run_not_open"):
@@ -8382,6 +8459,8 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
 
         async def execute(self, sql, _params):
             normalized = " ".join(sql.split())
+            if normalized.startswith("select id from run_attempts"):
+                return SingleRowCursor({"id": "attempt-a"})
             if normalized.startswith("with eligible_run as"):
                 self.attempt += 1
                 return SingleRowCursor(
@@ -8398,7 +8477,7 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
         return {"id": "run-a"}
 
     async def progress(_conn, **_kwargs):
-        if len(events) == 1:
+        if "run_cancelled" not in events:
             await repositories.append_event(
                 _conn,
                 tenant_id="tenant-a",
@@ -8418,21 +8497,26 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
     async def no_leases(*_args, **_kwargs):
         return []
 
+    async def record_cancel_v4(_conn, **_kwargs):
+        events.append("v4.run.cancel_requested")
+
     async def no_audit(*_args, **_kwargs):
         return None
 
     monkeypatch.setattr(repositories, "_stage_run_tool_permission_terminalization", stage)
+    monkeypatch.setattr("app.runs.infrastructure.postgres._stage_run_tool_permission_terminalization", stage)
     monkeypatch.setattr(repositories, "progress_run_tool_permission_terminalization", progress)
     monkeypatch.setattr(repositories, "append_event", record_event)
     monkeypatch.setattr(repositories, "append_audit_log", no_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_cancel_requested_v4_row", record_cancel_v4)
     monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_leases)
     conn = Connection()
 
-    first = await repositories.request_run_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
-    second = await repositories.request_run_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
+    first = await _request_owner_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
+    second = await _request_owner_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
 
     assert first["status"] == second["status"] == "cancelled"
-    assert events == ["cancel_requested", "run_cancelled"]
+    assert events == ["cancel_requested", "v4.run.cancel_requested", "run_cancelled"]
 
 
 @pytest.mark.asyncio
@@ -8607,6 +8691,8 @@ async def test_terminalization_progresses_in_bounded_crash_retry_batches_without
             normalized = " ".join(sql.split())
             normalized_lower = normalized.lower()
             self.sql.append((normalized, params))
+            if normalized_lower.startswith("select * from sse_stream_authorities"):
+                return SingleRowCursor(None)
             if normalized_lower.startswith("select id, trace_id, status, permission_terminalization_target"):
                 return SingleRowCursor(
                     {
@@ -8768,6 +8854,8 @@ async def test_soft_cancel_51_row_drain_upgrades_to_one_cancelled_terminal_resul
         async def execute(self, sql, params):
             normalized = " ".join(sql.split())
             lowered = normalized.lower()
+            if lowered.startswith("select * from sse_stream_authorities"):
+                return SingleRowCursor(None)
             if "set permission_terminalization_target = case" in lowered:
                 assert "permission_terminalization_target = 'cancel_requested'" in lowered
                 requested = params[0]
@@ -8940,6 +9028,8 @@ async def test_cancel_request_response_reports_actual_conflicting_terminal_statu
     class Connection:
         async def execute(self, sql, _params):
             normalized = " ".join(sql.split())
+            if normalized.startswith("select id from run_attempts"):
+                return SingleRowCursor({"id": "attempt-a"})
             assert normalized.startswith("with eligible_run as")
             row = {
                 "id": "run-a",
@@ -8964,16 +9054,17 @@ async def test_cancel_request_response_reports_actual_conflicting_terminal_statu
         return None
 
     monkeypatch.setattr(repositories, "_stage_run_tool_permission_terminalization", stage)
+    monkeypatch.setattr("app.runs.infrastructure.postgres._stage_run_tool_permission_terminalization", stage)
     monkeypatch.setattr(repositories, "progress_run_tool_permission_terminalization", progress)
     monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_leases)
     monkeypatch.setattr(repositories, "append_audit_log", no_audit)
 
     if admin:
-        result = await repositories.request_admin_run_cancel(
+        result = await _request_admin_cancel(
             Connection(), tenant_id="tenant-a", admin_user_id="admin-a", run_id="run-a"
         )
     else:
-        result = await repositories.request_run_cancel(
+        result = await _request_owner_cancel(
             Connection(), tenant_id="tenant-a", user_id="owner-a", run_id="run-a"
         )
 
@@ -9491,6 +9582,8 @@ async def test_allow_once_consumption_loses_a_barrier_synchronized_cancel_race(m
     monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_active_leases)
     monkeypatch.setattr(repositories, "append_event", no_op_event_or_audit)
     monkeypatch.setattr(repositories, "append_audit_log", no_op_event_or_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_cancel_requested_v4_row", no_op_event_or_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_terminal_v4_row", no_op_event_or_audit)
     conn = ConsumeCancelRaceConnection()
 
     consume_task = asyncio.create_task(
@@ -9503,7 +9596,7 @@ async def test_allow_once_consumption_loses_a_barrier_synchronized_cancel_race(m
         )
     )
     cancel_task = asyncio.create_task(
-        repositories.request_run_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
+        _request_owner_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
     )
     consumed, cancellation = await asyncio.gather(consume_task, cancel_task)
 
@@ -9561,6 +9654,8 @@ async def test_allow_for_run_lookup_loses_a_barrier_synchronized_cancel_race(mon
     monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_active_leases)
     monkeypatch.setattr(repositories, "append_event", no_op_event_or_audit)
     monkeypatch.setattr(repositories, "append_audit_log", no_op_event_or_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_cancel_requested_v4_row", no_op_event_or_audit)
+    monkeypatch.setattr(streaming_v4, "append_run_terminal_v4_row", no_op_event_or_audit)
     conn = ReuseCancelRaceConnection()
 
     reuse_task = asyncio.create_task(
@@ -9575,7 +9670,7 @@ async def test_allow_for_run_lookup_loses_a_barrier_synchronized_cancel_race(mon
         )
     )
     cancel_task = asyncio.create_task(
-        repositories.request_run_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
+        _request_owner_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
     )
     reusable_grant, cancellation = await asyncio.gather(reuse_task, cancel_task)
 
@@ -9883,14 +9978,16 @@ async def test_sandbox_lease_release_fence_serializes_with_postgres_insert():
                   provider text not null,
                   status text not null default 'active',
                   browser_enabled boolean not null default false,
-                  resource_limits_json jsonb not null default '{}'::jsonb,
-                  user_visible_payload_json jsonb not null default '{}'::jsonb,
-                  lease_payload_json jsonb not null default '{}'::jsonb,
+                  resource_limits_json jsonb not null default '{{}}'::jsonb,
+                  user_visible_payload_json jsonb not null default '{{}}'::jsonb,
+                  lease_payload_json jsonb not null default '{{}}'::jsonb,
                   runtime_container_id text,
                   runtime_container_name text,
                   runtime_executor_url text,
                   runtime_workspace_container_path text,
                   runtime_handle_verified_at timestamptz,
+                  executor_terminal_json jsonb,
+                  executor_reconciliation_status text not null default 'waiting_terminal',
                   heartbeat_at timestamptz,
                   expires_at timestamptz,
                   released_at timestamptz,
@@ -13397,6 +13494,8 @@ async def test_complete_run_consumes_valid_allow_for_run_before_its_final_pendin
         async def execute(self, sql, params):
             normalized = " ".join(sql.split())
             self.calls.append((normalized, params))
+            if normalized.startswith("select * from sse_stream_authorities"):
+                return Cursor(None)
             if normalized.startswith("select id from runs"):
                 return Cursor({"id": "run-a"})
             if "select clock_timestamp() as authority_now" in normalized:
@@ -13494,6 +13593,8 @@ async def test_complete_run_uses_one_locked_db_time_and_consumes_exact_valid_run
         async def execute(self, sql, params):
             normalized = " ".join(sql.split())
             self.calls.append((normalized, params))
+            if normalized.startswith("select * from sse_stream_authorities"):
+                return Cursor(None)
             if normalized.startswith("select id from runs") and "for update" in normalized:
                 return Cursor({"id": "run-a"})
             if "select clock_timestamp() as authority_now" in normalized:

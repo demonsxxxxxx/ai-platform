@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
 
 from app.control_plane_contracts import LEGACY_SYNTHETIC_CHAT_SKILL_ID
@@ -19,10 +18,11 @@ SKILL_WORKSPACE_CONTRACT_VERSION = "ai-platform.skill-workspace.v1"
 PLATFORM_CONTROLLED = "platform_controlled"
 SDK_NATIVE = "sdk_native"
 SDK_RESTRICTED = "sdk_restricted"
+SANDBOX_FULL_LOCAL = "sandbox_full_local"
 
 NATIVE_COMMAND_ISOLATION = "sibling-tool-sandbox-v1"
 CONTROLLED_COMMAND_ISOLATION = "minimal-environment-v1"
-OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE = "opensandbox_governed"
+SANDBOX_BOUNDARY_COMMAND_ISOLATION = "real-sandbox-boundary-v1"
 OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION = "opensandbox-workspace-v1"
 
 _EXPLICIT_SKILL_BASH_IDENTITY = ("Bash",)
@@ -34,15 +34,6 @@ _SERVER_BUILTIN_NON_BASH_TOOL_DECLARATIONS = {
 }
 _PLATFORM_CONTROLLED_SKILLS = frozenset({"baoyu-translate", "qa-file-reviewer"})
 _NATIVE_UPLOADED_TOOL_IDENTITIES = (
-    "Read",
-    "Glob",
-    "LS",
-    "Bash",
-    "Write",
-    "Edit",
-    "Grep",
-)
-_OPEN_SANDBOX_SDK_SKILL_FILE_TOOLS = (
     "Read",
     "Glob",
     "LS",
@@ -68,11 +59,12 @@ class SkillExecutionProfile(TypedDict):
     command_isolation: str
 
 
-@dataclass(frozen=True)
-class SdkSkillToolAdmission:
-    """Complete SDK tool authority for one server-selected execution profile."""
+class EffectiveSkillExecutionProfile(TypedDict):
+    """Runtime strategy derived from one validated immutable Skill profile."""
 
-    tool_names: tuple[str, ...]
+    strategy: Literal["platform_controlled", "sandbox_full_local", "sdk_restricted"]
+    trust_basis: str
+    workspace_contract: str
     command_isolation: str
 
 
@@ -80,51 +72,6 @@ class SkillExecutionProfileError(ValueError):
     """Raised when a pinned execution profile differs from server authority."""
 
     pass
-
-
-def sdk_skill_tool_admission_for_execution_profile(
-    *,
-    execution_profile: object,
-    selected_skill_id: object,
-    staged_skill_ids: object,
-    authorized_skill_ids: object,
-) -> SdkSkillToolAdmission | None:
-    """Return the exact sandbox SDK tool admission for one selected Skill."""
-
-    if (
-        execution_profile != OPEN_SANDBOX_GOVERNED_SDK_EXECUTION_PROFILE
-        or not isinstance(selected_skill_id, str)
-        or not selected_skill_id
-        or not isinstance(staged_skill_ids, list | tuple | set | frozenset)
-        or not isinstance(authorized_skill_ids, list | tuple | set | frozenset)
-    ):
-        return None
-    staged = {item for item in staged_skill_ids if isinstance(item, str)}
-    authorized = {item for item in authorized_skill_ids if isinstance(item, str)}
-    if selected_skill_id not in staged or selected_skill_id not in authorized:
-        return None
-    return SdkSkillToolAdmission(
-        tool_names=_OPEN_SANDBOX_SDK_SKILL_FILE_TOOLS,
-        command_isolation=OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION,
-    )
-
-
-def sdk_skill_file_tools_for_execution_profile(
-    *,
-    execution_profile: object,
-    selected_skill_id: object,
-    staged_skill_ids: object,
-    authorized_skill_ids: object,
-) -> tuple[str, ...]:
-    """Return the internal-beta SDK file tools for one exact staged Skill."""
-
-    admission = sdk_skill_tool_admission_for_execution_profile(
-        execution_profile=execution_profile,
-        selected_skill_id=selected_skill_id,
-        staged_skill_ids=staged_skill_ids,
-        authorized_skill_ids=authorized_skill_ids,
-    )
-    return admission.tool_names if admission is not None else ()
 
 
 def _known_tool_identities(values: tuple[str, ...]) -> list[str]:
@@ -237,6 +184,50 @@ def canonical_skill_execution_profile(manifest: dict[str, Any]) -> SkillExecutio
     if normalized != expected:
         raise SkillExecutionProfileError("run_skill_snapshot_execution_profile_mismatch")
     return expected
+
+
+def effective_skill_execution_profile(
+    manifest: dict[str, Any],
+) -> EffectiveSkillExecutionProfile:
+    """Translate immutable v1 metadata into its governed runtime strategy."""
+
+    persisted = canonical_skill_execution_profile(manifest)
+    if persisted["strategy"] == PLATFORM_CONTROLLED:
+        return {
+            "strategy": PLATFORM_CONTROLLED,
+            "trust_basis": persisted["trust_basis"],
+            "workspace_contract": persisted["workspace_contract"],
+            "command_isolation": persisted["command_isolation"],
+        }
+
+    source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
+    source_kind = str(source.get("kind") or "")
+    skill_id = str(manifest.get("skill_id") or "")
+    lifecycle_status = normalize_skill_version_status(
+        str(manifest.get("lifecycle_status") or "")
+    )
+    trusted_builtin = (
+        source_kind == "builtin"
+        and skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID
+        and lifecycle_status in _TRUSTED_BUILTIN_STATUSES
+    )
+    trusted_uploaded = (
+        source_kind == "uploaded"
+        and lifecycle_status in _TRUSTED_UPLOADED_STATUSES
+    )
+    if trusted_builtin or trusted_uploaded:
+        return {
+            "strategy": SANDBOX_FULL_LOCAL,
+            "trust_basis": persisted["trust_basis"],
+            "workspace_contract": persisted["workspace_contract"],
+            "command_isolation": SANDBOX_BOUNDARY_COMMAND_ISOLATION,
+        }
+    return {
+        "strategy": SDK_RESTRICTED,
+        "trust_basis": persisted["trust_basis"],
+        "workspace_contract": persisted["workspace_contract"],
+        "command_isolation": "none",
+    }
 
 
 def is_platform_controlled_profile(manifest: dict[str, Any]) -> bool:

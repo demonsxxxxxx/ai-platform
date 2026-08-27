@@ -31,3 +31,30 @@ def test_schema_keeps_internal_and_public_contracts_separate():
     assert '"PublicRunStreamEventV3"' in source
     assert '"owner_epoch"' not in source
     assert '"generation_id"' not in source
+
+
+def test_public_boundary_exposes_v3_and_v4_types_without_duplicate_ownership():
+    from app.streaming.domain import protocol_v4
+    from app.streaming.events import (
+        INTERNAL_STREAM_EVENT_SCHEMA_V4,
+        PUBLIC_APPLICATION_EVENT_TYPES_V4,
+        PUBLIC_RUN_STREAM_SCHEMA_V4,
+        PUBLIC_STREAM_EVENT_TYPES_V4,
+        STREAM_DESIGN_ID_V4,
+        STREAM_PROJECTION_VERSION_V4,
+        PublicRunStreamEventV3,
+        PublicRunStreamEventV4,
+    )
+
+    assert PublicRunStreamEventV3 is not PublicRunStreamEventV4
+    assert PublicRunStreamEventV4 is protocol_v4.PublicRunStreamEventV4
+    assert PUBLIC_RUN_STREAM_SCHEMA_V4 == protocol_v4.PUBLIC_RUN_STREAM_SCHEMA
+    assert INTERNAL_STREAM_EVENT_SCHEMA_V4 == protocol_v4.INTERNAL_STREAM_EVENT_SCHEMA
+    assert STREAM_PROJECTION_VERSION_V4 == protocol_v4.STREAM_PROJECTION_VERSION
+    assert STREAM_DESIGN_ID_V4 == protocol_v4.STREAM_DESIGN_ID
+    assert PUBLIC_STREAM_EVENT_TYPES_V4 is protocol_v4.PUBLIC_STREAM_EVENT_TYPES
+    assert PUBLIC_APPLICATION_EVENT_TYPES_V4 == frozenset(
+        value
+        for value in protocol_v4.PUBLIC_STREAM_EVENT_TYPES
+        if not value.startswith("stream.")
+    )

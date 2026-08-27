@@ -253,8 +253,9 @@ def test_skill_release_dashboard_readiness_contract_is_safe_and_does_not_close_g
         "covered_runtime_controls": [
             "ordinary_user_denied_detail",
             "same_tenant_admin_detail_projection",
-            "sync_builtin_dependency_policy_enforced",
-            "upload_admin_only_and_dependency_policy_enforced",
+            "sync_builtin_without_inferred_dependencies",
+            "sync_builtin_preserves_immutable_dependency_manifest",
+            "upload_admin_only_without_inferred_dependencies",
             "version_diff_admin_only_projection",
             "promote_policy_and_audit_controls",
             "rollback_policy_and_audit_controls",
@@ -263,12 +264,12 @@ def test_skill_release_dashboard_readiness_contract_is_safe_and_does_not_close_g
         "source_tests": [
             "tests/test_admin_skills.py::test_admin_skill_detail_requires_admin",
             "tests/test_admin_skills.py::test_admin_skill_detail_returns_skill_versions_and_snapshots",
-            "tests/test_admin_skills.py::test_admin_sync_builtin_skills_records_registry_versions_dependencies_and_snapshots",
-            "tests/test_admin_skills.py::test_admin_sync_builtin_skills_rejects_dependency_policy_violation",
+            "tests/test_admin_skills.py::test_admin_skill_detail_does_not_infer_dependency_without_persisted_version",
+            "tests/test_admin_skills.py::test_admin_sync_builtin_skills_records_registry_versions_without_inferred_dependencies",
+            "tests/test_admin_skills.py::test_admin_sync_builtin_skills_preserves_existing_immutable_dependency_manifest",
             "tests/test_admin_skills.py::test_admin_upload_skill_package_requires_admin",
-            "tests/test_admin_skills.py::test_admin_upload_skill_package_rejects_missing_internal_dependency",
             "tests/test_admin_skills.py::test_admin_upload_skill_package_stores_object_and_upserts_skill_version",
-            "tests/test_admin_skills.py::test_admin_upload_new_skill_package_creates_catalog_version_release_and_visibility",
+            "tests/test_admin_skills.py::test_admin_upload_new_skill_package_creates_draft_without_release_or_visibility",
             "tests/test_admin_skills.py::test_admin_upload_skill_package_rejects_name_mismatch_before_storage",
             "tests/test_admin_skills.py::test_admin_skill_release_routes_require_admin",
             "tests/test_admin_skills.py::test_admin_skill_version_diff_returns_manifest_changes",
@@ -321,7 +322,7 @@ def test_skill_release_readiness_records_policy_gaps_without_secret_or_absolute_
         "total_skills": 2,
         "public_workbench_skills": 1,
         "internal_dependency_skills": 1,
-        "skills_with_declared_dependencies": 1,
+        "skills_with_declared_dependencies": 0,
         "skills_with_package_metadata": 1,
         "skills_with_requirements": 1,
         "skills_with_sbom_evidence": 0,
@@ -420,8 +421,8 @@ def test_skill_release_readiness_records_policy_gaps_without_secret_or_absolute_
     assert qa_skill["public"] is True
     assert qa_skill["internal_dependency"] is False
     assert qa_skill["manifest"]["description_present"] is True
-    assert qa_skill["dependency_policy"]["dependency_ids"] == ["minimax-docx"]
-    assert qa_skill["dependency_policy"]["dependency_details"][0]["status"] == "allowed"
+    assert qa_skill["dependency_policy"]["dependency_ids"] == []
+    assert qa_skill["dependency_policy"]["dependency_details"] == []
     assert "signed_package_or_sbom_evidence_missing" in qa_skill["blockers"]
     assert "dependency_license_policy_evidence_missing" in qa_skill["blockers"]
     assert "dependency_vulnerability_evidence_missing" in qa_skill["blockers"]
@@ -540,19 +541,6 @@ def test_skill_release_readiness_fails_closed_when_inventory_is_missing(tmp_path
     assert readiness["summary"]["total_skills"] == 0
     assert "skill_inventory_missing_or_empty" in readiness["open_gaps"]
     assert readiness["source"]["inventory_present"] is False
-
-
-def test_skill_release_readiness_fails_closed_for_blocked_dependency_policy(tmp_path):
-    skills_root = tmp_path / "skills"
-    _write_skill(skills_root, "qa-file-reviewer", "Review Word documents.")
-
-    readiness = build_skill_release_readiness(skills_root=skills_root)
-
-    assert "skill_dependency_policy_blocked" in readiness["open_gaps"]
-    qa_skill = readiness["skills"][0]
-    assert qa_skill["skill_id"] == "qa-file-reviewer"
-    assert qa_skill["dependency_policy"]["dependency_details"][0]["status"] == "blocked"
-    assert "skill_dependency_policy_blocked" in qa_skill["blockers"]
 
 
 def test_skill_release_readiness_does_not_clear_review_gates_from_filenames_only(tmp_path):

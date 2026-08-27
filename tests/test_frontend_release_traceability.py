@@ -24,6 +24,7 @@ EXPECTED_CI_VERIFY = (
     "&& corepack pnpm run test:prd-closure-smoke-source "
     "&& corepack pnpm run test:company-rbac-browser-smoke-source "
     "&& corepack pnpm run test:skill-admin-ui "
+    "&& corepack pnpm run test:run-monitor "
     "&& corepack pnpm run test:control-plane-ui "
     "&& corepack pnpm run test:sse "
     "&& eslint . && tsc -b && vite build "
@@ -42,8 +43,6 @@ EXPECTED_WORKFLOW_PYTEST = (
     "tests/test_frontend_release_traceability.py "
     "tests/test_frontend_packaged_runtime_smoke.py "
     "tests/test_frontend_ci_workflow.py "
-    "tests/test_require_zero_junit_skips.py "
-    "tests/test_source_authority_docs.py "
     "-q --basetemp .pytest-tmp"
 )
 EXPECTED_LINUX_WORKFLOW_PYTEST = (
@@ -593,6 +592,12 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
 
     assert f"FROM {node_base} AS build" in dockerfile
     assert "apk add" not in dockerfile
+    openssl_upgrade = "RUN apk upgrade --no-cache libcrypto3 libssl3"
+    assert [
+        line
+        for line in runtime_dockerfile.splitlines()
+        if line.startswith("RUN apk upgrade ")
+    ] == [openssl_upgrade]
     assert "ARG AI_PLATFORM_BUILD_COMMIT=unknown" in dockerfile
     assert "ENV AI_PLATFORM_BUILD_COMMIT=${AI_PLATFORM_BUILD_COMMIT}" in dockerfile
     assert "org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT" in dockerfile
@@ -601,6 +606,7 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "COPY tools ./tools" in dockerfile
     copy_dist = "COPY --from=build /workspace/frontend/web/dist /usr/share/nginx/html"
     assert copy_dist in dockerfile
+    assert runtime_dockerfile.index(openssl_upgrade) < runtime_dockerfile.index(copy_dist)
     copy_dist_line = next(line for line in runtime_dockerfile.splitlines() if copy_dist in line)
     assert "--chown" not in copy_dist_line
     healthcheck = next(

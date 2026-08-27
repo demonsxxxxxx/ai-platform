@@ -99,16 +99,22 @@ jobs:
           git checkout --detach "$VALIDATED_PR_HEAD_REF"
           test "$(git rev-parse HEAD)" = "$VALIDATED_PR_HEAD_REF"
 
+      - name: Set up uv with lock-keyed cache
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
       - name: Install candidate dependencies from the lock authority
         run: |
-          python -m pip install "uv==$UV_VERSION"
           uv lock --check
           uv sync --locked --extra test --no-install-project
 
       - name: Compile backend sources
         run: python -m compileall -q app tools scripts
 
-      - name: Enforce SSE v3 release-atomic cutover
+      - name: Enforce SSE v4 release-atomic cutover
         run: python tools/check_sse_runtime_cutover.py
 
   backend-tests:
@@ -117,6 +123,19 @@ jobs:
     needs: backend-validation
     timeout-minutes: 15
     services:
+      postgres:
+        image: ${{ matrix.postgres_image }}
+        env:
+          POSTGRES_DB: ai_platform
+          POSTGRES_USER: ai_platform
+          POSTGRES_PASSWORD: ai_platform_ci_password
+        ports:
+          - "54329:5432"
+        options: >-
+          --health-cmd "pg_isready -U ai_platform -d ai_platform"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
       redis:
         image: ${{ matrix.redis_image }}
         ports:
@@ -131,6 +150,8 @@ jobs:
       matrix:
         include:
           - shard: sandbox-runtime
+            postgres_image: ""
+            postgres_url: ""
             redis_image: redis:7.4-alpine
             redis_url: redis://localhost:6379/15
             test_files: >-
@@ -149,6 +170,8 @@ jobs:
               tests/test_sandbox_runtime_evidence_script.py
               tests/test_contract.py
           - shard: repository-worker-streaming
+            postgres_image: postgres:16-alpine
+            postgres_url: postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform
             redis_image: redis:7.4-alpine
             redis_url: redis://localhost:6379/15
             test_files: >-
@@ -164,27 +187,80 @@ jobs:
               tests/test_lambchat_sse_v21.py
               tests/test_app_lifespan.py
               tests/test_runtime_launch_script.py
+          - shard: model-control-plane
+            postgres_image: ""
+            postgres_url: ""
+            redis_image: ""
+            redis_url: ""
+            test_files: >-
+              tests/test_model_management.py
+              tests/test_opensandbox_gateway.py
+              tests/test_opensandbox_model_route_credentials.py
+              tests/test_lambchat_frontend_compat.py::test_lambchat_model_catalog_comes_from_settings
+              tests/test_lambchat_frontend_compat.py::test_lambchat_governed_model_catalog_preempts_legacy_upstream_and_preserves_raw_ids
+              tests/test_execution_spec.py::test_execution_spec_preserves_raw_upstream_model_identity
+              tests/test_execution_spec.py::test_execution_spec_rejects_unsafe_upstream_model_identity
+              tests/test_schema.py::test_schema_adds_versioned_model_gateway_and_non_deleting_shared_catalog
+          - shard: run-control-contracts
+            postgres_image: ""
+            postgres_url: ""
+            redis_image: ""
+            redis_url: ""
+            test_files: >-
+              tests/test_admin_run_detail.py
+              tests/test_chat_selected_skill_routing.py
+              tests/test_claude_agent_events.py
+              tests/test_executor_reconciler.py
+              tests/test_issue_511_session_context_gen2.py
+              tests/test_platform_multi_agent_retirement.py
+              tests/test_routes.py
+              tests/test_run_admission_terminalization.py
+              tests/test_run_cancellation_use_case.py
+              tests/test_run_control_routes.py
+              tests/test_run_persistence.py
+              tests/test_run_projection.py
+              tests/test_sse_v3_contract_generation.py
+              tests/test_sse_v4_contract_generation.py
+              tests/test_streaming_contracts.py
+          - shard: schema-migrations
+            postgres_image: postgres:16-alpine
+            postgres_url: postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform
+            redis_image: ""
+            redis_url: ""
+            test_files: >-
+              tests/test_schema_migrations.py
+              tests/test_schema_migrations_postgres.py
+          - shard: v4-durable-streaming
+            postgres_image: postgres:16-alpine
+            postgres_url: postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform
+            redis_image: redis:7.4-alpine
+            redis_url: redis://127.0.0.1:6379/15
+            test_files: >-
+              tests/test_streaming_v4_durable.py
+              tests/test_streaming_v4_postgres_integration.py
+              tests/test_streaming_v4_redis_integration.py
+              tests/test_streaming_v4_transport.py
           - shard: release-governance-policy
+            postgres_image: ""
+            postgres_url: ""
             redis_image: ""
             redis_url: ""
             test_files: >-
               tests/test_architecture_governance.py
               tests/test_backend_ci_workflow.py
+              tests/test_trusted_governance.py
               tests/test_code_governance.py
-              tests/test_pr_review_record.py
               tests/test_source_authority_docs.py
               tests/test_ci_image_scope.py
+              tests/test_require_zero_junit_skips.py
               tests/test_s72_release_contract.py
               tests/test_packaging_contract.py
               tests/test_packaging_publish_workflow.py
               tests/test_trivy_failure_evidence.py
               tests/test_release_image_manifest.py
-          - shard: release-governance-readiness
-            redis_image: ""
-            redis_url: ""
-            test_files: >-
-              tests/test_pre_push_readiness.py
           - shard: release-governance-authority
+            postgres_image: ""
+            postgres_url: ""
             redis_image: ""
             redis_url: ""
             test_files: >-
@@ -193,6 +269,7 @@ jobs:
               tests/test_release_authority.py
     env:
       BACKEND_TEST_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      AI_PLATFORM_S0A_SCHEMA_TEST_DSN: ${{ matrix.postgres_url }}
       AI_PLATFORM_SSE_REDIS_TEST_URL: ${{ matrix.redis_url }}
     steps:
       - name: Checkout exact backend test source
@@ -213,9 +290,15 @@ jobs:
         with:
           python-version: ${{ env.BACKEND_PYTHON_VERSION }}
 
+      - name: Set up uv with lock-keyed cache
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
       - name: Install candidate dependencies from the lock authority
         run: |
-          python -m pip install "uv==$UV_VERSION"
           uv lock --check
           uv sync --locked --extra test --no-install-project
 
@@ -228,7 +311,12 @@ jobs:
               -vv \
               --tb=short \
               -o faulthandler_timeout=120 \
+              --junitxml ".pytest-tmp/${{ matrix.shard }}.xml" \
               --basetemp ".pytest-tmp/${{ matrix.shard }}"
+          if [[ "${{ matrix.shard }}" =~ ^(repository-worker-streaming|run-control-contracts|schema-migrations|v4-durable-streaming)$ ]]; then
+            uv run --locked --extra test python tools/require_zero_junit_skips.py \
+              ".pytest-tmp/${{ matrix.shard }}.xml"
+          fi
 
   agent-skill-contracts:
     name: Agent and Skill contracts
@@ -270,14 +358,21 @@ jobs:
         with:
           python-version: ${{ env.BACKEND_PYTHON_VERSION }}
 
+      - name: Set up uv with lock-keyed cache
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
       - name: Install candidate dependencies from the lock authority
         run: |
-          python -m pip install "uv==$UV_VERSION"
           uv lock --check
           uv sync --locked --extra test --no-install-project
 
       - name: Run Agent and Skill contract tests
         run: |
+          set -euo pipefail
           mkdir -p .pytest-tmp
           timeout --signal=TERM --kill-after=30s 10m \
             uv run --locked --extra test python -m pytest \
@@ -285,6 +380,7 @@ jobs:
               tests/test_agent_profile_lifecycle.py \
               tests/test_agent_profile_routes.py \
               tests/test_agent_profiles_postgres.py \
+              tests/test_model_management_postgres.py \
               tests/test_authorized_skill_catalog.py \
               tests/test_skill_dependencies.py \
               tests/test_skill_lifecycle.py \
@@ -296,7 +392,10 @@ jobs:
               -vv \
               --tb=short \
               -o faulthandler_timeout=120 \
+              --junitxml .pytest-tmp/agent-skill-contracts.xml \
               --basetemp .pytest-tmp/agent-skill-contracts
+          uv run --locked --extra test python tools/require_zero_junit_skips.py \
+            .pytest-tmp/agent-skill-contracts.xml
 
   backend-image:
     name: packaged backend image build
@@ -426,7 +525,11 @@ jobs:
           }
           cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
           trap cleanup EXIT
-          if ! docker run --detach --name "$container" --publish 127.0.0.1:18020:8020 "$image"; then
+          session_secret="$(python -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
+          if ! docker run --detach --name "$container" \
+            --env AI_SESSION_SECRET="$session_secret" \
+            --publish 127.0.0.1:18020:8020 \
+            "$image"; then
             emit_bounded_container_diagnostic
             exit 1
           fi

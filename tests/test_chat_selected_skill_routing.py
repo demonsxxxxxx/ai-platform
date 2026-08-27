@@ -1,6 +1,7 @@
 import base64
 import hashlib
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -8,12 +9,38 @@ from fastapi import HTTPException
 from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.models import ChatStreamRequest
-from app.routes.chat import chat_stream
+from app.routes.chat import chat_stream as _route_chat_stream
+
+
+_TEST_STREAM_REQUEST = SimpleNamespace(
+    app=SimpleNamespace(
+        state=SimpleNamespace(
+            run_stream_runtime=SimpleNamespace(worker_capabilities=object())
+        )
+    )
+)
+
+
+async def chat_stream(*args, **kwargs):
+    kwargs.setdefault("http_request", _TEST_STREAM_REQUEST)
+    return await _route_chat_stream(*args, **kwargs)
 
 
 @asynccontextmanager
 async def fake_transaction():
     yield object()
+
+
+@pytest.fixture
+def stub_unselected_model(monkeypatch):
+    async def resolve_model(_conn, *, selection):
+        assert selection is None
+        return None
+
+    monkeypatch.setattr(
+        "app.routes.chat.resolve_chat_model_selection",
+        resolve_model,
+    )
 
 
 def principal(**overrides):
@@ -140,7 +167,10 @@ def default_chat_stream_dependencies(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_explicit_selected_skill_survives_scoped_negative_prompt(monkeypatch):
+async def test_chat_stream_explicit_selected_skill_survives_scoped_negative_prompt(
+    monkeypatch,
+    stub_unselected_model,
+):
     calls = {}
     manifests = {
         skill_id: snapshot_manifest(skill_id)
@@ -272,7 +302,10 @@ async def test_chat_stream_explicit_selected_skill_survives_scoped_negative_prom
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_explicit_selected_skill_denial_precedes_side_effects(monkeypatch):
+async def test_chat_stream_explicit_selected_skill_denial_precedes_side_effects(
+    monkeypatch,
+    stub_unselected_model,
+):
     calls = []
 
     async def deny_selected(*_args, **kwargs):

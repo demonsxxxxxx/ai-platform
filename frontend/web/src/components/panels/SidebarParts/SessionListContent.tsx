@@ -7,6 +7,7 @@ import {
   Server,
   Bot,
   Cpu,
+  Activity,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -154,6 +155,12 @@ export function SessionListContent({
       icon: Cpu,
       label: t("nav.models"),
       onClick: () => navigate("/models"),
+    },
+    {
+      key: "runs",
+      icon: Activity,
+      label: t("nav.runs"),
+      onClick: () => navigate("/runs"),
     },
   ];
   const visibleGovernanceNavItems = governanceNavItems.filter(({ key }) =>

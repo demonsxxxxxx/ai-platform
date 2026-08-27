@@ -64,10 +64,15 @@ or retain secret, certificate-key, configuration, or private payload contents.
 `OPENSANDBOX_GATEWAY_BROKER_ENABLED` accepts only `true` or `false` and defaults
 to `true`. Set it to `false` only for an explicitly capability-only deployment:
 the authenticated lifecycle and external-egress capability routes remain active,
-but the mailbox/model broker is not started and model credential files are not
-read. Enabling the broker continues to require both model credential files and
-fails closed when either is absent or invalid. A capability-only deployment does
-not prove model egress or the remote smoke gates below.
+but the mailbox/model broker is not started. The broker never reads the real
+compatible-endpoint credential; it validates the signed Run route and forwards
+to the fixed AI Platform internal proxy. Enabling the broker requires the
+non-secret proxy bootstrap sentinel and the API/Nginx
+`MODEL_PROXY_INTERNAL_TOKEN` boundary to be configured consistently. The API
+separately requires `MODEL_CONNECTION_ENCRYPTION_KEY` before an administrator can
+activate a managed connection. Missing or invalid configuration fails closed. A
+capability-only deployment does not prove model egress or the remote smoke gates
+below.
 
 `OPENSANDBOX_GATEWAY_EXPECTED_NETWORK_MODE` defaults to `none`. The only other
 accepted value is `bridge`, and it additionally requires a profile ID containing

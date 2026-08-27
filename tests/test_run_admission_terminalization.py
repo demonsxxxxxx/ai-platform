@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -109,31 +110,44 @@ async def test_retired_admission_terminalization_emits_one_hidden_fact_after_del
         audits.append(kwargs)
         return "aud-terminal"
 
-    async def ensure_run_terminal_intent(_conn, **_kwargs):
-        return None
+    terminal_intents: list[tuple[str, str, str]] = []
+
+    async def ensure_terminal_intent(_conn, *, tenant_id, run_id, status):
+        terminal_intents.append((tenant_id, run_id, status))
+        return SimpleNamespace(terminal_event_id="evt-terminal")
 
     monkeypatch.setattr(repositories, "append_event", append_event)
     monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
     monkeypatch.setattr(
         "app.streaming.redis.ensure_run_terminal_intent",
-        ensure_run_terminal_intent,
+        ensure_terminal_intent,
     )
+    terminal_rows: list[tuple[str, str]] = []
+
+    class EventPersistence:
+        async def append_terminal_row(self, _conn, *, tenant_id, run_id):
+            terminal_rows.append((tenant_id, run_id))
+            return None
+
+    v4_capabilities = SimpleNamespace(event_persistence=EventPersistence())
     conn = DelayedPermissionDrainConnection()
 
     first = await terminalization.terminalize_retired_platform_multi_agent_run(
         conn,
         tenant_id="tenant-a",
         run_id="run-retired",
+        v4_capabilities=v4_capabilities,
     )
     assert first.completed is False
     assert conn.reason == "retired_platform_multi_agent_control"
     assert len(conn.remaining) == 1
     assert not [event for event in events if event["event_type"] == "run_failed"]
 
-    second = await repositories.progress_run_tool_permission_terminalization(
+    second = await terminalization.terminalize_retired_platform_multi_agent_run(
         conn,
         tenant_id="tenant-a",
         run_id="run-retired",
+        v4_capabilities=v4_capabilities,
     )
     assert second.completed is True and second.did_transition is True
     assert len([event for event in events if event["event_type"] == "run_failed"]) == 1
@@ -144,13 +158,17 @@ async def test_retired_admission_terminalization_emits_one_hidden_fact_after_del
         conn,
         tenant_id="tenant-a",
         run_id="run-retired",
+        v4_capabilities=v4_capabilities,
     )
-    await repositories.progress_run_tool_permission_terminalization(
+    await terminalization.terminalize_retired_platform_multi_agent_run(
         conn,
         tenant_id="tenant-a",
         run_id="run-retired",
+        v4_capabilities=v4_capabilities,
     )
     assert (len(events), len(audits)) == first_terminal_fact_counts
+    assert terminal_intents == [("tenant-a", "run-retired", "failed")]
+    assert terminal_rows == [("tenant-a", "run-retired")]
 
     run_events = [event for event in events if event["event_type"] == "run_failed"]
     run_audits = [audit for audit in audits if audit["target_type"] == "run"]
@@ -165,3 +183,136 @@ async def test_retired_admission_terminalization_emits_one_hidden_fact_after_del
     assert run_audits[0]["payload_json"]["reason"] == "retired_platform_multi_agent_control"
     assert run_audits[0]["payload_json"]["error_code"] == "platform_multi_agent_not_supported"
     assert run_audits[0]["payload_json"]["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_enqueue_failure_prepares_authority_then_terminal_row_on_same_connection(monkeypatch):
+    calls: list[tuple[str, object]] = []
+    conn = object()
+
+    async def mark_enqueue_failed(observed_conn, **kwargs):
+        assert observed_conn is conn
+        calls.append(("transition", observed_conn))
+        assert kwargs == {
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "run_id": "run-a",
+            "trace_id": "trace-run-a",
+        }
+        return terminalization.RunTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=True,
+        )
+
+    class PendingAdmissions:
+        async def prepare_pending_authority_in_transaction(
+            self, observed_conn, *, tenant_id, run_id, attempt_id
+        ):
+            assert observed_conn is conn
+            assert (tenant_id, run_id, attempt_id) == (
+                "tenant-a",
+                "run-a",
+                "enqueue_failure_run-a",
+            )
+            calls.append(("authority", observed_conn))
+            return object()
+
+    class EventPersistence:
+        async def append_terminal_row(self, observed_conn, *, tenant_id, run_id):
+            assert observed_conn is conn
+            assert (tenant_id, run_id) == ("tenant-a", "run-a")
+            calls.append(("terminal_row", observed_conn))
+            return "row-a"
+
+    monkeypatch.setattr(repositories, "mark_run_enqueue_failed", mark_enqueue_failed)
+
+    progress = await terminalization.terminalize_enqueue_failure_with_v4(
+        SimpleNamespace(
+            pending_admissions=PendingAdmissions(),
+            event_persistence=EventPersistence(),
+        ),
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-a",
+        trace_id="trace-run-a",
+    )
+
+    assert progress.did_transition is True
+    assert calls == [
+        ("authority", conn),
+        ("transition", conn),
+        ("terminal_row", conn),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_enqueue_failure_rejects_missing_v4_terminal_row(monkeypatch):
+    async def mark_enqueue_failed(_conn, **_kwargs):
+        return terminalization.RunTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=True,
+        )
+
+    class PendingAdmissions:
+        async def prepare_pending_authority_in_transaction(self, *_args, **_kwargs):
+            return object()
+
+    class EventPersistence:
+        async def append_terminal_row(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(repositories, "mark_run_enqueue_failed", mark_enqueue_failed)
+
+    with pytest.raises(RuntimeError, match="enqueue_failure_v4_terminal_row_missing"):
+        await terminalization.terminalize_enqueue_failure_with_v4(
+            SimpleNamespace(
+                pending_admissions=PendingAdmissions(),
+                event_persistence=EventPersistence(),
+            ),
+            object(),
+            tenant_id="tenant-a",
+            user_id="user-a",
+            run_id="run-a",
+            trace_id="trace-run-a",
+        )
+
+
+@pytest.mark.asyncio
+async def test_enqueue_failure_rejects_a_non_winning_transition(monkeypatch):
+    terminal_row_called = False
+
+    async def mark_enqueue_failed(_conn, **_kwargs):
+        return terminalization.RunTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=False,
+        )
+
+    class PendingAdmissions:
+        async def prepare_pending_authority_in_transaction(self, *_args, **_kwargs):
+            return object()
+
+    class EventPersistence:
+        async def append_terminal_row(self, *_args, **_kwargs):
+            nonlocal terminal_row_called
+            terminal_row_called = True
+            return "unexpected-row"
+
+    monkeypatch.setattr(repositories, "mark_run_enqueue_failed", mark_enqueue_failed)
+
+    with pytest.raises(RuntimeError, match="enqueue_failure_terminal_transition_missing"):
+        await terminalization.terminalize_enqueue_failure_with_v4(
+            SimpleNamespace(
+                pending_admissions=PendingAdmissions(),
+                event_persistence=EventPersistence(),
+            ),
+            object(),
+            tenant_id="tenant-a",
+            user_id="user-a",
+            run_id="run-a",
+            trace_id="trace-run-a",
+        )
+    assert terminal_row_called is False

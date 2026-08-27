@@ -1,0 +1,88 @@
+name: ai-platform trusted governance v2
+
+on:
+  pull_request_target:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-platform-trusted-governance-v2-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  GOVERNANCE_PYTHON_VERSION: "3.13.14"
+
+jobs:
+  trusted-governance-v2:
+    name: trusted governance v2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact trusted base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up trusted Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.GOVERNANCE_PYTHON_VERSION }}
+
+      - name: Install trusted governance dependencies
+        run: python -m pip install ruff==0.11.13 PyYAML==6.0.3
+
+      - name: Run accepted-base exact-range governance
+        env:
+          GOVERNANCE_PR_NUMBER: ${{ github.event.number }}
+          GOVERNANCE_BASE_REF: ${{ github.event.pull_request.base.sha }}
+          GOVERNANCE_HEAD_REF: ${{ github.event.pull_request.head.sha }}
+          GOVERNANCE_FETCH_TOKEN: ${{ github.token }}
+          PYTHONSAFEPATH: "1"
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "demonsxxxxxx/ai-platform"
+          [[ "$GOVERNANCE_PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          [[ "$GOVERNANCE_BASE_REF" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GOVERNANCE_HEAD_REF" =~ ^[0-9a-f]{40}$ ]]
+          GOVERNANCE_PULL_REF="refs/remotes/origin/pull/$GOVERNANCE_PR_NUMBER/head"
+          GOVERNANCE_FETCH_BASIC="$(printf 'x-access-token:%s' "$GOVERNANCE_FETCH_TOKEN" | base64 --wrap=0)"
+          echo "::add-mask::$GOVERNANCE_FETCH_BASIC"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $GOVERNANCE_FETCH_BASIC" fetch --no-tags origin "+refs/pull/$GOVERNANCE_PR_NUMBER/head:$GOVERNANCE_PULL_REF"
+          unset GOVERNANCE_FETCH_TOKEN GOVERNANCE_FETCH_BASIC
+          test "$(git rev-parse "$GOVERNANCE_PULL_REF^{commit}")" = "$GOVERNANCE_HEAD_REF"
+          git cat-file -e "$GOVERNANCE_BASE_REF^{commit}"
+          git cat-file -e "$GOVERNANCE_HEAD_REF^{commit}"
+          test "$(git rev-parse "$GOVERNANCE_BASE_REF^{commit}")" = "$GOVERNANCE_BASE_REF"
+          test "$(git rev-parse "$GOVERNANCE_HEAD_REF^{commit}")" = "$GOVERNANCE_HEAD_REF"
+          git merge-base --is-ancestor "$GOVERNANCE_BASE_REF" "$GOVERNANCE_HEAD_REF"
+          GOVERNANCE_BASE_WORKTREE="$RUNNER_TEMP/trusted-governance-v2-base"
+          GOVERNANCE_HEAD_WORKTREE="$RUNNER_TEMP/trusted-governance-v2-head"
+          git worktree add --detach "$GOVERNANCE_BASE_WORKTREE" "$GOVERNANCE_BASE_REF"
+          git worktree add --detach "$GOVERNANCE_HEAD_WORKTREE" "$GOVERNANCE_HEAD_REF"
+          python -P "$GOVERNANCE_BASE_WORKTREE/tools/trusted_governance.py" validate \
+            --base-root "$GOVERNANCE_BASE_WORKTREE" \
+            --head-root "$GOVERNANCE_HEAD_WORKTREE" \
+            --base-ref "$GOVERNANCE_BASE_REF" \
+            --head-ref "$GOVERNANCE_HEAD_REF"
+          (
+            cd "$GOVERNANCE_HEAD_WORKTREE"
+            python -P "$GOVERNANCE_BASE_WORKTREE/tools/code_governance.py" check \
+              --base-ref "$GOVERNANCE_BASE_REF" \
+              --head-ref "$GOVERNANCE_HEAD_REF" \
+              --format text
+            python -P "$GOVERNANCE_BASE_WORKTREE/tools/architecture_governance.py" check \
+              --authority-ref "$GOVERNANCE_BASE_REF" \
+              --base-ref "$GOVERNANCE_BASE_REF" \
+              --head-ref "$GOVERNANCE_HEAD_REF" \
+              --format text
+          )

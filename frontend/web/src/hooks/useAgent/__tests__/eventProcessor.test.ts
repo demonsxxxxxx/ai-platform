@@ -1,9 +1,80 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { getVisibleMessageParts } from "../../../components/chat/ChatMessage/messagePartVisibility.ts";
-import type { MessagePart } from "../../../types";
-import { processMessageEvent } from "../eventProcessor.ts";
+import type { Message, MessagePart } from "../../../types";
+import {
+  normalizeMessageTextLogicalIds,
+  processMessageEvent,
+} from "../eventProcessor.ts";
 import { isAssistantTextProjection } from "../types.ts";
+
+test("normalizes hydrated text with deterministic message-local ordinals", () => {
+  const hydrated = {
+    id: "persisted-assistant",
+    role: "assistant",
+    content: "",
+    timestamp: new Date("2026-08-21T00:00:00Z"),
+    parts: [
+      {
+        type: "text",
+        content: "first",
+        logical_id: "persisted-assistant:text:0:0:root",
+      },
+      {
+        type: "text",
+        content: "already identified",
+        logical_id: "protocol-message:text:1:0:root",
+      },
+      {
+        type: "subagent",
+        agent_id: "child",
+        agent_name: "Child",
+        input: "delegate",
+        status: "running",
+        depth: 0,
+        parts: [
+          {
+            type: "text",
+            content: "nested",
+            logical_id: "persisted-assistant:text:0:1:child",
+          },
+        ],
+      },
+    ],
+  } satisfies Message;
+
+  const first = normalizeMessageTextLogicalIds(hydrated, "protocol-message");
+  const replay = normalizeMessageTextLogicalIds(
+    {
+      ...hydrated,
+      parts: hydrated.parts?.map((part) =>
+        part.type === "subagent"
+          ? { ...part, parts: part.parts?.map((child) => ({ ...child })) }
+          : { ...part },
+      ),
+    },
+    "protocol-message",
+  );
+  assert.deepEqual(first.parts, replay.parts);
+  assert.equal(first.parts?.[0]?.type, "text");
+  assert.equal(
+    first.parts?.[0]?.type === "text" ? first.parts[0].logical_id : null,
+    "protocol-message:text:0:0:root",
+  );
+  assert.equal(first.parts?.[1]?.type, "text");
+  assert.equal(
+    first.parts?.[1]?.type === "text" ? first.parts[1].logical_id : null,
+    "protocol-message:text:1:0:root",
+  );
+  const child = first.parts?.[2];
+  assert.equal(child?.type, "subagent");
+  assert.equal(
+    child?.type === "subagent" && child.parts?.[0]?.type === "text"
+      ? child.parts[0].logical_id
+      : null,
+    "protocol-message:text:0:1:child",
+  );
+});
 
 test("projects the controlled native Skill sandbox admission failure stage", () => {
   const result = processMessageEvent(
@@ -517,7 +588,13 @@ test("streams versioned assistant deltas and converges to one canonical final", 
   assert.equal(delta.content, "Hello");
   assert.deepEqual(
     delta.parts.filter((part) => part.type === "text"),
-    [{ type: "text", content: "Hello" }],
+    [
+      {
+        type: "text",
+        content: "Hello",
+        logical_id: "message-1:text:0:0:root",
+      },
+    ],
   );
 
   const final = processMessageEvent(
@@ -555,7 +632,47 @@ test("streams versioned assistant deltas and converges to one canonical final", 
 
   assert.equal(replayedFinal.content, "Hello, world!");
   assert.deepEqual(replayedFinal.parts, [
-    { type: "text", content: "Hello, world!" },
+    {
+      type: "text",
+      content: "Hello, world!",
+      logical_id: "message-1:text:0:0:root",
+    },
+  ]);
+
+  const secondSegment = processMessageEvent(
+    "message:chunk",
+    {
+      projection_version: "ai-platform.chat-public-projection.v1",
+      projection_kind: "assistant_delta",
+      message_id: "protocol-message-1",
+      event_id: "evt-second-segment",
+      sequence: 5,
+      run_id: "run-a",
+      content: "Second segment",
+    },
+    [
+      ...replayedFinal.parts,
+      {
+        type: "tool",
+        id: "tool-divider",
+        name: "Read authorized files",
+        args: {},
+        isPending: false,
+      },
+    ],
+    replayedFinal.content,
+    [],
+    0,
+    [],
+    false,
+    "message-1",
+  );
+  const textIds = secondSegment.parts
+    .filter((part) => part.type === "text")
+    .map((part) => part.logical_id);
+  assert.deepEqual(textIds, [
+    "message-1:text:0:0:root",
+    "protocol-message-1:text:1:0:root",
   ]);
 });
 
@@ -1905,4 +2022,192 @@ test("fails closed for malformed, unknown, or step-id-less public execution even
     assert.deepEqual(result.parts, []);
     assert.equal(result.content, "");
   }
+});
+
+test("projects v4 tool lifecycle into stable typed statuses", () => {
+  const started = processMessageEvent(
+    "run_event",
+    { event_type: "public_tool_activity", operation_id: "op-search-1", category: "search", display_name: "Search authorized sources", status: "started", input_summary: "Query: stability evidence" },
+    [], "", [], 0, [], true, "message-1",
+  );
+  assert.equal(started.parts[0]?.type, "tool");
+  if (started.parts[0]?.type !== "tool") throw new Error("expected typed tool part");
+  assert.equal(started.parts[0].public_operation_id, "op-search-1");
+  assert.equal(started.parts[0].name, "Search authorized sources");
+  assert.equal(started.parts[0].public_input_summary, "Query: stability evidence");
+  assert.deepEqual(started.parts[0].args, {
+    category: "search",
+    summary: "Query: stability evidence",
+  });
+  assert.equal(started.parts[0].status, "started");
+
+  const completed = processMessageEvent(
+    "run_event",
+    { event_type: "public_tool_activity", operation_id: "op-search-1", category: "search", display_name: "Search authorized sources", status: "completed", result_summary: "safe summary" },
+    started.parts, "", [], 0, [], true, "message-1",
+  );
+  assert.equal(completed.parts.length, 1);
+  if (completed.parts[0]?.type !== "tool") throw new Error("expected typed tool part");
+  assert.equal(completed.parts[0].isPending, false);
+  assert.equal(completed.parts[0].result, "safe summary");
+  assert.equal(completed.parts[0].public_input_summary, "Query: stability evidence");
+  assert.deepEqual(completed.parts[0].args, {
+    category: "search",
+    summary: "Query: stability evidence",
+  });
+  assert.equal(completed.parts[0].status, "completed");
+
+  const failed = processMessageEvent(
+    "run_event",
+    { event_type: "public_tool_activity", operation_id: "op-failed", category: "read", display_name: "Failed read", status: "failed", failure_category: "private-failure-token" },
+    completed.parts, "", [], 0, [], true, "message-1",
+  );
+  const denied = processMessageEvent(
+    "run_event",
+    { event_type: "public_tool_activity", operation_id: "op-denied", category: "read", display_name: "Denied read", status: "denied", denial_code: "private-denial-token" },
+    failed.parts, "", [], 0, [], true, "message-1",
+  );
+  const terminalStatuses = denied.parts
+    .filter((part) => part.type === "tool")
+    .map((part) => part.status);
+  assert.deepEqual(terminalStatuses, ["completed", "failed", "denied"]);
+  assert.doesNotMatch(JSON.stringify(denied.parts), /private-failure-token|private-denial-token/);
+});
+
+test("nests v4 subagents by accepted event identity at stable depths", () => {
+  const root = processMessageEvent(
+    "run_event",
+    {
+      event_type: "public_subagent_activity",
+      subagent_id: "agent-root",
+      display_name: "Root agent",
+      status: "started",
+      event_id: "root-origin",
+    },
+    [], "", [], 0, [], true, "message-1",
+  );
+  const child = processMessageEvent(
+    "run_event",
+    {
+      event_type: "public_subagent_activity",
+      subagent_id: "agent-child",
+      display_name: "Verification agent",
+      status: "started",
+      event_id: "child-origin",
+      causation_event_id: "root-origin",
+    },
+    root.parts, "", [], 0, [], true, "message-1",
+  );
+  const sibling = processMessageEvent(
+    "run_event",
+    {
+      event_type: "public_subagent_activity",
+      subagent_id: "agent-sibling",
+      display_name: "Sibling agent",
+      status: "started",
+      event_id: "sibling-origin",
+      causation_event_id: "root-origin",
+    },
+    child.parts, "", [], 0, [], true, "message-1",
+  );
+  const grandchild = processMessageEvent(
+    "run_event",
+    {
+      event_type: "public_subagent_activity",
+      subagent_id: "agent-grandchild",
+      display_name: "Grandchild agent",
+      status: "started",
+      event_id: "grandchild-origin",
+      causation_event_id: "child-origin",
+    },
+    sibling.parts, "", [], 0, [], true, "message-1",
+  );
+
+  assert.equal(grandchild.parts.length, 1);
+  const rootPart = grandchild.parts[0];
+  assert.equal(rootPart?.type, "subagent");
+  if (rootPart?.type !== "subagent") throw new Error("expected root subagent");
+  assert.equal(rootPart.depth, 0);
+  assert.deepEqual(rootPart.parts?.map((part) => part.type === "subagent" ? part.agent_id : part.type), [
+    "agent-child",
+    "agent-sibling",
+  ]);
+  const childPart = rootPart.parts?.[0];
+  assert.equal(childPart?.type, "subagent");
+  if (childPart?.type !== "subagent") throw new Error("expected child subagent");
+  assert.equal(childPart.depth, 1);
+  assert.equal(childPart.parent_agent_id, "agent-root");
+  const grandchildPart = childPart.parts?.[0];
+  assert.equal(grandchildPart?.type, "subagent");
+  if (grandchildPart?.type !== "subagent") throw new Error("expected grandchild subagent");
+  assert.equal(grandchildPart.depth, 2);
+  assert.equal(grandchildPart.parent_agent_id, "agent-child");
+});
+
+ test("preserves subagent parent, origin, and sibling position across lifecycle updates", () => {
+  const started = processMessageEvent(
+    "run_event",
+    { event_type: "public_subagent_activity", subagent_id: "agent-root", display_name: "Root", status: "started", event_id: "root-origin" },
+    [], "", [], 0, [], true, "message-1",
+  );
+  const child = processMessageEvent(
+    "run_event",
+    { event_type: "public_subagent_activity", subagent_id: "agent-child", display_name: "Child", status: "started", event_id: "child-origin", causation_event_id: "root-origin" },
+    started.parts, "", [], 0, [], true, "message-1",
+  );
+  const sibling = processMessageEvent(
+    "run_event",
+    { event_type: "public_subagent_activity", subagent_id: "agent-sibling", display_name: "Sibling", status: "started", event_id: "sibling-origin", causation_event_id: "root-origin" },
+    child.parts, "", [], 0, [], true, "message-1",
+  );
+  const progressed = processMessageEvent(
+    "run_event",
+    { event_type: "public_subagent_activity", subagent_id: "agent-child", display_name: "Child", status: "progress", progress_percent: 50, event_id: "child-progress", causation_event_id: "child-origin" },
+    sibling.parts, "", [], 0, [], true, "message-1",
+  );
+  const completed = processMessageEvent(
+    "run_event",
+    { event_type: "public_subagent_activity", subagent_id: "agent-child", display_name: "Child", status: "completed", progress_percent: 100, event_id: "child-complete", causation_event_id: "missing-parent" },
+    progressed.parts, "", [], 0, [], true, "message-1",
+  );
+  const duplicate = processMessageEvent(
+    "run_event",
+    { event_type: "public_subagent_activity", subagent_id: "agent-child", display_name: "Child", status: "completed", progress_percent: 100, event_id: "child-complete", causation_event_id: "root-origin" },
+    completed.parts, "", [], 0, [], true, "message-1",
+  );
+
+  const rootPart = duplicate.parts[0];
+  assert.equal(rootPart?.type, "subagent");
+  if (rootPart?.type !== "subagent") throw new Error("expected root subagent");
+  assert.deepEqual(rootPart.parts?.map((part) => part.type === "subagent" ? part.agent_id : part.type), [
+    "agent-child",
+    "agent-sibling",
+  ]);
+  const childPart = rootPart.parts?.[0];
+  assert.equal(childPart?.type, "subagent");
+  if (childPart?.type !== "subagent") throw new Error("expected child subagent");
+  assert.equal(childPart.status, "complete");
+  assert.equal(childPart.parent_agent_id, "agent-root");
+  assert.equal(childPart.origin_event_id, "child-origin");
+  assert.equal(childPart.causation_event_id, "root-origin");
+  assert.equal(childPart.depth, 1);
+});
+
+test("does not invent a parent agent from an unresolved causation event", () => {
+  const result = processMessageEvent(
+    "run_event",
+    {
+      event_type: "public_subagent_activity",
+      subagent_id: "agent-child",
+      display_name: "Verification agent",
+      status: "started",
+      event_id: "child-event-2",
+      causation_event_id: "missing-parent-event",
+    },
+    [], "", [], 0, [], true, "message-1",
+  );
+  assert.equal(result.parts[0]?.type, "subagent");
+  if (result.parts[0]?.type !== "subagent") throw new Error("expected typed subagent part");
+  assert.equal(result.parts[0].parent_agent_id, undefined);
+  assert.equal(result.parts[0].causation_event_id, "missing-parent-event");
 });

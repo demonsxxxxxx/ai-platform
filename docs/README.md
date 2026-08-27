@@ -8,8 +8,8 @@ does not represent deployed runtime state.
 - `../AGENTS.md` defines repository-local operating constraints.
 - `agent-rules/multi-agent-context-workflow.md` defines ownership, leases, and
   handoff.
-- `agent-rules/github-issue-pr-workflow.md` defines issue, PR, review, and
-  closure evidence.
+- `agent-rules/github-issue-pr-workflow.md` defines risk-scaled PR scope,
+  review, verification, and evidence language.
 - `agent-rules/local-test-execution.md` defines the bounded, observable,
   worktree-safe procedure for local pytest stages and their failure taxonomy.
 - `architecture/runtime-authorities.md` maps each runtime capability to its
@@ -25,8 +25,8 @@ does not represent deployed runtime state.
   and strangler migration contract. ADR 0006 records the decision and rejected
   alternatives.
 - `architecture/ci-test-readiness-governance.md` defines evidence levels,
-  required-test ownership, runtime/offline readiness boundaries, and the
-  disposition ledger for obsolete tests and historical evidence.
+  required-test ownership, runtime/offline readiness boundaries, and retirement
+  rules for obsolete checks.
 - `architecture/single-enterprise-data-lifecycle.md` defines the fixed
   single-enterprise identity scope, datastore ownership, versioned schema
   lifecycle, bounded reads, retention workflow, and PostgreSQL payload limits.
@@ -47,22 +47,25 @@ does not represent deployed runtime state.
   registered Skill to invoke; Skill file capability is not a per-run upload
   requirement.
 - `architecture/opensandbox-ephemeral-model-credentials.md` defines the
-  attempt-bound model-route admission and trusted provider-secret boundary.
-- `architecture/redis-streams-sse-event-channel.md` indexes the implemented v3
+  attempt-bound model-route admission, Run-pinned compatible-endpoint revision,
+  and trusted encrypted credential/proxy boundary.
+- `architecture/redis-streams-sse-event-channel.md` indexes the implemented v4
   single-runtime Redis SSE contract. Its wire-protocol, execution-control, and
   cutover/acceptance links are the single detailed authorities; implementation
-  reuses existing Run/attempt/runtime/worker fences and replaces per-browser
-  Redis blocking readers with one process-local Pub/Sub fan-out plus Stream
-  replay.
+  reuses existing Run/attempt/runtime/worker fences, durable PostgreSQL event
+  ownership, Redis replay plus Pub/Sub fan-out, and successor-incarnation
+  recovery.
 - `architecture/chat-run-lifecycle-and-public-error-projection.md` records the
   repository-wide module disposition for queued-to-processing Chat state and
   disclosure-safe terminal-error presentation. It identifies the current
   authorities, retired browser compatibility, retained queue and safety
   fallbacks, owning tests, and deployment evidence ceiling without redefining
   the SSE wire or Run lifecycle.
-- `adr/0009-redis-streams-sse-v3-live-fanout.md` records the accepted v3
-  decision. ADR 0004 (v2.1), ADR 0003 (v2), and ADR 0002 (v1) are superseded
-  audit history after the release-atomic cutover, not runnable fallbacks.
+- `adr/0012-recoverable-agent-kernel-event-stream-v4.md` records the accepted,
+  active v4 Agent-kernel event and recovery decision. ADR 0009 remains
+  historical context for the Redis replay/live transport mechanics; ADR 0004
+  (v2.1), ADR 0003 (v2), and ADR 0002 (v1) are superseded audit history, not
+  runnable fallbacks.
 - `architecture/docker-packaging.md` defines reproducible dependency authority,
   immutable image bases, CI image acceptance, and digest-bound GHCR supply-chain
   publication without deployment or runtime authority.

@@ -19,6 +19,11 @@ const ModelCatalogPanel = lazy(() =>
     default: m.ModelCatalogPanel,
   })),
 );
+const RunMonitorPanel = lazy(() =>
+  import("../../panels/RunMonitorPanel").then((m) => ({
+    default: m.RunMonitorPanel,
+  })),
+);
 const MemoryPanel = lazy(() =>
   import("../../panels/MemoryPanel").then((m) => ({
     default: m.MemoryPanel,
@@ -62,6 +67,7 @@ const panelMap: Record<
   mcp: MCPPanel,
   feedback: WorkbenchFeedbackProjectionPanel,
   models: ModelCatalogPanel,
+  runs: RunMonitorPanel,
   notifications: WorkbenchNotificationsProjectionPanel,
   memory: MemoryPanel,
 };

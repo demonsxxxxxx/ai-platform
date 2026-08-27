@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -221,24 +223,42 @@ async def test_failed_reconciliation_cleanup_claims_stops_and_finalizes(
         executor_reconciliation_status="failed",
     )
     calls = []
+    transaction_active = False
+    transaction_count = 0
+
+    @asynccontextmanager
+    async def fenced_transaction():
+        nonlocal transaction_active, transaction_count
+        assert transaction_active is False
+        transaction_active = True
+        transaction_count += 1
+        try:
+            yield object()
+        finally:
+            transaction_active = False
 
     async def claim(_conn, **kwargs):
+        assert transaction_active is True
         calls.append(("claim", kwargs))
         return [row]
 
     async def has_claim(_conn, **kwargs):
+        assert transaction_active is True
         calls.append(("has_claim", kwargs))
         return True
 
     async def finalize(_conn, **kwargs):
+        assert transaction_active is True
         calls.append(("finalize", kwargs))
         return {**row, "status": "released", "executor_reconciliation_status": "finalized"}
 
     async def append_event(_conn, **kwargs):
+        assert transaction_active is True
         calls.append(("event", kwargs))
 
     class Provider:
         async def stop(self, lease, *, reason):
+            assert transaction_active is False
             calls.append(("stop", lease.container_id, reason))
             return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 
@@ -258,11 +278,13 @@ async def test_failed_reconciliation_cleanup_claims_stops_and_finalizes(
     monkeypatch.setattr(f"{owner}.repositories.append_event", append_event)
 
     released = await cleanup_failed_sandbox_executor_reconciliation_leases(
-        object(),
         tenant_id="tenant-a",
         provider_factory=lambda _provider: Provider(),
+        transaction_factory=fenced_transaction,
     )
 
+    assert transaction_active is False
+    assert transaction_count == 3
     assert [call[0] for call in calls] == ["claim", "has_claim", "stop", "finalize", "event"]
     claim_token = calls[0][1]["claim_token"]
     assert calls[0][1]["limit"] == 1
@@ -318,13 +340,92 @@ async def test_failed_reconciliation_cleanup_stop_failure_releases_cleanup_claim
     )
 
     released = await cleanup_failed_sandbox_executor_reconciliation_leases(
-        object(),
         provider_factory=lambda _provider: Provider(),
     )
 
     assert released == []
     assert [call[0] for call in calls] == ["claim", "has_claim", "stop", "release_claim"]
     assert calls[-1][1]["error"] == "executor_reconciliation_sandbox_stop_failed"
+
+
+@pytest.mark.asyncio
+async def test_failed_reconciliation_cleanup_stop_timeout_closes_transactions(monkeypatch):
+    from app.routes.sandbox_runtime_cleanup import (
+        cleanup_failed_sandbox_executor_reconciliation_leases,
+    )
+
+    row = expired_lease_row(
+        executor_terminal_json={"run_id": "run-a", "status": "failed"},
+        executor_reconciliation_status="failed",
+    )
+    transaction_active = False
+    transaction_count = 0
+    stop_cancelled = asyncio.Event()
+    released_claims = []
+
+    @asynccontextmanager
+    async def fenced_transaction():
+        nonlocal transaction_active, transaction_count
+        assert transaction_active is False
+        transaction_active = True
+        transaction_count += 1
+        try:
+            yield object()
+        finally:
+            transaction_active = False
+
+    async def claim(_conn, **_kwargs):
+        assert transaction_active is True
+        return [row]
+
+    async def has_claim(_conn, **_kwargs):
+        assert transaction_active is True
+        return True
+
+    async def release_claim(_conn, **kwargs):
+        assert transaction_active is True
+        released_claims.append(kwargs)
+        return True
+
+    class Provider:
+        async def stop(self, _lease, *, reason):
+            assert reason == "executor_reconciliation_cleanup"
+            assert transaction_active is False
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                stop_cancelled.set()
+                raise
+
+    owner = "app.routes.sandbox_runtime_cleanup"
+    monkeypatch.setattr(
+        f"{owner}.get_settings",
+        lambda: SimpleNamespace(sandbox_cleanup_timeout_seconds=0.001),
+    )
+    monkeypatch.setattr(
+        f"{owner}.sandbox_lease_repository.claim_failed_sandbox_executor_reconciliation_cleanups",
+        claim,
+    )
+    monkeypatch.setattr(
+        f"{owner}.sandbox_lease_repository.has_failed_sandbox_executor_reconciliation_cleanup_claim",
+        has_claim,
+    )
+    monkeypatch.setattr(
+        f"{owner}.sandbox_lease_repository.release_failed_sandbox_executor_reconciliation_cleanup_claim",
+        release_claim,
+    )
+
+    released = await cleanup_failed_sandbox_executor_reconciliation_leases(
+        provider_factory=lambda _provider: Provider(),
+        transaction_factory=fenced_transaction,
+    )
+
+    await stop_cancelled.wait()
+    assert released == []
+    assert transaction_active is False
+    assert transaction_count == 3
+    assert len(released_claims) == 1
+    assert released_claims[0]["error"] == "executor_reconciliation_sandbox_stop_failed"
 
 
 @pytest.mark.asyncio
@@ -357,7 +458,6 @@ async def test_failed_reconciliation_cleanup_lost_claim_has_no_runtime_side_effe
     )
 
     released = await cleanup_failed_sandbox_executor_reconciliation_leases(
-        object(),
         provider_factory=lambda _provider: pytest.fail(
             "a stale cleanup claimant must not select or stop a provider"
         ),
@@ -407,7 +507,6 @@ async def test_failed_reconciliation_cleanup_quarantines_invalid_runtime_handle(
     )
 
     released = await cleanup_failed_sandbox_executor_reconciliation_leases(
-        object(),
         provider_factory=lambda _provider: pytest.fail(
             "an invalid runtime handle must never select or stop a provider"
         ),
@@ -1003,7 +1102,6 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
         )
 
         cleaned = await cleanup_failed_sandbox_executor_reconciliation_leases(
-            object(),
             tenant_id="tenant-a",
             provider_factory=lambda _provider_name: provider,
         )

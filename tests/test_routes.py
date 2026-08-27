@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from openpyxl import Workbook
 import pytest
@@ -15,6 +16,7 @@ from app.capability_distribution import CapabilityAuthorizationDenial
 from app.file_preview_contracts import XlsxPreviewResponse
 from app.models import ChatStreamRequest, CreateRunRequest, QueueRunPayload, SandboxLeaseRequest
 from app.repositories import RepositoryConflictError
+from app.runs.api import RunTerminalizationProgress
 from app.routes import lambchat_compat as lambchat_module
 from app.routes import runs as runs_module
 from app.routes.health import admin_status
@@ -30,8 +32,8 @@ from app.routes.context import list_run_context_snapshots
 from app.routes.runs import (
     _governed_skill_manifest_pins,
     artifact_card,
-    copy_run,
-    create_run,
+    copy_run as _route_copy_run,
+    create_run as _route_create_run,
     get_run,
     get_run_control_readiness,
     get_run_events,
@@ -41,8 +43,8 @@ from app.routes.runs import (
     get_run_steps,
     progress_for_status,
     resolve_run_selector,
-    resume_run,
-    retry_run,
+    resume_run as _route_resume_run,
+    retry_run as _route_retry_run,
     run_playback_summary,
     run_event_response,
     run_step_response,
@@ -60,6 +62,63 @@ _ORIGINAL_RESOLVE_AGENT_SKILL = repository_module.resolve_agent_skill
 _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = repository_module.authorize_run_capabilities
 _ORIGINAL_AUTHORIZE_REPLAY_RUN_CAPABILITIES = repository_module.authorize_replay_run_capabilities
 _ORIGINAL_REAUTHORIZE_PINNED_RUN_FOR_REPLAY = runs_module.reauthorize_pinned_run_for_replay
+
+
+class _NoOpPendingAdmissions:
+    async def prepare_pending_authority_in_transaction(
+        self, _conn, *, tenant_id, run_id, attempt_id
+    ):
+        del tenant_id, run_id, attempt_id
+        return object()
+
+
+class _NoOpTerminalEventPersistence:
+    async def append_terminal_row(self, _conn, *, tenant_id, run_id):
+        del tenant_id, run_id
+        return object()
+
+
+_TEST_V4_CAPABILITIES = SimpleNamespace(
+    pending_admissions=_NoOpPendingAdmissions(),
+    event_persistence=_NoOpTerminalEventPersistence(),
+)
+_TEST_STREAM_REQUEST = SimpleNamespace(
+    app=SimpleNamespace(
+        state=SimpleNamespace(
+            run_stream_runtime=SimpleNamespace(
+                worker_capabilities=_TEST_V4_CAPABILITIES,
+            )
+        )
+    )
+)
+
+
+async def create_run(*args, **kwargs):
+    kwargs.setdefault("http_request", _TEST_STREAM_REQUEST)
+    return await _route_create_run(*args, **kwargs)
+
+
+async def copy_run(*args, **kwargs):
+    kwargs.setdefault("request", _TEST_STREAM_REQUEST)
+    return await _route_copy_run(*args, **kwargs)
+
+
+async def retry_run(*args, **kwargs):
+    kwargs.setdefault("request", _TEST_STREAM_REQUEST)
+    return await _route_retry_run(*args, **kwargs)
+
+
+async def resume_run(*args, **kwargs):
+    kwargs.setdefault("request", _TEST_STREAM_REQUEST)
+    return await _route_resume_run(*args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def default_run_model_inheritance(monkeypatch):
+    async def inherit_run_model(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runs_module, "inherit_run_model", inherit_run_model)
 
 
 @pytest.fixture(autouse=True)
@@ -3825,7 +3884,39 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
 
     async def mark_enqueue_failed(conn, **kwargs):
         conn.pending.append(("run_failed", str(kwargs["run_id"])))
-        return True
+        return RunTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=True,
+        )
+
+    class PendingAdmissions:
+        async def prepare_pending_authority_in_transaction(
+            self, conn, *, tenant_id, run_id, attempt_id
+        ):
+            assert tenant_id == "tenant-a"
+            assert attempt_id == f"enqueue_failure_{run_id}"
+            conn.pending.append(("authority", str(run_id)))
+            return object()
+
+    class EventPersistence:
+        async def append_terminal_row(self, conn, *, tenant_id, run_id):
+            assert tenant_id == "tenant-a"
+            conn.pending.append(("terminal_row", str(run_id)))
+            return "row-enqueue-failure"
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                run_stream_runtime=SimpleNamespace(
+                    worker_capabilities=SimpleNamespace(
+                        pending_admissions=PendingAdmissions(),
+                        event_persistence=EventPersistence(),
+                    )
+                )
+            )
+        )
+    )
 
     monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", resolve_skill)
@@ -3844,13 +3935,18 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
                 agent_id="qa-word-review",
                 capability_id="document_review",
             ),
+            http_request=request,
             principal=principal(),
         )
 
     assert exc_info.value.status_code == 503
     assert len(committed) == 2
     assert committed[0] and committed[0][0][0] == "run_created"
-    assert committed[1] == [("run_failed", committed[0][0][1])]
+    assert committed[1] == [
+        ("authority", committed[0][0][1]),
+        ("run_failed", committed[0][0][1]),
+        ("terminal_row", committed[0][0][1]),
+    ]
 
 
 @pytest.mark.asyncio
@@ -4317,9 +4413,9 @@ async def test_prepare_copied_agent_profile_reauthorizes_complete_skill_set(monk
 @pytest.mark.parametrize(
     ("route", "repository_method"),
     [
-        (runs_module.copy_run, "copy_run_as_new_task"),
-        (runs_module.retry_run, "retry_run_as_new_task"),
-        (runs_module.resume_run, "resume_run_as_new_task"),
+        (copy_run, "copy_run_as_new_task"),
+        (retry_run, "retry_run_as_new_task"),
+        (resume_run, "resume_run_as_new_task"),
     ],
 )
 async def test_copy_retry_resume_revocation_returns_403_without_enqueue(monkeypatch, route, repository_method):
@@ -4381,9 +4477,9 @@ async def test_copy_retry_resume_revocation_returns_403_without_enqueue(monkeypa
 @pytest.mark.parametrize(
     ("route", "repository_method"),
     [
-        (runs_module.copy_run, "copy_run_as_new_task"),
-        (runs_module.retry_run, "retry_run_as_new_task"),
-        (runs_module.resume_run, "resume_run_as_new_task"),
+        (copy_run, "copy_run_as_new_task"),
+        (retry_run, "retry_run_as_new_task"),
+        (resume_run, "resume_run_as_new_task"),
     ],
 )
 @pytest.mark.parametrize(
@@ -4444,7 +4540,7 @@ async def test_copy_retry_resume_capability_lifecycle_denial_returns_403_without
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("route", [runs_module.copy_run, runs_module.retry_run, runs_module.resume_run])
+@pytest.mark.parametrize("route", [copy_run, retry_run, resume_run])
 @pytest.mark.parametrize(
     "resolver_error",
     [
@@ -5619,6 +5715,7 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
     }
 
     async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+        calls["copy_conn"] = conn
         return {
             "session_id": "ses_copy",
             "run_id": "run_copy",
@@ -5633,6 +5730,20 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
             "skill_manifests": repository_module.skill_manifest_refs(source_skill_manifests),
             "model_id": "model-catalog-copy",
             "model_value": "provider-model-copy",
+        }
+
+    async def fake_inherit_run_model(
+        conn,
+        *,
+        tenant_id,
+        source_run_id,
+        child_run_id,
+    ):
+        calls["model_inheritance"] = {
+            "conn": conn,
+            "tenant_id": tenant_id,
+            "source_run_id": source_run_id,
+            "child_run_id": child_run_id,
         }
 
     async def fake_update_run_input_execution_snapshot(
@@ -5680,6 +5791,7 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
+    monkeypatch.setattr("app.routes.runs.inherit_run_model", fake_inherit_run_model)
     monkeypatch.setattr(
         "app.routes.runs.repositories.update_run_input_execution_snapshot",
         fake_update_run_input_execution_snapshot,
@@ -5694,6 +5806,12 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
     response = await copy_run("run_source", principal=principal())
 
     assert response.run_id == "run_copy"
+    assert calls["model_inheritance"] == {
+        "conn": calls["copy_conn"],
+        "tenant_id": "tenant-a",
+        "source_run_id": "run_source",
+        "child_run_id": "run_copy",
+    }
     assert calls["update"]["execution_snapshot"] == repository_module.copied_run_execution_snapshot(calls["queue"])
     assert calls["update"]["execution_snapshot"]["release_decision"] == source_release_decision
     assert calls["update"]["execution_snapshot"]["skill_manifests"] == repository_module.skill_manifest_refs(

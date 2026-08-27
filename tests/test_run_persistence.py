@@ -225,3 +225,33 @@ async def test_terminal_intent_rejects_invalid_target_before_query():
         )
 
     assert conn.calls == []
+
+
+@pytest.mark.asyncio
+async def test_terminal_event_fact_uses_active_run_authority_without_attempt_cutover():
+    conn = RecordingConnection(
+        [
+            {
+                "status": "failed",
+                "error_code": "queue_enqueue_failed",
+                "trace_id": "trace-run-a",
+            }
+        ]
+    )
+
+    fact = await run_persistence.load_current_terminal_event_fact(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+    )
+
+    assert fact is not None
+    assert fact.status == "failed"
+    assert fact.terminal_reason == "queue_enqueue_failed"
+    assert fact.error_code == "queue_enqueue_failed"
+    assert fact.trace_ref == "trace-run-a"
+    sql, params = conn.calls[0]
+    assert "from runs" in sql
+    assert "run_attempts" not in sql
+    assert sql.endswith("for update")
+    assert params == ("tenant-a", "run-a")

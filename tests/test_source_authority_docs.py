@@ -42,51 +42,41 @@ def test_documentation_index_names_the_only_durable_authority_surfaces():
         assert relative_path in index
 
 
-def test_agent_coding_contract_has_one_authority_and_falsifiable_evidence():
+def test_agent_coding_contract_has_one_authority_and_risk_scaled_evidence():
     agents = read(AGENTS)
     claude = read(CLAUDE)
     workflow = read(GITHUB_WORKFLOW)
     local_test_execution = read(LOCAL_TEST_EXECUTION)
     pull_request_template = read(PULL_REQUEST_TEMPLATE)
+    agents_flat = " ".join(agents.split())
     claude_flat = " ".join(claude.split())
     workflow_flat = " ".join(workflow.split())
 
     assert "## Change Control" in agents
     assert re.search(r"`AGENTS\.md` is .*repository coding authority", agents)
-    assert "## Change Contract" in workflow
-    assert re.search(
-        r"Before non-mechanical implementation, the (?:issue|persistent-task)",
-        workflow_flat,
+    assert "A focused ordinary change may use its pull request" in agents_flat
+    assert "goal-sized or high-risk change" in agents_flat
+    high_risk_boundaries = (
+        "authentication, authorization, tenant or workspace isolation",
+        "secrets, credentials, or ordinary-user projection redaction",
+        "destructive lifecycle, retention, schema migration, or irreversible data compatibility",
+        "sandbox, command, tool, Skill, MCP, or executor admission",
+        "public API, callback, event, or streaming protocols",
+        "workflow, image, release, deployment, or rollback authority",
     )
-    assert re.search(r"PR links .* prior record", workflow_flat)
+    for high_risk_boundary in high_risk_boundaries:
+        assert high_risk_boundary in agents_flat
+        assert high_risk_boundary in workflow_flat
+        assert high_risk_boundary in " ".join(pull_request_template.split())
     assert "single repository coding authority" in claude_flat
     assert "must not duplicate or weaken it" in claude_flat
-    assert "(AGENTS.md)" in claude
-    assert (
-        "docs/agent-rules/github-issue-pr-workflow.md#change-contract" in claude
-    )
-    assert "falsifiable regression" in workflow
-    assert "cannot prove the contract existed before coding" in workflow
-    for review_promotion_contract in (
-        "Treat automated and Agent review output as untrusted input",
-        "fixed`, `rejected with evidence`, or `deferred`",
-        "a stable reproducible regression becomes an owning test",
-        "demonstrates low false-positive risk",
-        "names a removal or replacement condition",
-        "A promoted rule replaces or consolidates an overlapping rule",
-        "Review wording is not the durable knowledge artifact",
-        "Issue/PR descriptions, reviews, and comments",
-        "identifiable human owner and role",
-        "independent security/domain confirmation",
-        "stable ID and severity",
-        "deterministic detector",
-        "Every material finding records an independent human verifier",
-        "different identifiable human owner",
-        "ai-platform.review-findings.v1",
-        "trusted-base PR-body validator",
-        "passing it does not prove",
-    ):
-        assert review_promotion_contract in workflow_flat
+    assert "high-risk Change Contract" in claude_flat
+    assert "A focused ordinary change may use its pull request" in workflow_flat
+    assert "does not require a separate issue" in workflow_flat
+    assert "authors do not copy SHAs" in workflow_flat
+    assert "falsifiable regression test" in workflow_flat
+    assert "Pull-request text written by the author is not proof" in workflow_flat
+    assert "review comments are the disposition record" in workflow_flat.casefold()
     assert "python tools/run_test_stage.py" in agents
     assert "docs/agent-rules/local-test-execution.md" in agents
     for execution_rule in (
@@ -103,41 +93,36 @@ def test_agent_coding_contract_has_one_authority_and_falsifiable_evidence():
         "tasks created only by a test",
     ):
         assert execution_rule in local_test_execution
-    assert re.search(r"Only risk categories .* non-applicable", workflow_flat)
-    assert re.search(r"bare `N/A`.*does not satisfy", workflow_flat)
     for heading in (
-        "## Subject and scope",
-        "## Behavior and decision",
-        "## Evidence and recovery",
-        "## Accuracy",
+        "## Purpose",
+        "## Scope",
+        "## Verification",
+        "## Risk",
+        "## High-risk changes only",
     ):
         assert heading in pull_request_template
     for required_field in (
-        "Issue / Change Contract:",
-        "Full base SHA / candidate head SHA:",
-        "Actual diff reconciled with scope:",
-        "Before/after, failure, and compatibility behavior:",
-        "Falsifiable regression proof:",
-        "Required and observed build, packaging, or integration path:",
-        "Focused commands and observed results:",
-        "Evidence ceiling and evidence not observed:",
-        "finding dispositions/promotions",
-        "rollback when required:",
-        "ai-platform.review-findings.v1",
-        '"head_sha": "REPLACE_ME_40_HEX_SHA"',
-        '"reviewer_handle": "@REPLACE_ME"',
-        '"defer_exit_condition": null',
-        '"independent_confirmation": {',
-        '"rule_evidence": null',
+        "Problem and intended outcome:",
+        "Changed behavior and owning modules:",
+        "Explicit non-goals:",
+        "Falsifiable regression test:",
+        "Commands run and observed results:",
+        "Checks not run and why:",
+        "Reached boundaries and preserved invariants:",
+        "Design or Change Contract:",
+        "Independent review and rollback or migration plan:",
     ):
         assert required_field in pull_request_template
-    assert "`N/A` is reserved for the risk categories" in pull_request_template
-    assert "a bare `N/A` is not an answer" in pull_request_template
-    template_flat = " ".join(pull_request_template.split())
-    assert re.search(
-        r"`Closes`/`Fixes`.*acceptance, review,.*required runtime criteria",
-        template_flat,
-    )
+    for removed_boilerplate in (
+        "Issue / Change Contract:",
+        "Full base SHA / candidate head SHA:",
+        "Writable paths / forbidden paths",
+        "ai-platform.review-findings.v1",
+        "REPLACE_ME",
+        "CI/build, packaged-artifact, deployment/runtime",
+        "Closes`/`Fixes",
+    ):
+        assert removed_boilerplate not in pull_request_template
 
 
 def test_source_architecture_authority_has_required_sections_and_anchors():
@@ -229,14 +214,12 @@ def test_ci_test_readiness_governance_separates_evidence_and_tracks_completion()
         "[`../agent-rules/local-test-execution.md`](../agent-rules/local-test-execution.md)"
         in governance
     )
-    assert "Authority baseline audited: `6c010079782afe30ada5f75c44600939f0381b13`" in governance
     assert {
         "## 2. Evidence levels",
-        "## 3. Target test model",
+        "## 3. Test model",
         "## 4. Required CI topology",
         "## 5. Runtime readiness boundary",
-        "## 6. Unified disposition ledger",
-        "## 8. Completion criteria for this governance program",
+        "## 6. Retirement and ownership",
     } <= headings
     for evidence_level in (
         "| Source |",
@@ -249,23 +232,32 @@ def test_ci_test_readiness_governance_separates_evidence_and_tracks_completion()
     ):
         assert evidence_level in governance
     for contract in (
-        "A missing required service is a CI failure, not a skip",
-        "MUST NOT be scanned by a live health endpoint",
-        "Completion proof / remaining exit",
-        "required integration suites cannot pass by skipping missing dependencies",
-        "required aggregators execute tested failure paths",
-        "the final ledger has no unowned `audit and assign` entries",
+        "A missing service is a failure, not a skip",
+        "must not be scanned by a live health endpoint",
+        "Product tests do not wait for author-written review metadata",
+        "A test appears in one required lane",
+        "Current work, owners, exceptions, and completion state belong in the active pull",
     ):
-        assert contract in governance_flat
+        assert contract.casefold() in governance_flat.casefold()
+    for dynamic_status in (
+        "Authority baseline audited:",
+        "Ledger refreshed:",
+        "Unified disposition ledger",
+        "Pending PR #",
+        "Completed in source",
+    ):
+        assert dynamic_status not in governance
 
 
 def test_governance_rules_keep_status_and_release_authority_out_of_history_docs():
     agents = read(AGENTS)
-    github = read(GITHUB_WORKFLOW)
+    ci_governance = read(CI_TEST_READINESS_GOVERNANCE)
+    ci_governance_flat = " ".join(ci_governance.split())
     workflow = read(MULTI_AGENT_WORKFLOW)
 
     assert "Historical runtime observations" in agents
-    assert "repository status pages" in github
+    assert "not a project status ledger" in ci_governance_flat
+    assert "Current work, owners, exceptions, and completion state" in ci_governance_flat
     assert "controller checkpoint" in workflow
     assert "one mutation lease" in workflow
 
@@ -368,6 +360,8 @@ def test_release_evidence_index_is_a_contract_not_a_status_snapshot():
     assert "docs/release-evidence/<gate>/<commit_sha>/<evidence_id>.json" in index
     assert "Do not commit generated Markdown" in index
     assert "runtime_subject_commit_sha" in index
+    assert "ordinary pull requests" in index.casefold()
+    assert "Actions artifacts" in index
     assert "authorized runtime procedure" in index
     assert "current overall status" not in index
 

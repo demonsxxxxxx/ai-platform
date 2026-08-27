@@ -14,6 +14,10 @@ export interface SubagentPanelData {
   startedAt?: number;
   completedAt?: number;
   status?: "pending" | "running" | "complete" | "error" | "cancelled";
+  parentAgentId?: string;
+  durationMs?: number;
+  progressPercent?: number;
+  currentCategory?: string;
 }
 
 type Listener = () => void;
