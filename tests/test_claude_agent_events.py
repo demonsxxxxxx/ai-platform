@@ -211,9 +211,7 @@ def test_thinking_and_tool_hooks_expose_public_lifecycle_without_private_sdk_con
         "PreToolUse",
         {"tool_use_id": "search-call-1", "tool_name": "WebSearch"},
     )
-    assert search_started[0].payload["input_summary"] == (
-        "Searching for: OpenSandbox workspace limits"
-    )
+    assert search_started[0].payload["input_summary"] == "Starting Web search"
     assert "query" not in search_started[0].payload
 
     assert adapter.accept_hook("PostToolUse", pre, tool_use_id="sdk-tool-1") == ()

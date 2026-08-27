@@ -60,13 +60,13 @@ The closed Agent-kernel registry is:
 
 Every payload is bounded and closed. Public identifiers use disclosure-safe
 patterns; fixed public reasoning summaries, server-owned phase messages,
-allowlisted and sanitized Tool input summaries, fixed Tool result summaries,
-final content, durations, turns, progress, artifact metadata, and reference
-arrays have explicit size bounds. Newly emitted thinking rows include their
-fixed summary; legacy v4 rows with an empty thinking payload remain replayable
-and the public frontend derives the same fixed summary. Hidden reasoning, raw
-SDK fields, commands, paths, arguments, outputs, exceptions, and raw capability
-or task identifiers are not protocol fields. Render families are registry
+fixed Tool start/result summaries, final content, durations, turns, progress,
+artifact metadata, and reference arrays have explicit size bounds. Newly
+emitted thinking rows include their fixed summary; legacy v4 rows with an empty
+thinking payload remain replayable and the public frontend derives the same fixed
+summary. Hidden reasoning, raw SDK fields, commands, paths, arguments, outputs,
+exceptions, and raw capability or task identifiers are not protocol fields.
+Render families are registry
 metadata only in this phase: `text`, `thinking_state`, `agent_progress`,
 `tool_activity`, `subagent_activity`, `artifact`, `policy_result`,
 `public_error`, `cancelled`, and `terminal`.

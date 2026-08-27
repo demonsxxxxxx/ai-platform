@@ -160,7 +160,7 @@ def test_lambchat_history_projects_valid_v4_execution_events_and_rejects_raw_fie
                 "operation_id": "operation-search-1",
                 "category": "search",
                 "display_name": "Search authorized sources",
-                "input_summary": "Query: stability evidence",
+                "input_summary": "Starting Search authorized sources",
                 "__stream_v4": {"version": "ai-platform.stream-row.v4"},
             },
         },
@@ -212,7 +212,7 @@ def test_lambchat_history_projects_valid_v4_execution_events_and_rejects_raw_fie
     assert progress["message"] == "Controlled execution is ready"
     started = records[2].history_event["data"]
     assert started["status"] == "started"
-    assert started["input_summary"] == "Query: stability evidence"
+    assert started["input_summary"] == "Starting Search authorized sources"
     completed = records[3].history_event["data"]
     assert completed["status"] == "completed"
     assert completed["result_summary"] == "Search authorized sources completed"

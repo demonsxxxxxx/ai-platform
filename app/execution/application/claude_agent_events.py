@@ -706,23 +706,6 @@ class ClaudeSdkAgentEventAdapter:
         )
         return tuple(events)
 
-    def _public_tool_input_summary(
-        self,
-        *,
-        category: str,
-        display_name: str,
-        tool_input: Mapping[str, object],
-    ) -> str:
-        fallback = f"Starting {display_name}"
-        if category != "search":
-            return fallback
-        query = _safe_text(
-            tool_input.get("query"),
-            maximum=_MAX_SUMMARY - len("Searching for: "),
-            sanitizer=self._sanitizer,
-        )
-        return f"Searching for: {query}" if query is not None else fallback
-
     def accept_hook(
         self,
         hook_event_name: object,
@@ -768,11 +751,7 @@ class ClaudeSdkAgentEventAdapter:
                         "operation_id": _opaque("op", self.run_id, "tool", call_id),
                         "category": category,
                         "display_name": label,
-                        "input_summary": self._public_tool_input_summary(
-                            category=category,
-                            display_name=label,
-                            tool_input=block[1],
-                        ),
+                        "input_summary": f"Starting {label}",
                     },
                     identity=f"started:{call_id}",
                 ),

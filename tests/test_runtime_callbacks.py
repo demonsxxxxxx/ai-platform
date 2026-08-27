@@ -1491,6 +1491,53 @@ def test_executor_callback_publishes_real_adapter_lifecycle_and_platform_progres
     assert response.json()["accepted"] is True
 
 
+@pytest.mark.parametrize(
+    ("event_type", "payload", "summary_field", "valid_summary"),
+    [
+        (
+            "tool.started",
+            {
+                "operation_id": "operation-read-1",
+                "category": "read",
+                "display_name": "Read authorized file",
+            },
+            "input_summary",
+            "Starting Read authorized file",
+        ),
+        (
+            "tool.completed",
+            {
+                "operation_id": "operation-read-1",
+                "category": "read",
+                "display_name": "Read authorized file",
+                "duration_ms": 12,
+            },
+            "result_summary",
+            "Read authorized file completed",
+        ),
+    ],
+)
+def test_callback_v4_rejects_untrusted_tool_summaries(
+    event_type, payload, summary_field, valid_summary
+):
+    from app.streaming.api import callback_item_to_v4
+
+    item = {
+        "event_type": event_type,
+        "event_id": f"event-{event_type.replace('.', '-')}",
+        "run_id": "run-a",
+        "payload": {**payload, summary_field: valid_summary},
+    }
+    assert callback_item_to_v4(
+        item, callback_index=0, batch_index=0, message_id="message-a"
+    ) is not None
+
+    item["payload"] = {**payload, summary_field: "Untrusted callback text"}
+    assert callback_item_to_v4(
+        item, callback_index=0, batch_index=0, message_id="message-a"
+    ) is None
+
+
 @pytest.mark.asyncio
 async def test_executor_callback_requires_batch_identity_for_public_progress() -> None:
     from fastapi import HTTPException

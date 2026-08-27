@@ -635,6 +635,13 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
                 raise V4ProjectionError("v4_projection_version_invalid")
         else:
             raise V4ProjectionError("v4_payload_key_unimplemented")
+    display_name = result.get("display_name")
+    if event_type == "tool.started" and "input_summary" in result:
+        if result["input_summary"] != f"Starting {display_name}":
+            raise V4ProjectionError("v4_input_summary_invalid")
+    if event_type == "tool.completed" and "result_summary" in result:
+        if result["result_summary"] != f"{display_name} completed":
+            raise V4ProjectionError("v4_result_summary_invalid")
     return result
 
 

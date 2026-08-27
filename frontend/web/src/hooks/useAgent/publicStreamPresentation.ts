@@ -99,12 +99,30 @@ export function upsertPublicThinkingActivity(
   parts: MessagePart[],
   activity: ThinkingPart,
 ): MessagePart[] {
-  const existing = parts.findIndex(
+  const exactIndex = parts.findIndex(
     (part) =>
       part.type === "thinking" && part.thinking_id === activity.thinking_id,
   );
-  if (existing < 0) return [...parts, activity];
-  return parts.map((part, index) => (index === existing ? activity : part));
+  if (exactIndex >= 0) {
+    return parts.map((part, index) => (index === exactIndex ? activity : part));
+  }
+  if (!activity.isStreaming && activity.content === PUBLIC_THINKING_SUMMARIES.completed) {
+    let startedIndex = -1;
+    for (let index = parts.length - 1; index >= 0; index -= 1) {
+      const part = parts[index];
+      if (
+        part?.type === "thinking" &&
+        part.content === PUBLIC_THINKING_SUMMARIES.started
+      ) {
+        startedIndex = index;
+        break;
+      }
+    }
+    if (startedIndex >= 0) {
+      return parts.map((part, index) => (index === startedIndex ? activity : part));
+    }
+  }
+  return [...parts, activity];
 }
 
 export const EXECUTION_PROGRESS_MIN_INTERVAL_MS = 250;

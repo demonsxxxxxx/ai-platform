@@ -97,11 +97,10 @@ paths, storage keys, private trace values, and unclassified objects are
 prohibited. Thinking events carry only fixed platform summaries. New rows
 include the summary; legacy empty thinking payloads remain replayable and the
 frontend derives the same fixed text. Agent progress carries only fixed
-server-owned phase messages. Tool input summaries are
-restricted to tool-specific allowlisted fields after public sanitization, and
-Tool result summaries remain fixed lifecycle text. The strict event-specific
-projector applies identity, byte, depth, and count bounds before a canonical
-public row can be committed.
+server-owned phase messages. Tool input and result summaries are fixed lifecycle
+text derived from the validated public display name; callback-supplied arbitrary
+summary text fails closed. The strict event-specific projector applies identity,
+byte, depth, and count bounds before a canonical public row can be committed.
 
 ## Key and stream incarnation
 

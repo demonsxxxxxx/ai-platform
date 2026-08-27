@@ -762,8 +762,24 @@ test("failed history retains canonical public execution activity through termina
         },
       },
       {
-        id: "failed-forged-thinking",
+        id: "failed-thinking-completed",
         sequence: 3,
+        event_type: "public_activity",
+        run_id: "run-failed-public-activity",
+        timestamp: "2026-08-20T01:13:42.000Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          event_id: "failed-thinking-completed",
+          event_type: "public_activity",
+          stage: "thinking",
+          message: "Analysis step completed",
+          severity: "info",
+          progress_kind: "completed",
+        },
+      },
+      {
+        id: "failed-forged-thinking",
+        sequence: 4,
         event_type: "public_activity",
         run_id: "run-failed-public-activity",
         timestamp: "2026-08-20T01:13:42.000Z",
@@ -790,7 +806,7 @@ test("failed history retains canonical public execution activity through termina
           category: "search",
           display_name: "Search authorized sources",
           status: "started",
-          input_summary: "Query: public evidence",
+          input_summary: "Starting Search authorized sources",
         },
       },
       {
@@ -845,11 +861,12 @@ test("failed history retains canonical public execution activity through termina
   const thinking = visibleParts[1];
   assert.equal(thinking?.type, "thinking");
   if (thinking?.type !== "thinking") throw new Error("expected thinking part");
-  assert.equal(thinking.content, "Analyzing the request");
+  assert.equal(thinking.content, "Analysis step completed");
+  assert.equal(thinking.isStreaming, false);
   const tool = visibleParts[2];
   assert.equal(tool?.type, "tool");
   if (tool?.type !== "tool") throw new Error("expected tool part");
-  assert.equal(tool.public_input_summary, "Query: public evidence");
+  assert.equal(tool.public_input_summary, "Starting Search authorized sources");
   assert.equal(tool.result, "Search authorized sources completed");
   const terminal = visibleParts[3];
   assert.equal(terminal?.type, "run_status");

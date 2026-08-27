@@ -124,3 +124,23 @@ test("external message conversion keeps stable ids and hides thinking payload", 
     { type: "text", text: "answer" },
   ]);
 });
+
+test("external message conversion exposes only fixed public thinking summaries", () => {
+  const converted = toAssistantUiMessage({
+    id: "message-public-thinking",
+    role: "assistant",
+    content: "",
+    timestamp: new Date("2026-01-01T00:00:00Z"),
+    parts: [
+      { type: "thinking", content: "Analyzing the request", isStreaming: true },
+      { type: "thinking", content: "Analysis step completed", isStreaming: false },
+      { type: "thinking", content: "Unreviewed reasoning", isStreaming: false },
+    ],
+  });
+
+  assert.deepEqual(converted.content, [
+    { type: "reasoning", text: "Analyzing the request", status: { type: "running" } },
+    { type: "reasoning", text: "Analysis step completed", status: { type: "complete" } },
+    { type: "reasoning", text: "", status: { type: "complete" } },
+  ]);
+});
