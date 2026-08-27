@@ -199,6 +199,8 @@ export interface ThinkingPart {
   type: "thinking";
   content: string;
   thinking_id?: string;
+  /** True only for reasoning admitted by the strict public v4 projector. */
+  public_reasoning?: boolean;
   depth?: number;
   agent_id?: string;
   isStreaming?: boolean;

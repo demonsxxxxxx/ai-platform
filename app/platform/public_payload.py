@@ -97,6 +97,12 @@ FORBIDDEN_PUBLIC_KEYS = {
     "legacy_runtime_fallback_used",
 }
 WINDOWS_DRIVE_PATH_PATTERN = re.compile(r"(?i)(?:^|[\s\"'({\[,=:])(?:[a-z]:[\\/])")
+_WINDOWS_PUBLIC_PATH_FRAGMENT_PATTERN = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])[A-Za-z]:[\\/][^\s\"'<>]+"
+)
+_FORBIDDEN_PUBLIC_FRAGMENT_PATTERNS = tuple(
+    re.compile(rf"\S*{re.escape(marker)}\S*") for marker in FORBIDDEN_PUBLIC_MARKERS
+)
 FORBIDDEN_PUBLIC_KEY_ALIASES = {
     "".join(ch for ch in key if ch.isalnum()).lower()
     for key in FORBIDDEN_PUBLIC_KEYS
@@ -147,4 +153,16 @@ def sanitize_public_payload(value: Any, *, preserve_sensitive_keys: bool = False
 def sanitize_public_text(value: object) -> str:
     text = "" if value is None else str(value)
     sanitized = sanitize_public_payload(text)
+    return sanitized if isinstance(sanitized, str) else ""
+
+
+def sanitize_public_reasoning_text(value: object) -> str:
+    """Redact private fragments while preserving the model's public summary."""
+
+    text = "" if value is None else str(value)
+    redacted = _WINDOWS_PUBLIC_PATH_FRAGMENT_PATTERN.sub("[redacted-path]", text)
+    for pattern in _FORBIDDEN_PUBLIC_FRAGMENT_PATTERNS:
+        redacted = pattern.sub("[redacted-private]", redacted)
+    redacted = redact_memory_text(redacted, mode=MEMORY_REDACTION_MODE_STRICT)
+    sanitized = sanitize_public_payload(redacted)
     return sanitized if isinstance(sanitized, str) else ""

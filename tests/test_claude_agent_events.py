@@ -9,9 +9,19 @@ from app.execution.api import (
     ClaudeSdkAgentEventAdapter,
 )
 from app.executors.claude_agent_sdk_runner import run_claude_agent_sdk
-from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
+from app.platform.public_payload import (
+    sanitize_public_payload,
+    sanitize_public_reasoning_text,
+    sanitize_public_text,
+)
 from app.runtime.event_bridge import agent_event_to_executor_event
-from app.runtime.kernel_contracts import AgentEvent
+from app.runtime.kernel_contracts import (
+    CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+    AgentEvent,
+)
+from app.streaming.application.callback_events_v4 import (
+    callback_thinking_summary_to_v4,
+)
 
 
 def _adapter():
@@ -20,6 +30,7 @@ def _adapter():
         attempt_id="attempt-1",
         sanitizer=sanitize_public_text,
         payload_sanitizer=sanitize_public_payload,
+        reasoning_sanitizer=sanitize_public_reasoning_text,
         authorized_capabilities={
             "Read": ("read", "Read file"),
             "WebSearch": ("search", "Web search"),
@@ -164,33 +175,32 @@ def test_policy_decision_emits_checking_then_terminal_and_denial_tool_event():
 
 
 
-def test_thinking_and_tool_hooks_expose_public_lifecycle_without_private_sdk_content():
+def test_thinking_summary_and_tool_hooks_exclude_sdk_signature_and_tool_payload():
     adapter = _adapter()
-    class ThinkingBlock:
-        pass
 
     class ToolUseBlock:
         pass
 
-    thinking = ThinkingBlock()
-    thinking.thinking = "private reasoning"
-    thinking.signature = "private"
+    thinking_events = adapter.accept_thinking_summary(
+        "Check the public evidence before choosing the next action.",
+        block_index=0,
+        message_identity="message-a",
+    )
+    assert len(thinking_events) == 1
+    thinking = thinking_events[0]
+    assert thinking.as_agent_event_fields()["type"] == (
+        CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE
+    )
+    assert thinking.summary == (
+        "Check the public evidence before choosing the next action."
+    )
+    assert thinking.message_id
+    assert "signature" not in repr(thinking.as_agent_event_fields())
+
     block = ToolUseBlock()
     block.id = "sdk-tool-1"
     block.name = "Read"
     block.input = {"file_path": "C:\\private\\x"}
-
-    thinking_events = adapter.accept_content_block(thinking, block_index=0)
-    assert [event.event_type for event in thinking_events] == [
-        "thinking.started",
-        "thinking.completed",
-    ]
-    assert [event.payload for event in thinking_events] == [
-        {"public_summary": "Analyzing the request"},
-        {"public_summary": "Analysis step completed"},
-    ]
-    assert all("private" not in repr(event.as_dict()) for event in thinking_events)
-
     assert adapter.accept_content_block(block) == ()
     pre = {"tool_name": "Read", "tool_use_id": "sdk-tool-1", "tool_input": {}}
     started = adapter.accept_hook("PreToolUse", pre, tool_use_id="sdk-tool-1")
@@ -481,16 +491,157 @@ def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
 def test_thinking_identity_is_scoped_by_message_and_block():
     adapter = _adapter()
 
-    class ThinkingBlock:
-        pass
-
-    block = ThinkingBlock()
-    first = adapter.accept_content_block(block, block_index=0, message_identity="message-a")
-    second = adapter.accept_content_block(block, block_index=0, message_identity="message-a")
-    third = adapter.accept_content_block(block, block_index=0, message_identity="message-b")
-    assert [event.event_type for event in first] == ["thinking.started", "thinking.completed"]
+    first = adapter.accept_thinking_summary(
+        "Compare the available evidence.",
+        block_index=0,
+        message_identity="message-a",
+    )
+    second = adapter.accept_thinking_summary(
+        "Compare the available evidence.",
+        block_index=0,
+        message_identity="message-a",
+    )
+    third = adapter.accept_thinking_summary(
+        "Compare the available evidence.",
+        block_index=0,
+        message_identity="message-b",
+    )
+    assert len(first) == 1
     assert second == ()
-    assert [event.event_type for event in third] == ["thinking.started", "thinking.completed"]
+    assert len(third) == 1
+    assert first[0].event_id != third[0].event_id
+    assert first[0].message_id == third[0].message_id
+    reconstructed = _adapter().accept_thinking_summary(
+        "Compare the available evidence.",
+        block_index=0,
+        message_identity="message-a",
+    )
+    assert reconstructed[0].event_id == first[0].event_id
+
+
+def test_content_block_does_not_trust_a_nominal_thinking_block_class():
+    adapter = _adapter()
+
+    class ThinkingBlock:
+        thinking = "This fake block must never become public."
+        signature = "private-signature"
+
+    assert adapter.accept_content_block(
+        ThinkingBlock(),
+        block_index=0,
+        message_identity="message-a",
+    ) == ()
+
+
+@pytest.mark.parametrize(
+    ("event_type", "payload"),
+    [
+        ("thinking.started", {"thinking_id": "thinking-1"}),
+        (
+            "thinking.delta",
+            {"thinking_id": "thinking-1", "delta": "arbitrary callback text"},
+        ),
+        ("thinking.completed", {"thinking_id": "thinking-1"}),
+    ],
+)
+def test_generic_agent_event_rejects_public_thinking_lifecycle(event_type, payload):
+    with pytest.raises(ValueError, match="Unsupported agent event type"):
+        AgentEvent(
+            type=event_type,
+            event_id="event-1",
+            run_id="run-1187",
+            message_id="message-1",
+            payload=payload,
+        )
+
+
+def test_thinking_is_sanitized_as_one_summary_before_callback_publication():
+    adapter = _adapter()
+
+    private = adapter.accept_thinking_summary(
+        "Review /tmp/private-runtime-output before answering.",
+        block_index=0,
+        message_identity="message-private",
+    )
+    assert len(private) == 1
+    assert private[0].summary == (
+        "Review [redacted-private] before answering."
+    )
+    assert "/tmp/" not in repr(private[0].as_agent_event_fields())
+
+    public_summary = "evidence " * 1_200
+    events = adapter.accept_thinking_summary(
+        public_summary,
+        block_index=1,
+        message_identity="message-public",
+    )
+    assert len(events) == 1
+    assert events[0].summary == public_summary
+    assert len(events[0].summary) > 8_192
+
+
+def test_callback_projects_whole_summaries_with_server_owned_identity_and_chunks():
+    def source(summary: str, event_id: str) -> dict[str, object]:
+        return {
+            "type": CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+            "message": "",
+            "payload": {"summary": summary},
+            "admin_only": True,
+            "event_id": event_id,
+            "run_id": "run-1187",
+            "message_id": "message-1",
+            "causation_event_id": None,
+        }
+
+    redacted = callback_thinking_summary_to_v4(
+        source("Review /tmp/private-runtime-output before answering.", "summary-1"),
+        callback_index=0,
+        first_batch_index=0,
+        callback_batch_id="batch-1",
+        expected_event_type=CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+        sanitizer=sanitize_public_reasoning_text,
+    )
+    assert [item.event_type for item in redacted] == [
+        "thinking.started",
+        "thinking.delta",
+        "thinking.completed",
+    ]
+    assert redacted[1].payload["delta"] == (
+        "Review [redacted-private] before answering."
+    )
+    assert "/tmp/" not in repr(redacted)
+
+    long_summary = "evidence " * 1_200
+    chunked = callback_thinking_summary_to_v4(
+        source(long_summary, "summary-2"),
+        callback_index=1,
+        first_batch_index=3,
+        callback_batch_id="batch-1",
+        expected_event_type=CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+        sanitizer=sanitize_public_reasoning_text,
+    )
+    deltas = [item.payload["delta"] for item in chunked[1:-1]]
+    assert len(deltas) == 2
+    assert "".join(deltas) == long_summary
+    assert all(len(delta) <= 8_192 for delta in deltas)
+
+    split_a = callback_thinking_summary_to_v4(
+        source("/tm", "summary-3"),
+        callback_index=2,
+        first_batch_index=0,
+        callback_batch_id="batch-1",
+        expected_event_type=CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+        sanitizer=sanitize_public_reasoning_text,
+    )
+    split_b = callback_thinking_summary_to_v4(
+        source("p/private", "summary-4"),
+        callback_index=3,
+        first_batch_index=3,
+        callback_batch_id="batch-1",
+        expected_event_type=CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+        sanitizer=sanitize_public_reasoning_text,
+    )
+    assert split_a[0].payload["thinking_id"] != split_b[0].payload["thinking_id"]
 
 
 @pytest.mark.asyncio
@@ -535,6 +686,11 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
 
     async def query_fn(*, prompt, options):
         del prompt
+        assert options.thinking == {
+            "type": "enabled",
+            "budget_tokens": 128,
+            "display": "summarized",
+        }
         yield sdk.StreamEvent(
             uuid="stream-1",
             session_id="sdk-session",
@@ -551,7 +707,17 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
             event={"type": "content_block_stop", "index": 0},
         )
         yield sdk.AssistantMessage(
-            content=[sdk.ToolUseBlock(id="sdk-tool-1", name="Read", input={"file_path": "answer.txt"})],
+            content=[
+                sdk.ThinkingBlock(
+                    thinking="Verify the public evidence before answering.",
+                    signature="private-signature",
+                ),
+                sdk.ToolUseBlock(
+                    id="sdk-tool-1",
+                    name="Read",
+                    input={"file_path": "answer.txt"},
+                ),
+            ],
             model="model-a",
         )
         pre = options.hooks["PreToolUse"][0].hooks[0]
@@ -603,7 +769,14 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
     )
 
     assert result.error is None
-    assert [candidate.event_type for candidate in candidates] == [
+    candidate_types = [
+        candidate.event_type
+        if isinstance(candidate, ClaudeAgentEventCandidate)
+        else candidate.as_agent_event_fields()["type"]
+        for candidate in candidates
+    ]
+    assert candidate_types == [
+        CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
         "policy.checking",
         "policy.allowed",
         "tool.started",
@@ -615,9 +788,27 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         "message.completed",
         "model.completed",
     ]
-    deltas = [candidate.payload["delta"] for candidate in candidates if candidate.event_type == "message.delta"]
+    deltas = [
+        candidate.payload["delta"]
+        for candidate in candidates
+        if isinstance(candidate, ClaudeAgentEventCandidate)
+        and candidate.event_type == "message.delta"
+    ]
     assert deltas == ["safe answer"]
-    assert all("sdk-tool-1" not in repr(candidate.as_dict()) for candidate in candidates)
+    summaries = [
+        candidate.summary
+        for candidate in candidates
+        if not isinstance(candidate, ClaudeAgentEventCandidate)
+    ]
+    assert summaries == ["Verify the public evidence before answering."]
+    serialized = [
+        candidate.as_dict()
+        if isinstance(candidate, ClaudeAgentEventCandidate)
+        else candidate.as_agent_event_fields()
+        for candidate in candidates
+    ]
+    assert "private-signature" not in repr(serialized)
+    assert all("sdk-tool-1" not in repr(value) for value in serialized)
 
 
 @pytest.mark.asyncio

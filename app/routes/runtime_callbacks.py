@@ -13,9 +13,11 @@ from app.context.retrieval import (
     ContextRetrievalInputError,
 )
 from app.db import transaction
+from app.platform.public_payload import sanitize_public_reasoning_text
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.public_execution import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
 from app.runtime.event_bridge import agent_event_to_executor_event
+from app.runtime.kernel_contracts import CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE
 from app.runtime.sandbox.callback_tokens import (
     CallbackTokenBinding,
     callback_token_id_matches_binding,
@@ -38,6 +40,7 @@ from app.streaming.api import (
     admit_v4_stream,
     append_callback_v4_rows,
     callback_item_to_v4,
+    callback_thinking_summary_to_v4,
     publish_pending_v4_events,
 )
 from app.streaming.redis import get_stream_authority
@@ -79,7 +82,12 @@ async def record_executor_callback(
     # Compatibility fields are retained in the private callback receipt only;
     # v4 public rows come from the typed post-bridge event subset.
     if callback.batch_id is None and any(
-        event.type == PUBLIC_AGENT_PROGRESS_EVENT_TYPE for event in callback.events
+        event.type
+        in {
+            PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
+            CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+        }
+        for event in callback.events
     ):
         raise HTTPException(status_code=409, detail="callback_batch_id_required")
     callback_for_events = callback.model_copy(update={"new_message": None})
@@ -121,11 +129,35 @@ async def record_executor_callback(
         ]
         lease_id = str(lease.get("id") or "") if isinstance(lease, dict) else ""
         for item_index, event in enumerate(events):
+            thinking_items = callback_thinking_summary_to_v4(
+                event.model_dump(mode="python"),
+                callback_index=item_index,
+                first_batch_index=len(v4_items),
+                callback_batch_id=str(callback.batch_id or ""),
+                expected_event_type=CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+                sanitizer=sanitize_public_reasoning_text,
+            )
+            if thinking_items:
+                v4_items.extend(thinking_items)
+                event_batch.append(
+                    {
+                        "event_type": "executor_private_event",
+                        "stage": "executor",
+                        "message": "Executor event projected to v4",
+                        "payload": {
+                            "source": "executor_callback",
+                            "source_event_type": event.type,
+                            "source_class": "public_v4",
+                            "visible_to_user": False,
+                        },
+                    }
+                )
+                continue
             executor_event = agent_event_to_executor_event(event)
             item = callback_item_to_v4(
                 executor_event,
                 callback_index=item_index,
-                batch_index=item_index,
+                batch_index=len(v4_items),
                 message_id=executor_event.get("message_id"),
             )
             if item is not None and item.source_run_id == callback.run_id:

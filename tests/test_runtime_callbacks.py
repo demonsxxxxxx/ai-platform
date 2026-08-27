@@ -1257,7 +1257,7 @@ def test_executor_callback_uses_adapter_events_and_durable_rows(monkeypatch):
     assert len(v4_rows) == 1
     items = v4_rows[0]["items"]
     assert [item.callback_index for item in items] == [1, 2]
-    assert [item.batch_index for item in items] == [1, 2]
+    assert [item.batch_index for item in items] == [0, 1]
     assert {item.message_id for item in items} == {adapter.message_id}
     assert adapter.message_id.startswith("msg_")
 
@@ -1386,7 +1386,10 @@ def test_executor_callback_publishes_real_adapter_lifecycle_and_platform_progres
 
     from app.execution.api import ClaudeSdkAgentEventAdapter
     from app.routes import runtime_callbacks
-    from app.runtime.kernel_contracts import AgentEvent
+    from app.runtime.kernel_contracts import (
+        CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+        AgentEvent,
+    )
 
     adapter = ClaudeSdkAgentEventAdapter(
         run_id="run-a",
@@ -1395,8 +1398,18 @@ def test_executor_callback_publishes_real_adapter_lifecycle_and_platform_progres
         payload_sanitizer=sanitize_public_payload,
         authorized_capabilities={"Read": {"category": "read", "display_name": "Read"}},
     )
-    ThinkingBlock = type("ThinkingBlock", (), {})
-    thinking = adapter.accept_content_block(ThinkingBlock(), block_index=0, message_identity="message-a")
+    thinking = (
+        AgentEvent(
+            type=CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+            event_id="thinking-summary-1",
+            run_id="run-a",
+            message_id="thinking-message-1",
+            payload={
+                "summary": "Compare the public evidence before answering.",
+            },
+            admin_only=True,
+        ),
+    )
     ToolUseBlock = type("ToolUseBlock", (), {})
     tool = ToolUseBlock()
     tool.id, tool.name, tool.input = "tool-1", "Read", {}
@@ -1470,6 +1483,7 @@ def test_executor_callback_publishes_real_adapter_lifecycle_and_platform_progres
     assert len(v4_rows) == 1
     assert {item.event_type for item in v4_rows[0]["items"]} == {
         "thinking.started",
+        "thinking.delta",
         "thinking.completed",
         "tool.started",
         "tool.completed",
@@ -1478,6 +1492,21 @@ def test_executor_callback_publishes_real_adapter_lifecycle_and_platform_progres
         "model.completed",
         "agent.progress",
     }
+    thinking_items = [
+        item
+        for item in v4_rows[0]["items"]
+        if item.event_type.startswith("thinking.")
+    ]
+    thinking_item = next(
+        item for item in thinking_items if item.event_type == "thinking.delta"
+    )
+    thinking_ids = {item.payload["thinking_id"] for item in thinking_items}
+    assert len(thinking_ids) == 1
+    assert next(iter(thinking_ids)).startswith("thinking_")
+    assert thinking_item.payload["delta"] == (
+        "Compare the public evidence before answering."
+    )
+    assert "private-signature" not in repr(v4_rows[0]["items"])
     progress_item = next(
         item for item in v4_rows[0]["items"] if item.event_type == "agent.progress"
     )
@@ -1561,6 +1590,43 @@ async def test_executor_callback_requires_batch_identity_for_public_progress() -
             new_message=None,
             state_patch={},
             events=[progress.model_dump()],
+        )
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await runtime_callbacks.record_executor_callback(
+            callback,
+            capabilities=callback_event_capabilities(),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "callback_batch_id_required"
+
+
+@pytest.mark.asyncio
+async def test_executor_callback_requires_batch_identity_for_thinking_summary() -> None:
+    from fastapi import HTTPException
+
+    from app.routes import runtime_callbacks
+    from app.runtime.kernel_contracts import (
+        CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+        AgentEvent,
+    )
+
+    summary = AgentEvent(
+        type=CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+        message="",
+        event_id="thinking-summary-1",
+        run_id="run-a",
+        message_id="message-a",
+        payload={"summary": "Compare the public evidence."},
+        admin_only=True,
+    )
+    callback = ExecutorCallbackEvent.model_validate(
+        callback_payload(
+            new_message=None,
+            state_patch={},
+            events=[summary.model_dump()],
         )
     )
 

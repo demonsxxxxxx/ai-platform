@@ -746,56 +746,62 @@ test("failed history retains canonical public execution activity through termina
         },
       },
       {
-        id: "failed-thinking",
+        id: "failed-thinking-started",
         sequence: 2,
         event_type: "public_activity",
         run_id: "run-failed-public-activity",
         timestamp: "2026-08-20T01:13:41.000Z",
         data: {
           projection_version: "ai-platform.chat-public-projection.v1",
-          event_id: "failed-thinking",
+          event_id: "failed-thinking-started",
           event_type: "public_activity",
           stage: "thinking",
-          message: "Analyzing the request",
+          message: "",
           severity: "info",
           progress_kind: "active",
+          payload: { thinking_id: "thinking-public-1" },
         },
       },
       {
-        id: "failed-thinking-completed",
+        id: "failed-thinking-delta",
         sequence: 3,
         event_type: "public_activity",
         run_id: "run-failed-public-activity",
         timestamp: "2026-08-20T01:13:42.000Z",
         data: {
           projection_version: "ai-platform.chat-public-projection.v1",
-          event_id: "failed-thinking-completed",
+          event_id: "failed-thinking-delta",
           event_type: "public_activity",
           stage: "thinking",
-          message: "Analysis step completed",
+          message: "Compare the public evidence before answering.",
           severity: "info",
-          progress_kind: "completed",
+          progress_kind: "active",
+          payload: {
+            thinking_id: "thinking-public-1",
+            delta: "Compare the public evidence before answering.",
+          },
         },
       },
       {
-        id: "failed-forged-thinking",
+        id: "failed-thinking-completed",
         sequence: 4,
         event_type: "public_activity",
         run_id: "run-failed-public-activity",
-        timestamp: "2026-08-20T01:13:42.000Z",
+        timestamp: "2026-08-20T01:13:43.000Z",
         data: {
           projection_version: "ai-platform.chat-public-projection.v1",
-          event_id: "failed-forged-thinking",
+          event_id: "failed-thinking-completed",
           event_type: "public_activity",
           stage: "thinking",
-          message: "Hidden reasoning must not render",
+          message: "",
           severity: "info",
-          progress_kind: "active",
+          progress_kind: "completed",
+          payload: { thinking_id: "thinking-public-1" },
         },
       },
       {
         id: "failed-tool-started",
-        sequence: 4,
+        sequence: 5,
         event_type: "public_tool_activity",
         run_id: "run-failed-public-activity",
         timestamp: "2026-08-20T01:13:43.000Z",
@@ -811,7 +817,7 @@ test("failed history retains canonical public execution activity through termina
       },
       {
         id: "failed-tool-completed",
-        sequence: 5,
+        sequence: 6,
         event_type: "public_tool_activity",
         run_id: "run-failed-public-activity",
         timestamp: "2026-08-20T01:13:44.000Z",
@@ -833,7 +839,7 @@ test("failed history retains canonical public execution activity through termina
         data: {
           projection_version: "ai-platform.chat-public-projection.v1",
           detail_kind: "failed",
-          detail_code: "claude_agent_sdk_tool_admission_failed",
+          detail_code: "run_failed",
         },
       },
       {
@@ -861,7 +867,8 @@ test("failed history retains canonical public execution activity through termina
   const thinking = visibleParts[1];
   assert.equal(thinking?.type, "thinking");
   if (thinking?.type !== "thinking") throw new Error("expected thinking part");
-  assert.equal(thinking.content, "Analysis step completed");
+  assert.equal(thinking.content, "Compare the public evidence before answering.");
+  assert.equal(thinking.public_reasoning, true);
   assert.equal(thinking.isStreaming, false);
   const tool = visibleParts[2];
   assert.equal(tool?.type, "tool");
@@ -872,7 +879,6 @@ test("failed history retains canonical public execution activity through termina
   assert.equal(terminal?.type, "run_status");
   if (terminal?.type !== "run_status") throw new Error("expected failed terminal status");
   assert.match(terminal.event_type, /failed/);
-  assert.doesNotMatch(JSON.stringify(messages), /Hidden reasoning must not render/);
 });
 
 test("reconstructMessagesFromEvents replays a production outer permission event through the compatibility envelope", () => {

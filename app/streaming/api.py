@@ -3,6 +3,7 @@
 from app.streaming.application.callback_events_v4 import (
     V4CallbackItem,
     callback_item_to_v4,
+    callback_thinking_summary_to_v4,
 )
 from app.streaming.application.durable_v4 import (
     V4PublicationClaim,
@@ -127,6 +128,7 @@ __all__ = [
     "build_v4_successor_rebuild",
     "build_v4_control",
     "callback_item_to_v4",
+    "callback_thinking_summary_to_v4",
     "opaque_message_id",
     "project_public_envelope_v4",
     "project_public_v4",

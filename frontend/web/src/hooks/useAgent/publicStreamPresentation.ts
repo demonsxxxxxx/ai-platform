@@ -63,7 +63,7 @@ export function projectPublicAgentProgress(
   };
 }
 
-/** Accept fixed public Thinking summaries from live v4 or strict history projection. */
+/** Project schema-validated public model reasoning from live or strict history. */
 export function projectPublicThinkingActivity(
   data: EventData,
   isStreaming: boolean,
@@ -76,22 +76,74 @@ export function projectPublicThinkingActivity(
   ) {
     return null;
   }
-  const isStarted =
-    data.message === PUBLIC_THINKING_SUMMARIES.started &&
+  const payload = data.payload;
+  const payloadThinkingId = payload?.thinking_id;
+  const thinkingId =
+    typeof payloadThinkingId === "string" && payloadThinkingId.length > 0
+      ? payloadThinkingId
+      : null;
+  const message = typeof data.message === "string" ? data.message : "";
+  const isHistoryThinking = data.stage === "thinking";
+  if (
+    ((data.stage === "thinking_delta" && data.status === "thinking_delta") ||
+      (isHistoryThinking && data.progress_kind === "active")) &&
+    thinkingId &&
+    message.length > 0 &&
+    payload?.delta === message
+  ) {
+    return {
+      type: "thinking",
+      content: message,
+      thinking_id: thinkingId,
+      public_reasoning: true,
+      isStreaming: true,
+    };
+  }
+  if (
+    ((data.stage === "thinking_started" && data.status === "thinking_started") ||
+      (isHistoryThinking && data.progress_kind === "active")) &&
+    thinkingId &&
+    message === "" &&
+    typeof payload?.delta !== "string"
+  ) {
+    return {
+      type: "thinking",
+      content: "",
+      thinking_id: thinkingId,
+      public_reasoning: true,
+      isStreaming: true,
+    };
+  }
+  if (
+    ((data.stage === "thinking_completed" && data.status === "thinking_completed") ||
+      (isHistoryThinking && data.progress_kind === "completed")) &&
+    thinkingId &&
+    message === ""
+  ) {
+    return {
+      type: "thinking",
+      content: "",
+      thinking_id: thinkingId,
+      public_reasoning: true,
+      isStreaming: false,
+    };
+  }
+
+  const isLegacyStarted =
+    message === PUBLIC_THINKING_SUMMARIES.started &&
     ((data.stage === "thinking_started" && data.status === "thinking_started") ||
       (data.stage === "thinking" && data.progress_kind === "active"));
-  const isCompleted =
-    data.message === PUBLIC_THINKING_SUMMARIES.completed &&
+  const isLegacyCompleted =
+    message === PUBLIC_THINKING_SUMMARIES.completed &&
     ((data.stage === "thinking_completed" && data.status === "thinking_completed") ||
       (data.stage === "thinking" && data.progress_kind === "completed"));
-  if (!isStarted && !isCompleted) return null;
+  if (!isLegacyStarted && !isLegacyCompleted) return null;
   return {
     type: "thinking",
-    content: isStarted
-      ? PUBLIC_THINKING_SUMMARIES.started
-      : PUBLIC_THINKING_SUMMARIES.completed,
+    content: message,
     thinking_id: data.event_id,
-    isStreaming: isStarted && isStreaming,
+    public_reasoning: true,
+    isStreaming: isLegacyStarted && isStreaming,
   };
 }
 
@@ -104,7 +156,16 @@ export function upsertPublicThinkingActivity(
       part.type === "thinking" && part.thinking_id === activity.thinking_id,
   );
   if (exactIndex >= 0) {
-    return parts.map((part, index) => (index === exactIndex ? activity : part));
+    return parts.map((part, index) => {
+      if (index !== exactIndex || part.type !== "thinking") return part;
+      if (activity.isStreaming && activity.content) {
+        return { ...activity, content: `${part.content}${activity.content}` };
+      }
+      if (!activity.isStreaming && !activity.content) {
+        return { ...activity, content: part.content };
+      }
+      return activity;
+    });
   }
   if (!activity.isStreaming && activity.content === PUBLIC_THINKING_SUMMARIES.completed) {
     let startedIndex = -1;

@@ -1,8 +1,10 @@
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.validation import assert_safe_id, assert_safe_principal_user_id
+
+CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE = "claude_sdk_thinking_summary"
 
 SUPPORTED_AGENT_EVENT_TYPES = {
     "agent_public_progress",
@@ -39,11 +41,10 @@ SUPPORTED_AGENT_EVENT_TYPES = {
     "run_failed",
     "run_completed",
     "run_cancelled",
+    CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
     "message.started",
     "message.delta",
     "message.completed",
-    "thinking.started",
-    "thinking.completed",
     "model.completed",
     "tool.started",
     "tool.completed",
@@ -136,6 +137,25 @@ class AgentEvent(BaseModel):
         if value not in SUPPORTED_AGENT_EVENT_TYPES:
             raise ValueError(f"Unsupported agent event type: {value}")
         return value
+
+    @model_validator(mode="after")
+    def validate_internal_thinking_summary(self):
+        if self.type != CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE:
+            return self
+        if (
+            self.message != ""
+            or not self.admin_only
+            or self.event_id is None
+            or self.run_id is None
+            or self.message_id is None
+            or self.causation_event_id is not None
+            or set(self.payload) != {"summary"}
+        ):
+            raise ValueError("agent_event_thinking_summary_invalid")
+        summary = self.payload.get("summary")
+        if not isinstance(summary, str) or not summary or len(summary) > 262_144:
+            raise ValueError("agent_event_thinking_summary_invalid")
+        return self
 
 
 def artifact_storage_prefix(context: RunContext) -> str:
