@@ -903,6 +903,7 @@ def test_mixed_public_and_internal_import_does_not_hide_internal_edge(
         'import importlib\nclass importlib(importlib.import_module("app.runs.domain.secret")):\n    pass\n',
         'import importlib\nclass importlib:\n    value = importlib.import_module("app.runs.domain.secret")\n',
         'import importlib\nclass importlib:\n    value = (lambda: importlib.import_module("app.runs.domain.secret"))()\n',
+        'import importlib\nclass importlib:\n    callback = lambda value=importlib.import_module("app.runs.domain.secret"): value\n',
         'import importlib\nclass importlib:\n    values = (item for item in importlib.import_module("app.runs.domain.secret"))\n',
         'import importlib\nclass importlib:\n    values = [importlib.import_module("app.runs.domain.secret") for _ in [0]]\n',
         'import types as loader, importlib as loader\nvalue = loader.import_module("app.runs.domain.secret")\n',
