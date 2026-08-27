@@ -905,8 +905,13 @@ test("reconstructMessagesFromEvents deduplicates repeated public thinking event 
   const repeatedDelta: HistoryEvent = {
     ...duplicateDelta,
     data: {
-      ...duplicateDelta.data,
+      projection_version: "ai-platform.chat-public-projection.v1",
+      event_id: "thinking-delta-once",
+      event_type: "public_activity",
+      stage: "thinking",
       message: "This repeated event must not replace the first occurrence.",
+      severity: "info",
+      progress_kind: "active",
       payload: {
         thinking_id: "thinking-public-once",
         delta: "This repeated event must not replace the first occurrence.",
