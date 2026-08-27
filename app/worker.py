@@ -43,7 +43,7 @@ from app.control_plane_contracts import (
 from app.db import transaction
 from app.execution.api import (
     WorkerRunCancelled,
-    payload_from_locked_run as _execution_payload_from_locked_run,
+    locked_run_payload_candidate as _locked_run_payload_candidate,
     restored_sandbox_run_payload as _restored_run_payload,
     submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
     time,
@@ -886,11 +886,17 @@ def _payload_from_locked_run(
     *,
     run_identity: dict[str, str],
 ) -> QueueRunPayload | None:
-    return _execution_payload_from_locked_run(
+    candidate = _locked_run_payload_candidate(
         locked_run,
         run_identity=run_identity,
-        run_payload_factory=QueueRunPayload,
+        harness_execution_kind=RUN_EXECUTION_KIND_HARNESS_CHAT,
     )
+    if candidate is None:
+        return None
+    try:
+        return QueueRunPayload.model_validate(candidate)
+    except ValidationError:
+        return None
 
 
 def _locked_agent_profile_identity_valid(

@@ -1,10 +1,6 @@
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from pydantic import ValidationError
-
-from app.control_plane_contracts import RUN_EXECUTION_KIND_HARNESS_CHAT
-
 
 LOCKED_RUN_SNAPSHOT_FIELDS = (
     "file_ids",
@@ -23,12 +19,12 @@ LOCKED_RUN_SNAPSHOT_FIELDS = (
 _RUN_MODEL_SNAPSHOT_FIELDS = ("model_id", "model_value", "model_gateway_revision")
 
 
-def payload_from_locked_run(
+def locked_run_payload_candidate(
     locked_run: object,
     *,
     run_identity: dict[str, str],
-    run_payload_factory: Callable[..., Any],
-) -> Any | None:
+    harness_execution_kind: str,
+) -> dict[str, Any] | None:
     if not isinstance(locked_run, dict):
         return None
     input_json = locked_run.get("input_json")
@@ -62,14 +58,11 @@ def payload_from_locked_run(
     ):
         return None
     if (
-        candidate.get("execution_kind") == RUN_EXECUTION_KIND_HARNESS_CHAT
+        candidate.get("execution_kind") == harness_execution_kind
         and candidate.get("skill_id") == ""
     ):
         candidate["skill_id"] = None
-    try:
-        return run_payload_factory.model_validate(candidate)
-    except ValidationError:
-        return None
+    return candidate
 
 
 async def with_locked_run_model_snapshot(

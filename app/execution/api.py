@@ -13,7 +13,7 @@ from app.execution.application.context_file_diagnostics import (
     validated_context_file_diagnostic,
 )
 from app.execution.application.executor_reconciliation import (
-    payload_from_locked_run,
+    locked_run_payload_candidate,
     restored_sandbox_run_payload,
     sandbox_reconciliation_payload,
     with_locked_run_model_snapshot,
@@ -65,8 +65,8 @@ __all__ = [
     "stage_stale_run_reconciliation",
     "submit_run_until_cancelled",
     "list_public_models",
+    "locked_run_payload_candidate",
     "parse_requested_model_selection",
-    "payload_from_locked_run",
     "resolve_chat_model_selection",
     "time",
     "validated_context_file_diagnostic",
