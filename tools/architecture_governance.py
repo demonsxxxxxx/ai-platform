@@ -2155,7 +2155,9 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
         for node in nodes
         for child in ast.iter_child_nodes(node)
     }
-    bindings: dict[ast.AST, dict[str, list[tuple[int, int, str]]]] = {}
+    bindings: dict[
+        ast.AST, dict[str, list[tuple[int, int, str, ast.AST | None]]]
+    ] = {}
     delegated: dict[ast.AST, dict[str, str]] = {}
     comprehension_scopes = (
         ast.ListComp,
@@ -2177,6 +2179,7 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
         node: ast.AST,
         *,
         after: ast.AST | None = None,
+        origin: ast.AST | None = None,
     ) -> None:
         if scope is not None and name:
             position = after or node
@@ -2187,6 +2190,7 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
                     getattr(position, line_attribute, 0),
                     getattr(position, column_attribute, 0),
                     identity,
+                    origin,
                 )
             )
 
@@ -2202,7 +2206,7 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
                     if alias.name == "importlib"
                     or (alias.asname is None and alias.name.startswith("importlib."))
                     else "other",
-                    node,
+                    alias,
                 )
         elif isinstance(node, ast.ImportFrom):
             for alias in node.names:
@@ -2215,7 +2219,7 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
                     and alias.name == "import_module"
                     else "other"
                 )
-                bind(scope, alias.asname or alias.name, identity, node)
+                bind(scope, alias.asname or alias.name, identity, alias)
         elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
             parent = parents.get(node)
             if (
@@ -2237,7 +2241,14 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
                 after = assignment.value
             elif isinstance(assignment, (ast.AsyncFor, ast.For)):
                 after = assignment.iter
-            bind(binding_scope, node.id, "other", node, after=after)
+            bind(
+                binding_scope,
+                node.id,
+                "other",
+                node,
+                after=after,
+                origin=assignment if after is not None else None,
+            )
         elif isinstance(node, ast.arg):
             bind(scope, node.arg, "other", node)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -2246,6 +2257,7 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
                 node.name,
                 "other",
                 node,
+                origin=node,
             )
         elif isinstance(node, ast.ExceptHandler):
             bind(scope, node.name, "other", node)
@@ -2262,25 +2274,88 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
         elif isinstance(node, ast.MatchMapping):
             bind(scope, node.rest, "other", node)
 
+    def direct_child(node: ast.AST, ancestor: ast.AST) -> ast.AST | None:
+        current = node
+        while parents.get(current) is not ancestor:
+            current = parents.get(current)
+            if current is None:
+                return None
+        return current
+
+    def is_within(node: ast.AST, ancestor: ast.AST) -> bool:
+        current: ast.AST | None = node
+        while current is not None:
+            if current is ancestor:
+                return True
+            current = parents.get(current)
+        return False
+
+    def definition_is_bound(definition: ast.AST, call: ast.Call) -> bool:
+        child = direct_child(call, definition)
+        if child is None:
+            return True
+        if isinstance(definition, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return child in definition.body
+        if child not in definition.body:
+            return False
+        current: ast.AST | None = call
+        while current is not None and current is not definition:
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                function_child = direct_child(call, current)
+                if function_child in current.body:
+                    return True
+            current = parents.get(current)
+        return False
+
+    def event_is_visible(
+        event: tuple[int, int, str, ast.AST | None],
+        call: ast.Call,
+        *,
+        limit_position: bool,
+    ) -> bool:
+        line, column, _identity, origin = event
+        if isinstance(origin, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if not definition_is_bound(origin, call):
+                return False
+        if (
+            isinstance(origin, ast.AnnAssign)
+            and origin.value is not None
+            and is_within(call, origin.annotation)
+        ):
+            return True
+        return not limit_position or (line, column) <= (call.lineno, call.col_offset)
+
+    def latest_identity(
+        events: list[tuple[int, int, str, ast.AST | None]],
+    ) -> str | None:
+        position = max(event[:2] for event in events)
+        identities = {
+            identity
+            for line, column, identity, _origin in events
+            if (line, column) == position
+        }
+        return next(iter(identities)) if len(identities) == 1 else None
+
     def resolve(call: ast.Call, name: str) -> str | None:
         scope = _dynamic_import_scope(call, parents)
         current_scope = scope
         inside_function = False
-        call_position = (call.lineno, call.col_offset)
         while scope is not None:
             if not (inside_function and isinstance(scope, ast.ClassDef)):
                 events = bindings.get(scope, {}).get(name, [])
                 declaration = delegated.get(scope, {}).get(name)
+                visible = [
+                    event
+                    for event in events
+                    if event_is_visible(
+                        event,
+                        call,
+                        limit_position=scope is current_scope or declaration is not None,
+                    )
+                ]
                 if declaration is not None:
-                    prior = [event for event in events if event[:2] <= call_position]
-                    if prior:
-                        position = max(event[:2] for event in prior)
-                        identities = {
-                            identity
-                            for line, column, identity in prior
-                            if (line, column) == position
-                        }
-                        return next(iter(identities)) if len(identities) == 1 else None
+                    if visible:
+                        return latest_identity(visible)
                     if isinstance(scope, function_scopes):
                         inside_function = True
                     if declaration == "global":
@@ -2289,29 +2364,17 @@ def _literal_dynamic_import_edges(tree: ast.Module) -> tuple[_ImportEdge, ...]:
                         scope = _dynamic_import_scope(scope, parents)
                     continue
                 if events:
-                    if scope is current_scope:
-                        prior = [event for event in events if event[:2] <= call_position]
-                        if not prior:
-                            if isinstance(scope, function_scopes):
-                                return None
-                            scope = _dynamic_import_scope(scope, parents)
-                            continue
-                        position = max(event[:2] for event in prior)
+                    if visible:
+                        if scope is current_scope or isinstance(scope, ast.Module):
+                            return latest_identity(visible)
                         identities = {
-                            identity
-                            for line, column, identity in prior
-                            if (line, column) == position
+                            identity for _line, _column, identity, _origin in visible
                         }
-                    elif isinstance(scope, ast.Module):
-                        position = max(event[:2] for event in events)
-                        identities = {
-                            identity
-                            for line, column, identity in events
-                            if (line, column) == position
-                        }
-                    else:
-                        identities = {identity for _line, _column, identity in events}
-                    return next(iter(identities)) if len(identities) == 1 else None
+                        return (
+                            next(iter(identities)) if len(identities) == 1 else None
+                        )
+                    if isinstance(scope, function_scopes):
+                        return None
             if isinstance(scope, function_scopes):
                 inside_function = True
             scope = _dynamic_import_scope(scope, parents)

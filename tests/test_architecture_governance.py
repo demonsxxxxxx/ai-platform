@@ -898,6 +898,11 @@ def test_mixed_public_and_internal_import_does_not_hide_internal_edge(
         'import importlib\nvalues = [item for importlib in (lambda: importlib.import_module("app.runs.domain.secret"))()]\n',
         'import importlib\nimportlib: object\nvalue = importlib.import_module("app.runs.domain.secret")\n',
         'import importlib\nclass Holder:\n    importlib: object\n    value = importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\ndef importlib(value=importlib.import_module("app.runs.domain.secret")):\n    return value\n',
+        'import importlib\ndef importlib() -> importlib.import_module("app.runs.domain.secret"):\n    pass\n',
+        'import importlib\nclass importlib(importlib.import_module("app.runs.domain.secret")):\n    pass\n',
+        'import importlib\nclass importlib:\n    value = importlib.import_module("app.runs.domain.secret")\n',
+        'import types as loader, importlib as loader\nvalue = loader.import_module("app.runs.domain.secret")\n',
         'import importlib\nimportlib = importlib.import_module("app.runs.domain.secret")\n',
         'import importlib\nvalue = (importlib := importlib.import_module("app.runs.domain.secret"))\n',
         'import importlib\nimportlib: object = importlib.import_module("app.runs.domain.secret")\n',
@@ -933,6 +938,10 @@ def test_literal_dynamic_imports_use_existing_dependency_rules(
         'import importlib\nclass FakeLoader:\n    def import_module(self, name):\n        return name\nvalues = [(importlib := FakeLoader()) for _ in [0]]\nvalue = importlib.import_module("app.runs.domain.secret")\n',
         'import importlib\nimportlib: object = object()\nvalue = importlib.import_module("app.runs.domain.secret")\n',
         'import importlib\ndef invoke():\n    importlib: object\n    return importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\ndef importlib():\n    return importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\nclass importlib:\n    def invoke(self):\n        return importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib as loader, types as loader\nvalue = loader.import_module("app.runs.domain.secret")\n',
+        'class FakeLoader:\n    def import_module(self, name):\n        return name\nimport importlib\nimportlib: importlib.import_module("app.runs.domain.secret") = FakeLoader()\n',
     ],
 )
 def test_shadowed_dynamic_import_names_do_not_create_edges(
