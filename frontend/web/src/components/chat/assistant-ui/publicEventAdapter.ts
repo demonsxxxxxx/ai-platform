@@ -143,7 +143,8 @@ function boundedCodePointString(
 ): value is string {
   if (typeof value !== "string") return false;
   let length = 0;
-  for (const _character of value) {
+  const characters = value[Symbol.iterator]();
+  while (!characters.next().done) {
     length += 1;
     if (length > maximum) return false;
   }

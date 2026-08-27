@@ -580,6 +580,27 @@ def test_thinking_is_sanitized_as_one_summary_before_callback_publication():
     assert len(events[0].summary) > 8_192
 
 
+@pytest.mark.parametrize(
+    "private_path",
+    [
+        r"C:\Users\Alice Smith\plan.txt",
+        r"C:\Users\Alice\quarterly plan.txt",
+    ],
+)
+def test_thinking_sanitizer_redacts_complete_windows_paths_with_spaces(
+    private_path,
+):
+    sanitized = sanitize_public_reasoning_text(
+        f"Review {private_path}\nContinue with the public evidence."
+    )
+
+    assert sanitized == (
+        "Review [redacted-path]\nContinue with the public evidence."
+    )
+    assert "Alice Smith" not in sanitized
+    assert "quarterly plan.txt" not in sanitized
+
+
 def test_callback_projects_whole_summaries_with_server_owned_identity_and_chunks():
     def source(summary: str, event_id: str) -> dict[str, object]:
         return {

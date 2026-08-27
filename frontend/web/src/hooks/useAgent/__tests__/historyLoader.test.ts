@@ -881,6 +881,42 @@ test("failed history retains canonical public execution activity through termina
   assert.match(terminal.event_type, /failed/);
 });
 
+test("reconstructMessagesFromEvents deduplicates repeated public thinking event ids", () => {
+  const duplicateDelta: HistoryEvent = {
+    id: "thinking-delta-once",
+    sequence: 1,
+    event_type: "public_activity",
+    run_id: "run-thinking-dedup",
+    timestamp: "2026-08-20T01:13:42.000Z",
+    data: {
+      projection_version: "ai-platform.chat-public-projection.v1",
+      event_id: "thinking-delta-once",
+      event_type: "public_activity",
+      stage: "thinking",
+      message: "Compare the public evidence once.",
+      severity: "info",
+      progress_kind: "active",
+      payload: {
+        thinking_id: "thinking-public-once",
+        delta: "Compare the public evidence once.",
+      },
+    },
+  };
+  const processedEventIds = new Set<string>();
+
+  const messages = reconstructMessagesFromEvents(
+    [duplicateDelta, { ...duplicateDelta }],
+    processedEventIds,
+    { activeSubagentStack: [] },
+  );
+
+  const thinking = messages[0]?.parts?.find((part) => part.type === "thinking");
+  assert.equal(thinking?.type, "thinking");
+  if (thinking?.type !== "thinking") throw new Error("expected thinking part");
+  assert.equal(thinking.content, "Compare the public evidence once.");
+  assert.deepEqual([...processedEventIds], ["thinking-delta-once"]);
+});
+
 test("reconstructMessagesFromEvents replays a production outer permission event through the compatibility envelope", () => {
   const messages = reconstructMessagesFromEvents(
     [
