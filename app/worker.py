@@ -98,7 +98,7 @@ from app.skills.catalog import (
     AuthorizedSkillCatalogResolution,
     resolve_authorized_skill_catalog,
 )
-from app.skills.execution_profiles import canonical_skill_execution_profile
+from app.skills.execution_profiles import effective_skill_execution_profile
 from app.tool_permission_lifecycle import (
     cancel_run_with_v4,
     complete_run_with_v4,
@@ -1082,7 +1082,7 @@ def _mcp_tool_lifecycle_status(tool: dict[str, Any]) -> str:
 
 _builtin_capability_subjects = _partial(
     builtin_capability_subjects,
-    canonical_manifest=canonical_skill_execution_profile,
+    canonical_manifest=effective_skill_execution_profile,
     canonical_identities=repositories.canonical_builtin_tool_identities,
 )
 
