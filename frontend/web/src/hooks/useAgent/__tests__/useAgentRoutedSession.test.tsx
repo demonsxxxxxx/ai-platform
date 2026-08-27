@@ -362,6 +362,18 @@ async function settle(act: typeof import("react").act) {
   }
 }
 
+async function settleUntil(
+  act: typeof import("react").act,
+  condition: () => boolean,
+) {
+  for (let index = 0; index < 40 && !condition(); index += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+  assert.ok(condition(), "expected condition to settle");
+}
+
 function completedSseResponse() {
   return new Response('event: complete\ndata: {"status":"succeeded"}\n\n', {
     headers: { "content-type": "text/event-stream" },
@@ -890,6 +902,7 @@ test("session route lifecycle supersedes stale loads across external and sidebar
     assert.equal(harness.hook.messages.length, 0);
 
     await harness.navigateRoute("/chat/session-e");
+    await settleUntil(harness.act, () => historyLoads.includes("session-e"));
     await settle(harness.act);
     assert.deepEqual(historyLoads, [
       "session-b",
