@@ -27,7 +27,10 @@ import type {
 import type { ExecutionTimelinePart } from "../../types/message";
 import {
   collapsePublicExecutionSteps,
+  projectPublicAgentProgress,
+  projectPublicThinkingActivity,
   upsertPublicExecutionStep,
+  upsertPublicThinkingActivity,
 } from "./publicStreamPresentation";
 import {
   publicTerminalPresentation,
@@ -574,6 +577,24 @@ export function processMessageEvent(
           result.parts = upsertPublicSubagentPart(parts, subagentPart);
           break;
         }
+      }
+      if (data.event_type === "agent_public_progress") {
+        const progress = projectPublicAgentProgress(data);
+        if (progress) {
+          result.parts = upsertPublicExecutionStep(parts, progress);
+        }
+        break;
+      }
+      if (
+        data.event_type === "public_activity" &&
+        typeof data.stage === "string" &&
+        data.stage.startsWith("thinking")
+      ) {
+        const thinking = projectPublicThinkingActivity(data, isStreaming);
+        if (thinking) {
+          result.parts = upsertPublicThinkingActivity(parts, thinking);
+        }
+        break;
       }
       if (!shouldProjectRunStatus(data)) {
         break;

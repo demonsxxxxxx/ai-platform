@@ -93,7 +93,14 @@ def test_lambchat_live_and_history_use_public_execution_event_names():
 
 def test_lambchat_history_projects_valid_v4_execution_events_and_rejects_raw_fields():
     principal = AuthPrincipal(user_id="user-a", display_name="User A", tenant_id="default")
-    run = {"id": "run-a", "status": "running", "trace_id": "trace-run-a"}
+    run = {
+        "id": "run-a",
+        "status": "failed",
+        "trace_id": "trace-run-a",
+        "error_code": "claude_agent_sdk_tool_admission_failed",
+        "error_message": "private executor detail",
+        "finished_at": "2026-08-20T01:13:49Z",
+    }
     common = {
         "trace_id": "trace-run-a",
         "schema_version": "ai-platform.event-envelope.v1",
@@ -197,6 +204,8 @@ def test_lambchat_history_projects_valid_v4_execution_events_and_rejects_raw_fie
         "public_activity",
         "public_tool_activity",
         "public_tool_activity",
+        "final_detail",
+        "done",
     ]
     progress = records[0].history_event["data"]
     assert progress["phase"] == "sandbox_preparation"
@@ -207,7 +216,10 @@ def test_lambchat_history_projects_valid_v4_execution_events_and_rejects_raw_fie
     completed = records[3].history_event["data"]
     assert completed["status"] == "completed"
     assert completed["result_summary"] == "Search authorized sources completed"
+    assert records[-2].history_event["event_type"] == "final_detail"
+    assert records[-1].history_event["data"] == {"run_id": "run-a", "status": "failed"}
     assert "command" not in str(records).lower()
+    assert "private executor detail" not in str(records)
 
 
 def test_lambchat_omits_legacy_capability_rows_when_strict_timeline_exists_for_every_principal():
