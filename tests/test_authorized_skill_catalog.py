@@ -1377,11 +1377,17 @@ async def test_sdk_registers_required_private_dependency_and_denies_unrelated_pr
         captured["prompt"] = messages[0]["message"]["content"]
         captured["required_permission"] = await options.kwargs["can_use_tool"](
             "Skill",
-            {"skill": "reference-fact-extraction"},
+            {
+                "skill": "reference-fact-extraction",
+                "args": "extract only the facts needed for this task",
+            },
         )
         captured["unrelated_permission"] = await options.kwargs["can_use_tool"](
             "Skill",
-            {"skill": "minimax-docx"},
+            {
+                "skill": "minimax-docx",
+                "args": "this cannot expand the authorized Skill Set",
+            },
         )
         for index, skill_id in enumerate((
             "ctd-32s73-stability-template-fill",
