@@ -1738,7 +1738,6 @@ async def _default_executor_runner(
             "on_tool_lifecycle": on_tool_lifecycle,
             "tool_policy_subjects": _task_tool_policy_subjects(request),
             "execution_policy": "sandbox_brokered",
-            "execution_profile": str(request.config.get("sdk_execution_profile") or ""),
             "require_selected_skill_invocation": request.config.get(
                 "require_selected_skill_invocation", True
             ) is not False,

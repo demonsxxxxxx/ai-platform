@@ -555,7 +555,7 @@ def primary_manifest(skill_id: str, version: str) -> dict:
     }
 
 
-def test_worker_projects_reviewed_uploaded_skill_local_tools_from_server_profile():
+def test_worker_ignores_uploaded_v1_local_tool_list_before_sandbox_boundary():
     profile = resolve_skill_execution_profile(
         skill_id="native-review",
         source_kind="uploaded",
@@ -600,20 +600,12 @@ def test_worker_projects_reviewed_uploaded_skill_local_tools_from_server_profile
     )
     by_identity = {subject["identity"]: subject for subject in subjects}
 
-    assert set(by_identity) == {
-        "Skill", "Read", "Glob", "LS", "Bash", "Write", "Edit", "Grep"
-    }
-    assert all(
-        subject["declared_identities"] == [subject["identity"]]
-        for subject in subjects
-    )
-    assert container_provider._native_tool_required(
+    assert set(by_identity) == {"Skill"}
+    assert by_identity["Skill"]["execution_strategy"] == "sandbox_full_local"
+    assert by_identity["Skill"]["allowed_skill_names"] == ["native-review"]
+    assert not container_provider._native_tool_required(
         types.SimpleNamespace(tool_policy_subjects=subjects)
     )
-    assert by_identity["Bash"]["command_isolation"] == "sibling-tool-sandbox-v1"
-    assert by_identity["Bash"]["execution_strategy"] == "sdk_native"
-    assert by_identity["Read"]["required_parameter_keys"] == ["file_path"]
-    assert by_identity["Skill"]["allowed_skill_names"] == ["native-review"]
 
 
 def test_general_chat_catalog_aggregation_drives_mount_and_native_bash_admission():
@@ -651,12 +643,10 @@ def test_general_chat_catalog_aggregation_drives_mount_and_native_bash_admission
     by_identity = {subject["identity"]: subject for subject in subjects}
     runtime_request = types.SimpleNamespace(tool_policy_subjects=subjects)
 
-    assert by_identity["Skill"]["execution_strategy"] == "sdk_restricted"
+    assert set(by_identity) == {"Skill"}
+    assert by_identity["Skill"]["execution_strategy"] == "sandbox_full_local"
     assert by_identity["Skill"]["allowed_skill_names"] == ["minimax-docx"]
-    assert by_identity["Bash"]["execution_strategy"] == "sdk_native"
-    assert by_identity["Bash"]["command_isolation"] == "sibling-tool-sandbox-v1"
-    assert container_provider._staged_skill_mount_required(runtime_request)
-    assert container_provider._native_tool_required(runtime_request)
+    assert not container_provider._native_tool_required(runtime_request)
 
 
 def test_worker_keeps_bash_available_without_required_completion():

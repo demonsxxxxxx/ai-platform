@@ -4161,7 +4161,9 @@ def test_skill_mount_inspection_supports_exact_profiles_and_fixed_catalog(tmp_pa
                 "qa-file-reviewer" if profile == "platform-controlled" else "minimax-docx"
             ),
             "primary_execution_strategy": (
-                "sdk_native" if profile == "sdk-native" else "platform_controlled"
+                "sandbox_full_local"
+                if profile == "sdk-native"
+                else "platform_controlled"
             ),
             "authorized_skill_count": 1,
             "native_sidecar_expected": profile == "sdk-native",
@@ -4205,8 +4207,23 @@ def test_skill_mount_inspection_supports_exact_profiles_and_fixed_catalog(tmp_pa
     assert platform_by_identity["Bash"]["command_isolation"] == "minimal-environment-v1"
     assert native_request.skill_ids == ["minimax-docx"]
     native_by_identity = {subject["identity"]: subject for subject in native_request.tool_policy_subjects}
-    assert set(native_by_identity) == {"Skill", "Bash", "Write"}
+    assert set(native_by_identity) == {
+        "Skill",
+        "Read",
+        "Glob",
+        "Grep",
+        "LS",
+        "Bash",
+        "Write",
+        "Edit",
+        "NotebookEdit",
+    }
     assert native_by_identity["Skill"]["allowed_skill_names"] == ["minimax-docx"]
+    assert {
+        subject["execution_strategy"]
+        for identity, subject in native_by_identity.items()
+        if identity != "Skill"
+    } == {"sandbox_full_local"}
     assert native_by_identity["Bash"]["command_isolation"] == "sibling-tool-sandbox-v1"
     capsys.readouterr()
 
@@ -4385,7 +4402,7 @@ def test_authoritative_inspection_catalog_cannot_be_replaced_with_forged_subject
             }
         ],
     )
-    with pytest.raises(generator._InspectionCheckFailed, match="aggregation mismatch"):
+    with pytest.raises(generator._InspectionCheckFailed, match="Skill subject mismatch"):
         generator._authoritative_inspection_catalog("sdk-native")
 
 
