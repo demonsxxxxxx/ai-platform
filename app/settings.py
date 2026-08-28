@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     sandbox_executor_dispatch_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
     opensandbox_domain: str = Field(default="127.0.0.1:8080")
     opensandbox_protocol: str = Field(default="http")
+    opensandbox_base_url: str = Field(default="")
     opensandbox_api_key: str = Field(default="")
     opensandbox_ca_cert_file: str = Field(default="")
     opensandbox_use_server_proxy: bool = Field(default=False)
@@ -71,16 +72,10 @@ class Settings(BaseSettings):
     opensandbox_workspace_mount_enabled: bool = Field(default=True)
     opensandbox_startup_io_probe_enabled: bool = Field(default=True)
     opensandbox_allowed_egress_hosts: str = Field(default="")
+    opensandbox_egress_proxy_url: str = Field(default="http://host.docker.internal:18043")
     sandbox_runtime_subject: str = Field(default="")
-    opensandbox_external_egress_capability_url: str = Field(default="")
-    opensandbox_external_egress_capability_token: str = Field(default="")
-    opensandbox_external_egress_gateway_policy_subject: str = Field(default="")
-    opensandbox_external_egress_callback_boundary_subject: str = Field(default="")
-    opensandbox_external_egress_callback_base_url: str = Field(default="")
-    opensandbox_external_egress_openai_base_url: str = Field(default="")
-    opensandbox_external_egress_anthropic_base_url: str = Field(default="")
     opensandbox_executor_image_digest: str = Field(default="")
-    opensandbox_expected_network_mode: Literal["none", "bridge"] = Field(default="none")
+    opensandbox_expected_network_mode: Literal["none", "bridge"] = Field(default="bridge")
     sandbox_max_active_ephemeral_containers: int = Field(default=2)
     sandbox_max_active_persistent_containers: int = Field(default=1)
     max_active_runs_per_user: int = Field(default=3)
@@ -334,15 +329,22 @@ class Settings(BaseSettings):
         ):
             raise ValueError("internal_test_opensandbox_profile_invalid")
         if self.opensandbox_internal_test_forward_model_credentials:
-            if not (
-                self.deployment_environment == "test"
-                and self.sandbox_container_provider == "opensandbox"
-                and self.sandbox_security_profile == "internal-test"
-                and self.opensandbox_expected_network_mode == "bridge"
-            ):
-                raise ValueError("internal_test_model_credential_forwarding_invalid")
-            if not self.openai_api_key.strip() or not self.anthropic_auth_token.strip():
-                raise ValueError("internal_test_model_credentials_required")
+            raise ValueError("opensandbox_model_credential_forwarding_disabled")
+        if self.deployment_environment == "production" and self.sandbox_container_provider == "opensandbox":
+            if self.sandbox_security_profile != "governed":
+                raise ValueError("production_opensandbox_profile_invalid")
+            if self.opensandbox_expected_network_mode != "bridge":
+                raise ValueError("production_opensandbox_network_mode_invalid")
+            if not self.opensandbox_use_server_proxy:
+                raise ValueError("production_opensandbox_server_proxy_required")
+            if not self.sandbox_egress_policy_enabled:
+                raise ValueError("production_opensandbox_egress_policy_required")
+            if not self.opensandbox_api_key.strip():
+                raise ValueError("production_opensandbox_api_key_required")
+            if not self.opensandbox_base_url.strip():
+                raise ValueError("production_opensandbox_base_url_required")
+            if not self.opensandbox_egress_proxy_url.strip():
+                raise ValueError("production_opensandbox_egress_proxy_required")
         if self.deployment_environment == "production":
             if self.frontend_poc_auth_enabled:
                 raise ValueError("frontend_poc_auth_forbidden_in_production")

@@ -81,7 +81,7 @@ async def test_real_opensandbox_bash_cannot_read_raw_model_credentials(
             "import glob, json, os\n"
             "from urllib.parse import urlsplit\n"
             "keys = {b'OPENAI_API_KEY', b'ANTHROPIC_AUTH_TOKEN', b'ANTHROPIC_API_KEY'}\n"
-            "sentinel = b'opensandbox-host-broker'\n"
+            "sentinel = b'opensandbox-sdk-sentinel'\n"
             f"canaries = {{item.encode() for item in json.loads({canary_json!r})}}\n"
             "def raw(entries):\n"
             "    for entry in entries:\n"

@@ -1,0 +1,97 @@
+server {
+    listen 8080;
+    server_name _;
+    access_log off;
+    client_max_body_size 1m;
+    client_body_timeout 10s;
+    send_timeout 10s;
+
+    location = /healthz {
+        add_header Content-Type text/plain;
+        return 200 "ok\n";
+    }
+
+    # Callback authentication remains the API's callback-token contract. The
+    # proxy only provides the network entry and never becomes a lifecycle API.
+    location ~ ^/api/ai/runtime/callbacks/(executor|context-retrieval|tool-permission)$ {
+        if ($request_method != POST) { return 405; }
+        proxy_pass ${AI_PLATFORM_API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $proxy_host;
+        proxy_set_header Authorization "";
+        proxy_set_header X-Api-Key "";
+        proxy_set_header api-key "";
+        proxy_set_header X-OpenAI-Api-Key "";
+        proxy_set_header X-Goog-Api-Key "";
+        proxy_set_header X-AI-Platform-Internal-Token "";
+        proxy_set_header X-AI-Platform-Executor-Credential "";
+        proxy_set_header X-AI-Platform-Native-Tool-Token "";
+        proxy_pass_request_headers on;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 10s;
+        proxy_send_timeout 10s;
+    }
+
+    # Model bases include validated run and attempt path segments. Nginx turns
+    # those segments into the headers consumed by the existing model control
+    # plane and supplies its internal credential server-side.
+    location ~ ^/openai/(?<openai_run_id>[A-Za-z0-9_-]{1,128})/(?<openai_attempt_id>[A-Za-z0-9_-]{1,128})/(?<openai_model_path>v1/(chat/completions|responses))$ {
+        if ($request_method != POST) { return 405; }
+        if ($query_string != "") { return 400; }
+        rewrite ^/openai/[^/]+/[^/]+/(.*)$ /api/ai/internal/model-proxy/openai/$1 break;
+        proxy_pass ${AI_PLATFORM_API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $proxy_host;
+        proxy_set_header Authorization "";
+        proxy_set_header X-Api-Key "";
+        proxy_set_header api-key "";
+        proxy_set_header X-OpenAI-Api-Key "";
+        proxy_set_header X-Goog-Api-Key "";
+        proxy_set_header X-AI-Platform-Callback-Token "";
+        proxy_set_header X-AI-Platform-Executor-Credential "";
+        proxy_set_header X-AI-Platform-Native-Tool-Token "";
+        proxy_set_header X-AI-Platform-Internal-Token ${MODEL_PROXY_INTERNAL_TOKEN};
+        proxy_set_header X-AI-Platform-Run-ID $openai_run_id;
+        proxy_set_header X-AI-Platform-Attempt-ID $openai_attempt_id;
+        proxy_pass_request_headers on;
+        proxy_buffering off;
+        proxy_cache off;
+        gzip off;
+        proxy_set_header Accept-Encoding "";
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location ~ ^/anthropic/(?<anthropic_run_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_attempt_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_model_path>v1/messages(?:/count_tokens)?)$ {
+        if ($request_method != POST) { return 405; }
+        if ($query_string != "") { return 400; }
+        rewrite ^/anthropic/[^/]+/[^/]+/(.*)$ /api/ai/internal/model-proxy/anthropic/$1 break;
+        proxy_pass ${AI_PLATFORM_API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $proxy_host;
+        proxy_set_header Authorization "";
+        proxy_set_header X-Api-Key "";
+        proxy_set_header api-key "";
+        proxy_set_header X-OpenAI-Api-Key "";
+        proxy_set_header X-Goog-Api-Key "";
+        proxy_set_header X-AI-Platform-Callback-Token "";
+        proxy_set_header X-AI-Platform-Executor-Credential "";
+        proxy_set_header X-AI-Platform-Native-Tool-Token "";
+        proxy_set_header X-AI-Platform-Internal-Token ${MODEL_PROXY_INTERNAL_TOKEN};
+        proxy_set_header X-AI-Platform-Run-ID $anthropic_run_id;
+        proxy_set_header X-AI-Platform-Attempt-ID $anthropic_attempt_id;
+        proxy_pass_request_headers on;
+        proxy_buffering off;
+        proxy_cache off;
+        gzip off;
+        proxy_set_header Accept-Encoding "";
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location / {
+        return 404;
+    }
+}

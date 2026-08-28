@@ -20,7 +20,7 @@ type = "sqlite"
 path = "/var/lib/ai-platform-opensandbox/opensandbox.db"
 
 [docker]
-network_mode = "none"
+network_mode = "bridge"
 drop_capabilities = ["AUDIT_WRITE", "MKNOD", "NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_TIME", "SYS_TTY_CONFIG"]
 no_new_privileges = true
 pids_limit = 4096

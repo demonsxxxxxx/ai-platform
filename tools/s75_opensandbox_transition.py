@@ -20,12 +20,12 @@ try:
 except ImportError:  # pragma: no cover - transition runs only on Linux
     fcntl = None  # type: ignore[assignment]
 
-LEGACY_PROJECT = "ai-platform-internal"
+LEGACY_PROJECT = authority.COMPOSE_PROJECT
 LEGACY_SELECTION = (
     authority.DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(),
     authority.SANDBOX_COMPOSE_RELATIVE_PATH,
 )
-TARGET_SELECTION = authority.S75_MIGRATED_COLOCATION_SELECTION
+TARGET_SELECTION = authority.DIRECT_OPENSANDBOX_SELECTION
 CONTAINERS = {
     "postgres": "ai-platform-postgres",
     "redis": "ai-platform-redis",
@@ -62,9 +62,9 @@ EXPECTED_VOLUME_CONSUMERS = {
     "ai_platform_postgres": {"ai-platform-postgres"},
     "ai_platform_redis": {"ai-platform-redis"},
     "ai_platform_minio": {"ai-platform-minio"},
-    "ai_platform_sandbox_workspaces": {"ai-platform-api", "ai-platform-worker"},
+    "ai_platform_sandbox_workspaces": {"ai-platform-workspace-init", "ai-platform-api", "ai-platform-worker"},
 }
-TARGET_BROKER_CONTAINER = "ai-platform-s72-broker-entry"
+TARGET_BROKER_CONTAINER = "ai-platform-opensandbox-egress-proxy"
 SCHEMA_PATHS = ("app/schema.sql", "app/schema_migrations.py")
 ADMISSION_CONTAINERS = ("ai-platform-frontend", "ai-platform-api", "ai-platform-worker")
 ACCEPTANCE_PORT_ENVIRONMENT = {
@@ -245,8 +245,11 @@ def _require_volume_identities(
         if set(consumers.stdout.splitlines()) != EXPECTED_VOLUME_CONSUMERS[logical]:
             raise TransitionError(f"legacy volume consumer mismatch: {logical}")
     workspace_name = EXPECTED_VOLUMES["ai_platform_sandbox_workspaces"][2]
-    for service in ("api", "workspace-init"):
-        if _mount_source(containers[service], "/tmp/ai-platform-sandbox-workspaces") != workspace_name:
+    for service, destination in (
+        ("api", "/tmp/ai-platform-sandbox-workspaces"),
+        ("workspace-init", "/runtime-workspaces"),
+    ):
+        if _mount_source(containers[service], destination) != workspace_name:
             raise TransitionError(f"legacy workspace volume mismatch: {service}")
 
 
@@ -318,7 +321,7 @@ def _require_schema_compatibility(repo_root: Path, legacy_commit: str, target_co
 
 
 def _require_host_prerequisites() -> None:
-    for service in ("opensandbox.service", "opensandbox-gateway.service"):
+    for service in ("opensandbox.service",):
         if _run(["systemctl", "is-active", "--quiet", service], check=False, timeout=15).returncode != 0:
             raise TransitionError(f"host prerequisite inactive: {service}")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -411,7 +414,7 @@ def _require_target_broker(docker: Sequence[str], commit: str) -> None:
     state = broker.get("State")
     if (
         labels.get("com.docker.compose.project") != authority.COMPOSE_PROJECT
-        or labels.get("com.docker.compose.service") != "s72-broker-entry"
+        or labels.get("com.docker.compose.service") != "opensandbox-egress-proxy"
         or labels.get("ai-platform.source-commit") != commit
         or not isinstance(state, dict)
         or state.get("Running") is not True
@@ -419,6 +422,18 @@ def _require_target_broker(docker: Sequence[str], commit: str) -> None:
         or state["Health"].get("Status") != "healthy"
     ):
         raise TransitionError("target broker runtime is invalid")
+
+
+def _require_target_executor(docker: Sequence[str]) -> None:
+    for service in ("api", "worker"):
+        environment = _container_environment(_inspect_container(docker, CONTAINERS[service]))
+        executor_image = environment.get("SANDBOX_EXECUTOR_IMAGE", "").strip()
+        if (
+            not executor_image
+            or environment.get("OPENSANDBOX_EXECUTOR_IMAGE", "").strip() != executor_image
+            or environment.get("OPENSANDBOX_EXECUTOR_IMAGE_DIGEST", "").strip() != executor_image
+        ):
+            raise TransitionError("target OpenSandbox executor image mismatch")
 
 
 def _require_target_parity(
@@ -437,6 +452,7 @@ def _require_target_parity(
     if parity.get("verified") is not True:
         raise TransitionError("target runtime parity is invalid")
     _require_target_broker(docker, commit)
+    _require_target_executor(docker)
 
 
 @contextmanager
@@ -726,9 +742,8 @@ def _validated_rollback_runtime(
         legacy_repo_root.parent,
     )
     selection = authority.resolve_compose_files(legacy_repo_root, LEGACY_SELECTION)
-    if executor_image != backend_image:
-        raise TransitionError("legacy executor image must equal the verified backend image")
     repository = authority.authoritative_repository(legacy_repo_root)
+    records: dict[str, dict[str, Any]] = {}
     for role, reference in (("backend", backend_image), ("frontend", frontend_image)):
         record = authority._image_record(list(docker), reference)
         authority._validate_release_image(
@@ -737,6 +752,10 @@ def _validated_rollback_runtime(
             repository=repository,
             role=role,
         )
+        records[role] = record
+    executor_record = authority._image_record(list(docker), executor_image)
+    if executor_record.get("id") != records["backend"].get("id"):
+        raise TransitionError("legacy executor image must resolve to the verified backend image")
     return LegacyRuntime(
         repo_root=legacy_repo_root.resolve(),
         compose_files=selection.absolute_paths,
@@ -807,6 +826,7 @@ def rollback(
             target_commit=target_commit,
             docker_cmd=docker_cmd,
         )
+        _require_schema_compatibility(target_repo_root, runtime.commit, normalized)
         _require_quiescent(docker)
         _stop_admission(docker)
         try:

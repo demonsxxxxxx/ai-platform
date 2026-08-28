@@ -38,6 +38,33 @@ def test_opensandbox_connection_keeps_sdk_default_transport_without_ca() -> None
     assert config.transport is None
 
 
+def test_opensandbox_connection_uses_direct_base_url() -> None:
+    settings = _settings()
+    settings.opensandbox_base_url = "https://server.test:9443/"
+
+    config = build_opensandbox_connection_config(settings, ConnectionConfig)
+
+    assert config.protocol == "https"
+    assert config.domain == "server.test:9443"
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "server.test:9443",
+        "https://server.test",
+        "https://user:pass@server.test:9443",
+        "https://server.test:9443/api",
+    ],
+)
+def test_opensandbox_connection_rejects_invalid_direct_base_url(base_url: str) -> None:
+    settings = _settings()
+    settings.opensandbox_base_url = base_url
+
+    with pytest.raises(OpenSandboxCapabilityAdmissionError, match="base URL is invalid"):
+        build_opensandbox_connection_config(settings, ConnectionConfig)
+
+
 @pytest.mark.parametrize("ca_file", ["relative-ca.pem", "/missing/opensandbox-ca.pem"])
 def test_opensandbox_connection_rejects_untrusted_ca_path(ca_file: str) -> None:
     with pytest.raises(OpenSandboxCapabilityAdmissionError, match="CA certificate is invalid"):

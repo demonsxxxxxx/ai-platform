@@ -13,7 +13,7 @@ from urllib.error import HTTPError, URLError
 
 
 SCHEMA_VERSION = "ai-platform.release-authority.v1"
-COMPOSE_PROJECT = "ai-platform-phaseb"
+COMPOSE_PROJECT = "ai-platform-internal"
 COMPATIBILITY_IMAGE_COMMIT_LABELS = (
     "ai-platform.source-revision",
     "ai-platform.runtime-subject",

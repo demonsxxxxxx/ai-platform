@@ -27,6 +27,10 @@ from app.runtime.sandbox.providers.opensandbox import metadata as opensandbox_me
 SANDBOX_SECURITY_PROFILE_GOVERNED = "governed"
 SANDBOX_SECURITY_PROFILE_INTERNAL_TEST = "internal-test"
 SANDBOX_SECURITY_PROFILE_LABEL = "ai-platform.security_profile"
+DIRECT_OPENSANDBOX_PROFILE_ID = "direct-opensandbox"
+DIRECT_OPENSANDBOX_POLICY_SUBJECT = "stateless-nginx-egress"
+DIRECT_OPENSANDBOX_CALLBACK_SUBJECT = "api-callback-token-validation"
+DIRECT_OPENSANDBOX_DENIAL_SUBJECT = "ai-platform-sandbox-runtime"
 INTERNAL_TEST_OPENSANDBOX_PROFILE = "official-opensandbox-direct-v1"
 _ORPHAN_SCOPE_KEYS = (
     "tenant_id",
@@ -44,14 +48,11 @@ _GOVERNED_BRIDGE_PATHS = {
     "openai": "/openai/v1",
     "anthropic": "/anthropic",
 }
-_DNS_HOSTNAME = re.compile(
-    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
-    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z"
-)
+_PROXY_HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,252}\Z")
 
 
 class OpenSandboxProfileConfigurationError(ValueError):
-    """Report a bounded OpenSandbox governed-policy configuration failure."""
+    """Report a bounded OpenSandbox egress configuration failure."""
 
 
 @dataclass(frozen=True)
@@ -63,7 +64,7 @@ class ExecutorEgressBases:
     anthropic_base_url: str
 
     def callback_target(self):
-        """Resolve the callback URL from the canonical governed base."""
+        """Resolve the callback URL from the canonical egress proxy base."""
 
         parsed = urlsplit(self.callback_base_url)
         return build_trusted_callback_target(
@@ -72,65 +73,40 @@ class ExecutorEgressBases:
         )
 
 
-def _canonical_governed_bridge_base(value: object, *, kind: str) -> str:
-    raw = str(value or "")
-    expected_path = _GOVERNED_BRIDGE_PATHS[kind]
+def _canonical_proxy_base(value: object) -> str:
+    raw = str(value or "").strip()
     try:
         parsed = urlsplit(raw)
         port = parsed.port
     except ValueError:
-        raise OpenSandboxProfileConfigurationError("OpenSandbox upstream bridge base is invalid") from None
+        raise OpenSandboxProfileConfigurationError("OpenSandbox egress proxy base is invalid") from None
     host = parsed.hostname or ""
-    pinned_https = parsed.scheme == "https" and bool(_DNS_HOSTNAME.fullmatch(host))
-    loopback_http = parsed.scheme == "http" and host == "127.0.0.1" and port == 18043
     if (
-        not (pinned_https or loopback_http)
-        or host != host.lower()
+        parsed.scheme not in {"http", "https"}
+        or not host
+        or not _PROXY_HOST.fullmatch(host)
         or parsed.username
         or parsed.password
-        or parsed.path != expected_path
+        or parsed.path not in {"", "/"}
         or parsed.query
         or parsed.fragment
         or port is None
         or not 1 <= port <= 65535
         or parsed.netloc != f"{host}:{port}"
-        or host in {"api.sandbox.internal", "host.docker.internal"}
     ):
-        raise OpenSandboxProfileConfigurationError("OpenSandbox upstream bridge base is invalid") from None
-    canonical = urlunsplit((parsed.scheme, f"{host}:{port}", expected_path, "", ""))
-    if raw != canonical:
-        raise OpenSandboxProfileConfigurationError("OpenSandbox upstream bridge base is invalid") from None
-    return canonical
+        raise OpenSandboxProfileConfigurationError("OpenSandbox egress proxy base is invalid") from None
+    return urlunsplit((parsed.scheme, f"{host}:{port}", "", "", ""))
 
 
 def governed_opensandbox_egress_bases(settings: Any) -> ExecutorEgressBases:
-    """Return the governed profile's canonical, same-origin bridge bases."""
+    """Return direct-mode bases for the one configured stateless egress proxy."""
 
-    bases = ExecutorEgressBases(
-        callback_base_url=_canonical_governed_bridge_base(
-            getattr(settings, "opensandbox_external_egress_callback_base_url", ""),
-            kind="callback",
-        ),
-        openai_base_url=_canonical_governed_bridge_base(
-            getattr(settings, "opensandbox_external_egress_openai_base_url", ""),
-            kind="openai",
-        ),
-        anthropic_base_url=_canonical_governed_bridge_base(
-            getattr(settings, "opensandbox_external_egress_anthropic_base_url", ""),
-            kind="anthropic",
-        ),
+    proxy = _canonical_proxy_base(getattr(settings, "opensandbox_egress_proxy_url", ""))
+    return ExecutorEgressBases(
+        callback_base_url=proxy,
+        openai_base_url=f"{proxy}/openai/v1",
+        anthropic_base_url=f"{proxy}/anthropic",
     )
-    origins = {
-        (urlsplit(value).scheme, urlsplit(value).hostname, urlsplit(value).port)
-        for value in (
-            bases.callback_base_url,
-            bases.openai_base_url,
-            bases.anthropic_base_url,
-        )
-    }
-    if len(origins) != 1:
-        raise OpenSandboxProfileConfigurationError("OpenSandbox upstream bridge origin drift detected")
-    return bases
 
 
 def validate_opensandbox_image_reference(
@@ -438,7 +414,6 @@ def _required_remote_string(labels: object, key: str) -> str | None:
 def _governed_cleanup_expected_binding(
     status: ContainerStatus,
     lease: ContainerLease,
-    proof: dict[str, object],
 ) -> dict[str, object] | None:
     labels = status.detail.get("labels")
     attempt_id = _required_remote_string(lease.labels, "ai-platform.attempt_id")
@@ -460,43 +435,37 @@ def _governed_cleanup_expected_binding(
         return None
 
     required_remote_keys = (
+        SANDBOX_SECURITY_PROFILE_LABEL,
         "ai-platform.external_egress.runtime_identity",
+        "ai-platform.external_egress.network_mode",
         "ai-platform.runtime_subject",
         "ai-platform.external_egress.gateway_policy_subject",
         "ai-platform.external_egress.callback_boundary_subject",
         "ai-platform.external_egress.deny_audit_subject",
         "ai-platform.external_egress.deny_counter_subject",
         "ai-platform.external_egress.profile_id",
+        "ai-platform.external_egress.profile_version",
         "ai-platform.external_egress.endpoint_sha256",
-        "ai-platform.executor.requested_image",
-        "ai-platform.executor.requested_image_digest",
-        "ai-platform.external_egress.profile_requested_image",
-        "ai-platform.external_egress.profile_requested_image_digest",
-        "ai-platform.external_egress.profile_expires_at",
+        "ai-platform.external_egress.executor_image",
+        "ai-platform.external_egress.executor_image_digest",
+        "ai-platform.external_egress.upstream_bridge_version",
+        "ai-platform.external_egress.callback_base_url_sha256",
+        "ai-platform.external_egress.openai_base_url_sha256",
+        "ai-platform.external_egress.anthropic_base_url_sha256",
     )
     if any(_required_remote_string(labels, key) is None for key in required_remote_keys):
         return None
     if (
-        _required_remote_string(labels, "ai-platform.external_egress.runtime_identity")
+        _required_remote_string(labels, SANDBOX_SECURITY_PROFILE_LABEL)
+        != SANDBOX_SECURITY_PROFILE_GOVERNED
+        or _required_remote_string(labels, "ai-platform.external_egress.runtime_identity")
         != _OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_IDENTITY
+        or _required_remote_string(labels, "ai-platform.external_egress.network_mode") != "bridge"
         or _required_remote_string(labels, "ai-platform.external_egress.profile_version") != "v1"
+        or _required_remote_string(labels, "ai-platform.external_egress.upstream_bridge_version") != "v1"
     ):
         return None
 
-    proof_endpoint = proof.get("network_name_sha256")
-    proof_expires_at = proof.get("expires_at")
-    if not isinstance(proof_endpoint, str) or not re.fullmatch(r"[0-9a-f]{64}", proof_endpoint):
-        return None
-    if not isinstance(proof_expires_at, str) or not proof_expires_at:
-        return None
-    if not opensandbox_metadata.opensandbox_metadata_matches(
-        labels,
-        {
-            "ai-platform.external_egress.endpoint_sha256": proof_endpoint,
-            "ai-platform.external_egress.profile_expires_at": proof_expires_at,
-        },
-    ):
-        return None
     return {
         "tenant_id": lease.tenant_id,
         "workspace_id": lease.workspace_id,
@@ -534,12 +503,6 @@ def opensandbox_cleanup_identity_is_authorized(
     lease_profile = str(
         lease.labels.get(SANDBOX_SECURITY_PROFILE_LABEL) or SANDBOX_SECURITY_PROFILE_GOVERNED
     )
-    if lease_profile == "trusted_internal":
-        from app.runtime.sandbox.opensandbox_legacy_cleanup import (
-            trusted_internal_cleanup_identity_is_authorized,
-        )
-
-        return trusted_internal_cleanup_identity_is_authorized(status_labels, lease.labels)
     if lease_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
         try:
             if not _is_internal_test_opensandbox(settings):
@@ -579,7 +542,7 @@ def opensandbox_cleanup_identity_is_authorized(
         return False
     if not isinstance(proof, dict):
         return False
-    expected_binding = _governed_cleanup_expected_binding(status, lease, proof)
+    expected_binding = _governed_cleanup_expected_binding(status, lease)
     if expected_binding is None:
         return False
     return is_governed_egress_proof(
