@@ -205,7 +205,7 @@ async def test_profile_definition_validates_stable_mcp_reference_and_server_exis
         get_server,
     )
 
-    skills, _model = await AgentProfileAuthority()._validate_definition(
+    skills = await AgentProfileAuthority()._validate_definition(
         object(),
         principal=_principal(),
         agent_id="agt_support",
