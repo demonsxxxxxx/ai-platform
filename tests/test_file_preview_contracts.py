@@ -10,11 +10,7 @@ import pytest
 from openpyxl import Workbook
 
 from app import file_preview_contracts
-from app.file_parser_contracts import (
-    AttachmentParserRequirement,
-    MAX_XLSX_PROMPT_CHARS,
-    parser_spec_for_attachment,
-)
+from app.file_parser_contracts import AttachmentParserRequirement, parser_spec_for_attachment
 from app.file_preview_contracts import (
     _stage_xlsx_preview_bytes,
     acquire_xlsx_preview_lease,
@@ -106,6 +102,30 @@ def test_xlsx_preview_uses_the_registered_parser_and_returns_only_the_presentati
     assert "parser_version" not in preview.model_dump_json()
 
 
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {"expected_byte_count": 0},
+        {"expected_sha256": "0" * 64},
+    ],
+    ids=("byte-count", "sha256"),
+)
+def test_xlsx_preview_rejects_mismatched_source_identity(identity):
+    raw = _workbook_bytes()
+
+    preview = _build_preview(
+        raw=raw,
+        file_id="file-mismatch",
+        file_name="checks.xlsx",
+        content_type=XLSX_CONTENT_TYPE,
+        **identity,
+    )
+
+    assert preview.status == "failed"
+    assert preview.error is not None
+    assert preview.error.code == "xlsx_preview_failed"
+
+
 def test_xlsx_preview_redacts_local_and_external_formula_source():
     raw = _workbook_bytes(
         formulas=["=SUM(40,2)", "='[private-book.xlsx]Sheet1'!A1"],
@@ -141,7 +161,7 @@ def test_generated_compatibility_xlsx_is_ready_through_the_isolated_deadline(cap
     assert preview.error is None
     assert preview.content is not None
     assert len(preview.content.sheets[0].rows) == 100
-    assert len(preview.model_dump_json()) > MAX_XLSX_PROMPT_CHARS
+    assert len(preview.model_dump_json()) > 16_000
     records = [
         record
         for record in caplog.records

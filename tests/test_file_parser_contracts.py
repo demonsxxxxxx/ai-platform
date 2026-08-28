@@ -8,34 +8,32 @@ from xml.etree import ElementTree
 import pytest
 from openpyxl import Workbook, load_workbook
 
-from app import file_parser_contracts
-from app.context_manifest import utf8_token_estimate
-from app.executors.claude_agent_sdk_runner import _attachment_context_data_message
 from app.file_parser_contracts import (
     MAX_XLSX_CELL_CHARS,
     MAX_XLSX_CELLS,
     MAX_XLSX_COLUMNS_PER_SHEET,
     MAX_XLSX_FILE_BYTES,
-    MAX_XLSX_PROMPT_CHARS,
-    MAX_XLSX_PROMPT_TOKENS,
     MAX_XLSX_ROWS_PER_SHEET,
     MAX_XLSX_SHEETS,
+    XLSX_CONTENT_TYPE,
+    XLSX_PARSER_ID,
+    XLSX_PARSER_VERSION,
+    AttachmentParserRequirement,
     AttachmentPreprocessingError,
-    MaterializedAttachmentFact,
-    attachment_requirements_from_contract,
-    build_attachment_preprocessing_contract,
-    is_known_binary_workbook,
-    parse_xlsx_attachment,
-    validate_required_parser_evidence,
+    parse_xlsx_preview_attachment,
 )
 
 
 def _requirement(file_name: str = "book.xlsx"):
-    contract = build_attachment_preprocessing_contract(
-        file_ids=["file-a"],
-        file_names=[file_name],
+    return AttachmentParserRequirement(
+        file_id="file-a",
+        file_name=file_name,
+        extension=Path(file_name).suffix.casefold(),
+        content_type=XLSX_CONTENT_TYPE,
+        parser_id=XLSX_PARSER_ID,
+        parser_version=XLSX_PARSER_VERSION,
+        max_bytes=MAX_XLSX_FILE_BYTES,
     )
-    return attachment_requirements_from_contract(contract)[0]
 
 
 def _write_workbook(path: Path, *, long: bool = False) -> None:
@@ -683,7 +681,7 @@ def test_xlsx_parser_emits_bounded_typed_content_and_positive_evidence(tmp_path)
     path = tmp_path / "book.xlsx"
     _write_workbook(path)
 
-    parsed = parse_xlsx_attachment(path=path, requirement=_requirement())
+    parsed = parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
     evidence = parsed.evidence
     assert evidence.status == "parsed"
@@ -697,16 +695,12 @@ def test_xlsx_parser_emits_bounded_typed_content_and_positive_evidence(tmp_path)
     formula = parsed.content["workbook"]["sheets"][0]["rows"][1]["cells"][1]
     assert formula == {"column": 2, "kind": "formula", "value": "=1+2"}
 
-    data_message = _attachment_context_data_message([parsed])
-    assert '"message_kind":"platform_typed_attachment_data"' in data_message
-    assert '"kind":"formula"' in data_message
-
 
 def test_xlsx_parser_reports_deterministic_truncation(tmp_path):
     path = tmp_path / "book.xlsx"
     _write_workbook(path, long=True)
 
-    parsed = parse_xlsx_attachment(path=path, requirement=_requirement())
+    parsed = parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
     assert parsed.evidence.truncated is True
     assert parsed.content["workbook"]["truncated"] is True
@@ -718,7 +712,7 @@ def test_xlsx_parser_reads_dimensionless_workbook_with_positive_evidence(tmp_pat
     path = tmp_path / "book.xlsx"
     _write_dimensionless_validation_workbook(path)
 
-    parsed = parse_xlsx_attachment(path=path, requirement=_requirement())
+    parsed = parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
     sheet = parsed.content["workbook"]["sheets"][0]
     rendered = json.dumps(parsed.content, ensure_ascii=False, sort_keys=True)
@@ -733,62 +727,18 @@ def test_xlsx_parser_reads_dimensionless_workbook_with_positive_evidence(tmp_pat
     assert parsed.evidence.truncated is True
 
 
-def test_xlsx_parser_bounds_dimensionless_row_column_cell_and_prompt_content(tmp_path):
+def test_xlsx_parser_bounds_dimensionless_rows_columns_and_cells(tmp_path):
     path = tmp_path / "book.xlsx"
     _write_dimensionless_validation_workbook(path, overflow=True)
 
-    parsed = parse_xlsx_attachment(path=path, requirement=_requirement())
+    parsed = parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
     rendered = json.dumps(parsed.content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     assert "ROW-101-MUST-BE-EXCLUDED" not in rendered
     assert "COL-33-MUST-BE-EXCLUDED" not in rendered
     assert parsed.evidence.cells_examined <= MAX_XLSX_CELLS
-    assert len(rendered) <= MAX_XLSX_PROMPT_CHARS
-    assert utf8_token_estimate(rendered) <= MAX_XLSX_PROMPT_TOKENS
     assert parsed.evidence.truncated is True
     assert parsed.content["workbook"]["truncated"] is True
-
-
-def test_xlsx_parser_reserves_final_workbook_fields_before_accepting_prompt_content(
-    tmp_path,
-    monkeypatch,
-):
-    path = tmp_path / "book.xlsx"
-    _write_workbook(path)
-    initial = parse_xlsx_attachment(path=path, requirement=_requirement())
-    without_final_fields = json.loads(json.dumps(initial.content))
-    without_final_fields["workbook"].pop("sheet_count")
-    without_final_fields["workbook"].pop("truncated")
-    boundary = len(
-        json.dumps(
-            without_final_fields,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    )
-    assert boundary < len(
-        json.dumps(
-            initial.content,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    )
-    monkeypatch.setattr(file_parser_contracts, "MAX_XLSX_PROMPT_CHARS", boundary)
-
-    parsed = parse_xlsx_attachment(path=path, requirement=_requirement())
-
-    rendered = json.dumps(
-        parsed.content,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    assert len(rendered) <= boundary
-    assert parsed.content["workbook"]["sheet_count"] == 1
-    assert parsed.content["workbook"]["truncated"] is True
-    assert parsed.evidence.truncated is True
 
 
 def test_xlsx_parser_rejects_stored_cell_overflow_before_openpyxl_load(tmp_path, monkeypatch):
@@ -804,7 +754,7 @@ def test_xlsx_parser_rejects_stored_cell_overflow_before_openpyxl_load(tmp_path,
     monkeypatch.setattr("openpyxl.load_workbook", fail_load_workbook)
 
     with pytest.raises(AttachmentPreprocessingError, match="xlsx_cell_limit_exceeded"):
-        parse_xlsx_attachment(path=path, requirement=_requirement())
+        parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
 
 def test_xlsx_parser_marks_forged_low_dimension_unreliable(tmp_path):
@@ -817,7 +767,7 @@ def test_xlsx_parser_marks_forged_low_dimension_unreliable(tmp_path):
     workbook.close()
     _set_worksheet_dimension(path, "A1")
 
-    parsed = parse_xlsx_attachment(path=path, requirement=_requirement())
+    parsed = parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
     sheet_content = parsed.content["workbook"]["sheets"][0]
     rendered = json.dumps(sheet_content, ensure_ascii=False, sort_keys=True)
@@ -853,7 +803,7 @@ def test_xlsx_parser_validates_dimension_range_direction(
     workbook.close()
     _set_worksheet_dimension(path, reference)
 
-    parsed = parse_xlsx_attachment(path=path, requirement=_requirement())
+    parsed = parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
     sheet_content = parsed.content["workbook"]["sheets"][0]
     assert sheet_content["max_row"] == expected_row
@@ -892,7 +842,7 @@ def test_xlsx_parser_ignores_foreign_id_and_rejects_real_sheet_overflow_before_o
     monkeypatch.setattr("openpyxl.load_workbook", fail_load_workbook)
 
     with pytest.raises(AttachmentPreprocessingError, match="xlsx_cell_limit_exceeded"):
-        parse_xlsx_attachment(path=path, requirement=_requirement())
+        parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
 
 def test_xlsx_parser_rejects_openpyxl_worksheet_part_mismatch(tmp_path, monkeypatch):
@@ -916,7 +866,7 @@ def test_xlsx_parser_rejects_openpyxl_worksheet_part_mismatch(tmp_path, monkeypa
     monkeypatch.setattr("openpyxl.load_workbook", lambda *_args, **_kwargs: fake_workbook)
 
     with pytest.raises(AttachmentPreprocessingError, match="xlsx_parse_failed"):
-        parse_xlsx_attachment(path=path, requirement=_requirement())
+        parse_xlsx_preview_attachment(path=path, requirement=_requirement())
     assert fake_workbook.closed is True
 
 
@@ -953,7 +903,7 @@ def test_xlsx_parser_rejects_foreign_row_children_before_openpyxl_load(tmp_path,
         AttachmentPreprocessingError,
         match="xlsx_worksheet_structure_unsupported",
     ):
-        parse_xlsx_attachment(path=path, requirement=_requirement())
+        parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
 
 def test_xlsx_parser_rejects_foreign_relationship_lookalike_before_openpyxl_load(
@@ -1002,7 +952,7 @@ def test_xlsx_parser_rejects_foreign_relationship_lookalike_before_openpyxl_load
         AttachmentPreprocessingError,
         match="xlsx_relationship_structure_unsupported",
     ):
-        parse_xlsx_attachment(path=path, requirement=_requirement())
+        parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
 
 def test_xlsx_parser_rejects_foreign_sheet_lookalike_before_openpyxl_load(tmp_path, monkeypatch):
@@ -1040,7 +990,7 @@ def test_xlsx_parser_rejects_foreign_sheet_lookalike_before_openpyxl_load(tmp_pa
         AttachmentPreprocessingError,
         match="xlsx_workbook_structure_unsupported",
     ):
-        parse_xlsx_attachment(path=path, requirement=_requirement())
+        parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
 
 def test_xlsx_parser_checks_selected_arbitrary_extension_payload_before_openpyxl(
@@ -1065,7 +1015,7 @@ def test_xlsx_parser_checks_selected_arbitrary_extension_payload_before_openpyxl
     monkeypatch.setattr("openpyxl.load_workbook", fail_load_workbook)
 
     with pytest.raises(AttachmentPreprocessingError, match="xlsx_xml_entities_unsupported"):
-        parse_xlsx_attachment(path=path, requirement=_requirement())
+        parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
 
 def test_xlsx_parser_rejects_arbitrary_relationship_child_before_openpyxl(
@@ -1097,7 +1047,7 @@ def test_xlsx_parser_rejects_arbitrary_relationship_child_before_openpyxl(
         AttachmentPreprocessingError,
         match="xlsx_relationship_structure_unsupported",
     ):
-        parse_xlsx_attachment(path=path, requirement=_requirement())
+        parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
 
 def test_xlsx_parser_rejects_arbitrary_seventeenth_sheet_child_before_openpyxl(
@@ -1129,7 +1079,7 @@ def test_xlsx_parser_rejects_arbitrary_seventeenth_sheet_child_before_openpyxl(
         AttachmentPreprocessingError,
         match="xlsx_workbook_structure_unsupported",
     ):
-        parse_xlsx_attachment(path=path, requirement=_requirement())
+        parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
 
 @pytest.mark.parametrize(
@@ -1156,7 +1106,7 @@ def test_xlsx_parser_rejects_malformed_exact_collections_before_openpyxl(
     monkeypatch.setattr("openpyxl.load_workbook", fail_load_workbook)
 
     with pytest.raises(AttachmentPreprocessingError, match=expected_code):
-        parse_xlsx_attachment(path=path, requirement=_requirement())
+        parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
 
 def test_xlsx_parser_preserves_total_sheet_count_beyond_selected_limit(tmp_path):
@@ -1168,7 +1118,7 @@ def test_xlsx_parser_preserves_total_sheet_count_beyond_selected_limit(tmp_path)
     workbook.save(path)
     workbook.close()
 
-    parsed = parse_xlsx_attachment(path=path, requirement=_requirement())
+    parsed = parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
     assert parsed.evidence.sheet_count == MAX_XLSX_SHEETS + 1
     assert parsed.evidence.sheets_processed == MAX_XLSX_SHEETS
@@ -1207,7 +1157,7 @@ def test_xlsx_parser_rejects_alternate_manifest_workbook_before_openpyxl(
     monkeypatch.setattr("openpyxl.load_workbook", fail_load_workbook)
 
     with pytest.raises(AttachmentPreprocessingError, match="xlsx_workbook_part_unsupported"):
-        parse_xlsx_attachment(path=path, requirement=_requirement())
+        parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
 
 def test_xlsx_parser_accepts_canonical_xml_default_workbook(tmp_path):
@@ -1215,7 +1165,7 @@ def test_xlsx_parser_accepts_canonical_xml_default_workbook(tmp_path):
     _write_workbook(path)
     _use_canonical_xml_default_for_workbook(path)
 
-    parsed = parse_xlsx_attachment(path=path, requirement=_requirement())
+    parsed = parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
     assert parsed.evidence.status == "parsed"
     assert parsed.evidence.sheet_count == 1
@@ -1227,7 +1177,7 @@ def test_xlsx_parser_accepts_dimensionless_fixture_with_canonical_xml_default(tm
     _write_dimensionless_validation_workbook(path)
     _use_canonical_xml_default_for_workbook(path)
 
-    parsed = parse_xlsx_attachment(path=path, requirement=_requirement())
+    parsed = parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
     rendered = json.dumps(parsed.content, ensure_ascii=False, sort_keys=True)
     assert "GMP-VAL-002 Requirement" in rendered
@@ -1255,7 +1205,7 @@ def test_xlsx_parser_rejects_relative_workbook_override_before_openpyxl(
         AttachmentPreprocessingError,
         match="xlsx_content_types_structure_unsupported",
     ):
-        parse_xlsx_attachment(path=path, requirement=_requirement())
+        parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
 
 @pytest.mark.parametrize(
@@ -1284,7 +1234,7 @@ def test_xlsx_parser_rejects_invalid_sheet_id_before_openpyxl(
         AttachmentPreprocessingError,
         match="xlsx_workbook_structure_unsupported",
     ):
-        parse_xlsx_attachment(path=path, requirement=_requirement())
+        parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
 
 def test_xlsx_parser_rejects_arbitrary_content_types_child_before_openpyxl(
@@ -1315,7 +1265,7 @@ def test_xlsx_parser_rejects_arbitrary_content_types_child_before_openpyxl(
         AttachmentPreprocessingError,
         match="xlsx_content_types_structure_unsupported",
     ):
-        parse_xlsx_attachment(path=path, requirement=_requirement())
+        parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
 
 def test_xlsx_parser_checks_later_nonstandard_worksheet_before_openpyxl(
@@ -1344,7 +1294,7 @@ def test_xlsx_parser_checks_later_nonstandard_worksheet_before_openpyxl(
     monkeypatch.setattr("openpyxl.load_workbook", fail_load_workbook)
 
     with pytest.raises(AttachmentPreprocessingError, match="xlsx_xml_entities_unsupported"):
-        parse_xlsx_attachment(path=path, requirement=_requirement())
+        parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
 
 def test_xlsx_parser_rejects_unreferenced_duplicate_worksheet_target_before_openpyxl(
@@ -1374,7 +1324,7 @@ def test_xlsx_parser_rejects_unreferenced_duplicate_worksheet_target_before_open
         AttachmentPreprocessingError,
         match="xlsx_relationship_structure_unsupported",
     ):
-        parse_xlsx_attachment(path=path, requirement=_requirement())
+        parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
 
 @pytest.mark.parametrize("utf16", [False, True], ids=["utf8", "utf16"])
@@ -1384,7 +1334,7 @@ def test_xlsx_parser_rejects_dtd_and_entity_declarations(tmp_path, utf16):
     _inject_worksheet_entity_declaration(path, utf16=utf16)
 
     with pytest.raises(AttachmentPreprocessingError, match="xlsx_xml_entities_unsupported"):
-        parse_xlsx_attachment(path=path, requirement=_requirement())
+        parse_xlsx_preview_attachment(path=path, requirement=_requirement())
 
 
 @pytest.mark.parametrize(
@@ -1400,106 +1350,4 @@ def test_xlsx_parser_fails_truthfully_for_malformed_or_oversized_input(tmp_path,
     path.write_bytes(payload)
 
     with pytest.raises(AttachmentPreprocessingError, match=expected_code):
-        parse_xlsx_attachment(path=path, requirement=_requirement())
-
-
-def test_platform_registry_marks_legacy_workbook_unsupported():
-    contract = build_attachment_preprocessing_contract(
-        file_ids=["file-a"],
-        file_names=["legacy.xls"],
-    )
-    requirement = attachment_requirements_from_contract(contract)[0]
-
-    assert requirement.supported is False
-    assert requirement.parser_id == "unsupported"
-    assert is_known_binary_workbook(file_name="legacy.xls") is True
-
-
-def test_platform_registry_uses_server_content_type_when_extension_is_generic(tmp_path):
-    path = tmp_path / "attachment.bin"
-    _write_workbook(path)
-    contract = build_attachment_preprocessing_contract(
-        file_ids=["file-a"],
-        file_names=["attachment.bin"],
-        content_types=["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
-    )
-    requirement = attachment_requirements_from_contract(contract)[0]
-
-    parsed = parse_xlsx_attachment(path=path, requirement=requirement)
-
-    assert requirement.extension == ".bin"
-    assert requirement.content_type.endswith("spreadsheetml.sheet")
-    assert parsed.evidence.status == "parsed"
-
-
-def test_parser_rejects_brokered_bytes_that_do_not_match_worker_materialization(tmp_path):
-    path = tmp_path / "book.xlsx"
-    materialized = b"AAAA"
-    path.write_bytes(materialized)
-    contract = build_attachment_preprocessing_contract(
-        attachment_facts=[
-            MaterializedAttachmentFact(
-                file_id="file-a",
-                file_name="book.xlsx",
-                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                byte_count=len(materialized),
-                sha256=hashlib.sha256(materialized).hexdigest(),
-            )
-        ],
-    )
-    requirement = attachment_requirements_from_contract(contract)[0]
-    assert requirement.expected_byte_count == len(materialized)
-    assert requirement.expected_sha256 == hashlib.sha256(materialized).hexdigest()
-
-    path.write_bytes(b"BBBB")
-    with pytest.raises(AttachmentPreprocessingError, match="attachment_parser_staged_file_mismatch"):
-        parse_xlsx_attachment(path=path, requirement=requirement)
-
-
-def test_duplicate_xlsx_basenames_keep_distinct_file_facts_and_requirements():
-    first = b"AAAA"
-    second = b"BBBB"
-    contract = build_attachment_preprocessing_contract(
-        attachment_facts=[
-            MaterializedAttachmentFact(
-                file_id="file-a",
-                file_name="book.xlsx",
-                content_type="application/octet-stream",
-                byte_count=len(first),
-                sha256=hashlib.sha256(first).hexdigest(),
-            ),
-            MaterializedAttachmentFact(
-                file_id="file-b",
-                file_name="book.xlsx",
-                content_type="application/octet-stream",
-                byte_count=len(second),
-                sha256=hashlib.sha256(second).hexdigest(),
-            ),
-        ]
-    )
-
-    requirements = attachment_requirements_from_contract(contract)
-
-    assert [requirement.file_id for requirement in requirements] == ["file-a", "file-b"]
-    assert [requirement.file_name for requirement in requirements] == ["book.xlsx", "book.xlsx"]
-    assert requirements[0].expected_byte_count == requirements[1].expected_byte_count
-    assert requirements[0].expected_sha256 != requirements[1].expected_sha256
-
-
-def test_worker_evidence_validation_rejects_mismatch_and_accepts_exact_record(tmp_path):
-    path = tmp_path / "book.xlsx"
-    _write_workbook(path)
-    requirement = _requirement()
-    parsed = parse_xlsx_attachment(path=path, requirement=requirement)
-    evidence = parsed.evidence.model_dump(mode="json")
-
-    assert validate_required_parser_evidence(
-        requirements=[requirement],
-        evidence=[evidence],
-    ) == (True, "")
-
-    evidence["parser_version"] = "999"
-    assert validate_required_parser_evidence(
-        requirements=[requirement],
-        evidence=[evidence],
-    ) == (False, "attachment_parser_evidence_mismatch")
+        parse_xlsx_preview_attachment(path=path, requirement=_requirement())

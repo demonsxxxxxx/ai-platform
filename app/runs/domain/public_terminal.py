@@ -68,6 +68,7 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "context_file_json_invalid": "context_file_invalid",
     "context_file_staging_write_failed": "context_file_staging_unavailable",
     "context_file_text_encoding_unsupported": "context_file_encoding_unsupported",
+    "context_file_xlsx_archive_invalid": "context_file_invalid",
     "xlsx_archive_too_large": "context_file_processing_limit_exceeded",
     "xlsx_cell_limit_exceeded": "context_file_processing_limit_exceeded",
     "xlsx_content_types_structure_unsupported": "context_file_invalid",
