@@ -1315,12 +1315,12 @@ s72_atomic_apply_current_link() {
 }
 
 s72_atomic_restore_snapshot() {
-  snapshot=$1
+  s72_restore_snapshot_target=$1
   transaction_id=$2
   records=$3
   s72_atomic_is_transaction_id "$transaction_id" || return 1
-  s72_atomic_preflight_snapshot "$snapshot" || return 1
-  s72_atomic_verify_snapshot_seal "$snapshot" || return 1
+  s72_atomic_preflight_snapshot "$s72_restore_snapshot_target" || return 1
+  s72_atomic_verify_snapshot_seal "$s72_restore_snapshot_target" || return 1
   s72_atomic_load_transaction "$records" "$transaction_id" || return 1
   if test "$S72_TX_PHASE" = recovering; then
     S72_RESTORE_SCOPE=recovery
@@ -1338,7 +1338,7 @@ s72_atomic_restore_snapshot() {
   else
     preflight_recoverable_live "$S72_TX_RECOVERY_SNAPSHOT" "$S72_TX_APPLY_SNAPSHOT" || return 1
   fi
-  s72_atomic_verify_snapshot_seal "$snapshot" || return 1
+  s72_atomic_verify_snapshot_seal "$s72_restore_snapshot_target" || return 1
   s72_atomic_advance_transaction "$records" "$transaction_id" stop-intent || return 1
   for unit in opensandbox-gateway-helper.service opensandbox-gateway.service; do
     active_state=$(systemctl show "$unit" -p ActiveState --value) || return 1
@@ -1351,12 +1351,12 @@ s72_atomic_restore_snapshot() {
     test "$active_state" = inactive || return 1
   done
   s72_atomic_advance_transaction "$records" "$transaction_id" stopped || return 1
-  restore_snapshot_payload "$snapshot" "$transaction_id" || return 1
+  restore_snapshot_payload "$s72_restore_snapshot_target" "$transaction_id" || return 1
   s72_atomic_advance_transaction "$records" "$transaction_id" current-applied || return 1
   preflight_live_state || return 1
   s72_atomic_require_exact_lifecycle || return 1
   s72_atomic_advance_transaction "$records" "$transaction_id" revalidated || return 1
-  restore_snapshot_runtime "$snapshot" || return 1
+  restore_snapshot_runtime "$s72_restore_snapshot_target" || return 1
   preflight_live_state || return 1
   s72_atomic_require_exact_lifecycle || return 1
   s72_atomic_advance_transaction "$records" "$transaction_id" runtime-restored
