@@ -19,11 +19,16 @@ The source argument to `install-s72.sh` is a root-owned, clean source checkout:
 its real path is non-symlinked, every path is root-owned, `HEAD`,
 `refs/remotes/origin/main`, and
 `OPENSANDBOX_GATEWAY_EXPECTED_AUTHORITY_SHA` are the same 40-character commit.
-The installer archives only the gateway and deployment subjects into an immutable
-root-owned release below `/opt/opensandbox-gateway/releases/<commit>`, verifies
-its manifest, applies the sealed desired state through the recovery transaction,
-and commits only after the current pointer, service state, and listener are all
-revalidated.
+The operator also records the approved target host's lowercase SHA-256 digest of
+`/etc/machine-id` as `OPENSANDBOX_GATEWAY_EXPECTED_MACHINE_ID_SHA256`; install,
+rollback, recovery, and newly published gateway releases fail closed on a
+machine-identity mismatch. Only rollback may accept a release published before
+Stage A without a machine marker; exact publication always requires one. The
+installer archives only the gateway and deployment
+subjects into an immutable root-owned release below
+`/opt/opensandbox-gateway/releases/<commit>`, verifies its manifest, applies the
+sealed desired state through the recovery transaction, and commits only after the
+current pointer, service state, and listener are all revalidated.
 
 Use the live scripts, with values obtained through the authorized host procedure:
 
@@ -31,6 +36,7 @@ Use the live scripts, with values obtained through the authorized host procedure
 sudo env \
   OPENSANDBOX_GATEWAY_EXPECTED_AUTHORITY_SHA=<fresh-main-commit> \
   OPENSANDBOX_GATEWAY_AUTHORITY_EVIDENCE_ID=<non-secret-fresh-evidence-id> \
+  OPENSANDBOX_GATEWAY_EXPECTED_MACHINE_ID_SHA256=<approved-machine-id-sha256> \
   deploy/opensandbox/install-s72.sh /path/to/root-owned-clean-ai-platform-clone
 ```
 
@@ -38,7 +44,13 @@ Do not replace this with a manual unit, copy, symlink, Git checkout, or service
 mutation. A mismatch, dirty source, stale local authority ref, unsafe ownership,
 or unavailable lock fails closed.
 
-## Configuration And Pinned CA
+## Configuration And Upstream Trust
+
+The installer does not install or configure OpenSandbox Server. Before gateway
+installation, `opensandbox.service` must resolve to a root-owned regular `0644`
+unit, be active, and return HTTP 200 at `http://127.0.0.1:8080/health` without a
+proxy. A missing, unhealthy, replaced, or non-loopback prerequisite fails before
+persistent gateway mutation.
 
 Before installation, `/etc/opensandbox-gateway` and its `secrets/` and `tls/`
 directories must be root-owned, non-symlinked `0750` directories. The installer
@@ -47,15 +59,23 @@ group without widening modes:
 
 | Subject | Required mode |
 | --- | --- |
-| `gateway.env`, `egress-policy.v1.json`, `tls/fullchain.pem`, `tls/upstream-ca.pem` | `0640` |
+| `gateway.env`, `tls/fullchain.pem` | `0640` |
 | `tls/privkey.pem`, `secrets/lifecycle-api-key`, `secrets/capability-token`, `secrets/record-signing-key` | `0440` |
 
-The gateway bridge policy pins its callback, OpenAI, and Anthropic destinations
-to the approved broker address and fixed hostname. `tls/upstream-ca.pem` is the
-dedicated non-secret bridge CA certificate used only by the gateway trust
-context. Keep the CA private key offline; do not install this CA in a system
-trust store, substitute a leaf or system bundle, or put certificate/key bytes in
-Git, environment variables, logs, or terminal evidence.
+The checked-in same-host configuration pins callback, OpenAI, and Anthropic
+upstreams to exact `http://127.0.0.1:18043` routes. In that loopback mode,
+`gateway.env` must omit both `OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE` and
+`OPENSANDBOX_GATEWAY_EGRESS_POLICY_FILE`; `tls/upstream-ca.pem` and
+`egress-policy.v1.json` are not required. The loopback transport remains closed
+to every other hostname, address, port, and scheme.
+
+A separately approved HTTPS upstream mode must configure both file variables,
+requires `tls/upstream-ca.pem` and `egress-policy.v1.json` as root-owned regular
+`0640` files, and requires all three upstream bases to use HTTPS. The dedicated
+CA is used only by the gateway trust context. Keep its private key offline; do
+not install this CA in a system trust store, substitute a leaf or system bundle,
+or put certificate/key bytes in Git, environment variables, logs, or terminal
+evidence.
 
 Secrets are files, never `gateway.env` values or command output. Report only
 redacted metadata and non-secret authority evidence; do not print, copy, export,
@@ -74,13 +94,12 @@ activate a managed connection. Missing or invalid configuration fails closed. A
 capability-only deployment does not prove model egress or the remote smoke gates
 below.
 
-`OPENSANDBOX_GATEWAY_EXPECTED_NETWORK_MODE` defaults to `none`. The only other
-accepted value is `bridge`, and it additionally requires a profile ID containing
-`internal-test`. The gateway signs this value into the capability profile; the
-ai-platform provider must independently configure the same exact value or fail
-closed before sandbox creation. `bridge` is a temporary functional-test posture,
-never production isolation evidence. Production acceptance continues to require
-`none` and the remote smoke below.
+`OPENSANDBOX_GATEWAY_EXPECTED_NETWORK_MODE` defaults to `none`. Gateway code
+accepts `bridge` only with an `internal-test` profile, but the governed
+same-host production Compose and release contract require exact `none` and
+cannot be overridden by the managed environment. The gateway signs this value
+into the capability profile; the ai-platform provider independently verifies the
+same exact value before sandbox creation.
 
 ## Mandatory Remote Smoke Before Provider Switch
 
@@ -142,7 +161,9 @@ On process death or a partial install/rollback failure, run only the supported
 recovery entry after reacquiring the same mutation lease:
 
 ```sh
-sudo deploy/opensandbox/install-s72.sh --recover
+sudo env \
+  OPENSANDBOX_GATEWAY_EXPECTED_MACHINE_ID_SHA256=<approved-machine-id-sha256> \
+  deploy/opensandbox/install-s72.sh --recover
 ```
 
 Recovery verifies the sealed snapshot and transaction chain, accepts live files
@@ -160,6 +181,7 @@ new non-secret evidence ID:
 sudo env \
   OPENSANDBOX_GATEWAY_EXPECTED_AUTHORITY_SHA=<fresh-main-commit> \
   OPENSANDBOX_GATEWAY_AUTHORITY_EVIDENCE_ID=<non-secret-fresh-evidence-id> \
+  OPENSANDBOX_GATEWAY_EXPECTED_MACHINE_ID_SHA256=<approved-machine-id-sha256> \
   deploy/opensandbox/rollback-s72.sh
 ```
 

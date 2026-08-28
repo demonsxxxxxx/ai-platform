@@ -1921,6 +1921,13 @@ def _validate_s72_colocation_config(rendered: str | bytes) -> None:
             for key in ("EXISTING_AUTH_BASE_URL", "EXISTING_USER_INFO_BASE_URL")
         )
         invalid_ports = any(services[role].get("ports") not in (None, []) for role in ("postgres", "redis", "minio", "api"))
+        invalid_sandbox = any(
+            services[role]["environment"].get("SANDBOX_CONTAINER_PROVIDER") != "opensandbox"
+            or services[role]["environment"].get("SANDBOX_SECURITY_PROFILE") != "governed"
+            or services[role]["environment"].get("OPENSANDBOX_USE_SERVER_PROXY") != "true"
+            or services[role]["environment"].get("OPENSANDBOX_EXPECTED_NETWORK_MODE") != "none"
+            for role in ("api", "worker")
+        )
         invalid_authority = any(
             any(not isinstance(value, str) or not value.strip() for value in values)
             or values[0] != values[1]
@@ -1936,7 +1943,7 @@ def _validate_s72_colocation_config(rendered: str | bytes) -> None:
         )
     except (AttributeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         raise _compose_config_preflight_error("invalid-colocation-config") from None
-    if invalid_ports or invalid_authority:
+    if invalid_ports or invalid_sandbox or invalid_authority:
         raise _compose_config_preflight_error("invalid-colocation-config")
 
 
