@@ -432,12 +432,13 @@ def test_http_protocol_error_is_normalized_for_rollback(
         release._wait_health(quickstart.Subject(COMMIT, BACKEND, FRONTEND))
 
 
-def test_health_probes_installed_opensandbox_bridge(
+def test_health_probes_configured_opensandbox_from_api_and_worker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     release = quickstart.Quickstart(tmp_path)
+    release.docker = ["docker"]
     subject = quickstart.Subject(COMMIT, BACKEND, FRONTEND)
-    requested_urls: list[str] = []
+    probe_commands: list[list[str]] = []
 
     monkeypatch.setattr(
         release,
@@ -462,54 +463,38 @@ def test_health_probes_installed_opensandbox_bridge(
             "config",
         ],
     )
-    monkeypatch.setattr(release.runner, "run", lambda *_args, **_kwargs: "active")
 
-    class Response:
-        status = 200
+    def run(command, **_kwargs):
+        if command[:2] == ["systemctl", "is-active"]:
+            return "active"
+        probe_commands.append(list(command))
+        return ""
 
-        def __enter__(self) -> "Response":
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-        def read(self, _limit: int) -> bytes:
-            return b"{}"
-
-    def open_health(url: str, *, timeout: int) -> Response:
-        assert timeout == 10
-        requested_urls.append(url)
-        return Response()
-
-    monkeypatch.setattr(quickstart, "_direct_urlopen", open_health)
+    monkeypatch.setattr(release.runner, "run", run)
 
     release._health(subject)
 
-    assert requested_urls == ["http://172.18.0.1:8080/health"]
+    assert [command[2] for command in probe_commands] == [
+        "ai-platform-api",
+        "ai-platform-worker",
+    ]
+    assert all("OPENSANDBOX_BASE_URL" in command[-1] for command in probe_commands)
+    assert all("ProxyHandler({})" in command[-1] for command in probe_commands)
 
 
-def test_direct_health_probe_ignores_process_proxy(
-    monkeypatch: pytest.MonkeyPatch,
+def test_configured_lifecycle_probe_failure_is_normalized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    observed_handlers: list[quickstart.ProxyHandler] = []
+    release = quickstart.Quickstart(tmp_path)
+    release.docker = ["docker"]
 
-    class Opener:
-        def open(self, url: str, *, timeout: int) -> object:
-            assert url == quickstart.OPENSANDBOX_HEALTH_URL
-            assert timeout == 10
-            return object()
+    def fail(*_args, **_kwargs):
+        raise quickstart.QuickstartError("command failed")
 
-    def build_direct_opener(handler: quickstart.ProxyHandler) -> Opener:
-        observed_handlers.append(handler)
-        return Opener()
+    monkeypatch.setattr(release.runner, "run", fail)
 
-    monkeypatch.setenv("HTTP_PROXY", "http://10.56.0.224:7897")
-    monkeypatch.setattr(quickstart, "build_opener", build_direct_opener)
-
-    quickstart._direct_urlopen(quickstart.OPENSANDBOX_HEALTH_URL, timeout=10)
-
-    assert len(observed_handlers) == 1
-    assert observed_handlers[0].proxies == {}
+    with pytest.raises(quickstart.QuickstartError, match="command failed"):
+        release._probe_opensandbox_lifecycle()
 
 
 def test_up_failure_runs_one_small_rollback_without_destructive_compose_commands(

@@ -586,6 +586,20 @@ def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, 
     assert events == ["down-partial-legacy", "restore-target-fenced", "target-parity-fenced"]
 
 
+def test_host_prerequisite_defers_health_to_target_container_parity(monkeypatch):
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return _completed(command)
+
+    monkeypatch.setattr(transition, "_run", run)
+
+    transition._require_host_prerequisites()
+
+    assert commands == [["systemctl", "is-active", "--quiet", "opensandbox.service"]]
+
+
 def test_target_lifecycle_is_reachable_from_api_and_worker(monkeypatch):
     environment = ["OPENSANDBOX_BASE_URL=http://172.19.0.1:8080"]
     containers = {

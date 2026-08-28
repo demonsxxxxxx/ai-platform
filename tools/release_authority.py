@@ -1938,10 +1938,20 @@ def _validate_direct_opensandbox_config(rendered: str | bytes) -> None:
         for environment in (api_environment, worker_environment):
             lifecycle_host = urlsplit(str(environment.get("OPENSANDBOX_BASE_URL") or "")).hostname
             proxy_host = urlsplit(str(environment.get("OPENSANDBOX_EGRESS_PROXY_URL") or "")).hostname
+            lifecycle_address = ipaddress.ip_address(lifecycle_host or "")
+            proxy_address = ipaddress.ip_address(proxy_host or "")
+            lifecycle_is_private = (
+                isinstance(lifecycle_address, ipaddress.IPv4Address)
+                and lifecycle_address.is_private
+                and not lifecycle_address.is_loopback
+                and not lifecycle_address.is_link_local
+                and not lifecycle_address.is_multicast
+                and not lifecycle_address.is_reserved
+                and not lifecycle_address.is_unspecified
+            )
             if (
-                not lifecycle_host
-                or not proxy_host
-                or ipaddress.ip_address(lifecycle_host) == ipaddress.ip_address(proxy_host)
+                not lifecycle_is_private
+                or lifecycle_address == proxy_address
                 or proxy_host != published_host
             ):
                 separated_endpoints = False

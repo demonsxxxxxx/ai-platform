@@ -698,6 +698,10 @@ def test_opensandbox_server_publishes_only_the_configured_lifecycle_address():
     )
 
     assert "--publish ${OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS}:8080:8080" in service
+    assert "ipaddress.ip_address(os.environ['OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS'])" in service
+    assert "address.is_private" in service
+    assert "address.is_loopback" in service
+    assert "address.is_unspecified" in service
     assert "OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS=REQUIRED_PRIVATE_NON_EGRESS_IPV4_ADDRESS" in environment
     assert 'host = "0.0.0.0"' in config
     assert "--publish 127.0.0.1:8080:8080" not in service
@@ -774,6 +778,9 @@ def test_missing_compose_keys_fail_before_all_non_preflight_docker_and_redact_ra
         ("api", "OPENSANDBOX_USE_SERVER_PROXY", "false"),
         ("worker", "OPENSANDBOX_EXPECTED_NETWORK_MODE", "none"),
         ("api", "OPENSANDBOX_BASE_URL", "http://opensandbox.internal:8080"),
+        ("api", "OPENSANDBOX_BASE_URL", "http://0.0.0.0:8080"),
+        ("api", "OPENSANDBOX_BASE_URL", "http://127.0.0.1:8080"),
+        ("api", "OPENSANDBOX_BASE_URL", "http://8.8.8.8:8080"),
         ("api", "OPENSANDBOX_BASE_URL", "http://172.18.0.1:8080"),
         ("opensandbox-egress-proxy", "host_ip", "0.0.0.0"),
         ("redis", "ports", [{"host_ip": "0.0.0.0", "published": "63799", "target": 6379}]),
@@ -782,6 +789,9 @@ def test_missing_compose_keys_fail_before_all_non_preflight_docker_and_redact_ra
         "server-proxy-disabled",
         "unexpected-network-mode",
         "non-literal-lifecycle-address",
+        "wildcard-lifecycle-address",
+        "loopback-lifecycle-address",
+        "public-lifecycle-address",
         "lifecycle-shares-egress-address",
         "proxy-exposed-all-interfaces",
         "data-service-published",

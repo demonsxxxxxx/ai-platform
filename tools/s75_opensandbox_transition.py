@@ -7,7 +7,6 @@ import shlex
 import stat
 import subprocess
 import sys
-import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -325,13 +324,6 @@ def _require_host_prerequisites() -> None:
     for service in ("opensandbox.service",):
         if _run(["systemctl", "is-active", "--quiet", service], check=False, timeout=15).returncode != 0:
             raise TransitionError(f"host prerequisite inactive: {service}")
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    try:
-        with opener.open("http://127.0.0.1:8080/health", timeout=5) as response:
-            if response.status != 200:
-                raise TransitionError("OpenSandbox health check failed")
-    except (OSError, ValueError) as exc:
-        raise TransitionError("OpenSandbox health check failed") from exc
 
 
 def _quiescence_counts(docker: Sequence[str]) -> tuple[int, int, int]:
