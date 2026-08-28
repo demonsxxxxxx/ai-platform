@@ -58,8 +58,8 @@ server-side and appended to the executor system prompt.
    the existing revision-bound Agent Workspace URL.
 3. Cards summarize up to three recommended tasks as “Suitable for”, without
    exposing private instructions or server capability identifiers.
-4. The detail view tells a first-time user that model and Skill configuration
-   is already owned by the expert.
+4. The detail view tells a first-time user that model selection is platform-owned
+   and the expert already owns its governed Skill configuration.
 5. Empty and no-match states provide a direct recovery action. Network and
    authority errors remain fail-closed.
 6. Agent Workspace starters are presented as ready-to-run task examples and
@@ -73,7 +73,6 @@ The initial editing surface contains only these core fields:
 | --- | --- | --- |
 | `name` | Expert name | Public identity |
 | `instructions` | Agent.md initial instructions | Private system initialization |
-| `model_id` | Runtime model | Exact server-authorized model selection |
 | `skill_set` | Skill Set | One or more exact governed Skill/version bindings |
 
 All other fields remain supported but are progressive configuration:
@@ -149,7 +148,7 @@ the browser.
 - Opening a Workspace does not create a conversation; first explicit send uses
   `agentProfileApi.createConversation` with `selected_agent_profile` and one
   operation identity.
-- Builder can save a draft with the four core field groups and safe defaults for
+- Builder can save a draft with the three core fields and safe defaults for
   presentation fields without choosing a model. Missing any core field still
   blocks save.
 - Public Agent payloads contain no `instructions`, raw Skill identity, MCP IDs,
@@ -163,7 +162,7 @@ the browser.
 
 - Desktop and narrow viewport: Agent Market is the first authenticated surface,
   cards and recovery actions remain usable, and no generic Chat entry appears.
-- Builder initially shows the four core fields; every progressive section can
+- Builder initially shows the three core fields; every progressive section can
   be opened with keyboard and retains entered values.
 - Agent Workspace shows expert identity, task examples, task history, the shared
   enabled-model selector, and a task-oriented composer without exposing the

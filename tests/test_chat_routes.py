@@ -4479,7 +4479,6 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
                     "input_modes": [],
                 },
             ),
-            model={"id": "model-a", "value": "provider-model-a"},
             mcp_tool_ids=(),
             private_execution_input={
                 "agent_id": "agt_support",
@@ -5053,7 +5052,6 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
                 "skill_version": "version-profile",
                 "executor_type": "claude-agent-worker",
             },
-            model={"id": "model-a", "value": "provider-model-a"},
             mcp_tool_ids=(),
             private_execution_input={
                 "agent_id": "agt_support",

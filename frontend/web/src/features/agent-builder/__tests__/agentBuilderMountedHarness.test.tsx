@@ -362,7 +362,6 @@ function profile(
     allowed_roles: [],
     allowed_user_ids: [],
     instructions: "仅回答公司支持范围内的问题。",
-    model_id: "model-id",
     selected_skill: {
       skill_id: "support-skill",
       expected_version: "2026.07.28",

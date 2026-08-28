@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ApiRequestError } from "../../../services/api/fetch";
-import type { ModelOption } from "../../../services/api/modelPublic";
 import type {
   AgentProfileAdminProjection,
   AgentProfileDraftRequest,
@@ -18,12 +17,6 @@ import {
   projectAgentBuilderError,
   type AgentBuilderProfileApi,
 } from "../agentBuilderController";
-
-const model: ModelOption = {
-  id: "model-id",
-  value: "platform/model",
-  label: "Platform model",
-};
 
 function skill(): PublicSkillResponse {
   return {
@@ -67,7 +60,6 @@ function profile(
     allowed_roles: [],
     allowed_user_ids: [],
     instructions: "仅使用已授权资料。",
-    model_id: model.id,
     selected_skill: {
       skill_id: "document-review",
       expected_version: "2026.07.28",

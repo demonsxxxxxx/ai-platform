@@ -18,7 +18,8 @@ not describe storage, routes, frameworks, or current runtime state.
 **Agent Workspace**
 : The dedicated user experience for one Agent App. Entering it does not create
   a conversation. It shows only safe profile facts and never lets the client
-  replace the Agent App's fixed model, Skill, tools, or private instructions.
+  replace the Agent App's Skill, tools, or private instructions. The platform
+  resolves and binds the governed execution model to each admitted Agent Run.
 
 **Agent Conversation**
 : A user-owned conversation pinned to one Agent App identity, Agent Profile

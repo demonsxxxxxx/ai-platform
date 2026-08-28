@@ -50,6 +50,14 @@ def safe_agent_avatar_seed(value: object, *, fallback: str) -> str:
     return candidate
 
 
+def discard_legacy_agent_profile_model_id(value: object) -> object:
+    if not isinstance(value, dict) or "model_id" not in value:
+        return value
+    normalized = dict(value)
+    normalized.pop("model_id")
+    return normalized
+
+
 def normalize_agent_profile_display_items(
     values: Sequence[str],
     field_name: str,

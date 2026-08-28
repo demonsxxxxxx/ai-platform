@@ -171,7 +171,7 @@ The ordinary-user projection must not contain, including in nested maps/lists:
 `welcome_message`,
 `starter_prompts`, `capability_summary`, `recommended_tasks`,
 `supported_input_types`, `expected_outputs`,
-`permissions_and_data_access_notice`, `instructions`, `model_id`, `skill_set`,
+`permissions_and_data_access_notice`, `instructions`, `skill_set`,
 `selected_skill`, `mcp_tool_ids`, `avatar_ref`, `avatar_asset_id`, `avatar_seed`,
 `category`, `visibility`, `allowed_department_ids`, `allowed_roles`,
 `allowed_user_ids`, `content_hash`, `created_at`, and `published_at`. It remains
@@ -182,6 +182,18 @@ paths, executor-private payloads, or secrets.
 Both projection models are closed typed records (`extra="forbid"`). Adding,
 renaming, or exposing a field is a product/security behavior change, not a
 source replay.
+
+`agent_profile_revisions.model_id` remains a private, not-null compatibility
+column only. Active Profile requests, projections, admission, and execution never
+read or expose it as model authority. New authored and published revisions write
+the fixed `platform-selected` sentinel; immutable withdrawal revisions preserve
+their source value and hash. Historical hash codecs continue to read the exact
+stored value so existing revisions and old binaries retain their byte contract.
+The column and hash key may be versioned, renamed, or removed only after deployment
+inventory proves that no model-aware old binary or cached old admin client remains
+inside the supported rollback window. That successor must prove exact-predecessor
+upgrade, restart/idempotence, historical reconstruction, and old-binary rollback
+before deleting compatibility material.
 
 `supported_input_types` is the universal `["text", "file"]` capability. It is
 not an administrator-configurable per-Profile restriction. `supported_file_types`
@@ -332,7 +344,7 @@ behavior issue changes it.
 
 | Application category | Baseline machine codes and current collapse |
 | --- | --- |
-| `ProfileDefinitionInvalid` | `agent_id_invalid`, `agent_profile_avatar_asset_invalid`, `agent_profile_model_not_available`, `agent_profile_selector_conflict`, `agent_conversation_purpose_invalid`, `agent_conversation_operation_invalid`, and `agent_app_override_not_allowed` remain validation failures. |
+| `ProfileDefinitionInvalid` | `agent_id_invalid`, `agent_profile_avatar_asset_invalid`, `agent_profile_selector_conflict`, `agent_conversation_purpose_invalid`, `agent_conversation_operation_invalid`, and `agent_app_override_not_allowed` remain validation failures. |
 | `ProfileForbidden` | `not_ai_admin`, `agent_profile_capability_not_available`, and `agent_profile_not_authorized` remain forbidden failures. Public detail intentionally collapses unauthorized/capability-invalid profiles to `agent_profile_not_found`; public list silently omits them. |
 | `ProfileNotFound` | `agent_profile_not_found`, `agent_conversation_not_found`, `workspace_not_found`, and repository `run_not_found` keep their current scope-specific not-found semantics. |
 | `ProfileRevisionConflict` | `agent_profile_create_revision_invalid`, `agent_profile_revision_stale`, `agent_profile_validation_unavailable`, and adapter `agent_profile_revision_write_failed` keep their current conflict/stale-write semantics. Route-level repository conflicts continue to collapse to `agent_profile_revision_stale` where they do today. |
@@ -343,8 +355,10 @@ behavior issue changes it.
 
 Worker-side bound-profile reauthorization intentionally returns `None` for a
 missing/invalid/unauthorized binding instead of leaking one of these errors.
-Changing that collapse, renaming a code, changing its status, or exposing
-dependency details is a behavior change and requires its own evidence.
+`agent_profile_model_not_available` is a historical pre-control-plane code and
+has no current Agent Profile producer. Changing a current collapse, renaming a
+current code, changing its status, or exposing dependency details is a behavior
+change and requires its own evidence.
 
 ## 4. PostgreSQL adapter contract
 

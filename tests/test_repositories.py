@@ -521,7 +521,7 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
         name="Support assistant",
         description="Approved support helper.",
         instructions="Private instruction",
-        model_id="model-a",
+        legacy_model_id="model-a",
         skill_id="general-chat",
         skill_version="version-a",
         mcp_tool_ids=["mcp-a", "mcp-b"],

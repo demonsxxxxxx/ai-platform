@@ -15,6 +15,7 @@ from app.context_builder import record_initial_context_snapshot
 from app.context.file_continuity import has_file_input_mode, primary_file_ids_for_run
 from app.context_manifest import public_context_manifest_projection
 from app.db import transaction
+from app.execution.api import resolve_chat_model_selection
 from app.models import (
     CreateRunRequest,
     CreateRunResponse,
@@ -24,7 +25,7 @@ from app.models import (
     RunControlResponse,
     RunResponse,
 )
-from app.runs.api import inherit_run_model
+from app.runs.api import bind_run_model, inherit_run_model
 from app.product_events import initial_run_event_specs
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.control_plane_contracts import (
@@ -972,6 +973,12 @@ async def create_run(
                 skill_version = None
                 release_decision_payload = {}
                 skill_manifests = []
+            try:
+                selected_model = await resolve_chat_model_selection(conn, selection=None)
+            except ValueError as exc:
+                raise HTTPException(status_code=503, detail="run_model_unavailable") from exc
+            if selected_model is None:
+                raise HTTPException(status_code=503, detail="run_model_unavailable")
             skill_manifest_transport = repositories.skill_manifest_refs(skill_manifests)
             session_id = request.session_id or repositories.new_id("ses")
             run_id = repositories.new_id("run")
@@ -990,6 +997,8 @@ async def create_run(
                 "skill_version": skill_version,
                 "release_decision": release_decision_payload,
                 "skill_manifests": skill_manifest_transport,
+                "model_id": selected_model.model_id,
+                "model_value": selected_model.model_value,
                 **(
                     {"schema_version": RUN_PAYLOAD_SCHEMA_VERSION_V2}
                     if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
@@ -1044,6 +1053,8 @@ async def create_run(
                     "skill_version": skill_version,
                     "release_decision": release_decision_payload,
                     "skill_manifests": queue_payload["skill_manifests"],
+                    "model_id": selected_model.model_id,
+                    "model_value": selected_model.model_value,
                     "schema_version": queue_payload["schema_version"],
                 },
                 principal_roles=principal.roles,
@@ -1053,6 +1064,14 @@ async def create_run(
                 authority_source=principal.authority_source or principal.source,
                 authority_checked_at=principal.authority_checked_at or None,
                 run_id=run_id,
+            )
+            await bind_run_model(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                model_id=selected_model.model_id,
+                model_value=selected_model.model_value,
+                connection_revision=selected_model.connection_revision,
             )
             if execution_kind == RUN_EXECUTION_KIND_SKILL:
                 await repositories.insert_run_skill_snapshots_at_creation(

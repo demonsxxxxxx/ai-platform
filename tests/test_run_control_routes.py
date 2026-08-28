@@ -628,9 +628,8 @@ async def test_run_control_queue_admission_keeps_profile_lock_transaction_open(
     [
         (409, "agent_profile_not_available"),
         (403, "agent_profile_not_authorized"),
-        (400, "agent_profile_model_not_available"),
     ],
-    ids=["unpublished", "acl-revoked", "model-revoked"],
+    ids=["unpublished", "acl-revoked"],
 )
 def test_copy_run_profile_reauthorization_denials_have_no_child_side_effect(
     monkeypatch,

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ModelOption } from "../../../services/api/modelPublic";
 import type {
   AgentProfileAdminProjection,
   PublicSkillResponse,
@@ -47,12 +46,6 @@ function skill(overrides: Partial<PublicSkillResponse> = {}): PublicSkillRespons
   };
 }
 
-const model: ModelOption = {
-  id: "model-id",
-  value: "platform/model",
-  label: "Platform model",
-};
-
 function profile(
   overrides: Partial<AgentProfileAdminProjection> = {},
 ): AgentProfileAdminProjection {
@@ -77,7 +70,6 @@ function profile(
     allowed_roles: [],
     allowed_user_ids: [],
     instructions: "仅使用已授权资料。",
-    model_id: model.id,
     selected_skill: {
       skill_id: "document-review",
       expected_version: "2026.07.28",
@@ -138,7 +130,6 @@ test("maps only complete authorized Skill and safe MCP identities", () => {
 
 test("hydrates every exact server identity without catalog fallback", () => {
   const serverProfile = profile({
-    model_id: "removed-model",
     selected_skill: {
       skill_id: "removed-skill",
       expected_version: "sha256:removed",
