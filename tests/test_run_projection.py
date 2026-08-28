@@ -363,6 +363,36 @@ def test_context_file_size_terminal_projection_is_specific_and_safe():
             "活动内容",
         ),
         (
+            "context_file_docx_embedded_content_unsupported",
+            "context_file_unsafe_content",
+            "活动内容",
+        ),
+        (
+            "context_file_docx_external_relationship_unsupported",
+            "context_file_unsafe_content",
+            "活动内容",
+        ),
+        (
+            "context_file_docx_parse_failed",
+            "context_file_invalid",
+            "无法解析",
+        ),
+        (
+            "context_file_json_invalid",
+            "context_file_invalid",
+            "无法解析",
+        ),
+        (
+            "context_file_text_encoding_unsupported",
+            "context_file_encoding_unsupported",
+            "编码",
+        ),
+        (
+            "context_file_xlsx_archive_invalid",
+            "context_file_invalid",
+            "无法解析",
+        ),
+        (
             "context_file_pdf_parse_failed",
             "context_file_invalid",
             "无法解析",

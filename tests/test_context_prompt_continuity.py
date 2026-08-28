@@ -71,7 +71,7 @@ def test_harness_chat_prompt_keeps_bounded_context_manifest_without_private_payl
                         "storage_key": "secret",
                     }
                 ],
-                "available_retrieval_tools": ["read_context_file"],
+                "available_retrieval_tools": ["stage_context_file_to_workspace"],
                 "private_payload": {
                     "storage_key": "tenants/private/input.docx",
                 },
@@ -86,7 +86,7 @@ def test_harness_chat_prompt_keeps_bounded_context_manifest_without_private_payl
     assert "Recent conversation text is supplied separately by the platform" in prompt
     assert "Use context retrieval tools before assuming full prior message" not in prompt
     assert "Authorized file ref IDs (use these exact IDs in retrieval tools): file-a" in prompt
-    assert "Available context retrieval tools: read_context_file" in prompt
+    assert "Available context retrieval tools: stage_context_file_to_workspace" in prompt
     assert "storage_key" not in prompt
     assert "tenants/private" not in prompt
     assert "private_payload" not in prompt
@@ -389,14 +389,12 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
     assert server["name"] == "ai-platform-context"
     assert [tool.name for tool in server["tools"]] == [
         "read_session_messages",
-        "read_context_file",
         "read_run_artifact",
         "stage_context_file_to_workspace",
         "stage_run_artifact_to_workspace",
         "search_memory",
     ]
     assert "read_session_messages" in captured["allowed_tools"]
-    assert "read_context_file" in captured["allowed_tools"]
     assert "stage_context_file_to_workspace" in captured["allowed_tools"]
     assert "stage_run_artifact_to_workspace" in captured["allowed_tools"]
     message_tool = server["tools"][0]
@@ -408,7 +406,7 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
     assert "scoped private message" not in denied_scope["content"][0]["text"]
     tool_result = await message_tool.handler({"limit": 5, "offset": 0, "max_tokens": 20})
     assert "scoped private messa" in tool_result["content"][0]["text"]
-    stage_tool = server["tools"][3]
+    stage_tool = server["tools"][2]
     stage_result = await stage_tool.handler({"file_id": "file-a"})
     assert "context/file-a/source.txt" in stage_result["content"][0]["text"]
     assert "workspace staged content" not in stage_result["content"][0]["text"]
@@ -425,7 +423,7 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
         "reason": "context_file_too_large",
     }
     assert too_large_payload["redaction"] == {"object_locator_refs_removed": True}
-    artifact_stage_tool = server["tools"][4]
+    artifact_stage_tool = server["tools"][3]
     artifact_stage_result = await artifact_stage_tool.handler({"artifact_id": "artifact-a"})
     assert "context/artifact-a/translated.docx" in artifact_stage_result["content"][0]["text"]
     assert "artifact bytes" not in artifact_stage_result["content"][0]["text"]

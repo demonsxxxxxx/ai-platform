@@ -78,8 +78,10 @@ For container formats such as DOCX/XLSX, the platform performs only
 non-semantic archive safety checks: bounded entry count, bounded compressed and
 uncompressed sizes, bounded compression ratio, no absolute or traversal paths,
 no duplicate normalized names, and no encrypted package. Office active content,
-macros, embedded executable objects, and external relationships remain denied
-where the existing threat model requires their denial.
+macros, ActiveX, and OLE objects remain denied. Opaque embedded package entries
+and external relationships are neither interpreted nor dereferenced by the
+platform. The selected Skill may inspect accepted original bytes only inside
+its sandbox and under its existing tool and network policy.
 
 This step must not read cells, paragraphs, tables, document text, formulas, or
 PDF page text. It must not produce a summary.
@@ -138,17 +140,18 @@ The cutover removes these platform behaviors and their contracts from the produc
 execution path:
 
 - typed attachment preprocessing requirements and parser evidence;
-- the XLSX parser registry and its sheet, row, column, cell, cell-text, and
-  model-context limits;
+- the Run-execution XLSX parser contract, evidence, and model-context limits;
 - `platform_typed_attachment_data` model messages;
 - server parsing of DOCX/PDF/text as a prerequisite for attachment staging;
 - the Agent-facing parsed-content retrieval path;
 - parser-specific admission failures such as `xlsx_cell_limit_exceeded`.
 
-The former parser implementation is not reachable from run dispatch, runtime
-staging, or the Sandbox SDK boundary after this cutover. Its code-only removal
-is a follow-up mechanical cleanup once package-level compatibility tests are
-migrated; it must not be reconnected to any production execution path.
+The former execution parser is not reachable from run dispatch, runtime staging,
+or the Sandbox SDK boundary after this cutover. Issue #1273 removes its dead
+contract and prompt-budget implementation while retaining the separately
+authorized XLSX presentation preview and its bounded parser core. Package-safety
+tests move to the raw staging validator. Persisted legacy error codes keep their
+public projections for historical Run replay only.
 
 A `stage_context_file_to_workspace` capability may remain only as a raw,
 authorized byte-delivery broker for files that were not included in the initial
@@ -165,8 +168,9 @@ The cutover does not relax these controls:
   rejection;
 - upload, per-file, total-stage, file-count, sandbox disk, CPU, memory, timeout,
   and artifact collection quotas;
-- archive bomb, encryption, macro, embedded-content, and external-relationship
-  protection;
+- archive bomb, encryption, macro, ActiveX, and OLE protection;
+- embedded packages and external relationships are never interpreted, executed,
+  or dereferenced by the platform;
 - no direct Agent authority to platform storage, databases, Redis, or host
   filesystem;
 - public error redaction: no content, file ID, storage key, absolute path, or
@@ -220,9 +224,11 @@ content-derived admission limits with byte- and structure-derived limits.
 | Run input file | 32 MiB per file | workspace materializer | bounded disk and transfer |
 | Run input set | 128 MiB total | workspace materializer | bounded sandbox staging |
 | Run input set | 512 files | workspace materializer | bounded descriptor and disk work |
-| XLSX/DOCX archive entries | 2,000 entries | archive safety validator | zip-bomb and archive-work bound |
-| XLSX/DOCX compressed entry | 32 MiB | archive safety validator | bounded decompression |
-| XLSX/DOCX expanded package | 64 MiB | archive safety validator | zip-bomb and disk bound |
+| XLSX archive / DOCX outer plus embedded archives | 2,000 cumulative entries | archive safety validator | zip-bomb and archive-work bound |
+| XLSX compressed entry | 8 MiB | archive safety validator | bounded decompression |
+| XLSX expanded package | 32 MiB | archive safety validator | zip-bomb and memory bound |
+| DOCX compressed entry | 32 MiB | archive safety validator | bounded decompression |
+| DOCX outer plus embedded archives | 64 MiB cumulative expanded bytes | archive safety validator | zip-bomb and memory bound |
 | Artifact output file | 64 MiB per file | artifact collector | bounded result transfer |
 | Artifact output set | 256 MiB total / 128 files | artifact collector | bounded result storage |
 
@@ -257,10 +263,13 @@ Costs:
 - Skill authors must use bounded reading strategies appropriate to document
   size;
 - Sandbox resource limits become the execution control for content processing;
-- platform no longer offers server-side attachment previews or content search.
+- the platform does not offer execution-time attachment summaries or content
+  search; the separately authorized XLSX presentation preview remains available
+  outside Run dispatch.
 
-These costs are intentional. This ADR rejects preview and summary fallback
-paths so all attachments retain one auditable, least-authority behavior.
+These costs are intentional. This ADR rejects preview or summary fallback inside
+the execution path so all Run attachments retain one auditable, least-authority
+behavior.
 
 ## Acceptance
 

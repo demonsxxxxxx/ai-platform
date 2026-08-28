@@ -8,7 +8,6 @@ from typing import Any
 
 import pytest
 
-from app.file_parser_contracts import build_attachment_preprocessing_contract
 from app.repositories import RepositoryConflictError
 from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import FakeContainerProvider
@@ -996,7 +995,10 @@ async def test_runtime_validation_cleanup_failure_keeps_persistent_lease_fail_cl
 
 
 @pytest.mark.asyncio
-async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(tmp_path, monkeypatch):
+async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(
+    tmp_path_factory,
+    monkeypatch,
+):
     sent = []
 
     class StubSettings:
@@ -1011,7 +1013,7 @@ async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(tmp
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
 
     runtime = SandboxRuntime(
-        workspace_root=tmp_path,
+        workspace_root=tmp_path_factory.mktemp("r"),
         provider=FakeContainerProvider(executor_url="http://executor.test"),
         execute_task=execute,
         callback_token_resolver=lambda token_id: "secret-token",
@@ -1024,10 +1026,6 @@ async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(tmp
             context_manifest={
                 "schema_version": "ai-platform.context-manifest.v1",
                 "available_retrieval_tools": ["read_context_file"],
-                "attachment_preprocessing": build_attachment_preprocessing_contract(
-                    file_ids=["file-a"],
-                    file_names=["book.xlsx"],
-                ),
             },
             context_retrieval_scope={
                 "tenant_id": "tenant-a",
@@ -1041,9 +1039,6 @@ async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(tmp
     )
 
     assert sent[0].config["context_manifest"]["available_retrieval_tools"] == ["read_context_file"]
-    requirement = sent[0].config["context_manifest"]["attachment_preprocessing"]["requirements"][0]
-    assert requirement["file_id"] == "file-a"
-    assert requirement["parser_id"] == "ai-platform.xlsx.openpyxl"
     assert sent[0].config["context_retrieval_scope"]["user_id"] == "user-a"
     assert sent[0].callback_url == "http://platform.test/api/ai/runtime/callbacks/executor"
     assert sent[0].callback_token_id == "cbt:run-a:qat_test-runtime-attempt"
