@@ -1186,11 +1186,7 @@ def test_linux_directory_retry_accepts_only_post_rename_ctime_drift_with_matchin
         step=success-marker
         test -f "$success_workspace/config.applied"
         step=success-match
-        if ! s72_atomic_directory_matches "$success_live" "$success_source"; then
-          printf 'live-metadata=%s\n' "$(capture_config_metadata "$success_live")" >&2
-          printf 'source-metadata=%s\n' "$(capture_config_metadata "$success_source")" >&2
-          exit 1
-        fi
+        s72_atomic_directory_matches "$success_live" "$success_source"
 
         step=predrift-reject
         ! s72_atomic_apply_directory \

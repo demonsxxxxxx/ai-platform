@@ -1108,7 +1108,7 @@ s72_atomic_directory_matches() (
   test "$live_metadata" = "$source_metadata"
 )
 
-s72_atomic_directory_matches_identity_except_ctime() {
+s72_atomic_directory_matches_identity_except_ctime() (
   live=$1
   source=$2
   expected=$3
@@ -1116,7 +1116,7 @@ s72_atomic_directory_matches_identity_except_ctime() {
   actual=$(s72_atomic_node_identity "$live") || return 1
   test "${actual%:*}" = "${expected%:*}" || return 1
   s72_atomic_directory_matches "$live" "$source"
-}
+)
 
 s72_atomic_apply_file() {
   live=$1
