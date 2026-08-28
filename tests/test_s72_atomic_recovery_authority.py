@@ -1267,6 +1267,8 @@ def test_recovery_retry_preserves_install_only_optional_apply_snapshot(
         ROOT=$(cygpath -u "$2" 2>/dev/null || printf '%s\n' "$2")
         eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
         observations=$ROOT/optional
+        restored_targets=$ROOT/restored-targets
+        expected_target=$ROOT/snapshot
         s72_atomic_preflight_snapshot() {{ :; }}
         s72_atomic_verify_snapshot_seal() {{ :; }}
         s72_atomic_load_transaction() {{
@@ -1279,18 +1281,21 @@ def test_recovery_retry_preserves_install_only_optional_apply_snapshot(
         preflight_recoverable_live() {{
           printf '%s\n' "$S72_RECOVERY_APPLY_OPTIONAL" >> "$observations"
           test "$S72_RECOVERY_APPLY_OPTIONAL" -eq {expected_optional}
+          snapshot=$2
         }}
         preflight_live_state() {{ :; }}
         s72_atomic_require_exact_lifecycle() {{ :; }}
         s72_atomic_advance_transaction() {{ :; }}
-        restore_snapshot_payload() {{ :; }}
-        restore_snapshot_runtime() {{ :; }}
+        restore_snapshot_payload() {{ printf '%s\n' "$1" >> "$restored_targets"; }}
+        restore_snapshot_runtime() {{ printf '%s\n' "$1" >> "$restored_targets"; }}
         systemctl() {{ printf '%s\n' inactive; }}
 
-        s72_atomic_restore_snapshot "$ROOT/snapshot" \
+        s72_atomic_restore_snapshot "$expected_target" \
           11111111111111111111111111111111 "$ROOT/records"
         test "$(wc -l < "$observations")" -eq 2
         test -z "$(grep -vx {expected_optional} "$observations")"
+        test "$(wc -l < "$restored_targets")" -eq 2
+        test -z "$(grep -vx "$expected_target" "$restored_targets")"
         ''',
         INSTALLER,
         tmp_path,
