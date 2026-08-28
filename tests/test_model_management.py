@@ -37,6 +37,7 @@ from app.execution.infrastructure.model_upstream import (
 from app.runtime.sandbox.callback_tokens import (
     CallbackTokenBinding,
     callback_token_id_for_binding,
+    callback_token_matches,
     derive_callback_token,
 )
 from app.execution.transport import model_management as model_routes
@@ -50,6 +51,19 @@ from app.runs.infrastructure.postgres import (
 
 def _key() -> str:
     return base64.urlsafe_b64encode(b"k" * 32).decode("ascii")
+
+
+def _attempt_capability_verifier(secret: str):
+    def verify(*, run_id: str, attempt_id: str, provided_capability: str) -> bool:
+        return callback_token_matches(
+            secret=secret,
+            token_id=callback_token_id_for_binding(
+                CallbackTokenBinding(run_id=run_id, attempt_id=attempt_id)
+            ),
+            provided_token=provided_capability,
+        )
+
+    return verify
 
 
 def test_model_transport_maps_missing_write_only_key_to_validation_error() -> None:
@@ -1074,6 +1088,7 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
         legacy_catalog=SimpleNamespace(),
         security=SimpleNamespace(),
         upstream=SimpleNamespace(open_stream=fake_open_stream),
+        attempt_capability_verifier=_attempt_capability_verifier(callback_secret),
     )
     monkeypatch.setattr(model_routes, "configured_model_control_plane", lambda: service)
 
@@ -1131,6 +1146,7 @@ async def test_internal_runtime_proxy_rejects_capability_for_another_attempt_bef
         legacy_catalog=SimpleNamespace(),
         security=SimpleNamespace(),
         upstream=SimpleNamespace(),
+        attempt_capability_verifier=_attempt_capability_verifier(callback_secret),
     )
 
     with pytest.raises(PermissionError, match="model_proxy_capability_invalid"):
@@ -1163,6 +1179,7 @@ async def test_internal_runtime_proxy_rejects_non_ascii_token_before_database(mo
         legacy_catalog=SimpleNamespace(),
         security=SimpleNamespace(),
         upstream=SimpleNamespace(),
+        attempt_capability_verifier=lambda **_kwargs: False,
     )
 
     async def receive():

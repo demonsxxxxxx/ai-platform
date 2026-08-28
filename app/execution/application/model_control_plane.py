@@ -15,11 +15,6 @@ from app.execution.application.model_selection import (
     RunModelSelection,
     resolve_chat_model_selection,
 )
-from app.runtime.sandbox.callback_tokens import (
-    CallbackTokenBinding,
-    callback_token_id_for_binding,
-    callback_token_matches,
-)
 
 
 _ALLOWED_RUNTIME_PATHS = {
@@ -56,6 +51,16 @@ class ModelEndpointSecurity(Protocol):
     def fingerprint(self, api_key: str) -> str: ...
 
 
+class ModelAttemptCapabilityVerifier(Protocol):
+    def __call__(
+        self,
+        *,
+        run_id: str,
+        attempt_id: str,
+        provided_capability: str,
+    ) -> bool: ...
+
+
 class ModelUpstream(Protocol):
     def request(self, **kwargs: Any) -> bytes: ...
 
@@ -81,6 +86,7 @@ class ModelControlPlaneService:
         legacy_catalog: LegacyModelResolver,
         security: ModelEndpointSecurity,
         upstream: ModelUpstream,
+        attempt_capability_verifier: ModelAttemptCapabilityVerifier,
     ) -> None:
         self._transaction = transaction_factory
         self._settings_provider = settings_provider
@@ -88,6 +94,7 @@ class ModelControlPlaneService:
         self._legacy_catalog = legacy_catalog
         self._security = security
         self._upstream = upstream
+        self._attempt_capability_verifier = attempt_capability_verifier
 
     def _security_settings(self) -> tuple[str, str]:
         settings = self._settings_provider()
@@ -227,17 +234,10 @@ class ModelControlPlaneService:
             raise PermissionError("model_proxy_forbidden")
         if not attempt_id:
             raise PermissionError("model_proxy_attempt_required")
-        callback_secret = str(getattr(settings, "sandbox_callback_token", "") or "")
-        try:
-            token_id = callback_token_id_for_binding(
-                CallbackTokenBinding(run_id=run_id, attempt_id=attempt_id)
-            )
-        except ValueError:
-            raise PermissionError("model_proxy_capability_invalid") from None
-        if not callback_secret or not callback_token_matches(
-            secret=callback_secret,
-            token_id=token_id,
-            provided_token=model_proxy_capability,
+        if not self._attempt_capability_verifier(
+            run_id=run_id,
+            attempt_id=attempt_id,
+            provided_capability=model_proxy_capability,
         ):
             raise PermissionError("model_proxy_capability_invalid")
         if upstream_path not in _ALLOWED_RUNTIME_PATHS.get(provider, frozenset()):
