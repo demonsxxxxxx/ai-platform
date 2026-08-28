@@ -444,6 +444,91 @@ async def test_inherit_run_model_requires_exact_copy_relation_and_updates_child(
     )
 
 
+@pytest.mark.parametrize("operation", ["copy", "retry", "resume"])
+@pytest.mark.asyncio
+async def test_inherit_run_model_modernizes_legacy_descendants(operation: str) -> None:
+    child_run_id = f"run-{operation}"
+    conn = _RunModelMutationConnection(
+        [
+            {
+                "model_id": None,
+                "model_value": None,
+                "model_gateway_revision": None,
+                "input_json": {
+                    "model_id": "legacy-default",
+                    "model_value": "openai/gpt-5",
+                },
+            },
+            {
+                "status": "queued",
+                "copied_from_run_id": "run-source",
+                "model_id": None,
+                "model_value": None,
+                "model_gateway_revision": None,
+            },
+            {"id": child_run_id},
+        ]
+    )
+
+    await inherit_run_model(
+        conn,
+        tenant_id="tenant-a",
+        source_run_id="run-source",
+        child_run_id=child_run_id,
+    )
+
+    assert "input_json" in conn.calls[0][0]
+    assert "for update" in conn.calls[0][0].lower()
+    assert conn.calls[2][1] == (
+        "legacy-default",
+        "openai/gpt-5",
+        None,
+        "tenant-a",
+        child_run_id,
+    )
+
+
+@pytest.mark.parametrize(
+    "input_json",
+    [
+        None,
+        {},
+        {"model_id": "legacy-default"},
+        {"model_id": "bad model", "model_value": "openai/gpt-5"},
+        {"model_id": "legacy-default", "model_value": " openai/gpt-5"},
+    ],
+)
+@pytest.mark.asyncio
+async def test_inherit_run_model_rejects_invalid_legacy_queue_pair(input_json) -> None:
+    conn = _RunModelMutationConnection(
+        [
+            {
+                "model_id": None,
+                "model_value": None,
+                "model_gateway_revision": None,
+                "input_json": input_json,
+            },
+            {
+                "status": "queued",
+                "copied_from_run_id": "run-source",
+                "model_id": None,
+                "model_value": None,
+                "model_gateway_revision": None,
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="run_model_source_legacy_invalid"):
+        await inherit_run_model(
+            conn,
+            tenant_id="tenant-a",
+            source_run_id="run-source",
+            child_run_id="run-child",
+        )
+
+    assert len(conn.calls) == 2
+
+
 @pytest.mark.asyncio
 async def test_inherit_run_model_rejects_child_from_a_different_source() -> None:
     conn = _RunModelMutationConnection(

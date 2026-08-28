@@ -18,6 +18,7 @@ from app.runs.domain.attempt_lifecycle import (
     decide_run_attempt_transition,
 )
 from app.runs.domain.execution_spec import ExecutionSpec
+from app.runs.domain.model_snapshot import legacy_queue_model_snapshot
 from app.runs.domain.terminalization import (
     RunTerminalEventFact,
     RunTerminalizationProgress,
@@ -633,7 +634,7 @@ async def inherit_run_model(
         raise ValueError("run_model_inheritance_invalid")
     source_cursor = await conn.execute(
         """
-        select model_id, model_value, model_gateway_revision
+        select model_id, model_value, model_gateway_revision, input_json
         from runs
         where tenant_id = %s and id = %s
         for update
@@ -664,16 +665,9 @@ async def inherit_run_model(
     source_model_value = source.get("model_value")
     source_revision = source.get("model_gateway_revision")
     if source_model_id is None and source_model_value is None and source_revision is None:
-        if any(
-            value is not None
-            for value in (
-                child.get("model_id"),
-                child.get("model_value"),
-                child.get("model_gateway_revision"),
-            )
-        ):
-            raise ValueError("run_model_child_partial")
-        return
+        source_model_id, source_model_value = legacy_queue_model_snapshot(
+            source.get("input_json")
+        )
     if (
         not isinstance(source_model_id, str)
         or not source_model_id
