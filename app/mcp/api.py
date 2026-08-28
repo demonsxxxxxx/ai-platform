@@ -5,12 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from app.mcp.application.live_catalog import (
-    GatewayRevisions,
     LiveMcpServerResult,
     LiveMcpTool,
-    MCP_CACHE_INVALIDATION_TOKEN_HEADER,
-    read_cached_live_mcp_tool,
-    service_token_matches,
 )
 from app.mcp.application.runtime_registry import (
     LiveMcpCatalogProxy,
@@ -113,10 +109,8 @@ async def record_mcp_server_credential(conn: Any, **kwargs: Any) -> None:
 
 
 __all__ = [
-    "GatewayRevisions",
     "LiveMcpServerResult",
     "LiveMcpTool",
-    "MCP_CACHE_INVALIDATION_TOKEN_HEADER",
     "MCP_JWT_AUTHORIZATION_HEADER",
     "McpRuntimeContextError",
     "assert_mcp_tool_reference",
@@ -137,11 +131,9 @@ __all__ = [
     "normalize_static_mcp_headers",
     "open_mcp_server_credentials",
     "parse_mcp_tool_reference",
-    "read_cached_live_mcp_tool",
     "read_mcp_principal_jwt",
     "record_mcp_server_credential",
     "seal_mcp_server_credentials",
-    "service_token_matches",
     "store_mcp_principal_jwt",
     "toggle_mcp_server_registry",
     "upsert_mcp_server_registry",

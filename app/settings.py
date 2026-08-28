@@ -185,8 +185,6 @@ class Settings(BaseSettings):
     # MCP-only server-side custody. JWT lifetime remains authoritative from exp.
     mcp_encryption_keys_json: str = Field(default="", repr=False)
     mcp_encryption_current_key_id: str = Field(default="current")
-    mcp_gateway_service_token: str = Field(default="", repr=False)
-    mcp_cache_invalidation_token: str = Field(default="", repr=False)
 
     llm_gateway_provider: str = Field(default="openai_compatible")
     model_gateway_request_concurrency_limit: int = Field(default=0)

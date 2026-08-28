@@ -126,14 +126,14 @@ Backed read and server lifecycle routes:
 - `POST /api/admin/mcp/`
 - `PUT /api/admin/mcp/{name}`
 - `DELETE /api/admin/mcp/{name}`
-- `POST /api/internal/mcp/cache-invalidation`
 
 `GET /api/mcp/chat-tools` discovers each user's current effective tools from
 every distributed MCP Server by calling `tools/list` with that user's
 server-side company JWT. Dynamic Gateway tool definitions and ACLs are not
-persisted in AI Platform. Redis caches are scoped by tenant, user, Server, and
-Gateway catalog/ACL revisions; a single unavailable Server does not hide tools
-from other Servers. Responses expose stable `mcp_server_id::public_tool_name`
+persisted or cached in AI Platform; every request performs a fresh discovery,
+while each Gateway owns its internal catalog and ACL caching. A single
+unavailable Server does not hide tools from other Servers. Responses expose
+stable `mcp_server_id::public_tool_name`
 references and bounded display metadata, never JWTs, static headers, Gateway
 internal IDs, or cache keys. The code-owned RAGFlow row remains the only local
 `mcp_tools` compatibility entry while its built-in dependency is retained.

@@ -5,7 +5,7 @@ import hashlib
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app import repositories
@@ -21,17 +21,13 @@ from app.control_plane_contracts import sanitize_public_payload, standard_trace_
 from app.db import transaction
 from app.mcp import api as mcp_repository
 from app.mcp.api import (
-    GatewayRevisions,
     LiveMcpServerResult,
-    MCP_CACHE_INVALIDATION_TOKEN_HEADER,
     McpRuntimeContextError,
     get_live_mcp_catalog,
     get_mcp_principal_jwt_store,
     normalize_static_mcp_headers,
     seal_mcp_server_credentials,
-    service_token_matches,
 )
-from app.settings import get_settings
 from app.validation import assert_safe_id
 
 router = APIRouter()
@@ -126,21 +122,6 @@ class McpServerToggleRequest(BaseModel):
         if self.active is not None:
             return self.active
         return self.is_active
-
-
-class McpCacheInvalidationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    mcp_server_id: str
-    catalog_revision: int = Field(ge=0)
-    acl_revision: int = Field(ge=0)
-    reason: str = Field(min_length=1, max_length=64)
-    event_id: str
-
-    @field_validator("mcp_server_id", "event_id")
-    @classmethod
-    def validate_safe_ids(cls, value: str, info):
-        return assert_safe_id(value, info.field_name)
 
 
 def _require_admin(principal: AuthPrincipal) -> None:
@@ -677,49 +658,6 @@ async def list_chat_mcp_tools(
     return response
 
 
-@router.post("/internal/mcp/cache-invalidation")
-async def invalidate_mcp_tool_cache(
-    request: McpCacheInvalidationRequest,
-    response: Response,
-    service_authorization: str | None = Header(
-        default=None,
-        alias=MCP_CACHE_INVALIDATION_TOKEN_HEADER,
-    ),
-) -> dict[str, Any]:
-    """Accept idempotent, monotonic cache revisions from a configured Gateway."""
-
-    if not service_token_matches(
-        str(get_settings().mcp_cache_invalidation_token),
-        service_authorization,
-    ):
-        raise HTTPException(status_code=401, detail="mcp_service_unauthorized")
-    applied = await LIVE_MCP_CATALOG.invalidate(
-        tenant_id=str(get_settings().default_tenant_id),
-        server_id=request.mcp_server_id,
-        revisions=GatewayRevisions(
-            catalog_revision=request.catalog_revision,
-            acl_revision=request.acl_revision,
-        ),
-        event_id=request.event_id,
-    )
-    response.headers["Cache-Control"] = "no-store"
-    logger.info(
-        "MCP tool cache invalidation processed. ServerId=%s CatalogRevision=%s AclRevision=%s Reason=%s EventId=%s Applied=%s",
-        request.mcp_server_id,
-        request.catalog_revision,
-        request.acl_revision,
-        request.reason,
-        request.event_id,
-        applied,
-    )
-    return {
-        "accepted": True,
-        "applied": applied,
-        "catalog_revision": request.catalog_revision,
-        "acl_revision": request.acl_revision,
-    }
-
-
 @router.post("/mcp/")
 @router.post("/mcp")
 async def create_mcp_server(
@@ -920,7 +858,7 @@ async def discover_mcp_tools(
             "name": tool.tool_id,
             "description": tool.description,
             "server": tool.server_id,
-            "cached": tool.cached,
+            "cached": False,
             "parameters": [],
             "system_disabled": False,
             "user_disabled": False,

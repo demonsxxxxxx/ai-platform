@@ -20,7 +20,6 @@ from app.mcp.domain.tool_references import MCP_PUBLIC_TOOL_NAME_PATTERN
 
 MCP_DISCOVERY_PAGE_LIMIT = 100
 MCP_PROTOCOL_VERSION = "2025-03-26"
-MCP_GATEWAY_SERVICE_TOKEN_HEADER = "X-MCP-Gateway-Service-Token"
 MCP_TOOL_ANNOTATION_READ_ONLY = "read_only"
 MCP_TOOL_ANNOTATION_WRITE_CAPABLE = "write_capable"
 MCP_TOOL_ANNOTATION_UNKNOWN = "unknown"
@@ -481,48 +480,3 @@ class StreamableHttpMcpToolDiscoveryAdapter:
                 seen_cursors.add(next_cursor)
                 cursor = next_cursor
         raise McpToolDiscoveryError("page_limit_exceeded")
-
-
-async def read_gateway_cache_revisions(
-    endpoint: str,
-    *,
-    service_token: str,
-) -> dict[str, Any] | None:
-    """Read a bounded Gateway revision response using its service identity."""
-
-    token = str(service_token or "").strip()
-    if not token:
-        return None
-    try:
-        parsed = urlsplit(endpoint)
-        revision_endpoint = urlunsplit(
-            (parsed.scheme, parsed.netloc, "/api/internal/cache-revisions", "", "")
-        )
-        target = await _validated_discovery_target(revision_endpoint)
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
-            async with client.stream(
-                "GET",
-                target.connect_url,
-                headers={
-                    MCP_GATEWAY_SERVICE_TOKEN_HEADER: token,
-                    "Host": target.host_header,
-                    "Accept-Encoding": "identity",
-                },
-                extensions={"sni_hostname": target.sni_hostname},
-            ) as response:
-                if response.status_code != 200:
-                    return None
-                if response.headers.get("Content-Encoding", "identity").strip().lower() not in {
-                    "",
-                    "identity",
-                }:
-                    return None
-                body = bytearray()
-                async for chunk in response.aiter_raw():
-                    if len(body) + len(chunk) > 16_384:
-                        return None
-                    body.extend(chunk)
-        payload = json.loads(body)
-        return payload if isinstance(payload, dict) else None
-    except (McpToolDiscoveryError, httpx.HTTPError, ValueError, json.JSONDecodeError):
-        return None

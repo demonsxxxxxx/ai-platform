@@ -35,9 +35,7 @@ class _McpRuntimeServices:
         )
         self.principal_jwt_store = mcp_runtime.get_mcp_principal_jwt_store()
         self.live_catalog = LiveMcpCatalogService(
-            redis_provider=get_redis_client,
             target_resolver=self._resolve_live_target,
-            revision_reader=self._read_gateway_revisions,
             discovery=mcp_catalog.StreamableHttpMcpToolDiscoveryAdapter(),
         )
 
@@ -65,13 +63,6 @@ class _McpRuntimeServices:
                 status_code=503,
             )
         return _LiveMcpTarget(endpoint=endpoint, static_headers=static_headers)
-
-    @staticmethod
-    async def _read_gateway_revisions(endpoint: str) -> object | None:
-        return await mcp_catalog.read_gateway_cache_revisions(
-            endpoint,
-            service_token=str(get_settings().mcp_gateway_service_token),
-        )
 
     @staticmethod
     def seal_server_credentials(**kwargs: Any) -> str:
