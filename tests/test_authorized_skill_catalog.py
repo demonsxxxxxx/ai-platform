@@ -711,6 +711,8 @@ def _worker_dispatch_fixture(execution_input: dict[str, Any]):
             "selected_track": "manifest_pin",
         },
         skill_manifests=[primary_manifest_ref],
+        model_id="platform-default",
+        model_value="openai/gpt-5",
         input=execution_input,
     )
     stored = payload.model_dump(mode="python")
@@ -726,6 +728,9 @@ def _worker_dispatch_fixture(execution_input: dict[str, Any]):
         "session_admitted_agent_profile_revision": None,
         "session_admitted_agent_profile_hash": None,
         "skill_id": "general-chat",
+        "model_id": stored["model_id"],
+        "model_value": stored["model_value"],
+        "model_gateway_revision": None,
         "trace_id": "trace-run-a",
         "principal_roles": ["admin"],
         "principal_department_id": "qa",
