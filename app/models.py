@@ -20,6 +20,7 @@ from app.control_plane_contracts import (
     SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS,
 )
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
+from app.agent_apps.api import discard_legacy_agent_profile_model_id
 from app.agent_apps.api import (
     normalize_agent_avatar_seed, normalize_agent_profile_display_items, normalize_agent_skill_set,
 )
@@ -239,7 +240,7 @@ class AgentProfileDraftRequest(BaseModel):
     expected_outputs: list[str] = Field(default_factory=list, max_length=16)
     permissions_and_data_access_notice: str = Field(default="", max_length=4_000)
     instructions: str = Field(min_length=1, max_length=MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
-    model_id: str = "platform-selected"
+    _legacy_model_id: str = PrivateAttr(default="platform-selected")
     skill_set: list[SelectedSkillRequest] = Field(default_factory=list, max_length=32)
     selected_skill: SelectedSkillRequest | None = None
     mcp_tool_ids: list[str] = Field(default_factory=list)
@@ -252,6 +253,11 @@ class AgentProfileDraftRequest(BaseModel):
     allowed_roles: list[str] = Field(default_factory=list)
     allowed_user_ids: list[str] = Field(default_factory=list)
     expected_draft_revision: int = Field(ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_model_id(cls, value):
+        return discard_legacy_agent_profile_model_id(value)
 
     @field_validator("welcome_message", "capability_summary", "permissions_and_data_access_notice")
     @classmethod
@@ -290,11 +296,6 @@ class AgentProfileDraftRequest(BaseModel):
     def normalize_skill_set(self):
         self.skill_set, self.selected_skill = normalize_agent_skill_set(self.skill_set, self.selected_skill)
         return self
-
-    @field_validator("model_id")
-    @classmethod
-    def validate_model_id(cls, value: str):
-        return assert_safe_id(value, "model_id")
 
     @field_validator("mcp_tool_ids")
     @classmethod
@@ -451,7 +452,6 @@ class AgentProfileAdminProjection(BaseModel):
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
     instructions: str
-    model_id: str
     skill_set: list[SelectedSkillRequest] = Field(default_factory=list)
     selected_skill: SelectedSkillRequest
     mcp_tool_ids: list[str] = Field(default_factory=list)

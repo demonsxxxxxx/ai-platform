@@ -122,6 +122,22 @@ def default_run_model_inheritance(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def default_run_model_binding(monkeypatch):
+    async def resolve_model(*_args, **_kwargs):
+        return SimpleNamespace(
+            model_id="platform-default",
+            model_value="provider/default",
+            connection_revision=None,
+        )
+
+    async def bind_model(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runs_module, "resolve_chat_model_selection", resolve_model)
+    monkeypatch.setattr(runs_module, "bind_run_model", bind_model)
+
+
+@pytest.fixture(autouse=True)
 def default_create_run_workspace_guard(monkeypatch):
     async def ensure_workspace_belongs_to_tenant(conn, *, tenant_id, workspace_id):
         return {"id": workspace_id, "tenant_id": tenant_id, "status": "active"}
@@ -3782,7 +3798,19 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
                 kwargs["auth_source"],
             )
         )
+        calls.append(("run_input_model", kwargs["input_json"]["model_id"], kwargs["input_json"]["model_value"]))
         return kwargs["run_id"]
+
+    async def resolve_model(conn, *, selection):
+        calls.append(("resolve_model", conn, selection))
+        return SimpleNamespace(
+            model_id="catalog-default",
+            model_value="provider/default",
+            connection_revision=9,
+        )
+
+    async def bind_model(conn, **kwargs):
+        calls.append(("bind_model", conn, kwargs))
 
     async def fake_bind_files_to_run(conn, **kwargs):
         calls.append(("bind_files_to_run", kwargs["user_id"]))
@@ -3803,6 +3831,8 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
     monkeypatch.setattr("app.routes.runs.repositories.ensure_user", fake_ensure_user)
     monkeypatch.setattr("app.routes.runs.repositories.create_session", fake_create_session)
     monkeypatch.setattr("app.routes.runs.repositories.create_run", fake_create_run)
+    monkeypatch.setattr(runs_module, "resolve_chat_model_selection", resolve_model)
+    monkeypatch.setattr(runs_module, "bind_run_model", bind_model)
     monkeypatch.setattr("app.routes.runs.repositories.bind_files_to_run", fake_bind_files_to_run)
     monkeypatch.setattr(
         "app.routes.runs.repositories.insert_run_skill_snapshots_at_creation",
@@ -3830,12 +3860,25 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
     )
 
     assert response.run_id.startswith("run_")
-    assert calls[:2] == [
+    assert calls[0][0] == "resolve_model"
+    assert calls[1:3] == [
         ("ensure_user", "default", "phaseb-smoke", "Phase B Smoke"),
         ("create_session", "phaseb-smoke"),
     ]
     assert ("bind_files_to_run", "phaseb-smoke") in calls
     assert ("auth_snapshot", ["qa_operator"], "qa", "session-token") in calls
+    assert ("run_input_model", "catalog-default", "provider/default") in calls
+    resolve_call = next(item for item in calls if item[0] == "resolve_model")
+    bind_call = next(item for item in calls if item[0] == "bind_model")
+    assert resolve_call[1] is bind_call[1]
+    assert resolve_call[2] is None
+    assert bind_call[2] == {
+        "tenant_id": "default",
+        "run_id": response.run_id,
+        "model_id": "catalog-default",
+        "model_value": "provider/default",
+        "connection_revision": 9,
+    }
     snapshot_index = next(index for index, item in enumerate(calls) if item[0] == "creation_snapshots")
     event_index = next(index for index, item in enumerate(calls) if item[0] == "event")
     enqueue_index = next(index for index, item in enumerate(calls) if item[0] == "enqueue")
@@ -3848,6 +3891,7 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
     """A direct create must persist its failure state after the creation commit."""
 
     committed: list[list[tuple[str, str]]] = []
+    enqueue_attempts: list[str] = []
 
     class TransactionState:
         def __init__(self) -> None:
@@ -3876,10 +3920,14 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
         conn.pending.append(("run_created", str(kwargs["run_id"])))
         return str(kwargs["run_id"])
 
+    async def bind_model(conn, **kwargs):
+        conn.pending.append(("model_bound", str(kwargs["run_id"])))
+
     async def noop(*_args, **_kwargs):
         return None
 
-    async def fail_enqueue(_payload):
+    async def fail_enqueue(payload):
+        enqueue_attempts.append(str(payload["run_id"]))
         raise RuntimeError("queue unavailable")
 
     async def mark_enqueue_failed(conn, **kwargs):
@@ -3923,6 +3971,7 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
     monkeypatch.setattr("app.routes.runs.repositories.ensure_user", ensure_user)
     monkeypatch.setattr("app.routes.runs.repositories.create_session", create_session)
     monkeypatch.setattr("app.routes.runs.repositories.create_run", create_durable_run)
+    monkeypatch.setattr(runs_module, "bind_run_model", bind_model)
     monkeypatch.setattr("app.routes.runs.repositories.bind_files_to_run", noop)
     monkeypatch.setattr("app.routes.runs.repositories.append_event", noop)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue)
@@ -3941,12 +3990,35 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
 
     assert exc_info.value.status_code == 503
     assert len(committed) == 2
-    assert committed[0] and committed[0][0][0] == "run_created"
+    assert committed[0][0][0] == "run_created"
+    assert committed[0][1] == ("model_bound", committed[0][0][1])
+    assert enqueue_attempts == [committed[0][0][1]]
     assert committed[1] == [
         ("authority", committed[0][0][1]),
         ("run_failed", committed[0][0][1]),
         ("terminal_row", committed[0][0][1]),
     ]
+
+    committed.clear()
+    enqueue_attempts.clear()
+
+    async def fail_model_binding(_conn, **_kwargs):
+        raise RuntimeError("model binding failed")
+
+    monkeypatch.setattr(runs_module, "bind_run_model", fail_model_binding)
+    with pytest.raises(RuntimeError, match="model binding failed"):
+        await create_run(
+            CreateRunRequest(
+                workspace_id="default",
+                agent_id="qa-word-review",
+                capability_id="document_review",
+            ),
+            http_request=request,
+            principal=principal(),
+        )
+
+    assert committed == []
+    assert enqueue_attempts == []
 
 
 @pytest.mark.asyncio

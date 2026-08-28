@@ -74,7 +74,7 @@ async def create_agent_profile_revision(
     name: str,
     description: str,
     instructions: str,
-    model_id: str,
+    legacy_model_id: str,
     skill_id: str,
     skill_version: str,
     mcp_tool_ids: list[str],
@@ -157,7 +157,7 @@ async def create_agent_profile_revision(
             name,
             description,
             instructions,
-            model_id,
+            legacy_model_id,
             skill_id,
             skill_version,
             _dumps_json(

@@ -293,7 +293,7 @@ def _canonical_profile_hash(
     name: str,
     description: str,
     instructions: str,
-    model_id: str,
+    legacy_model_id: str,
     skill_id: str,
     skill_version: str,
 ) -> str:
@@ -305,7 +305,7 @@ def _canonical_profile_hash(
         "name": name,
         "description": description,
         "instructions": instructions,
-        "model_id": model_id,
+        "model_id": legacy_model_id,
         "skill_id": skill_id,
         "skill_version": skill_version,
         "skill_set": [
@@ -346,7 +346,7 @@ async def _seed_profile_chat_storage(
         name="Profile Chat Agent",
         description="Published profile for Chat locking",
         instructions="private profile chat instructions",
-        model_id="model-a",
+        legacy_model_id="model-a",
         skill_id="profile-chat-skill",
         skill_version=skill_version,
     )
@@ -471,7 +471,7 @@ async def test_create_agent_profile_revision_persists_draft_and_publish_in_postg
                 name="Support assistant",
                 description="Approved support helper.",
                 instructions="Private draft instruction",
-                model_id="model-a",
+                legacy_model_id="model-a",
                 skill_id="general-chat",
                 skill_version="version-a",
                 mcp_tool_ids=["mcp-draft"],
@@ -493,7 +493,7 @@ async def test_create_agent_profile_revision_persists_draft_and_publish_in_postg
                 name="Support assistant",
                 description="Approved support helper.",
                 instructions="Private published instruction",
-                model_id="model-a",
+                legacy_model_id="model-a",
                 skill_id="general-chat",
                 skill_version="version-a",
                 mcp_tool_ids=["mcp-published"],
@@ -593,7 +593,7 @@ async def test_postgres_profile_revision_fence_serializes_real_concurrent_publis
                 name="Support assistant",
                 description="Approved support helper.",
                 instructions="Private draft instruction",
-                model_id="model-a",
+                legacy_model_id="model-a",
                 skill_id="general-chat",
                 skill_version="version-a",
                 mcp_tool_ids=[],
@@ -613,7 +613,7 @@ async def test_postgres_profile_revision_fence_serializes_real_concurrent_publis
                         name="Support assistant",
                         description="Approved support helper.",
                         instructions="Private published instruction",
-                        model_id="model-a",
+                        legacy_model_id="model-a",
                         skill_id="general-chat",
                         skill_version="version-a",
                         mcp_tool_ids=[],
@@ -672,13 +672,10 @@ async def test_postgres_agent_conversation_duplicate_start_is_exactly_once(monke
         authority = AgentProfileAuthority()
 
         async def validate(*_args, **_kwargs):
-            return (
-                {
-                    "skill_id": "profile-chat-skill",
-                    "skill_version": str(manifest["content_hash"]),
-                },
-                {"id": "model-a", "value": "provider-model-a"},
-            )
+            return ({
+                "skill_id": "profile-chat-skill",
+                "skill_version": str(manifest["content_hash"]),
+            },)
 
         monkeypatch.setattr(authority, "_validate_definition", validate)
         principal = AuthPrincipal(
@@ -986,7 +983,7 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
         name="Profile agent",
         description="Published profile",
         instructions="private profile instructions",
-        model_id="model-a",
+        legacy_model_id="model-a",
         skill_id="profile-skill",
         skill_version=locked_skill_version,
     )
@@ -1147,14 +1144,11 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
             assert principal.tenant_id == "tenant-profile"
             assert agent_id == "agt_profile"
             assert definition.selected_skill.skill_id == "profile-skill"
-            return (
-                {
-                    "skill_id": "profile-skill",
-                    "skill_version": locked_skill_version,
-                    "executor_type": "claude-agent-worker",
-                },
-                {"id": "model-a", "value": "provider-model-a"},
-            )
+            return ({
+                "skill_id": "profile-skill",
+                "skill_version": locked_skill_version,
+                "executor_type": "claude-agent-worker",
+            },)
 
         @asynccontextmanager
         async def admission_transaction():
@@ -1746,7 +1740,7 @@ async def test_postgres_pre_701_upgrade_and_old_binary_rollback_redeploy_converg
                 name="Current draft",
                 description="",
                 instructions="private current draft",
-                model_id="model-a",
+                legacy_model_id="model-a",
                 skill_id="legacy-skill",
                 skill_version="version-a",
                 mcp_tool_ids=[],
@@ -1876,7 +1870,7 @@ async def test_postgres_pre_701_upgrade_and_old_binary_rollback_redeploy_converg
                 name="Later withdrawn",
                 description="",
                 instructions="private withdrawn",
-                model_id="model-a",
+                legacy_model_id="model-a",
                 skill_id="legacy-skill",
                 skill_version="version-a",
                 mcp_tool_ids=[],
@@ -1900,7 +1894,7 @@ async def test_postgres_pre_701_upgrade_and_old_binary_rollback_redeploy_converg
                 name="Post-withdrawal draft",
                 description="",
                 instructions="private post-withdrawal draft",
-                model_id="model-a",
+                legacy_model_id="model-a",
                 skill_id="legacy-skill",
                 skill_version="version-a",
                 mcp_tool_ids=[],

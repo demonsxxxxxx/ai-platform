@@ -1320,6 +1320,9 @@ def test_locked_harness_run_reconstructs_null_skill_identity():
         "skill_id": "",
     }
     locked_run = {
+        "model_id": "catalog-model",
+        "model_value": "provider/catalog-model",
+        "model_gateway_revision": 3,
         "input_json": {
             "input": {"message": "hello"},
             "file_ids": [],
@@ -1340,6 +1343,67 @@ def test_locked_harness_run_reconstructs_null_skill_identity():
     assert reconstructed is not None
     assert reconstructed.execution_kind == "harness_chat"
     assert reconstructed.skill_id is None
+    assert reconstructed.model_id == "catalog-model"
+    assert reconstructed.model_value == "provider/catalog-model"
+
+
+@pytest.mark.parametrize(
+    ("durable_model", "queue_model", "expected_model"),
+    [
+        (("bound-model", "provider/bound-model", 7), ("stale-model", "provider/stale-model"), ("bound-model", "provider/bound-model")),
+        (("partial", None, None), ("queue-model", "provider/queue-model"), None),
+        ((None, "provider/partial", None), ("queue-model", "provider/queue-model"), None),
+        ((None, None, 1), ("queue-model", "provider/queue-model"), None),
+        ((None, None, None), (None, None), None),
+        ((None, None, None), ("legacy-model", "provider/legacy-model"), ("legacy-model", "provider/legacy-model")),
+    ],
+)
+def test_locked_run_uses_one_complete_model_authority(
+    durable_model,
+    queue_model,
+    expected_model,
+):
+    payload = base_payload(
+        _leased=False,
+        execution_kind="harness_chat",
+        skill_id=None,
+        skill_version=None,
+        release_decision={},
+        skill_manifests=[],
+        file_ids=[],
+        input={"message": "hello"},
+        executor_type="claude-agent-worker",
+        schema_version="ai-platform.run-payload.v2",
+        model_id=queue_model[0],
+        model_value=queue_model[1],
+    )
+    locked_run = locked_run_from_payload(payload)
+    locked_run.update(
+        model_id=durable_model[0],
+        model_value=durable_model[1],
+        model_gateway_revision=durable_model[2],
+    )
+    run_identity = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "agent_id": "qa-word-review",
+        "execution_kind": "harness_chat",
+        "skill_id": "",
+    }
+
+    reconstructed = worker_module._payload_from_locked_run(
+        locked_run,
+        run_identity=run_identity,
+    )
+
+    if expected_model is None:
+        assert reconstructed is None
+    else:
+        assert reconstructed is not None
+        assert (reconstructed.model_id, reconstructed.model_value) == expected_model
 
 
 @pytest.mark.asyncio
@@ -1443,6 +1507,8 @@ def base_payload(**overrides):
         "skill_id": skill_id,
         "file_ids": ["file-a"],
         "input": {"mode": "file"},
+        "model_id": "catalog-default",
+        "model_value": "provider/catalog-default",
         "executor_type": "fake",
         "skill_version": default_version,
         "release_decision": release_decision(default_version),
@@ -2013,7 +2079,6 @@ def test_agent_profile_snapshot_rejects_authority_skill_version_mismatch():
             "skill_id": "qa-file-reviewer",
             "skill_version": "different-version",
         },
-        model={"id": payload.model_id, "value": payload.model_value},
         mcp_tool_ids=tuple(repository_module.extract_run_mcp_tool_ids(payload.input)),
     )
 
@@ -2383,7 +2448,6 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         return types.SimpleNamespace(
             private_execution_input=authorized_profile,
             skill={"skill_id": "general-chat"},
-            model={"id": "obsolete-profile-model", "value": "obsolete-profile-model"},
             mcp_tool_ids=(),
         )
 
@@ -5966,6 +6030,14 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
             },
         }
 
+    async def load_run_model_snapshot(conn, *, tenant_id, run_id):
+        calls.append(("model_snapshot", conn, tenant_id, run_id))
+        return {
+            "model_id": "platform-default",
+            "model_value": "provider/default",
+            "model_gateway_revision": None,
+        }
+
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs["event_type"], kwargs.get("payload") or {}))
         return "evt-a"
@@ -5995,6 +6067,7 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_run_model_snapshot)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
@@ -6022,6 +6095,9 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
     assert captured["payload"].file_ids == ["file-db"]
     assert captured["payload"].skill_version == version
     assert captured["payload"].release_decision == release_decision(version)
+    assert captured["payload"].model_id == "platform-default"
+    model_snapshot_call = next(item for item in calls if item[0] == "model_snapshot")
+    assert model_snapshot_call[2:] == ("tenant-a", "run-a")
     assert captured["payload"].context_snapshot_id == "ctx-db"
 
 
@@ -9145,6 +9221,9 @@ def _install_task6_worker_fakes(
         "session_admitted_agent_profile_revision": None,
         "session_admitted_agent_profile_hash": None,
         "skill_id": skill_id,
+        "model_id": "platform-default",
+        "model_value": "provider/default",
+        "model_gateway_revision": None,
         "trace_id": "trace-run-a",
         "principal_roles": list(principal_roles or ["qa_operator"]),
         "principal_department_id": principal_department_id,

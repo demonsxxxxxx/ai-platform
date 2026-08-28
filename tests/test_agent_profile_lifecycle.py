@@ -225,10 +225,7 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
         return "aud_profile"
 
     async def validate(*_args, **_kwargs):
-        return (
-            {"skill_id": "general-chat", "skill_version": "version-a"},
-            {"id": "model-a", "value": "model-a"},
-        )
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock",
@@ -248,7 +245,6 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
         name="Support assistant",
         description="Approved support help.",
         instructions="private instruction",
-        model_id="model-a",
         selected_skill=SelectedSkillRequest(skill_id="general-chat", expected_version="version-a"),
         expected_draft_revision=7,
     )
@@ -275,6 +271,8 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
         "text/*",
         "video/*",
     ]
+    assert revision_writes[-1]["legacy_model_id"] == "platform-selected"
+    assert "model_id" not in revision_writes[-1]
 
     order.clear()
     await authority.publish_draft(
@@ -300,6 +298,8 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
         "text/*",
         "video/*",
     ]
+    assert revision_writes[-1]["legacy_model_id"] == "platform-selected"
+    assert "model_id" not in revision_writes[-1]
 
 
 @pytest.mark.asyncio
@@ -496,7 +496,6 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
                     "name",
                     "description",
                     "instructions",
-                    "model_id",
                     "skill_id",
                     "skill_version",
                     "mcp_tool_ids",
@@ -509,6 +508,7 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
                     "allowed_user_ids",
                 )
             }
+            | {"model_id": kwargs["legacy_model_id"]}
         )
         rows[revision] = row
         return row
@@ -527,17 +527,13 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
     authority = AgentProfileAuthority()
 
     async def validate(*_args, **_kwargs):
-        return (
-            {"skill_id": "general-chat", "skill_version": "version-a"},
-            {"id": "model-a", "value": "model-a"},
-        )
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
     monkeypatch.setattr(authority, "_validate_definition", validate)
 
     omitted = AgentProfileDraftRequest(
         name="Updated support assistant",
         instructions="updated private instruction",
-        model_id="model-a",
         selected_skill=SelectedSkillRequest(skill_id="general-chat", expected_version="version-a"),
         expected_draft_revision=7,
     )
@@ -643,10 +639,7 @@ async def test_draft_preview_uses_presence_aware_effective_existing_definition(m
 
     async def validate(*_args, **kwargs):
         validated.append(kwargs["definition"])
-        return (
-            {"skill_id": "general-chat", "skill_version": "version-a"},
-            {"id": "model-a", "value": "model-a"},
-        )
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
     async def audit(*_args, **_kwargs):
         return "aud_preview"
@@ -661,7 +654,6 @@ async def test_draft_preview_uses_presence_aware_effective_existing_definition(m
     omitted = AgentProfileDraftRequest(
         name="Updated support assistant",
         instructions="updated private instruction",
-        model_id="model-a",
         selected_skill=SelectedSkillRequest(skill_id="general-chat", expected_version="version-a"),
         expected_draft_revision=7,
     )
@@ -680,7 +672,6 @@ async def test_draft_preview_uses_presence_aware_effective_existing_definition(m
     explicit_empty = AgentProfileDraftRequest(
         name="Updated support assistant",
         instructions="updated private instruction",
-        model_id="model-a",
         selected_skill=SelectedSkillRequest(skill_id="general-chat", expected_version="version-a"),
         visibility="restricted",
         allowed_department_ids=[],
@@ -739,7 +730,6 @@ async def test_draft_preview_rejects_a_superseded_revision_before_validation_or_
             definition=AgentProfileDraftRequest(
                 name="Superseded draft",
                 instructions="private instructions",
-                model_id="model-a",
                 selected_skill=SelectedSkillRequest(
                     skill_id="general-chat",
                     expected_version="version-a",
@@ -941,7 +931,7 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
         return profile_row
 
     async def validate(*_args, **_kwargs):
-        return ({"skill_id": "general-chat", "skill_version": "version-a"}, {"id": "model-a", "value": "model-a"})
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
     async def remember_workspace(*_args, **_kwargs):
         observed["workspace"] = True
@@ -1038,7 +1028,7 @@ async def test_agent_conversation_operation_replay_returns_one_pinned_session_wi
         return state["existing"]
 
     async def validate(*_args, **_kwargs):
-        return ({"skill_id": "general-chat", "skill_version": "version-a"}, {"id": "model-a", "value": "model-a"})
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
     async def create_session(*_args, **kwargs):
         calls["create"] += 1
@@ -1227,10 +1217,7 @@ async def test_revision_bound_conversations_stay_on_their_publication_until_unpu
         return row
 
     async def validate(*_args, **_kwargs):
-        return (
-            {"skill_id": "general-chat", "skill_version": "version-a"},
-            {"id": "model-a", "value": "model-a"},
-        )
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
     async def noop(*_args, **_kwargs):
         return None
@@ -1335,10 +1322,7 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
 
     async def validate(*_args, **kwargs):
         calls.append(("validate", kwargs["definition"]))
-        return (
-            {"skill_id": "general-chat", "skill_version": "version-a"},
-            {"id": "model-a", "value": "model-a"},
-        )
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
@@ -1390,10 +1374,7 @@ async def test_worker_dispatch_accepts_only_the_exact_legacy_one_skill_hash(monk
         return row
 
     async def validate(*_args, **_kwargs):
-        return (
-            {"skill_id": "general-chat", "skill_version": "version-a"},
-            {"id": "model-a", "value": "model-a"},
-        )
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
@@ -1459,10 +1440,7 @@ async def test_worker_dispatch_profile_reauthorization_fails_closed(monkeypatch,
         calls["validate"] += 1
         if denial == "capability":
             raise HTTPException(status_code=403, detail="agent_profile_capability_not_available")
-        return (
-            {"skill_id": "general-chat", "skill_version": "version-a"},
-            {"id": "model-a", "value": "model-a"},
-        )
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
@@ -1538,7 +1516,6 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
             revision=7,
             content_hash="a" * 64,
             skill={"skill_id": "general-chat", "skill_version": "version-a"},
-            model={"id": "model-a", "value": "model-a"},
             mcp_tool_ids=(),
             private_execution_input={
                 "agent_id": "agt_support",
@@ -1746,6 +1723,7 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
         observed["append"] = kwargs
         row = {
             **kwargs,
+            "model_id": kwargs["legacy_model_id"],
             "agent_id": "agt_support",
             "revision": 9,
             "published_at": None,
@@ -1847,10 +1825,7 @@ async def test_profile_authority_accepts_the_exact_canonical_frontend_transport_
         return profile_row
 
     async def validate(*_args, **_kwargs):
-        return (
-            {"skill_id": "general-chat", "skill_version": "version-a"},
-            {"id": "model-a", "value": "model-a"},
-        )
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.get_current_published_agent_profile",
@@ -1931,10 +1906,7 @@ async def test_profile_authority_rejects_nonempty_client_mcp_selector_even_when_
         return profile_row
 
     async def validate(*_args, **_kwargs):
-        return (
-            {"skill_id": "general-chat", "skill_version": "version-a"},
-            {"id": "model-a", "value": "model-a"},
-        )
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.get_current_published_agent_profile",
@@ -1993,21 +1965,18 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
 
     async def validate(*_args, **_kwargs):
         return (
-            (
-                {
-                    "skill_id": "skill-a",
-                    "skill_version": "version-a",
-                    "executor_type": "claude-agent-worker",
-                    "backing_mcp_tool_id": "skill-a-search",
-                },
-                {
-                    "skill_id": "skill-b",
-                    "skill_version": "version-b",
-                    "executor_type": "claude-agent-worker",
-                    "backing_mcp_tool_id": "skill-b-search",
-                },
-            ),
-            {"id": "model-a", "value": "model-a"},
+            {
+                "skill_id": "skill-a",
+                "skill_version": "version-a",
+                "executor_type": "claude-agent-worker",
+                "backing_mcp_tool_id": "skill-a-search",
+            },
+            {
+                "skill_id": "skill-b",
+                "skill_version": "version-b",
+                "executor_type": "claude-agent-worker",
+                "backing_mcp_tool_id": "skill-b-search",
+            },
         )
 
     monkeypatch.setattr(
@@ -2127,10 +2096,7 @@ async def test_profile_authority_rejects_incompatible_client_selectors_after_pro
         return profile_row
 
     async def validate(*_args, **_kwargs):
-        return (
-            {"skill_id": "general-chat", "skill_version": "version-a"},
-            {"id": "model-a", "value": "model-a"},
-        )
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.get_current_published_agent_profile",
