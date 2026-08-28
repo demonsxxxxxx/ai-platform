@@ -94,7 +94,7 @@ timeout --signal=INT --kill-after=30s 24000s \
   "${MIRROR_ARGS[@]}" \
   --docker-cmd "sudo -n docker" \
   --compose-file deploy/ai-platform/docker-compose.yml \
-  --compose-file deploy/ai-platform/docker-compose.sandbox.yml
+  --compose-file deploy/ai-platform/docker-compose.opensandbox-internal-test.yml
 ```
 
 `SOURCE` is the coordination checkout: it supplies the authority executable and
@@ -139,16 +139,14 @@ do not exist until after a build are replaced only inside that read-only parser
 process with a fixed `.invalid` preflight placeholder; the convergence command is
 constructed separately from verified target image references.
 
-For a governed host-colocated OpenSandbox selection, do not invoke the retired
-cross-host overlay or render resolved config manually. The release authority
-uses Compose JSON rendering to additionally verify API/Worker provider parity,
-governed security profile, server proxy enabled, network mode `none`, callback
-and model authority parity, and reset host ports. The s75 migration command runs
-this same semantic preflight against its exact three-file contour before stopping
-admission. On failure, keep deployment authorization blocked and use only the
-authority's bounded key-name diagnostic; never print or copy the managed
-environment file.
-
+For a direct OpenSandbox selection, do not render resolved config manually. The
+release authority uses Compose JSON rendering to verify API/Worker provider
+parity, direct SDK mode, governed profile, bridge networking, proxy binding,
+model-proxy token presence, and reset host ports. The same-project transition
+keeps `ai-platform-internal` and its exact named volumes; never invokes a
+project migration or volume aliases. On failure, keep deployment authorization
+blocked and use only the authority's bounded key-name diagnostic; never print
+or copy the managed environment file.
 The authority permits at most 32 distinct required keys and at most 33 parser
 attempts. Each parser attempt is capped at 15 seconds. When one or more required
 keys are absent, it reports only the fixed `missing-required-config` category and
@@ -203,24 +201,25 @@ read only for signed `released` or `expired` history; active acquisition and
 dispatch require the current key and a fresh proof. Keep the raw values in the
 host environment file only.
 
-### s72 direct official OpenSandbox functional acceptance
+### s72 direct OpenSandbox functional acceptance
 
-`docker-compose.opensandbox-internal-test.yml` is a separate, non-default
-functional-acceptance overlay. It pins API and worker to
-`DEPLOYMENT_ENVIRONMENT=test`, `SANDBOX_CONTAINER_PROVIDER=opensandbox`,
-`SANDBOX_SECURITY_PROFILE=internal-test`, and
-`OPENSANDBOX_EXPECTED_NETWORK_MODE=bridge`. Use it only with the base Compose
-file and an exact merged backend SHA; do not combine it with the governed
-OpenSandbox overlay or the Docker-socket sandbox overlay.
+`docker-compose.opensandbox.yml` is the single direct-OpenSandbox overlay. It
+pins API and worker to `SANDBOX_CONTAINER_PROVIDER=opensandbox`,
+`SANDBOX_SECURITY_PROFILE=governed`,
+`OPENSANDBOX_EXPECTED_NETWORK_MODE=bridge`, native server proxying, and the
+stateless model/callback egress entry. Use it only with the base Compose file;
+do not combine it with the Docker-socket sandbox overlay.
 
 This mode connects directly to the official OpenSandbox lifecycle API. It does
-not require the capability gateway, model broker, a custom `/attestation`
-endpoint, or a governed-egress proof key. The official API key remains an
-operator-held secret and must never appear in commands, logs, or evidence.
+not require a lifecycle gateway, mailbox relay, custom `/attestation` endpoint,
+or a provider-specific credential path. Model traffic uses the existing
+platform model control plane through the stateless Nginx egress entry. The
+OpenSandbox API key remains an operator-held secret and must never appear in
+commands, logs, or evidence.
 Unknown profiles, production selection, non-OpenSandbox providers, or a
 one-sided network-mode change fail during process startup.
 
-For the s72 internal-test release, the controller first verifies that fresh
+For the s72 direct OpenSandbox release, the controller first verifies that fresh
 `origin/main` has successful backend, frontend, and packaging runs. It then
 atomically prepares `/data/ai-platform-internal-test/incoming/latest-main.json`
 as a non-secret owner-managed file with exactly these fields:
@@ -246,7 +245,7 @@ checkout with no release arguments:
 The quickstart rechecks fresh `origin/main`, requires immutable role-specific
 image refs, validates the existing runtime-scoped managed `.env` as an
 owner-matching `0600` regular file without reading or printing its values, and
-runs Compose `config --quiet` before either pull or up. It uses only the base
+runs Compose semantic preflight before either pull or up. It uses only the base
 file plus `docker-compose.opensandbox-internal-test.yml`, never builds on s72,
 and never runs `down`, `down -v`, or volume deletion. If startup or smoke fails,
 it performs one `--no-build --pull never` up of the saved previous subject;
@@ -289,43 +288,92 @@ the s72 host, inspect that exact sandbox container and record
 proof. Keep the governed profile as the production default and track network
 closure as separate follow-up work.
 
-### Governed host-colocated OpenSandbox transition
+The production release uses the base Compose file plus
+`docker-compose.opensandbox.yml`. API and Worker use the official
+OpenSandbox SDK directly with `OPENSANDBOX_USE_SERVER_PROXY=true`. The
+OpenSandbox Server remains an independently managed root service using runsc;
+its lifecycle port is published only on a dedicated private host address distinct
+from the egress bridge address. The server process binds its isolated service
+container internally, while Docker owns that exact host publication. Target
+parity probes `/health` from both API and Worker before migration can report
+success. Native bridge network policy permits only the distinct stateless
+egress-proxy address.
+The proxy strips sandbox credentials, forwards the callback-derived per-attempt
+model capability, injects the internal proxy token, and forwards callbacks to
+the existing API callback-token validators.
 
-The retired cross-host `docker-compose.opensandbox.yml` contour is not a
-release or rollback path. Ordinary production deployment remains base plus
-`docker-compose.sandbox.yml` until a separately approved provider-transition
-charter passes all prerequisites.
+The s75 deployment keeps Compose project `ai-platform-internal` and the four
+existing named data/workspace volumes. A bounded transition stops admission,
+proves zero nonterminal Runs/RunAttempts/leases and zero sandbox containers,
+changes the overlay in place, and revalidates exact volume mount identities.
+Rollback uses the same project and volumes without `down -v` or any project
+namespace migration.
 
-Host-colocated production uses base plus
-`docker-compose.s72-colocation.yml`. Despite the historical filename, that
-overlay is the governed same-host contract: OpenSandbox Server is an
-independently managed root service; API/Worker use the `opensandbox` provider
-and governed profile; server proxying is enabled; sandbox network mode is fixed
-to `none`; and callback/model traffic crosses only the capability gateway and
-broker boundaries described by
-`s72-opensandbox-gateway-runbook.md`.
+Run the transition only from the exact CI-qualified target checkout. Preserve the
+currently verified Docker release values before cutover; they are rollback
+arguments, not values to rediscover after a failure. The command exits before
+mutation when schema, quiescence, image, project, volume, host, or Compose
+preflight fails. A failure after the old contour stops performs one automatic
+rollback and exits nonzero.
 
-The one approved legacy s75 migration additionally uses
-`docker-compose.s75-migration.yml` so project `ai-platform-phaseb` reuses the
-four exact volumes created by legacy project `ai-platform-internal`. The
-ordinary release authority does not adopt the old project or infer volume
-aliases. Only `tools.s75_opensandbox_transition` may perform that one-time
-project/provider change and its exact rollback, following
-`s75-opensandbox-migration.md`.
+```bash
+cd "$TARGET_REPO_ROOT"
+umask 077
+sudo -n python3 -B -m tools.s75_opensandbox_transition migrate \
+  --target-repo-root "$TARGET_REPO_ROOT" \
+  --target-commit "$TARGET_COMMIT" \
+  --legacy-repo-root "$LEGACY_REPO_ROOT" \
+  --legacy-commit "$LEGACY_COMMIT" \
+  --env-file "$MANAGED_ENV_FILE" \
+  --backend-image "$TARGET_BACKEND_IMAGE" \
+  --frontend-image "$TARGET_FRONTEND_IMAGE" \
+  --docker-cmd docker >"$TRANSITION_RESULT"
+```
 
-The transition must prepare immutable images and semantic Compose before
-downtime, stop admission, prove zero nonterminal Runs/RunAttempts/leases and
-zero sandbox containers, and revalidate exact ownership and mount identity
-before removing legacy containers without `-v`. Source and target projects
-must never run concurrently against those writable volumes. Unknown projects,
-selections, roots, services, volume identities, missing host prerequisites, or
-concurrent transition locks fail closed.
+Do not finalize from the migration command alone. Require all eight application
+services plus `opensandbox-egress-proxy` healthy, API readiness and schema checks,
+zero restart-count growth, exact target image/Compose parity, unchanged volume
+IDs and mounts, and a real application-owned Run that proves
+create -> execute -> collect -> delete through OpenSandbox with
+`HostConfig.Runtime=runsc`. From that sandbox, the lifecycle listener and an
+unrelated host port must both be unreachable while the egress proxy remains
+reachable. That Run must also prove model traffic through the existing
+model-control-plane proxy and callback delivery through the existing
+Run/attempt callback authority. Keep admission fenced and roll back on any failed
+or missing check. After those checks pass, admit the target:
 
-A successful Compose/parity transition is deployment evidence only. Before
-ordinary work is admitted, controlled-host acceptance must prove disposable
-OpenSandbox create, command execution, file write/read, stop, orphan cleanup,
-`runsc`, and network mode `none`. Image/provider rollback does not reverse a
-database migration.
+```bash
+cd "$TARGET_REPO_ROOT"
+sudo -n python3 -B -m tools.s75_opensandbox_transition finalize \
+  --target-repo-root "$TARGET_REPO_ROOT" \
+  --target-commit "$TARGET_COMMIT" \
+  --env-file "$MANAGED_ENV_FILE" \
+  --docker-cmd docker
+```
+
+Before database migration or while schema compatibility still passes, an operator
+may explicitly restore the captured Docker release. The rollback command repeats
+quiescence, authenticates both legacy images and the executor image by immutable
+Docker image ID, checks reverse schema compatibility, stops the target contour,
+and restores admission only after legacy parity succeeds:
+
+```bash
+cd "$TARGET_REPO_ROOT"
+sudo -n python3 -B -m tools.s75_opensandbox_transition rollback \
+  --target-repo-root "$TARGET_REPO_ROOT" \
+  --target-commit "$TARGET_COMMIT" \
+  --legacy-repo-root "$LEGACY_REPO_ROOT" \
+  --legacy-commit "$LEGACY_COMMIT" \
+  --env-file "$MANAGED_ENV_FILE" \
+  --legacy-backend-image "$LEGACY_BACKEND_IMAGE" \
+  --legacy-frontend-image "$LEGACY_FRONTEND_IMAGE" \
+  --legacy-executor-image "$LEGACY_EXECUTOR_IMAGE" \
+  --docker-cmd docker
+```
+
+Never run `migrate`, `finalize`, or `rollback` concurrently. Never use `down -v`,
+start a second Compose project, copy the managed environment file, or retry a
+nonzero transition before classifying its bounded result and current runtime.
 
 ## Readiness Evidence
 
@@ -408,7 +456,7 @@ timeout --signal=INT --kill-after=30s 27000s \
   --canonical-build-timeout-seconds 1800 \
   --docker-cmd "sudo -n docker" \
   --compose-file deploy/ai-platform/docker-compose.yml \
-  --compose-file deploy/ai-platform/docker-compose.sandbox.yml
+  --compose-file deploy/ai-platform/docker-compose.opensandbox-internal-test.yml
 ```
 
 The flag is default-off. It is accepted only after the authority has completed

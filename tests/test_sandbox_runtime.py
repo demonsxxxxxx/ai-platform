@@ -301,9 +301,7 @@ async def test_runtime_opensandbox_workspace_stage_failure_stops_and_releases_on
         opensandbox_use_server_proxy = False
         opensandbox_executor_image = "sha256:" + "a" * 64
         opensandbox_executor_image_digest = "sha256:" + "a" * 64
-        opensandbox_external_egress_callback_base_url = "https://bridge.internal.example:18443"
-        opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
-        opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
+        opensandbox_egress_proxy_url = "https://172.18.0.1:18443"
 
         sandbox_lease_ttl_seconds = 1800
     class TrustedOpenSandboxProvider(FakeContainerProvider):
@@ -861,9 +859,7 @@ async def test_runtime_uses_opensandbox_external_bridge_callback_without_changin
         sandbox_container_provider = "opensandbox"
         sandbox_callback_base_url = "http://api.sandbox.internal:8020"
         sandbox_callback_token = "settings-token"
-        opensandbox_external_egress_callback_base_url = "https://bridge.internal.example:18443"
-        opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
-        opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
+        opensandbox_egress_proxy_url = "https://172.18.0.1:18443"
 
         sandbox_lease_ttl_seconds = 1800
     class OpenSandboxProvider(FakeContainerProvider):
@@ -887,9 +883,9 @@ async def test_runtime_uses_opensandbox_external_bridge_callback_without_changin
 
     await runtime.submit(request())
 
-    assert sent[0].callback_base_url == "https://bridge.internal.example:18443"
+    assert sent[0].callback_base_url == "https://172.18.0.1:18443"
     assert sent[0].callback_url == (
-        "https://bridge.internal.example:18443/api/ai/runtime/callbacks/executor"
+        "https://172.18.0.1:18443/api/ai/runtime/callbacks/executor"
     )
     assert StubSettings.sandbox_callback_base_url == "http://api.sandbox.internal:8020"
 
@@ -1423,9 +1419,7 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
         sandbox_egress_proof_signing_key = signing_key
-        opensandbox_external_egress_callback_base_url = "https://bridge.internal.example:18443"
-        opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
-        opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
+        opensandbox_egress_proxy_url = "https://172.18.0.1:18443"
 
         sandbox_lease_ttl_seconds = 1800
     class OpenSandboxProvider(FakeContainerProvider):
@@ -1726,9 +1720,7 @@ async def test_runtime_default_db_record_rejects_incomplete_trusted_runtime_hand
     class StubSettings:
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
-        opensandbox_external_egress_callback_base_url = "https://bridge.internal.example:18443"
-        opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
-        opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
+        opensandbox_egress_proxy_url = "https://172.18.0.1:18443"
 
         sandbox_lease_ttl_seconds = 1800
     class IncompleteProvider(FakeContainerProvider):
@@ -1782,9 +1774,7 @@ async def test_runtime_records_opensandbox_provider_as_platform_db_lease(tmp_pat
     settings = SimpleNamespace(
         sandbox_callback_base_url="http://platform.test",
         sandbox_callback_token="settings-token",
-        opensandbox_external_egress_callback_base_url="https://bridge.internal.example:18443",
-        opensandbox_external_egress_openai_base_url="https://bridge.internal.example:18443/openai/v1",
-        opensandbox_external_egress_anthropic_base_url="https://bridge.internal.example:18443/anthropic",
+        opensandbox_egress_proxy_url="https://172.18.0.1:18443",
     )
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: settings)
 
@@ -1851,9 +1841,7 @@ async def test_runtime_passes_private_executor_headers_to_dispatch_without_db_le
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
         sandbox_egress_proof_signing_key = "runtime-test-proof-key-with-enough-entropy-2026"
-        opensandbox_external_egress_callback_base_url = "https://bridge.internal.example:18443"
-        opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
-        opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
+        opensandbox_egress_proxy_url = "https://172.18.0.1:18443"
 
         sandbox_lease_ttl_seconds = 1800
     class HeaderProvider(FakeContainerProvider):

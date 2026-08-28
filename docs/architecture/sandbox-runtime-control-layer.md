@@ -11,9 +11,10 @@ workers issue scoped commands to that authority; they do not create provider
 leases or mutate a real provider lease into a terminal state independently.
 
 `ContainerProvider` is the provider port. OpenSandbox and Docker SDK details
-remain behind that port. The OpenSandbox Gateway may keep its own internal
-`uncertain_create/reconciling/cleanup_pending/deleted` recovery states, but those
-states are provider observations rather than a second application lifecycle.
+remain behind that port. OpenSandbox API and Worker calls use the official
+OpenSandbox SDK directly; OpenSandbox Server owns sandbox lifecycle and runsc
+execution. The stateless model/callback proxy is an egress boundary only and
+is not a second application lifecycle.
 
 The platform owns these durable facts:
 

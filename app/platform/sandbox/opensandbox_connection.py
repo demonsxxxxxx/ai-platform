@@ -4,6 +4,7 @@ import ssl
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -11,10 +12,33 @@ from app.platform.sandbox.errors import OpenSandboxCapabilityAdmissionError
 
 
 def build_opensandbox_connection_config(settings: Any, connection_config_class: Any) -> Any:
+    base_url = str(getattr(settings, "opensandbox_base_url", "") or "").strip()
+    if base_url:
+        try:
+            parsed = urlsplit(base_url)
+            port = parsed.port
+        except ValueError:
+            raise OpenSandboxCapabilityAdmissionError("OpenSandbox base URL is invalid") from None
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+            or port is None
+        ):
+            raise OpenSandboxCapabilityAdmissionError("OpenSandbox base URL is invalid")
+        protocol = parsed.scheme
+        domain = parsed.netloc
+    else:
+        protocol = str(getattr(settings, "opensandbox_protocol", "http") or "http")
+        domain = str(getattr(settings, "opensandbox_domain", "") or "localhost:8080")
     config = connection_config_class(
         api_key=str(getattr(settings, "opensandbox_api_key", "") or "") or None,
-        domain=str(getattr(settings, "opensandbox_domain", "") or "localhost:8080"),
-        protocol=str(getattr(settings, "opensandbox_protocol", "http") or "http"),
+        domain=domain,
+        protocol=protocol,
         request_timeout=timedelta(
             seconds=max(
                 float(getattr(settings, "opensandbox_request_timeout_seconds", 30.0) or 30.0),

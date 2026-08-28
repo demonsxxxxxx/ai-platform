@@ -60,6 +60,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_settings.py",
         "tests/test_sandbox_container_provider.py",
         "tests/test_opensandbox_live_credential_isolation.py",
+        "tests/test_opensandbox_client_ca.py",
         "tests/test_sandbox_runtime.py",
         "tests/test_sandbox_runtime_cleanup.py",
         "tests/test_sandbox_runtime_evidence_script.py",
@@ -81,8 +82,6 @@ BACKEND_TEST_SHARDS = {
     ),
     "model-control-plane": (
         "tests/test_model_management.py",
-        "tests/test_opensandbox_gateway.py",
-        "tests/test_opensandbox_model_route_credentials.py",
         "tests/test_lambchat_frontend_compat.py::test_lambchat_model_catalog_comes_from_settings",
         "tests/test_lambchat_frontend_compat.py::test_lambchat_governed_model_catalog_preempts_legacy_upstream_and_preserves_raw_ids",
         "tests/test_execution_spec.py::test_execution_spec_preserves_raw_upstream_model_identity",
@@ -125,16 +124,15 @@ BACKEND_TEST_SHARDS = {
         "tests/test_source_authority_docs.py",
         "tests/test_ci_image_scope.py",
         "tests/test_require_zero_junit_skips.py",
-        "tests/test_s72_release_contract.py",
         "tests/test_packaging_contract.py",
         "tests/test_packaging_publish_workflow.py",
         "tests/test_trivy_failure_evidence.py",
         "tests/test_release_image_manifest.py",
     ),
     "release-governance-authority": (
-        "tests/test_s72_atomic_recovery_authority.py",
         "tests/test_governance_readiness.py",
         "tests/test_release_authority.py",
+        "tests/test_s75_opensandbox_transition.py",
     ),
 }
 
@@ -174,6 +172,7 @@ def test_backend_required_check_is_stable_for_every_main_pull_request():
     assert "tests/test_release_image_manifest.py" in workflow
     assert "tests/test_governance_readiness.py" in workflow
     assert "tests/test_release_authority.py" in workflow
+    assert "tests/test_s75_opensandbox_transition.py" in workflow
     assert "tests/test_contract.py" in workflow
     assert "tests/test_worker_main.py" in workflow
 
@@ -246,7 +245,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
         "release-governance-authority": ("", ""),
     }
     all_selectors = [selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors]
-    assert len(all_selectors) == len(set(all_selectors)) == 71
+    assert len(all_selectors) == len(set(all_selectors)) == 69
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job

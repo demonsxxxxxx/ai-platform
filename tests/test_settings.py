@@ -157,19 +157,18 @@ def test_internal_test_opensandbox_profile_requires_explicit_test_bridge_selecti
     assert settings.opensandbox_internal_test_forward_model_credentials is False
 
 
-def test_internal_test_model_credential_forwarding_requires_exact_profile_and_credentials():
-    settings = Settings(
-        _env_file=None,
-        deployment_environment="test",
-        sandbox_container_provider="opensandbox",
-        sandbox_security_profile="internal-test",
-        opensandbox_expected_network_mode="bridge",
-        opensandbox_internal_test_forward_model_credentials=True,
-        openai_api_key="test-openai-key",
-        anthropic_auth_token="test-anthropic-token",
-    )
-
-    assert settings.opensandbox_internal_test_forward_model_credentials is True
+def test_model_credential_forwarding_is_forbidden_for_opensandbox():
+    with pytest.raises(ValidationError, match="opensandbox_model_credential_forwarding_disabled"):
+        Settings(
+            _env_file=None,
+            deployment_environment="test",
+            sandbox_container_provider="opensandbox",
+            sandbox_security_profile="internal-test",
+            opensandbox_expected_network_mode="bridge",
+            opensandbox_internal_test_forward_model_credentials=True,
+            openai_api_key="test-openai-key",
+            anthropic_auth_token="test-anthropic-token",
+        )
 
 
 @pytest.mark.parametrize(
@@ -194,28 +193,6 @@ def test_internal_test_model_credential_forwarding_rejects_other_profiles(overri
     }
 
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, **values)
-
-
-@pytest.mark.parametrize(
-    "missing_credential",
-    ["openai_api_key", "anthropic_auth_token"],
-)
-def test_internal_test_model_credential_forwarding_requires_both_credentials(
-    missing_credential,
-):
-    values = {
-        "deployment_environment": "test",
-        "sandbox_container_provider": "opensandbox",
-        "sandbox_security_profile": "internal-test",
-        "opensandbox_expected_network_mode": "bridge",
-        "opensandbox_internal_test_forward_model_credentials": True,
-        "openai_api_key": "test-openai-key",
-        "anthropic_auth_token": "test-anthropic-token",
-        missing_credential: "",
-    }
-
-    with pytest.raises(ValidationError, match="internal_test_model_credentials_required"):
         Settings(_env_file=None, **values)
 
 

@@ -11,7 +11,6 @@ LOCAL_TEST_EXECUTION = ROOT / "docs/agent-rules/local-test-execution.md"
 PULL_REQUEST_TEMPLATE = ROOT / ".github/PULL_REQUEST_TEMPLATE.md"
 CLAUDE = ROOT / "CLAUDE.md"
 RUNBOOK = ROOT / "docs/operations/release-operations-runbook.md"
-S72_RUNBOOK = ROOT / "docs/operations/s72-opensandbox-gateway-runbook.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_ARCHITECTURE = ROOT / "docs/architecture/source-code-architecture.md"
 CI_TEST_READINESS_GOVERNANCE = ROOT / "docs/architecture/ci-test-readiness-governance.md"
@@ -36,7 +35,6 @@ def test_documentation_index_names_the_only_durable_authority_surfaces():
         "architecture/ci-test-readiness-governance.md",
         "adr/0006-domain-first-modular-monolith.md",
         "operations/release-operations-runbook.md",
-        "operations/s72-opensandbox-gateway-runbook.md",
         "release-evidence/README.md",
     ):
         assert relative_path in index
@@ -308,49 +306,6 @@ def test_decommissioned_runtime_is_not_an_active_source_authority():
     assert retired_host not in active_text
     assert retired_connection not in active_text
     assert "211_api_worker_runtime" not in active_text
-
-
-def test_s72_runbook_owns_gateway_install_and_rollback_contracts():
-    runbook = " ".join(read(S72_RUNBOOK).split())
-
-    assert "deploy/opensandbox/install-s72.sh" in runbook
-    assert "deploy/opensandbox/rollback-s72.sh" in runbook
-    assert "one mutation lease" in runbook
-    assert "root-owned, clean source checkout" in runbook
-    assert "OPENSANDBOX_GATEWAY_EXPECTED_AUTHORITY_SHA" in runbook
-    assert "/etc/opensandbox-gateway" in runbook
-    assert "`0750`" in runbook
-    assert "`0640`" in runbook
-    assert "`0440`" in runbook
-    assert "tls/upstream-ca.pem" in runbook
-    assert "system trust store" in runbook
-    assert "Before an ai-platform provider switch" in runbook
-    assert "/run/lock/opensandbox-gateway-s72-install.lock" in runbook
-    assert "recovery snapshot" in runbook
-    assert "install-s72.sh --recover" in runbook
-    assert "same-parent rename" in runbook
-    assert "MANIFEST.identity" in runbook and "SNAPSHOT.seal" in runbook
-    assert "self-authenticating transaction-record chain" in runbook
-    assert "reserved -> snapshot-published" in runbook
-    assert "release-published -> staged" in runbook
-    assert "runtime-restored -> committed -> cleaned" in runbook
-    assert "identity-group-intent -> identity-group-ready" in runbook
-    assert "`UnitFileState`, `LoadState`, and `ActiveState`" in runbook
-    assert "gateway UID binds the exact system group, account, home, shell" in runbook
-    assert "`failed`, `activating`, `static`, `masked`, `linked`, or `enabled-runtime`" in runbook
-    assert "real, effective, saved, and filesystem UIDs" in runbook
-    assert "after group cleanup immediately before identity advancement" in runbook
-    assert "private producer/consumer stream enforces byte and row limits" in runbook
-    assert "Before the transaction records `stopped`" in runbook
-    assert "hard-queried again after disable" in runbook
-    assert "it never kills a process" in runbook
-    assert "published from a transaction-owned private stage" in runbook
-    assert "foreign replacement is preserved and fails closed" in runbook
-    assert "device/inode" in runbook
-    assert "exactly one `LISTEN` `127.0.0.1:8080`" in runbook
-    assert "left untouched and recovery fails closed" in runbook
-    assert "They do not prove a live systemd/Docker deployment" in runbook
-    assert "cannot establish application runtime acceptance" in runbook
 
 
 def test_release_evidence_index_is_a_contract_not_a_status_snapshot():

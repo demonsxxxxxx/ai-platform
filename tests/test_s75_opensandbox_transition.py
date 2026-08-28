@@ -7,7 +7,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import yaml
 
 import tools.release_authority as release_authority
 import tools.s75_opensandbox_transition as transition
@@ -15,7 +14,6 @@ import tools.s75_opensandbox_transition as transition
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_DIR = ROOT / "deploy" / "ai-platform"
-S75_OVERLAY = COMPOSE_DIR / "docker-compose.s75-migration.yml"
 COMMIT = "a" * 40
 
 
@@ -63,7 +61,11 @@ def _legacy_containers(selection, commit=COMMIT):
                 {
                     "Type": "volume",
                     "Name": transition.EXPECTED_VOLUMES["ai_platform_sandbox_workspaces"][2],
-                    "Destination": "/tmp/ai-platform-sandbox-workspaces",
+                    "Destination": (
+                        "/runtime-workspaces"
+                        if service == "workspace-init"
+                        else "/tmp/ai-platform-sandbox-workspaces"
+                    ),
                 }
             )
         containers[service] = {
@@ -89,19 +91,12 @@ def _legacy_runtime(tmp_path: Path):
     )
 
 
-def test_s75_overlay_reuses_only_the_four_legacy_project_volumes():
-    overlay = yaml.safe_load(S75_OVERLAY.read_text(encoding="utf-8"))
-
-    assert overlay["services"] == {}
-    assert overlay["volumes"] == {
-        logical: {"external": True, "name": expected}
-        for logical, (_, _, expected) in transition.EXPECTED_VOLUMES.items()
-    }
-    selection = release_authority.resolve_compose_files(
-        ROOT,
-        release_authority.S75_MIGRATED_COLOCATION_SELECTION,
-    )
-    assert selection.relative_paths == release_authority.S75_MIGRATED_COLOCATION_SELECTION
+def test_s75_target_reuses_the_legacy_compose_project_and_named_volumes():
+    assert transition.LEGACY_PROJECT == release_authority.COMPOSE_PROJECT
+    assert transition.TARGET_SELECTION == release_authority.DIRECT_OPENSANDBOX_SELECTION
+    assert not (COMPOSE_DIR / "docker-compose.s75-migration.yml").exists()
+    selection = release_authority.resolve_compose_files(ROOT, transition.TARGET_SELECTION)
+    assert selection.relative_paths == transition.TARGET_SELECTION
 
 
 def test_prepare_packaged_release_images_pulls_verifies_and_tags(monkeypatch):
@@ -463,6 +458,50 @@ def test_finalize_releases_loopback_admission_only_after_acceptance(monkeypatch,
     assert events == ["acceptance-runtime", "quiescent", "deploy-admitted", "parity"]
 
 
+def test_finalize_restores_loopback_fence_when_admitted_parity_fails(monkeypatch, tmp_path):
+    events = []
+
+    @contextmanager
+    def unlocked():
+        yield
+
+    monkeypatch.setattr(transition.os, "name", "posix")
+    monkeypatch.setattr(transition.os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(transition, "_transition_lock", unlocked)
+    monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
+    monkeypatch.setattr(transition, "_require_target_runtime", lambda *args, **kwargs: (COMMIT, ()))
+    monkeypatch.setattr(transition, "_require_quiescent", lambda docker: None)
+
+    def deploy(*args, **kwargs):
+        fenced = transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
+        events.append("deploy-fenced" if fenced else "deploy-admitted")
+
+    parity_calls = 0
+
+    def parity(*args, **kwargs):
+        nonlocal parity_calls
+        parity_calls += 1
+        events.append("parity")
+        if parity_calls == 1:
+            raise transition.TransitionError("admitted parity failed")
+
+    monkeypatch.setattr(release_authority, "deploy_clean_commit", deploy)
+    monkeypatch.setattr(transition, "_require_target_parity", parity)
+
+    with pytest.raises(
+        transition.TransitionError,
+        match="final admission failed; target runtime restored behind acceptance fence",
+    ):
+        transition.finalize(
+            target_repo_root=tmp_path / "target",
+            target_commit=COMMIT,
+            env_file=tmp_path / ".env",
+            docker_cmd="docker",
+        )
+
+    assert events == ["deploy-admitted", "parity", "deploy-fenced", "parity"]
+
+
 def test_explicit_rollback_requires_quiescence_and_restores_legacy_selection(monkeypatch, tmp_path):
     runtime = _legacy_runtime(tmp_path / "legacy")
     target_files = _selection(tmp_path / "target", transition.TARGET_SELECTION).absolute_paths
@@ -478,6 +517,7 @@ def test_explicit_rollback_requires_quiescence_and_restores_legacy_selection(mon
     monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
     monkeypatch.setattr(transition, "_validated_rollback_runtime", lambda *args, **kwargs: runtime)
     monkeypatch.setattr(transition, "_require_target_runtime", lambda *args, **kwargs: (COMMIT, target_files))
+    monkeypatch.setattr(transition, "_require_schema_compatibility", lambda *args: events.append("schema-compatible"))
     monkeypatch.setattr(transition, "_require_quiescent", lambda docker: events.append("quiescent"))
     monkeypatch.setattr(transition, "_stop_admission", lambda docker: events.append("stop-admission"))
     monkeypatch.setattr(transition, "_rollback", lambda *args, **kwargs: events.append("rollback"))
@@ -495,7 +535,7 @@ def test_explicit_rollback_requires_quiescence_and_restores_legacy_selection(mon
     )
 
     assert result["status"] == "rolled_back"
-    assert events == ["quiescent", "stop-admission", "quiescent", "rollback"]
+    assert events == ["schema-compatible", "quiescent", "stop-admission", "quiescent", "rollback"]
 
 
 def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, tmp_path):
@@ -513,13 +553,23 @@ def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, 
     monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
     monkeypatch.setattr(transition, "_validated_rollback_runtime", lambda *args, **kwargs: runtime)
     monkeypatch.setattr(transition, "_require_target_runtime", lambda *args, **kwargs: (COMMIT, target_files))
+    monkeypatch.setattr(transition, "_require_schema_compatibility", lambda *args: None)
     monkeypatch.setattr(transition, "_require_quiescent", lambda docker: None)
     monkeypatch.setattr(transition, "_stop_admission", lambda docker: None)
     monkeypatch.setattr(transition, "_rollback", lambda *args, **kwargs: (_ for _ in ()).throw(transition.TransitionError("legacy start failed")))
     monkeypatch.setattr(transition, "_down", lambda *args, **kwargs: events.append("down-partial-legacy"))
-    monkeypatch.setattr(release_authority, "deploy_clean_commit", lambda *args, **kwargs: events.append("restore-target"))
+    def restore_target(*args, **kwargs):
+        assert transition.os.environ.get("AI_PLATFORM_API_PORT") == "127.0.0.1:8020"
+        assert transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
+        events.append("restore-target-fenced")
 
-    monkeypatch.setattr(transition, "_require_target_parity", lambda *args, **kwargs: events.append("target-parity"))
+    def target_parity(*args, **kwargs):
+        assert transition.os.environ.get("AI_PLATFORM_API_PORT") == "127.0.0.1:8020"
+        assert transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
+        events.append("target-parity-fenced")
+
+    monkeypatch.setattr(release_authority, "deploy_clean_commit", restore_target)
+    monkeypatch.setattr(transition, "_require_target_parity", target_parity)
 
     with pytest.raises(transition.TransitionError, match="target runtime restored"):
         transition.rollback(
@@ -533,7 +583,113 @@ def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, 
             legacy_executor_image=runtime.executor_image,
             docker_cmd="docker",
         )
-    assert events == ["down-partial-legacy", "restore-target", "target-parity"]
+    assert events == ["down-partial-legacy", "restore-target-fenced", "target-parity-fenced"]
+
+
+def test_host_prerequisite_defers_health_to_target_container_parity(monkeypatch):
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return _completed(command)
+
+    monkeypatch.setattr(transition, "_run", run)
+
+    transition._require_host_prerequisites()
+
+    assert commands == [["systemctl", "is-active", "--quiet", "opensandbox.service"]]
+
+
+def test_target_lifecycle_is_reachable_from_api_and_worker(monkeypatch):
+    environment = ["OPENSANDBOX_BASE_URL=http://172.19.0.1:8080"]
+    containers = {
+        transition.CONTAINERS[service]: {"Config": {"Env": list(environment)}}
+        for service in ("api", "worker")
+    }
+    monkeypatch.setattr(
+        transition,
+        "_inspect_container",
+        lambda docker, name: containers[name],
+    )
+    calls = []
+    failing_service = {"name": ""}
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(
+            returncode=int(command[2] == failing_service["name"]),
+            stdout="",
+        )
+
+    monkeypatch.setattr(transition, "_run", run)
+
+    transition._require_target_lifecycle_reachable(["docker"])
+    assert [command[2] for command in calls] == [
+        transition.CONTAINERS["api"],
+        transition.CONTAINERS["worker"],
+    ]
+    assert all(command[-1] == "http://172.19.0.1:8080/health" for command in calls)
+
+    failing_service["name"] = transition.CONTAINERS["worker"]
+    with pytest.raises(transition.TransitionError, match="unreachable from worker"):
+        transition._require_target_lifecycle_reachable(["docker"])
+
+
+def test_target_executor_binding_matches_release_authority_image(monkeypatch):
+    environment = [
+        "SANDBOX_EXECUTOR_IMAGE=sha256:" + "a" * 64,
+        "OPENSANDBOX_EXECUTOR_IMAGE=sha256:" + "a" * 64,
+        "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST=sha256:" + "a" * 64,
+    ]
+    containers = {
+        transition.CONTAINERS[service]: {"Config": {"Env": list(environment)}}
+        for service in ("api", "worker")
+    }
+    monkeypatch.setattr(transition, "_inspect_container", lambda docker, name: containers[name])
+
+    transition._require_target_executor(["docker"])
+    containers[transition.CONTAINERS["worker"]]["Config"]["Env"][-1] = "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST=sha256:" + "b" * 64
+    with pytest.raises(transition.TransitionError, match="executor image mismatch"):
+        transition._require_target_executor(["docker"])
+
+
+def test_rollback_executor_reference_may_alias_verified_backend_image(monkeypatch, tmp_path):
+    backend_id = "sha256:" + "a" * 64
+    backend = "registry.example/backend@sha256:" + "1" * 64
+    frontend = "registry.example/frontend@sha256:" + "2" * 64
+    executor = backend_id
+    selection = _selection(tmp_path, transition.LEGACY_SELECTION)
+    monkeypatch.setattr(release_authority, "assert_managed_target_checkout", lambda *args: COMMIT)
+    monkeypatch.setattr(release_authority, "resolve_compose_files", lambda *args: selection)
+    monkeypatch.setattr(release_authority, "authoritative_repository", lambda *args: release_authority.AUTHORITATIVE_REPOSITORY)
+    records = {
+        backend: {"id": backend_id},
+        frontend: {"id": "sha256:" + "b" * 64},
+        executor: {"id": backend_id},
+    }
+    monkeypatch.setattr(release_authority, "_image_record", lambda docker, reference: records[reference])
+    monkeypatch.setattr(release_authority, "_validate_release_image", lambda *args, **kwargs: None)
+
+    runtime = transition._validated_rollback_runtime(
+        ["docker"],
+        legacy_repo_root=tmp_path,
+        legacy_commit=COMMIT,
+        backend_image=backend,
+        frontend_image=frontend,
+        executor_image=executor,
+    )
+    assert runtime.executor_image == executor
+
+    records[executor] = {"id": "sha256:" + "c" * 64}
+    with pytest.raises(transition.TransitionError, match="verified backend image"):
+        transition._validated_rollback_runtime(
+            ["docker"],
+            legacy_repo_root=tmp_path,
+            legacy_commit=COMMIT,
+            backend_image=backend,
+            frontend_image=frontend,
+            executor_image=executor,
+        )
 
 
 def test_managed_environment_file_metadata_fails_closed_without_reading_contents():
