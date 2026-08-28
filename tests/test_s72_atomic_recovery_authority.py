@@ -1118,8 +1118,8 @@ def test_linux_directory_retry_accepts_only_post_rename_ctime_drift_with_matchin
     result = _run_privileged_bash(
         r'''
         set -eu
-        HELPER=$1; ROOT=$2; caller_uid=$3; caller_gid=$4
-        trap 'rc=$?; chown -R "$caller_uid:$caller_gid" "$ROOT" >/dev/null 2>&1 || :; exit "$rc"' EXIT
+        HELPER=$1; ROOT=$2; caller_uid=$3; caller_gid=$4; step=setup
+        trap 'rc=$?; test "$rc" -eq 0 || printf "failed-step=%s\n" "$step" >&2; chown -R "$caller_uid:$caller_gid" "$ROOT" >/dev/null 2>&1 || :; exit "$rc"' EXIT
         . "$HELPER"
         chown root:root "$ROOT"; chmod 0700 "$ROOT"
 
@@ -1181,20 +1181,32 @@ def test_linux_directory_retry_accepts_only_post_rename_ctime_drift_with_matchin
         mv "$replacement_live" "$ROOT/replacement-original"
         cp -a "$replacement_source" "$replacement_live"
 
+        step=success-apply
         s72_atomic_apply_directory "$success_live" "$success_source" "$success_workspace" config
+        step=success-marker
         test -f "$success_workspace/config.applied"
+        step=success-match
         s72_atomic_directory_matches "$success_live" "$success_source"
 
+        step=predrift-reject
         ! s72_atomic_apply_directory \
           "$predrift_live" "$predrift_source" "$predrift_workspace" config
+        step=predrift-state
         test ! -e "$predrift_workspace/config.old" && test ! -e "$predrift_workspace/config.applied"
+        step=tree-drift-reject
         ! s72_atomic_apply_directory "$drift_live" "$drift_source" "$drift_workspace" config
+        step=tree-drift-state
         test ! -e "$drift_workspace/config.old" && test ! -e "$drift_workspace/config.applied"
+        step=absent-reject
         ! s72_atomic_apply_directory "$absent_live" absent "$absent_workspace" config
+        step=absent-state
         test -d "$absent_live" && test ! -e "$absent_workspace/config.old"
+        step=replacement-reject
         ! s72_atomic_apply_directory \
           "$replacement_live" "$replacement_source" "$replacement_workspace" config
+        step=replacement-state
         test -d "$replacement_live" && test ! -e "$replacement_workspace/config.old"
+        step=complete
         ''',
         HELPER,
         tmp_path,
