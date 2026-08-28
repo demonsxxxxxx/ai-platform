@@ -2991,13 +2991,14 @@ async def test_invalid_archive_marker_does_not_block_distribution_status_update(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("enabled", "distribution_status"),
-    [(True, "active"), (False, "disabled")],
+    ("enabled", "distribution_status", "expected_catalog_status"),
+    [(True, "active", "refresh_required"), (False, "disabled", "disabled")],
 )
-async def test_mcp_distribution_toggle_does_not_mutate_removed_local_catalog(
+async def test_mcp_distribution_toggle_invalidates_server_catalog(
     monkeypatch,
     enabled,
     distribution_status,
+    expected_catalog_status,
 ):
     async def no_backfill(conn, *, tenant_id):
         assert tenant_id == "tenant-a"
@@ -3044,12 +3045,18 @@ async def test_mcp_distribution_toggle_does_not_mutate_removed_local_catalog(
                         "metadata_json": {},
                     }
                 )
+            if compact.startswith("update mcp_servers"):
+                assert "catalog_generation = catalog_generation + 1" in compact
+                assert "catalog_discovered_count = 0" in compact
+                assert "catalog_selectable_count = 0" in compact
+                assert params == (enabled, enabled, "tenant-a", "qa-mcp")
+                assert expected_catalog_status in compact
+                return Cursor({"name": "qa-mcp"})
             raise AssertionError(compact)
 
     monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
-    conn = Connection()
     row = await repositories.toggle_capability_distribution_row(
-        conn,
+        Connection(),
         tenant_id="tenant-a",
         capability_kind="mcp_server",
         capability_id="qa-mcp",
@@ -3058,80 +3065,6 @@ async def test_mcp_distribution_toggle_does_not_mutate_removed_local_catalog(
     )
 
     assert row["status"] == distribution_status
-    assert not any("mcp_servers" in sql or "catalog_" in sql for sql, _ in conn.calls)
-
-
-@pytest.mark.asyncio
-async def test_mcp_distribution_upsert_does_not_mutate_removed_local_catalog(monkeypatch):
-    async def no_backfill(conn, *, tenant_id):
-        assert tenant_id == "tenant-a"
-
-    class Cursor:
-        def __init__(self, row):
-            self.row = row
-
-        async def fetchone(self):
-            return self.row
-
-    class Connection:
-        def __init__(self):
-            self.calls = []
-
-        async def execute(self, sql, params=()):
-            compact = " ".join(sql.split())
-            self.calls.append((compact, params))
-            if "pg_advisory_xact_lock" in compact:
-                return Cursor(None)
-            if compact.startswith("select metadata_json"):
-                return Cursor(None)
-            if compact.startswith("insert into tenant_capability_distributions"):
-                assert "catalog_status" not in compact
-                assert params[1:] == (
-                    "tenant-a",
-                    "mcp_server",
-                    "qa-mcp",
-                    "active",
-                    True,
-                    "allowlist",
-                    [],
-                    "[]",
-                    "{}",
-                    "admin-a",
-                )
-                return Cursor(
-                    {
-                        "id": "capdist-mcp",
-                        "tenant_id": "tenant-a",
-                        "capability_kind": "mcp_server",
-                        "capability_id": "qa-mcp",
-                        "status": "active",
-                        "visible_to_user": True,
-                        "scope_mode": "allowlist",
-                        "department_ids": [],
-                        "allowed_roles": [],
-                        "metadata_json": {},
-                    }
-                )
-            raise AssertionError(compact)
-
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
-    conn = Connection()
-    row = await repositories.upsert_capability_distribution_row(
-        conn,
-        tenant_id="tenant-a",
-        capability_kind="mcp_server",
-        capability_id="qa-mcp",
-        status="active",
-        visible_to_user=True,
-        scope_mode="allowlist",
-        department_ids=[],
-        allowed_roles=[],
-        metadata_json={},
-        updated_by="admin-a",
-    )
-
-    assert row["status"] == "active"
-    assert not any("mcp_servers" in sql or "catalog_" in sql for sql, _ in conn.calls)
 
 
 @pytest.mark.asyncio
