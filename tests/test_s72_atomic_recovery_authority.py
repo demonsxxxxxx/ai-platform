@@ -1155,9 +1155,12 @@ def test_linux_directory_retry_accepts_only_post_rename_ctime_drift_with_matchin
         drift_source=$ROOT/drift-source; drift_live=$ROOT/drift-live
         absent_live=$ROOT/absent-live
         replacement_source=$ROOT/replacement-source; replacement_live=$ROOT/replacement-live
-        for tree in "$success_source" "$success_live" "$predrift_source" "$predrift_live" \
-          "$drift_source" "$drift_live" "$absent_live" "$replacement_source" \
-          "$replacement_live"; do make_tree "$tree"; done
+        for tree in "$success_source" "$predrift_source" "$drift_source" \
+          "$replacement_source" "$absent_live"; do make_tree "$tree"; done
+        cp -a "$success_source" "$success_live"
+        cp -a "$predrift_source" "$predrift_live"
+        cp -a "$drift_source" "$drift_live"
+        cp -a "$replacement_source" "$replacement_live"
 
         success_workspace=$(s72_atomic_prepare_workspace "$ROOT" success 11111111111111111111111111111111)
         predrift_workspace=$(s72_atomic_prepare_workspace "$ROOT" predrift 22222222222222222222222222222222)
