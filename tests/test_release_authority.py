@@ -581,6 +581,7 @@ def _colocation_environment(auth_base: str, user_info_base: str) -> dict[str, st
         "SANDBOX_SECURITY_PROFILE": "governed",
         "OPENSANDBOX_USE_SERVER_PROXY": "true",
         "OPENSANDBOX_EXPECTED_NETWORK_MODE": "none",
+        "OPENSANDBOX_CA_CERT_FILE": "/etc/ssl/certs/opensandbox-gateway.pem",
     }
 
 
@@ -610,11 +611,13 @@ def _write_required_provider_compose_files(repo_root: Path) -> tuple[Path, Path]
         "      SANDBOX_SECURITY_PROFILE: governed\n"
         "      OPENSANDBOX_USE_SERVER_PROXY: \"true\"\n"
         "      OPENSANDBOX_EXPECTED_NETWORK_MODE: none\n"
+        "      OPENSANDBOX_CA_CERT_FILE: /etc/ssl/certs/opensandbox-gateway.pem\n"
         "  worker:\n    environment:\n"
         "      SANDBOX_CONTAINER_PROVIDER: opensandbox\n"
         "      SANDBOX_SECURITY_PROFILE: governed\n"
         "      OPENSANDBOX_USE_SERVER_PROXY: \"true\"\n"
-        "      OPENSANDBOX_EXPECTED_NETWORK_MODE: none\n",
+        "      OPENSANDBOX_EXPECTED_NETWORK_MODE: none\n"
+        "      OPENSANDBOX_CA_CERT_FILE: /etc/ssl/certs/opensandbox-gateway.pem\n",
         encoding="utf-8",
     )
     return main, colocation
@@ -633,6 +636,10 @@ def test_env_example_inventory_covers_exact_base_and_opensandbox_required_keys()
     colocation_required = set(required_pattern.findall(colocation_text))
     assert colocation_text.count('OPENSANDBOX_USE_SERVER_PROXY: "true"') == 2
     assert colocation_text.count("OPENSANDBOX_EXPECTED_NETWORK_MODE: none") == 2
+    assert colocation_text.count("OPENSANDBOX_CA_CERT_FILE: /etc/ssl/certs/opensandbox-gateway.pem") == 2
+    assert colocation_text.count(
+        "/etc/opensandbox-gateway/tls/fullchain.pem:/etc/ssl/certs/opensandbox-gateway.pem:ro"
+    ) == 2
     reviewed_colocation_required = {
         "AI_PLATFORM_FRONTEND_IMAGE",
         "AI_PLATFORM_SOURCE_COMMIT",
@@ -749,8 +756,9 @@ def test_missing_compose_keys_fail_before_all_non_preflight_docker_and_redact_ra
         {"services": {"postgres": {"ports": [{"published": "54329", "target": 5432}]}, "redis": {}, "minio": {}, "api": {"environment": _colocation_environment("https://auth.internal.example", "https://identity.internal.example")}, "worker": {"environment": _colocation_environment("https://auth.internal.example", "https://identity.internal.example")}}},
         {"services": {"postgres": {}, "redis": {}, "minio": {}, "api": {"environment": {**_colocation_environment("https://auth.internal.example", "https://identity.internal.example"), "OPENSANDBOX_USE_SERVER_PROXY": "false"}}, "worker": {"environment": _colocation_environment("https://auth.internal.example", "https://identity.internal.example")}}},
         {"services": {"postgres": {}, "redis": {}, "minio": {}, "api": {"environment": _colocation_environment("https://auth.internal.example", "https://identity.internal.example")}, "worker": {"environment": {**_colocation_environment("https://auth.internal.example", "https://identity.internal.example"), "OPENSANDBOX_EXPECTED_NETWORK_MODE": "bridge"}}}},
+        {"services": {"postgres": {}, "redis": {}, "minio": {}, "api": {"environment": {**_colocation_environment("https://auth.internal.example", "https://identity.internal.example"), "OPENSANDBOX_CA_CERT_FILE": "/tmp/untrusted.pem"}}, "worker": {"environment": _colocation_environment("https://auth.internal.example", "https://identity.internal.example")}}},
     ],
-    ids=("api-worker-authority-drift", "reset-not-applied", "server-proxy-disabled", "sandbox-network-mode-not-none"),
+    ids=("api-worker-authority-drift", "reset-not-applied", "server-proxy-disabled", "sandbox-network-mode-not-none", "untrusted-ca-path"),
 )
 def test_s72_semantic_preflight_rejects_authority_drift_or_unreset_ports(monkeypatch, tmp_path, rendered):
     _write_required_provider_compose_files(tmp_path)

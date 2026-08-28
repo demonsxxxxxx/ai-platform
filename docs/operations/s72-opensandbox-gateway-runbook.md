@@ -54,13 +54,20 @@ persistent gateway mutation.
 
 Before installation, `/etc/opensandbox-gateway` and its `secrets/` and `tls/`
 directories must be root-owned, non-symlinked `0750` directories. The installer
-requires these regular files, then normalizes the runtime copy to the gateway
-group without widening modes:
+requires these regular files, then normalizes the runtime copy to the minimum
+mode required by each consumer:
 
 | Subject | Required mode |
 | --- | --- |
-| `gateway.env`, `tls/fullchain.pem` | `0640` |
+| `gateway.env` | `0640` |
+| `tls/fullchain.pem` | `0644` |
 | `tls/privkey.pem`, `secrets/lifecycle-api-key`, `secrets/capability-token`, `secrets/record-signing-key` | `0440` |
+
+The public `fullchain.pem` is mounted read-only into only the API and Worker by
+the governed colocation overlay. Their OpenSandbox client starts from the normal
+system trust store and adds this dedicated CA; it never disables verification or
+mounts the private key. All credential and private-key files remain inaccessible
+to the application containers.
 
 The checked-in same-host configuration pins callback, OpenAI, and Anthropic
 upstreams to exact `http://127.0.0.1:18043` routes. In that loopback mode,

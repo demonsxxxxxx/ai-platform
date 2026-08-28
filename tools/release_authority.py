@@ -1929,6 +1929,8 @@ def _validate_s72_colocation_config(rendered: str | bytes) -> None:
             or services[role]["environment"].get("SANDBOX_SECURITY_PROFILE") != "governed"
             or services[role]["environment"].get("OPENSANDBOX_USE_SERVER_PROXY") != "true"
             or services[role]["environment"].get("OPENSANDBOX_EXPECTED_NETWORK_MODE") != "none"
+            or services[role]["environment"].get("OPENSANDBOX_CA_CERT_FILE")
+            != "/etc/ssl/certs/opensandbox-gateway.pem"
             for role in ("api", "worker")
         )
         invalid_authority = any(

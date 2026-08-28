@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     opensandbox_domain: str = Field(default="127.0.0.1:8080")
     opensandbox_protocol: str = Field(default="http")
     opensandbox_api_key: str = Field(default="")
+    opensandbox_ca_cert_file: str = Field(default="")
     opensandbox_use_server_proxy: bool = Field(default=False)
     opensandbox_internal_test_forward_model_credentials: bool = Field(default=False)
     opensandbox_request_timeout_seconds: float = Field(default=30.0)
