@@ -686,6 +686,23 @@ def test_env_example_inventory_covers_exact_base_and_opensandbox_required_keys()
     assert "BEGIN CERTIFICATE" not in example_text and "BEGIN PRIVATE KEY" not in example_text
 
 
+def test_opensandbox_server_publishes_only_the_configured_lifecycle_address():
+    service = (ROOT / "deploy" / "opensandbox" / "opensandbox-s72.service").read_text(
+        encoding="utf-8"
+    )
+    environment = (ROOT / "deploy" / "opensandbox" / "server-s72.env.example").read_text(
+        encoding="utf-8"
+    )
+    config = (ROOT / "deploy" / "opensandbox" / "server-s72.toml.example").read_text(
+        encoding="utf-8"
+    )
+
+    assert "--publish ${OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS}:8080:8080" in service
+    assert "OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS=REQUIRED_PRIVATE_NON_EGRESS_IPV4_ADDRESS" in environment
+    assert 'host = "0.0.0.0"' in config
+    assert "--publish 127.0.0.1:8080:8080" not in service
+
+
 def test_compose_semantic_preflight_accepts_complete_s72_config_with_operator_auth(monkeypatch, tmp_path):
     commit = "a" * 40
     main, colocation = _write_required_provider_compose_files(tmp_path)

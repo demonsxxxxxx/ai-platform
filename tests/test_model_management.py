@@ -1168,7 +1168,20 @@ async def test_internal_runtime_proxy_rejects_invalid_capability_before_database
 
 
 @pytest.mark.asyncio
-async def test_internal_runtime_proxy_rejects_non_ascii_token_before_database(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("internal_token", "model_authorization", "model_api_key", "expected_detail"),
+    [
+        ("令牌", "", "", "model_proxy_forbidden"),
+        ("internal-token", "Bearer 令牌", "密钥", "model_proxy_capability_invalid"),
+    ],
+)
+async def test_internal_runtime_proxy_rejects_malformed_tokens_before_database(
+    monkeypatch,
+    internal_token: str,
+    model_authorization: str,
+    model_api_key: str,
+    expected_detail: str,
+) -> None:
     @asynccontextmanager
     async def forbidden_transaction():
         raise AssertionError("invalid token reached database")
@@ -1218,13 +1231,13 @@ async def test_internal_runtime_proxy_rejects_non_ascii_token_before_database(mo
             request,
             x_ai_platform_run_id="run-123",
             x_ai_platform_attempt_id="attempt-123",
-            x_ai_platform_internal_token="令牌",
-            x_ai_platform_model_authorization="",
-            x_ai_platform_model_api_key="",
+            x_ai_platform_internal_token=internal_token,
+            x_ai_platform_model_authorization=model_authorization,
+            x_ai_platform_model_api_key=model_api_key,
         )
 
     assert captured.value.status_code == 403
-    assert captured.value.detail == "model_proxy_forbidden"
+    assert captured.value.detail == expected_detail
 
 
 @pytest.mark.asyncio

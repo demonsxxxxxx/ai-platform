@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Sequence
+from urllib.parse import urlsplit
 
 import tools.release_authority as authority
 
@@ -436,6 +437,46 @@ def _require_target_executor(docker: Sequence[str]) -> None:
             raise TransitionError("target OpenSandbox executor image mismatch")
 
 
+def _require_target_lifecycle_reachable(docker: Sequence[str]) -> None:
+    endpoints: dict[str, str] = {}
+    for service in ("api", "worker"):
+        environment = _container_environment(_inspect_container(docker, CONTAINERS[service]))
+        base_url = environment.get("OPENSANDBOX_BASE_URL", "").strip()
+        try:
+            parsed = urlsplit(base_url)
+            valid = (
+                parsed.scheme in {"http", "https"}
+                and parsed.hostname is not None
+                and parsed.port is not None
+                and parsed.username is None
+                and parsed.password is None
+                and parsed.path in {"", "/"}
+                and not parsed.query
+                and not parsed.fragment
+            )
+        except ValueError:
+            valid = False
+        if not valid:
+            raise TransitionError("target OpenSandbox lifecycle endpoint is invalid")
+        endpoints[service] = f"{base_url.rstrip('/')}/health"
+    if len(set(endpoints.values())) != 1:
+        raise TransitionError("target OpenSandbox lifecycle endpoint mismatch")
+    probe = (
+        "import sys, urllib.request; "
+        "opener = urllib.request.build_opener(urllib.request.ProxyHandler({})); "
+        "response = opener.open(sys.argv[1], timeout=5); "
+        "raise SystemExit(0 if response.status == 200 else 1)"
+    )
+    for service, health_url in endpoints.items():
+        result = _run(
+            [*docker, "exec", CONTAINERS[service], "python", "-c", probe, health_url],
+            check=False,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            raise TransitionError(f"target OpenSandbox lifecycle unreachable from {service}")
+
+
 def _require_target_parity(
     docker: Sequence[str],
     repo_root: Path,
@@ -453,6 +494,7 @@ def _require_target_parity(
         raise TransitionError("target runtime parity is invalid")
     _require_target_broker(docker, commit)
     _require_target_executor(docker)
+    _require_target_lifecycle_reachable(docker)
 
 
 @contextmanager
@@ -867,21 +909,22 @@ def rollback(
                     compose_files=runtime.compose_files,
                     environment=_legacy_release_environment(runtime),
                 )
-                authority.deploy_clean_commit(
-                    target_repo_root,
-                    normalized,
-                    docker_cmd=docker_cmd,
-                    env_file=safe_env_file,
-                    compose_files=TARGET_SELECTION,
-                    strategy="canonical",
-                    replace_known_manual_frontend=False,
-                )
-                _require_target_parity(
-                    docker,
-                    target_repo_root,
-                    normalized,
-                    docker_cmd=docker_cmd,
-                )
+                with _acceptance_fence():
+                    authority.deploy_clean_commit(
+                        target_repo_root,
+                        normalized,
+                        docker_cmd=docker_cmd,
+                        env_file=safe_env_file,
+                        compose_files=TARGET_SELECTION,
+                        strategy="canonical",
+                        replace_known_manual_frontend=False,
+                    )
+                    _require_target_parity(
+                        docker,
+                        target_repo_root,
+                        normalized,
+                        docker_cmd=docker_cmd,
+                    )
             except Exception as target_restore_exc:
                 raise TransitionError("legacy rollback and target restoration both failed") from target_restore_exc
             raise TransitionError("legacy rollback failed; target runtime restored") from rollback_exc

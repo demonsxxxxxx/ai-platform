@@ -558,9 +558,18 @@ def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, 
     monkeypatch.setattr(transition, "_stop_admission", lambda docker: None)
     monkeypatch.setattr(transition, "_rollback", lambda *args, **kwargs: (_ for _ in ()).throw(transition.TransitionError("legacy start failed")))
     monkeypatch.setattr(transition, "_down", lambda *args, **kwargs: events.append("down-partial-legacy"))
-    monkeypatch.setattr(release_authority, "deploy_clean_commit", lambda *args, **kwargs: events.append("restore-target"))
+    def restore_target(*args, **kwargs):
+        assert transition.os.environ.get("AI_PLATFORM_API_PORT") == "127.0.0.1:8020"
+        assert transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
+        events.append("restore-target-fenced")
 
-    monkeypatch.setattr(transition, "_require_target_parity", lambda *args, **kwargs: events.append("target-parity"))
+    def target_parity(*args, **kwargs):
+        assert transition.os.environ.get("AI_PLATFORM_API_PORT") == "127.0.0.1:8020"
+        assert transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
+        events.append("target-parity-fenced")
+
+    monkeypatch.setattr(release_authority, "deploy_clean_commit", restore_target)
+    monkeypatch.setattr(transition, "_require_target_parity", target_parity)
 
     with pytest.raises(transition.TransitionError, match="target runtime restored"):
         transition.rollback(
@@ -574,7 +583,42 @@ def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, 
             legacy_executor_image=runtime.executor_image,
             docker_cmd="docker",
         )
-    assert events == ["down-partial-legacy", "restore-target", "target-parity"]
+    assert events == ["down-partial-legacy", "restore-target-fenced", "target-parity-fenced"]
+
+
+def test_target_lifecycle_is_reachable_from_api_and_worker(monkeypatch):
+    environment = ["OPENSANDBOX_BASE_URL=http://172.19.0.1:8080"]
+    containers = {
+        transition.CONTAINERS[service]: {"Config": {"Env": list(environment)}}
+        for service in ("api", "worker")
+    }
+    monkeypatch.setattr(
+        transition,
+        "_inspect_container",
+        lambda docker, name: containers[name],
+    )
+    calls = []
+    failing_service = {"name": ""}
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(
+            returncode=int(command[2] == failing_service["name"]),
+            stdout="",
+        )
+
+    monkeypatch.setattr(transition, "_run", run)
+
+    transition._require_target_lifecycle_reachable(["docker"])
+    assert [command[2] for command in calls] == [
+        transition.CONTAINERS["api"],
+        transition.CONTAINERS["worker"],
+    ]
+    assert all(command[-1] == "http://172.19.0.1:8080/health" for command in calls)
+
+    failing_service["name"] = transition.CONTAINERS["worker"]
+    with pytest.raises(transition.TransitionError, match="unreachable from worker"):
+        transition._require_target_lifecycle_reachable(["docker"])
 
 
 def test_target_executor_binding_matches_release_authority_image(monkeypatch):

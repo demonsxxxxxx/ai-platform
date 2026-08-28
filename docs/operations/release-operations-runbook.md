@@ -292,8 +292,12 @@ The production release uses the base Compose file plus
 `docker-compose.opensandbox.yml`. API and Worker use the official
 OpenSandbox SDK directly with `OPENSANDBOX_USE_SERVER_PROXY=true`. The
 OpenSandbox Server remains an independently managed root service using runsc;
-its lifecycle listener binds only to a non-bridge host address, while native
-bridge network policy permits only the distinct stateless egress-proxy address.
+its lifecycle port is published only on a dedicated private host address distinct
+from the egress bridge address. The server process binds its isolated service
+container internally, while Docker owns that exact host publication. Target
+parity probes `/health` from both API and Worker before migration can report
+success. Native bridge network policy permits only the distinct stateless
+egress-proxy address.
 The proxy strips sandbox credentials, forwards the callback-derived per-attempt
 model capability, injects the internal proxy token, and forwards callbacks to
 the existing API callback-token validators.

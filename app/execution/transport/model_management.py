@@ -172,7 +172,9 @@ async def proxy_model_request(
     if (
         bearer_capability
         and api_key_capability
-        and not hmac.compare_digest(bearer_capability, api_key_capability)
+        and not hmac.compare_digest(
+            bearer_capability.encode("utf-8"), api_key_capability.encode("utf-8")
+        )
     ):
         model_proxy_capability = ""
     body_buffer = bytearray()

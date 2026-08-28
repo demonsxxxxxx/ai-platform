@@ -1,5 +1,5 @@
 [server]
-host = "REQUIRED_NON_BRIDGE_HOST_ADDRESS"
+host = "0.0.0.0"
 port = 8080
 max_sandbox_timeout_seconds = 86400
 api_key = "REQUIRED_RANDOM_LIFECYCLE_API_KEY_AT_LEAST_32_BYTES"
