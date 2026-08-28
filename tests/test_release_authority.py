@@ -574,6 +574,17 @@ def _write_provider_compose_files(repo_root: Path) -> tuple[Path, Path, Path]:
     return main, sandbox, colocation
 
 
+def _colocation_environment(auth_base: str, user_info_base: str) -> dict[str, str]:
+    return {
+        "EXISTING_AUTH_BASE_URL": auth_base,
+        "EXISTING_USER_INFO_BASE_URL": user_info_base,
+        "SANDBOX_CONTAINER_PROVIDER": "opensandbox",
+        "SANDBOX_SECURITY_PROFILE": "governed",
+        "OPENSANDBOX_USE_SERVER_PROXY": "true",
+        "OPENSANDBOX_EXPECTED_NETWORK_MODE": "none",
+    }
+
+
 def _write_required_provider_compose_files(repo_root: Path) -> tuple[Path, Path]:
     main, _, colocation = _write_provider_compose_files(repo_root)
     main.write_text(
@@ -595,7 +606,16 @@ def _write_required_provider_compose_files(repo_root: Path) -> tuple[Path, Path]
         "  postgres:\n    ports: !reset []\n"
         "  redis:\n    ports: !reset []\n"
         "  minio:\n    ports: !reset []\n"
-        "  api:\n    ports: !reset []\n",
+        "  api:\n    ports: !reset []\n    environment:\n"
+        "      SANDBOX_CONTAINER_PROVIDER: opensandbox\n"
+        "      SANDBOX_SECURITY_PROFILE: governed\n"
+        "      OPENSANDBOX_USE_SERVER_PROXY: \"true\"\n"
+        "      OPENSANDBOX_EXPECTED_NETWORK_MODE: none\n"
+        "  worker:\n    environment:\n"
+        "      SANDBOX_CONTAINER_PROVIDER: opensandbox\n"
+        "      SANDBOX_SECURITY_PROFILE: governed\n"
+        "      OPENSANDBOX_USE_SERVER_PROXY: \"true\"\n"
+        "      OPENSANDBOX_EXPECTED_NETWORK_MODE: none\n",
         encoding="utf-8",
     )
     return main, colocation
@@ -610,9 +630,10 @@ def test_env_example_inventory_covers_exact_base_and_opensandbox_required_keys()
         "AI_PLATFORM_S72_BRIDGE_TLS_CERT_FILE",
         "AI_PLATFORM_S72_BRIDGE_TLS_KEY_FILE",
     }
-    colocation_required = set(
-        required_pattern.findall(S72_COLOCATION_COMPOSE.read_text(encoding="utf-8"))
-    )
+    colocation_text = S72_COLOCATION_COMPOSE.read_text(encoding="utf-8")
+    colocation_required = set(required_pattern.findall(colocation_text))
+    assert colocation_text.count('OPENSANDBOX_USE_SERVER_PROXY: "true"') == 2
+    assert colocation_text.count("OPENSANDBOX_EXPECTED_NETWORK_MODE: none") == 2
     reviewed_colocation_required = {
         "AI_PLATFORM_FRONTEND_IMAGE",
         "AI_PLATFORM_SOURCE_COMMIT",
@@ -680,8 +701,8 @@ def test_compose_semantic_preflight_accepts_complete_s72_config_with_operator_au
                 "postgres": {},
                 "redis": {},
                 "minio": {},
-                "api": {"environment": {"EXISTING_AUTH_BASE_URL": "http://10.56.0.25:7263", "EXISTING_USER_INFO_BASE_URL": "http://10.56.0.25:5166"}},
-                "worker": {"environment": {"EXISTING_AUTH_BASE_URL": "http://10.56.0.25:7263", "EXISTING_USER_INFO_BASE_URL": "http://10.56.0.25:5166"}},
+                "api": {"environment": _colocation_environment("http://10.56.0.25:7263", "http://10.56.0.25:5166")},
+                "worker": {"environment": _colocation_environment("http://10.56.0.25:7263", "http://10.56.0.25:5166")},
             }
         }
     )
@@ -725,10 +746,12 @@ def test_missing_compose_keys_fail_before_all_non_preflight_docker_and_redact_ra
 @pytest.mark.parametrize(
     "rendered",
     [
-        {"services": {"postgres": {}, "redis": {}, "minio": {}, "api": {"environment": {"EXISTING_AUTH_BASE_URL": "http://10.56.0.25:7263", "EXISTING_USER_INFO_BASE_URL": "http://10.56.0.25:5166"}}, "worker": {"environment": {"EXISTING_AUTH_BASE_URL": "https://different-auth.internal.example", "EXISTING_USER_INFO_BASE_URL": "http://10.56.0.25:5166"}}}},
-        {"services": {"postgres": {"ports": [{"published": "54329", "target": 5432}]}, "redis": {}, "minio": {}, "api": {"environment": {"EXISTING_AUTH_BASE_URL": "https://auth.internal.example", "EXISTING_USER_INFO_BASE_URL": "https://identity.internal.example"}}, "worker": {"environment": {"EXISTING_AUTH_BASE_URL": "https://auth.internal.example", "EXISTING_USER_INFO_BASE_URL": "https://identity.internal.example"}}}},
+        {"services": {"postgres": {}, "redis": {}, "minio": {}, "api": {"environment": _colocation_environment("http://10.56.0.25:7263", "http://10.56.0.25:5166")}, "worker": {"environment": _colocation_environment("https://different-auth.internal.example", "http://10.56.0.25:5166")}}},
+        {"services": {"postgres": {"ports": [{"published": "54329", "target": 5432}]}, "redis": {}, "minio": {}, "api": {"environment": _colocation_environment("https://auth.internal.example", "https://identity.internal.example")}, "worker": {"environment": _colocation_environment("https://auth.internal.example", "https://identity.internal.example")}}},
+        {"services": {"postgres": {}, "redis": {}, "minio": {}, "api": {"environment": {**_colocation_environment("https://auth.internal.example", "https://identity.internal.example"), "OPENSANDBOX_USE_SERVER_PROXY": "false"}}, "worker": {"environment": _colocation_environment("https://auth.internal.example", "https://identity.internal.example")}}},
+        {"services": {"postgres": {}, "redis": {}, "minio": {}, "api": {"environment": _colocation_environment("https://auth.internal.example", "https://identity.internal.example")}, "worker": {"environment": {**_colocation_environment("https://auth.internal.example", "https://identity.internal.example"), "OPENSANDBOX_EXPECTED_NETWORK_MODE": "bridge"}}}},
     ],
-    ids=("api-worker-authority-drift", "reset-not-applied"),
+    ids=("api-worker-authority-drift", "reset-not-applied", "server-proxy-disabled", "sandbox-network-mode-not-none"),
 )
 def test_s72_semantic_preflight_rejects_authority_drift_or_unreset_ports(monkeypatch, tmp_path, rendered):
     _write_required_provider_compose_files(tmp_path)
@@ -3377,10 +3400,10 @@ def test_deploy_rejects_provider_ownership_change_during_preflight_revalidation(
                 }
                 | {
                     role: {
-                        "environment": {
-                            "EXISTING_AUTH_BASE_URL": "https://auth.internal.example",
-                            "EXISTING_USER_INFO_BASE_URL": "https://identity.internal.example",
-                        }
+                        "environment": _colocation_environment(
+                            "https://auth.internal.example",
+                            "https://identity.internal.example",
+                        )
                     }
                     for role in ("api", "worker")
                 }

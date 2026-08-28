@@ -4,6 +4,8 @@ set -eu
 AUTHORITY_REF=${OPENSANDBOX_GATEWAY_AUTHORITY_REF:-origin/main}
 EXPECTED_AUTHORITY_SHA=${OPENSANDBOX_GATEWAY_EXPECTED_AUTHORITY_SHA:-}
 AUTHORITY_EVIDENCE_ID=${OPENSANDBOX_GATEWAY_AUTHORITY_EVIDENCE_ID:-}
+EXPECTED_MACHINE_ID_SHA256=${OPENSANDBOX_GATEWAY_EXPECTED_MACHINE_ID_SHA256:-}
+MACHINE_ID_FILE=/etc/machine-id
 RELEASES=/opt/opensandbox-gateway/releases
 CURRENT_LINK=/opt/opensandbox-gateway/current
 DEPLOY_STATE=/var/lib/opensandbox-gateway-deploy
@@ -189,6 +191,29 @@ is_authority_evidence_id() {
   s72_atomic_is_authority_evidence_id "$@"
 }
 
+is_sha256() {
+  machine_value=$1
+  test "${#machine_value}" -eq 64 || return 1
+  case "$machine_value" in *[!0-9a-f]*) return 1 ;; esac
+}
+
+current_machine_id_sha256() {
+  test -f "$MACHINE_ID_FILE" && test ! -L "$MACHINE_ID_FILE" || return 1
+  test "$(stat -c %u -- "$MACHINE_ID_FILE")" -eq 0 || return 1
+  machine_mode=$(stat -c %a -- "$MACHINE_ID_FILE") || return 1
+  case "$machine_mode" in ""|*[!0-7]*) return 1 ;; esac
+  test $((0$machine_mode & 0022)) -eq 0 || return 1
+  machine_digest=$(sha256sum -- "$MACHINE_ID_FILE") || return 1
+  machine_digest=${machine_digest%% *}
+  is_sha256 "$machine_digest" || return 1
+  printf '%s\n' "$machine_digest"
+}
+
+require_target_machine_identity() {
+  is_sha256 "$EXPECTED_MACHINE_ID_SHA256" || return 1
+  test "$(current_machine_id_sha256)" = "$EXPECTED_MACHINE_ID_SHA256"
+}
+
 require_root_tree() {
   s72_atomic_require_root_tree "$@"
 }
@@ -211,6 +236,26 @@ gateway_service_uid_from_config_at() {
   s72_atomic_is_service_uid "$gateway_uid" || return 1
   test "$(grep -Fxc "OPENSANDBOX_GATEWAY_ALLOWED_UID=$gateway_uid" "$gateway_env")" -eq 1 || return 1
   printf '%s\n' "$gateway_uid"
+}
+
+gateway_upstream_contract_mode_at() {
+  gateway_env=$1/gateway.env
+  ca_lines=$(grep -Ec '^OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE=' "$gateway_env" || :)
+  policy_lines=$(grep -Ec '^OPENSANDBOX_GATEWAY_EGRESS_POLICY_FILE=' "$gateway_env" || :)
+  if test "$ca_lines:$policy_lines" = 0:0; then
+    test "$(grep -Fxc 'OPENSANDBOX_GATEWAY_CALLBACK_BASE=http://127.0.0.1:18043' "$gateway_env")" -eq 1 || return 1
+    test "$(grep -Fxc 'OPENSANDBOX_GATEWAY_OPENAI_BASE=http://127.0.0.1:18043/openai/v1' "$gateway_env")" -eq 1 || return 1
+    test "$(grep -Fxc 'OPENSANDBOX_GATEWAY_ANTHROPIC_BASE=http://127.0.0.1:18043/anthropic' "$gateway_env")" -eq 1 || return 1
+    printf '%s\n' loopback
+    return
+  fi
+  test "$ca_lines:$policy_lines" = 1:1 || return 1
+  grep -Eq '^OPENSANDBOX_GATEWAY_CALLBACK_BASE=https://[^[:space:]]+$' "$gateway_env" || return 1
+  grep -Eq '^OPENSANDBOX_GATEWAY_OPENAI_BASE=https://[^[:space:]]+$' "$gateway_env" || return 1
+  grep -Eq '^OPENSANDBOX_GATEWAY_ANTHROPIC_BASE=https://[^[:space:]]+$' "$gateway_env" || return 1
+  test "$(grep -Fxc 'OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE=/etc/opensandbox-gateway/tls/upstream-ca.pem' "$gateway_env")" -eq 1 || return 1
+  test "$(grep -Fxc 'OPENSANDBOX_GATEWAY_EGRESS_POLICY_FILE=/etc/opensandbox-gateway/egress-policy.v1.json' "$gateway_env")" -eq 1 || return 1
+  printf '%s\n' https
 }
 
 require_resolved_egress_policy_at() {
@@ -782,15 +827,17 @@ require_gateway_config_contract_at() {
   test -z "$(find "$contract_root/tls" -mindepth 1 -maxdepth 1 \
     ! -name fullchain.pem ! -name privkey.pem ! -name upstream-ca.pem -print -quit)" || return 1
   require_root_owned_regular "$contract_root/gateway.env" 640 || return 1
-  require_root_owned_regular "$contract_root/egress-policy.v1.json" 640 || return 1
-  require_resolved_egress_policy_at "$contract_root/egress-policy.v1.json" || return 1
   require_root_owned_regular "$contract_root/tls/fullchain.pem" 640 || return 1
-  require_root_owned_regular "$contract_root/tls/upstream-ca.pem" 640 || return 1
   require_root_owned_regular "$contract_root/tls/privkey.pem" 440 || return 1
   for secret in lifecycle-api-key capability-token record-signing-key; do
     require_root_owned_regular "$contract_root/secrets/$secret" 440 || return 1
   done
-  test "$(grep -Fxc 'OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE=/etc/opensandbox-gateway/tls/upstream-ca.pem' "$contract_root/gateway.env")" -eq 1
+  upstream_mode=$(gateway_upstream_contract_mode_at "$contract_root") || return 1
+  if test "$upstream_mode" = https; then
+    require_root_owned_regular "$contract_root/egress-policy.v1.json" 640 || return 1
+    require_resolved_egress_policy_at "$contract_root/egress-policy.v1.json" || return 1
+    require_root_owned_regular "$contract_root/tls/upstream-ca.pem" 640 || return 1
+  fi
   gateway_service_uid_from_config_at "$contract_root" >/dev/null
 }
 
@@ -892,6 +939,15 @@ validate_release() {
   authority_ref=$(cat "$release/AUTHORITY_REF") || return 1
   authority_commit=$(cat "$release/AUTHORITY_COMMIT") || return 1
   authority_evidence=$(cat "$release/AUTHORITY_EVIDENCE_ID") || return 1
+  release_machine_path=$release/TARGET_MACHINE_ID_SHA256
+  if test -f "$release_machine_path"; then
+    release_machine_id=$(cat "$release_machine_path") || return 1
+    is_sha256 "$release_machine_id" || return 1
+    test "$release_machine_id" = "$(current_machine_id_sha256)" || return 1
+  else
+    test "$mode" = rollback || return 1
+    test ! -e "$release_machine_path" && test ! -L "$release_machine_path" || return 1
+  fi
   is_commit "$authority_commit" || return 1
   is_authority_evidence_id "$authority_evidence" || return 1
   test "$authority_commit" = "$commit" || return 1
@@ -913,6 +969,21 @@ validate_release() {
 
 require_marker_pair() {
   s72_atomic_require_marker_pair "$@"
+}
+
+require_opensandbox_service_prerequisite() {
+  opensandbox_fragment=$(systemctl show opensandbox.service -p FragmentPath --value) || return 1
+  case "$opensandbox_fragment" in /*) ;; *) return 1 ;; esac
+  require_root_owned_regular "$opensandbox_fragment" 644 || return 1
+  systemctl is-active --quiet opensandbox.service || return 1
+  python3 -I - <<'PY'
+import urllib.request
+
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+with opener.open("http://127.0.0.1:8080/health", timeout=5) as response:
+    if response.status != 200:
+        raise SystemExit(1)
+PY
 }
 
 preflight_live_state() {
@@ -1487,6 +1558,7 @@ rollback_action() {
   case "$AUTHORITY_REF" in ""|*[!A-Za-z0-9._/-]*|*..*) return 1 ;; esac
   is_commit "$EXPECTED_AUTHORITY_SHA" || return 1
   is_authority_evidence_id "$AUTHORITY_EVIDENCE_ID" || return 1
+  require_target_machine_identity || return 1
   acquire_install_lock || return 1
   initialize_deploy_state || return 1
   require_gateway_config_contract || return 1
@@ -1557,6 +1629,7 @@ test "$(id -u)" -eq 0
 case "${1:-}" in
   --recover)
     test "$#" -eq 1
+    require_target_machine_identity
     acquire_install_lock
     initialize_deploy_state
     recover_active_transaction
@@ -1574,6 +1647,7 @@ test "$#" -eq 1
 case "$AUTHORITY_REF" in ""|*[!A-Za-z0-9._/-]*|*..*) exit 1 ;; esac
 is_commit "$EXPECTED_AUTHORITY_SHA"
 is_authority_evidence_id "$AUTHORITY_EVIDENCE_ID"
+require_target_machine_identity
 acquire_install_lock
 SOURCE_REAL=$(readlink -f "$SOURCE_ROOT")
 test "$SOURCE_REAL" = "$(cd "$SOURCE_ROOT" && pwd -P)"
@@ -1590,6 +1664,7 @@ require_gateway_config_contract
 s72_atomic_service_uid=$(gateway_service_uid_from_config_at "$CONFIG_DIR")
 SERVICE_UID=$s72_atomic_service_uid
 require_gateway_identity_contract "$SERVICE_UID"
+require_opensandbox_service_prerequisite
 s72_atomic_require_exact_lifecycle
 preflight_live_state
 initialize_deploy_state
@@ -1626,9 +1701,12 @@ printf '%s\n' "$SOURCE_REAL" > "$STAGE/SOURCE_ROOT"
 printf '%s\n' "$AUTHORITY_REF" > "$STAGE/AUTHORITY_REF"
 printf '%s\n' "$AUTHORITY_COMMIT" > "$STAGE/AUTHORITY_COMMIT"
 printf '%s\n' "$AUTHORITY_EVIDENCE_ID" > "$STAGE/AUTHORITY_EVIDENCE_ID"
+printf '%s\n' "$EXPECTED_MACHINE_ID_SHA256" > "$STAGE/TARGET_MACHINE_ID_SHA256"
 install -d -o root -g opensandbox-gateway -m 0750 "$STAGE/config"
 install -o root -g opensandbox-gateway -m 0640 "$CONFIG_DIR/gateway.env" "$STAGE/config/gateway.env"
-install -o root -g opensandbox-gateway -m 0640 "$CONFIG_DIR/egress-policy.v1.json" "$STAGE/config/egress-policy.v1.json"
+if test -f "$CONFIG_DIR/egress-policy.v1.json"; then
+  install -o root -g opensandbox-gateway -m 0640 "$CONFIG_DIR/egress-policy.v1.json" "$STAGE/config/egress-policy.v1.json"
+fi
 sed -i "s#/etc/opensandbox-gateway/egress-policy.v1.json#$RELEASE_ROOT/config/egress-policy.v1.json#g" "$STAGE/config/gateway.env"
 sed "s#/opt/opensandbox-gateway/current#$RELEASE_ROOT#g;s#EnvironmentFile=/etc/opensandbox-gateway/gateway.env#EnvironmentFile=$RELEASE_ROOT/config/gateway.env#g" \
   "$STAGE/deploy/opensandbox/opensandbox-gateway.service" > "$STAGE/config/opensandbox-gateway.service"

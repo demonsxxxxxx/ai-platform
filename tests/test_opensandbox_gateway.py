@@ -343,6 +343,40 @@ def test_loopback_gateway_policy_is_closed_and_needs_no_cross_host_trust(tmp_pat
     config.validate()
     assert config.upstream_transport == "loopback_http"
 
+    secret_paths = {}
+    for name, value in {
+        "api": config.lifecycle_api_key,
+        "capability": config.capability_bearer_token,
+        "signing": config.record_signing_key.decode("utf-8"),
+    }.items():
+        path = tmp_path / name
+        path.write_text(value, encoding="utf-8")
+        secret_paths[name] = str(path)
+    loaded, _, policy_path, _, _, ca_path, _ = gateway_server.load_config(
+        {
+            "OPENSANDBOX_GATEWAY_API_KEY_FILE": secret_paths["api"],
+            "OPENSANDBOX_GATEWAY_CAPABILITY_TOKEN_FILE": secret_paths["capability"],
+            "OPENSANDBOX_GATEWAY_SIGNING_KEY_FILE": secret_paths["signing"],
+            "OPENSANDBOX_GATEWAY_PROOF_KEY_ID": config.proof_key_id,
+            "OPENSANDBOX_GATEWAY_PROFILE_ID": config.profile_id,
+            "OPENSANDBOX_GATEWAY_PUBLIC_AUTHORITY": config.public_authority,
+            "OPENSANDBOX_GATEWAY_EXECUTOR_IMAGE": config.executor_image,
+            "OPENSANDBOX_GATEWAY_RUNTIME_SUBJECT": config.runtime_subject,
+            "OPENSANDBOX_GATEWAY_POLICY_SUBJECT": config.gateway_policy_subject,
+            "OPENSANDBOX_GATEWAY_CALLBACK_SUBJECT": config.callback_boundary_subject,
+            "OPENSANDBOX_GATEWAY_DENY_AUDIT_SUBJECT": config.deny_audit_subject,
+            "OPENSANDBOX_GATEWAY_DENY_COUNTER_SUBJECT": config.deny_counter_subject,
+            "OPENSANDBOX_GATEWAY_CALLBACK_BASE": config.callback_upstream_base,
+            "OPENSANDBOX_GATEWAY_OPENAI_BASE": config.openai_upstream_base,
+            "OPENSANDBOX_GATEWAY_ANTHROPIC_BASE": config.anthropic_upstream_base,
+            "OPENSANDBOX_GATEWAY_STATE_PATH": str(tmp_path / "state.sqlite3"),
+            "OPENSANDBOX_GATEWAY_TLS_CERT_FILE": str(tmp_path / "fullchain.pem"),
+            "OPENSANDBOX_GATEWAY_TLS_KEY_FILE": str(tmp_path / "privkey.pem"),
+        }
+    )
+    assert loaded.upstream_transport == "loopback_http"
+    assert policy_path == "" and ca_path == ""
+
     policy = gateway_server._load_broker_policy(config, "")
     assert policy.transport == "loopback_http"
     assert {target[1] for target in policy.targets.values()} == {("127.0.0.1",)}
@@ -4005,6 +4039,9 @@ def test_privileged_helper_is_narrow_and_public_unit_has_no_docker_access() -> N
             "s72_atomic_verify_snapshot_seal",
             "recover_active_transaction",
             "require_gateway_config_contract",
+            "gateway_upstream_contract_mode_at",
+            "require_opensandbox_service_prerequisite",
+            "OPENSANDBOX_GATEWAY_EXPECTED_MACHINE_ID_SHA256",
             "require_resolved_egress_policy_at",
             "require_root_owned_regular",
             "upstream-ca.pem",
@@ -4146,6 +4183,112 @@ def test_installer_accepts_only_standard_sticky_or_nonwritable_lock_parent_modes
         ''',
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_installer_validates_machine_id_file_and_digest(tmp_path) -> None:
+    script = pathlib.Path(__file__).resolve().parents[1] / "deploy/opensandbox/install-s72.sh"
+    result = _run_gateway_bash_contract(
+        script,
+        tmp_path,
+        r'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1"); ROOT=$(cygpath -u "$2")
+        eval "$(sed '/^install_main \"\$@\"$/d' "$SCRIPT")"
+        MACHINE_ID_FILE=$ROOT/machine-id
+        printf '%s\n' 'fixture-machine-id' > "$MACHINE_ID_FILE"
+        TEST_MACHINE_UID=0
+        TEST_MACHINE_MODE=444
+        stat() {
+          if [ "$1" = -c ] && [ "$2" = %u ]; then
+            printf '%s\n' "$TEST_MACHINE_UID"
+          elif [ "$1" = -c ] && [ "$2" = %a ]; then
+            printf '%s\n' "$TEST_MACHINE_MODE"
+          else
+            command stat "$@"
+          fi
+        }
+        expected=$(/usr/bin/sha256sum -- "$MACHINE_ID_FILE")
+        expected=${expected%% *}
+        test "$(current_machine_id_sha256)" = "$expected"
+        EXPECTED_MACHINE_ID_SHA256=$(printf '%064d' 1)
+        ! require_target_machine_identity
+        EXPECTED_MACHINE_ID_SHA256=$expected
+        require_target_machine_identity
+        TEST_MACHINE_UID=1000
+        ! current_machine_id_sha256
+        TEST_MACHINE_UID=0
+        TEST_MACHINE_MODE=664
+        ! current_machine_id_sha256
+        TEST_MACHINE_MODE=444
+        MACHINE_ID_FILE=$ROOT/missing-machine-id
+        ! current_machine_id_sha256
+        MACHINE_ID_FILE=$ROOT/machine-link
+        if ln -s "$ROOT/machine-id" "$MACHINE_ID_FILE" 2>/dev/null && test -L "$MACHINE_ID_FILE"; then
+          ! current_machine_id_sha256
+        fi
+        ''',
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_installer_accepts_loopback_gateway_config_without_external_ca_or_policy(tmp_path) -> None:
+    script = pathlib.Path(__file__).resolve().parents[1] / "deploy/opensandbox/install-s72.sh"
+    result = _run_gateway_bash_contract(
+        script,
+        tmp_path,
+        r'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1"); ROOT=$(cygpath -u "$2")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        CONFIG=$ROOT/config
+        mkdir -p "$CONFIG/secrets" "$CONFIG/tls"
+        sed 's/REQUIRED_GATEWAY_UID/1000/' "${SCRIPT%/*}/gateway.env.example" > "$CONFIG/gateway.env"
+        for file in lifecycle-api-key capability-token record-signing-key; do
+          printf 'fixture\n' > "$CONFIG/secrets/$file"
+        done
+        printf 'fixture\n' > "$CONFIG/tls/fullchain.pem"
+        printf 'fixture\n' > "$CONFIG/tls/privkey.pem"
+        require_root_owned_directory() { test -d "$1" && test ! -L "$1"; }
+        require_root_owned_regular() { test -f "$1" && test ! -L "$1"; }
+        require_resolved_egress_policy_at() { return 47; }
+        require_gateway_config_contract_at "$CONFIG"
+        printf '%s\n' 'OPENSANDBOX_GATEWAY_UPSTREAM_CA_FILE=/etc/opensandbox-gateway/tls/upstream-ca.pem' >> "$CONFIG/gateway.env"
+        ! require_gateway_config_contract_at "$CONFIG"
+        ''',
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_installer_binds_target_machine_and_requires_healthy_loopback_server(tmp_path) -> None:
+    script = pathlib.Path(__file__).resolve().parents[1] / "deploy/opensandbox/install-s72.sh"
+    result = _run_gateway_bash_contract(
+        script,
+        tmp_path,
+        r'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1"); ROOT=$(cygpath -u "$2")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        EXPECTED_MACHINE_ID_SHA256=$(printf 'a%.0s' $(seq 1 64))
+        current_machine_id_sha256() { printf '%s\n' "$EXPECTED_MACHINE_ID_SHA256"; }
+        require_target_machine_identity
+        current_machine_id_sha256() { printf '%064d\n' 0; }
+        ! require_target_machine_identity
+        printf 'unit\n' > "$ROOT/opensandbox.service"
+        require_root_owned_regular() { test -f "$1" && test ! -L "$1"; }
+        systemctl() {
+          case "$*" in
+            'show opensandbox.service -p FragmentPath --value') printf '%s\n' "$ROOT/opensandbox.service" ;;
+            'is-active --quiet opensandbox.service') return 0 ;;
+            *) return 1 ;;
+          esac
+        }
+        python3() { cat >/dev/null; }
+        require_opensandbox_service_prerequisite
+        systemctl() { return 1; }
+        ! require_opensandbox_service_prerequisite
+        ''',
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
 
 
 def test_installer_rejects_unresolved_or_malformed_egress_policy(tmp_path) -> None:
@@ -4508,14 +4651,24 @@ def test_release_validation_enforces_commit_owner_symlink_manifest_and_main(tmp_
         git -C "$ROOT/source" branch -M main; git -C "$ROOT/source" remote add origin "$ROOT/remote.git"; git -C "$ROOT/source" push -u origin main >/dev/null
         COMMIT=$(git -C "$ROOT/source" rev-parse HEAD); RELEASES=$ROOT/releases; mkdir -p "$RELEASES/$COMMIT"
         EXPECTED_AUTHORITY_SHA=$COMMIT; AUTHORITY_EVIDENCE_ID=ls-remote-initial
+        EXPECTED_MACHINE_ID_SHA256=$(printf '%064d' 0)
+        current_machine_id_sha256() { printf '%s\n' "$EXPECTED_MACHINE_ID_SHA256"; }
         printf '%s\n' "$COMMIT" > "$RELEASES/$COMMIT/SOURCE_COMMIT"
         printf '%s\n' "$ROOT/source" > "$RELEASES/$COMMIT/SOURCE_ROOT"
         printf 'origin/main\n' > "$RELEASES/$COMMIT/AUTHORITY_REF"
         printf '%s\n' "$COMMIT" > "$RELEASES/$COMMIT/AUTHORITY_COMMIT"
         printf '%s\n' "$AUTHORITY_EVIDENCE_ID" > "$RELEASES/$COMMIT/AUTHORITY_EVIDENCE_ID"
+        printf '%s\n' "$EXPECTED_MACHINE_ID_SHA256" > "$RELEASES/$COMMIT/TARGET_MACHINE_ID_SHA256"
         printf 'sealed\n' > "$RELEASES/$COMMIT/payload"
         chown() { :; }; require_root_tree() { test -d "$1" && test ! -L "$1"; }
         write_manifest "$RELEASES/$COMMIT"; validate_release "$COMMIT" exact
+        printf '%064d\n' 1 > "$RELEASES/$COMMIT/TARGET_MACHINE_ID_SHA256"
+        write_manifest "$RELEASES/$COMMIT"; ! validate_release "$COMMIT" rollback
+        rm "$RELEASES/$COMMIT/TARGET_MACHINE_ID_SHA256"
+        write_manifest "$RELEASES/$COMMIT"; ! validate_release "$COMMIT" exact
+        validate_release "$COMMIT" rollback
+        printf '%s\n' "$EXPECTED_MACHINE_ID_SHA256" > "$RELEASES/$COMMIT/TARGET_MACHINE_ID_SHA256"
+        write_manifest "$RELEASES/$COMMIT"
         test "$(require_exact_authority_head "$ROOT/source" origin/main "$COMMIT")" = "$COMMIT"
         printf 'tampered\n' >> "$RELEASES/$COMMIT/payload"; ! validate_release "$COMMIT"
         printf 'sealed\n' > "$RELEASES/$COMMIT/payload"; write_manifest "$RELEASES/$COMMIT"
@@ -4532,6 +4685,7 @@ def test_release_validation_enforces_commit_owner_symlink_manifest_and_main(tmp_
         printf 'origin/main\n' > "$RELEASES/$UNPUSHED/AUTHORITY_REF"
         printf '%s\n' "$UNPUSHED" > "$RELEASES/$UNPUSHED/AUTHORITY_COMMIT"
         printf 'ls-remote-unpushed\n' > "$RELEASES/$UNPUSHED/AUTHORITY_EVIDENCE_ID"
+        printf '%s\n' "$EXPECTED_MACHINE_ID_SHA256" > "$RELEASES/$UNPUSHED/TARGET_MACHINE_ID_SHA256"
         printf 'sealed\n' > "$RELEASES/$UNPUSHED/payload"
         write_manifest "$RELEASES/$UNPUSHED"; ! validate_release "$UNPUSHED"
         CURRENT_AUTHORITY=$(git -C "$ROOT/source" rev-parse refs/remotes/origin/main)
