@@ -572,7 +572,7 @@ def test_existing_source_harness_loads_the_deterministic_sibling_helper(
     assert result.returncode == 0, result.stderr or result.stdout
 
 
-def test_helper_rejects_manifest_mismatch_and_closed_marker_state(tmp_path: pathlib.Path) -> None:
+def test_helper_rejects_manifest_mismatch_and_closed_snapshot_state(tmp_path: pathlib.Path) -> None:
     result = _run_bash(
         r'''
         set -eu
@@ -589,9 +589,17 @@ def test_helper_rejects_manifest_mismatch_and_closed_marker_state(tmp_path: path
         ! s72_atomic_verify_manifest "$ROOT/tree"
 
         require_root_tree() { :; }
-        require_root_owned_regular() { test -f "$1" && test ! -L "$1"; }
-        s72_atomic_require_root_owned_regular() { test -f "$1" && test ! -L "$1"; }
+        require_root_owned_regular() {
+          test -f "$1" && test ! -L "$1" || return 1
+          case "$1" in
+            *.present|*.absent|*.active|*.inactive|*.enabled|*.disabled|*/workspaces.acl)
+              test "$2" = 600 ;;
+            *) test "$2" = 400 ;;
+          esac
+        }
+        s72_atomic_require_root_owned_regular() { require_root_owned_regular "$@"; }
         verify_manifest() { :; }
+        s72_atomic_verify_manifest() { :; }
         require_marker_pair() { s72_atomic_require_marker_pair "$@"; }
         is_commit() { s72_atomic_is_commit "$@"; }
         is_authority_evidence_id() { s72_atomic_is_authority_evidence_id "$@"; }
@@ -641,15 +649,47 @@ def test_helper_rejects_manifest_mismatch_and_closed_marker_state(tmp_path: path
         mkdir "$ROOT/snapshot/etc-opensandbox-gateway"
         ! s72_atomic_preflight_snapshot "$ROOT/snapshot"
         rmdir "$ROOT/snapshot/etc-opensandbox-gateway"
-        printf 'releases/1111111111111111111111111111111111111111\n' > "$ROOT/snapshot/current"
+
+        write_payload() {
+          path=$1
+          value=$2
+          test ! -e "$path" || chmod 0600 "$path"
+          printf '%s\n' "$value" > "$path"
+          chmod 0400 "$path"
+        }
+        rm "$ROOT/snapshot/authority-sha.absent" \
+          "$ROOT/snapshot/authority-evidence.absent" \
+          "$ROOT/snapshot/current.absent" \
+          "$ROOT/snapshot/rollback-pointer.absent"
+        write_payload "$ROOT/snapshot/authority-sha" 1111111111111111111111111111111111111111
+        write_payload "$ROOT/snapshot/authority-evidence" sealed-source-evidence
+        write_payload "$ROOT/snapshot/current" releases/1111111111111111111111111111111111111111
+        write_payload "$ROOT/snapshot/rollback-pointer" .rollback.22222222222222222222222222222222
+        s72_atomic_preflight_snapshot "$ROOT/snapshot"
+
+        : > "$ROOT/snapshot/authority-sha.absent"
+        chmod 0600 "$ROOT/snapshot/authority-sha.absent"
         ! s72_atomic_preflight_snapshot "$ROOT/snapshot"
-        rm "$ROOT/snapshot/current"
-        printf '.rollback.22222222222222222222222222222222\n' > "$ROOT/snapshot/rollback-pointer"
+        rm "$ROOT/snapshot/authority-sha.absent"
+        chmod 0600 "$ROOT/snapshot/authority-sha"
+        : > "$ROOT/snapshot/authority-sha"
+        chmod 0400 "$ROOT/snapshot/authority-sha"
         ! s72_atomic_preflight_snapshot "$ROOT/snapshot"
-        rm "$ROOT/snapshot/rollback-pointer"
-        printf '1111111111111111111111111111111111111111\n' > "$ROOT/snapshot/authority-sha"
+        write_payload "$ROOT/snapshot/authority-sha" 1111111111111111111111111111111111111111
+        write_payload "$ROOT/snapshot/authority-sha" invalid
         ! s72_atomic_preflight_snapshot "$ROOT/snapshot"
-        rm "$ROOT/snapshot/authority-sha"
+        write_payload "$ROOT/snapshot/authority-sha" 1111111111111111111111111111111111111111
+        rm "$ROOT/snapshot/authority-evidence"
+        ! s72_atomic_preflight_snapshot "$ROOT/snapshot"
+        write_payload "$ROOT/snapshot/authority-evidence" sealed-source-evidence
+        write_payload "$ROOT/snapshot/current" releases/2222222222222222222222222222222222222222
+        ! s72_atomic_preflight_snapshot "$ROOT/snapshot"
+        write_payload "$ROOT/snapshot/current" releases/1111111111111111111111111111111111111111
+        write_payload "$ROOT/snapshot/rollback-pointer" invalid
+        ! s72_atomic_preflight_snapshot "$ROOT/snapshot"
+        write_payload "$ROOT/snapshot/rollback-pointer" .rollback.22222222222222222222222222222222
+        s72_atomic_preflight_snapshot "$ROOT/snapshot"
+
         printf 'unknown\n' > "$ROOT/snapshot/unknown-payload"
         ! s72_atomic_preflight_snapshot "$ROOT/snapshot"
         rm "$ROOT/snapshot/unknown-payload"
