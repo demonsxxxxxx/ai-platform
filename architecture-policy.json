@@ -93,7 +93,9 @@
     "api",
     "events"
   ],
-  "public_kernel_modules": [],
+  "public_kernel_modules": [
+    "memory_redaction"
+  ],
   "approved_root_modules": [
     "app/__init__.py",
     "app/agent_conversation_repository.py",
@@ -251,6 +253,26 @@
       "owner": "conversations",
       "reason": "The root-level Agent Conversation repository may preserve its existing history-query symbol only as an exact identity alias while its PostgreSQL projection moves to the Conversations adapter.",
       "removal_condition": "After the Conversation persistence move, migrate the Chat Sessions transport to the Conversations API, inventory supported external imports, and remove this bridge in an authority-only change before deleting the legacy alias."
+    },
+    {
+      "source_path": "app/memory_redaction.py",
+      "target_module": "app.kernel.memory_redaction",
+      "module_alias": "memory_redaction_kernel",
+      "symbols": [
+        "MEMORY_REDACTION_MODES",
+        "MEMORY_REDACTION_MODE_STANDARD",
+        "MEMORY_REDACTION_MODE_STRICT",
+        "is_sensitive_redaction_key",
+        "normalize_memory_redaction_mode",
+        "redact_memory_metadata",
+        "redact_memory_metadata_value",
+        "redact_memory_text",
+        "sanitizer_unstable_assignment_suffix_length",
+        "sanitizer_unstable_suffix_length"
+      ],
+      "owner": "kernel",
+      "reason": "The shared memory-redaction policy may move from its approved legacy root into one framework-neutral Kernel module while the legacy import surface remains exact identity aliases.",
+      "removal_condition": "After all supported callers import the Kernel owner directly, remove this bridge before deleting the legacy facade."
     },
     {
       "source_path": "app/persistence_limits.py",
