@@ -59,7 +59,8 @@ import stat
 import sys
 
 path, expected_text = sys.argv[1:]
-expected = tuple(int(value) for value in expected_text.split(":"))
+identity = expected_text.split(":")
+expected = (*map(int, identity[:4]), int(identity[4], 8))
 parent = os.path.dirname(path)
 name = os.path.basename(path)
 flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -1296,13 +1297,7 @@ s72_atomic_restore_snapshot() {
   if test "$S72_TX_PHASE" = recovering; then
     S72_RESTORE_SCOPE=recovery
     S72_RECOVERY_APPLY_OPTIONAL=0
-    case "$S72_TX_OPERATION:$S72_TX_PREVIOUS_PHASE" in
-      install:reserved|install:snapshot-published|install:identity-group-intent|\
-      install:identity-group-ready|install:identity-user-intent|install:identity-user-ready|\
-      install:identity-runtime-intent|install:identity-ready|install:release-published)
-        S72_RECOVERY_APPLY_OPTIONAL=1
-        ;;
-    esac
+    test "$S72_TX_OPERATION" != install || S72_RECOVERY_APPLY_OPTIONAL=1
     preflight_recoverable_live "$S72_TX_RECOVERY_SNAPSHOT" "$S72_TX_APPLY_SNAPSHOT" || return 1
   else
     S72_RESTORE_SCOPE=apply

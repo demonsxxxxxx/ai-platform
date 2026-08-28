@@ -1074,6 +1074,87 @@ def test_linux_production_recovery_entry_is_lock_first_and_idempotent_across_mou
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Linux inode-safe removal runs on required Ubuntu CI")
+def test_linux_empty_directory_removal_parses_recorded_mode_as_octal(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = _run_privileged_bash(
+        r'''
+        set -eu
+        HELPER=$1; ROOT=$2; caller_uid=$3; caller_gid=$4
+        trap 'rc=$?; chown -R "$caller_uid:$caller_gid" "$ROOT" >/dev/null 2>&1 || :; exit "$rc"' EXIT
+        . "$HELPER"
+        runtime=$ROOT/runtime
+
+        install -d -o root -g root -m 0700 "$runtime"
+        identity=$(s72_atomic_directory_identity "$runtime")
+        s72_atomic_remove_empty_directory "$runtime" "$identity"
+        test ! -e "$runtime" && test ! -L "$runtime"
+
+        install -d -o root -g root -m 0700 "$runtime"
+        identity=$(s72_atomic_directory_identity "$runtime")
+        chmod 0710 "$runtime"
+        ! s72_atomic_remove_empty_directory "$runtime" "$identity"
+        test -d "$runtime"
+
+        chmod 0700 "$runtime"
+        : > "$runtime/owned"
+        identity=$(s72_atomic_directory_identity "$runtime")
+        ! s72_atomic_remove_empty_directory "$runtime" "$identity"
+        test -f "$runtime/owned"
+        rm "$runtime/owned"
+        rmdir "$runtime"
+        ''',
+        HELPER,
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+@pytest.mark.parametrize(("operation", "expected_optional"), [("install", 1), ("rollback", 0)])
+def test_recovery_retry_preserves_install_only_optional_apply_snapshot(
+    tmp_path: pathlib.Path,
+    operation: str,
+    expected_optional: int,
+) -> None:
+    result = _run_bash(
+        rf'''
+        set -eu
+        SCRIPT=$(cygpath -u "$1" 2>/dev/null || printf '%s\n' "$1")
+        ROOT=$(cygpath -u "$2" 2>/dev/null || printf '%s\n' "$2")
+        eval "$(sed '/^install_main "\$@"$/d' "$SCRIPT")"
+        observations=$ROOT/optional
+        s72_atomic_preflight_snapshot() {{ :; }}
+        s72_atomic_verify_snapshot_seal() {{ :; }}
+        s72_atomic_load_transaction() {{
+          S72_TX_PHASE=recovering
+          S72_TX_OPERATION={shlex.quote(operation)}
+          S72_TX_PREVIOUS_PHASE=stopped
+          S72_TX_RECOVERY_SNAPSHOT=.rollback.11111111111111111111111111111111
+          S72_TX_APPLY_SNAPSHOT=.rollback.22222222222222222222222222222222
+        }}
+        preflight_recoverable_live() {{
+          printf '%s\n' "$S72_RECOVERY_APPLY_OPTIONAL" >> "$observations"
+          test "$S72_RECOVERY_APPLY_OPTIONAL" -eq {expected_optional}
+        }}
+        preflight_live_state() {{ :; }}
+        s72_atomic_require_exact_lifecycle() {{ :; }}
+        s72_atomic_advance_transaction() {{ :; }}
+        restore_snapshot_payload() {{ :; }}
+        restore_snapshot_runtime() {{ :; }}
+        systemctl() {{ printf '%s\n' inactive; }}
+
+        s72_atomic_restore_snapshot "$ROOT/snapshot" \
+          11111111111111111111111111111111 "$ROOT/records"
+        test "$(wc -l < "$observations")" -eq 2
+        test -z "$(grep -vx {expected_optional} "$observations")"
+        ''',
+        INSTALLER,
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 @pytest.mark.parametrize(
     ("active_contour", "expected_success"),
     [
