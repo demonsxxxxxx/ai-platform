@@ -1015,6 +1015,8 @@ def test_linux_production_recovery_entry_is_lock_first_and_idempotent_across_mou
               /opt/s72-source/deploy/opensandbox/rollback-s72.sh
             install -o root -g root -m 0644 "$HELPER" \
               /opt/s72-source/deploy/opensandbox/lib/s72-atomic-recovery-authority.sh
+            machine_id_sha256=$(/usr/bin/sha256sum -- /etc/machine-id)
+            export OPENSANDBOX_GATEWAY_EXPECTED_MACHINE_ID_SHA256=${machine_id_sha256%% *}
             /opt/s72-source/deploy/opensandbox/install-s72.sh --recover
             /opt/s72-source/deploy/opensandbox/rollback-s72.sh --recover
             test -d /var/lib/opensandbox-gateway-deploy/snapshots
