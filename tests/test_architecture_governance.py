@@ -324,6 +324,28 @@ def _activate_context_memory_bridge(repo: Path) -> None:
     )
 
 
+def _activate_memory_redaction_bridge(repo: Path) -> None:
+    bridge = _migration_bridge(
+        source_path="app/memory_redaction.py",
+        target_module="app.kernel.memory_redaction",
+    )
+    _write(
+        repo,
+        "app/kernel/memory_redaction.py",
+        _fixture_bridge_definitions(bridge["symbols"]) + "\n",
+    )
+    _write(
+        repo,
+        bridge["source_path"],
+        f"import {bridge['target_module']} as {bridge['module_alias']}\n"
+        + "\n".join(
+            f"{name} = {bridge['module_alias']}.{name}"
+            for name in bridge["symbols"]
+        )
+        + "\n",
+    )
+
+
 def _activate_conversation_bridges(repo: Path) -> None:
     bridges = [
         _migration_bridge(
@@ -1169,7 +1191,9 @@ def test_kernel_allowlist_does_not_authorize_private_descendants(
 ) -> None:
     repo, authority = governance_repo
     policy = _fixture_policy()
-    policy["public_kernel_modules"] = ["identity"]
+    policy["public_kernel_modules"] = sorted(
+        [*policy["public_kernel_modules"], "identity"]
+    )
     _write(repo, "architecture-policy.json", json.dumps(policy, indent=2))
     policy_head = _commit(repo, "authority with kernel public module")
     _write(
@@ -1189,7 +1213,9 @@ def test_kernel_from_import_resolves_private_descendant_modules(
 ) -> None:
     repo, _authority = governance_repo
     policy = _fixture_policy()
-    policy["public_kernel_modules"] = ["identity"]
+    policy["public_kernel_modules"] = sorted(
+        [*policy["public_kernel_modules"], "identity"]
+    )
     _write(repo, "architecture-policy.json", json.dumps(policy, indent=2))
     _write(repo, "app/kernel/identity/__init__.py", "class Principal:\n    pass\n")
     _write(repo, "app/kernel/identity/private.py", "SECRET = True\n")
@@ -1211,7 +1237,9 @@ def test_kernel_from_import_allows_symbols_from_a_public_module(
 ) -> None:
     repo, _authority = governance_repo
     policy = _fixture_policy()
-    policy["public_kernel_modules"] = ["identity"]
+    policy["public_kernel_modules"] = sorted(
+        [*policy["public_kernel_modules"], "identity"]
+    )
     _write(repo, "architecture-policy.json", json.dumps(policy, indent=2))
     _write(repo, "app/kernel/identity.py", "class Principal:\n    pass\n")
     authority = _commit(repo, "authority with public kernel module")
@@ -1291,6 +1319,102 @@ def test_exact_context_memory_migration_bridge_moves_symbols_as_identity_aliases
 
     assert evaluation.status == "pass"
     assert evaluation.findings == ()
+
+
+def test_exact_memory_redaction_kernel_bridge_uses_existing_contract(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _activate_memory_redaction_bridge(repo)
+    head = _commit(repo, "activate memory redaction Kernel bridge")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.findings == ()
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "annotation_only",
+        "conditional_only_binding",
+        "conditional_duplicate_binding",
+        "duplicate_binding",
+        "computed_dynamic_import",
+        "builtins_mapping_dynamic_import",
+        "imported_assignment",
+        "transitive_imported_assignment",
+    ],
+)
+def test_migration_bridge_target_requires_runtime_local_ownership(
+    governance_repo: tuple[Path, str], drift: str
+) -> None:
+    repo, authority = governance_repo
+    bridge = _migration_bridge(
+        source_path="app/memory_redaction.py",
+        target_module="app.kernel.memory_redaction",
+    )
+    _activate_memory_redaction_bridge(repo)
+    target_path = repo / "app/kernel/memory_redaction.py"
+    source = target_path.read_text(encoding="utf-8")
+    symbol = bridge["symbols"][0]
+    if drift == "annotation_only":
+        source = source.replace(f"{symbol} = 1", f"{symbol}: object")
+    elif drift == "conditional_only_binding":
+        source = source.replace(f"{symbol} = 1", f"if False:\n    {symbol} = 1")
+    elif drift == "conditional_duplicate_binding":
+        source += f"if True:\n    {symbol} = 2\n"
+    elif drift == "duplicate_binding":
+        source += f"{symbol} = 2\n"
+    elif drift == "computed_dynamic_import":
+        source += "module_name = 'app.' + 'memory_redaction'\nLOADED = __import__(module_name)\n"
+    elif drift == "builtins_mapping_dynamic_import":
+        source += (
+            "module_name = 'app.' + 'memory_redaction'\n"
+            'LOADED = __builtins__["__import__"](module_name)\n'
+        )
+    elif drift == "transitive_imported_assignment":
+        source = "from re import IGNORECASE as imported_value\n_value = imported_value\n" + (
+            source.replace(f"{symbol} = 1", f"{symbol} = _value")
+        )
+    else:
+        source = "from re import IGNORECASE as value\n" + source.replace(
+            f"{symbol} = 1", f"{symbol} = value"
+        )
+    target_path.write_text(source, encoding="utf-8")
+    head = _commit(repo, f"reject bridge target {drift}")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "migration_bridge_target_contract" in _codes(evaluation)
+
+
+@pytest.mark.parametrize("alias_form", ["annotated", "chained"])
+def test_migration_bridge_rejects_non_plain_identity_aliases(
+    governance_repo: tuple[Path, str], alias_form: str
+) -> None:
+    repo, authority = governance_repo
+    bridge = _migration_bridge(
+        source_path="app/memory_redaction.py",
+        target_module="app.kernel.memory_redaction",
+    )
+    _activate_memory_redaction_bridge(repo)
+    source_path = repo / bridge["source_path"]
+    source = source_path.read_text(encoding="utf-8")
+    symbol = bridge["symbols"][0]
+    exact = f"{symbol} = {bridge['module_alias']}.{symbol}"
+    replacement = (
+        f"{symbol}: object = {bridge['module_alias']}.{symbol}"
+        if alias_form == "annotated"
+        else f"{symbol} = extra_binding = {bridge['module_alias']}.{symbol}"
+    )
+    source_path.write_text(source.replace(exact, replacement), encoding="utf-8")
+    head = _commit(repo, f"reject bridge {alias_form} alias")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "migration_bridge_symbol_contract" in _codes(evaluation)
 
 
 def test_exact_conversation_migration_bridges_move_symbols_as_identity_aliases(
@@ -1882,6 +2006,57 @@ def test_live_context_memory_persistence_bridge_is_inactive() -> None:
     )
     for symbol in bridge["symbols"]:
         assert f"{symbol} = {bridge['module_alias']}.{symbol}" not in source
+
+
+def test_live_memory_redaction_kernel_bridge_is_exact_and_inactive() -> None:
+    bridge = _migration_bridge(
+        source_path="app/memory_redaction.py",
+        target_module="app.kernel.memory_redaction",
+    )
+    source = (REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8")
+
+    assert bridge == {
+        "source_path": "app/memory_redaction.py",
+        "target_module": "app.kernel.memory_redaction",
+        "module_alias": "memory_redaction_kernel",
+        "symbols": [
+            "MEMORY_REDACTION_MODES",
+            "MEMORY_REDACTION_MODE_STANDARD",
+            "MEMORY_REDACTION_MODE_STRICT",
+            "is_sensitive_redaction_key",
+            "normalize_memory_redaction_mode",
+            "redact_memory_metadata",
+            "redact_memory_metadata_value",
+            "redact_memory_text",
+            "sanitizer_unstable_assignment_suffix_length",
+            "sanitizer_unstable_suffix_length",
+        ],
+        "owner": "kernel",
+        "reason": (
+            "The shared memory-redaction policy may move from its approved legacy "
+            "root into one framework-neutral Kernel module while the legacy import "
+            "surface remains exact identity aliases."
+        ),
+        "removal_condition": (
+            "After all supported callers import the Kernel owner directly, remove "
+            "this bridge before deleting the legacy facade."
+        ),
+    }
+    assert not (REPO_ROOT / "app/kernel/memory_redaction.py").exists()
+    assert f"import {bridge['target_module']} as {bridge['module_alias']}" not in source
+
+
+def test_public_kernel_migration_bridge_requires_kernel_allowlist(
+    tmp_path: Path,
+) -> None:
+    policy = _fixture_policy()
+    policy["public_kernel_modules"] = []
+    repo, authority = _create_repo(tmp_path, policy_text=json.dumps(policy))
+
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, authority, authority, authority)
+
+    assert caught.value.code == "invalid_policy"
 
 
 def test_persistence_limits_platform_bridge_authority_is_exact() -> None:
