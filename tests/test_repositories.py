@@ -3062,6 +3062,79 @@ async def test_mcp_distribution_toggle_does_not_mutate_removed_local_catalog(
 
 
 @pytest.mark.asyncio
+async def test_mcp_distribution_upsert_does_not_mutate_removed_local_catalog(monkeypatch):
+    async def no_backfill(conn, *, tenant_id):
+        assert tenant_id == "tenant-a"
+
+    class Cursor:
+        def __init__(self, row):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params=()):
+            compact = " ".join(sql.split())
+            self.calls.append((compact, params))
+            if "pg_advisory_xact_lock" in compact:
+                return Cursor(None)
+            if compact.startswith("select metadata_json"):
+                return Cursor(None)
+            if compact.startswith("insert into tenant_capability_distributions"):
+                assert "catalog_status" not in compact
+                assert params[1:] == (
+                    "tenant-a",
+                    "mcp_server",
+                    "qa-mcp",
+                    "active",
+                    True,
+                    "allowlist",
+                    [],
+                    "[]",
+                    "{}",
+                    "admin-a",
+                )
+                return Cursor(
+                    {
+                        "id": "capdist-mcp",
+                        "tenant_id": "tenant-a",
+                        "capability_kind": "mcp_server",
+                        "capability_id": "qa-mcp",
+                        "status": "active",
+                        "visible_to_user": True,
+                        "scope_mode": "allowlist",
+                        "department_ids": [],
+                        "allowed_roles": [],
+                        "metadata_json": {},
+                    }
+                )
+            raise AssertionError(compact)
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    conn = Connection()
+    row = await repositories.upsert_capability_distribution_row(
+        conn,
+        tenant_id="tenant-a",
+        capability_kind="mcp_server",
+        capability_id="qa-mcp",
+        status="active",
+        visible_to_user=True,
+        scope_mode="allowlist",
+        department_ids=[],
+        allowed_roles=[],
+        metadata_json={},
+        updated_by="admin-a",
+    )
+
+    assert row["status"] == "active"
+    assert not any("mcp_servers" in sql or "catalog_" in sql for sql, _ in conn.calls)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("actor", [None, "", "   ", [], "x" * 256])
 async def test_archive_distribution_rejects_invalid_actor_before_database_write(monkeypatch, actor):
     async def fail_backfill(*args, **kwargs):
@@ -6924,7 +6997,7 @@ async def test_list_mcp_server_registry_filters_by_tenant_department_and_redacts
                     "tenant_id": "tenant-a",
                     "name": "qa-mcp",
                     "transport": "streamable_http",
-                    "endpoint_redacted": "",
+                    "endpoint_redacted": "https://mcp.example/sse",
                     "status": "active",
                     "is_system": False,
                     "allowed_roles": ["qa"],
@@ -6966,7 +7039,7 @@ async def test_list_mcp_server_registry_filters_by_tenant_department_and_redacts
             "tenant_id": "tenant-a",
             "name": "qa-mcp",
             "transport": "streamable_http",
-            "endpoint_redacted": "",
+            "endpoint_redacted": "https://mcp.example/sse",
             "status": "active",
             "is_system": False,
             "allowed_roles": ["qa"],
@@ -6974,6 +7047,13 @@ async def test_list_mcp_server_registry_filters_by_tenant_department_and_redacts
             "department_ids": ["qa"],
             "credential_state": "configured",
             "credential_metadata": {"header_names": ["Authorization"]},
+            "catalog_generation": 0,
+            "catalog_revision": 0,
+            "catalog_status": "legacy",
+            "catalog_unavailable_reason": "",
+            "catalog_discovered_count": 0,
+            "catalog_selectable_count": 0,
+            "catalog_last_synced_at": None,
             "created_at": "2026-06-23T00:00:00Z",
             "updated_at": "2026-06-23T00:00:00Z",
         }
@@ -6989,7 +7069,7 @@ async def test_upsert_mcp_server_registry_persists_only_redacted_endpoint_and_cr
                 "tenant_id": "tenant-a",
                 "name": "qa-mcp",
                 "transport": "streamable_http",
-                "endpoint_redacted": "",
+                "endpoint_redacted": "https://mcp.example/sse",
                 "status": "active",
                 "is_system": False,
                 "allowed_roles": ["qa"],
@@ -7030,11 +7110,11 @@ async def test_upsert_mcp_server_registry_persists_only_redacted_endpoint_and_cr
 
     sql, params = conn.calls[0]
     assert "insert into mcp_servers" in sql
-    assert "where mcp_servers.is_system = excluded.is_system" in sql
+    assert "existing.is_system <> %s" in sql
+    assert "where mcp_servers.is_system = excluded.is_system returning *" in sql
     assert "credential_fingerprint" in sql
     assert "credential-sha" in params
-    assert params[1:5] == ("tenant-a", "qa-mcp", "streamable_http", "")
-    assert "https://mcp.example/sse" not in params
+    assert params[:3] == ("tenant-a", "qa-mcp", False)
     assert "raw-secret" not in str(params)
     assert row["name"] == "qa-mcp"
     assert row["credential_state"] == "configured"
@@ -7070,9 +7150,19 @@ async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_ten
     class RegistryCursor:
         async def fetchone(self):
             return {
-                "name": "qa-mcp",
-                "transport": "streamable_http",
-                "status": "active",
+                "tool_id": "qa-search",
+                "server_id": "qa-mcp",
+                "name": "QA Search",
+                "description": "Search QA records.",
+                "registry_status": "active",
+                "server_status": "active",
+                "registry_write_capable": False,
+                "registry_risk_level": "low",
+                "registry_visible_to_user": True,
+                "policy_status": "active",
+                "policy_write_capable": False,
+                "policy_risk_level": "low",
+                "policy_visible_to_user": True,
             }
 
     class RegistryConnection:
@@ -7088,15 +7178,20 @@ async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_ten
     row = await repositories.get_mcp_tool_registry_entry(
         conn,
         tenant_id="tenant-a",
-        tool_id="qa-mcp::qa-search",
+        tool_id="qa-search",
     )
 
     sql, params = conn.calls[0]
-    assert "from mcp_servers" in sql
-    assert "mcp_tools" not in sql
-    assert "catalog_" not in sql
+    assert "join mcp_servers" in sql
+    assert "mcp_servers.tenant_id = %s" in sql
+    assert "mcp_servers.name = mcp_tools.server_id" in sql
+    assert "mcp_tools.id = %s" in sql
+    assert "catalog_entry.tenant_id = %s" in sql
+    assert "catalog_entry.catalog_generation = catalog_server.catalog_generation" in sql
+    assert "catalog_server.catalog_status = 'available'" in sql
+    assert "catalog_any" not in sql
     assert sql.count("%s") == len(params)
-    assert params == ("tenant-a", "qa-mcp")
+    assert params == ("tenant-a", "qa-search", "tenant-a")
     assert row is not None
     assert {
         key: row[key]
@@ -7111,24 +7206,46 @@ async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_ten
             "risk_level",
             "visible_to_user",
             "effective_status",
+            "source",
         )
     } == {
-        "tool_id": "qa-mcp::qa-search",
+        "tool_id": "qa-search",
         "server_id": "qa-mcp",
-        "name": "qa-search",
-        "description": "",
+        "name": "QA Search",
+        "description": "Search QA records.",
         "registry_status": "active",
         "server_status": "active",
-        "write_capable": True,
-        "risk_level": "high",
+        "write_capable": False,
+        "risk_level": "low",
         "visible_to_user": True,
         "effective_status": "active",
+        "source": "tenant",
     }
 
 
 @pytest.mark.asyncio
-async def test_chat_catalog_repository_path_is_removed():
-    assert not hasattr(repositories, "list_chat_mcp_tool_catalog_entries")
+async def test_chat_catalog_query_accepts_only_the_known_builtin_or_current_tenant_catalog():
+    class Cursor:
+        async def fetchall(self):
+            return []
+
+    class Connection:
+        def __init__(self):
+            self.sql = ""
+            self.params = ()
+
+        async def execute(self, sql, params):
+            self.sql = sql
+            self.params = params
+            return Cursor()
+
+    conn = Connection()
+    assert await repositories.list_chat_mcp_tool_catalog_entries(conn, tenant_id="tenant-a") == []
+
+    assert "ragflow-knowledge-search" in conn.sql
+    assert "catalog_entry.tenant_id = %s" in conn.sql
+    assert "catalog_any" not in conn.sql
+    assert conn.params == ("tenant-a", "tenant-a")
 
 
 @pytest.mark.asyncio
@@ -7149,7 +7266,6 @@ async def test_record_mcp_server_credential_keeps_hash_not_secret_material():
         server_name="qa-mcp",
         credential_fingerprint="credential-sha",
         metadata={"header_names": ["Authorization"]},
-        credential_envelope="sealed-envelope",
         updated_by="admin-a",
     )
 
@@ -7161,7 +7277,6 @@ async def test_record_mcp_server_credential_keeps_hash_not_secret_material():
         "qa-mcp",
         "credential-sha",
         json.dumps({"header_names": ["Authorization"]}, ensure_ascii=False),
-        "sealed-envelope",
         "admin-a",
     )
     assert "raw-secret" not in str(params)

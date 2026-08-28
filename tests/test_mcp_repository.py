@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from app import repositories
@@ -14,6 +16,132 @@ class _Cursor:
 
     async def fetchall(self):
         return self._rows
+
+
+@pytest.mark.asyncio
+async def test_dynamic_server_registry_projection_excludes_legacy_catalog_state():
+    row = {
+        "tenant_id": "tenant-a",
+        "name": "gateway",
+        "transport": "streamable_http",
+        "endpoint_redacted": "",
+        "status": "active",
+        "is_system": False,
+        "allowed_roles": ["qa"],
+        "role_quotas_json": {"qa": {"daily_limit": 3}},
+        "department_ids": ["qa"],
+        "credential_state": "configured",
+        "credential_metadata_json": {"header_names": ["Authorization"]},
+        "catalog_generation": 7,
+        "catalog_status": "legacy",
+        "created_at": "2026-06-23T00:00:00Z",
+        "updated_at": "2026-06-23T00:00:00Z",
+    }
+
+    class Connection:
+        async def execute(self, query, params):
+            assert "from mcp_servers" in query
+            assert "catalog_" not in query
+            assert params == ("tenant-a", "qa", False)
+            return _Cursor(rows=(row,))
+
+    assert await mcp_repository.list_mcp_server_registry(
+        Connection(),
+        tenant_id="tenant-a",
+        department_id="qa",
+        include_disabled=False,
+    ) == [
+        {
+            "tenant_id": "tenant-a",
+            "name": "gateway",
+            "transport": "streamable_http",
+            "endpoint_redacted": "",
+            "status": "active",
+            "is_system": False,
+            "allowed_roles": ["qa"],
+            "role_quotas": {"qa": {"daily_limit": 3}},
+            "department_ids": ["qa"],
+            "credential_state": "configured",
+            "credential_metadata": {"header_names": ["Authorization"]},
+            "created_at": "2026-06-23T00:00:00Z",
+            "updated_at": "2026-06-23T00:00:00Z",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dynamic_server_upsert_persists_no_endpoint_material():
+    row = {
+        "tenant_id": "tenant-a",
+        "name": "gateway",
+        "transport": "streamable_http",
+        "endpoint_redacted": "",
+        "status": "active",
+        "is_system": False,
+        "allowed_roles": ["qa"],
+        "role_quotas_json": {},
+        "department_ids": ["qa"],
+        "credential_state": "configured",
+        "credential_metadata_json": {"header_names": ["Authorization"]},
+        "created_at": "2026-06-23T00:00:00Z",
+        "updated_at": "2026-06-23T00:00:00Z",
+    }
+
+    class Connection:
+        async def execute(self, query, params):
+            assert "insert into mcp_servers" in query
+            assert "where mcp_servers.is_system = excluded.is_system" in query
+            assert params[1:5] == ("tenant-a", "gateway", "streamable_http", "")
+            assert "https://mcp.example/sse" not in params
+            assert "credential-sha" in params
+            return _Cursor(row=row)
+
+    result = await mcp_repository.upsert_mcp_server_registry(
+        Connection(),
+        tenant_id="tenant-a",
+        name="gateway",
+        transport="streamable_http",
+        enabled=True,
+        is_system=False,
+        endpoint_redacted="https://mcp.example/sse",
+        allowed_roles=["qa"],
+        role_quotas={},
+        department_ids=["qa"],
+        credential_state="configured",
+        credential_metadata={"header_names": ["Authorization"]},
+        credential_fingerprint="credential-sha",
+        updated_by="admin-a",
+    )
+
+    assert result["endpoint_redacted"] == ""
+    assert result["name"] == "gateway"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_server_credential_persists_only_encrypted_envelope():
+    class Connection:
+        async def execute(self, query, params):
+            assert "insert into mcp_server_credentials" in query
+            assert "credential_envelope" in query
+            assert params == (
+                "tenant-a",
+                "gateway",
+                "credential-sha",
+                json.dumps({"header_names": ["Authorization"]}, ensure_ascii=False),
+                "sealed-envelope",
+                "admin-a",
+            )
+            return _Cursor()
+
+    await mcp_repository.record_mcp_server_credential(
+        Connection(),
+        tenant_id="tenant-a",
+        server_name="gateway",
+        credential_fingerprint="credential-sha",
+        metadata={"header_names": ["Authorization"]},
+        credential_envelope="sealed-envelope",
+        updated_by="admin-a",
+    )
 
 
 @pytest.mark.asyncio
