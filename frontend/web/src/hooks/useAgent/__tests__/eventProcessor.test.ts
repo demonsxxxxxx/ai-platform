@@ -1795,6 +1795,7 @@ test("upserts strict public execution steps by step id without merging them into
     type: string;
     step_id: string;
     kind: string;
+    stage?: string;
     progress: { current: number; total: number };
     status: string;
     safe_file_name: string | null;
@@ -1802,6 +1803,7 @@ test("upserts strict public execution steps by step id without merging them into
   assert.equal(executionStep.type, "execution_step");
   assert.equal(executionStep.step_id, "step-prepare-report");
   assert.equal(executionStep.kind, "processing");
+  assert.equal(executionStep.stage, undefined);
   assert.deepEqual(executionStep.progress, { current: 4, total: 4 });
   assert.equal(executionStep.status, "completed");
   assert.equal(executionStep.safe_file_name, "report.docx");
@@ -1809,6 +1811,144 @@ test("upserts strict public execution steps by step id without merging them into
     JSON.stringify(completed.parts),
     /evt-step|run-execution|准备报告|输入已准备|artifact-public|2026-07-27/,
   );
+});
+
+test("retains the allowlisted v2 execution presentation stage", () => {
+  const result = processMessageEvent(
+    "execution_step",
+    {
+      schema_version: "ai-platform.public-execution-event.v2",
+      event_id: "evt-v2-stage",
+      sequence: 1,
+      run_id: "run-v2-stage",
+      step_id: "step-v2-stage",
+      presentation_kind: "write",
+      kind: "generation",
+      stage: "edit",
+      status: "running",
+      progress: { current: 0, total: 1 },
+      safe_label: "Updating authorized files",
+      created_at: null,
+    } as never,
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+  );
+
+  const step = result.parts[0];
+  assert.equal(step?.type, "execution_step");
+  if (step?.type !== "execution_step") throw new Error("expected execution step");
+  assert.equal(step.presentation_kind, "write");
+  assert.equal(step.stage, "edit");
+});
+
+test("fails closed for impossible v2 lifecycle progress", () => {
+  const result = processMessageEvent(
+    "execution_step_completed",
+    {
+      schema_version: "ai-platform.public-execution-event.v2",
+      event_id: "evt-v2-invalid-progress",
+      sequence: 1,
+      run_id: "run-v2-invalid-progress",
+      step_id: "step-v2-invalid-progress",
+      presentation_kind: "write",
+      kind: "generation",
+      stage: "edit",
+      status: "completed",
+      progress: { current: 0, total: 2 },
+      safe_label: "Updating authorized files",
+      created_at: null,
+    } as never,
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+  );
+
+  assert.deepEqual(result.parts, []);
+});
+
+test("fails closed for unsafe dynamic v2 labels", () => {
+  for (const [suffix, safeLabel] of [
+    ["whitespace", "   "],
+    ["control", "\u0000"],
+    ["python-strip", "Skill\u0085"],
+    ["symbols", "---"],
+    ["untrimmed", " Skill action"],
+  ]) {
+    const result = processMessageEvent(
+      "execution_step",
+      {
+        schema_version: "ai-platform.public-execution-event.v2",
+        event_id: `evt-v2-${suffix}`,
+        sequence: 1,
+        run_id: `run-v2-${suffix}`,
+        step_id: `step-v2-${suffix}`,
+        presentation_kind: "skill",
+        kind: "capability",
+        stage: "execution",
+        status: "running",
+        progress: { current: 0, total: 1 },
+        safe_label: safeLabel,
+        created_at: null,
+      } as never,
+      [],
+      "",
+      [],
+      0,
+      [],
+      true,
+    );
+
+    assert.deepEqual(result.parts, [], suffix);
+  }
+
+  const acceptedPayload = {
+    schema_version: "ai-platform.public-execution-event.v2",
+    event_id: "evt-v2-feff",
+    sequence: 1,
+    run_id: "run-v2-feff",
+    step_id: "step-v2-feff",
+    presentation_kind: "skill",
+    kind: "capability",
+    stage: "execution",
+    status: "running",
+    progress: { current: 0, total: 1 },
+    safe_label: "Skill\ufeff",
+    created_at: null,
+  };
+  const accepted = processMessageEvent(
+    "execution_step",
+    acceptedPayload as never,
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+  );
+  const acceptedHistory = processMessageEvent(
+    "run_event",
+    {
+      ...acceptedPayload,
+      event_type: "execution_step",
+      timestamp: "2026-08-27T00:00:00Z",
+    } as never,
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+  );
+
+  assert.equal(accepted.parts[0]?.type, "execution_step");
+  assert.deepEqual(acceptedHistory.parts, accepted.parts);
 });
 
 test("collapses terminal public execution state without changing answer or artifact siblings", () => {
@@ -1904,6 +2044,85 @@ test("fails closed when a history envelope carries a raw execution field", () =>
 
   assert.deepEqual(result.parts, []);
   assert.equal(result.content, "");
+});
+
+test("fails closed when v2 history carries a v1-only field", () => {
+  const result = processMessageEvent(
+    "run_event",
+    {
+      schema_version: "ai-platform.public-execution-event.v2",
+      event_id: "evt-v2-cross-version-field",
+      sequence: 1,
+      run_id: "run-v2-cross-version-field",
+      event_type: "execution_step",
+      timestamp: "2026-07-31T01:00:00.000Z",
+      step_id: "step-v2-cross-version-field",
+      presentation_kind: "skill",
+      kind: "capability",
+      stage: "execution",
+      status: "running",
+      progress: { current: 0, total: 1 },
+      created_at: null,
+      safe_file_name: null,
+    } as never,
+    [],
+    "",
+    [],
+    0,
+    [],
+    false,
+    "assistant-v2-cross-version-field",
+  );
+
+  assert.deepEqual(result.parts, []);
+});
+
+test("preserves v2 optional-label parity between live and history", () => {
+  const payload = {
+    schema_version: "ai-platform.public-execution-event.v2",
+    event_id: "evt-v2-optional-label",
+    sequence: 1,
+    run_id: "run-v2-optional-label",
+    step_id: "step-v2-optional-label",
+    presentation_kind: "skill",
+    kind: "capability",
+    stage: "execution",
+    status: "running",
+    progress: { current: 0, total: 1 },
+    created_at: null,
+  } as const;
+  const live = processMessageEvent(
+    "execution_step",
+    payload as never,
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+  );
+  const history = processMessageEvent(
+    "run_event",
+    {
+      ...payload,
+      event_type: "execution_step",
+      timestamp: "2026-07-31T01:00:00.000Z",
+    } as never,
+    [],
+    "",
+    [],
+    0,
+    [],
+    false,
+    "assistant-v2-optional-label",
+  );
+
+  const historyProcess = history.parts[0];
+  assert.equal(historyProcess?.type, "execution_process");
+  if (historyProcess?.type !== "execution_process") {
+    throw new Error("expected execution process");
+  }
+  assert.deepEqual(historyProcess.steps, live.parts);
 });
 
 test("drops a path-like safe_file_name before public execution state is retained", () => {

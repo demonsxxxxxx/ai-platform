@@ -17,6 +17,7 @@ from app.validation import (
 SandboxMode = Literal["ephemeral", "persistent"]
 ContainerProviderName = Literal["fake", "docker", "opensandbox"]
 CallbackStatus = Literal["running", "completed", "failed", "cancelled"]
+TerminalCallbackStatus = Literal["completed", "failed", "cancelled"]
 EXECUTOR_AUTH_HEADER = "X-AI-Platform-Executor-Credential"
 EXECUTOR_CALLBACK_PATH = "/api/ai/runtime/callbacks/executor"
 EXECUTOR_TOOL_PERMISSION_CALLBACK_PATH = "/api/ai/runtime/callbacks/tool-permission"
@@ -402,6 +403,30 @@ class ExecutorTerminalResult(BaseModel):
         return self
 
 
+def normalize_executor_terminal_status(
+    task_status: object,
+    result_status: object,
+) -> TerminalCallbackStatus | None:
+    if not isinstance(task_status, str) or not isinstance(result_status, str):
+        return None
+    aliases: dict[str, TerminalCallbackStatus] = {
+        "completed": "completed",
+        "succeeded": "completed",
+        "failed": "failed",
+        "cancelled": "cancelled",
+        "canceled": "cancelled",
+    }
+    normalized_result = aliases.get(result_status.strip().lower())
+    if normalized_result is None:
+        return None
+    normalized_task = task_status.strip().lower()
+    if normalized_task == "callback_failed":
+        return normalized_result
+    if aliases.get(normalized_task) == normalized_result:
+        return normalized_result
+    return None
+
+
 class ExecutorCallbackEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -428,13 +453,14 @@ class ExecutorCallbackEvent(BaseModel):
             return self
         if self.terminal_result.run_id != self.run_id:
             raise ValueError("terminal_result run_id must match callback run_id")
-        result_status = self.terminal_result.status
-        if self.status == "completed" and result_status not in {"completed", "succeeded"}:
-            raise ValueError("completed callback requires a successful terminal result")
-        if self.status == "failed" and result_status != "failed":
-            raise ValueError("failed callback requires a failed terminal result")
-        if self.status == "cancelled" and result_status not in {"cancelled", "canceled"}:
-            raise ValueError("cancelled callback requires a cancelled terminal result")
+        if (
+            normalize_executor_terminal_status(
+                self.status,
+                self.terminal_result.status,
+            )
+            is None
+        ):
+            raise ValueError("terminal callback status must match terminal result")
         return self
 
     @field_validator("session_id", "run_id", "attempt_id", "callback_token_id")

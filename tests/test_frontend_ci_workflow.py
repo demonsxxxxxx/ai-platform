@@ -142,6 +142,7 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
         "session route lifecycle supersedes stale loads across external and sidebar navigation"
         in test_sse
     )
+    assert "src/hooks/useAgent/__tests__/historyLoader.test.ts" in test_sse
     assert "group: ai-platform-frontend-${{ github.event.pull_request.number || github.run_id }}" in workflow
     assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in workflow
     contract = _workflow_contract()
