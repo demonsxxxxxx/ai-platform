@@ -94,6 +94,7 @@ from app.runtime.sandbox.executor_client import (
 from app.runtime.sandbox import governed_egress_diagnostics as egress_diagnostics
 from app.runtime.sandbox.filesystem_contract import encode_execd_mode
 from app.platform.sandbox.model_credentials import prepare_opensandbox_executor_environment
+from app.platform.sandbox.opensandbox_connection import build_opensandbox_connection_config
 from app.runtime.sandbox.providers.opensandbox.startup import (
     OpenSandboxStartupFailure,
     OpenSandboxStartupOperations,
@@ -1818,18 +1819,6 @@ def _opensandbox_volumes(
 
     del settings, workspace, skill_mount, host_class, volume_class
     return []
-
-
-def _opensandbox_connection_config(settings: Any, connection_config_class: Any) -> Any:
-    return connection_config_class(
-        api_key=str(getattr(settings, "opensandbox_api_key", "") or "") or None,
-        domain=str(getattr(settings, "opensandbox_domain", "") or "localhost:8080"),
-        protocol=str(getattr(settings, "opensandbox_protocol", "http") or "http"),
-        request_timeout=timedelta(
-            seconds=max(float(getattr(settings, "opensandbox_request_timeout_seconds", 30.0) or 30.0), 1.0)
-        ),
-        use_server_proxy=bool(getattr(settings, "opensandbox_use_server_proxy", False)),
-    )
 
 
 def _opensandbox_sentinel_path(workspace: WorkspaceLease) -> str:
@@ -4373,7 +4362,7 @@ class OpenSandboxContainerProvider:
 
     def _connection_config(self, settings: Any) -> Any:
         self._ensure_symbols()
-        return _opensandbox_connection_config(settings, self._connection_config_class)
+        return build_opensandbox_connection_config(settings, self._connection_config_class)
 
     def _elapsed_ms(self, started_at: float) -> int:
         return max(int(round((self._monotonic() - started_at) * 1000)), 0)

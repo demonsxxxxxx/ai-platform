@@ -827,7 +827,7 @@ require_gateway_config_contract_at() {
   test -z "$(find "$contract_root/tls" -mindepth 1 -maxdepth 1 \
     ! -name fullchain.pem ! -name privkey.pem ! -name upstream-ca.pem -print -quit)" || return 1
   require_root_owned_regular "$contract_root/gateway.env" 640 || return 1
-  require_root_owned_regular "$contract_root/tls/fullchain.pem" 640 || return 1
+  require_root_owned_regular "$contract_root/tls/fullchain.pem" 644 || return 1
   require_root_owned_regular "$contract_root/tls/privkey.pem" 440 || return 1
   for secret in lifecycle-api-key capability-token record-signing-key; do
     require_root_owned_regular "$contract_root/secrets/$secret" 440 || return 1
@@ -849,9 +849,10 @@ normalize_runtime_config_permissions() {
     test ! -e "$directory" || chmod 0750 "$directory" || return 1
   done
   for file in "$CONFIG_DIR/gateway.env" "$CONFIG_DIR/egress-policy.v1.json" \
-    "$CONFIG_DIR/tls/fullchain.pem" "$CONFIG_DIR/tls/upstream-ca.pem"; do
+    "$CONFIG_DIR/tls/upstream-ca.pem"; do
     test ! -e "$file" || chmod 0640 "$file" || return 1
   done
+  test ! -e "$CONFIG_DIR/tls/fullchain.pem" || chmod 0644 "$CONFIG_DIR/tls/fullchain.pem" || return 1
   for file in "$CONFIG_DIR"/secrets/* "$CONFIG_DIR/tls/privkey.pem"; do
     test ! -e "$file" || chmod 0440 "$file" || return 1
   done

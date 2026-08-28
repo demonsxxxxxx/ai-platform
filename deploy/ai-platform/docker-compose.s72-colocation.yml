@@ -21,6 +21,7 @@ services:
       OPENSANDBOX_DOMAIN: ${OPENSANDBOX_DOMAIN:?set OPENSANDBOX_DOMAIN}
       OPENSANDBOX_PROTOCOL: ${OPENSANDBOX_PROTOCOL:?set OPENSANDBOX_PROTOCOL}
       OPENSANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:?set OPENSANDBOX_API_KEY}
+      OPENSANDBOX_CA_CERT_FILE: /etc/ssl/certs/opensandbox-gateway.pem
       OPENSANDBOX_EXECUTOR_IMAGE: ${OPENSANDBOX_EXECUTOR_IMAGE:?set OPENSANDBOX_EXECUTOR_IMAGE}
       OPENSANDBOX_EXECUTOR_IMAGE_DIGEST: ${OPENSANDBOX_EXECUTOR_IMAGE_DIGEST:?set OPENSANDBOX_EXECUTOR_IMAGE_DIGEST}
       OPENSANDBOX_USE_SERVER_PROXY: "true"
@@ -37,6 +38,8 @@ services:
       - default
       - s72_callback
       - opensandbox_lifecycle
+    volumes:
+      - /etc/opensandbox-gateway/tls/fullchain.pem:/etc/ssl/certs/opensandbox-gateway.pem:ro
 
   worker:
     environment:
@@ -52,6 +55,7 @@ services:
       OPENSANDBOX_DOMAIN: ${OPENSANDBOX_DOMAIN:?set OPENSANDBOX_DOMAIN}
       OPENSANDBOX_PROTOCOL: ${OPENSANDBOX_PROTOCOL:?set OPENSANDBOX_PROTOCOL}
       OPENSANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:?set OPENSANDBOX_API_KEY}
+      OPENSANDBOX_CA_CERT_FILE: /etc/ssl/certs/opensandbox-gateway.pem
       OPENSANDBOX_EXECUTOR_IMAGE: ${OPENSANDBOX_EXECUTOR_IMAGE:?set OPENSANDBOX_EXECUTOR_IMAGE}
       OPENSANDBOX_EXECUTOR_IMAGE_DIGEST: ${OPENSANDBOX_EXECUTOR_IMAGE_DIGEST:?set OPENSANDBOX_EXECUTOR_IMAGE_DIGEST}
       OPENSANDBOX_USE_SERVER_PROXY: "true"
@@ -66,6 +70,8 @@ services:
     networks:
       - default
       - opensandbox_lifecycle
+    volumes:
+      - /etc/opensandbox-gateway/tls/fullchain.pem:/etc/ssl/certs/opensandbox-gateway.pem:ro
 
   s72-broker-entry:
     image: ${AI_PLATFORM_FRONTEND_IMAGE:?set AI_PLATFORM_FRONTEND_IMAGE}

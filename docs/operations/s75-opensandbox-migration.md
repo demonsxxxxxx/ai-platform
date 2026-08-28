@@ -22,7 +22,8 @@ release runbook，不再运行本迁移命令。
    `http://127.0.0.1:8080/health` 返回 200。
 4. `opensandbox-gateway.service` 已按
    `s72-opensandbox-gateway-runbook.md` 的 host-colocation 规则安装并 active；安装时使用
-   本机 machine-id SHA-256，不打印 secret。
+   本机 machine-id SHA-256，不打印 secret。公开 `tls/fullchain.pem` 已由 target Compose
+   只读挂载给 API/Worker，OpenSandbox client 在系统默认信任库上追加该专用 CA；私钥不挂载。
 5. `runsc` 已注册；目标 executor image digest 已在该 Docker host 缓存或可拉取。
 6. managed environment file 是 root-owned regular file、非 symlink、mode `0600`。
 7. s75 没有 active Run、RunAttempt、sandbox lease、Docker sandbox 或 native-tool container。
