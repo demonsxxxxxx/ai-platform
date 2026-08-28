@@ -95,12 +95,15 @@ DEFAULT_MANAGED_ENV_RELATIVE_PATH = Path("deploy/ai-platform/.env")
 MANAGED_RELEASE_DIRECTORY_NAME = "releases"
 SANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.sandbox.yml"
 S72_COLOCATION_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.s72-colocation.yml"
+S75_MIGRATION_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.s75-migration.yml"
 S72_COLOCATION_SELECTION = (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), S72_COLOCATION_COMPOSE_RELATIVE_PATH)
+S75_MIGRATED_COLOCATION_SELECTION = (*S72_COLOCATION_SELECTION, S75_MIGRATION_COMPOSE_RELATIVE_PATH)
+HOST_COLOCATION_SELECTIONS = frozenset({S72_COLOCATION_SELECTION, S75_MIGRATED_COLOCATION_SELECTION})
 GOVERNED_COMPOSE_SELECTIONS = frozenset(
     {
         (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(),),
         (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), SANDBOX_COMPOSE_RELATIVE_PATH),
-        S72_COLOCATION_SELECTION,
+        *HOST_COLOCATION_SELECTIONS,
     }
 )
 WORKER_HEARTBEAT_FILENAME = "ai-platform-worker-runtime-heartbeat.json"
@@ -1958,15 +1961,15 @@ def _semantic_compose_config_preflight(docker: Sequence[str], selection: _Compos
     missing_keys: list[str] = []
     release_overrides = [f"AI_PLATFORM_IMAGE={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}/backend", f"AI_PLATFORM_FRONTEND_IMAGE={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}/frontend", f"SANDBOX_EXECUTOR_IMAGE={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}/sandbox-executor", f"AI_PLATFORM_SOURCE_COMMIT={commit}", f"AI_PLATFORM_BUILD_COMMIT={commit}", "AI_PLATFORM_BUILD_DIRTY=false"]
     compose_file_args = [argument for path in selection.absolute_paths for argument in ("-f", str(path))]
-    is_s72_colocation = selection.relative_paths == S72_COLOCATION_SELECTION
-    config_args = ["config", "--format", "json"] if is_s72_colocation else ["config", "--quiet"]
+    is_host_colocation = selection.relative_paths in HOST_COLOCATION_SELECTIONS
+    config_args = ["config", "--format", "json"] if is_host_colocation else ["config", "--quiet"]
     for _ in range(COMPOSE_CONFIG_PREFLIGHT_MAX_REQUIRED_KEYS + 1):
         command = [*_compose_command_with_environment(docker, [*release_overrides, *(f"{key}={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}" for key in missing_keys)]), "compose", "-p", COMPOSE_PROJECT, "--env-file", str(env_file), *compose_file_args, *config_args]
         result = _run(command, cwd=selection.absolute_paths[0].parent, check=False, timeout=COMPOSE_CONFIG_PREFLIGHT_TIMEOUT_SECONDS)
         if result.returncode == 0:
             if missing_keys:
                 raise _compose_config_preflight_error("missing-required-config", missing_keys)
-            if is_s72_colocation:
+            if is_host_colocation:
                 _validate_s72_colocation_config(result.stdout)
             return
         stderr = result.stderr.decode("utf-8", errors="replace") if isinstance(result.stderr, bytes) else result.stderr if isinstance(result.stderr, str) else ""
@@ -2004,6 +2007,43 @@ def _validate_release_image(image: dict[str, Any], *, commit: str, repository: s
     for label in COMPATIBILITY_IMAGE_COMMIT_LABELS:
         if label in labels and labels.get(label) != commit:
             raise ReleaseAuthorityError(f"{role} image label mismatch: {label}")
+
+
+def prepare_packaged_release_images(
+    commit: str,
+    *,
+    backend_image: str,
+    frontend_image: str,
+    docker_cmd: str = "docker",
+) -> dict[str, str]:
+    """Pull, verify, and locally tag CI-packaged images before release downtime."""
+    normalized = _normalize_commit(commit)
+    docker = _docker_base(docker_cmd)
+    repository = AUTHORITATIVE_REPOSITORY
+    targets = build_image_references(normalized)
+    sources = {"backend": backend_image, "frontend": frontend_image}
+    for role, source in sources.items():
+        if not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", source):
+            raise ReleaseAuthorityError(f"{role} packaged image is not immutable")
+        _run([*docker, "pull", source])
+        source_record = _image_record(docker, source)
+        _validate_release_image(
+            source_record,
+            commit=normalized,
+            repository=repository,
+            role=role,
+        )
+        _run([*docker, "tag", source, targets[role]])
+        target_record = _image_record(docker, targets[role])
+        _validate_release_image(
+            target_record,
+            commit=normalized,
+            repository=repository,
+            role=role,
+        )
+        if target_record.get("id") != source_record.get("id"):
+            raise ReleaseAuthorityError(f"{role} packaged image tag identity mismatch")
+    return targets
 
 
 def _existing_release_image(

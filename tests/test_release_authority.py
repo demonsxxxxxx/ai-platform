@@ -215,16 +215,15 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert "Only after that local trust gate" in contract_text
     assert "--compose-file deploy/ai-platform/docker-compose.yml" in text
     assert "--compose-file deploy/ai-platform/docker-compose.sandbox.yml" in text
-    assert "The base Compose and `docker-compose.sandbox.yml` Docker rollback path do not" in text
-    assert "OpenSandbox overlay only under an" in text
-    assert "explicit provider-transition release charter" in text
-    assert "exact provider-overlay ownership transition" in text
-    assert "base-only, reordered, duplicate" in text
-    assert "missing, extra, or arbitrary overlay" in text
+    assert "The retired cross-host `docker-compose.opensandbox.yml` contour is not" in text
+    assert "Ordinary production deployment remains base plus" in text
+    assert "separately approved provider-transition" in text
+    assert "The one approved legacy s75 migration additionally uses" in text
+    assert "Only `tools.s75_opensandbox_transition` may perform" in text
+    assert "must never run concurrently against those writable volumes" in text
     assert "ai-platform-phaseb" in text
     assert "--env-file <release-root>/deploy/ai-platform/.env" not in text
     assert "--env-file deploy/ai-platform/.env" not in text
-    assert '--env-file "$ROOT/deploy/ai-platform/.env"' in text
     canonical_command = re.search(r"```bash\n(?P<command>.*?)```", text, re.DOTALL)
     assert canonical_command is not None
     command = canonical_command.group("command")
@@ -242,7 +241,7 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert "do not run `docker export`, `docker import`, `docker tag`, or Compose by hand" in contract_text
     assert "`authority_commit`" in text
     assert "Secure provisioning and read-only Compose semantic preflight" in text
-    assert "config --quiet >/dev/null 2>/dev/null" in text
+    assert "config --quiet" in text
     assert "missing-required-config" in text
     assert "33 bounded Compose semantic parser attempts" in text
 

@@ -1,0 +1,15 @@
+services: {}
+
+volumes:
+  ai_platform_postgres:
+    external: true
+    name: ai-platform-internal_ai_platform_postgres
+  ai_platform_redis:
+    external: true
+    name: ai-platform-internal_ai_platform_redis
+  ai_platform_minio:
+    external: true
+    name: ai-platform-internal_ai_platform_minio
+  ai_platform_sandbox_workspaces:
+    external: true
+    name: ai-platform-internal_ai_platform_sandbox_workspaces

@@ -80,9 +80,15 @@ procedure for a controlled Docker host. It requires a read-only readiness packet
 owner with one mutation lease. No document here authorizes a manual deployment
 or substitutes for current host evidence.
 
-`operations/s72-opensandbox-gateway-runbook.md` is the separate root-owned s72
-gateway install and rollback authority. It does not replace the application
-release procedure or establish application runtime acceptance.
+`operations/s72-opensandbox-gateway-runbook.md` is the separate root-owned
+host-colocated gateway install and rollback authority. Its historical filename
+is retained; it does not replace the application release procedure or establish
+application runtime acceptance.
+
+`operations/s75-opensandbox-migration.md` is the Issue #1278 one-time migration
+procedure from the exact legacy s75 Docker project to the governed host-colocated
+OpenSandbox contour. It does not authorize any other project, volume mapping, or
+ordinary release.
 
 `acceptance/agent-app/ordinary-user-matrix.md` defines the source/runtime
 evidence boundary and post-merge ordinary-user matrix for Agent Apps. It grants
