@@ -2214,6 +2214,9 @@ async def test_run_worker_pool_clamps_invalid_worker_count_to_one(monkeypatch):
 def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
     calls = []
 
+    def configure_model_services():
+        calls.append(("configure_model_services",))
+
     async def fake_run_once(timeout_seconds=5, *, v4_capabilities=None):
         assert v4_capabilities is _TEST_V4_CAPABILITIES
         calls.append(("run_once", timeout_seconds))
@@ -2226,6 +2229,7 @@ def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
         calls.append(("close_redis_client",))
 
     monkeypatch.setattr(sys, "argv", ["worker", "--once", "--timeout", "7"])
+    monkeypatch.setattr("app.worker_main.configure_model_services", configure_model_services)
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_pool", fake_close_pool)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_redis_client", fake_close_redis_client)
@@ -2233,6 +2237,7 @@ def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
     worker_main.main()
 
     assert calls == [
+        ("configure_model_services",),
         ("run_once", 7),
         ("close_redis_client",),
         ("close_pool",),
@@ -2243,6 +2248,9 @@ def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
 def test_worker_main_uses_configured_worker_concurrency(monkeypatch):
     calls = []
 
+    def configure_model_services():
+        calls.append(("configure_model_services",))
+
     class Settings:
         worker_concurrency = 10
 
@@ -2250,12 +2258,16 @@ def test_worker_main_uses_configured_worker_concurrency(monkeypatch):
         calls.append(("run_worker_pool", worker_count, poll_timeout_seconds))
 
     monkeypatch.setattr(sys, "argv", ["worker", "--timeout", "9"])
+    monkeypatch.setattr("app.worker_main.configure_model_services", configure_model_services)
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.run_worker_pool", fake_run_worker_pool)
 
     worker_main.main()
 
-    assert calls == [("run_worker_pool", 10, 9)]
+    assert calls == [
+        ("configure_model_services",),
+        ("run_worker_pool", 10, 9),
+    ]
 
 
 @pytest.mark.asyncio

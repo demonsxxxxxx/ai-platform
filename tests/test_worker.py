@@ -9,6 +9,9 @@ from pathlib import Path
 
 import pytest
 
+import app.bootstrap.model_services as model_services
+import app.execution.application.model_control_plane as model_control_plane_module
+import app.runs.application.model_snapshot as run_model_snapshot_module
 import app.worker as worker_module
 from app import repositories as repository_module
 from app.auth import AuthPrincipal, is_ai_admin
@@ -6030,13 +6033,14 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
             },
         }
 
-    async def load_run_model_snapshot(conn, *, tenant_id, run_id):
-        calls.append(("model_snapshot", conn, tenant_id, run_id))
-        return {
-            "model_id": "platform-default",
-            "model_value": "provider/default",
-            "model_gateway_revision": None,
-        }
+    class SnapshotRepository:
+        async def load(self, conn, *, tenant_id, run_id):
+            calls.append(("model_snapshot", conn, tenant_id, run_id))
+            return {
+                "model_id": "platform-default",
+                "model_value": "provider/default",
+                "model_gateway_revision": None,
+            }
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs["event_type"], kwargs.get("payload") or {}))
@@ -6067,7 +6071,10 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_run_model_snapshot)
+    monkeypatch.setattr(model_control_plane_module, "_service", model_control_plane_module._service)
+    monkeypatch.setattr(run_model_snapshot_module, "_service", run_model_snapshot_module._service)
+    monkeypatch.setattr(model_services, "PostgresRunModelSnapshotRepository", SnapshotRepository)
+    model_services.configure_model_services()
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
