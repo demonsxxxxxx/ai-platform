@@ -475,6 +475,15 @@ s72_atomic_require_marker_pair() {
   fi
 }
 
+s72_atomic_require_payload_or_absent() {
+  if test -f "$1" && test ! -L "$1"; then
+    require_root_owned_regular "$1" 400 || return 1
+    test -s "$1" && test ! -e "$2" && test ! -L "$2"
+  else
+    test ! -e "$1" && test ! -L "$1" && s72_atomic_require_marker_file "$2"
+  fi
+}
+
 s72_atomic_preflight_gateway_identity_snapshot() (
   snapshot=$1
   s72_atomic_require_root_owned_regular "$snapshot/gateway-service-uid" 400 || return 1
@@ -636,16 +645,20 @@ s72_atomic_preflight_snapshot() (
     test ! -e "$snapshot/config.metadata" && test ! -L "$snapshot/config.metadata" || return 1
   fi
   require_root_owned_regular "$snapshot/workspaces.acl" 600 || return 1
-  s72_atomic_require_marker_pair "$snapshot/authority-sha" "$snapshot/authority-sha.absent" || return 1
-  s72_atomic_require_marker_pair "$snapshot/authority-evidence" "$snapshot/authority-evidence.absent" || return 1
+  s72_atomic_require_payload_or_absent \
+    "$snapshot/authority-sha" "$snapshot/authority-sha.absent" || return 1
+  s72_atomic_require_payload_or_absent \
+    "$snapshot/authority-evidence" "$snapshot/authority-evidence.absent" || return 1
   if test -f "$snapshot/authority-sha"; then
     test -f "$snapshot/authority-evidence" || return 1
-    require_root_owned_regular "$snapshot/authority-sha" 400 || return 1
-    require_root_owned_regular "$snapshot/authority-evidence" 400 || return 1
+    s72_atomic_is_commit "$(cat "$snapshot/authority-sha")" || return 1
+    s72_atomic_is_authority_evidence_id \
+      "$(cat "$snapshot/authority-evidence")" || return 1
   else
     test ! -e "$snapshot/authority-evidence" && test ! -L "$snapshot/authority-evidence" || return 1
   fi
-  s72_atomic_require_marker_pair "$snapshot/current" "$snapshot/current.absent" || return 1
+  s72_atomic_require_payload_or_absent \
+    "$snapshot/current" "$snapshot/current.absent" || return 1
   if test -f "$snapshot/current"; then
     old_target=$(cat "$snapshot/current") || return 1
     case "$old_target" in releases/*) old_commit=${old_target#releases/} ;; *) return 1 ;; esac
@@ -655,7 +668,10 @@ s72_atomic_preflight_snapshot() (
   else
     test -f "$snapshot/authority-sha.absent" && test -f "$snapshot/authority-evidence.absent" || return 1
   fi
-  s72_atomic_require_marker_pair "$snapshot/rollback-pointer" "$snapshot/rollback-pointer.absent" || return 1
+  s72_atomic_require_payload_or_absent \
+    "$snapshot/rollback-pointer" "$snapshot/rollback-pointer.absent" || return 1
+  test ! -f "$snapshot/rollback-pointer" \
+    || s72_atomic_is_snapshot_id "$(cat "$snapshot/rollback-pointer")" || return 1
 )
 
 s72_atomic_create_snapshot_stage() {
