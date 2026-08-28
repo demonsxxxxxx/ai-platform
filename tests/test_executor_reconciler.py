@@ -373,6 +373,114 @@ async def test_probe_releases_active_executor_for_future_heartbeat_checks(monkey
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "task_status",
+        "result_status",
+        "success_message",
+        "expected_executor_status",
+    ),
+    [
+        ("completed", "completed", "done", "completed"),
+        ("succeeded", "succeeded", "done", "completed"),
+        ("callback_failed", "completed", "done", "completed"),
+        ("callback_failed", "succeeded", "done", "completed"),
+        ("failed", "failed", None, "failed"),
+        ("callback_failed", "failed", None, "failed"),
+        ("cancelled", "cancelled", None, "cancelled"),
+        ("canceled", "cancelled", None, "cancelled"),
+        ("callback_failed", "canceled", None, "cancelled"),
+        ("completed", "failed", None, "protocol_invalid"),
+        ("failed", "completed", "done", "protocol_invalid"),
+        ("finished", "completed", "done", "protocol_invalid"),
+        ("callback_failed", "completed", "", "protocol_invalid"),
+    ],
+)
+async def test_probe_preserves_matching_terminal_status_and_rejects_contradictions(
+    monkeypatch,
+    task_status,
+    result_status,
+    success_message,
+    expected_executor_status,
+):
+    persisted = []
+
+    async def claim(_conn, **_kwargs):
+        return [_suspect_lease_row()]
+
+    async def get_run(_conn, **_kwargs):
+        return {"id": "run-a", "status": "running"}
+
+    async def persist(lease_row, **kwargs):
+        persisted.append((lease_row, kwargs))
+
+    terminal_result = {"run_id": "run-a", "status": result_status}
+    if result_status in {"completed", "succeeded"}:
+        terminal_result["message"] = success_message
+    else:
+        terminal_result.update(
+            error_code="executor_failed",
+            error_message="Executor failed",
+        )
+
+    class Provider:
+        async def executor_control_endpoint(self, _lease, _request):
+            return "http://executor", {"Authorization": "Bearer control"}
+
+    class Client:
+        def __init__(self, *, timeout_seconds):
+            assert timeout_seconds == 10.0
+
+        async def get_status(self, _executor_url, **_kwargs):
+            return {
+                "status": task_status,
+                "terminal_result": terminal_result,
+            }
+
+    monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
+    monkeypatch.setattr(
+        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_suspects",
+        claim,
+    )
+    monkeypatch.setattr("app.executor_reconciler.repositories.get_run", get_run)
+    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
+    monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
+    monkeypatch.setattr(
+        "app.executor_reconciler.container_lease_from_persisted_row",
+        lambda _row: SimpleNamespace(provider="fake"),
+    )
+    monkeypatch.setattr(
+        "app.executor_reconciler.create_container_provider",
+        lambda _provider_name: Provider(),
+    )
+    monkeypatch.setattr("app.executor_reconciler.SandboxExecutorClient", Client)
+    monkeypatch.setattr("app.executor_reconciler._persist_probe_terminal", persist)
+
+    assert await probe_suspect_executor_tasks_once() == 1
+    assert len(persisted) == 1
+    assert persisted[0][0]["id"] == "lease-a"
+    assert isinstance(persisted[0][1].pop("claim_token"), str)
+    if expected_executor_status == "protocol_invalid":
+        assert persisted[0][1] == {
+            "executor_status": "failed",
+            "terminal_result": {
+                "run_id": "run-a",
+                "status": "failed",
+                "message": "",
+                "error_code": "executor_protocol_invalid",
+                "error_message": "Sandbox executor returned an invalid terminal result",
+            },
+        }
+    else:
+        expected_result = {**terminal_result}
+        expected_result.setdefault("message", "")
+        assert persisted[0][1] == {
+            "executor_status": expected_executor_status,
+            "terminal_result": expected_result,
+        }
+
+
+@pytest.mark.asyncio
 async def test_probe_cancellation_releases_claim_before_propagating(monkeypatch):
     claim_tokens = []
     released = []

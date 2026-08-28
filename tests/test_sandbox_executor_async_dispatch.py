@@ -106,6 +106,43 @@ def test_v2_dispatch_returns_accepted_and_delivers_terminal_callback(tmp_path):
         )
 
 
+def test_v2_status_retains_completed_result_when_terminal_callback_is_unavailable(tmp_path):
+    async def executor_runner(_request, _workspace_root, _emit_event):
+        return {"status": "completed", "message": "done"}
+
+    async def callback_sender(url, payload, _token):
+        if payload.get("status") == "running":
+            return callback_ack(payload)
+        raise httpx.ConnectError(
+            "callback unavailable",
+            request=httpx.Request("POST", url),
+        )
+
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        callback_sender=callback_sender,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/v2/tasks",
+            json=task_payload(),
+            headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        status_payload = _wait_for_status(client, "callback_failed")
+
+    terminal_result = status_payload["terminal_result"]
+    assert terminal_result["run_id"] == "run-a"
+    assert terminal_result["status"] == "completed"
+    assert terminal_result["message"] == "done"
+
+
 def test_v2_delivery_exhaustion_still_delivers_failed_terminal_callback(tmp_path):
     callbacks: list[dict[str, object]] = []
     assistant_attempts: list[dict[str, object]] = []
