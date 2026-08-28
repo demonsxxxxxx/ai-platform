@@ -101,12 +101,8 @@ export function getSessionRouteSyncAction({
     return null;
   }
 
-  if (sessionId && sessionId !== urlSessionId) {
+  if (sessionId && !urlSessionId) {
     return { type: "replace-url", path: `${sessionRouteBasePath}/${sessionId}` };
-  }
-
-  if (!sessionId && urlSessionId) {
-    return { type: "replace-url", path: sessionRouteBasePath };
   }
 
   return null;

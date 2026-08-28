@@ -1,4 +1,5 @@
 import importlib.metadata
+import json
 from pathlib import Path
 import tomllib
 from unittest.mock import patch
@@ -13,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-frontend.yml"
 BACKEND_WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-backend.yml"
 LOCK = ROOT / "uv.lock"
+PACKAGE = ROOT / "frontend" / "web" / "package.json"
 PYTEST_COMMAND = (
     "python -m pytest tests/test_deploy_frontend_static.py "
     "tests/test_frontend_release_traceability.py "
@@ -135,6 +137,12 @@ def test_frontend_ci_workflow_derives_and_verifies_jsonschema_from_lock_authorit
 def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     backend_workflow = BACKEND_WORKFLOW.read_text(encoding="utf-8")
+    test_sse = json.loads(PACKAGE.read_text(encoding="utf-8"))["scripts"]["test:sse"]
+    assert (
+        "session route lifecycle supersedes stale loads across external and sidebar navigation"
+        in test_sse
+    )
+    assert "src/hooks/useAgent/__tests__/historyLoader.test.ts" in test_sse
     assert "group: ai-platform-frontend-${{ github.event.pull_request.number || github.run_id }}" in workflow
     assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in workflow
     contract = _workflow_contract()

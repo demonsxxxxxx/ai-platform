@@ -804,6 +804,10 @@ test("session route lifecycle supersedes stale loads across external and sidebar
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalFetch = dom.window.fetch;
   const historyLoads: string[] = [];
+  let resolveSessionELoadStarted!: () => void;
+  const sessionELoadStarted = new Promise<void>((resolve) => {
+    resolveSessionELoadStarted = resolve;
+  });
   let releaseSessionB!: () => void;
   const sessionBGate = new Promise<void>((resolve) => {
     releaseSessionB = resolve;
@@ -827,6 +831,9 @@ test("session route lifecycle supersedes stale loads across external and sidebar
   })) as typeof sessionApi.submitChat;
   sessionApi.get = async (sessionId) => {
     historyLoads.push(sessionId);
+    if (sessionId === "session-e") {
+      resolveSessionELoadStarted();
+    }
     if (sessionId === "session-b") {
       await sessionBGate;
     }
@@ -890,6 +897,30 @@ test("session route lifecycle supersedes stale loads across external and sidebar
     assert.equal(harness.hook.messages.length, 0);
 
     await harness.navigateRoute("/chat/session-e");
+    let sessionELoadTimeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        sessionELoadStarted,
+        new Promise<never>((_resolve, reject) => {
+          sessionELoadTimeout = setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `session_e_history_load_not_started:${JSON.stringify({
+                    pathname: harness.route.pathname,
+                    routeSessionId: harness.route.sessionId,
+                    sessionId: harness.hook.sessionId,
+                    historyLoads,
+                  })}`,
+                ),
+              ),
+            5000,
+          );
+        }),
+      ]);
+    } finally {
+      if (sessionELoadTimeout) clearTimeout(sessionELoadTimeout);
+    }
     await settle(harness.act);
     assert.deepEqual(historyLoads, [
       "session-b",

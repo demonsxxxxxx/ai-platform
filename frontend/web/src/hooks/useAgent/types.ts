@@ -292,6 +292,41 @@ function isExecutionProgress(value: unknown): value is { current: number; total:
   );
 }
 
+function isPythonStripWhitespace(character: string): boolean {
+  const codePoint = character.codePointAt(0);
+  return (
+    codePoint !== undefined &&
+    ((codePoint >= 0x09 && codePoint <= 0x0d) ||
+      (codePoint >= 0x1c && codePoint <= 0x20) ||
+      codePoint === 0x85 ||
+      codePoint === 0xa0 ||
+      codePoint === 0x1680 ||
+      (codePoint >= 0x2000 && codePoint <= 0x200a) ||
+      codePoint === 0x2028 ||
+      codePoint === 0x2029 ||
+      codePoint === 0x202f ||
+      codePoint === 0x205f ||
+      codePoint === 0x3000)
+  );
+}
+
+function isSafePublicExecutionLabel(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const characters = [...value];
+  return (
+    characters.length > 0 &&
+    characters.length <= 96 &&
+    !isPythonStripWhitespace(characters[0]) &&
+    !isPythonStripWhitespace(characters.at(-1) ?? "") &&
+    /[\p{L}\p{N}]/u.test(value) &&
+    characters.every(
+      (character) =>
+        (character.codePointAt(0) ?? 0) >= 32 &&
+        !"\\/:.;`'\"<>|{}[]$".includes(character),
+    )
+  );
+}
+
 /** Reject all partial, expanded, or raw-tool-shaped execution payloads. */
 export function isPublicExecutionEvent(
   eventType: string,
@@ -312,8 +347,8 @@ export function isPublicExecutionEvent(
   presentation_kind?: string;
   safe_label?: string;
   progress: { current: number; total: number };
-  safe_file_name: string | null;
-  artifact_public_id: string | null;
+  safe_file_name?: string | null;
+  artifact_public_id?: string | null;
   created_at: string | null;
 } {
   if (!PUBLIC_EXECUTION_EVENT_TYPES.has(eventType as PublicExecutionEventType)) {
@@ -329,8 +364,6 @@ export function isPublicExecutionEvent(
     source.sequence < 0 ||
     typeof source.stage !== "string" || !source.stage ||
     !isExecutionProgress(source.progress) ||
-    (source.safe_file_name !== null && typeof source.safe_file_name !== "string") ||
-    (source.artifact_public_id !== null && !isOpaquePublicId(source.artifact_public_id)) ||
     (source.created_at !== null && typeof source.created_at !== "string")
   ) {
     return false;
@@ -352,6 +385,10 @@ export function isPublicExecutionEvent(
   const presentation = `${String(source.presentation_kind)}:${String(source.kind)}:${String(source.stage)}`;
   const hasSafeLabel = Object.hasOwn(source, "safe_label");
   const expectedSafeLabel = PUBLIC_EXECUTION_V2_STATIC_LABELS[presentation];
+  const expectedProgressCurrent =
+    eventType === "execution_step_completed" || eventType === "execution_step_failed"
+      ? 1
+      : 0;
   return (
     Object.keys(source).length ===
       PUBLIC_EXECUTION_V2_EVENT_FIELDS.length - (hasSafeLabel ? 0 : 1) &&
@@ -359,11 +396,10 @@ export function isPublicExecutionEvent(
       .filter((key) => key !== "safe_label" || hasSafeLabel)
       .every((key) => Object.hasOwn(source, key)) &&
     PUBLIC_EXECUTION_V2_PRESENTATIONS.has(presentation) &&
+    source.progress.total === 1 &&
+    source.progress.current === expectedProgressCurrent &&
     (!hasSafeLabel ||
-      (typeof source.safe_label === "string" &&
-        source.safe_label.length > 0 &&
-        source.safe_label.length <= 96 &&
-        !/[\\/:.;`'"<>|{}[\]$\n\r\t]/.test(source.safe_label) &&
+      (isSafePublicExecutionLabel(source.safe_label) &&
         (expectedSafeLabel === undefined || source.safe_label === expectedSafeLabel))) &&
     (expectedSafeLabel === undefined || source.safe_label === expectedSafeLabel)
   );

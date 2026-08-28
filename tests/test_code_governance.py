@@ -6,7 +6,6 @@ import json
 import subprocess
 import sys
 from contextlib import redirect_stdout
-from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -29,16 +28,6 @@ def _run(repo: Path, *arguments: str, check: bool = True) -> subprocess.Complete
         capture_output=True,
         text=True,
         encoding="utf-8",
-    )
-
-
-def _run_bytes(repo: Path, *arguments: str, input_bytes: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(
-        list(arguments),
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        input=input_bytes,
     )
 
 
@@ -91,12 +80,10 @@ def _evaluate(
             return code_governance.CodeGovernanceEvaluator(
                 repo,
                 runner=runner,
-                today=date(2026, 7, 25),
             ).evaluate(base, head)
     return code_governance.CodeGovernanceEvaluator(
         repo,
         runner=runner,
-        today=date(2026, 7, 25),
     ).evaluate(base, head)
 
 
@@ -114,21 +101,6 @@ def _payload(evaluation: Any) -> dict[str, Any]:
 
 def _python_lines(count: int, *, prefix: str = "value") -> str:
     return "".join(f"{prefix}_{index} = {index}\n" for index in range(count))
-
-
-def _candidate_binding(repo: Path, base: str, scope_head: str) -> dict[str, str]:
-    reader = code_governance._GitChangeReader(repo, code_governance._CommandRunner())
-    return {
-        "base_ref": base,
-        "scope_sha256": reader.exception_scope_sha256(base, scope_head),
-    }
-
-
-def _commit_raw_path(repo: Path, base: str, path: bytes) -> str:
-    blob = _run_bytes(repo, "git", "hash-object", "-w", "--stdin", input_bytes=b"same content\n").stdout.strip()
-    tree_input = b"100644 blob " + blob + b"\t" + path + b"\0"
-    tree = _run_bytes(repo, "git", "mktree", "-z", input_bytes=tree_input).stdout.decode("ascii").strip()
-    return _git(repo, "commit-tree", tree, "-p", base, "-m", "raw path candidate")
 
 
 def test_small_non_python_change_passes(governance_repo: tuple[Path, str]) -> None:
@@ -149,7 +121,7 @@ def test_small_non_python_change_passes(governance_repo: tuple[Path, str]) -> No
     }
 
 
-def test_v1_report_keeps_legacy_fields_and_adds_advisories(
+def test_v2_report_exposes_no_exception_surface(
     governance_repo: tuple[Path, str],
 ) -> None:
     repo, base = governance_repo
@@ -161,8 +133,6 @@ def test_v1_report_keeps_legacy_fields_and_adds_advisories(
     assert {
         "base_ref",
         "changes",
-        "exception",
-        "exempted_violations",
         "head_ref",
         "metrics",
         "mode",
@@ -173,7 +143,9 @@ def test_v1_report_keeps_legacy_fields_and_adds_advisories(
         "status",
         "violations",
     } <= payload.keys()
-    assert payload["schema_version"] == "ai-platform.code-governance-report.v1"
+    assert "exception" not in payload
+    assert "exempted_violations" not in payload
+    assert payload["schema_version"] == "ai-platform.code-governance-report.v2"
     assert payload["advisories"] == []
 
 
@@ -423,199 +395,6 @@ def test_behavior_change_reports_test_loc_ratio_as_a_soft_review_signal(
     assert _payload(evaluation)["policy"]["test_loc_review"]["enforcement"] == "soft"
 
 
-def test_invalid_exception_schema_is_an_error(governance_repo: tuple[Path, str]) -> None:
-    repo, base = governance_repo
-    _write(repo, "app/billing_rules.py", "RATE = 2\n")
-    _write(
-        repo,
-        code_governance.EXCEPTION_PATH,
-        json.dumps(
-            {
-                "schema_version": code_governance.EXCEPTION_SCHEMA_VERSION,
-                "candidate": {"base_ref": "0" * 40, "scope_sha256": "0" * 64},
-                "expires_on": "2026-08-01",
-                "owner": "platform",
-                "reason": "bounded migration",
-                "violations": [{"code": "production_net_loc", "path": None}],
-                "unexpected": True,
-            }
-        ),
-    )
-    head = _commit(repo, "invalid exception")
-
-    with pytest.raises(code_governance.GovernanceError, match="keys must be exactly") as caught:
-        _evaluate(repo, base, head)
-
-    assert caught.value.code == "invalid_exception"
-
-
-def test_valid_exact_exception_exempts_only_requested_hard_violation(
-    governance_repo: tuple[Path, str],
-) -> None:
-    repo, _base = governance_repo
-    evaluator = code_governance.CodeGovernanceEvaluator(repo)
-    violation = code_governance.Violation(
-        "custom_hard_gate",
-        "hard gate failed",
-        path="app/billing_rules.py",
-    )
-    payload = {
-        "schema_version": code_governance.EXCEPTION_SCHEMA_VERSION,
-        "candidate": {"base_ref": "0" * 40, "scope_sha256": "0" * 64},
-        "expires_on": "2026-08-01",
-        "owner": "platform-governance",
-        "reason": "temporary hard-gate migration",
-        "violations": [
-            {"code": "custom_hard_gate", "path": "app/billing_rules.py"}
-        ],
-    }
-
-    active, exempted, summary = evaluator._apply_exception([violation], [], payload)
-
-    assert active == []
-    assert exempted == [violation]
-    assert summary["status"] == "applied"
-    assert summary["acknowledged_advisories"] == []
-
-
-def test_exact_legacy_size_exception_acknowledges_advisory_without_hiding_it(
-    governance_repo: tuple[Path, str],
-) -> None:
-    repo, _initial = governance_repo
-    _write(repo, "app/billing_rules.py", _python_lines(3001))
-    base = _commit(repo, "hot functional base")
-    _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\n")
-    scope_head = _commit(repo, "exception scope")
-    _write(
-        repo,
-        code_governance.EXCEPTION_PATH,
-        json.dumps(
-            {
-                "schema_version": code_governance.EXCEPTION_SCHEMA_VERSION,
-                "candidate": _candidate_binding(repo, base, scope_head),
-                "expires_on": "2026-08-01",
-                "owner": "platform-governance",
-                "reason": "temporary hot-file migration",
-                "violations": [{"code": "functional_hot_file_growth", "path": "app/billing_rules.py"}],
-            }
-        ),
-    )
-    head = _commit(repo, "valid exception")
-
-    evaluation = _evaluate(repo, base, head)
-
-    assert evaluation.status == "pass"
-    assert evaluation.exit_code == 0
-    assert [item.code for item in evaluation.advisories] == ["functional_hot_file_growth"]
-    assert evaluation.exempted_violations == ()
-    assert evaluation.exception["status"] == "applied"
-    assert [
-        item["code"] for item in evaluation.exception["acknowledged_advisories"]
-    ] == ["functional_hot_file_growth"]
-
-
-def test_inherited_exception_cannot_authorize_a_later_candidate(
-    governance_repo: tuple[Path, str],
-) -> None:
-    repo, _initial = governance_repo
-    _write(repo, "app/billing_rules.py", _python_lines(3001))
-    scope_head = _commit(repo, "exception scope")
-    _write(
-        repo,
-        code_governance.EXCEPTION_PATH,
-        json.dumps(
-            {
-                "schema_version": code_governance.EXCEPTION_SCHEMA_VERSION,
-                "candidate": _candidate_binding(repo, _initial, scope_head),
-                "expires_on": "2026-08-01",
-                "owner": "platform-governance",
-                "reason": "candidate-bound hot-file migration",
-                "violations": [{"code": "functional_hot_file_growth", "path": "app/billing_rules.py"}],
-            }
-        ),
-    )
-    base = _commit(repo, "exception-bearing base")
-    _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\n")
-    head = _commit(repo, "later candidate inherits exception")
-
-    with pytest.raises(code_governance.GovernanceError, match="candidate binding does not match") as caught:
-        _evaluate(repo, base, head)
-
-    assert caught.value.code == "invalid_exception"
-
-
-def test_exception_cannot_authorize_scope_appended_under_the_same_base(
-    governance_repo: tuple[Path, str],
-) -> None:
-    repo, _initial = governance_repo
-    _write(repo, "app/billing_rules.py", _python_lines(3001))
-    base = _commit(repo, "hot functional base")
-    _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\n")
-    scope_head = _commit(repo, "authorized scope")
-    candidate = _candidate_binding(repo, base, scope_head)
-    reader = code_governance._GitChangeReader(
-        repo,
-        code_governance._CommandRunner(),
-    )
-    code_governance._validate_exception_candidate(
-        candidate,
-        base_ref=base,
-        scope_sha256=reader.exception_scope_sha256(base, scope_head),
-    )
-
-    _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\nLATER = True\n")
-    later_head = _commit(repo, "append later scope")
-
-    with pytest.raises(code_governance.GovernanceError, match="candidate binding does not match") as caught:
-        code_governance._validate_exception_candidate(
-            candidate,
-            base_ref=base,
-            scope_sha256=reader.exception_scope_sha256(base, later_head),
-        )
-
-    assert caught.value.code == "invalid_exception"
-
-
-def test_semantically_unchanged_exception_rewrite_cannot_renew_authority(
-    governance_repo: tuple[Path, str],
-) -> None:
-    repo, initial = governance_repo
-    _write(repo, "app/billing_rules.py", _python_lines(3001))
-    base = _commit(repo, "hot functional base")
-    _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\n")
-    scope_head = _commit(repo, "authorized scope")
-    payload = {
-        "schema_version": code_governance.EXCEPTION_SCHEMA_VERSION,
-        "candidate": _candidate_binding(repo, base, scope_head),
-        "expires_on": "2026-08-01",
-        "owner": "platform-governance",
-        "reason": "candidate-bound hot-file migration",
-        "violations": [{"code": "functional_hot_file_growth", "path": "app/billing_rules.py"}],
-    }
-    _write(repo, code_governance.EXCEPTION_PATH, json.dumps(payload))
-    inherited_base = _commit(repo, "authorize exact scope")
-    _write(repo, "app/billing_rules.py", _python_lines(3001) + "EXTRA = True\nLATER = True\n")
-    _write(repo, code_governance.EXCEPTION_PATH, json.dumps(payload, indent=2))
-    later_head = _commit(repo, "rewrite inherited exception")
-
-    with pytest.raises(code_governance.GovernanceError, match="candidate binding does not match") as caught:
-        _evaluate(repo, inherited_base, later_head)
-
-    assert initial != base
-    assert caught.value.code == "invalid_exception"
-
-
-def test_candidate_scope_hash_preserves_non_utf8_git_path_bytes(
-    governance_repo: tuple[Path, str],
-) -> None:
-    repo, base = governance_repo
-    first_head = _commit_raw_path(repo, base, b"raw-\xff.py")
-    second_head = _commit_raw_path(repo, base, b"raw-\xfe.py")
-    reader = code_governance._GitChangeReader(repo, code_governance._CommandRunner())
-
-    assert reader.exception_scope_sha256(base, first_head) != reader.exception_scope_sha256(base, second_head)
-
-
 def test_missing_ruff_fails_closed_and_command_is_deterministic(
     governance_repo: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -627,10 +406,7 @@ def test_missing_ruff_fails_closed_and_command_is_deterministic(
     head = _commit(repo, "python change")
     monkeypatch.setattr(code_governance.importlib.util, "find_spec", lambda name: None)
 
-    evaluation = code_governance.CodeGovernanceEvaluator(
-        repo,
-        today=date(2026, 7, 25),
-    ).evaluate(base, head)
+    evaluation = code_governance.CodeGovernanceEvaluator(repo).evaluate(base, head)
 
     assert evaluation.status == "violation"
     assert "ruff_unavailable" in _codes(evaluation)
@@ -664,7 +440,6 @@ def test_ruff_failure_is_reported(governance_repo: tuple[Path, str], monkeypatch
     evaluation = code_governance.CodeGovernanceEvaluator(
         repo,
         runner=_RuffFailingRunner(),
-        today=date(2026, 7, 25),
     ).evaluate(base, head)
 
     assert evaluation.ruff["status"] == "failed"
@@ -697,7 +472,7 @@ def test_ruff_isolated_ignores_head_config_suppression(
         "tests/test_alpha.py",
         check=False,
     )
-    evaluation = code_governance.CodeGovernanceEvaluator(repo, today=date(2026, 7, 25)).evaluate(base, head)
+    evaluation = code_governance.CodeGovernanceEvaluator(repo).evaluate(base, head)
 
     assert configured.returncode == 0
     assert "ruff_failed" in _codes(evaluation)

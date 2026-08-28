@@ -868,6 +868,140 @@ def test_mixed_public_and_internal_import_does_not_hide_internal_edge(
     assert finding.details == {"target": "app.runs.secret_internal"}
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import importlib\nvalue = importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\nvalue = importlib.import_module(name="app.runs.domain.secret")\n',
+        'import importlib as loader\nvalue = loader.import_module("app.runs.domain.secret")\n',
+        'import importlib.util\nvalue = importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\ndef invoke():\n    return importlib.import_module("app.runs.domain.secret")\n',
+        'from importlib import import_module\nvalue = import_module("app.runs.domain.secret")\n',
+        'from importlib import import_module\ndef invoke():\n    return import_module("app.runs.domain.secret")\n',
+        'from importlib import import_module as loader\nvalue = loader("app.runs.domain.secret")\n',
+        'import importlib\nvalue = importlib.import_module(".domain.secret", package="app.runs")\n',
+        'import importlib\nvalue = importlib.import_module("app.runs.domain.secret")\nimportlib = object()\n',
+        'importlib = object()\nimport importlib\nvalue = importlib.import_module("app.runs.domain.secret")\n',
+        'value = __import__("app.runs.domain.secret")\n',
+        'value = __import__(name="app.runs.domain.secret")\n',
+        'value = __import__("app.runs.domain.secret", level=0)\n',
+        'value = __import__("app.runs.domain.secret", level=False)\n',
+        'value = __import__("app.runs.domain.secret")\ndef __import__(name):\n    return name\n',
+        'def invoke():\n    global importlib\n    import importlib\n    return importlib.import_module("app.runs.domain.secret")\n',
+        'def outer():\n    importlib = object()\n    def invoke():\n        nonlocal importlib\n        import importlib\n        return importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\ndef invoke(importlib=importlib.import_module("app.runs.domain.secret")):\n    return importlib\n',
+        'import importlib\ninvoke = lambda importlib=importlib.import_module("app.runs.domain.secret"): importlib\n',
+        'import importlib\n@importlib.import_module("app.runs.domain.secret")\ndef invoke(importlib):\n    return importlib\n',
+        'import importlib\nvalues = [item for importlib in importlib.import_module("app.runs.domain.secret")]\n',
+        'import importlib\ndef invoke(importlib=(lambda: importlib.import_module("app.runs.domain.secret"))()):\n    return importlib\n',
+        'import importlib\n@(lambda: importlib.import_module("app.runs.domain.secret"))()\ndef invoke(importlib):\n    return importlib\n',
+        'import importlib\nvalues = [item for importlib in (lambda: importlib.import_module("app.runs.domain.secret"))()]\n',
+        'import importlib\nimportlib: object\nvalue = importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\nclass Holder:\n    importlib: object\n    value = importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\ndef importlib(value=importlib.import_module("app.runs.domain.secret")):\n    return value\n',
+        'import importlib\ndef importlib() -> importlib.import_module("app.runs.domain.secret"):\n    pass\n',
+        'import importlib\nclass importlib(importlib.import_module("app.runs.domain.secret")):\n    pass\n',
+        'import importlib\nclass importlib:\n    value = importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\nclass importlib:\n    value = (lambda: importlib.import_module("app.runs.domain.secret"))()\n',
+        'import importlib\nclass importlib:\n    callback = lambda value=importlib.import_module("app.runs.domain.secret"): value\n',
+        'import importlib\nclass importlib:\n    values = (item for item in importlib.import_module("app.runs.domain.secret"))\n',
+        'import importlib\nclass importlib:\n    values = [importlib.import_module("app.runs.domain.secret") for _ in [0]]\n',
+        'import types as loader, importlib as loader\nvalue = loader.import_module("app.runs.domain.secret")\n',
+        'import importlib\nimportlib = importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\nvalue = (importlib := importlib.import_module("app.runs.domain.secret"))\n',
+        'import importlib\nimportlib: object = importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\nimportlib += importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\nfor importlib in importlib.import_module("app.runs.domain.secret"):\n    pass\n',
+    ],
+)
+def test_literal_dynamic_imports_use_existing_dependency_rules(
+    governance_repo: tuple[Path, str], source: str
+) -> None:
+    repo, authority = governance_repo
+    _write(repo, "app/skills/application/publish.py", source)
+    head = _commit(repo, "literal dynamic cross-domain import")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    finding = next(item for item in evaluation.findings if item.code == "cross_domain_internal_import")
+    assert finding.exemptible is False
+    assert finding.details == {"target": "app.runs.domain.secret"}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'def invoke(__import__):\n    return __import__("app.runs.domain.secret")\n',
+        'import importlib\ndef invoke(importlib):\n    return importlib.import_module("app.runs.domain.secret")\n',
+        'from importlib import import_module\ndef invoke(import_module):\n    return import_module("app.runs.domain.secret")\n',
+        'import importlib\nimportlib = object()\nvalue = importlib.import_module("app.runs.domain.secret")\n',
+        'from importlib import import_module\ndef invoke():\n    import_module = lambda name: name\n    return import_module("app.runs.domain.secret")\n',
+        'import importlib\ndef invoke():\n    global importlib\n    importlib = object()\n    return importlib.import_module("app.runs.domain.secret")\n',
+        'def outer():\n    import importlib\n    def invoke():\n        nonlocal importlib\n        importlib = object()\n        return importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\ndef invoke(value=(lambda importlib: importlib.import_module("app.runs.domain.secret"))(object())):\n    return value\n',
+        'import importlib\nclass FakeLoader:\n    def import_module(self, name):\n        return name\nvalues = [(importlib := FakeLoader()) for _ in [0]]\nvalue = importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\nimportlib: object = object()\nvalue = importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\ndef invoke():\n    importlib: object\n    return importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\ndef importlib():\n    return importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\nclass importlib:\n    def invoke(self):\n        return importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\nclass importlib:\n    callback = lambda: importlib.import_module("app.runs.domain.secret")\n',
+        'import importlib\nclass importlib:\n    values = (importlib.import_module("app.runs.domain.secret") for _ in [0])\n',
+        'import importlib as loader, types as loader\nvalue = loader.import_module("app.runs.domain.secret")\n',
+        'class FakeLoader:\n    def import_module(self, name):\n        return name\nimport importlib\nimportlib: importlib.import_module("app.runs.domain.secret") = FakeLoader()\n',
+    ],
+)
+def test_shadowed_dynamic_import_names_do_not_create_edges(
+    governance_repo: tuple[Path, str], source: str
+) -> None:
+    repo, authority = governance_repo
+    _write(repo, "app/skills/application/publish.py", source)
+    head = _commit(repo, "shadowed dynamic import name")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.findings == ()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import importlib\nvalue = importlib.import_module(".domain.policy", package="app.runs")\n',
+        'import importlib\npackage = "app.runs"\nvalue = importlib.import_module(".domain.policy", package=package)\n',
+        'value = __import__("domain.policy", globals(), locals(), [], 1)\n',
+        'value = __import__("app.runs.domain.policy", level=True)\n',
+    ],
+)
+def test_unresolved_relative_dynamic_imports_do_not_create_false_edges(
+    governance_repo: tuple[Path, str], source: str
+) -> None:
+    repo, authority = governance_repo
+    _write(repo, "app/runs/application/publish.py", source)
+    head = _commit(repo, "relative dynamic import")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.findings == ()
+
+
+def test_computed_dynamic_import_target_does_not_create_a_static_edge(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(
+        repo,
+        "app/skills/application/publish.py",
+        'import importlib\nmodule_name = "app.runs.domain.secret"\nvalue = importlib.import_module(module_name)\n',
+    )
+    head = _commit(repo, "computed dynamic import")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.findings == ()
+
+
 def test_rename_rechecks_edges_against_the_new_source_context(
     governance_repo: tuple[Path, str],
 ) -> None:
@@ -896,6 +1030,36 @@ def test_layer_inversion_is_rejected(governance_repo: tuple[Path, str]) -> None:
     evaluation = _evaluate(repo, authority, authority, head)
 
     assert "layer_dependency_forbidden" in _codes(evaluation)
+
+
+def test_canonical_layer_cannot_import_same_context_legacy_module(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(repo, "app/runs/legacy.py", "LEGACY = True\n")
+    base = _commit(repo, "legacy same-context module")
+    _write(repo, "app/runs/domain/attempt.py", "from app.runs import legacy\n")
+    head = _commit(repo, "canonical layer imports legacy module")
+
+    evaluation = _evaluate(repo, authority, base, head)
+
+    finding = next(item for item in evaluation.findings if item.code == "layer_dependency_forbidden")
+    assert finding.exemptible is False
+    assert finding.details == {"target": "app.runs.legacy"}
+
+
+def test_platform_cannot_import_legacy_app_root_module(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(repo, "app/platform/postgres/client.py", "import app.auth\n")
+    head = _commit(repo, "platform imports legacy root module")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    finding = next(item for item in evaluation.findings if item.code == "platform_product_import")
+    assert finding.exemptible is False
+    assert finding.details == {"target": "app.auth"}
 
 
 def test_domain_third_party_dependency_is_rejected(
