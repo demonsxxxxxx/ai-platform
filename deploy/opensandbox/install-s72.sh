@@ -24,7 +24,7 @@ TRANSACTION_RECORDS=$DEPLOY_STATE/transactions
 SNAPSHOTS=$DEPLOY_STATE/snapshots
 LOCK_FILE=/run/lock/opensandbox-gateway-s72-install.lock
 
-S72_ATOMIC_RECOVERY_HELPER_SHA256=9ff13af856af2f011a1da336df138eb3840e3a3686bf9649cf88d7544e00815e
+S72_ATOMIC_RECOVERY_HELPER_SHA256=022750b7808024d701eb99796cba6cba5c9cce766f42985ff4b6c6c8a61f8cd2
 
 s72_loader_reject() {
   printf '%s\n' 'OpenSandbox s72 loader authority rejected' >&2
