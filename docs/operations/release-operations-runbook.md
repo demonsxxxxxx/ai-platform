@@ -94,7 +94,7 @@ timeout --signal=INT --kill-after=30s 24000s \
   "${MIRROR_ARGS[@]}" \
   --docker-cmd "sudo -n docker" \
   --compose-file deploy/ai-platform/docker-compose.yml \
-  --compose-file deploy/ai-platform/docker-compose.sandbox.yml
+  --compose-file deploy/ai-platform/docker-compose.opensandbox-internal-test.yml
 ```
 
 `SOURCE` is the coordination checkout: it supplies the authority executable and
@@ -246,7 +246,7 @@ The quickstart rechecks fresh `origin/main`, requires immutable role-specific
 image refs, validates the existing runtime-scoped managed `.env` as an
 owner-matching `0600` regular file without reading or printing its values, and
 runs Compose semantic preflight before either pull or up. It uses only the base
-file plus `docker-compose.opensandbox.yml`, never builds on s72,
+file plus `docker-compose.opensandbox-internal-test.yml`, never builds on s72,
 and never runs `down`, `down -v`, or volume deletion. If startup or smoke fails,
 it performs one `--no-build --pull never` up of the saved previous subject;
 Postgres, Redis, MinIO, and workspace volumes remain untouched.
@@ -292,9 +292,11 @@ The production release uses the base Compose file plus
 `docker-compose.opensandbox.yml`. API and Worker use the official
 OpenSandbox SDK directly with `OPENSANDBOX_USE_SERVER_PROXY=true`. The
 OpenSandbox Server remains an independently managed root service using runsc;
-its native bridge network policy permits only the configured stateless egress
-proxy. The proxy strips sandbox credentials, injects the internal model-proxy
-token, and forwards callbacks to the existing API callback-token validators.
+its lifecycle listener binds only to a non-bridge host address, while native
+bridge network policy permits only the distinct stateless egress-proxy address.
+The proxy strips sandbox credentials, forwards the callback-derived per-attempt
+model capability, injects the internal proxy token, and forwards callbacks to
+the existing API callback-token validators.
 
 The s75 deployment keeps Compose project `ai-platform-internal` and the four
 existing named data/workspace volumes. A bounded transition stops admission,
@@ -329,8 +331,10 @@ services plus `opensandbox-egress-proxy` healthy, API readiness and schema check
 zero restart-count growth, exact target image/Compose parity, unchanged volume
 IDs and mounts, and a real application-owned Run that proves
 create -> execute -> collect -> delete through OpenSandbox with
-`HostConfig.Runtime=runsc`. That Run must also prove model traffic through the
-existing model-control-plane proxy and callback delivery through the existing
+`HostConfig.Runtime=runsc`. From that sandbox, the lifecycle listener and an
+unrelated host port must both be unreachable while the egress proxy remains
+reachable. That Run must also prove model traffic through the existing
+model-control-plane proxy and callback delivery through the existing
 Run/attempt callback authority. Keep admission fenced and roll back on any failed
 or missing check. After those checks pass, admit the target:
 
@@ -448,7 +452,7 @@ timeout --signal=INT --kill-after=30s 27000s \
   --canonical-build-timeout-seconds 1800 \
   --docker-cmd "sudo -n docker" \
   --compose-file deploy/ai-platform/docker-compose.yml \
-  --compose-file deploy/ai-platform/docker-compose.sandbox.yml
+  --compose-file deploy/ai-platform/docker-compose.opensandbox-internal-test.yml
 ```
 
 The flag is default-off. It is accepted only after the authority has completed

@@ -4,6 +4,7 @@ import uuid
 
 import pytest
 
+from app.runtime.sandbox.callback_tokens import CallbackTokenBinding, callback_token_id_for_binding
 from app.runtime.sandbox.container_provider import OpenSandboxContainerProvider
 from app.runtime.sandbox.contracts import SandboxRuntimeRequest
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
@@ -63,7 +64,9 @@ async def test_real_opensandbox_bash_cannot_read_raw_model_credentials(
             f"{settings.sandbox_callback_base_url.rstrip('/')}"
             "/api/ai/runtime/callbacks/executor"
         ),
-        callback_token_id=f"cbt_{suffix}",
+        callback_token_id=callback_token_id_for_binding(
+            CallbackTokenBinding(run_id=f"run_{suffix}", attempt_id=f"attempt_{suffix}")
+        ),
     )
     workspace = SandboxWorkspaceManager(root=tmp_path).prepare(request)
     provider = OpenSandboxContainerProvider()
@@ -80,13 +83,11 @@ async def test_real_opensandbox_bash_cannot_read_raw_model_credentials(
             "python - <<'PY'\n"
             "import glob, json, os\n"
             "from urllib.parse import urlsplit\n"
-            "keys = {b'OPENAI_API_KEY', b'ANTHROPIC_AUTH_TOKEN', b'ANTHROPIC_API_KEY'}\n"
-            "sentinel = b'opensandbox-sdk-sentinel'\n"
             f"canaries = {{item.encode() for item in json.loads({canary_json!r})}}\n"
             "def raw(entries):\n"
             "    for entry in entries:\n"
-            "        key, sep, value = entry.partition(b'=')\n"
-            "        if sep and ((key in keys and value and value != sentinel) or any(canary in value for canary in canaries)):\n"
+            "        _key, sep, value = entry.partition(b'=')\n"
+            "        if sep and any(canary in value for canary in canaries):\n"
             "            return True\n"
             "    return False\n"
             "env_raw = raw([f'{key}={value}'.encode() for key, value in os.environ.items()])\n"

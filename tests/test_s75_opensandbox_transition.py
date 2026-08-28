@@ -458,6 +458,50 @@ def test_finalize_releases_loopback_admission_only_after_acceptance(monkeypatch,
     assert events == ["acceptance-runtime", "quiescent", "deploy-admitted", "parity"]
 
 
+def test_finalize_restores_loopback_fence_when_admitted_parity_fails(monkeypatch, tmp_path):
+    events = []
+
+    @contextmanager
+    def unlocked():
+        yield
+
+    monkeypatch.setattr(transition.os, "name", "posix")
+    monkeypatch.setattr(transition.os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(transition, "_transition_lock", unlocked)
+    monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
+    monkeypatch.setattr(transition, "_require_target_runtime", lambda *args, **kwargs: (COMMIT, ()))
+    monkeypatch.setattr(transition, "_require_quiescent", lambda docker: None)
+
+    def deploy(*args, **kwargs):
+        fenced = transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
+        events.append("deploy-fenced" if fenced else "deploy-admitted")
+
+    parity_calls = 0
+
+    def parity(*args, **kwargs):
+        nonlocal parity_calls
+        parity_calls += 1
+        events.append("parity")
+        if parity_calls == 1:
+            raise transition.TransitionError("admitted parity failed")
+
+    monkeypatch.setattr(release_authority, "deploy_clean_commit", deploy)
+    monkeypatch.setattr(transition, "_require_target_parity", parity)
+
+    with pytest.raises(
+        transition.TransitionError,
+        match="final admission failed; target runtime restored behind acceptance fence",
+    ):
+        transition.finalize(
+            target_repo_root=tmp_path / "target",
+            target_commit=COMMIT,
+            env_file=tmp_path / ".env",
+            docker_cmd="docker",
+        )
+
+    assert events == ["deploy-admitted", "parity", "deploy-fenced", "parity"]
+
+
 def test_explicit_rollback_requires_quiescence_and_restores_legacy_selection(monkeypatch, tmp_path):
     runtime = _legacy_runtime(tmp_path / "legacy")
     target_files = _selection(tmp_path / "target", transition.TARGET_SELECTION).absolute_paths

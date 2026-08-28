@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 import pytest
 
+from app.runtime.sandbox.callback_tokens import CallbackTokenBinding, callback_token_id_for_binding
 from app.runtime.sandbox.contracts import SandboxRuntimeRequest, WorkspaceLease
 
 
@@ -90,9 +91,13 @@ def request(**overrides) -> SandboxRuntimeRequest:
         "model": "deepseek-v4-flash",
         "permissions": ["sandbox.execute"],
         "callback_url": "http://callback",
-        "callback_token_id": "cbt_run_a",
+        "callback_token_id": "cbt:run-a:qat-test-attempt",
     }
     values.update(overrides)
+    if "callback_token_id" not in overrides:
+        values["callback_token_id"] = callback_token_id_for_binding(
+            CallbackTokenBinding(run_id=values["run_id"], attempt_id=values["attempt_id"])
+        )
     return SandboxRuntimeRequest(**values)
 
 
@@ -996,6 +1001,7 @@ class OpenSandboxSettings:
     sandbox_executor_health_timeout_seconds = 60
     sandbox_executor_image = "registry.example/ai-platform@sha256:" + "a" * 64
     sandbox_callback_base_url = "http://host.docker.internal:8020"
+    sandbox_callback_token = "provider-test-callback-key-with-enough-entropy-2026"
     sandbox_egress_policy_enabled = True
     sandbox_egress_proof_signing_key = "provider-test-proof-key-with-enough-entropy-2026"
     sandbox_egress_proof_key_id = "current"
@@ -1012,8 +1018,8 @@ class OpenSandboxSettings:
     opensandbox_startup_io_probe_enabled = True
     opensandbox_allowed_egress_hosts = ""
     sandbox_runtime_subject = "runtime-subject-a"
-    opensandbox_base_url = "http://opensandbox.local:8080"
-    opensandbox_egress_proxy_url = "https://bridge.internal.example:18443"
+    opensandbox_base_url = "http://172.19.0.1:8080"
+    opensandbox_egress_proxy_url = "https://172.18.0.1:18443"
     opensandbox_expected_network_mode = "bridge"
     opensandbox_executor_image_digest = "sha256:" + "a" * 64
 
@@ -1045,6 +1051,25 @@ async def test_opensandbox_provider_rejects_direct_mode_without_server_proxy(
     with pytest.raises(
         container_provider.OpenSandboxCapabilityAdmissionError,
         match="server proxy is required",
+    ):
+        await opensandbox_provider().create_or_reuse(request(), workspace())
+
+    assert FakeOpenSandbox.created == []
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_production_network_policy_requires_literal_separate_addresses(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+
+    class HostnameLifecycleSettings(OpenSandboxSettings):
+        opensandbox_base_url = "http://opensandbox.internal:8080"
+
+    monkeypatch.setattr(container_provider, "get_settings", lambda: HostnameLifecycleSettings())
+
+    with pytest.raises(
+        container_provider.OpenSandboxCapabilityAdmissionError,
+        match="egress proxy configuration is invalid",
     ):
         await opensandbox_provider().create_or_reuse(request(), workspace())
 
@@ -1657,8 +1682,12 @@ async def test_opensandbox_internal_test_direct_create_readback_health_identity_
     assert lease.labels["ai-platform.executor.requested_image_digest"] == settings.opensandbox_executor_image_digest
     assert FakeOpenSandbox.instances[lease.container_id].info_calls == 1
     assert health_calls and identity_calls
-    assert FakeOpenSandbox.created[0]["env"]["OPENAI_API_KEY"] == "opensandbox-sdk-sentinel"
-    assert FakeOpenSandbox.created[0]["env"]["ANTHROPIC_AUTH_TOKEN"] == "opensandbox-sdk-sentinel"
+    model_capability = container_provider.derive_callback_token(
+        settings.sandbox_callback_token,
+        request().callback_token_id,
+    )
+    assert FakeOpenSandbox.created[0]["env"]["OPENAI_API_KEY"] == model_capability
+    assert FakeOpenSandbox.created[0]["env"]["ANTHROPIC_AUTH_TOKEN"] == model_capability
     assert settings.openai_api_key not in FakeOpenSandbox.created[0]["env"].values()
     assert settings.anthropic_auth_token not in FakeOpenSandbox.created[0]["env"].values()
     assert "MODEL_CATALOG_JSON" not in FakeOpenSandbox.created[0]["env"]
@@ -3865,7 +3894,7 @@ async def test_opensandbox_provider_maps_lease_and_platform_controls(monkeypatch
     assert created["volumes"] == []
     assert created["network_policy"].kwargs["defaultAction"] == "deny"
     assert [(rule.action, rule.target) for rule in created["network_policy"].kwargs["egress"]] == [
-        ("allow", "bridge.internal.example")
+        ("allow", "172.18.0.1")
     ]
 
     sandbox = FakeOpenSandbox.instances["osb-run-a"]

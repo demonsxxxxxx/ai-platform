@@ -32,6 +32,11 @@ try:
 except ImportError:  # pragma: no cover - exercised through docker = None path
     docker = None
 
+from app.runtime.sandbox.callback_tokens import (
+    CallbackTokenBinding,
+    callback_token_id_matches_binding,
+    derive_callback_token,
+)
 from app.runtime.sandbox.contracts import (
     EXECUTOR_AUTH_HEADER,
     CallbackTargetValidationError,
@@ -1445,9 +1450,20 @@ def _opensandbox_network_policy(settings: Any, network_policy_class: Any, networ
             parsed_proxy = urlsplit(str(getattr(settings, "opensandbox_egress_proxy_url", "") or "").strip())
             proxy_host = parsed_proxy.hostname or ""
             parsed_proxy.port
+            lifecycle_host = urlsplit(str(getattr(settings, "opensandbox_base_url", "") or "").strip()).hostname or ""
+            same_destination = proxy_host == lifecycle_host
+            if not _is_internal_test_opensandbox(settings):
+                same_destination = ipaddress.ip_address(proxy_host) == ipaddress.ip_address(lifecycle_host)
         except ValueError as exc:
             raise OpenSandboxCapabilityAdmissionError("OpenSandbox egress proxy configuration is invalid") from exc
-        if parsed_proxy.scheme not in {"http", "https"} or not proxy_host or parsed_proxy.username or parsed_proxy.password:
+        if (
+            parsed_proxy.scheme not in {"http", "https"}
+            or not proxy_host
+            or not lifecycle_host
+            or same_destination
+            or parsed_proxy.username
+            or parsed_proxy.password
+        ):
             raise OpenSandboxCapabilityAdmissionError("OpenSandbox egress proxy configuration is invalid")
         allowed_hosts = [proxy_host]
     else:
@@ -4415,12 +4431,21 @@ class OpenSandboxContainerProvider:
             egress_bases=_opensandbox_runtime_egress_bases(settings, request),
             workspace_container_path=workspace.workspace_container_path,
         )
+        forward_model_credentials = bool(
+            getattr(settings, "opensandbox_internal_test_forward_model_credentials", False)
+        ) and _is_internal_test_opensandbox(settings)
+        callback_binding = CallbackTokenBinding(run_id=request.run_id, attempt_id=request.attempt_id)
+        if not callback_token_id_matches_binding(request.callback_token_id, callback_binding):
+            raise ContainerStartFailedError("OpenSandbox callback token binding is invalid")
+        callback_secret = str(getattr(settings, "sandbox_callback_token", "") or "")
+        if not forward_model_credentials and not callback_secret:
+            raise ContainerStartFailedError("OpenSandbox model proxy capability is unavailable")
         environment, credential_free_environment = prepare_opensandbox_executor_environment(
             environment,
-            forward_model_credentials=bool(
-                getattr(settings, "opensandbox_internal_test_forward_model_credentials", False)
-            )
-            and _is_internal_test_opensandbox(settings),
+            forward_model_credentials=forward_model_credentials,
+            model_proxy_capability=(
+                "" if forward_model_credentials else derive_callback_token(callback_secret, request.callback_token_id)
+            ),
         )
         _assert_no_raw_model_credentials_in_environment(
             credential_free_environment,

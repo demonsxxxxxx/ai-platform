@@ -710,16 +710,33 @@ def finalize(
                 docker_cmd=docker_cmd,
             )
         _require_quiescent(docker)
-        authority.deploy_clean_commit(
-            target_repo_root,
-            normalized,
-            docker_cmd=docker_cmd,
-            env_file=safe_env_file,
-            compose_files=TARGET_SELECTION,
-            strategy="canonical",
-            replace_known_manual_frontend=False,
-        )
-        _require_target_parity(docker, target_repo_root, normalized, docker_cmd=docker_cmd)
+        try:
+            authority.deploy_clean_commit(
+                target_repo_root,
+                normalized,
+                docker_cmd=docker_cmd,
+                env_file=safe_env_file,
+                compose_files=TARGET_SELECTION,
+                strategy="canonical",
+                replace_known_manual_frontend=False,
+            )
+            _require_target_parity(docker, target_repo_root, normalized, docker_cmd=docker_cmd)
+        except Exception as exc:
+            try:
+                with _acceptance_fence():
+                    authority.deploy_clean_commit(
+                        target_repo_root,
+                        normalized,
+                        docker_cmd=docker_cmd,
+                        env_file=safe_env_file,
+                        compose_files=TARGET_SELECTION,
+                        strategy="canonical",
+                        replace_known_manual_frontend=False,
+                    )
+                    _require_target_parity(docker, target_repo_root, normalized, docker_cmd=docker_cmd)
+            except Exception as fence_exc:
+                raise TransitionError("final admission failed and the acceptance fence could not be restored") from fence_exc
+            raise TransitionError("final admission failed; target runtime restored behind acceptance fence") from exc
         return {
             "status": "admitted",
             "commit": normalized,

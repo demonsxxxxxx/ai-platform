@@ -15,6 +15,11 @@ from app.execution.application.model_selection import (
     RunModelSelection,
     resolve_chat_model_selection,
 )
+from app.runtime.sandbox.callback_tokens import (
+    CallbackTokenBinding,
+    callback_token_id_for_binding,
+    callback_token_matches,
+)
 
 
 _ALLOWED_RUNTIME_PATHS = {
@@ -212,6 +217,7 @@ class ModelControlPlaneService:
         run_id: str,
         attempt_id: str,
         internal_token: str,
+        model_proxy_capability: str,
     ) -> RuntimeProxyResponse:
         settings = self._settings_provider()
         expected_token = str(settings.model_proxy_internal_token or "")
@@ -221,6 +227,19 @@ class ModelControlPlaneService:
             raise PermissionError("model_proxy_forbidden")
         if not attempt_id:
             raise PermissionError("model_proxy_attempt_required")
+        callback_secret = str(getattr(settings, "sandbox_callback_token", "") or "")
+        try:
+            token_id = callback_token_id_for_binding(
+                CallbackTokenBinding(run_id=run_id, attempt_id=attempt_id)
+            )
+        except ValueError:
+            raise PermissionError("model_proxy_capability_invalid") from None
+        if not callback_secret or not callback_token_matches(
+            secret=callback_secret,
+            token_id=token_id,
+            provided_token=model_proxy_capability,
+        ):
+            raise PermissionError("model_proxy_capability_invalid")
         if upstream_path not in _ALLOWED_RUNTIME_PATHS.get(provider, frozenset()):
             raise PermissionError("model_proxy_path_not_allowed")
         if query_present:

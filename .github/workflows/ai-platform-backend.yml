@@ -108,6 +108,7 @@ jobs:
               tests/test_settings.py
               tests/test_sandbox_container_provider.py
               tests/test_opensandbox_live_credential_isolation.py
+              tests/test_opensandbox_client_ca.py
               tests/test_sandbox_runtime.py
               tests/test_sandbox_runtime_cleanup.py
               tests/test_sandbox_runtime_evidence_script.py

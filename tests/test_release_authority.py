@@ -203,7 +203,8 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert "before any Git command or fetch" in contract_text
     assert "Only after that local trust gate" in contract_text
     assert "--compose-file deploy/ai-platform/docker-compose.yml" in text
-    assert "--compose-file deploy/ai-platform/docker-compose.sandbox.yml" in text
+    assert text.count("--compose-file deploy/ai-platform/docker-compose.opensandbox-internal-test.yml") == 2
+    assert "--compose-file deploy/ai-platform/docker-compose.sandbox.yml" not in text
     assert "The production release uses the base Compose file plus" in text
     assert "`docker-compose.opensandbox.yml`" in text
     assert "The s75 deployment keeps Compose project `ai-platform-internal`" in text
@@ -212,6 +213,8 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     for command in ("migrate", "finalize", "rollback"):
         assert f"-m tools.s75_opensandbox_transition {command}" in text
     assert "HostConfig.Runtime=runsc" in text
+    assert "the lifecycle listener and an" in text
+    assert "unrelated host port must both be unreachable" in text
     assert "real application-owned Run" in text
     assert "Never use `down -v`" in text
     assert "--env-file <release-root>/deploy/ai-platform/.env" not in text
@@ -572,7 +575,7 @@ def _colocation_environment(auth_base: str, user_info_base: str) -> dict[str, st
         "SANDBOX_CONTAINER_PROVIDER": "opensandbox",
         "SANDBOX_SECURITY_PROFILE": "governed",
         "SANDBOX_EGRESS_POLICY_ENABLED": "true",
-        "OPENSANDBOX_BASE_URL": "http://opensandbox.internal:8080",
+        "OPENSANDBOX_BASE_URL": "http://172.19.0.1:8080",
         "OPENSANDBOX_API_KEY": "operator-provided-key",
         "OPENSANDBOX_USE_SERVER_PROXY": "true",
         "OPENSANDBOX_EXPECTED_NETWORK_MODE": "bridge",
@@ -753,12 +756,16 @@ def test_missing_compose_keys_fail_before_all_non_preflight_docker_and_redact_ra
     [
         ("api", "OPENSANDBOX_USE_SERVER_PROXY", "false"),
         ("worker", "OPENSANDBOX_EXPECTED_NETWORK_MODE", "none"),
+        ("api", "OPENSANDBOX_BASE_URL", "http://opensandbox.internal:8080"),
+        ("api", "OPENSANDBOX_BASE_URL", "http://172.18.0.1:8080"),
         ("opensandbox-egress-proxy", "host_ip", "0.0.0.0"),
         ("redis", "ports", [{"host_ip": "0.0.0.0", "published": "63799", "target": 6379}]),
     ],
     ids=(
         "server-proxy-disabled",
         "unexpected-network-mode",
+        "non-literal-lifecycle-address",
+        "lifecycle-shares-egress-address",
         "proxy-exposed-all-interfaces",
         "data-service-published",
     ),

@@ -79,9 +79,9 @@ def internal_test_cleanup_labels() -> dict[str, str]:
     return internal_test_orphan_cleanup_expected_labels(filters, InternalTestCleanupSettings()) or {}
 
 
-def opensandbox_cleanup_proof():
+def opensandbox_cleanup_proof(*, signing_key=TEST_PROOF_KEY, key_id="current"):
     return build_governed_egress_proof(
-        signing_key=TEST_PROOF_KEY,
+        signing_key=signing_key,
         provider="opensandbox",
         runtime_subject=_opensandbox_governed_runtime_subject("runsc", "runtime-subject-a"),
         policy_subject=DIRECT_OPENSANDBOX_POLICY_SUBJECT,
@@ -104,6 +104,7 @@ def opensandbox_cleanup_proof():
         authorized_skill_scope="cleanup-skill-scope",
         authorized_native_tool_scope="cleanup-native-tool-scope",
         lease_identity="opensandbox:opensandbox-run-a:osb-run-a",
+        key_id=key_id,
         issued_at=TEST_PROOF_NOW,
         expires_at=TEST_PROOF_NOW + timedelta(seconds=120),
     )
@@ -613,6 +614,33 @@ async def test_cleanup_expired_sandbox_runtime_leases_uses_verified_handle_and_c
         "expired",
     )
     assert calls[1] == ("release", "tenant-a", "expired", ["lease-a"], None)
+
+
+def test_opensandbox_cleanup_accepts_configured_previous_key_and_rejects_it_when_removed(monkeypatch):
+    from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
+
+    previous_key = "cleanup-previous-proof-key-with-enough-entropy-2026"
+    proof = opensandbox_cleanup_proof(signing_key=previous_key, key_id="previous")
+    row = expired_lease_row(
+        provider="opensandbox",
+        runtime_container_id="osb-run-a",
+        runtime_container_name="opensandbox-run-a",
+        runtime_executor_url="http://opensandbox-executor.test:18000",
+        runtime_workspace_container_path="/workspace",
+        lease_payload_json={
+            "attempt_id": "attempt-a",
+            "governed_egress_proof": proof,
+        },
+    )
+
+    settings = CleanupProofSettings()
+    settings.sandbox_egress_proof_signing_key = "cleanup-current-proof-key-with-enough-entropy-2026"
+    settings.sandbox_egress_proof_previous_keys_json = '{"previous":"' + previous_key + '"}'
+    monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.get_settings", lambda: settings)
+    assert container_lease_from_persisted_row(row) is not None
+
+    settings.sandbox_egress_proof_previous_keys_json = ""
+    assert container_lease_from_persisted_row(row) is None
 
 
 @pytest.mark.asyncio

@@ -520,6 +520,8 @@ def test_opensandbox_egress_proxy_preserves_existing_model_and_callback_authorit
     assert "/api/ai/internal/model-proxy/anthropic/" in template
     assert template.count("proxy_set_header Authorization \"\";") == 3
     assert template.count("proxy_set_header X-AI-Platform-Internal-Token ${MODEL_PROXY_INTERNAL_TOKEN};") == 2
+    assert template.count("proxy_set_header X-AI-Platform-Model-Authorization $http_authorization;") == 2
+    assert template.count("proxy_set_header X-AI-Platform-Model-Api-Key $http_x_api_key;") == 2
     assert "location / {\n        return 404;\n    }" in template
     assert "gateway" not in template.casefold()
 

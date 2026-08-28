@@ -9,6 +9,7 @@ import ctypes
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
+import ipaddress
 import json
 import os
 import posixpath
@@ -1932,12 +1933,26 @@ def _validate_direct_opensandbox_config(rendered: str | bytes) -> None:
         proxy = services.get("opensandbox-egress-proxy", {})
         proxy_ports = proxy.get("ports") or []
         published = proxy_ports[0] if len(proxy_ports) == 1 else {}
+        published_host = str(published.get("host_ip") or "") if isinstance(published, dict) else ""
+        separated_endpoints = True
+        for environment in (api_environment, worker_environment):
+            lifecycle_host = urlsplit(str(environment.get("OPENSANDBOX_BASE_URL") or "")).hostname
+            proxy_host = urlsplit(str(environment.get("OPENSANDBOX_EGRESS_PROXY_URL") or "")).hostname
+            if (
+                not lifecycle_host
+                or not proxy_host
+                or ipaddress.ip_address(lifecycle_host) == ipaddress.ip_address(proxy_host)
+                or proxy_host != published_host
+            ):
+                separated_endpoints = False
+                break
         invalid_proxy = (
             proxy.get("labels", {}).get("ai-platform.release-role") != "opensandbox-egress-proxy"
             or not isinstance(published, dict)
             or published.get("target") != 8080
-            or not str(published.get("host_ip") or "").strip()
-            or str(published.get("host_ip")) in {"0.0.0.0", "::"}
+            or not published_host
+            or published_host in {"0.0.0.0", "::"}
+            or not separated_endpoints
         )
     except (AttributeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         raise _compose_config_preflight_error("invalid-direct-opensandbox-config") from None

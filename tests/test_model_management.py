@@ -34,6 +34,11 @@ from app.execution.infrastructure.model_upstream import (
     open_upstream_stream,
     parse_model_ids,
 )
+from app.runtime.sandbox.callback_tokens import (
+    CallbackTokenBinding,
+    callback_token_id_for_binding,
+    derive_callback_token,
+)
 from app.execution.transport import model_management as model_routes
 from app.model_catalog import build_model_catalog, resolve_model_selection
 from app.runs.infrastructure.postgres import (
@@ -1052,10 +1057,16 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
         },
         receive,
     )
+    callback_secret = "model-proxy-callback-secret"
+    callback_token_id = callback_token_id_for_binding(
+        CallbackTokenBinding(run_id="run-123", attempt_id="attempt-123")
+    )
+    model_capability = derive_callback_token(callback_secret, callback_token_id)
     service = ModelControlPlaneService(
         transaction_factory=fake_transaction,
         settings_provider=lambda: SimpleNamespace(
             model_proxy_internal_token="internal-token",
+            sandbox_callback_token=callback_secret,
             model_connection_encryption_key=_key(),
             model_connection_allowed_internal_hosts="",
         ),
@@ -1073,6 +1084,8 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
         x_ai_platform_run_id="run-123",
         x_ai_platform_attempt_id="attempt-123",
         x_ai_platform_internal_token="internal-token",
+        x_ai_platform_model_authorization=f"Bearer {model_capability}",
+        x_ai_platform_model_api_key="",
     )
     streamed = b"".join([chunk async for chunk in response.body_iterator])
 
@@ -1092,6 +1105,46 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
     )
     assert outbound["authorization"] == "Bearer run-pinned-secret"
     assert "x-ai-platform-internal-token" not in outbound
+
+
+@pytest.mark.asyncio
+async def test_internal_runtime_proxy_rejects_capability_for_another_attempt_before_database() -> None:
+    @asynccontextmanager
+    async def forbidden_transaction():
+        raise AssertionError("cross-attempt capability reached database")
+        yield
+
+    callback_secret = "model-proxy-callback-secret"
+    other_capability = derive_callback_token(
+        callback_secret,
+        callback_token_id_for_binding(
+            CallbackTokenBinding(run_id="run-123", attempt_id="attempt-other")
+        ),
+    )
+    service = ModelControlPlaneService(
+        transaction_factory=forbidden_transaction,
+        settings_provider=lambda: SimpleNamespace(
+            model_proxy_internal_token="internal-token",
+            sandbox_callback_token=callback_secret,
+        ),
+        repository=SimpleNamespace(),
+        legacy_catalog=SimpleNamespace(),
+        security=SimpleNamespace(),
+        upstream=SimpleNamespace(),
+    )
+
+    with pytest.raises(PermissionError, match="model_proxy_capability_invalid"):
+        await service.proxy(
+            provider="openai",
+            upstream_path="v1/chat/completions",
+            query_present=False,
+            body=b'{"model":"openai/gpt-5"}',
+            headers={},
+            run_id="run-123",
+            attempt_id="attempt-123",
+            internal_token="internal-token",
+            model_proxy_capability=other_capability,
+        )
 
 
 @pytest.mark.asyncio
@@ -1145,6 +1198,8 @@ async def test_internal_runtime_proxy_rejects_non_ascii_token_before_database(mo
             x_ai_platform_run_id="run-123",
             x_ai_platform_attempt_id="attempt-123",
             x_ai_platform_internal_token="令牌",
+            x_ai_platform_model_authorization="",
+            x_ai_platform_model_api_key="",
         )
 
     assert captured.value.status_code == 403
@@ -1198,6 +1253,8 @@ async def test_internal_runtime_proxy_bounds_streamed_request_before_database(mo
             x_ai_platform_run_id="run-123",
             x_ai_platform_attempt_id="attempt-123",
             x_ai_platform_internal_token="internal-token",
+            x_ai_platform_model_authorization="",
+            x_ai_platform_model_api_key="",
         )
 
     assert raised.value.status_code == 413

@@ -1,18 +1,16 @@
 from __future__ import annotations
 
 
-# SDK clients require a non-empty credential even though authentication is
-# performed by the platform model proxy.
-OPENSANDBOX_MODEL_CREDENTIAL_SENTINEL = "opensandbox-sdk-sentinel"
-
-
 def prepare_opensandbox_executor_environment(
     environment: dict[str, str],
     *,
     forward_model_credentials: bool,
+    model_proxy_capability: str,
 ) -> tuple[dict[str, str], dict[str, str]]:
     if forward_model_credentials:
         raise ValueError("OpenSandbox model credential forwarding is not supported")
+    if not model_proxy_capability:
+        raise ValueError("OpenSandbox model proxy capability is required")
 
     filtered_environment = {
         key: value
@@ -26,8 +24,8 @@ def prepare_opensandbox_executor_environment(
     }
     filtered_environment.update(
         {
-            "OPENAI_API_KEY": OPENSANDBOX_MODEL_CREDENTIAL_SENTINEL,
-            "ANTHROPIC_AUTH_TOKEN": OPENSANDBOX_MODEL_CREDENTIAL_SENTINEL,
+            "OPENAI_API_KEY": model_proxy_capability,
+            "ANTHROPIC_AUTH_TOKEN": model_proxy_capability,
         }
     )
     return filtered_environment, dict(filtered_environment)
