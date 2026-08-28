@@ -41,6 +41,7 @@ import { translateBackendError } from "../../utils/backendErrors";
 import {
   CHAT_PUBLIC_PROGRESS_EVENT_TYPES,
   CHAT_PUBLIC_PROJECTION_VERSION,
+  PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION,
   isPublicAgentProgressEvent,
   isAssistantTextProjection,
   isPublicExecutionEvent,
@@ -1073,12 +1074,17 @@ function createExecutionTimelinePart(
     step_id: publicEvent.step_id,
     kind: publicEvent.kind,
     presentation_kind: publicEvent.presentation_kind,
-    stage: publicEvent.stage,
+    stage:
+      publicEvent.schema_version === PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION
+        ? publicEvent.stage
+        : undefined,
     title: undefined,
     summary: undefined,
     status: publicEvent.status,
     progress: publicEvent.progress,
-    safe_file_name: safePublicExecutionFileName(publicEvent.safe_file_name),
+    safe_file_name: safePublicExecutionFileName(
+      publicEvent.safe_file_name ?? null,
+    ),
   };
 }
 
@@ -1128,12 +1134,6 @@ const PUBLIC_EXECUTION_V2_FIELDS = new Set([
   "safe_label",
   "created_at",
 ]);
-const PUBLIC_EXECUTION_HISTORY_ENVELOPE_FIELDS = new Set([
-  ...PUBLIC_EXECUTION_V1_FIELDS,
-  ...PUBLIC_EXECUTION_V2_FIELDS,
-  "event_type",
-  "timestamp",
-]);
 
 type ValidPublicExecutionEvent = EventData & {
   sequence: number;
@@ -1141,7 +1141,7 @@ type ValidPublicExecutionEvent = EventData & {
   kind: ExecutionTimelinePart["kind"];
   status: ExecutionTimelinePart["status"];
   progress: ExecutionTimelinePart["progress"];
-  safe_file_name: string | null;
+  safe_file_name?: string | null;
   stage: string;
   presentation_kind?: string;
   title?: string;
@@ -1155,21 +1155,25 @@ function normalizePublicExecutionEvent(
 ): ValidPublicExecutionEvent | null {
   if (isPublicExecutionEvent(eventType, data)) return data;
   const source = data as Record<string, unknown>;
-  if (
-    source.event_type !== eventType ||
-    (source.timestamp !== undefined && typeof source.timestamp !== "string") ||
-    !Object.keys(source).every((key) =>
-      PUBLIC_EXECUTION_HISTORY_ENVELOPE_FIELDS.has(key),
-    )
-  ) {
-    return null;
-  }
   const fields =
     source.schema_version === "ai-platform.public-execution-event.v2"
       ? PUBLIC_EXECUTION_V2_FIELDS
-      : PUBLIC_EXECUTION_V1_FIELDS;
+      : source.schema_version === "ai-platform.public-execution-event.v1"
+        ? PUBLIC_EXECUTION_V1_FIELDS
+        : null;
+  if (fields === null) return null;
+  const envelopeFields = new Set([...fields, "event_type", "timestamp"]);
+  if (
+    source.event_type !== eventType ||
+    (source.timestamp !== undefined && typeof source.timestamp !== "string") ||
+    !Object.keys(source).every((key) => envelopeFields.has(key))
+  ) {
+    return null;
+  }
   const normalized = Object.fromEntries(
-    [...fields].map((key) => [key, source[key]]),
+    [...fields]
+      .filter((key) => Object.hasOwn(source, key))
+      .map((key) => [key, source[key]]),
   ) as EventData;
   return isPublicExecutionEvent(eventType, normalized) ? normalized : null;
 }
