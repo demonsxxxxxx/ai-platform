@@ -19,7 +19,11 @@ from app.routes.sandbox_runtime_cleanup import (
     container_lease_from_persisted_row,
 )
 from app.runtime.sandbox.container_provider import create_container_provider
-from app.runtime.sandbox.contracts import SandboxRuntimeRequest
+from app.runtime.sandbox.contracts import (
+    ExecutorTerminalResult,
+    SandboxRuntimeRequest,
+    normalize_executor_terminal_status,
+)
 from app.runtime.sandbox.executor_client import SandboxExecutorClient
 from app.runtime.sandbox.executor_signals import (
     ExecutorSignalUnavailable,
@@ -575,15 +579,39 @@ async def probe_suspect_executor_tasks_once(
                 executor_headers=executor_headers,
             )
             terminal_result = status.get("terminal_result")
-            if isinstance(terminal_result, dict):
-                result_status = str(terminal_result.get("status") or "").strip().lower()
-                executor_status = "completed" if result_status == "succeeded" else "failed"
-                if str(status.get("status") or "").strip().lower() == "cancelled":
-                    executor_status = "cancelled"
+            if terminal_result is not None:
+                try:
+                    canonical_result = ExecutorTerminalResult.model_validate(
+                        terminal_result
+                    ).model_dump(mode="json", exclude_none=True)
+                except ValueError:
+                    canonical_result = None
+                executor_status = (
+                    normalize_executor_terminal_status(
+                        status.get("status"),
+                        canonical_result.get("status"),
+                    )
+                    if canonical_result is not None
+                    else None
+                )
+                if executor_status is None:
+                    await _persist_probe_terminal(
+                        lease_row,
+                        executor_status="failed",
+                        terminal_result={
+                            "run_id": str(lease_row["run_id"]),
+                            "status": "failed",
+                            "message": "",
+                            "error_code": "executor_protocol_invalid",
+                            "error_message": "Sandbox executor returned an invalid terminal result",
+                        },
+                        claim_token=claim_token,
+                    )
+                    continue
                 await _persist_probe_terminal(
                     lease_row,
                     executor_status=executor_status,
-                    terminal_result=terminal_result,
+                    terminal_result=canonical_result,
                     claim_token=claim_token,
                 )
                 continue

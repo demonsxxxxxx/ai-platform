@@ -8,6 +8,7 @@ from app.runtime.sandbox.contracts import (
     ExecutorTerminalResult,
     SandboxRuntimeRequest,
     WorkspaceLease,
+    normalize_executor_terminal_status,
 )
 from app.runtime.kernel_contracts import RunContext
 
@@ -63,6 +64,78 @@ def test_terminal_callback_accepts_structured_failure_result():
     )
 
     assert result.error_code == "executor_failed"
+
+
+@pytest.mark.parametrize(
+    ("callback_status", "result_status", "expected"),
+    [
+        ("completed", "completed", "completed"),
+        ("completed", "succeeded", "completed"),
+        ("succeeded", "completed", "completed"),
+        ("failed", "failed", "failed"),
+        ("cancelled", "cancelled", "cancelled"),
+        ("cancelled", "canceled", "cancelled"),
+        ("callback_failed", "completed", "completed"),
+        ("callback_failed", "failed", "failed"),
+        ("callback_failed", "cancelled", "cancelled"),
+        ("completed", "failed", None),
+        ("failed", "completed", None),
+        ("cancelled", "completed", None),
+        ("running", "completed", None),
+        (None, "completed", None),
+    ],
+)
+def test_normalize_executor_terminal_status_requires_a_matching_pair(
+    callback_status, result_status, expected
+):
+    assert normalize_executor_terminal_status(callback_status, result_status) == expected
+
+
+def test_terminal_callback_rejects_a_contradictory_result():
+    with pytest.raises(ValidationError, match="terminal callback status must match"):
+        ExecutorCallbackEvent.model_validate(
+            {
+                "session_id": "session-a",
+                "run_id": "run-a",
+                "attempt_id": "attempt-a",
+                "callback_token_id": "cbt_run-a",
+                "status": "completed",
+                "progress": 100,
+                "terminal_result": {
+                    "status": "failed",
+                    "run_id": "run-a",
+                    "error_code": "executor_failed",
+                    "error_message": "Executor failed",
+                },
+            }
+        )
+
+
+def test_probe_and_callback_canonical_failure_results_are_identical():
+    raw_result = {
+        "status": "failed",
+        "run_id": "run-a",
+        "error_code": "executor_failed",
+        "error_message": "Executor failed",
+    }
+    callback = ExecutorCallbackEvent.model_validate(
+        {
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "attempt_id": "attempt-a",
+            "callback_token_id": "cbt_run-a",
+            "status": "failed",
+            "progress": 100,
+            "terminal_result": raw_result,
+        }
+    )
+
+    assert ExecutorTerminalResult.model_validate(raw_result).model_dump(
+        mode="json", exclude_none=True
+    ) == callback.terminal_result.model_dump(mode="json", exclude_none=True) == {
+        **raw_result,
+        "message": "",
+    }
 
 
 def test_sandbox_runtime_request_requires_platform_identity():
