@@ -1123,19 +1123,23 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
 
 
 @pytest.mark.asyncio
-async def test_internal_runtime_proxy_rejects_capability_for_another_attempt_before_database() -> None:
+@pytest.mark.parametrize("invalid_capability", ["another-attempt", "令牌"])
+async def test_internal_runtime_proxy_rejects_invalid_capability_before_database(
+    invalid_capability: str,
+) -> None:
     @asynccontextmanager
     async def forbidden_transaction():
         raise AssertionError("cross-attempt capability reached database")
         yield
 
     callback_secret = "model-proxy-callback-secret"
-    other_capability = derive_callback_token(
-        callback_secret,
-        callback_token_id_for_binding(
-            CallbackTokenBinding(run_id="run-123", attempt_id="attempt-other")
-        ),
-    )
+    if invalid_capability == "another-attempt":
+        invalid_capability = derive_callback_token(
+            callback_secret,
+            callback_token_id_for_binding(
+                CallbackTokenBinding(run_id="run-123", attempt_id="attempt-other")
+            ),
+        )
     service = ModelControlPlaneService(
         transaction_factory=forbidden_transaction,
         settings_provider=lambda: SimpleNamespace(
@@ -1159,7 +1163,7 @@ async def test_internal_runtime_proxy_rejects_capability_for_another_attempt_bef
             run_id="run-123",
             attempt_id="attempt-123",
             internal_token="internal-token",
-            model_proxy_capability=other_capability,
+            model_proxy_capability=invalid_capability,
         )
 
 
