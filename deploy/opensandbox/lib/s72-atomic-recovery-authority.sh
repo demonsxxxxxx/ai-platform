@@ -1108,6 +1108,16 @@ s72_atomic_directory_matches() (
   test "$live_metadata" = "$source_metadata"
 )
 
+s72_atomic_directory_matches_identity_except_ctime() (
+  live=$1
+  source=$2
+  expected=$3
+  test "$source" != absent || return 1
+  actual=$(s72_atomic_node_identity "$live") || return 1
+  test "${actual%:*}" = "${expected%:*}" || return 1
+  s72_atomic_directory_matches "$live" "$source"
+)
+
 s72_atomic_apply_file() {
   live=$1
   source=$2
@@ -1202,10 +1212,12 @@ s72_atomic_apply_directory() {
   if test "$expected" != absent && test ! -e "$old"; then
     s72_atomic_require_identity "$live" "$expected" || return 1
     mv -T -n "$live" "$old" || return 1
-    s72_atomic_require_identity "$old" "$expected" || {
-      test -e "$live" || mv -T -n "$old" "$live" || :
-      return 1
-    }
+    s72_atomic_require_identity "$old" "$expected" \
+      || s72_atomic_directory_matches_identity_except_ctime "$old" "$source" "$expected" \
+      || {
+        test -e "$live" || mv -T -n "$old" "$live" || :
+        return 1
+      }
     s72_atomic_fsync_path "$parent" || return 1
   elif test "$expected" = absent; then
     test ! -e "$live" && test ! -L "$live" || return 1

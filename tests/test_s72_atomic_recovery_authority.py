@@ -1111,6 +1111,109 @@ def test_linux_empty_directory_removal_parses_recorded_mode_as_octal(
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Linux inode-safe directory apply runs on required Ubuntu CI")
+def test_linux_directory_retry_accepts_only_post_rename_ctime_drift_with_matching_tree(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = _run_privileged_bash(
+        r'''
+        set -eu
+        HELPER=$1; ROOT=$2; caller_uid=$3; caller_gid=$4; step=setup
+        trap 'rc=$?; test "$rc" -eq 0 || printf "failed-step=%s\n" "$step" >&2; chown -R "$caller_uid:$caller_gid" "$ROOT" >/dev/null 2>&1 || :; exit "$rc"' EXIT
+        . "$HELPER"
+        chown root:root "$ROOT"; chmod 0700 "$ROOT"
+
+        capture_config_metadata() (
+          tree=$1
+          cd "$tree"
+          find . -mindepth 1 -print | LC_ALL=C sort | while IFS= read -r relative; do
+            if test -f "$relative" && test ! -L "$relative"; then
+              kind=f; digest=$(sha256sum "$relative"); digest=${digest%% *}
+            elif test -d "$relative" && test ! -L "$relative"; then
+              kind=d; digest=-
+            else
+              exit 1
+            fi
+            printf '%s\t%s\t%s\t%s\n' "$relative" "$kind" \
+              "$(stat -c %u:%g:%a:%s:%Y "$relative")" "$digest"
+          done
+        )
+        make_tree() {
+          tree=$1
+          install -d -o root -g root -m 0700 "$tree"
+          printf '%s\n' payload > "$tree/value"
+          chown root:root "$tree/value"; chmod 0600 "$tree/value"
+        }
+        record_identity() {
+          workspace=$1; live=$2
+          s72_atomic_publish_new_file "$workspace/config.live-identity" 0400 \
+            "$(s72_atomic_node_identity "$live")"
+        }
+
+        success_source=$ROOT/success-source; success_live=$ROOT/success-live
+        predrift_source=$ROOT/predrift-source; predrift_live=$ROOT/predrift-live
+        drift_source=$ROOT/drift-source; drift_live=$ROOT/drift-live
+        absent_live=$ROOT/absent-live
+        replacement_source=$ROOT/replacement-source; replacement_live=$ROOT/replacement-live
+        for tree in "$success_source" "$predrift_source" "$drift_source" \
+          "$replacement_source" "$absent_live"; do make_tree "$tree"; done
+        cp -a "$success_source" "$success_live"
+        cp -a "$predrift_source" "$predrift_live"
+        cp -a "$drift_source" "$drift_live"
+        cp -a "$replacement_source" "$replacement_live"
+
+        success_workspace=$(s72_atomic_prepare_workspace "$ROOT" success 11111111111111111111111111111111)
+        predrift_workspace=$(s72_atomic_prepare_workspace "$ROOT" predrift 22222222222222222222222222222222)
+        drift_workspace=$(s72_atomic_prepare_workspace "$ROOT" drift 33333333333333333333333333333333)
+        absent_workspace=$(s72_atomic_prepare_workspace "$ROOT" absent 44444444444444444444444444444444)
+        replacement_workspace=$(s72_atomic_prepare_workspace "$ROOT" replacement 55555555555555555555555555555555)
+        record_identity "$success_workspace" "$success_live"
+        record_identity "$predrift_workspace" "$predrift_live"
+        record_identity "$drift_workspace" "$drift_live"
+        record_identity "$absent_workspace" "$absent_live"
+        record_identity "$replacement_workspace" "$replacement_live"
+
+        sleep 1.1
+        chmod 0710 "$predrift_live"; chmod 0700 "$predrift_live"
+        chmod 0710 "$drift_live"; chmod 0700 "$drift_live"
+        printf '%s\n' changed > "$drift_live/value"
+        chmod 0710 "$absent_live"; chmod 0700 "$absent_live"
+        mv "$replacement_live" "$ROOT/replacement-original"
+        cp -a "$replacement_source" "$replacement_live"
+
+        step=success-apply
+        s72_atomic_apply_directory "$success_live" "$success_source" "$success_workspace" config
+        step=success-marker
+        test -f "$success_workspace/config.applied"
+        step=success-match
+        s72_atomic_directory_matches "$success_live" "$success_source"
+
+        step=predrift-reject
+        ! s72_atomic_apply_directory \
+          "$predrift_live" "$predrift_source" "$predrift_workspace" config
+        step=predrift-state
+        test ! -e "$predrift_workspace/config.old" && test ! -e "$predrift_workspace/config.applied"
+        step=tree-drift-reject
+        ! s72_atomic_apply_directory "$drift_live" "$drift_source" "$drift_workspace" config
+        step=tree-drift-state
+        test ! -e "$drift_workspace/config.old" && test ! -e "$drift_workspace/config.applied"
+        step=absent-reject
+        ! s72_atomic_apply_directory "$absent_live" absent "$absent_workspace" config
+        step=absent-state
+        test -d "$absent_live" && test ! -e "$absent_workspace/config.old"
+        step=replacement-reject
+        ! s72_atomic_apply_directory \
+          "$replacement_live" "$replacement_source" "$replacement_workspace" config
+        step=replacement-state
+        test -d "$replacement_live" && test ! -e "$replacement_workspace/config.old"
+        step=complete
+        ''',
+        HELPER,
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 @pytest.mark.parametrize(("operation", "expected_optional"), [("install", 1), ("rollback", 0)])
 def test_recovery_retry_preserves_install_only_optional_apply_snapshot(
     tmp_path: pathlib.Path,
