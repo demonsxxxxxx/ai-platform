@@ -156,7 +156,7 @@ def test_legacy_runtime_binds_compose_provenance_and_volume_identity(monkeypatch
     selection = _selection(tmp_path, transition.LEGACY_SELECTION)
     containers = _legacy_containers(selection)
 
-    monkeypatch.setattr(release_authority, "assert_clean_commit", lambda root, commit: COMMIT)
+    monkeypatch.setattr(release_authority, "assert_managed_target_checkout", lambda root, commit, release_root: COMMIT)
     monkeypatch.setattr(release_authority, "resolve_compose_files", lambda root, names: selection)
     monkeypatch.setattr(transition, "_inspect_container", lambda docker, name: containers[next(service for service, expected in transition.CONTAINERS.items() if expected == name)])
 
@@ -168,6 +168,22 @@ def test_legacy_runtime_binds_compose_provenance_and_volume_identity(monkeypatch
 
     monkeypatch.setattr(transition, "_docker_json", docker_json)
 
+    def run(command, **kwargs):
+        if "com.docker.compose.project=" in " ".join(command):
+            return _completed(command, stdout="\n".join(
+                f"{name}|{service}" for service, name in transition.CONTAINERS.items()
+            ))
+        volume = next((part.split("=", 1)[1] for part in command if part.startswith("volume=")), None)
+        if volume:
+            logical = next(
+                logical for logical, (_, _, expected) in transition.EXPECTED_VOLUMES.items()
+                if expected == volume
+            )
+            return _completed(command, stdout="\n".join(transition.EXPECTED_VOLUME_CONSUMERS[logical]))
+        raise AssertionError(command)
+
+    monkeypatch.setattr(transition, "_run", run)
+
     runtime = transition._legacy_runtime(["docker"], tmp_path, COMMIT)
     assert runtime.commit == COMMIT
     assert runtime.backend_image == "ai-platform:old"
@@ -177,6 +193,32 @@ def test_legacy_runtime_binds_compose_provenance_and_volume_identity(monkeypatch
     containers["postgres"]["Mounts"][0]["Name"] = "wrong-volume"
     with pytest.raises(transition.TransitionError, match="volume identity mismatch"):
         transition._legacy_runtime(["docker"], tmp_path, COMMIT)
+
+
+def test_schema_compatibility_requires_identical_authoritative_objects(monkeypatch, tmp_path):
+    calls = []
+
+    def matching(command, **kwargs):
+        calls.append(command[-1])
+        return _completed(command, stdout=f"{command[-1].split(':', 1)[1]}-object\n")
+
+    monkeypatch.setattr(transition, "_run", matching)
+    transition._require_schema_compatibility(tmp_path, "1" * 40, "2" * 40)
+    assert calls == [
+        f"{'1' * 40}:app/schema.sql",
+        f"{'2' * 40}:app/schema.sql",
+        f"{'1' * 40}:app/schema_migrations.py",
+        f"{'2' * 40}:app/schema_migrations.py",
+    ]
+
+    outputs = iter(("same\n", "different\n"))
+    monkeypatch.setattr(
+        transition,
+        "_run",
+        lambda command, **kwargs: _completed(command, stdout=next(outputs)),
+    )
+    with pytest.raises(transition.TransitionError, match="schema is not legacy-rollback compatible"):
+        transition._require_schema_compatibility(tmp_path, "1" * 40, "2" * 40)
 
 
 def test_quiescence_requires_terminal_database_state_and_no_sandbox_containers(monkeypatch):
@@ -216,6 +258,7 @@ def _stub_migration(
     deploy_error=None,
     down_error=None,
     second_quiescence_error=None,
+    parity_error=None,
 ):
     runtime = _legacy_runtime(tmp_path / "legacy")
     target_selection = _selection(tmp_path / "target", transition.TARGET_SELECTION)
@@ -236,7 +279,8 @@ def _stub_migration(
             raise second_quiescence_error
 
     monkeypatch.setattr(transition, "_require_quiescent", quiescent)
-    monkeypatch.setattr(release_authority, "assert_clean_commit", lambda root, commit: COMMIT)
+    monkeypatch.setattr(release_authority, "assert_managed_target_checkout", lambda root, commit, release_root: COMMIT)
+    monkeypatch.setattr(transition, "_require_schema_compatibility", lambda *args: events.append("schema-compatible"))
     monkeypatch.setattr(release_authority, "resolve_compose_files", lambda root, names: target_selection)
     monkeypatch.setattr(release_authority, "prepare_packaged_release_images", lambda *args, **kwargs: events.append("images"))
     monkeypatch.setattr(release_authority, "_semantic_compose_config_preflight", lambda *args, **kwargs: events.append("compose-preflight"))
@@ -251,11 +295,17 @@ def _stub_migration(
 
     def deploy(*args, **kwargs):
         events.append("deploy-target")
+        assert kwargs["replace_known_manual_frontend"] is False
         if deploy_error is not None:
             raise deploy_error
 
     monkeypatch.setattr(release_authority, "deploy_clean_commit", deploy)
-    monkeypatch.setattr(release_authority, "collect_live_parity", lambda *args, **kwargs: events.append("parity") or {"verified": True})
+    def parity(*args, **kwargs):
+        events.append("parity")
+        if parity_error is not None:
+            raise parity_error
+
+    monkeypatch.setattr(transition, "_require_target_parity", parity)
     monkeypatch.setattr(transition, "_rollback", lambda *args, **kwargs: events.append("rollback"))
     return events
 
@@ -274,10 +324,11 @@ def test_migration_prepares_before_downtime_and_rechecks_after_stopping_admissio
         docker_cmd="docker",
     )
 
-    assert result["status"] == "migrated"
+    assert result["status"] == "migrated_acceptance_pending"
     assert events == [
         "host",
         "quiescent-1",
+        "schema-compatible",
         "images",
         "compose-preflight",
         "stop-admission",
@@ -331,6 +382,27 @@ def test_migration_rolls_back_legacy_project_when_target_deploy_fails(monkeypatc
     assert events[-3:] == ["down-legacy", "deploy-target", "rollback"]
 
 
+def test_migration_rolls_back_when_target_parity_fails(monkeypatch, tmp_path):
+    events = _stub_migration(
+        monkeypatch,
+        tmp_path,
+        parity_error=transition.TransitionError("target parity failed"),
+    )
+
+    with pytest.raises(transition.TransitionError, match="legacy runtime restored"):
+        transition._migrate_locked(
+            target_repo_root=tmp_path / "target",
+            target_commit=COMMIT,
+            legacy_repo_root=tmp_path / "legacy",
+            legacy_commit=COMMIT,
+            env_file=tmp_path / ".env",
+            backend_image="ghcr.io/example/backend@sha256:" + "1" * 64,
+            frontend_image="ghcr.io/example/frontend@sha256:" + "2" * 64,
+            docker_cmd="docker",
+        )
+    assert events[-2:] == ["parity", "rollback"]
+
+
 def test_migration_rolls_back_after_partial_legacy_down_failure(monkeypatch, tmp_path):
     events = _stub_migration(
         monkeypatch,
@@ -350,6 +422,45 @@ def test_migration_rolls_back_after_partial_legacy_down_failure(monkeypatch, tmp
             docker_cmd="docker",
         )
     assert events[-2:] == ["down-legacy", "rollback"]
+
+
+def test_finalize_releases_loopback_admission_only_after_acceptance(monkeypatch, tmp_path):
+    events = []
+
+    @contextmanager
+    def unlocked():
+        yield
+
+    monkeypatch.setattr(transition.os, "name", "posix")
+    monkeypatch.setattr(transition.os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(transition, "_transition_lock", unlocked)
+    monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
+
+    def target_runtime(*args, **kwargs):
+        assert transition.os.environ["AI_PLATFORM_FRONTEND_PORT"] == "127.0.0.1:18001"
+        events.append("acceptance-runtime")
+        return COMMIT, ()
+
+    monkeypatch.setattr(transition, "_require_target_runtime", target_runtime)
+    monkeypatch.setattr(transition, "_require_quiescent", lambda docker: events.append("quiescent"))
+
+    def deploy(*args, **kwargs):
+        assert "AI_PLATFORM_FRONTEND_PORT" not in transition.os.environ
+        assert kwargs["replace_known_manual_frontend"] is False
+        events.append("deploy-admitted")
+
+    monkeypatch.setattr(release_authority, "deploy_clean_commit", deploy)
+    monkeypatch.setattr(transition, "_require_target_parity", lambda *args, **kwargs: events.append("parity"))
+
+    result = transition.finalize(
+        target_repo_root=tmp_path / "target",
+        target_commit=COMMIT,
+        env_file=tmp_path / ".env",
+        docker_cmd="docker",
+    )
+
+    assert result["status"] == "admitted"
+    assert events == ["acceptance-runtime", "quiescent", "deploy-admitted", "parity"]
 
 
 def test_explicit_rollback_requires_quiescence_and_restores_legacy_selection(monkeypatch, tmp_path):
@@ -408,6 +519,8 @@ def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, 
     monkeypatch.setattr(transition, "_down", lambda *args, **kwargs: events.append("down-partial-legacy"))
     monkeypatch.setattr(release_authority, "deploy_clean_commit", lambda *args, **kwargs: events.append("restore-target"))
 
+    monkeypatch.setattr(transition, "_require_target_parity", lambda *args, **kwargs: events.append("target-parity"))
+
     with pytest.raises(transition.TransitionError, match="target runtime restored"):
         transition.rollback(
             target_repo_root=tmp_path / "target",
@@ -420,7 +533,7 @@ def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, 
             legacy_executor_image=runtime.executor_image,
             docker_cmd="docker",
         )
-    assert events == ["down-partial-legacy", "restore-target"]
+    assert events == ["down-partial-legacy", "restore-target", "target-parity"]
 
 
 def test_managed_environment_file_metadata_fails_closed_without_reading_contents():

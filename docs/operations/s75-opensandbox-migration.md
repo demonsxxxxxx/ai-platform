@@ -58,15 +58,17 @@ sudo -n /usr/bin/python3 -m tools.s75_opensandbox_transition migrate \
 该命令按固定顺序执行：
 
 1. 取得 root-owned POSIX flock；
-2. 验证 legacy ownership、四个 volume、host services、零 active work；
-3. 在停机前 pull、验证并本地 tag 两个 CI immutable image；
-4. 对目标三文件 Compose 做 semantic preflight；
-5. 停止旧 API/Worker admission，再次检查 DB、lease 和 sandbox container；
-6. 对旧项目执行 `down --remove-orphans`，不使用 `-v`；
-7. 只通过 release authority 启动目标 project；
-8. 验证 target parity 后输出 JSON 结果和明确 rollback image references。
+2. 验证 legacy ownership、精确八服务 membership、四个 volume 的独占消费者、host services、零 active work；
+3. 证明 legacy 和 target 的 `schema.sql` 与 migration authority 对象完全相同；
+4. 在停机前 pull、验证并本地 tag 两个 CI immutable image；
+5. 对目标三文件 Compose 做 semantic preflight，并将 API/Frontend 临时仅绑定 loopback；
+6. 逐个停止旧 Frontend/API/Worker，失败时补偿恢复，再次检查 ownership、volume、DB、lease 和 sandbox container；
+7. 对旧项目执行 `down --remove-orphans`，不使用 `-v`；
+8. 只通过 release authority 启动目标 project；
+9. 验证 target parity 和 broker health 后输出 `migrated_acceptance_pending` 及明确 rollback image references。
 
-命令不读取或打印 `.env` 内容。源和目标 project 不会同时挂载这些 writable volumes。
+命令不读取或打印 `.env` 内容。源和目标 project 不会同时挂载这些 writable volumes；
+普通流量在验收完成前不能通过目标的 API/Frontend host ports。
 
 如果 target deployment 失败，命令自动对目标执行不带 `-v` 的 `down`，再用迁移前
 观察到的 exact legacy image 和 Compose selection 恢复旧项目。若自动 rollback 也失败，
@@ -94,9 +96,8 @@ sudo -n /usr/bin/python3 -m tools.s75_opensandbox_transition rollback \
 回滚复用同四个 external volumes，不使用 `down -v`。如果 legacy 启动失败，authority
 会清除 partial legacy containers 并恢复 target；两边都无法恢复时停止操作并保留现场。
 
-镜像/provider 回滚不等于数据库降级。若目标 release 已执行旧镜像不兼容的 schema
-migration，不得声称 legacy image rollback 可用；必须按 release runbook 的 schema
-兼容边界处理。
+镜像/provider 回滚不等于数据库降级。迁移 authority 因此要求 target 与 legacy 的
+schema 和 migration authority 对象完全相同；不一致时在停机前失败，不承诺数据库降级。
 
 ## 4. 上线验收
 
@@ -113,3 +114,16 @@ migration，不得声称 legacy image rollback 可用；必须按 release runboo
 
 任一项失败时，不接收普通任务；仍在兼容回滚窗口内则执行第 3 节，否则按 incident
 流程保留证据并停止。
+
+全部通过后才解除 loopback admission fence：
+
+```bash
+sudo -n /usr/bin/python3 -m tools.s75_opensandbox_transition finalize \
+  --target-repo-root "$TARGET_REPO_ROOT" \
+  --target-commit "$TARGET_COMMIT" \
+  --env-file "$MANAGED_ENV_FILE" \
+  --docker-cmd "docker"
+```
+
+`finalize` 会再次要求零 active work，以普通 managed port 配置重新收敛 exact target，
+并在返回 `admitted` 前重验 target parity 和 broker health。
