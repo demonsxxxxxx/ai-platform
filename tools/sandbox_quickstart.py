@@ -30,6 +30,15 @@ COMPOSE_FILES = (
 BACKEND_REPOSITORY = "ghcr.io/demonsxxxxxx/ai-platform-backend"
 FRONTEND_REPOSITORY = "ghcr.io/demonsxxxxxx/ai-platform-frontend"
 ORIGIN_URL = "https://github.com/demonsxxxxxx/ai-platform.git"
+OPENSANDBOX_HEALTH_PROBE = (
+    "import os, sys, urllib.request; "
+    "base_url = os.environ.get('OPENSANDBOX_BASE_URL', '').strip() or "
+    "os.environ['OPENSANDBOX_PROTOCOL'] + '://' + os.environ['OPENSANDBOX_DOMAIN']; "
+    "url = base_url.rstrip('/') + '/health'; "
+    "opener = urllib.request.build_opener(urllib.request.ProxyHandler({})); "
+    "response = opener.open(url, timeout=10); "
+    "raise SystemExit(0 if response.status == 200 and len(response.read(65537)) <= 65536 else 1)"
+)
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST_REF = re.compile(r"(?P<repository>[^@]+)@sha256:[0-9a-f]{64}\Z")
 SERVICES = ("api", "worker", "frontend", "postgres", "redis", "minio")
@@ -334,16 +343,16 @@ class Quickstart:
         return value
 
     def _probe_opensandbox_lifecycle(self) -> None:
-        probe = (
-            "import os, sys, urllib.request; "
-            "url = os.environ['OPENSANDBOX_BASE_URL'].rstrip('/') + '/health'; "
-            "opener = urllib.request.build_opener(urllib.request.ProxyHandler({})); "
-            "response = opener.open(url, timeout=10); "
-            "raise SystemExit(0 if response.status == 200 and len(response.read(65537)) <= 65536 else 1)"
-        )
         for service in ("api", "worker"):
             self.runner.run(
-                [*self.docker, "exec", f"ai-platform-{service}", "python", "-c", probe],
+                [
+                    *self.docker,
+                    "exec",
+                    f"ai-platform-{service}",
+                    "python",
+                    "-c",
+                    OPENSANDBOX_HEALTH_PROBE,
+                ],
                 timeout=15,
                 environment=_docker_environment(),
             )

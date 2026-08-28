@@ -698,11 +698,32 @@ def test_opensandbox_server_publishes_only_the_configured_lifecycle_address():
     )
 
     assert "--publish ${OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS}:8080:8080" in service
-    assert "ipaddress.ip_address(os.environ['OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS'])" in service
+    assert "OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS', 'OPENSANDBOX_EGRESS_LISTEN_ADDRESS" in service
     assert "address.is_private" in service
     assert "address.is_loopback" in service
     assert "address.is_unspecified" in service
+    assert "addresses[0] != addresses[1]" in service
     assert "OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS=REQUIRED_PRIVATE_NON_EGRESS_IPV4_ADDRESS" in environment
+    assert "OPENSANDBOX_EGRESS_LISTEN_ADDRESS=REQUIRED_PRIVATE_NON_LIFECYCLE_IPV4_ADDRESS" in environment
+    guard = service.split('ExecStartPre=/usr/bin/python3 -c "', 1)[1].split('"\nExecStart=', 1)[0]
+    for lifecycle, egress, accepted in (
+        ("172.19.0.1", "172.18.0.1", True),
+        ("172.18.0.1", "172.18.0.1", False),
+        ("0.0.0.0", "172.18.0.1", False),
+        ("127.0.0.1", "172.18.0.1", False),
+        ("8.8.8.8", "172.18.0.1", False),
+    ):
+        result = subprocess.run(
+            [sys.executable, "-c", guard],
+            env={
+                **os.environ,
+                "OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS": lifecycle,
+                "OPENSANDBOX_EGRESS_LISTEN_ADDRESS": egress,
+            },
+            capture_output=True,
+            check=False,
+        )
+        assert (result.returncode == 0) is accepted
     assert 'host = "0.0.0.0"' in config
     assert "--publish 127.0.0.1:8080:8080" not in service
 

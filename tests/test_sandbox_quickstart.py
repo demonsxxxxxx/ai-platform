@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import urllib.request
 from http.client import BadStatusLine
 from pathlib import Path
 
@@ -479,7 +480,38 @@ def test_health_probes_configured_opensandbox_from_api_and_worker(
         "ai-platform-worker",
     ]
     assert all("OPENSANDBOX_BASE_URL" in command[-1] for command in probe_commands)
+    assert all("OPENSANDBOX_PROTOCOL" in command[-1] for command in probe_commands)
+    assert all("OPENSANDBOX_DOMAIN" in command[-1] for command in probe_commands)
     assert all("ProxyHandler({})" in command[-1] for command in probe_commands)
+
+
+def test_health_probe_uses_supported_protocol_domain_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested_urls: list[str] = []
+
+    class Response:
+        status = 200
+
+        def read(self, _limit: int) -> bytes:
+            return b"{}"
+
+    class Opener:
+        def open(self, url: str, *, timeout: int) -> Response:
+            assert timeout == 10
+            requested_urls.append(url)
+            return Response()
+
+    monkeypatch.setenv("OPENSANDBOX_BASE_URL", "")
+    monkeypatch.setenv("OPENSANDBOX_PROTOCOL", "http")
+    monkeypatch.setenv("OPENSANDBOX_DOMAIN", "opensandbox.internal:8080")
+    monkeypatch.setattr(urllib.request, "build_opener", lambda _handler: Opener())
+
+    with pytest.raises(SystemExit) as exc_info:
+        exec(quickstart.OPENSANDBOX_HEALTH_PROBE, {})
+
+    assert exc_info.value.code == 0
+    assert requested_urls == ["http://opensandbox.internal:8080/health"]
 
 
 def test_configured_lifecycle_probe_failure_is_normalized(
