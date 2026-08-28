@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -295,6 +295,11 @@ function AgentMarketCatalog({
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const searchQuery = searchParams.get("q") ?? "";
+  const [searchInput, setSearchInput] = useState(searchQuery);
+  const isSearchComposing = useRef(false);
+  useEffect(() => {
+    if (!isSearchComposing.current) setSearchInput(searchQuery);
+  }, [searchQuery]);
   const hasActiveFilter =
     searchQuery.trim().length > 0 || activeCategory !== "all";
   const visibleProfiles = useMemo(
@@ -331,6 +336,14 @@ function AgentMarketCatalog({
       setSearchParams(next, { replace: true });
     },
     [searchParams, setSearchParams],
+  );
+
+  const handleSearchInput = useCallback(
+    (query: string) => {
+      setSearchInput(query);
+      if (!isSearchComposing.current) handleSearch(query);
+    },
+    [handleSearch],
   );
 
   const handleRefresh = useCallback(() => {
@@ -384,10 +397,19 @@ function AgentMarketCatalog({
                 aria-label="搜索专家"
                 className="h-11 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] pl-10 pr-3 text-sm text-[var(--theme-text)] outline-none placeholder:text-[var(--theme-text-secondary)] focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary)]/20"
                 maxLength={160}
-                onChange={(event) => handleSearch(event.target.value)}
+                onChange={(event) => handleSearchInput(event.target.value)}
+                onCompositionStart={() => {
+                  isSearchComposing.current = true;
+                }}
+                onCompositionEnd={(event) => {
+                  isSearchComposing.current = false;
+                  const query = event.currentTarget.value;
+                  setSearchInput(query);
+                  handleSearch(query);
+                }}
                 placeholder="搜索专家名称、能力或任务"
                 type="search"
-                value={searchQuery}
+                value={searchInput}
               />
             </label>
             <div

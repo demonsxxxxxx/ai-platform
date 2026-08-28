@@ -359,6 +359,7 @@ class TestDocument extends TestNode {
 
 function installDom() {
   const document = new TestDocument();
+  const CompositionEvent = class {};
   const storage = new Map<string, string>();
   const windowTarget = new TestEventTarget() as TestEventTarget & {
     document: TestDocument;
@@ -432,6 +433,7 @@ function installDom() {
     HTMLSelectElement: TestElement,
     HTMLIFrameElement: TestElement,
     SVGElement: TestElement,
+    CompositionEvent,
     Node: TestNode,
   });
   document.defaultView = windowTarget as unknown as typeof window;
@@ -449,6 +451,7 @@ function installDom() {
     HTMLIFrameElement: TestElement,
     SVGElement: TestElement,
     IS_REACT_ACT_ENVIRONMENT: true,
+    CompositionEvent,
     requestAnimationFrame: windowTarget.requestAnimationFrame,
     cancelAnimationFrame: windowTarget.cancelAnimationFrame,
     CustomEvent: class {
@@ -558,6 +561,91 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     },
   };
 }
+
+test("market search commits Chinese IME text only after composition ends", async () => {
+  const dom = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { MemoryRouter, Route, Routes, useLocation } = await import("react-router-dom");
+  const { AgentMarketRoute } = await import("../AgentMarketRoute.tsx");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const shellHarness = await prepareShellHarness();
+  const profile = {
+    ...enterpriseProfileFields,
+    agent_id: "agt_support",
+    expected_revision: 1,
+    name: "支持助手",
+    description: "处理支持请求。",
+    avatar_ref: "builtin:assistant",
+    category: "support",
+  } as const;
+  const originalListPublished = agentProfileApi.listPublished;
+  agentProfileApi.listPublished = async () => ({ agent_profiles: [profile] });
+  let currentPath = "";
+  function LocationProbe() {
+    const location = useLocation();
+    currentPath = `${location.pathname}${location.search}`;
+    return null;
+  }
+
+  const container = dom.document.createElement("div");
+  const root = ReactDOM.createRoot(container as never);
+  try {
+    await React.act(async () => {
+      root.render(
+        React.createElement(
+          MemoryRouter,
+          { initialEntries: ["/agent-market"] },
+          shellHarness.wrap(
+            React.createElement(
+              React.Fragment,
+              null,
+              React.createElement(LocationProbe),
+              React.createElement(
+                Routes,
+                null,
+                React.createElement(Route, {
+                  path: "/agent-market",
+                  element: React.createElement(AgentMarketRoute),
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const search = container.querySelector("[data-agent-market-search]");
+    assert.ok(search);
+    await React.act(async () => {
+      search.value = "f";
+      search.dispatchEvent({ type: "compositionstart", bubbles: true });
+      search.value = "fa";
+      search.dispatchEvent({ type: "input", bubbles: true });
+      await Promise.resolve();
+    });
+    assert.equal(currentPath, "/agent-market");
+    assert.equal(search.value, "fa");
+
+    await React.act(async () => {
+      search.value = "法";
+      search.dispatchEvent({
+        type: "compositionend",
+        bubbles: true,
+        data: "法",
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.equal(currentPath, "/agent-market?q=%E6%B3%95");
+    assert.equal(search.value, "法");
+  } finally {
+    agentProfileApi.listPublished = originalListPublished;
+    shellHarness.restore();
+    await React.act(async () => root.unmount());
+  }
+});
 
 test("rendered Marketplace opens a productized bare workspace without creating a conversation", async () => {
   const dom = installDom();
