@@ -166,7 +166,7 @@ def test_public_context_manifest_projection_exposes_only_counts_and_flags():
     projection = public_context_manifest_projection(
         {
             "context_manifest_version": "v1",
-            "generated_at": "not-a-timestamp read_context_file secret",
+            "generated_at": "not-a-timestamp opaque secret",
             "selection": {
                 "selection_version": "conversation-turns-v1",
                 "status": "trimmed",
@@ -178,7 +178,7 @@ def test_public_context_manifest_projection_exposes_only_counts_and_flags():
             "artifacts": [{"artifact_id": "artifact-secret"}],
             "memory_records": [{"memory_record_id": "mem-secret"}],
             "source_runs": [{"run_id": "run-secret"}],
-            "available_retrieval_tools": ["read_session_messages", "read_context_file"],
+            "available_retrieval_tools": ["read_session_messages", "stage_context_file_to_workspace"],
         }
     )
 

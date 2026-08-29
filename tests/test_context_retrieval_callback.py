@@ -67,7 +67,6 @@ def _patch_route(
 
     async def get_snapshot(conn, *, tenant_id, workspace_id, user_id, session_id, run_id):
         refs = {
-            "read_context_file": ("files", [{"file_id": "file-a"}]),
             "read_run_artifact": ("artifacts", [{"artifact_id": "artifact-a"}]),
             "stage_context_file_to_workspace": ("files", [{"file_id": "file-a"}]),
             "stage_run_artifact_to_workspace": ("artifacts", [{"artifact_id": "artifact-a"}]),

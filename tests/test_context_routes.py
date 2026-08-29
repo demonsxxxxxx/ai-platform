@@ -367,7 +367,7 @@ def test_context_snapshot_response_projects_context_manifest_without_inline_priv
                                 "storage_key": "tenants/tenant-a/private/salary.xlsx",
                             }
                         ],
-                        "available_retrieval_tools": ["read_context_file"],
+                        "available_retrieval_tools": ["stage_context_file_to_workspace"],
                     }
                 },
                 "created_at": None,
