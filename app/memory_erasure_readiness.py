@@ -54,7 +54,7 @@ _EVIDENCE_MARKERS = [
     },
     {
         "name": "ordinary_user_export_query",
-        "path": "app/repositories.py",
+        "path": "app/context/infrastructure/postgres.py",
         "markers": [
             "async def list_memory_records(",
             "and status = 'active'",
