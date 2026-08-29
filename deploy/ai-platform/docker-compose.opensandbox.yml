@@ -8,6 +8,10 @@ services:
   minio:
     ports: !reset []
 
+  workspace-init:
+    volumes:
+      - ${SANDBOX_WORKSPACE_ROOT:?set SANDBOX_WORKSPACE_ROOT}:/runtime-workspaces
+
   api:
     environment:
       MODEL_CONNECTION_ENCRYPTION_KEY: ${MODEL_CONNECTION_ENCRYPTION_KEY:?set MODEL_CONNECTION_ENCRYPTION_KEY}
@@ -29,6 +33,8 @@ services:
       OPENSANDBOX_EGRESS_PROXY_URL: ${OPENSANDBOX_EGRESS_PROXY_URL:?set OPENSANDBOX_EGRESS_PROXY_URL}
     networks:
       - default
+    volumes:
+      - ${SANDBOX_WORKSPACE_ROOT:?set SANDBOX_WORKSPACE_ROOT}:${SANDBOX_WORKSPACE_ROOT:?set SANDBOX_WORKSPACE_ROOT}
 
   worker:
     environment:
@@ -52,6 +58,8 @@ services:
       OPENSANDBOX_EGRESS_PROXY_URL: ${OPENSANDBOX_EGRESS_PROXY_URL:?set OPENSANDBOX_EGRESS_PROXY_URL}
     networks:
       - default
+    volumes:
+      - ${SANDBOX_WORKSPACE_ROOT:?set SANDBOX_WORKSPACE_ROOT}:${SANDBOX_WORKSPACE_ROOT:?set SANDBOX_WORKSPACE_ROOT}
 
   opensandbox-egress-proxy:
     image: ${AI_PLATFORM_FRONTEND_IMAGE:?set AI_PLATFORM_FRONTEND_IMAGE}

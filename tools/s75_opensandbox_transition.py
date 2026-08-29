@@ -62,7 +62,13 @@ EXPECTED_VOLUME_CONSUMERS = {
     "ai_platform_postgres": {"ai-platform-postgres"},
     "ai_platform_redis": {"ai-platform-redis"},
     "ai_platform_minio": {"ai-platform-minio"},
-    "ai_platform_sandbox_workspaces": {"ai-platform-workspace-init", "ai-platform-api", "ai-platform-worker"},
+    "ai_platform_sandbox_workspaces": {"ai-platform-api", "ai-platform-worker"},
+}
+S75_WORKSPACE_ROOT = "/data/ai-platform-prod/runtime-workspaces"
+EXPECTED_WORKSPACE_BINDS = {
+    "workspace-init": ("/runtime-workspaces", S75_WORKSPACE_ROOT),
+    "api": (S75_WORKSPACE_ROOT, S75_WORKSPACE_ROOT),
+    "worker": (S75_WORKSPACE_ROOT, S75_WORKSPACE_ROOT),
 }
 TARGET_BROKER_CONTAINER = "ai-platform-opensandbox-egress-proxy"
 SCHEMA_PATHS = ("app/schema.sql", "app/schema_migrations.py")
@@ -186,20 +192,27 @@ def _container_environment(container: dict[str, Any]) -> dict[str, str]:
     return result
 
 
-def _mount_source(container: dict[str, Any], destination: str) -> str:
+def _mount_source(
+    container: dict[str, Any],
+    destination: str,
+    *,
+    mount_type: str = "volume",
+) -> str:
     mounts = container.get("Mounts")
     if not isinstance(mounts, list):
         raise TransitionError("invalid managed container mounts")
     matches = [
         mount
         for mount in mounts
-        if isinstance(mount, dict) and mount.get("Destination") == destination
+        if isinstance(mount, dict)
+        and mount.get("Destination") == destination
+        and mount.get("Type") == mount_type
     ]
-    if len(matches) != 1 or matches[0].get("Type") != "volume":
-        raise TransitionError(f"managed volume mount mismatch: {destination}")
-    source = matches[0].get("Name") or matches[0].get("Source")
+    if len(matches) != 1:
+        raise TransitionError(f"managed {mount_type} mount mismatch: {destination}")
+    source = matches[0].get("Name" if mount_type == "volume" else "Source")
     if not isinstance(source, str) or not source:
-        raise TransitionError(f"managed volume identity missing: {destination}")
+        raise TransitionError(f"managed {mount_type} identity missing: {destination}")
     return source
 
 
@@ -245,12 +258,14 @@ def _require_volume_identities(
         if set(consumers.stdout.splitlines()) != EXPECTED_VOLUME_CONSUMERS[logical]:
             raise TransitionError(f"legacy volume consumer mismatch: {logical}")
     workspace_name = EXPECTED_VOLUMES["ai_platform_sandbox_workspaces"][2]
-    for service, destination in (
-        ("api", "/tmp/ai-platform-sandbox-workspaces"),
-        ("workspace-init", "/runtime-workspaces"),
-    ):
-        if _mount_source(containers[service], destination) != workspace_name:
-            raise TransitionError(f"legacy workspace volume mismatch: {service}")
+    if _mount_source(containers["api"], "/tmp/ai-platform-sandbox-workspaces") != workspace_name:
+        raise TransitionError("legacy workspace volume mismatch: api")
+    for service, (destination, expected_source) in EXPECTED_WORKSPACE_BINDS.items():
+        if _mount_source(containers[service], destination, mount_type="bind") != expected_source:
+            raise TransitionError(f"managed workspace bind mismatch: {service}")
+    for service in ("api", "worker"):
+        if _container_environment(containers[service]).get("SANDBOX_WORKSPACE_ROOT") != S75_WORKSPACE_ROOT:
+            raise TransitionError(f"managed workspace root mismatch: {service}")
 
 
 def _legacy_runtime(
@@ -310,6 +325,27 @@ def _require_safe_env_file(path: Path) -> Path:
     ):
         raise TransitionError("managed environment file metadata mismatch")
     return path.resolve(strict=True)
+
+
+def _require_workspace_root_env(path: Path) -> None:
+    inherited = os.environ.get("SANDBOX_WORKSPACE_ROOT")
+    if inherited is not None and inherited != S75_WORKSPACE_ROOT:
+        raise TransitionError("managed workspace root configuration mismatch")
+    try:
+        if path.stat().st_size > 1024 * 1024:
+            raise TransitionError("managed environment file too large")
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise TransitionError("managed environment file unreadable") from exc
+    values = [
+        value.strip()
+        for line in lines
+        if line.strip() and not line.lstrip().startswith("#")
+        for key, separator, value in (line.partition("="),)
+        if separator and key.strip() == "SANDBOX_WORKSPACE_ROOT"
+    ]
+    if values != [S75_WORKSPACE_ROOT]:
+        raise TransitionError("managed workspace root configuration mismatch")
 
 
 def _require_schema_compatibility(repo_root: Path, legacy_commit: str, target_commit: str) -> None:
@@ -377,7 +413,10 @@ def _compose_command(
     compose_files: Sequence[Path],
     environment: Sequence[str] = (),
 ) -> list[str]:
-    docker_with_env = authority._compose_command_with_environment(docker, list(environment))
+    root_key = "SANDBOX_WORKSPACE_ROOT="
+    pinned_environment = [value for value in environment if not value.startswith(root_key)]
+    pinned_environment.append(f"{root_key}{S75_WORKSPACE_ROOT}")
+    docker_with_env = authority._compose_command_with_environment(docker, pinned_environment)
     file_args = [argument for path in compose_files for argument in ("-f", str(path))]
     return [
         *docker_with_env,
@@ -487,6 +526,20 @@ def _require_target_parity(
     _require_target_broker(docker, commit)
     _require_target_executor(docker)
     _require_target_lifecycle_reachable(docker)
+
+
+@contextmanager
+def _workspace_root_environment() -> Iterator[None]:
+    key = "SANDBOX_WORKSPACE_ROOT"
+    previous = os.environ.get(key)
+    os.environ[key] = S75_WORKSPACE_ROOT
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
 
 
 @contextmanager
@@ -616,6 +669,7 @@ def _migrate_locked(
         raise TransitionError("s75 transition requires root on a POSIX host")
     docker = _docker_base(docker_cmd)
     safe_env_file = _require_safe_env_file(env_file)
+    _require_workspace_root_env(safe_env_file)
     runtime = _legacy_runtime(docker, legacy_repo_root, legacy_commit)
     _require_host_prerequisites()
     _require_quiescent(docker)
@@ -632,7 +686,7 @@ def _migrate_locked(
         frontend_image=frontend_image,
         docker_cmd=docker_cmd,
     )
-    with _acceptance_fence():
+    with _acceptance_fence(), _workspace_root_environment():
         authority._semantic_compose_config_preflight(
             docker,
             target_selection,
@@ -658,7 +712,7 @@ def _migrate_locked(
             compose_files=runtime.compose_files,
             environment=_legacy_release_environment(runtime),
         )
-        with _acceptance_fence():
+        with _acceptance_fence(), _workspace_root_environment():
             authority.deploy_clean_commit(
                 target_repo_root,
                 normalized,
@@ -668,10 +722,10 @@ def _migrate_locked(
                 strategy="canonical",
                 replace_known_manual_frontend=False,
             )
-            _require_target_parity(
+            _require_target_runtime(
                 docker,
-                target_repo_root,
-                normalized,
+                target_repo_root=target_repo_root,
+                target_commit=normalized,
                 docker_cmd=docker_cmd,
             )
     except Exception as exc:
@@ -736,7 +790,8 @@ def finalize(
     with _transition_lock():
         docker = _docker_base(docker_cmd)
         safe_env_file = _require_safe_env_file(env_file)
-        with _acceptance_fence():
+        _require_workspace_root_env(safe_env_file)
+        with _acceptance_fence(), _workspace_root_environment():
             normalized, _ = _require_target_runtime(
                 docker,
                 target_repo_root=target_repo_root,
@@ -745,19 +800,25 @@ def finalize(
             )
         _require_quiescent(docker)
         try:
-            authority.deploy_clean_commit(
-                target_repo_root,
-                normalized,
-                docker_cmd=docker_cmd,
-                env_file=safe_env_file,
-                compose_files=TARGET_SELECTION,
-                strategy="canonical",
-                replace_known_manual_frontend=False,
-            )
-            _require_target_parity(docker, target_repo_root, normalized, docker_cmd=docker_cmd)
+            with _workspace_root_environment():
+                authority.deploy_clean_commit(
+                    target_repo_root,
+                    normalized,
+                    docker_cmd=docker_cmd,
+                    env_file=safe_env_file,
+                    compose_files=TARGET_SELECTION,
+                    strategy="canonical",
+                    replace_known_manual_frontend=False,
+                )
+                _require_target_runtime(
+                    docker,
+                    target_repo_root=target_repo_root,
+                    target_commit=normalized,
+                    docker_cmd=docker_cmd,
+                )
         except Exception as exc:
             try:
-                with _acceptance_fence():
+                with _acceptance_fence(), _workspace_root_environment():
                     authority.deploy_clean_commit(
                         target_repo_root,
                         normalized,
@@ -767,7 +828,12 @@ def finalize(
                         strategy="canonical",
                         replace_known_manual_frontend=False,
                     )
-                    _require_target_parity(docker, target_repo_root, normalized, docker_cmd=docker_cmd)
+                    _require_target_runtime(
+                        docker,
+                        target_repo_root=target_repo_root,
+                        target_commit=normalized,
+                        docker_cmd=docker_cmd,
+                    )
             except Exception as fence_exc:
                 raise TransitionError("final admission failed and the acceptance fence could not be restored") from fence_exc
             raise TransitionError("final admission failed; target runtime restored behind acceptance fence") from exc
@@ -863,6 +929,7 @@ def rollback(
     with _transition_lock():
         docker = _docker_base(docker_cmd)
         safe_env_file = _require_safe_env_file(env_file)
+        _require_workspace_root_env(safe_env_file)
         runtime = _validated_rollback_runtime(
             docker,
             legacy_repo_root=legacy_repo_root,
@@ -871,12 +938,13 @@ def rollback(
             frontend_image=legacy_frontend_image,
             executor_image=legacy_executor_image,
         )
-        normalized, target_files = _require_target_runtime(
-            docker,
-            target_repo_root=target_repo_root,
-            target_commit=target_commit,
-            docker_cmd=docker_cmd,
-        )
+        with _workspace_root_environment():
+            normalized, target_files = _require_target_runtime(
+                docker,
+                target_repo_root=target_repo_root,
+                target_commit=target_commit,
+                docker_cmd=docker_cmd,
+            )
         _require_schema_compatibility(target_repo_root, runtime.commit, normalized)
         _require_quiescent(docker)
         _stop_admission(docker)
@@ -901,7 +969,7 @@ def rollback(
                     compose_files=runtime.compose_files,
                     environment=_legacy_release_environment(runtime),
                 )
-                with _acceptance_fence():
+                with _acceptance_fence(), _workspace_root_environment():
                     authority.deploy_clean_commit(
                         target_repo_root,
                         normalized,
@@ -911,10 +979,10 @@ def rollback(
                         strategy="canonical",
                         replace_known_manual_frontend=False,
                     )
-                    _require_target_parity(
+                    _require_target_runtime(
                         docker,
-                        target_repo_root,
-                        normalized,
+                        target_repo_root=target_repo_root,
+                        target_commit=normalized,
                         docker_cmd=docker_cmd,
                     )
             except Exception as target_restore_exc:

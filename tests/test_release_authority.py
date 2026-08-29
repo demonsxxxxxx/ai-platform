@@ -125,6 +125,10 @@ def test_opensandbox_compose_overlay_uses_direct_sdk_and_egress_proxy():
         assert environment["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
         assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == "bridge"
         assert "OPENSANDBOX_EGRESS_PROXY_URL" in environment
+    workspace_root = "${SANDBOX_WORKSPACE_ROOT:?set SANDBOX_WORKSPACE_ROOT}"
+    assert services["workspace-init"]["volumes"] == [f"{workspace_root}:/runtime-workspaces"]
+    for service_name in ("api", "worker"):
+        assert f"{workspace_root}:{workspace_root}" in services[service_name]["volumes"]
     proxy = services["opensandbox-egress-proxy"]
     assert proxy["labels"]["ai-platform.release-role"] == "opensandbox-egress-proxy"
     assert proxy["ports"] == [
@@ -210,6 +214,8 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert "The s75 deployment keeps Compose project `ai-platform-internal`" in text
     assert "never invokes a project migration or volume aliases" in contract_text
     assert "same project and volumes" in text
+    assert "`/data/ai-platform-prod/runtime-workspaces` platform bind" in text
+    assert "OpenSandbox sandboxes never receive that host path" in text
     for command in ("migrate", "finalize", "rollback"):
         assert f"-m tools.s75_opensandbox_transition {command}" in text
     assert "HostConfig.Runtime=runsc" in text
@@ -651,6 +657,7 @@ def test_env_example_inventory_covers_exact_base_and_opensandbox_required_keys()
         "OPENSANDBOX_EXECUTOR_IMAGE",
         "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
         "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
+        "SANDBOX_WORKSPACE_ROOT",
         "WORKER_CLAUDE_AGENT_SDK_ENABLED",
     }
     assert direct_required == expected_direct_required

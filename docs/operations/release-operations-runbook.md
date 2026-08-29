@@ -303,11 +303,14 @@ model capability, injects the internal proxy token, and forwards callbacks to
 the existing API callback-token validators.
 
 The s75 deployment keeps Compose project `ai-platform-internal` and the four
-existing named data/workspace volumes. A bounded transition stops admission,
+existing named data/workspace volumes. It also preserves the authenticated
+`/data/ai-platform-prod/runtime-workspaces` platform bind for `workspace-init`,
+API, and Worker; OpenSandbox sandboxes never receive that host path and continue
+to use bounded SDK file transfer. A bounded transition stops admission,
 proves zero nonterminal Runs/RunAttempts/leases and zero sandbox containers,
-changes the overlay in place, and revalidates exact volume mount identities.
-Rollback uses the same project and volumes without `down -v` or any project
-namespace migration.
+changes the overlay in place, and revalidates exact volume and bind mount identities.
+Rollback uses the same project and volumes, plus the same platform bind, without
+`down -v` or any project namespace migration.
 
 Run the transition only from the exact CI-qualified target checkout. Preserve the
 currently verified Docker release values before cutover; they are rollback

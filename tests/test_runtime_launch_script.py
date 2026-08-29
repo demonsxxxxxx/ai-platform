@@ -500,11 +500,20 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
     assert set(overlay["services"]) == {
         "api",
         "worker",
+        "workspace-init",
         "postgres",
         "redis",
         "minio",
         "opensandbox-egress-proxy",
     }
+    workspace_root = "${SANDBOX_WORKSPACE_ROOT:?set SANDBOX_WORKSPACE_ROOT}"
+    assert overlay["services"]["workspace-init"]["volumes"] == [
+        f"{workspace_root}:/runtime-workspaces"
+    ]
+    for service_name in ("api", "worker"):
+        assert overlay["services"][service_name]["volumes"] == [
+            f"{workspace_root}:{workspace_root}"
+        ]
     for service_name in ("postgres", "redis", "minio"):
         assert overlay["services"][service_name]["ports"] == []
     assert "SANDBOX_SECURITY_PROFILE=governed" in env_example
