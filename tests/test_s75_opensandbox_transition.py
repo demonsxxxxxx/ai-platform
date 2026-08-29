@@ -271,6 +271,34 @@ def test_legacy_runtime_binds_compose_provenance_and_volume_identity(monkeypatch
         transition._legacy_runtime(["docker"], tmp_path, COMMIT)
 
 
+def test_legacy_rollback_authority_requires_root_owner(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        release_authority,
+        "assert_managed_target_checkout",
+        lambda root, commit, release_root: COMMIT,
+    )
+    monkeypatch.setattr(Path, "stat", lambda self, **kwargs: SimpleNamespace(st_uid=1001))
+    monkeypatch.setattr(
+        release_authority,
+        "resolve_compose_files",
+        lambda *args: pytest.fail("non-root checkout must fail before Compose resolution"),
+    )
+
+    for invocation in (
+        lambda: transition._legacy_runtime(["docker"], tmp_path, COMMIT),
+        lambda: transition._validated_rollback_runtime(
+            ["docker"],
+            legacy_repo_root=tmp_path,
+            legacy_commit=COMMIT,
+            backend_image="backend",
+            frontend_image="frontend",
+            executor_image="executor",
+        ),
+    ):
+        with pytest.raises(transition.TransitionError, match="must be root-owned"):
+            invocation()
+
+
 def test_schema_compatibility_requires_identical_authoritative_objects(monkeypatch, tmp_path):
     calls = []
 

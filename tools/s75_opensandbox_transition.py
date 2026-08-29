@@ -269,16 +269,27 @@ def _require_volume_identities(
             raise TransitionError(f"managed workspace root mismatch: {service}")
 
 
+def _assert_root_owned_checkout(repo_root: Path, commit: str) -> str:
+    normalized = authority.assert_managed_target_checkout(
+        repo_root,
+        commit,
+        repo_root.parent,
+    )
+    try:
+        owner = repo_root.stat(follow_symlinks=False).st_uid
+    except OSError as exc:
+        raise TransitionError("legacy rollback checkout metadata unavailable") from exc
+    if owner != 0:
+        raise TransitionError("legacy rollback checkout must be root-owned")
+    return normalized
+
+
 def _legacy_runtime(
     docker: Sequence[str],
     legacy_repo_root: Path,
     legacy_commit: str,
 ) -> LegacyRuntime:
-    normalized = authority.assert_managed_target_checkout(
-        legacy_repo_root,
-        legacy_commit,
-        legacy_repo_root.parent,
-    )
+    normalized = _assert_root_owned_checkout(legacy_repo_root, legacy_commit)
     selection = authority.resolve_compose_files(legacy_repo_root, LEGACY_SELECTION)
     _require_exact_legacy_inventory(docker)
     containers = {service: _inspect_container(docker, name) for service, name in CONTAINERS.items()}
@@ -855,11 +866,7 @@ def _validated_rollback_runtime(
     frontend_image: str,
     executor_image: str,
 ) -> LegacyRuntime:
-    normalized = authority.assert_managed_target_checkout(
-        legacy_repo_root,
-        legacy_commit,
-        legacy_repo_root.parent,
-    )
+    normalized = _assert_root_owned_checkout(legacy_repo_root, legacy_commit)
     selection = authority.resolve_compose_files(legacy_repo_root, LEGACY_SELECTION)
     repository = authority.authoritative_repository(legacy_repo_root)
     records: dict[str, dict[str, Any]] = {}
