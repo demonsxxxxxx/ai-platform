@@ -345,12 +345,13 @@ def _stub_migration(
             raise deploy_error
 
     monkeypatch.setattr(release_authority, "deploy_clean_commit", deploy)
-    def parity(*args, **kwargs):
-        events.append("parity")
+    def target_runtime(*args, **kwargs):
+        events.append("target-runtime")
         if parity_error is not None:
             raise parity_error
+        return COMMIT, target_selection.absolute_paths
 
-    monkeypatch.setattr(transition, "_require_target_parity", parity)
+    monkeypatch.setattr(transition, "_require_target_runtime", target_runtime)
     monkeypatch.setattr(transition, "_rollback", lambda *args, **kwargs: events.append("rollback"))
     return events
 
@@ -380,7 +381,7 @@ def test_migration_prepares_before_downtime_and_rechecks_after_stopping_admissio
         "quiescent-2",
         "down-legacy",
         "deploy-target",
-        "parity",
+        "target-runtime",
     ]
 
 
@@ -445,7 +446,7 @@ def test_migration_rolls_back_when_target_parity_fails(monkeypatch, tmp_path):
             frontend_image="ghcr.io/example/frontend@sha256:" + "2" * 64,
             docker_cmd="docker",
         )
-    assert events[-2:] == ["parity", "rollback"]
+    assert events[-2:] == ["target-runtime", "rollback"]
 
 
 def test_migration_rolls_back_after_partial_legacy_down_failure(monkeypatch, tmp_path):
@@ -483,8 +484,9 @@ def test_finalize_releases_loopback_admission_only_after_acceptance(monkeypatch,
     monkeypatch.setattr(transition, "_require_workspace_root_env", lambda path: None)
 
     def target_runtime(*args, **kwargs):
-        assert transition.os.environ["AI_PLATFORM_FRONTEND_PORT"] == "127.0.0.1:18001"
-        events.append("acceptance-runtime")
+        fenced = transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
+        assert transition.os.environ["SANDBOX_WORKSPACE_ROOT"] == transition.S75_WORKSPACE_ROOT
+        events.append("acceptance-runtime" if fenced else "admitted-runtime")
         return COMMIT, ()
 
     monkeypatch.setattr(transition, "_require_target_runtime", target_runtime)
@@ -496,7 +498,6 @@ def test_finalize_releases_loopback_admission_only_after_acceptance(monkeypatch,
         events.append("deploy-admitted")
 
     monkeypatch.setattr(release_authority, "deploy_clean_commit", deploy)
-    monkeypatch.setattr(transition, "_require_target_parity", lambda *args, **kwargs: events.append("parity"))
 
     result = transition.finalize(
         target_repo_root=tmp_path / "target",
@@ -506,7 +507,7 @@ def test_finalize_releases_loopback_admission_only_after_acceptance(monkeypatch,
     )
 
     assert result["status"] == "admitted"
-    assert events == ["acceptance-runtime", "quiescent", "deploy-admitted", "parity"]
+    assert events == ["acceptance-runtime", "quiescent", "deploy-admitted", "admitted-runtime"]
 
 
 def test_finalize_restores_loopback_fence_when_admitted_parity_fails(monkeypatch, tmp_path):
@@ -521,24 +522,28 @@ def test_finalize_restores_loopback_fence_when_admitted_parity_fails(monkeypatch
     monkeypatch.setattr(transition, "_transition_lock", unlocked)
     monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
     monkeypatch.setattr(transition, "_require_workspace_root_env", lambda path: None)
-    monkeypatch.setattr(transition, "_require_target_runtime", lambda *args, **kwargs: (COMMIT, ()))
+    runtime_calls = 0
+
+    def target_runtime(*args, **kwargs):
+        nonlocal runtime_calls
+        runtime_calls += 1
+        if runtime_calls == 1:
+            return COMMIT, ()
+        fenced = transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
+        assert transition.os.environ["SANDBOX_WORKSPACE_ROOT"] == transition.S75_WORKSPACE_ROOT
+        events.append("target-runtime-fenced" if fenced else "target-runtime-admitted")
+        if runtime_calls == 2:
+            raise transition.TransitionError("admitted target runtime failed")
+        return COMMIT, ()
+
+    monkeypatch.setattr(transition, "_require_target_runtime", target_runtime)
     monkeypatch.setattr(transition, "_require_quiescent", lambda docker: None)
 
     def deploy(*args, **kwargs):
         fenced = transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
         events.append("deploy-fenced" if fenced else "deploy-admitted")
 
-    parity_calls = 0
-
-    def parity(*args, **kwargs):
-        nonlocal parity_calls
-        parity_calls += 1
-        events.append("parity")
-        if parity_calls == 1:
-            raise transition.TransitionError("admitted parity failed")
-
     monkeypatch.setattr(release_authority, "deploy_clean_commit", deploy)
-    monkeypatch.setattr(transition, "_require_target_parity", parity)
 
     with pytest.raises(
         transition.TransitionError,
@@ -551,7 +556,12 @@ def test_finalize_restores_loopback_fence_when_admitted_parity_fails(monkeypatch
             docker_cmd="docker",
         )
 
-    assert events == ["deploy-admitted", "parity", "deploy-fenced", "parity"]
+    assert events == [
+        "deploy-admitted",
+        "target-runtime-admitted",
+        "deploy-fenced",
+        "target-runtime-fenced",
+    ]
 
 
 def test_explicit_rollback_requires_quiescence_and_restores_legacy_selection(monkeypatch, tmp_path):
@@ -606,7 +616,19 @@ def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, 
     monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
     monkeypatch.setattr(transition, "_require_workspace_root_env", lambda path: None)
     monkeypatch.setattr(transition, "_validated_rollback_runtime", lambda *args, **kwargs: runtime)
-    monkeypatch.setattr(transition, "_require_target_runtime", lambda *args, **kwargs: (COMMIT, target_files))
+    target_runtime_calls = 0
+
+    def target_runtime(*args, **kwargs):
+        nonlocal target_runtime_calls
+        target_runtime_calls += 1
+        if target_runtime_calls > 1:
+            assert transition.os.environ.get("AI_PLATFORM_API_PORT") == "127.0.0.1:8020"
+            assert transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
+            assert transition.os.environ["SANDBOX_WORKSPACE_ROOT"] == transition.S75_WORKSPACE_ROOT
+            events.append("target-runtime-fenced")
+        return COMMIT, target_files
+
+    monkeypatch.setattr(transition, "_require_target_runtime", target_runtime)
     monkeypatch.setattr(transition, "_require_schema_compatibility", lambda *args: None)
     monkeypatch.setattr(transition, "_require_quiescent", lambda docker: None)
     monkeypatch.setattr(transition, "_stop_admission", lambda docker: None)
@@ -617,13 +639,7 @@ def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, 
         assert transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
         events.append("restore-target-fenced")
 
-    def target_parity(*args, **kwargs):
-        assert transition.os.environ.get("AI_PLATFORM_API_PORT") == "127.0.0.1:8020"
-        assert transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
-        events.append("target-parity-fenced")
-
     monkeypatch.setattr(release_authority, "deploy_clean_commit", restore_target)
-    monkeypatch.setattr(transition, "_require_target_parity", target_parity)
 
     with pytest.raises(transition.TransitionError, match="target runtime restored"):
         transition.rollback(
@@ -637,7 +653,7 @@ def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, 
             legacy_executor_image=runtime.executor_image,
             docker_cmd="docker",
         )
-    assert events == ["down-partial-legacy", "restore-target-fenced", "target-parity-fenced"]
+    assert events == ["down-partial-legacy", "restore-target-fenced", "target-runtime-fenced"]
 
 
 def test_host_prerequisite_defers_health_to_target_container_parity(monkeypatch):
@@ -774,7 +790,7 @@ def test_managed_environment_file_metadata_fails_closed_without_reading_contents
             transition._require_safe_env_file(invalid)
 
 
-def test_managed_workspace_root_configuration_fails_closed(tmp_path):
+def test_managed_workspace_root_configuration_fails_closed(monkeypatch, tmp_path):
     env_file = tmp_path / "managed.env"
     env_file.write_text(
         f"UNRELATED=private-value\nSANDBOX_WORKSPACE_ROOT={transition.S75_WORKSPACE_ROOT}\n",
@@ -791,6 +807,14 @@ def test_managed_workspace_root_configuration_fails_closed(tmp_path):
         env_file.write_text(contents, encoding="utf-8")
         with pytest.raises(transition.TransitionError, match="workspace root configuration"):
             transition._require_workspace_root_env(env_file)
+
+    env_file.write_text(
+        f"SANDBOX_WORKSPACE_ROOT={transition.S75_WORKSPACE_ROOT}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SANDBOX_WORKSPACE_ROOT", "/process-override")
+    with pytest.raises(transition.TransitionError, match="workspace root configuration"):
+        transition._require_workspace_root_env(env_file)
 
 
 def test_transition_lock_rejects_unsafe_metadata(monkeypatch):

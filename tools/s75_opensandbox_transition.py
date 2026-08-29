@@ -328,6 +328,9 @@ def _require_safe_env_file(path: Path) -> Path:
 
 
 def _require_workspace_root_env(path: Path) -> None:
+    inherited = os.environ.get("SANDBOX_WORKSPACE_ROOT")
+    if inherited is not None and inherited != S75_WORKSPACE_ROOT:
+        raise TransitionError("managed workspace root configuration mismatch")
     try:
         if path.stat().st_size > 1024 * 1024:
             raise TransitionError("managed environment file too large")
@@ -410,7 +413,10 @@ def _compose_command(
     compose_files: Sequence[Path],
     environment: Sequence[str] = (),
 ) -> list[str]:
-    docker_with_env = authority._compose_command_with_environment(docker, list(environment))
+    root_key = "SANDBOX_WORKSPACE_ROOT="
+    pinned_environment = [value for value in environment if not value.startswith(root_key)]
+    pinned_environment.append(f"{root_key}{S75_WORKSPACE_ROOT}")
+    docker_with_env = authority._compose_command_with_environment(docker, pinned_environment)
     file_args = [argument for path in compose_files for argument in ("-f", str(path))]
     return [
         *docker_with_env,
@@ -520,6 +526,20 @@ def _require_target_parity(
     _require_target_broker(docker, commit)
     _require_target_executor(docker)
     _require_target_lifecycle_reachable(docker)
+
+
+@contextmanager
+def _workspace_root_environment() -> Iterator[None]:
+    key = "SANDBOX_WORKSPACE_ROOT"
+    previous = os.environ.get(key)
+    os.environ[key] = S75_WORKSPACE_ROOT
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
 
 
 @contextmanager
@@ -666,7 +686,7 @@ def _migrate_locked(
         frontend_image=frontend_image,
         docker_cmd=docker_cmd,
     )
-    with _acceptance_fence():
+    with _acceptance_fence(), _workspace_root_environment():
         authority._semantic_compose_config_preflight(
             docker,
             target_selection,
@@ -692,7 +712,7 @@ def _migrate_locked(
             compose_files=runtime.compose_files,
             environment=_legacy_release_environment(runtime),
         )
-        with _acceptance_fence():
+        with _acceptance_fence(), _workspace_root_environment():
             authority.deploy_clean_commit(
                 target_repo_root,
                 normalized,
@@ -702,10 +722,10 @@ def _migrate_locked(
                 strategy="canonical",
                 replace_known_manual_frontend=False,
             )
-            _require_target_parity(
+            _require_target_runtime(
                 docker,
-                target_repo_root,
-                normalized,
+                target_repo_root=target_repo_root,
+                target_commit=normalized,
                 docker_cmd=docker_cmd,
             )
     except Exception as exc:
@@ -771,7 +791,7 @@ def finalize(
         docker = _docker_base(docker_cmd)
         safe_env_file = _require_safe_env_file(env_file)
         _require_workspace_root_env(safe_env_file)
-        with _acceptance_fence():
+        with _acceptance_fence(), _workspace_root_environment():
             normalized, _ = _require_target_runtime(
                 docker,
                 target_repo_root=target_repo_root,
@@ -780,19 +800,25 @@ def finalize(
             )
         _require_quiescent(docker)
         try:
-            authority.deploy_clean_commit(
-                target_repo_root,
-                normalized,
-                docker_cmd=docker_cmd,
-                env_file=safe_env_file,
-                compose_files=TARGET_SELECTION,
-                strategy="canonical",
-                replace_known_manual_frontend=False,
-            )
-            _require_target_parity(docker, target_repo_root, normalized, docker_cmd=docker_cmd)
+            with _workspace_root_environment():
+                authority.deploy_clean_commit(
+                    target_repo_root,
+                    normalized,
+                    docker_cmd=docker_cmd,
+                    env_file=safe_env_file,
+                    compose_files=TARGET_SELECTION,
+                    strategy="canonical",
+                    replace_known_manual_frontend=False,
+                )
+                _require_target_runtime(
+                    docker,
+                    target_repo_root=target_repo_root,
+                    target_commit=normalized,
+                    docker_cmd=docker_cmd,
+                )
         except Exception as exc:
             try:
-                with _acceptance_fence():
+                with _acceptance_fence(), _workspace_root_environment():
                     authority.deploy_clean_commit(
                         target_repo_root,
                         normalized,
@@ -802,7 +828,12 @@ def finalize(
                         strategy="canonical",
                         replace_known_manual_frontend=False,
                     )
-                    _require_target_parity(docker, target_repo_root, normalized, docker_cmd=docker_cmd)
+                    _require_target_runtime(
+                        docker,
+                        target_repo_root=target_repo_root,
+                        target_commit=normalized,
+                        docker_cmd=docker_cmd,
+                    )
             except Exception as fence_exc:
                 raise TransitionError("final admission failed and the acceptance fence could not be restored") from fence_exc
             raise TransitionError("final admission failed; target runtime restored behind acceptance fence") from exc
@@ -907,12 +938,13 @@ def rollback(
             frontend_image=legacy_frontend_image,
             executor_image=legacy_executor_image,
         )
-        normalized, target_files = _require_target_runtime(
-            docker,
-            target_repo_root=target_repo_root,
-            target_commit=target_commit,
-            docker_cmd=docker_cmd,
-        )
+        with _workspace_root_environment():
+            normalized, target_files = _require_target_runtime(
+                docker,
+                target_repo_root=target_repo_root,
+                target_commit=target_commit,
+                docker_cmd=docker_cmd,
+            )
         _require_schema_compatibility(target_repo_root, runtime.commit, normalized)
         _require_quiescent(docker)
         _stop_admission(docker)
@@ -937,7 +969,7 @@ def rollback(
                     compose_files=runtime.compose_files,
                     environment=_legacy_release_environment(runtime),
                 )
-                with _acceptance_fence():
+                with _acceptance_fence(), _workspace_root_environment():
                     authority.deploy_clean_commit(
                         target_repo_root,
                         normalized,
@@ -947,10 +979,10 @@ def rollback(
                         strategy="canonical",
                         replace_known_manual_frontend=False,
                     )
-                    _require_target_parity(
+                    _require_target_runtime(
                         docker,
-                        target_repo_root,
-                        normalized,
+                        target_repo_root=target_repo_root,
+                        target_commit=normalized,
                         docker_cmd=docker_cmd,
                     )
             except Exception as target_restore_exc:
