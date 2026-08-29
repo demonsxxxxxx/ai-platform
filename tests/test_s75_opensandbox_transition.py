@@ -164,7 +164,7 @@ def test_legacy_runtime_binds_compose_provenance_and_volume_identity(monkeypatch
     selection = _selection(tmp_path, transition.LEGACY_SELECTION)
     containers = _legacy_containers()
 
-    monkeypatch.setattr(release_authority, "assert_managed_target_checkout", lambda root, commit, release_root: COMMIT)
+    monkeypatch.setattr(transition, "_assert_root_owned_checkout", lambda root, commit: COMMIT)
     monkeypatch.setattr(release_authority, "resolve_compose_files", lambda root, names: selection)
     monkeypatch.setattr(transition, "_inspect_container", lambda docker, name: containers[next(service for service, expected in transition.CONTAINERS.items() if expected == name)])
 
@@ -789,7 +789,7 @@ def test_rollback_executor_reference_may_alias_verified_backend_image(monkeypatc
     frontend = "registry.example/frontend@sha256:" + "2" * 64
     executor = backend_id
     selection = _selection(tmp_path, transition.LEGACY_SELECTION)
-    monkeypatch.setattr(release_authority, "assert_managed_target_checkout", lambda *args: COMMIT)
+    monkeypatch.setattr(transition, "_assert_root_owned_checkout", lambda *args: COMMIT)
     monkeypatch.setattr(release_authority, "resolve_compose_files", lambda *args: selection)
     monkeypatch.setattr(release_authority, "authoritative_repository", lambda *args: release_authority.AUTHORITATIVE_REPOSITORY)
     records = {
