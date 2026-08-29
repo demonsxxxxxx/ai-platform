@@ -64,19 +64,25 @@ def _legacy_containers(selection, commit=COMMIT):
                     "Destination": "/tmp/ai-platform-sandbox-workspaces",
                 }
             )
-        elif service == "workspace-init":
+        if service in transition.EXPECTED_WORKSPACE_BINDS:
+            destination, source = transition.EXPECTED_WORKSPACE_BINDS[service]
             mounts.append(
                 {
                     "Type": "bind",
-                    "Source": "/data/ai-platform-prod/runtime-workspaces",
-                    "Destination": "/runtime-workspaces",
+                    "Source": source,
+                    "Destination": destination,
                 }
             )
         containers[service] = {
             "Config": {
                 "Labels": labels,
                 "Image": "ai-platform-frontend:old" if service == "frontend" else "ai-platform:old",
-                "Env": ["SANDBOX_EXECUTOR_IMAGE=ai-platform:old"],
+                "Env": ["SANDBOX_EXECUTOR_IMAGE=ai-platform:old"]
+                + (
+                    [f"SANDBOX_WORKSPACE_ROOT={transition.S75_WORKSPACE_ROOT}"]
+                    if service in {"api", "worker"}
+                    else []
+                ),
             },
             "Mounts": mounts,
         }
@@ -171,7 +177,6 @@ def test_legacy_runtime_binds_compose_provenance_and_volume_identity(monkeypatch
         for logical, expected in transition.EXPECTED_VOLUME_CONSUMERS.items()
     }
     workspace_consumers = volume_consumers["ai_platform_sandbox_workspaces"]
-    workspace_consumers.remove(transition.CONTAINERS["workspace-init"])
 
     def run(command, **kwargs):
         if "com.docker.compose.project=" in " ".join(command):
@@ -205,14 +210,29 @@ def test_legacy_runtime_binds_compose_provenance_and_volume_identity(monkeypatch
         transition._legacy_runtime(["docker"], tmp_path, COMMIT)
     workspace_consumers.add(transition.CONTAINERS["worker"])
 
-    workspace_consumers.add(transition.CONTAINERS["workspace-init"])
-    with pytest.raises(transition.TransitionError, match="managed volume mount mismatch"):
-        transition._require_volume_identities(
-            ["docker"],
-            containers,
-            workspace_init_required=True,
-        )
-    workspace_consumers.remove(transition.CONTAINERS["workspace-init"])
+    workspace_init_mounts = containers["workspace-init"]["Mounts"]
+    workspace_init_bind = workspace_init_mounts[0]
+    for field, invalid in (
+        ("Type", "volume"),
+        ("Destination", "/wrong-workspace"),
+        ("Source", "/wrong-workspace"),
+    ):
+        original = workspace_init_bind[field]
+        workspace_init_bind[field] = invalid
+        with pytest.raises(transition.TransitionError, match="managed .*bind.*mismatch"):
+            transition._legacy_runtime(["docker"], tmp_path, COMMIT)
+        workspace_init_bind[field] = original
+    workspace_init_mounts.clear()
+    with pytest.raises(transition.TransitionError, match="managed bind mount mismatch"):
+        transition._legacy_runtime(["docker"], tmp_path, COMMIT)
+    workspace_init_mounts.append(workspace_init_bind)
+
+    containers["api"]["Config"]["Env"][-1] = "SANDBOX_WORKSPACE_ROOT=/wrong-workspace"
+    with pytest.raises(transition.TransitionError, match="managed workspace root mismatch"):
+        transition._legacy_runtime(["docker"], tmp_path, COMMIT)
+    containers["api"]["Config"]["Env"][-1] = (
+        f"SANDBOX_WORKSPACE_ROOT={transition.S75_WORKSPACE_ROOT}"
+    )
 
     containers["postgres"]["Mounts"][0]["Name"] = "wrong-volume"
     with pytest.raises(transition.TransitionError, match="volume identity mismatch"):
@@ -292,6 +312,7 @@ def _stub_migration(
     monkeypatch.setattr(transition.os, "name", "posix")
     monkeypatch.setattr(transition.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
+    monkeypatch.setattr(transition, "_require_workspace_root_env", lambda path: None)
     monkeypatch.setattr(transition, "_legacy_runtime", lambda *args: runtime)
     monkeypatch.setattr(transition, "_require_host_prerequisites", lambda: events.append("host"))
 
@@ -459,6 +480,7 @@ def test_finalize_releases_loopback_admission_only_after_acceptance(monkeypatch,
     monkeypatch.setattr(transition.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(transition, "_transition_lock", unlocked)
     monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
+    monkeypatch.setattr(transition, "_require_workspace_root_env", lambda path: None)
 
     def target_runtime(*args, **kwargs):
         assert transition.os.environ["AI_PLATFORM_FRONTEND_PORT"] == "127.0.0.1:18001"
@@ -498,6 +520,7 @@ def test_finalize_restores_loopback_fence_when_admitted_parity_fails(monkeypatch
     monkeypatch.setattr(transition.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(transition, "_transition_lock", unlocked)
     monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
+    monkeypatch.setattr(transition, "_require_workspace_root_env", lambda path: None)
     monkeypatch.setattr(transition, "_require_target_runtime", lambda *args, **kwargs: (COMMIT, ()))
     monkeypatch.setattr(transition, "_require_quiescent", lambda docker: None)
 
@@ -544,6 +567,7 @@ def test_explicit_rollback_requires_quiescence_and_restores_legacy_selection(mon
     monkeypatch.setattr(transition.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(transition, "_transition_lock", unlocked)
     monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
+    monkeypatch.setattr(transition, "_require_workspace_root_env", lambda path: None)
     monkeypatch.setattr(transition, "_validated_rollback_runtime", lambda *args, **kwargs: runtime)
     monkeypatch.setattr(transition, "_require_target_runtime", lambda *args, **kwargs: (COMMIT, target_files))
     monkeypatch.setattr(transition, "_require_schema_compatibility", lambda *args: events.append("schema-compatible"))
@@ -580,6 +604,7 @@ def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, 
     monkeypatch.setattr(transition.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(transition, "_transition_lock", unlocked)
     monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
+    monkeypatch.setattr(transition, "_require_workspace_root_env", lambda path: None)
     monkeypatch.setattr(transition, "_validated_rollback_runtime", lambda *args, **kwargs: runtime)
     monkeypatch.setattr(transition, "_require_target_runtime", lambda *args, **kwargs: (COMMIT, target_files))
     monkeypatch.setattr(transition, "_require_schema_compatibility", lambda *args: None)
@@ -747,6 +772,25 @@ def test_managed_environment_file_metadata_fails_closed_without_reading_contents
     ):
         with pytest.raises(transition.TransitionError, match="metadata mismatch"):
             transition._require_safe_env_file(invalid)
+
+
+def test_managed_workspace_root_configuration_fails_closed(tmp_path):
+    env_file = tmp_path / "managed.env"
+    env_file.write_text(
+        f"UNRELATED=private-value\nSANDBOX_WORKSPACE_ROOT={transition.S75_WORKSPACE_ROOT}\n",
+        encoding="utf-8",
+    )
+    transition._require_workspace_root_env(env_file)
+
+    for contents in (
+        "UNRELATED=private-value\n",
+        "SANDBOX_WORKSPACE_ROOT=/wrong-workspace\n",
+        f"SANDBOX_WORKSPACE_ROOT={transition.S75_WORKSPACE_ROOT}\n"
+        f"SANDBOX_WORKSPACE_ROOT={transition.S75_WORKSPACE_ROOT}\n",
+    ):
+        env_file.write_text(contents, encoding="utf-8")
+        with pytest.raises(transition.TransitionError, match="workspace root configuration"):
+            transition._require_workspace_root_env(env_file)
 
 
 def test_transition_lock_rejects_unsafe_metadata(monkeypatch):

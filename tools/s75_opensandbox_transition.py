@@ -62,7 +62,13 @@ EXPECTED_VOLUME_CONSUMERS = {
     "ai_platform_postgres": {"ai-platform-postgres"},
     "ai_platform_redis": {"ai-platform-redis"},
     "ai_platform_minio": {"ai-platform-minio"},
-    "ai_platform_sandbox_workspaces": {"ai-platform-workspace-init", "ai-platform-api", "ai-platform-worker"},
+    "ai_platform_sandbox_workspaces": {"ai-platform-api", "ai-platform-worker"},
+}
+S75_WORKSPACE_ROOT = "/data/ai-platform-prod/runtime-workspaces"
+EXPECTED_WORKSPACE_BINDS = {
+    "workspace-init": ("/runtime-workspaces", S75_WORKSPACE_ROOT),
+    "api": (S75_WORKSPACE_ROOT, S75_WORKSPACE_ROOT),
+    "worker": (S75_WORKSPACE_ROOT, S75_WORKSPACE_ROOT),
 }
 TARGET_BROKER_CONTAINER = "ai-platform-opensandbox-egress-proxy"
 SCHEMA_PATHS = ("app/schema.sql", "app/schema_migrations.py")
@@ -186,20 +192,27 @@ def _container_environment(container: dict[str, Any]) -> dict[str, str]:
     return result
 
 
-def _mount_source(container: dict[str, Any], destination: str) -> str:
+def _mount_source(
+    container: dict[str, Any],
+    destination: str,
+    *,
+    mount_type: str = "volume",
+) -> str:
     mounts = container.get("Mounts")
     if not isinstance(mounts, list):
         raise TransitionError("invalid managed container mounts")
     matches = [
         mount
         for mount in mounts
-        if isinstance(mount, dict) and mount.get("Destination") == destination
+        if isinstance(mount, dict)
+        and mount.get("Destination") == destination
+        and mount.get("Type") == mount_type
     ]
-    if len(matches) != 1 or matches[0].get("Type") != "volume":
-        raise TransitionError(f"managed volume mount mismatch: {destination}")
-    source = matches[0].get("Name") or matches[0].get("Source")
+    if len(matches) != 1:
+        raise TransitionError(f"managed {mount_type} mount mismatch: {destination}")
+    source = matches[0].get("Name" if mount_type == "volume" else "Source")
     if not isinstance(source, str) or not source:
-        raise TransitionError(f"managed volume identity missing: {destination}")
+        raise TransitionError(f"managed {mount_type} identity missing: {destination}")
     return source
 
 
@@ -225,8 +238,6 @@ def _require_exact_legacy_inventory(docker: Sequence[str]) -> None:
 def _require_volume_identities(
     docker: Sequence[str],
     containers: dict[str, dict[str, Any]],
-    *,
-    workspace_init_required: bool,
 ) -> None:
     for logical, (service, destination, expected_name) in EXPECTED_VOLUMES.items():
         if _mount_source(containers[service], destination) != expected_name:
@@ -244,18 +255,17 @@ def _require_volume_identities(
             [*docker, "container", "ls", "-a", "--filter", f"volume={expected_name}", "--format", "{{.Names}}"],
             timeout=30,
         )
-        expected_consumers = EXPECTED_VOLUME_CONSUMERS[logical]
-        if logical == "ai_platform_sandbox_workspaces" and not workspace_init_required:
-            expected_consumers = expected_consumers - {CONTAINERS["workspace-init"]}
-        if set(consumers.stdout.splitlines()) != expected_consumers:
+        if set(consumers.stdout.splitlines()) != EXPECTED_VOLUME_CONSUMERS[logical]:
             raise TransitionError(f"legacy volume consumer mismatch: {logical}")
     workspace_name = EXPECTED_VOLUMES["ai_platform_sandbox_workspaces"][2]
-    workspace_mounts = [("api", "/tmp/ai-platform-sandbox-workspaces")]
-    if workspace_init_required:
-        workspace_mounts.append(("workspace-init", "/runtime-workspaces"))
-    for service, destination in workspace_mounts:
-        if _mount_source(containers[service], destination) != workspace_name:
-            raise TransitionError(f"legacy workspace volume mismatch: {service}")
+    if _mount_source(containers["api"], "/tmp/ai-platform-sandbox-workspaces") != workspace_name:
+        raise TransitionError("legacy workspace volume mismatch: api")
+    for service, (destination, expected_source) in EXPECTED_WORKSPACE_BINDS.items():
+        if _mount_source(containers[service], destination, mount_type="bind") != expected_source:
+            raise TransitionError(f"managed workspace bind mismatch: {service}")
+    for service in ("api", "worker"):
+        if _container_environment(containers[service]).get("SANDBOX_WORKSPACE_ROOT") != S75_WORKSPACE_ROOT:
+            raise TransitionError(f"managed workspace root mismatch: {service}")
 
 
 def _legacy_runtime(
@@ -288,7 +298,7 @@ def _legacy_runtime(
             raise TransitionError(f"legacy release provenance mismatch: {service}")
     if _container_image(containers["api"]) != _container_image(containers["worker"]):
         raise TransitionError("legacy backend image mismatch")
-    _require_volume_identities(docker, containers, workspace_init_required=False)
+    _require_volume_identities(docker, containers)
     executor_image = _container_environment(containers["api"]).get("SANDBOX_EXECUTOR_IMAGE", "").strip()
     if not executor_image:
         raise TransitionError("legacy executor image missing")
@@ -315,6 +325,24 @@ def _require_safe_env_file(path: Path) -> Path:
     ):
         raise TransitionError("managed environment file metadata mismatch")
     return path.resolve(strict=True)
+
+
+def _require_workspace_root_env(path: Path) -> None:
+    try:
+        if path.stat().st_size > 1024 * 1024:
+            raise TransitionError("managed environment file too large")
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise TransitionError("managed environment file unreadable") from exc
+    values = [
+        value.strip()
+        for line in lines
+        if line.strip() and not line.lstrip().startswith("#")
+        for key, separator, value in (line.partition("="),)
+        if separator and key.strip() == "SANDBOX_WORKSPACE_ROOT"
+    ]
+    if values != [S75_WORKSPACE_ROOT]:
+        raise TransitionError("managed workspace root configuration mismatch")
 
 
 def _require_schema_compatibility(repo_root: Path, legacy_commit: str, target_commit: str) -> None:
@@ -621,6 +649,7 @@ def _migrate_locked(
         raise TransitionError("s75 transition requires root on a POSIX host")
     docker = _docker_base(docker_cmd)
     safe_env_file = _require_safe_env_file(env_file)
+    _require_workspace_root_env(safe_env_file)
     runtime = _legacy_runtime(docker, legacy_repo_root, legacy_commit)
     _require_host_prerequisites()
     _require_quiescent(docker)
@@ -741,6 +770,7 @@ def finalize(
     with _transition_lock():
         docker = _docker_base(docker_cmd)
         safe_env_file = _require_safe_env_file(env_file)
+        _require_workspace_root_env(safe_env_file)
         with _acceptance_fence():
             normalized, _ = _require_target_runtime(
                 docker,
@@ -847,7 +877,7 @@ def _require_target_runtime(
             or labels.get("com.docker.compose.service") != service
         ):
             raise TransitionError(f"target Compose ownership mismatch: {service}")
-    _require_volume_identities(docker, containers, workspace_init_required=True)
+    _require_volume_identities(docker, containers)
     return normalized, selection.absolute_paths
 
 
@@ -868,6 +898,7 @@ def rollback(
     with _transition_lock():
         docker = _docker_base(docker_cmd)
         safe_env_file = _require_safe_env_file(env_file)
+        _require_workspace_root_env(safe_env_file)
         runtime = _validated_rollback_runtime(
             docker,
             legacy_repo_root=legacy_repo_root,
