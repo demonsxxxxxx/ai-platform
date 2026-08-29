@@ -2008,12 +2008,13 @@ def test_live_context_memory_persistence_bridge_is_inactive() -> None:
         assert f"{symbol} = {bridge['module_alias']}.{symbol}" not in source
 
 
-def test_live_memory_redaction_kernel_bridge_is_exact_and_inactive() -> None:
+def test_live_memory_redaction_kernel_bridge_is_exact_and_active() -> None:
     bridge = _migration_bridge(
         source_path="app/memory_redaction.py",
         target_module="app.kernel.memory_redaction",
     )
     source = (REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8")
+    target_path = REPO_ROOT / "app/kernel/memory_redaction.py"
 
     assert bridge == {
         "source_path": "app/memory_redaction.py",
@@ -2042,8 +2043,23 @@ def test_live_memory_redaction_kernel_bridge_is_exact_and_inactive() -> None:
             "this bridge before deleting the legacy facade."
         ),
     }
-    assert not (REPO_ROOT / "app/kernel/memory_redaction.py").exists()
-    assert f"import {bridge['target_module']} as {bridge['module_alias']}" not in source
+    assert target_path.exists()
+    assert source == (
+        f"import {bridge['target_module']} as {bridge['module_alias']}\n\n"
+        + "\n".join(
+            f"{symbol} = {bridge['module_alias']}.{symbol}"
+            for symbol in bridge["symbols"]
+        )
+        + "\n"
+    )
+
+    from app import memory_redaction
+    from app.kernel import memory_redaction as kernel_memory_redaction
+
+    for symbol in bridge["symbols"]:
+        assert getattr(memory_redaction, symbol) is getattr(
+            kernel_memory_redaction, symbol
+        )
 
 
 def test_public_kernel_migration_bridge_requires_kernel_allowlist(
