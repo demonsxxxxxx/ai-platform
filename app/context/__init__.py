@@ -1,12 +1,7 @@
 """Owned context product modules."""
 
-from app.context.retrieval import (
-    ContextRetrieval,
-    ContextRetrievalAuthority,
-    ContextRetrievalDenied,
-    ContextRetrievalIdentity,
-    ContextRetrievalInputError,
-)
+from importlib import import_module
+from typing import Any
 
 __all__ = [
     "ContextRetrieval",
@@ -15,3 +10,16 @@ __all__ = [
     "ContextRetrievalIdentity",
     "ContextRetrievalInputError",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name not in __all__:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    retrieval = import_module("app.context.retrieval")
+    value = getattr(retrieval, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

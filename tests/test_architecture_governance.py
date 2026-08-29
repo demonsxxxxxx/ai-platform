@@ -1991,7 +1991,38 @@ def test_context_memory_persistence_bridge_authority_is_exact() -> None:
     }
 
 
-def test_live_context_memory_persistence_bridge_is_inactive() -> None:
+def test_context_postgres_import_does_not_initialize_legacy_repository_cycle() -> None:
+    program = """
+import sys
+
+import app.context.infrastructure.postgres
+
+assert "app.context.retrieval" not in sys.modules
+assert "app.repositories" not in sys.modules
+
+import app.context as context
+
+try:
+    context.not_a_public_export
+except AttributeError:
+    pass
+else:
+    raise AssertionError("unknown Context exports must fail closed")
+assert "app.context.retrieval" not in sys.modules
+
+from app.context import retrieval
+
+for name in context.__all__:
+    assert getattr(context, name) is getattr(retrieval, name)
+"""
+    subprocess.run(
+        [sys.executable, "-c", program],
+        cwd=REPO_ROOT,
+        check=True,
+    )
+
+
+def test_live_context_memory_persistence_bridge_is_exact_and_active() -> None:
     bridge = _migration_bridge(
         source_path="app/repositories.py",
         target_module="app.context.infrastructure.postgres",
@@ -1999,13 +2030,18 @@ def test_live_context_memory_persistence_bridge_is_inactive() -> None:
     target_path = REPO_ROOT / "app/context/infrastructure/postgres.py"
     source = (REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8")
 
-    assert not target_path.exists()
-    assert (
-        f"import {bridge['target_module']} as {bridge['module_alias']}"
-        not in source
-    )
+    assert target_path.exists()
+    assert f"import {bridge['target_module']} as {bridge['module_alias']}" in source
     for symbol in bridge["symbols"]:
-        assert f"{symbol} = {bridge['module_alias']}.{symbol}" not in source
+        assert f"{symbol} = {bridge['module_alias']}.{symbol}" in source
+
+    from app import repositories
+    from app.context.infrastructure import postgres as context_memory_persistence
+
+    for symbol in bridge["symbols"]:
+        assert getattr(repositories, symbol) is getattr(
+            context_memory_persistence, symbol
+        )
 
 
 def test_live_memory_redaction_kernel_bridge_is_exact_and_active() -> None:
