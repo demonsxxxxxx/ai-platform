@@ -73,6 +73,14 @@ does not represent deployed runtime state.
 The repository-root `../CONTEXT.md` defines the compressed Agent App ubiquitous
 language used by source, product, and acceptance contracts.
 
+## Product Requirements
+
+- `product/README.md` indexes durable user-facing product requirement
+  contracts. It is not a roadmap or implementation-status board.
+- `product/external-knowledge/README.md` indexes the external Knowledge
+  product contract for governed connection to the company's existing RAGFlow
+  datasets, Agent revision binding, retrieval admission, evidence and citations.
+
 ## Operations
 
 `operations/release-operations-runbook.md` is the sole executable release
