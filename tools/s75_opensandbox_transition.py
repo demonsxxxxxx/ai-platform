@@ -225,6 +225,8 @@ def _require_exact_legacy_inventory(docker: Sequence[str]) -> None:
 def _require_volume_identities(
     docker: Sequence[str],
     containers: dict[str, dict[str, Any]],
+    *,
+    workspace_init_required: bool,
 ) -> None:
     for logical, (service, destination, expected_name) in EXPECTED_VOLUMES.items():
         if _mount_source(containers[service], destination) != expected_name:
@@ -242,13 +244,16 @@ def _require_volume_identities(
             [*docker, "container", "ls", "-a", "--filter", f"volume={expected_name}", "--format", "{{.Names}}"],
             timeout=30,
         )
-        if set(consumers.stdout.splitlines()) != EXPECTED_VOLUME_CONSUMERS[logical]:
+        expected_consumers = EXPECTED_VOLUME_CONSUMERS[logical]
+        if logical == "ai_platform_sandbox_workspaces" and not workspace_init_required:
+            expected_consumers = expected_consumers - {CONTAINERS["workspace-init"]}
+        if set(consumers.stdout.splitlines()) != expected_consumers:
             raise TransitionError(f"legacy volume consumer mismatch: {logical}")
     workspace_name = EXPECTED_VOLUMES["ai_platform_sandbox_workspaces"][2]
-    for service, destination in (
-        ("api", "/tmp/ai-platform-sandbox-workspaces"),
-        ("workspace-init", "/runtime-workspaces"),
-    ):
+    workspace_mounts = [("api", "/tmp/ai-platform-sandbox-workspaces")]
+    if workspace_init_required:
+        workspace_mounts.append(("workspace-init", "/runtime-workspaces"))
+    for service, destination in workspace_mounts:
         if _mount_source(containers[service], destination) != workspace_name:
             raise TransitionError(f"legacy workspace volume mismatch: {service}")
 
@@ -283,7 +288,7 @@ def _legacy_runtime(
             raise TransitionError(f"legacy release provenance mismatch: {service}")
     if _container_image(containers["api"]) != _container_image(containers["worker"]):
         raise TransitionError("legacy backend image mismatch")
-    _require_volume_identities(docker, containers)
+    _require_volume_identities(docker, containers, workspace_init_required=False)
     executor_image = _container_environment(containers["api"]).get("SANDBOX_EXECUTOR_IMAGE", "").strip()
     if not executor_image:
         raise TransitionError("legacy executor image missing")
@@ -842,7 +847,7 @@ def _require_target_runtime(
             or labels.get("com.docker.compose.service") != service
         ):
             raise TransitionError(f"target Compose ownership mismatch: {service}")
-    _require_volume_identities(docker, containers)
+    _require_volume_identities(docker, containers, workspace_init_required=True)
     return normalized, selection.absolute_paths
 
 

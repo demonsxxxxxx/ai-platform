@@ -56,16 +56,20 @@ def _legacy_containers(selection, commit=COMMIT):
         for _, (owner, destination, volume) in transition.EXPECTED_VOLUMES.items():
             if owner == service:
                 mounts.append({"Type": "volume", "Name": volume, "Destination": destination})
-        if service in {"api", "workspace-init"}:
+        if service == "api":
             mounts.append(
                 {
                     "Type": "volume",
                     "Name": transition.EXPECTED_VOLUMES["ai_platform_sandbox_workspaces"][2],
-                    "Destination": (
-                        "/runtime-workspaces"
-                        if service == "workspace-init"
-                        else "/tmp/ai-platform-sandbox-workspaces"
-                    ),
+                    "Destination": "/tmp/ai-platform-sandbox-workspaces",
+                }
+            )
+        elif service == "workspace-init":
+            mounts.append(
+                {
+                    "Type": "bind",
+                    "Source": "/data/ai-platform-prod/runtime-workspaces",
+                    "Destination": "/runtime-workspaces",
                 }
             )
         containers[service] = {
@@ -162,6 +166,12 @@ def test_legacy_runtime_binds_compose_provenance_and_volume_identity(monkeypatch
         return [{"Labels": {"com.docker.compose.project": transition.LEGACY_PROJECT, "com.docker.compose.volume": logical}}]
 
     monkeypatch.setattr(transition, "_docker_json", docker_json)
+    volume_consumers = {
+        logical: set(expected)
+        for logical, expected in transition.EXPECTED_VOLUME_CONSUMERS.items()
+    }
+    workspace_consumers = volume_consumers["ai_platform_sandbox_workspaces"]
+    workspace_consumers.remove(transition.CONTAINERS["workspace-init"])
 
     def run(command, **kwargs):
         if "com.docker.compose.project=" in " ".join(command):
@@ -174,7 +184,7 @@ def test_legacy_runtime_binds_compose_provenance_and_volume_identity(monkeypatch
                 logical for logical, (_, _, expected) in transition.EXPECTED_VOLUMES.items()
                 if expected == volume
             )
-            return _completed(command, stdout="\n".join(transition.EXPECTED_VOLUME_CONSUMERS[logical]))
+            return _completed(command, stdout="\n".join(sorted(volume_consumers[logical])))
         raise AssertionError(command)
 
     monkeypatch.setattr(transition, "_run", run)
@@ -184,6 +194,25 @@ def test_legacy_runtime_binds_compose_provenance_and_volume_identity(monkeypatch
     assert runtime.backend_image == "ai-platform:old"
     assert runtime.frontend_image == "ai-platform-frontend:old"
     assert runtime.executor_image == "ai-platform:old"
+
+    workspace_consumers.add(transition.CONTAINERS["workspace-init"])
+    with pytest.raises(transition.TransitionError, match="volume consumer mismatch"):
+        transition._legacy_runtime(["docker"], tmp_path, COMMIT)
+    workspace_consumers.remove(transition.CONTAINERS["workspace-init"])
+
+    workspace_consumers.remove(transition.CONTAINERS["worker"])
+    with pytest.raises(transition.TransitionError, match="volume consumer mismatch"):
+        transition._legacy_runtime(["docker"], tmp_path, COMMIT)
+    workspace_consumers.add(transition.CONTAINERS["worker"])
+
+    workspace_consumers.add(transition.CONTAINERS["workspace-init"])
+    with pytest.raises(transition.TransitionError, match="managed volume mount mismatch"):
+        transition._require_volume_identities(
+            ["docker"],
+            containers,
+            workspace_init_required=True,
+        )
+    workspace_consumers.remove(transition.CONTAINERS["workspace-init"])
 
     containers["postgres"]["Mounts"][0]["Name"] = "wrong-volume"
     with pytest.raises(transition.TransitionError, match="volume identity mismatch"):
