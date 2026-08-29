@@ -1021,7 +1021,7 @@ async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(
         request(
             context_manifest={
                 "schema_version": "ai-platform.context-manifest.v1",
-                "available_retrieval_tools": ["read_context_file"],
+                "available_retrieval_tools": ["stage_context_file_to_workspace"],
             },
             context_retrieval_scope={
                 "tenant_id": "tenant-a",
@@ -1034,7 +1034,10 @@ async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(
         )
     )
 
-    assert sent[0].config["context_manifest"]["available_retrieval_tools"] == ["read_context_file"]
+    assert (
+        sent[0].config["context_manifest"]["available_retrieval_tools"]
+        == ["stage_context_file_to_workspace"]
+    )
     assert sent[0].config["context_retrieval_scope"]["user_id"] == "user-a"
     assert sent[0].callback_url == "http://platform.test/api/ai/runtime/callbacks/executor"
     assert sent[0].callback_token_id == "cbt:run-a:qat_test-runtime-attempt"

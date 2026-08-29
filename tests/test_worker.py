@@ -5239,7 +5239,7 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
                             "storage_key": "tenants/tenant-a/private/source.docx",
                         }
                     ],
-                    "available_retrieval_tools": ["read_context_file"],
+                    "available_retrieval_tools": ["stage_context_file_to_workspace"],
                 },
             },
             "created_at": None,

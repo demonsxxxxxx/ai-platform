@@ -72,20 +72,24 @@ def test_invalid_or_out_of_scope_capabilities_deny_synchronously(overrides, reas
 def test_exact_prefixed_and_adapter_bare_identity_resolve_to_one_declaration():
     prefixed = evaluate_tool_policy(
         tool=policy_tool(
-            requested_identity="mcp__context__read_context_file",
-            declared_identities=["mcp__context__read_context_file"],
+            requested_identity="mcp__context__stage_context_file_to_workspace",
+            declared_identities=["mcp__context__stage_context_file_to_workspace"],
         )
     )
     bare = evaluate_tool_policy(
         tool=policy_tool(
-            requested_identity="mcp__context__read_context_file",
-            declared_identities=["mcp__context__read_context_file"],
-            adapter_original_identity="read_context_file",
+            requested_identity="mcp__context__stage_context_file_to_workspace",
+            declared_identities=["mcp__context__stage_context_file_to_workspace"],
+            adapter_original_identity="stage_context_file_to_workspace",
         )
     )
 
     assert (prefixed.outcome, bare.outcome) == ("allow", "allow")
-    assert prefixed.canonical_identity == bare.canonical_identity == "mcp__context__read_context_file"
+    assert (
+        prefixed.canonical_identity
+        == bare.canonical_identity
+        == "mcp__context__stage_context_file_to_workspace"
+    )
 
 
 def test_mcp_identity_uses_authoritative_registry_id_grammar_without_prefix_authority():
