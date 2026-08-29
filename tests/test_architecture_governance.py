@@ -1945,6 +1945,56 @@ def test_conversation_migration_bridge_authority_is_exact() -> None:
     ]
 
 
+def test_context_source_persistence_bridge_authority_is_exact_and_pending() -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.context.infrastructure.sources_postgres",
+    )
+
+    assert bridge == {
+        "source_path": "app/repositories.py",
+        "target_module": "app.context.infrastructure.sources_postgres",
+        "module_alias": "context_sources_persistence",
+        "symbols": [
+            "count_session_context_messages",
+            "get_scoped_context_artifact",
+            "get_scoped_context_file",
+            "list_authorized_context_file_rows",
+            "list_scoped_context_messages",
+            "list_session_context_artifacts",
+            "list_session_context_files",
+            "list_session_context_messages",
+            "session_has_legacy_run_history",
+        ],
+        "owner": "context",
+        "reason": (
+            "The frozen global repository may expose these existing immutable-"
+            "snapshot and prior-session Context source-read symbols only as exact "
+            "identity aliases while their PostgreSQL implementation moves to the "
+            "Context source adapter."
+        ),
+        "removal_condition": (
+            "After the Context source-read persistence move, migrate supported "
+            "internal callers to the Context API, inventory external imports, and "
+            "remove this bridge in an authority-only change before deleting the "
+            "repositories aliases."
+        ),
+    }
+
+    target_path = REPO_ROOT / "app/context/infrastructure/sources_postgres.py"
+    source = (REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8")
+    source_tree = ast.parse(source)
+    local_async_functions = {
+        node.name for node in source_tree.body if isinstance(node, ast.AsyncFunctionDef)
+    }
+
+    assert not target_path.exists()
+    assert f"import {bridge['target_module']} as {bridge['module_alias']}" not in source
+    assert set(bridge["symbols"]) <= local_async_functions
+    for symbol in bridge["symbols"]:
+        assert f"{symbol} = {bridge['module_alias']}.{symbol}" not in source
+
+
 def test_context_memory_persistence_bridge_authority_is_exact() -> None:
     bridge = _migration_bridge(
         source_path="app/repositories.py",
@@ -2393,6 +2443,7 @@ def test_authority_rejects_reused_bridge_alias_within_one_source(
     assert {bridge["target_module"] for bridge in bridges} == {
         "app.agent_apps.infrastructure.postgres",
         "app.context.infrastructure.postgres",
+        "app.context.infrastructure.sources_postgres",
         "app.conversations.infrastructure.postgres",
         "app.platform.postgres.errors",
         "app.runs.infrastructure.postgres",
@@ -2419,6 +2470,7 @@ def test_authority_rejects_reused_bridge_symbol_within_one_source(
     assert {bridge["target_module"] for bridge in bridges} == {
         "app.agent_apps.infrastructure.postgres",
         "app.context.infrastructure.postgres",
+        "app.context.infrastructure.sources_postgres",
         "app.conversations.infrastructure.postgres",
         "app.platform.postgres.errors",
         "app.runs.infrastructure.postgres",

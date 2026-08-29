@@ -352,6 +352,25 @@
     },
     {
       "source_path": "app/repositories.py",
+      "target_module": "app.context.infrastructure.sources_postgres",
+      "module_alias": "context_sources_persistence",
+      "symbols": [
+        "count_session_context_messages",
+        "get_scoped_context_artifact",
+        "get_scoped_context_file",
+        "list_authorized_context_file_rows",
+        "list_scoped_context_messages",
+        "list_session_context_artifacts",
+        "list_session_context_files",
+        "list_session_context_messages",
+        "session_has_legacy_run_history"
+      ],
+      "owner": "context",
+      "reason": "The frozen global repository may expose these existing immutable-snapshot and prior-session Context source-read symbols only as exact identity aliases while their PostgreSQL implementation moves to the Context source adapter.",
+      "removal_condition": "After the Context source-read persistence move, migrate supported internal callers to the Context API, inventory external imports, and remove this bridge in an authority-only change before deleting the repositories aliases."
+    },
+    {
+      "source_path": "app/repositories.py",
       "target_module": "app.conversations.infrastructure.postgres",
       "module_alias": "conversation_persistence",
       "symbols": [
