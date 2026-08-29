@@ -312,12 +312,16 @@ changes the overlay in place, and revalidates exact volume and bind mount identi
 Rollback uses the same project and volumes, plus the same platform bind, without
 `down -v` or any project namespace migration.
 
-Run the transition only from the exact CI-qualified target checkout. Preserve the
-currently verified Docker release values before cutover; they are rollback
-arguments, not values to rediscover after a failure. The command exits before
-mutation when schema, quiescence, image, project, volume, host, or Compose
-preflight fails. A failure after the old contour stops performs one automatic
-rollback and exits nonzero.
+Run the transition only from the exact CI-qualified target checkout. `LEGACY_REPO_ROOT`
+must likewise be a newly materialized, root-owned exact-commit checkout used only
+as rollback authority; it need not be the old deploy-user checkout recorded in
+the running containers. The transition validates those container labels against
+the fixed historical s75 release root, commit, and Compose relative paths without
+reading or executing that old tree. Preserve the currently verified Docker
+release values before cutover; they are rollback arguments, not values to
+rediscover after a failure. The command exits before mutation when schema,
+quiescence, image, project, volume, host, or Compose preflight fails. A failure
+after the old contour stops performs one automatic rollback and exits nonzero.
 
 ```bash
 cd "$TARGET_REPO_ROOT"
