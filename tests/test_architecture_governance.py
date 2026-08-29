@@ -1945,7 +1945,7 @@ def test_conversation_migration_bridge_authority_is_exact() -> None:
     ]
 
 
-def test_context_source_persistence_bridge_authority_is_exact_and_pending() -> None:
+def test_live_context_source_persistence_bridge_is_exact_and_active() -> None:
     bridge = _migration_bridge(
         source_path="app/repositories.py",
         target_module="app.context.infrastructure.sources_postgres",
@@ -1984,15 +1984,66 @@ def test_context_source_persistence_bridge_authority_is_exact_and_pending() -> N
     target_path = REPO_ROOT / "app/context/infrastructure/sources_postgres.py"
     source = (REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8")
     source_tree = ast.parse(source)
-    local_async_functions = {
+
+    assert target_path.exists()
+    target_tree = ast.parse(target_path.read_text(encoding="utf-8"))
+    source_async_functions = {
         node.name for node in source_tree.body if isinstance(node, ast.AsyncFunctionDef)
     }
+    target_async_functions = [
+        node.name for node in target_tree.body if isinstance(node, ast.AsyncFunctionDef)
+    ]
 
-    assert not target_path.exists()
-    assert f"import {bridge['target_module']} as {bridge['module_alias']}" not in source
-    assert set(bridge["symbols"]) <= local_async_functions
+    assert set(bridge["symbols"]).isdisjoint(source_async_functions)
+    assert sorted(target_async_functions) == bridge["symbols"]
+    target_imports = [
+        (imported.name, imported.asname)
+        for node in source_tree.body
+        if isinstance(node, ast.Import)
+        for imported in node.names
+        if imported.name == bridge["target_module"]
+    ]
+    assert target_imports == [(bridge["target_module"], bridge["module_alias"])]
+
+    source_binding_counts = architecture_governance._top_level_local_binding_counts(source_tree)
+    assert {symbol: source_binding_counts[symbol] for symbol in bridge["symbols"]} == {
+        symbol: 1 for symbol in bridge["symbols"]
+    }
+    source_aliases = [
+        (target.id, node.value.value.id, node.value.attr)
+        for node in source_tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance((target := node.targets[0]), ast.Name)
+        and target.id in bridge["symbols"]
+        and isinstance(node.value, ast.Attribute)
+        and isinstance(node.value.value, ast.Name)
+    ]
+    assert sorted(source_aliases) == [
+        (symbol, bridge["module_alias"], symbol) for symbol in bridge["symbols"]
+    ]
     for symbol in bridge["symbols"]:
-        assert f"{symbol} = {bridge['module_alias']}.{symbol}" not in source
+        assert target_async_functions.count(symbol) == 1
+
+    from app import repositories
+    from app.context.infrastructure import sources_postgres
+
+    for symbol in bridge["symbols"]:
+        assert getattr(repositories, symbol) is getattr(sources_postgres, symbol)
+
+    program = """
+import sys
+
+import app.context.infrastructure.sources_postgres
+
+assert "app.context.retrieval" not in sys.modules
+assert "app.repositories" not in sys.modules
+"""
+    subprocess.run(
+        [sys.executable, "-c", program],
+        cwd=REPO_ROOT,
+        check=True,
+    )
 
 
 def test_context_memory_persistence_bridge_authority_is_exact() -> None:
