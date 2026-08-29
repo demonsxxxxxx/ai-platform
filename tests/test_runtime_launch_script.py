@@ -525,6 +525,8 @@ def test_opensandbox_egress_proxy_preserves_existing_model_and_callback_authorit
     template = OPENSANDBOX_EGRESS_TEMPLATE.read_text(encoding="utf-8")
 
     assert "/api/ai/runtime/callbacks/(executor|context-retrieval|tool-permission)" in template
+    assert 'location ~ "^/openai/(?<openai_run_id>[A-Za-z0-9_-]{1,128})/(?<openai_attempt_id>[A-Za-z0-9_-]{1,128})/(?<openai_model_path>v1/(chat/completions|responses))$" {' in template
+    assert 'location ~ "^/anthropic/(?<anthropic_run_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_attempt_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_model_path>v1/messages(?:/count_tokens)?)$" {' in template
     assert "/api/ai/internal/model-proxy/openai/" in template
     assert "/api/ai/internal/model-proxy/anthropic/" in template
     assert template.count("proxy_set_header Authorization \"\";") == 3
