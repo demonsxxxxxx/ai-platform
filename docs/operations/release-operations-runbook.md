@@ -315,9 +315,12 @@ Rollback uses the same project and volumes, plus the same platform bind, without
 Run the transition only from the exact CI-qualified target checkout. `LEGACY_REPO_ROOT`
 must likewise be a newly materialized, root-owned exact-commit checkout used only
 as rollback authority; it need not be the old deploy-user checkout recorded in
-the running containers. The transition validates those container labels against
-the fixed historical s75 release root, commit, and Compose relative paths without
-reading or executing that old tree. Preserve the currently verified Docker
+the running containers. The transition validates initial container labels
+against the fixed historical s75 release root, commit, and Compose relative
+paths without reading or executing that old tree. After the transition restores
+the project from the authenticated rollback checkout, a retry accepts only a
+consistent label set naming that same trusted Compose selection. Preserve the
+currently verified Docker
 release values before cutover; they are rollback arguments, not values to
 rediscover after a failure. The command exits before mutation when schema,
 quiescence, image, project, volume, host, or Compose preflight fails. A failure

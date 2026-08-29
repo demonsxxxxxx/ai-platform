@@ -293,18 +293,32 @@ def _legacy_runtime(
     selection = authority.resolve_compose_files(legacy_repo_root, LEGACY_SELECTION)
     _require_exact_legacy_inventory(docker)
     containers = {service: _inspect_container(docker, name) for service, name in CONTAINERS.items()}
-    runtime_root = LEGACY_RUNTIME_RELEASE_ROOT / normalized
-    expected_files = ",".join(str(runtime_root / path) for path in LEGACY_SELECTION)
-    expected_working_dir = str((runtime_root / LEGACY_SELECTION[0]).parent)
+    historical_root = LEGACY_RUNTIME_RELEASE_ROOT / normalized
+    accepted_locations = {
+        (
+            ",".join(str(historical_root / path) for path in LEGACY_SELECTION),
+            str((historical_root / LEGACY_SELECTION[0]).parent),
+        ),
+        (
+            ",".join(str(path) for path in selection.absolute_paths),
+            str(selection.working_dir),
+        ),
+    }
+    runtime_location = None
     for service, container in containers.items():
         labels = _labels(container)
+        location = (
+            labels.get("com.docker.compose.project.config_files"),
+            labels.get("com.docker.compose.project.working_dir"),
+        )
         if (
             labels.get("com.docker.compose.project") != LEGACY_PROJECT
             or labels.get("com.docker.compose.service") != service
-            or labels.get("com.docker.compose.project.config_files") != expected_files
-            or labels.get("com.docker.compose.project.working_dir") != expected_working_dir
+            or location not in accepted_locations
+            or (runtime_location is not None and location != runtime_location)
         ):
             raise TransitionError(f"legacy Compose ownership mismatch: {service}")
+        runtime_location = location
     for service in ("api", "worker", "frontend"):
         labels = _labels(containers[service])
         if labels.get("ai-platform.source-commit") != normalized or labels.get("ai-platform.source-dirty") != "false":
