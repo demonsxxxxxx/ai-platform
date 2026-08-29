@@ -34,9 +34,12 @@ def _selection(root: Path, names: tuple[str, ...]):
     )
 
 
-def _legacy_containers(selection, commit=COMMIT):
-    config_files = ",".join(str(path) for path in selection.absolute_paths)
-    working_dir = str(selection.absolute_paths[0].parent)
+def _legacy_containers(commit=COMMIT):
+    runtime_root = transition.LEGACY_RUNTIME_RELEASE_ROOT / commit
+    config_files = ",".join(
+        str(runtime_root / path) for path in transition.LEGACY_SELECTION
+    )
+    working_dir = str((runtime_root / transition.LEGACY_SELECTION[0]).parent)
     containers = {}
     for service, name in transition.CONTAINERS.items():
         labels = {
@@ -159,7 +162,7 @@ def test_prepare_packaged_release_images_rejects_mutable_reference(monkeypatch):
 
 def test_legacy_runtime_binds_compose_provenance_and_volume_identity(monkeypatch, tmp_path):
     selection = _selection(tmp_path, transition.LEGACY_SELECTION)
-    containers = _legacy_containers(selection)
+    containers = _legacy_containers()
 
     monkeypatch.setattr(release_authority, "assert_managed_target_checkout", lambda root, commit, release_root: COMMIT)
     monkeypatch.setattr(release_authority, "resolve_compose_files", lambda root, names: selection)
@@ -195,10 +198,39 @@ def test_legacy_runtime_binds_compose_provenance_and_volume_identity(monkeypatch
     monkeypatch.setattr(transition, "_run", run)
 
     runtime = transition._legacy_runtime(["docker"], tmp_path, COMMIT)
+    assert runtime.repo_root == tmp_path.resolve()
+    assert runtime.compose_files == selection.absolute_paths
     assert runtime.commit == COMMIT
     assert runtime.backend_image == "ai-platform:old"
     assert runtime.frontend_image == "ai-platform-frontend:old"
     assert runtime.executor_image == "ai-platform:old"
+
+    api_labels = containers["api"]["Config"]["Labels"]
+    for label, invalid in (
+        (
+            "com.docker.compose.project.config_files",
+            api_labels["com.docker.compose.project.config_files"].replace(
+                str(transition.LEGACY_RUNTIME_RELEASE_ROOT), "/wrong-release-root"
+            ),
+        ),
+        (
+            "com.docker.compose.project.config_files",
+            api_labels["com.docker.compose.project.config_files"].replace(COMMIT, "b" * 40),
+        ),
+        (
+            "com.docker.compose.project.config_files",
+            api_labels["com.docker.compose.project.config_files"] + ",/unexpected.yml",
+        ),
+        (
+            "com.docker.compose.project.working_dir",
+            "/wrong-release-root/deploy/ai-platform",
+        ),
+    ):
+        original = api_labels[label]
+        api_labels[label] = invalid
+        with pytest.raises(transition.TransitionError, match="legacy Compose ownership mismatch"):
+            transition._legacy_runtime(["docker"], tmp_path, COMMIT)
+        api_labels[label] = original
 
     workspace_consumers.add(transition.CONTAINERS["workspace-init"])
     with pytest.raises(transition.TransitionError, match="volume consumer mismatch"):
