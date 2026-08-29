@@ -34,8 +34,8 @@ def _selection(root: Path, names: tuple[str, ...]):
     )
 
 
-def _legacy_containers(commit=COMMIT):
-    runtime_root = transition.LEGACY_RUNTIME_RELEASE_ROOT / commit
+def _legacy_containers(commit=COMMIT, runtime_root: Path | None = None):
+    runtime_root = runtime_root or transition.LEGACY_RUNTIME_RELEASE_ROOT / commit
     config_files = ",".join(
         str(runtime_root / path) for path in transition.LEGACY_SELECTION
     )
@@ -205,6 +205,13 @@ def test_legacy_runtime_binds_compose_provenance_and_volume_identity(monkeypatch
     assert runtime.frontend_image == "ai-platform-frontend:old"
     assert runtime.executor_image == "ai-platform:old"
 
+    containers = _legacy_containers(runtime_root=tmp_path)
+    assert transition._legacy_runtime(["docker"], tmp_path, COMMIT).repo_root == tmp_path.resolve()
+    containers["api"]["Config"]["Labels"] = _legacy_containers()["api"]["Config"]["Labels"]
+    with pytest.raises(transition.TransitionError, match="legacy Compose ownership mismatch"):
+        transition._legacy_runtime(["docker"], tmp_path, COMMIT)
+
+    containers = _legacy_containers()
     api_labels = containers["api"]["Config"]["Labels"]
     for label, invalid in (
         (
