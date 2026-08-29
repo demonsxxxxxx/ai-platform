@@ -35,7 +35,7 @@ server {
     # Model bases include validated run and attempt path segments. Nginx turns
     # those segments into the headers consumed by the existing model control
     # plane and supplies its internal credential server-side.
-    location ~ ^/openai/(?<openai_run_id>[A-Za-z0-9_-]{1,128})/(?<openai_attempt_id>[A-Za-z0-9_-]{1,128})/(?<openai_model_path>v1/(chat/completions|responses))$ {
+    location ~ "^/openai/(?<openai_run_id>[A-Za-z0-9_-]{1,128})/(?<openai_attempt_id>[A-Za-z0-9_-]{1,128})/(?<openai_model_path>v1/(chat/completions|responses))$" {
         if ($request_method != POST) { return 405; }
         if ($query_string != "") { return 400; }
         rewrite ^/openai/[^/]+/[^/]+/(.*)$ /api/ai/internal/model-proxy/openai/$1 break;
@@ -65,7 +65,7 @@ server {
         proxy_send_timeout 3600s;
     }
 
-    location ~ ^/anthropic/(?<anthropic_run_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_attempt_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_model_path>v1/messages(?:/count_tokens)?)$ {
+    location ~ "^/anthropic/(?<anthropic_run_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_attempt_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_model_path>v1/messages(?:/count_tokens)?)$" {
         if ($request_method != POST) { return 405; }
         if ($query_string != "") { return 400; }
         rewrite ^/anthropic/[^/]+/[^/]+/(.*)$ /api/ai/internal/model-proxy/anthropic/$1 break;
