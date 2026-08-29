@@ -212,7 +212,7 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert "--compose-file deploy/ai-platform/docker-compose.sandbox.yml" not in text
     assert "The production release uses the base Compose file plus" in text
     assert "`docker-compose.opensandbox.yml`" in text
-    assert "The s75 deployment keeps Compose project `ai-platform-internal`" in text
+    assert "The production deployment keeps Compose project `ai-platform-internal`" in text
     assert "never invokes a project migration or volume aliases" in contract_text
     assert "same project and volumes" in text
     assert "`/data/ai-platform-prod/runtime-workspaces` platform bind" in text
