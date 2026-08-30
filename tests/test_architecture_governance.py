@@ -2165,6 +2165,52 @@ def test_conversation_migration_bridge_authority_is_exact() -> None:
     ]
 
 
+def test_identity_principal_persistence_bridge_authority_is_exact_and_pending() -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.identity.infrastructure.postgres",
+    )
+
+    assert bridge == {
+        "source_path": "app/repositories.py",
+        "target_module": "app.identity.infrastructure.postgres",
+        "module_alias": "identity_persistence",
+        "symbols": [
+            "ensure_submission_principal",
+            "ensure_user",
+            "get_user",
+            "tenant_exists",
+        ],
+        "owner": "identity",
+        "reason": (
+            "The frozen global repository may expose these existing tenant and "
+            "principal persistence symbols only as exact identity aliases while "
+            "their implementation moves to the Identity PostgreSQL adapter."
+        ),
+        "removal_condition": (
+            "After the Identity principal persistence move, migrate supported "
+            "internal callers to the Identity API, inventory external imports, "
+            "and remove this bridge in an authority-only change before deleting "
+            "the repositories aliases."
+        ),
+    }
+
+    target_path = REPO_ROOT / "app/identity/infrastructure/postgres.py"
+    source_tree = ast.parse((REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8"))
+    source_definitions = [
+        node.name
+        for node in source_tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name in bridge["symbols"]
+    ]
+    source_binding_counts = architecture_governance._top_level_local_binding_counts(source_tree)
+
+    assert not target_path.exists()
+    assert sorted(source_definitions) == bridge["symbols"]
+    assert {symbol: source_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]} == {
+        symbol: 1 for symbol in bridge["symbols"]
+    }
+
+
 def test_live_context_snapshot_persistence_bridge_is_exact_and_active() -> None:
     bridge = _migration_bridge(
         source_path="app/repositories.py",
@@ -2833,6 +2879,7 @@ def test_authority_rejects_reused_bridge_alias_within_one_source(
         "app.context.infrastructure.snapshot_postgres",
         "app.context.infrastructure.sources_postgres",
         "app.conversations.infrastructure.postgres",
+        "app.identity.infrastructure.postgres",
         "app.platform.postgres.errors",
         "app.runs.infrastructure.postgres",
         "app.skills.infrastructure.postgres",
@@ -2861,6 +2908,7 @@ def test_authority_rejects_reused_bridge_symbol_within_one_source(
         "app.context.infrastructure.snapshot_postgres",
         "app.context.infrastructure.sources_postgres",
         "app.conversations.infrastructure.postgres",
+        "app.identity.infrastructure.postgres",
         "app.platform.postgres.errors",
         "app.runs.infrastructure.postgres",
         "app.skills.infrastructure.postgres",
