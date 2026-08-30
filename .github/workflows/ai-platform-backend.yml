@@ -67,16 +67,16 @@ jobs:
         run: |
           set -euo pipefail
           if test "$KNOWLEDGE_MANIFEST_BASE_COMMIT" = "0000000000000000000000000000000000000000"; then
-            python tools/validate_external_knowledge_slice_manifest.py
+            uv run --locked --extra test python tools/validate_external_knowledge_slice_manifest.py
             exit 0
           fi
-          python tools/validate_external_knowledge_slice_manifest.py \
+          uv run --locked --extra test python tools/validate_external_knowledge_slice_manifest.py \
             --base-ref "$KNOWLEDGE_MANIFEST_BASE_COMMIT" \
             --head-ref "$BACKEND_PREFLIGHT_SOURCE_COMMIT"
 
       - name: Validate External Knowledge manifest authority
         if: ${{ github.event_name == 'workflow_dispatch' }}
-        run: python tools/validate_external_knowledge_slice_manifest.py
+        run: uv run --locked --extra test python tools/validate_external_knowledge_slice_manifest.py
 
   backend-tests:
     name: backend tests (${{ matrix.shard }})
