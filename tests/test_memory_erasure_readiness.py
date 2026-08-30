@@ -45,6 +45,9 @@ def test_memory_erasure_readiness_records_delete_retention_evidence_without_priv
     assert "sandbox_cached_lease_scope_revalidation_source_tests" in implemented
 
     markers = {item["name"]: item for item in readiness["evidence_markers"]}
+    assert markers["ordinary_user_export_query"]["source"] == (
+        "app/context/infrastructure/postgres.py"
+    )
     assert set(markers) == {
         "ordinary_user_delete_route",
         "admin_delete_route",

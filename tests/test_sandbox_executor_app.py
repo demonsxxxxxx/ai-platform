@@ -2682,7 +2682,7 @@ def test_executor_execute_rehydrates_context_retrieval_for_manifest(tmp_path, mo
     payload["config"]["context_manifest"] = {
         "queue_attempt_id": "qat-attempt-a",
         "schema_version": "ai-platform.context-manifest.v1",
-        "available_retrieval_tools": ["read_context_file"],
+        "available_retrieval_tools": ["stage_context_file_to_workspace"],
     }
     payload["config"]["context_retrieval_scope"] = {
         "tenant_id": "tenant-a",
@@ -2768,7 +2768,7 @@ def test_executor_execute_fails_closed_for_manifest_without_valid_scope(tmp_path
     payload["config"]["context_manifest"] = {
         "queue_attempt_id": "qat-attempt-a",
         "schema_version": "ai-platform.context-manifest.v1",
-        "available_retrieval_tools": ["read_context_file"],
+        "available_retrieval_tools": ["stage_context_file_to_workspace"],
     }
     payload["config"]["context_retrieval_scope"] = {"tenant_id": "tenant-a"}
 
@@ -2792,7 +2792,7 @@ def test_executor_execute_rejects_context_scope_for_different_run(tmp_path, monk
     payload["config"]["context_manifest"] = {
         "queue_attempt_id": "qat-attempt-a",
         "schema_version": "ai-platform.context-manifest.v1",
-        "available_retrieval_tools": ["read_context_file"],
+        "available_retrieval_tools": ["stage_context_file_to_workspace"],
     }
     payload["config"]["context_retrieval_scope"] = {
         "tenant_id": "tenant-a",

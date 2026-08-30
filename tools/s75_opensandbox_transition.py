@@ -7,11 +7,11 @@ import shlex
 import stat
 import subprocess
 import sys
-import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterator, Sequence
+from urllib.parse import urlsplit
 
 import tools.release_authority as authority
 
@@ -20,12 +20,12 @@ try:
 except ImportError:  # pragma: no cover - transition runs only on Linux
     fcntl = None  # type: ignore[assignment]
 
-LEGACY_PROJECT = "ai-platform-internal"
+LEGACY_PROJECT = authority.COMPOSE_PROJECT
 LEGACY_SELECTION = (
     authority.DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(),
     authority.SANDBOX_COMPOSE_RELATIVE_PATH,
 )
-TARGET_SELECTION = authority.S75_MIGRATED_COLOCATION_SELECTION
+TARGET_SELECTION = authority.DIRECT_OPENSANDBOX_SELECTION
 CONTAINERS = {
     "postgres": "ai-platform-postgres",
     "redis": "ai-platform-redis",
@@ -64,7 +64,14 @@ EXPECTED_VOLUME_CONSUMERS = {
     "ai_platform_minio": {"ai-platform-minio"},
     "ai_platform_sandbox_workspaces": {"ai-platform-api", "ai-platform-worker"},
 }
-TARGET_BROKER_CONTAINER = "ai-platform-s72-broker-entry"
+S75_WORKSPACE_ROOT = "/data/ai-platform-prod/runtime-workspaces"
+LEGACY_RUNTIME_RELEASE_ROOT = PurePosixPath("/data/ai-platform-prod/releases")
+EXPECTED_WORKSPACE_BINDS = {
+    "workspace-init": ("/runtime-workspaces", S75_WORKSPACE_ROOT),
+    "api": (S75_WORKSPACE_ROOT, S75_WORKSPACE_ROOT),
+    "worker": (S75_WORKSPACE_ROOT, S75_WORKSPACE_ROOT),
+}
+TARGET_BROKER_CONTAINER = "ai-platform-opensandbox-egress-proxy"
 SCHEMA_PATHS = ("app/schema.sql", "app/schema_migrations.py")
 ADMISSION_CONTAINERS = ("ai-platform-frontend", "ai-platform-api", "ai-platform-worker")
 ACCEPTANCE_PORT_ENVIRONMENT = {
@@ -186,20 +193,27 @@ def _container_environment(container: dict[str, Any]) -> dict[str, str]:
     return result
 
 
-def _mount_source(container: dict[str, Any], destination: str) -> str:
+def _mount_source(
+    container: dict[str, Any],
+    destination: str,
+    *,
+    mount_type: str = "volume",
+) -> str:
     mounts = container.get("Mounts")
     if not isinstance(mounts, list):
         raise TransitionError("invalid managed container mounts")
     matches = [
         mount
         for mount in mounts
-        if isinstance(mount, dict) and mount.get("Destination") == destination
+        if isinstance(mount, dict)
+        and mount.get("Destination") == destination
+        and mount.get("Type") == mount_type
     ]
-    if len(matches) != 1 or matches[0].get("Type") != "volume":
-        raise TransitionError(f"managed volume mount mismatch: {destination}")
-    source = matches[0].get("Name") or matches[0].get("Source")
+    if len(matches) != 1:
+        raise TransitionError(f"managed {mount_type} mount mismatch: {destination}")
+    source = matches[0].get("Name" if mount_type == "volume" else "Source")
     if not isinstance(source, str) or not source:
-        raise TransitionError(f"managed volume identity missing: {destination}")
+        raise TransitionError(f"managed {mount_type} identity missing: {destination}")
     return source
 
 
@@ -245,9 +259,29 @@ def _require_volume_identities(
         if set(consumers.stdout.splitlines()) != EXPECTED_VOLUME_CONSUMERS[logical]:
             raise TransitionError(f"legacy volume consumer mismatch: {logical}")
     workspace_name = EXPECTED_VOLUMES["ai_platform_sandbox_workspaces"][2]
-    for service in ("api", "workspace-init"):
-        if _mount_source(containers[service], "/tmp/ai-platform-sandbox-workspaces") != workspace_name:
-            raise TransitionError(f"legacy workspace volume mismatch: {service}")
+    if _mount_source(containers["api"], "/tmp/ai-platform-sandbox-workspaces") != workspace_name:
+        raise TransitionError("legacy workspace volume mismatch: api")
+    for service, (destination, expected_source) in EXPECTED_WORKSPACE_BINDS.items():
+        if _mount_source(containers[service], destination, mount_type="bind") != expected_source:
+            raise TransitionError(f"managed workspace bind mismatch: {service}")
+    for service in ("api", "worker"):
+        if _container_environment(containers[service]).get("SANDBOX_WORKSPACE_ROOT") != S75_WORKSPACE_ROOT:
+            raise TransitionError(f"managed workspace root mismatch: {service}")
+
+
+def _assert_root_owned_checkout(repo_root: Path, commit: str) -> str:
+    normalized = authority.assert_managed_target_checkout(
+        repo_root,
+        commit,
+        repo_root.parent,
+    )
+    try:
+        owner = repo_root.stat(follow_symlinks=False).st_uid
+    except OSError as exc:
+        raise TransitionError("legacy rollback checkout metadata unavailable") from exc
+    if owner != 0:
+        raise TransitionError("legacy rollback checkout must be root-owned")
+    return normalized
 
 
 def _legacy_runtime(
@@ -255,25 +289,36 @@ def _legacy_runtime(
     legacy_repo_root: Path,
     legacy_commit: str,
 ) -> LegacyRuntime:
-    normalized = authority.assert_managed_target_checkout(
-        legacy_repo_root,
-        legacy_commit,
-        legacy_repo_root.parent,
-    )
+    normalized = _assert_root_owned_checkout(legacy_repo_root, legacy_commit)
     selection = authority.resolve_compose_files(legacy_repo_root, LEGACY_SELECTION)
     _require_exact_legacy_inventory(docker)
     containers = {service: _inspect_container(docker, name) for service, name in CONTAINERS.items()}
-    expected_files = ",".join(str(path) for path in selection.absolute_paths)
-    expected_working_dir = str(selection.absolute_paths[0].parent)
+    historical_root = LEGACY_RUNTIME_RELEASE_ROOT / normalized
+    accepted_locations = {
+        (
+            ",".join(str(historical_root / path) for path in LEGACY_SELECTION),
+            str((historical_root / LEGACY_SELECTION[0]).parent),
+        ),
+        (
+            ",".join(str(path) for path in selection.absolute_paths),
+            str(selection.working_dir),
+        ),
+    }
+    runtime_location = None
     for service, container in containers.items():
         labels = _labels(container)
+        location = (
+            labels.get("com.docker.compose.project.config_files"),
+            labels.get("com.docker.compose.project.working_dir"),
+        )
         if (
             labels.get("com.docker.compose.project") != LEGACY_PROJECT
             or labels.get("com.docker.compose.service") != service
-            or labels.get("com.docker.compose.project.config_files") != expected_files
-            or labels.get("com.docker.compose.project.working_dir") != expected_working_dir
+            or location not in accepted_locations
+            or (runtime_location is not None and location != runtime_location)
         ):
             raise TransitionError(f"legacy Compose ownership mismatch: {service}")
+        runtime_location = location
     for service in ("api", "worker", "frontend"):
         labels = _labels(containers[service])
         if labels.get("ai-platform.source-commit") != normalized or labels.get("ai-platform.source-dirty") != "false":
@@ -309,6 +354,27 @@ def _require_safe_env_file(path: Path) -> Path:
     return path.resolve(strict=True)
 
 
+def _require_workspace_root_env(path: Path) -> None:
+    inherited = os.environ.get("SANDBOX_WORKSPACE_ROOT")
+    if inherited is not None and inherited != S75_WORKSPACE_ROOT:
+        raise TransitionError("managed workspace root configuration mismatch")
+    try:
+        if path.stat().st_size > 1024 * 1024:
+            raise TransitionError("managed environment file too large")
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise TransitionError("managed environment file unreadable") from exc
+    values = [
+        value.strip()
+        for line in lines
+        if line.strip() and not line.lstrip().startswith("#")
+        for key, separator, value in (line.partition("="),)
+        if separator and key.strip() == "SANDBOX_WORKSPACE_ROOT"
+    ]
+    if values != [S75_WORKSPACE_ROOT]:
+        raise TransitionError("managed workspace root configuration mismatch")
+
+
 def _require_schema_compatibility(repo_root: Path, legacy_commit: str, target_commit: str) -> None:
     for path in SCHEMA_PATHS:
         legacy = _run(["git", "-C", str(repo_root), "rev-parse", f"{legacy_commit}:{path}"], timeout=30)
@@ -318,16 +384,9 @@ def _require_schema_compatibility(repo_root: Path, legacy_commit: str, target_co
 
 
 def _require_host_prerequisites() -> None:
-    for service in ("opensandbox.service", "opensandbox-gateway.service"):
+    for service in ("opensandbox.service",):
         if _run(["systemctl", "is-active", "--quiet", service], check=False, timeout=15).returncode != 0:
             raise TransitionError(f"host prerequisite inactive: {service}")
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    try:
-        with opener.open("http://127.0.0.1:8080/health", timeout=5) as response:
-            if response.status != 200:
-                raise TransitionError("OpenSandbox health check failed")
-    except (OSError, ValueError) as exc:
-        raise TransitionError("OpenSandbox health check failed") from exc
 
 
 def _quiescence_counts(docker: Sequence[str]) -> tuple[int, int, int]:
@@ -381,7 +440,10 @@ def _compose_command(
     compose_files: Sequence[Path],
     environment: Sequence[str] = (),
 ) -> list[str]:
-    docker_with_env = authority._compose_command_with_environment(docker, list(environment))
+    root_key = "SANDBOX_WORKSPACE_ROOT="
+    pinned_environment = [value for value in environment if not value.startswith(root_key)]
+    pinned_environment.append(f"{root_key}{S75_WORKSPACE_ROOT}")
+    docker_with_env = authority._compose_command_with_environment(docker, pinned_environment)
     file_args = [argument for path in compose_files for argument in ("-f", str(path))]
     return [
         *docker_with_env,
@@ -411,7 +473,7 @@ def _require_target_broker(docker: Sequence[str], commit: str) -> None:
     state = broker.get("State")
     if (
         labels.get("com.docker.compose.project") != authority.COMPOSE_PROJECT
-        or labels.get("com.docker.compose.service") != "s72-broker-entry"
+        or labels.get("com.docker.compose.service") != "opensandbox-egress-proxy"
         or labels.get("ai-platform.source-commit") != commit
         or not isinstance(state, dict)
         or state.get("Running") is not True
@@ -419,6 +481,58 @@ def _require_target_broker(docker: Sequence[str], commit: str) -> None:
         or state["Health"].get("Status") != "healthy"
     ):
         raise TransitionError("target broker runtime is invalid")
+
+
+def _require_target_executor(docker: Sequence[str]) -> None:
+    for service in ("api", "worker"):
+        environment = _container_environment(_inspect_container(docker, CONTAINERS[service]))
+        executor_image = environment.get("SANDBOX_EXECUTOR_IMAGE", "").strip()
+        if (
+            not executor_image
+            or environment.get("OPENSANDBOX_EXECUTOR_IMAGE", "").strip() != executor_image
+            or environment.get("OPENSANDBOX_EXECUTOR_IMAGE_DIGEST", "").strip() != executor_image
+        ):
+            raise TransitionError("target OpenSandbox executor image mismatch")
+
+
+def _require_target_lifecycle_reachable(docker: Sequence[str]) -> None:
+    endpoints: dict[str, str] = {}
+    for service in ("api", "worker"):
+        environment = _container_environment(_inspect_container(docker, CONTAINERS[service]))
+        base_url = environment.get("OPENSANDBOX_BASE_URL", "").strip()
+        try:
+            parsed = urlsplit(base_url)
+            valid = (
+                parsed.scheme in {"http", "https"}
+                and parsed.hostname is not None
+                and parsed.port is not None
+                and parsed.username is None
+                and parsed.password is None
+                and parsed.path in {"", "/"}
+                and not parsed.query
+                and not parsed.fragment
+            )
+        except ValueError:
+            valid = False
+        if not valid:
+            raise TransitionError("target OpenSandbox lifecycle endpoint is invalid")
+        endpoints[service] = f"{base_url.rstrip('/')}/health"
+    if len(set(endpoints.values())) != 1:
+        raise TransitionError("target OpenSandbox lifecycle endpoint mismatch")
+    probe = (
+        "import sys, urllib.request; "
+        "opener = urllib.request.build_opener(urllib.request.ProxyHandler({})); "
+        "response = opener.open(sys.argv[1], timeout=5); "
+        "raise SystemExit(0 if response.status == 200 else 1)"
+    )
+    for service, health_url in endpoints.items():
+        result = _run(
+            [*docker, "exec", CONTAINERS[service], "python", "-c", probe, health_url],
+            check=False,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            raise TransitionError(f"target OpenSandbox lifecycle unreachable from {service}")
 
 
 def _require_target_parity(
@@ -437,6 +551,22 @@ def _require_target_parity(
     if parity.get("verified") is not True:
         raise TransitionError("target runtime parity is invalid")
     _require_target_broker(docker, commit)
+    _require_target_executor(docker)
+    _require_target_lifecycle_reachable(docker)
+
+
+@contextmanager
+def _workspace_root_environment() -> Iterator[None]:
+    key = "SANDBOX_WORKSPACE_ROOT"
+    previous = os.environ.get(key)
+    os.environ[key] = S75_WORKSPACE_ROOT
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
 
 
 @contextmanager
@@ -566,6 +696,7 @@ def _migrate_locked(
         raise TransitionError("s75 transition requires root on a POSIX host")
     docker = _docker_base(docker_cmd)
     safe_env_file = _require_safe_env_file(env_file)
+    _require_workspace_root_env(safe_env_file)
     runtime = _legacy_runtime(docker, legacy_repo_root, legacy_commit)
     _require_host_prerequisites()
     _require_quiescent(docker)
@@ -582,7 +713,7 @@ def _migrate_locked(
         frontend_image=frontend_image,
         docker_cmd=docker_cmd,
     )
-    with _acceptance_fence():
+    with _acceptance_fence(), _workspace_root_environment():
         authority._semantic_compose_config_preflight(
             docker,
             target_selection,
@@ -608,7 +739,7 @@ def _migrate_locked(
             compose_files=runtime.compose_files,
             environment=_legacy_release_environment(runtime),
         )
-        with _acceptance_fence():
+        with _acceptance_fence(), _workspace_root_environment():
             authority.deploy_clean_commit(
                 target_repo_root,
                 normalized,
@@ -618,10 +749,10 @@ def _migrate_locked(
                 strategy="canonical",
                 replace_known_manual_frontend=False,
             )
-            _require_target_parity(
+            _require_target_runtime(
                 docker,
-                target_repo_root,
-                normalized,
+                target_repo_root=target_repo_root,
+                target_commit=normalized,
                 docker_cmd=docker_cmd,
             )
     except Exception as exc:
@@ -686,7 +817,8 @@ def finalize(
     with _transition_lock():
         docker = _docker_base(docker_cmd)
         safe_env_file = _require_safe_env_file(env_file)
-        with _acceptance_fence():
+        _require_workspace_root_env(safe_env_file)
+        with _acceptance_fence(), _workspace_root_environment():
             normalized, _ = _require_target_runtime(
                 docker,
                 target_repo_root=target_repo_root,
@@ -694,16 +826,44 @@ def finalize(
                 docker_cmd=docker_cmd,
             )
         _require_quiescent(docker)
-        authority.deploy_clean_commit(
-            target_repo_root,
-            normalized,
-            docker_cmd=docker_cmd,
-            env_file=safe_env_file,
-            compose_files=TARGET_SELECTION,
-            strategy="canonical",
-            replace_known_manual_frontend=False,
-        )
-        _require_target_parity(docker, target_repo_root, normalized, docker_cmd=docker_cmd)
+        try:
+            with _workspace_root_environment():
+                authority.deploy_clean_commit(
+                    target_repo_root,
+                    normalized,
+                    docker_cmd=docker_cmd,
+                    env_file=safe_env_file,
+                    compose_files=TARGET_SELECTION,
+                    strategy="canonical",
+                    replace_known_manual_frontend=False,
+                )
+                _require_target_runtime(
+                    docker,
+                    target_repo_root=target_repo_root,
+                    target_commit=normalized,
+                    docker_cmd=docker_cmd,
+                )
+        except Exception as exc:
+            try:
+                with _acceptance_fence(), _workspace_root_environment():
+                    authority.deploy_clean_commit(
+                        target_repo_root,
+                        normalized,
+                        docker_cmd=docker_cmd,
+                        env_file=safe_env_file,
+                        compose_files=TARGET_SELECTION,
+                        strategy="canonical",
+                        replace_known_manual_frontend=False,
+                    )
+                    _require_target_runtime(
+                        docker,
+                        target_repo_root=target_repo_root,
+                        target_commit=normalized,
+                        docker_cmd=docker_cmd,
+                    )
+            except Exception as fence_exc:
+                raise TransitionError("final admission failed and the acceptance fence could not be restored") from fence_exc
+            raise TransitionError("final admission failed; target runtime restored behind acceptance fence") from exc
         return {
             "status": "admitted",
             "commit": normalized,
@@ -720,15 +880,10 @@ def _validated_rollback_runtime(
     frontend_image: str,
     executor_image: str,
 ) -> LegacyRuntime:
-    normalized = authority.assert_managed_target_checkout(
-        legacy_repo_root,
-        legacy_commit,
-        legacy_repo_root.parent,
-    )
+    normalized = _assert_root_owned_checkout(legacy_repo_root, legacy_commit)
     selection = authority.resolve_compose_files(legacy_repo_root, LEGACY_SELECTION)
-    if executor_image != backend_image:
-        raise TransitionError("legacy executor image must equal the verified backend image")
     repository = authority.authoritative_repository(legacy_repo_root)
+    records: dict[str, dict[str, Any]] = {}
     for role, reference in (("backend", backend_image), ("frontend", frontend_image)):
         record = authority._image_record(list(docker), reference)
         authority._validate_release_image(
@@ -737,6 +892,10 @@ def _validated_rollback_runtime(
             repository=repository,
             role=role,
         )
+        records[role] = record
+    executor_record = authority._image_record(list(docker), executor_image)
+    if executor_record.get("id") != records["backend"].get("id"):
+        raise TransitionError("legacy executor image must resolve to the verified backend image")
     return LegacyRuntime(
         repo_root=legacy_repo_root.resolve(),
         compose_files=selection.absolute_paths,
@@ -793,6 +952,7 @@ def rollback(
     with _transition_lock():
         docker = _docker_base(docker_cmd)
         safe_env_file = _require_safe_env_file(env_file)
+        _require_workspace_root_env(safe_env_file)
         runtime = _validated_rollback_runtime(
             docker,
             legacy_repo_root=legacy_repo_root,
@@ -801,12 +961,14 @@ def rollback(
             frontend_image=legacy_frontend_image,
             executor_image=legacy_executor_image,
         )
-        normalized, target_files = _require_target_runtime(
-            docker,
-            target_repo_root=target_repo_root,
-            target_commit=target_commit,
-            docker_cmd=docker_cmd,
-        )
+        with _workspace_root_environment():
+            normalized, target_files = _require_target_runtime(
+                docker,
+                target_repo_root=target_repo_root,
+                target_commit=target_commit,
+                docker_cmd=docker_cmd,
+            )
+        _require_schema_compatibility(target_repo_root, runtime.commit, normalized)
         _require_quiescent(docker)
         _stop_admission(docker)
         try:
@@ -830,21 +992,22 @@ def rollback(
                     compose_files=runtime.compose_files,
                     environment=_legacy_release_environment(runtime),
                 )
-                authority.deploy_clean_commit(
-                    target_repo_root,
-                    normalized,
-                    docker_cmd=docker_cmd,
-                    env_file=safe_env_file,
-                    compose_files=TARGET_SELECTION,
-                    strategy="canonical",
-                    replace_known_manual_frontend=False,
-                )
-                _require_target_parity(
-                    docker,
-                    target_repo_root,
-                    normalized,
-                    docker_cmd=docker_cmd,
-                )
+                with _acceptance_fence(), _workspace_root_environment():
+                    authority.deploy_clean_commit(
+                        target_repo_root,
+                        normalized,
+                        docker_cmd=docker_cmd,
+                        env_file=safe_env_file,
+                        compose_files=TARGET_SELECTION,
+                        strategy="canonical",
+                        replace_known_manual_frontend=False,
+                    )
+                    _require_target_runtime(
+                        docker,
+                        target_repo_root=target_repo_root,
+                        target_commit=normalized,
+                        docker_cmd=docker_cmd,
+                    )
             except Exception as target_restore_exc:
                 raise TransitionError("legacy rollback and target restoration both failed") from target_restore_exc
             raise TransitionError("legacy rollback failed; target runtime restored") from rollback_exc

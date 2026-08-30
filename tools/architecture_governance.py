@@ -1133,6 +1133,7 @@ def _validate_policy(policy: dict[str, Any], git: _GitObjects, authority: str) -
     _validate_migration_bridges(
         policy["migration_bridges"],
         bounded_contexts=set(bounded_contexts),
+        public_kernel_modules=set(kernel_modules),
         git=git,
         authority=authority,
     )
@@ -1229,6 +1230,7 @@ def _validate_migration_bridges(
     value: Any,
     *,
     bounded_contexts: set[str],
+    public_kernel_modules: set[str],
     git: _GitObjects,
     authority: str,
 ) -> None:
@@ -1284,10 +1286,19 @@ def _validate_migration_bridges(
             and target_parts[2] == "infrastructure"
         )
         platform_technical_module = target_module in ALLOWED_PLATFORM_MIGRATION_TARGETS
-        if not (bounded_context_infrastructure or platform_technical_module):
+        public_kernel_module = (
+            len(target_parts) == 3
+            and target_parts[:2] == ["app", "kernel"]
+            and target_parts[2] in public_kernel_modules
+        )
+        if not (
+            bounded_context_infrastructure
+            or platform_technical_module
+            or public_kernel_module
+        ):
             raise ArchitectureError(
                 "invalid_policy",
-                f"{label}.target_module must name bounded-context infrastructure or a platform technical module",
+                f"{label}.target_module must name bounded-context infrastructure, a platform technical module, or a declared public Kernel module",
             )
         module_alias = entry["module_alias"]
         if not isinstance(module_alias, str) or re.fullmatch(
@@ -1756,7 +1767,7 @@ def _top_level_local_binding_counts(tree: ast.Module) -> Counter[str]:
         elif isinstance(node, ast.Assign):
             for target in node.targets:
                 counts.update(_assignment_target_names(target))
-        elif isinstance(node, ast.AnnAssign):
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
             counts.update(_assignment_target_names(node.target))
     return counts
 
@@ -1769,6 +1780,73 @@ def _top_level_import_bound_names(tree: ast.Module) -> set[str]:
         elif isinstance(node, ast.ImportFrom):
             names.update(alias.asname or alias.name for alias in node.names if alias.name != "*")
     return names
+
+
+def _migration_bridge_target_binding_contract(
+    tree: ast.Module,
+) -> tuple[Counter[str], set[str]]:
+    nodes = tuple(ast.walk(tree))
+    parents = {
+        child: node
+        for node in nodes
+        for child in ast.iter_child_nodes(node)
+    }
+    counts: Counter[str] = Counter()
+    imported_names: set[str] = set()
+    assignment_values: dict[str, list[ast.expr]] = {}
+    comprehension_scopes = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+    for node in nodes:
+        scope = _enclosing_import_scope(node, parents)
+        if isinstance(node, (ast.Import, ast.ImportFrom)) and scope is tree:
+            imported_names.update(
+                alias.asname or alias.name.split(".", 1)[0]
+                for alias in node.names
+                if alias.name != "*"
+            )
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            parent = parents.get(node)
+            if isinstance(parent, ast.AnnAssign) and parent.value is None:
+                continue
+            binding_scope = scope
+            if isinstance(parent, ast.NamedExpr):
+                binding_scope = _dynamic_import_scope(node, parents)
+                while isinstance(binding_scope, comprehension_scopes):
+                    binding_scope = _dynamic_import_scope(binding_scope, parents)
+            if binding_scope is not tree:
+                continue
+            counts[node.id] += 1
+            assignment: ast.AST | None = parent
+            while isinstance(assignment, (ast.List, ast.Starred, ast.Tuple)):
+                assignment = parents.get(assignment)
+            if isinstance(assignment, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+                value = assignment.value
+                if value is not None:
+                    assignment_values.setdefault(node.id, []).append(value)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if _enclosing_import_scope(node, parents, include_self=False) is tree:
+                counts[node.name] += 1
+        elif isinstance(node, ast.ExceptHandler) and scope is tree and node.name:
+            counts[node.name] += 1
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and scope is tree and node.name:
+            counts[node.name] += 1
+        elif isinstance(node, ast.MatchMapping) and scope is tree and node.rest:
+            counts[node.rest] += 1
+
+    import_backed = set(imported_names)
+    while True:
+        expanded = import_backed | {
+            name
+            for name, values in assignment_values.items()
+            if any(
+                isinstance(value_node, ast.Name) and value_node.id in import_backed
+                for value in values
+                for value_node in ast.walk(value)
+            )
+        }
+        if expanded == import_backed:
+            return counts, import_backed
+        import_backed = expanded
 
 
 def _is_legacy_api_cutover_import(node: ast.stmt, entry: dict[str, Any]) -> bool:
@@ -2997,13 +3075,13 @@ def _bridge_alias_assignment_name(
     node: ast.stmt,
     bridge: dict[str, Any],
 ) -> str | None:
-    if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+    if (
+        not isinstance(node, ast.Assign)
+        or len(node.targets) != 1
+        or not isinstance(node.targets[0], ast.Name)
+    ):
         return None
-    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-    names = set().union(*(_assignment_target_names(target) for target in targets))
-    if len(names) != 1:
-        return None
-    exact_name = next(iter(names))
+    exact_name = node.targets[0].id
     value = node.value
     if (
         exact_name in set(bridge["symbols"])
@@ -3146,26 +3224,33 @@ def _migration_bridge_findings(
             )
         else:
             target_tree = _parse_python(target_source, target_path, candidate=True)
-            defined = {
-                node.name
-                for node in target_tree.body
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            }
-            for node in target_tree.body:
-                if isinstance(node, ast.Assign):
-                    for target in node.targets:
-                        defined.update(_assignment_target_names(target))
-                elif isinstance(node, ast.AnnAssign):
-                    defined.update(_assignment_target_names(node.target))
-            missing = sorted(set(bridge["symbols"]) - defined)
-            if missing:
+            module_counts, import_backed_names = _migration_bridge_target_binding_contract(
+                target_tree
+            )
+            direct_counts = _top_level_local_binding_counts(target_tree)
+            invalid_symbols = sorted(
+                symbol
+                for symbol in bridge["symbols"]
+                if module_counts[symbol] != 1 or direct_counts[symbol] != 1
+            )
+            imported_symbols = sorted(set(bridge["symbols"]) & import_backed_names)
+            dynamic_import = (
+                bridge["target_module"].startswith("app.kernel.")
+                and bool(_dynamic_import_fingerprints(target_tree))
+            )
+            if invalid_symbols or imported_symbols or dynamic_import:
                 findings.append(
                     Finding(
                         "migration_bridge_target_contract",
-                        "migration bridge target must define every declared symbol",
+                        "migration bridge targets must own every declared symbol locally exactly once",
                         target_path,
                         exemptible=False,
-                        details={**details, "missing_symbols": missing},
+                        details={
+                            **details,
+                            "dynamic_import": dynamic_import,
+                            "import_backed_symbols": imported_symbols,
+                            "invalid_symbols": invalid_symbols,
+                        },
                     )
                 )
 
@@ -3321,7 +3406,11 @@ def _dynamic_import_capability_labels_for_node(node: ast.AST) -> set[str]:
             for alias in node.names
             if alias.name in {"__import__", "import_module"}
         )
-    elif isinstance(node, ast.Name) and node.id in {"__import__", "import_module"}:
+    elif isinstance(node, ast.Name) and node.id in {
+        "__builtins__",
+        "__import__",
+        "import_module",
+    }:
         labels.add(node.id)
     elif isinstance(node, ast.Attribute) and node.attr in {"__import__", "import_module"}:
         labels.add(node.attr)

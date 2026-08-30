@@ -37,7 +37,10 @@ def test_skill_prompt_lists_material_retrieval_without_using_message_refs_as_his
                     "history_omitted_count": 0,
                 },
                 "files": [{"file_id": "file-a", "name": "input.docx", "storage_key": "secret"}],
-                "available_retrieval_tools": ["read_session_messages", "read_context_file"],
+                "available_retrieval_tools": [
+                    "read_session_messages",
+                    "stage_context_file_to_workspace",
+                ],
                 "private_payload": {"storage_key": "tenants/private/input.docx"},
             },
         },
@@ -47,6 +50,7 @@ def test_skill_prompt_lists_material_retrieval_without_using_message_refs_as_his
     assert "Recent conversation text is supplied separately by the platform" in prompt
     assert "Authorized message ref IDs" not in prompt
     assert "read_session_messages" in prompt
+    assert "stage_context_file_to_workspace" in prompt
     assert "storage_key" not in prompt
     assert "tenants/private" not in prompt
     assert "private_payload" not in prompt

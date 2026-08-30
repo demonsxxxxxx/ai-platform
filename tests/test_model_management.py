@@ -34,6 +34,12 @@ from app.execution.infrastructure.model_upstream import (
     open_upstream_stream,
     parse_model_ids,
 )
+from app.runtime.sandbox.callback_tokens import (
+    CallbackTokenBinding,
+    callback_token_id_for_binding,
+    callback_token_matches,
+    derive_callback_token,
+)
 from app.execution.transport import model_management as model_routes
 from app.model_catalog import build_model_catalog, resolve_model_selection
 from app.runs.infrastructure.postgres import (
@@ -45,6 +51,19 @@ from app.runs.infrastructure.postgres import (
 
 def _key() -> str:
     return base64.urlsafe_b64encode(b"k" * 32).decode("ascii")
+
+
+def _attempt_capability_verifier(secret: str):
+    def verify(*, run_id: str, attempt_id: str, provided_capability: str) -> bool:
+        return callback_token_matches(
+            secret=secret,
+            token_id=callback_token_id_for_binding(
+                CallbackTokenBinding(run_id=run_id, attempt_id=attempt_id)
+            ),
+            provided_token=provided_capability,
+        )
+
+    return verify
 
 
 def test_model_transport_maps_missing_write_only_key_to_validation_error() -> None:
@@ -1052,10 +1071,16 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
         },
         receive,
     )
+    callback_secret = "model-proxy-callback-secret"
+    callback_token_id = callback_token_id_for_binding(
+        CallbackTokenBinding(run_id="run-123", attempt_id="attempt-123")
+    )
+    model_capability = derive_callback_token(callback_secret, callback_token_id)
     service = ModelControlPlaneService(
         transaction_factory=fake_transaction,
         settings_provider=lambda: SimpleNamespace(
             model_proxy_internal_token="internal-token",
+            sandbox_callback_token=callback_secret,
             model_connection_encryption_key=_key(),
             model_connection_allowed_internal_hosts="",
         ),
@@ -1063,6 +1088,7 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
         legacy_catalog=SimpleNamespace(),
         security=SimpleNamespace(),
         upstream=SimpleNamespace(open_stream=fake_open_stream),
+        attempt_capability_verifier=_attempt_capability_verifier(callback_secret),
     )
     monkeypatch.setattr(model_routes, "configured_model_control_plane", lambda: service)
 
@@ -1073,6 +1099,8 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
         x_ai_platform_run_id="run-123",
         x_ai_platform_attempt_id="attempt-123",
         x_ai_platform_internal_token="internal-token",
+        x_ai_platform_model_authorization=f"Bearer {model_capability}",
+        x_ai_platform_model_api_key="",
     )
     streamed = b"".join([chunk async for chunk in response.body_iterator])
 
@@ -1095,7 +1123,65 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
 
 
 @pytest.mark.asyncio
-async def test_internal_runtime_proxy_rejects_non_ascii_token_before_database(monkeypatch) -> None:
+@pytest.mark.parametrize("invalid_capability", ["another-attempt", "令牌"])
+async def test_internal_runtime_proxy_rejects_invalid_capability_before_database(
+    invalid_capability: str,
+) -> None:
+    @asynccontextmanager
+    async def forbidden_transaction():
+        raise AssertionError("cross-attempt capability reached database")
+        yield
+
+    callback_secret = "model-proxy-callback-secret"
+    if invalid_capability == "another-attempt":
+        invalid_capability = derive_callback_token(
+            callback_secret,
+            callback_token_id_for_binding(
+                CallbackTokenBinding(run_id="run-123", attempt_id="attempt-other")
+            ),
+        )
+    service = ModelControlPlaneService(
+        transaction_factory=forbidden_transaction,
+        settings_provider=lambda: SimpleNamespace(
+            model_proxy_internal_token="internal-token",
+            sandbox_callback_token=callback_secret,
+        ),
+        repository=SimpleNamespace(),
+        legacy_catalog=SimpleNamespace(),
+        security=SimpleNamespace(),
+        upstream=SimpleNamespace(),
+        attempt_capability_verifier=_attempt_capability_verifier(callback_secret),
+    )
+
+    with pytest.raises(PermissionError, match="model_proxy_capability_invalid"):
+        await service.proxy(
+            provider="openai",
+            upstream_path="v1/chat/completions",
+            query_present=False,
+            body=b'{"model":"openai/gpt-5"}',
+            headers={},
+            run_id="run-123",
+            attempt_id="attempt-123",
+            internal_token="internal-token",
+            model_proxy_capability=invalid_capability,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("internal_token", "model_authorization", "model_api_key", "expected_detail"),
+    [
+        ("令牌", "", "", "model_proxy_forbidden"),
+        ("internal-token", "Bearer 令牌", "密钥", "model_proxy_capability_invalid"),
+    ],
+)
+async def test_internal_runtime_proxy_rejects_malformed_tokens_before_database(
+    monkeypatch,
+    internal_token: str,
+    model_authorization: str,
+    model_api_key: str,
+    expected_detail: str,
+) -> None:
     @asynccontextmanager
     async def forbidden_transaction():
         raise AssertionError("invalid token reached database")
@@ -1110,6 +1196,7 @@ async def test_internal_runtime_proxy_rejects_non_ascii_token_before_database(mo
         legacy_catalog=SimpleNamespace(),
         security=SimpleNamespace(),
         upstream=SimpleNamespace(),
+        attempt_capability_verifier=lambda **_kwargs: False,
     )
 
     async def receive():
@@ -1144,11 +1231,13 @@ async def test_internal_runtime_proxy_rejects_non_ascii_token_before_database(mo
             request,
             x_ai_platform_run_id="run-123",
             x_ai_platform_attempt_id="attempt-123",
-            x_ai_platform_internal_token="令牌",
+            x_ai_platform_internal_token=internal_token,
+            x_ai_platform_model_authorization=model_authorization,
+            x_ai_platform_model_api_key=model_api_key,
         )
 
     assert captured.value.status_code == 403
-    assert captured.value.detail == "model_proxy_forbidden"
+    assert captured.value.detail == expected_detail
 
 
 @pytest.mark.asyncio
@@ -1198,6 +1287,8 @@ async def test_internal_runtime_proxy_bounds_streamed_request_before_database(mo
             x_ai_platform_run_id="run-123",
             x_ai_platform_attempt_id="attempt-123",
             x_ai_platform_internal_token="internal-token",
+            x_ai_platform_model_authorization="",
+            x_ai_platform_model_api_key="",
         )
 
     assert raised.value.status_code == 413

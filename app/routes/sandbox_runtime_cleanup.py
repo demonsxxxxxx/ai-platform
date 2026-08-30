@@ -14,9 +14,10 @@ from app.settings import get_settings
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.runtime.sandbox.container_provider import ContainerProvider
 from app.runtime.sandbox.contracts import ContainerLease
-from app.runtime.sandbox.opensandbox_legacy_cleanup import trusted_internal_cleanup_labels_from_persisted_row
 from app.runtime.sandbox.opensandbox_policy import (
+    SANDBOX_SECURITY_PROFILE_GOVERNED,
     SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
+    SANDBOX_SECURITY_PROFILE_LABEL,
     internal_test_orphan_cleanup_expected_labels,
     requested_opensandbox_image,
 )
@@ -107,12 +108,14 @@ def container_lease_from_persisted_row(row: dict[str, Any]) -> ContainerLease | 
         if not isinstance(lease_payload, dict):
             return None
         security_profile = lease_payload.get("security_profile")
-        if security_profile == "trusted_internal":
-            rebuilt_labels = trusted_internal_cleanup_labels_from_persisted_row(row, lease_payload)
-            if rebuilt_labels is None:
-                return None
-            labels.update(rebuilt_labels)
-        elif security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
+        if not isinstance(security_profile, str) or not security_profile:
+            persisted_labels = lease_payload.get("labels")
+            security_profile = (
+                str(persisted_labels.get(SANDBOX_SECURITY_PROFILE_LABEL) or "")
+                if isinstance(persisted_labels, dict)
+                else ""
+            ) or SANDBOX_SECURITY_PROFILE_GOVERNED
+        if security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
             persisted = lease_payload.get("labels")
             settings = get_settings()
             if not (
@@ -151,6 +154,8 @@ def container_lease_from_persisted_row(row: dict[str, Any]) -> ContainerLease | 
             if any(str(persisted.get(key) or "") != value for key, value in expected.items()):
                 return None
             labels.update({str(key): str(value) for key, value in persisted.items()})
+        elif security_profile != SANDBOX_SECURITY_PROFILE_GOVERNED:
+            return None
         else:
             attempt_id = lease_payload.get("attempt_id")
             if not isinstance(attempt_id, str):

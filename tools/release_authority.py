@@ -9,6 +9,7 @@ import ctypes
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
+import ipaddress
 import json
 import os
 import posixpath
@@ -93,17 +94,15 @@ DOCKER_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 DEFAULT_COMPOSE_RELATIVE_PATH = Path("deploy/ai-platform/docker-compose.yml")
 DEFAULT_MANAGED_ENV_RELATIVE_PATH = Path("deploy/ai-platform/.env")
 MANAGED_RELEASE_DIRECTORY_NAME = "releases"
+DIRECT_OPENSANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.opensandbox.yml"
 SANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.sandbox.yml"
-S72_COLOCATION_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.s72-colocation.yml"
-S75_MIGRATION_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.s75-migration.yml"
-S72_COLOCATION_SELECTION = (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), S72_COLOCATION_COMPOSE_RELATIVE_PATH)
-S75_MIGRATED_COLOCATION_SELECTION = (*S72_COLOCATION_SELECTION, S75_MIGRATION_COMPOSE_RELATIVE_PATH)
-HOST_COLOCATION_SELECTIONS = frozenset({S72_COLOCATION_SELECTION, S75_MIGRATED_COLOCATION_SELECTION})
+DIRECT_OPENSANDBOX_SELECTION = (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), DIRECT_OPENSANDBOX_COMPOSE_RELATIVE_PATH)
+DIRECT_OPENSANDBOX_SELECTIONS = frozenset({DIRECT_OPENSANDBOX_SELECTION})
 GOVERNED_COMPOSE_SELECTIONS = frozenset(
     {
         (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(),),
         (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), SANDBOX_COMPOSE_RELATIVE_PATH),
-        *HOST_COLOCATION_SELECTIONS,
+        *DIRECT_OPENSANDBOX_SELECTIONS,
     }
 )
 WORKER_HEARTBEAT_FILENAME = "ai-platform-worker-runtime-heartbeat.json"
@@ -1916,38 +1915,60 @@ def _compose_config_preflight_error(category: str, missing_keys: Sequence[str] =
     return error
 
 
-def _validate_s72_colocation_config(rendered: str | bytes) -> None:
+def _validate_direct_opensandbox_config(rendered: str | bytes) -> None:
     try:
         services = json.loads(rendered)["services"]
-        authorities = tuple(
-            tuple(services[role]["environment"].get(key) for role in ("api", "worker"))
-            for key in ("EXISTING_AUTH_BASE_URL", "EXISTING_USER_INFO_BASE_URL")
-        )
-        invalid_ports = any(services[role].get("ports") not in (None, []) for role in ("postgres", "redis", "minio", "api"))
+        api_environment = services["api"]["environment"]
+        worker_environment = services["worker"]["environment"]
         invalid_sandbox = any(
-            services[role]["environment"].get("SANDBOX_CONTAINER_PROVIDER") != "opensandbox"
-            or services[role]["environment"].get("SANDBOX_SECURITY_PROFILE") != "governed"
-            or services[role]["environment"].get("OPENSANDBOX_USE_SERVER_PROXY") != "true"
-            or services[role]["environment"].get("OPENSANDBOX_EXPECTED_NETWORK_MODE") != "none"
-            for role in ("api", "worker")
+            environment.get("SANDBOX_CONTAINER_PROVIDER") != "opensandbox"
+            or environment.get("SANDBOX_SECURITY_PROFILE") != "governed"
+            or environment.get("SANDBOX_EGRESS_POLICY_ENABLED") != "true"
+            or environment.get("OPENSANDBOX_USE_SERVER_PROXY") != "true"
+            or environment.get("OPENSANDBOX_EXPECTED_NETWORK_MODE") != "bridge"
+            or not str(environment.get("OPENSANDBOX_EGRESS_PROXY_URL") or "").strip()
+            for environment in (api_environment, worker_environment)
         )
-        invalid_authority = any(
-            any(not isinstance(value, str) or not value.strip() for value in values)
-            or values[0] != values[1]
-            or any(
-                (parsed := urlsplit(value)).scheme not in {"http", "https"}
-                or not parsed.hostname
-                or parsed.username is not None
-                or parsed.password is not None
-                or bool(parsed.query or parsed.fragment)
-                for value in values
+        invalid_data_ports = any(services[name].get("ports") for name in ("postgres", "redis", "minio"))
+        proxy = services.get("opensandbox-egress-proxy", {})
+        proxy_ports = proxy.get("ports") or []
+        published = proxy_ports[0] if len(proxy_ports) == 1 else {}
+        published_host = str(published.get("host_ip") or "") if isinstance(published, dict) else ""
+        separated_endpoints = True
+        for environment in (api_environment, worker_environment):
+            lifecycle_host = urlsplit(str(environment.get("OPENSANDBOX_BASE_URL") or "")).hostname
+            proxy_host = urlsplit(str(environment.get("OPENSANDBOX_EGRESS_PROXY_URL") or "")).hostname
+            lifecycle_address = ipaddress.ip_address(lifecycle_host or "")
+            proxy_address = ipaddress.ip_address(proxy_host or "")
+            lifecycle_is_private = (
+                isinstance(lifecycle_address, ipaddress.IPv4Address)
+                and lifecycle_address.is_private
+                and not lifecycle_address.is_loopback
+                and not lifecycle_address.is_link_local
+                and not lifecycle_address.is_multicast
+                and not lifecycle_address.is_reserved
+                and not lifecycle_address.is_unspecified
             )
-            for values in authorities
+            if (
+                not lifecycle_is_private
+                or lifecycle_address == proxy_address
+                or proxy_host != published_host
+            ):
+                separated_endpoints = False
+                break
+        invalid_proxy = (
+            proxy.get("labels", {}).get("ai-platform.release-role") != "opensandbox-egress-proxy"
+            or not isinstance(published, dict)
+            or published.get("target") != 8080
+            or not published_host
+            or published_host in {"0.0.0.0", "::"}
+            or not separated_endpoints
         )
     except (AttributeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
-        raise _compose_config_preflight_error("invalid-colocation-config") from None
-    if invalid_ports or invalid_sandbox or invalid_authority:
-        raise _compose_config_preflight_error("invalid-colocation-config")
+        raise _compose_config_preflight_error("invalid-direct-opensandbox-config") from None
+    if invalid_sandbox or invalid_data_ports or invalid_proxy:
+        raise _compose_config_preflight_error("invalid-direct-opensandbox-config")
+
 
 
 def _semantic_compose_config_preflight(docker: Sequence[str], selection: _ComposeSelection, env_file: Path, *, commit: str) -> None:
@@ -1961,16 +1982,16 @@ def _semantic_compose_config_preflight(docker: Sequence[str], selection: _Compos
     missing_keys: list[str] = []
     release_overrides = [f"AI_PLATFORM_IMAGE={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}/backend", f"AI_PLATFORM_FRONTEND_IMAGE={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}/frontend", f"SANDBOX_EXECUTOR_IMAGE={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}/sandbox-executor", f"AI_PLATFORM_SOURCE_COMMIT={commit}", f"AI_PLATFORM_BUILD_COMMIT={commit}", "AI_PLATFORM_BUILD_DIRTY=false"]
     compose_file_args = [argument for path in selection.absolute_paths for argument in ("-f", str(path))]
-    is_host_colocation = selection.relative_paths in HOST_COLOCATION_SELECTIONS
-    config_args = ["config", "--format", "json"] if is_host_colocation else ["config", "--quiet"]
+    is_direct_opensandbox = selection.relative_paths in DIRECT_OPENSANDBOX_SELECTIONS
+    config_args = ["config", "--format", "json"] if is_direct_opensandbox else ["config", "--quiet"]
     for _ in range(COMPOSE_CONFIG_PREFLIGHT_MAX_REQUIRED_KEYS + 1):
         command = [*_compose_command_with_environment(docker, [*release_overrides, *(f"{key}={COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}" for key in missing_keys)]), "compose", "-p", COMPOSE_PROJECT, "--env-file", str(env_file), *compose_file_args, *config_args]
         result = _run(command, cwd=selection.absolute_paths[0].parent, check=False, timeout=COMPOSE_CONFIG_PREFLIGHT_TIMEOUT_SECONDS)
         if result.returncode == 0:
             if missing_keys:
                 raise _compose_config_preflight_error("missing-required-config", missing_keys)
-            if is_host_colocation:
-                _validate_s72_colocation_config(result.stdout)
+            if is_direct_opensandbox:
+                _validate_direct_opensandbox_config(result.stdout)
             return
         stderr = result.stderr.decode("utf-8", errors="replace") if isinstance(result.stderr, bytes) else result.stderr if isinstance(result.stderr, str) else ""
         if "required" not in stderr.lower() or not any(marker in stderr.lower() for marker in ("missing", "value", "set ")):
@@ -2858,14 +2879,22 @@ def deploy_clean_commit(
                 [*docker, "container", "rm", "-f", ownership.manual_frontend_id]
             ),
         )
+    sandbox_executor_image = _immutable_sandbox_executor_reference(images["backend"])
     compose_environment = [
         f"AI_PLATFORM_IMAGE={refs['backend']}",
         f"AI_PLATFORM_FRONTEND_IMAGE={refs['frontend']}",
-        f"SANDBOX_EXECUTOR_IMAGE={_immutable_sandbox_executor_reference(images['backend'])}",
+        f"SANDBOX_EXECUTOR_IMAGE={sandbox_executor_image}",
         f"AI_PLATFORM_SOURCE_COMMIT={normalized}",
         f"AI_PLATFORM_BUILD_COMMIT={normalized}",
         "AI_PLATFORM_BUILD_DIRTY=false",
     ]
+    if selection.relative_paths in DIRECT_OPENSANDBOX_SELECTIONS:
+        compose_environment.extend(
+            (
+                f"OPENSANDBOX_EXECUTOR_IMAGE={sandbox_executor_image}",
+                f"OPENSANDBOX_EXECUTOR_IMAGE_DIGEST={sandbox_executor_image}",
+            )
+        )
     compose_command = _compose_command_with_environment(docker, compose_environment)
     compose_file_args = [argument for path in selection.absolute_paths for argument in ("-f", str(path))]
     _stage(
@@ -2892,7 +2921,7 @@ def deploy_clean_commit(
     result = {
         "commit": normalized,
         "images": refs,
-        "sandbox_executor_image": _immutable_sandbox_executor_reference(images["backend"]),
+        "sandbox_executor_image": sandbox_executor_image,
         "compose_file": str(selection.absolute_paths[0]),
         "compose_files": [str(path) for path in selection.absolute_paths],
         "strategy": strategy,

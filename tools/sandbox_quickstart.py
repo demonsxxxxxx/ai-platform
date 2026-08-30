@@ -18,7 +18,7 @@ import stat
 import subprocess
 import time
 from typing import Any, Sequence
-from urllib.request import ProxyHandler, build_opener, urlopen
+from urllib.request import urlopen
 
 
 MANAGED_ROOT = Path("/data/ai-platform-internal-test")
@@ -30,7 +30,15 @@ COMPOSE_FILES = (
 BACKEND_REPOSITORY = "ghcr.io/demonsxxxxxx/ai-platform-backend"
 FRONTEND_REPOSITORY = "ghcr.io/demonsxxxxxx/ai-platform-frontend"
 ORIGIN_URL = "https://github.com/demonsxxxxxx/ai-platform.git"
-OPENSANDBOX_HEALTH_URL = "http://172.18.0.1:8080/health"
+OPENSANDBOX_HEALTH_PROBE = (
+    "import os, sys, urllib.request; "
+    "base_url = os.environ.get('OPENSANDBOX_BASE_URL', '').strip() or "
+    "os.environ['OPENSANDBOX_PROTOCOL'] + '://' + os.environ['OPENSANDBOX_DOMAIN']; "
+    "url = base_url.rstrip('/') + '/health'; "
+    "opener = urllib.request.build_opener(urllib.request.ProxyHandler({})); "
+    "response = opener.open(url, timeout=10); "
+    "raise SystemExit(0 if response.status == 200 and len(response.read(65537)) <= 65536 else 1)"
+)
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST_REF = re.compile(r"(?P<repository>[^@]+)@sha256:[0-9a-f]{64}\Z")
 SERVICES = ("api", "worker", "frontend", "postgres", "redis", "minio")
@@ -172,10 +180,6 @@ def _docker_environment() -> dict[str, str]:
         *PROXY_ENVIRONMENT,
     )
     return {key: os.environ[key] for key in allowed if key in os.environ}
-
-
-def _direct_urlopen(url: str, *, timeout: int):
-    return build_opener(ProxyHandler({})).open(url, timeout=timeout)
 
 
 def _interrupt(*_args: object) -> None:
@@ -338,6 +342,21 @@ class Quickstart:
             raise QuickstartError("health response is invalid")
         return value
 
+    def _probe_opensandbox_lifecycle(self) -> None:
+        for service in ("api", "worker"):
+            self.runner.run(
+                [
+                    *self.docker,
+                    "exec",
+                    f"ai-platform-{service}",
+                    "python",
+                    "-c",
+                    OPENSANDBOX_HEALTH_PROBE,
+                ],
+                timeout=15,
+                environment=_docker_environment(),
+            )
+
     def _health(self, subject: Subject) -> None:
         health = self._http_json("/api/ai/health")
         ready = self._http_json("/api/ai/ready")
@@ -355,9 +374,7 @@ class Quickstart:
                 raise QuickstartError("runtime image mismatch")
         if self.runner.run(["systemctl", "is-active", "opensandbox.service"], output=True, timeout=15) != "active":
             raise QuickstartError("OpenSandbox is not active")
-        with _direct_urlopen(OPENSANDBOX_HEALTH_URL, timeout=10) as response:
-            if response.status != 200 or len(response.read(65537)) > 65536:
-                raise QuickstartError("OpenSandbox health failed")
+        self._probe_opensandbox_lifecycle()
 
     def _wait_health(self, subject: Subject) -> None:
         deadline = time.monotonic() + self.health_timeout

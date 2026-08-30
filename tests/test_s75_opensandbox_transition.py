@@ -7,7 +7,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import yaml
 
 import tools.release_authority as release_authority
 import tools.s75_opensandbox_transition as transition
@@ -15,7 +14,6 @@ import tools.s75_opensandbox_transition as transition
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_DIR = ROOT / "deploy" / "ai-platform"
-S75_OVERLAY = COMPOSE_DIR / "docker-compose.s75-migration.yml"
 COMMIT = "a" * 40
 
 
@@ -36,9 +34,12 @@ def _selection(root: Path, names: tuple[str, ...]):
     )
 
 
-def _legacy_containers(selection, commit=COMMIT):
-    config_files = ",".join(str(path) for path in selection.absolute_paths)
-    working_dir = str(selection.absolute_paths[0].parent)
+def _legacy_containers(commit=COMMIT, runtime_root: Path | None = None):
+    runtime_root = runtime_root or transition.LEGACY_RUNTIME_RELEASE_ROOT / commit
+    config_files = ",".join(
+        str(runtime_root / path) for path in transition.LEGACY_SELECTION
+    )
+    working_dir = str((runtime_root / transition.LEGACY_SELECTION[0]).parent)
     containers = {}
     for service, name in transition.CONTAINERS.items():
         labels = {
@@ -58,7 +59,7 @@ def _legacy_containers(selection, commit=COMMIT):
         for _, (owner, destination, volume) in transition.EXPECTED_VOLUMES.items():
             if owner == service:
                 mounts.append({"Type": "volume", "Name": volume, "Destination": destination})
-        if service in {"api", "workspace-init"}:
+        if service == "api":
             mounts.append(
                 {
                     "Type": "volume",
@@ -66,11 +67,25 @@ def _legacy_containers(selection, commit=COMMIT):
                     "Destination": "/tmp/ai-platform-sandbox-workspaces",
                 }
             )
+        if service in transition.EXPECTED_WORKSPACE_BINDS:
+            destination, source = transition.EXPECTED_WORKSPACE_BINDS[service]
+            mounts.append(
+                {
+                    "Type": "bind",
+                    "Source": source,
+                    "Destination": destination,
+                }
+            )
         containers[service] = {
             "Config": {
                 "Labels": labels,
                 "Image": "ai-platform-frontend:old" if service == "frontend" else "ai-platform:old",
-                "Env": ["SANDBOX_EXECUTOR_IMAGE=ai-platform:old"],
+                "Env": ["SANDBOX_EXECUTOR_IMAGE=ai-platform:old"]
+                + (
+                    [f"SANDBOX_WORKSPACE_ROOT={transition.S75_WORKSPACE_ROOT}"]
+                    if service in {"api", "worker"}
+                    else []
+                ),
             },
             "Mounts": mounts,
         }
@@ -89,19 +104,12 @@ def _legacy_runtime(tmp_path: Path):
     )
 
 
-def test_s75_overlay_reuses_only_the_four_legacy_project_volumes():
-    overlay = yaml.safe_load(S75_OVERLAY.read_text(encoding="utf-8"))
-
-    assert overlay["services"] == {}
-    assert overlay["volumes"] == {
-        logical: {"external": True, "name": expected}
-        for logical, (_, _, expected) in transition.EXPECTED_VOLUMES.items()
-    }
-    selection = release_authority.resolve_compose_files(
-        ROOT,
-        release_authority.S75_MIGRATED_COLOCATION_SELECTION,
-    )
-    assert selection.relative_paths == release_authority.S75_MIGRATED_COLOCATION_SELECTION
+def test_s75_target_reuses_the_legacy_compose_project_and_named_volumes():
+    assert transition.LEGACY_PROJECT == release_authority.COMPOSE_PROJECT
+    assert transition.TARGET_SELECTION == release_authority.DIRECT_OPENSANDBOX_SELECTION
+    assert not (COMPOSE_DIR / "docker-compose.s75-migration.yml").exists()
+    selection = release_authority.resolve_compose_files(ROOT, transition.TARGET_SELECTION)
+    assert selection.relative_paths == transition.TARGET_SELECTION
 
 
 def test_prepare_packaged_release_images_pulls_verifies_and_tags(monkeypatch):
@@ -154,9 +162,9 @@ def test_prepare_packaged_release_images_rejects_mutable_reference(monkeypatch):
 
 def test_legacy_runtime_binds_compose_provenance_and_volume_identity(monkeypatch, tmp_path):
     selection = _selection(tmp_path, transition.LEGACY_SELECTION)
-    containers = _legacy_containers(selection)
+    containers = _legacy_containers()
 
-    monkeypatch.setattr(release_authority, "assert_managed_target_checkout", lambda root, commit, release_root: COMMIT)
+    monkeypatch.setattr(transition, "_assert_root_owned_checkout", lambda root, commit: COMMIT)
     monkeypatch.setattr(release_authority, "resolve_compose_files", lambda root, names: selection)
     monkeypatch.setattr(transition, "_inspect_container", lambda docker, name: containers[next(service for service, expected in transition.CONTAINERS.items() if expected == name)])
 
@@ -167,6 +175,11 @@ def test_legacy_runtime_binds_compose_provenance_and_volume_identity(monkeypatch
         return [{"Labels": {"com.docker.compose.project": transition.LEGACY_PROJECT, "com.docker.compose.volume": logical}}]
 
     monkeypatch.setattr(transition, "_docker_json", docker_json)
+    volume_consumers = {
+        logical: set(expected)
+        for logical, expected in transition.EXPECTED_VOLUME_CONSUMERS.items()
+    }
+    workspace_consumers = volume_consumers["ai_platform_sandbox_workspaces"]
 
     def run(command, **kwargs):
         if "com.docker.compose.project=" in " ".join(command):
@@ -179,20 +192,118 @@ def test_legacy_runtime_binds_compose_provenance_and_volume_identity(monkeypatch
                 logical for logical, (_, _, expected) in transition.EXPECTED_VOLUMES.items()
                 if expected == volume
             )
-            return _completed(command, stdout="\n".join(transition.EXPECTED_VOLUME_CONSUMERS[logical]))
+            return _completed(command, stdout="\n".join(sorted(volume_consumers[logical])))
         raise AssertionError(command)
 
     monkeypatch.setattr(transition, "_run", run)
 
     runtime = transition._legacy_runtime(["docker"], tmp_path, COMMIT)
+    assert runtime.repo_root == tmp_path.resolve()
+    assert runtime.compose_files == selection.absolute_paths
     assert runtime.commit == COMMIT
     assert runtime.backend_image == "ai-platform:old"
     assert runtime.frontend_image == "ai-platform-frontend:old"
     assert runtime.executor_image == "ai-platform:old"
 
+    containers = _legacy_containers(runtime_root=tmp_path)
+    assert transition._legacy_runtime(["docker"], tmp_path, COMMIT).repo_root == tmp_path.resolve()
+    containers["api"]["Config"]["Labels"] = _legacy_containers()["api"]["Config"]["Labels"]
+    with pytest.raises(transition.TransitionError, match="legacy Compose ownership mismatch"):
+        transition._legacy_runtime(["docker"], tmp_path, COMMIT)
+
+    containers = _legacy_containers()
+    api_labels = containers["api"]["Config"]["Labels"]
+    for label, invalid in (
+        (
+            "com.docker.compose.project.config_files",
+            api_labels["com.docker.compose.project.config_files"].replace(
+                str(transition.LEGACY_RUNTIME_RELEASE_ROOT), "/wrong-release-root"
+            ),
+        ),
+        (
+            "com.docker.compose.project.config_files",
+            api_labels["com.docker.compose.project.config_files"].replace(COMMIT, "b" * 40),
+        ),
+        (
+            "com.docker.compose.project.config_files",
+            api_labels["com.docker.compose.project.config_files"] + ",/unexpected.yml",
+        ),
+        (
+            "com.docker.compose.project.working_dir",
+            "/wrong-release-root/deploy/ai-platform",
+        ),
+    ):
+        original = api_labels[label]
+        api_labels[label] = invalid
+        with pytest.raises(transition.TransitionError, match="legacy Compose ownership mismatch"):
+            transition._legacy_runtime(["docker"], tmp_path, COMMIT)
+        api_labels[label] = original
+
+    workspace_consumers.add(transition.CONTAINERS["workspace-init"])
+    with pytest.raises(transition.TransitionError, match="volume consumer mismatch"):
+        transition._legacy_runtime(["docker"], tmp_path, COMMIT)
+    workspace_consumers.remove(transition.CONTAINERS["workspace-init"])
+
+    workspace_consumers.remove(transition.CONTAINERS["worker"])
+    with pytest.raises(transition.TransitionError, match="volume consumer mismatch"):
+        transition._legacy_runtime(["docker"], tmp_path, COMMIT)
+    workspace_consumers.add(transition.CONTAINERS["worker"])
+
+    workspace_init_mounts = containers["workspace-init"]["Mounts"]
+    workspace_init_bind = workspace_init_mounts[0]
+    for field, invalid in (
+        ("Type", "volume"),
+        ("Destination", "/wrong-workspace"),
+        ("Source", "/wrong-workspace"),
+    ):
+        original = workspace_init_bind[field]
+        workspace_init_bind[field] = invalid
+        with pytest.raises(transition.TransitionError, match="managed .*bind.*mismatch"):
+            transition._legacy_runtime(["docker"], tmp_path, COMMIT)
+        workspace_init_bind[field] = original
+    workspace_init_mounts.clear()
+    with pytest.raises(transition.TransitionError, match="managed bind mount mismatch"):
+        transition._legacy_runtime(["docker"], tmp_path, COMMIT)
+    workspace_init_mounts.append(workspace_init_bind)
+
+    containers["api"]["Config"]["Env"][-1] = "SANDBOX_WORKSPACE_ROOT=/wrong-workspace"
+    with pytest.raises(transition.TransitionError, match="managed workspace root mismatch"):
+        transition._legacy_runtime(["docker"], tmp_path, COMMIT)
+    containers["api"]["Config"]["Env"][-1] = (
+        f"SANDBOX_WORKSPACE_ROOT={transition.S75_WORKSPACE_ROOT}"
+    )
+
     containers["postgres"]["Mounts"][0]["Name"] = "wrong-volume"
     with pytest.raises(transition.TransitionError, match="volume identity mismatch"):
         transition._legacy_runtime(["docker"], tmp_path, COMMIT)
+
+
+def test_legacy_rollback_authority_requires_root_owner(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        release_authority,
+        "assert_managed_target_checkout",
+        lambda root, commit, release_root: COMMIT,
+    )
+    monkeypatch.setattr(Path, "stat", lambda self, **kwargs: SimpleNamespace(st_uid=1001))
+    monkeypatch.setattr(
+        release_authority,
+        "resolve_compose_files",
+        lambda *args: pytest.fail("non-root checkout must fail before Compose resolution"),
+    )
+
+    for invocation in (
+        lambda: transition._legacy_runtime(["docker"], tmp_path, COMMIT),
+        lambda: transition._validated_rollback_runtime(
+            ["docker"],
+            legacy_repo_root=tmp_path,
+            legacy_commit=COMMIT,
+            backend_image="backend",
+            frontend_image="frontend",
+            executor_image="executor",
+        ),
+    ):
+        with pytest.raises(transition.TransitionError, match="must be root-owned"):
+            invocation()
 
 
 def test_schema_compatibility_requires_identical_authoritative_objects(monkeypatch, tmp_path):
@@ -268,6 +379,7 @@ def _stub_migration(
     monkeypatch.setattr(transition.os, "name", "posix")
     monkeypatch.setattr(transition.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
+    monkeypatch.setattr(transition, "_require_workspace_root_env", lambda path: None)
     monkeypatch.setattr(transition, "_legacy_runtime", lambda *args: runtime)
     monkeypatch.setattr(transition, "_require_host_prerequisites", lambda: events.append("host"))
 
@@ -300,12 +412,13 @@ def _stub_migration(
             raise deploy_error
 
     monkeypatch.setattr(release_authority, "deploy_clean_commit", deploy)
-    def parity(*args, **kwargs):
-        events.append("parity")
+    def target_runtime(*args, **kwargs):
+        events.append("target-runtime")
         if parity_error is not None:
             raise parity_error
+        return COMMIT, target_selection.absolute_paths
 
-    monkeypatch.setattr(transition, "_require_target_parity", parity)
+    monkeypatch.setattr(transition, "_require_target_runtime", target_runtime)
     monkeypatch.setattr(transition, "_rollback", lambda *args, **kwargs: events.append("rollback"))
     return events
 
@@ -335,7 +448,7 @@ def test_migration_prepares_before_downtime_and_rechecks_after_stopping_admissio
         "quiescent-2",
         "down-legacy",
         "deploy-target",
-        "parity",
+        "target-runtime",
     ]
 
 
@@ -400,7 +513,7 @@ def test_migration_rolls_back_when_target_parity_fails(monkeypatch, tmp_path):
             frontend_image="ghcr.io/example/frontend@sha256:" + "2" * 64,
             docker_cmd="docker",
         )
-    assert events[-2:] == ["parity", "rollback"]
+    assert events[-2:] == ["target-runtime", "rollback"]
 
 
 def test_migration_rolls_back_after_partial_legacy_down_failure(monkeypatch, tmp_path):
@@ -435,10 +548,12 @@ def test_finalize_releases_loopback_admission_only_after_acceptance(monkeypatch,
     monkeypatch.setattr(transition.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(transition, "_transition_lock", unlocked)
     monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
+    monkeypatch.setattr(transition, "_require_workspace_root_env", lambda path: None)
 
     def target_runtime(*args, **kwargs):
-        assert transition.os.environ["AI_PLATFORM_FRONTEND_PORT"] == "127.0.0.1:18001"
-        events.append("acceptance-runtime")
+        fenced = transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
+        assert transition.os.environ["SANDBOX_WORKSPACE_ROOT"] == transition.S75_WORKSPACE_ROOT
+        events.append("acceptance-runtime" if fenced else "admitted-runtime")
         return COMMIT, ()
 
     monkeypatch.setattr(transition, "_require_target_runtime", target_runtime)
@@ -450,7 +565,6 @@ def test_finalize_releases_loopback_admission_only_after_acceptance(monkeypatch,
         events.append("deploy-admitted")
 
     monkeypatch.setattr(release_authority, "deploy_clean_commit", deploy)
-    monkeypatch.setattr(transition, "_require_target_parity", lambda *args, **kwargs: events.append("parity"))
 
     result = transition.finalize(
         target_repo_root=tmp_path / "target",
@@ -460,7 +574,61 @@ def test_finalize_releases_loopback_admission_only_after_acceptance(monkeypatch,
     )
 
     assert result["status"] == "admitted"
-    assert events == ["acceptance-runtime", "quiescent", "deploy-admitted", "parity"]
+    assert events == ["acceptance-runtime", "quiescent", "deploy-admitted", "admitted-runtime"]
+
+
+def test_finalize_restores_loopback_fence_when_admitted_parity_fails(monkeypatch, tmp_path):
+    events = []
+
+    @contextmanager
+    def unlocked():
+        yield
+
+    monkeypatch.setattr(transition.os, "name", "posix")
+    monkeypatch.setattr(transition.os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(transition, "_transition_lock", unlocked)
+    monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
+    monkeypatch.setattr(transition, "_require_workspace_root_env", lambda path: None)
+    runtime_calls = 0
+
+    def target_runtime(*args, **kwargs):
+        nonlocal runtime_calls
+        runtime_calls += 1
+        if runtime_calls == 1:
+            return COMMIT, ()
+        fenced = transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
+        assert transition.os.environ["SANDBOX_WORKSPACE_ROOT"] == transition.S75_WORKSPACE_ROOT
+        events.append("target-runtime-fenced" if fenced else "target-runtime-admitted")
+        if runtime_calls == 2:
+            raise transition.TransitionError("admitted target runtime failed")
+        return COMMIT, ()
+
+    monkeypatch.setattr(transition, "_require_target_runtime", target_runtime)
+    monkeypatch.setattr(transition, "_require_quiescent", lambda docker: None)
+
+    def deploy(*args, **kwargs):
+        fenced = transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
+        events.append("deploy-fenced" if fenced else "deploy-admitted")
+
+    monkeypatch.setattr(release_authority, "deploy_clean_commit", deploy)
+
+    with pytest.raises(
+        transition.TransitionError,
+        match="final admission failed; target runtime restored behind acceptance fence",
+    ):
+        transition.finalize(
+            target_repo_root=tmp_path / "target",
+            target_commit=COMMIT,
+            env_file=tmp_path / ".env",
+            docker_cmd="docker",
+        )
+
+    assert events == [
+        "deploy-admitted",
+        "target-runtime-admitted",
+        "deploy-fenced",
+        "target-runtime-fenced",
+    ]
 
 
 def test_explicit_rollback_requires_quiescence_and_restores_legacy_selection(monkeypatch, tmp_path):
@@ -476,8 +644,10 @@ def test_explicit_rollback_requires_quiescence_and_restores_legacy_selection(mon
     monkeypatch.setattr(transition.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(transition, "_transition_lock", unlocked)
     monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
+    monkeypatch.setattr(transition, "_require_workspace_root_env", lambda path: None)
     monkeypatch.setattr(transition, "_validated_rollback_runtime", lambda *args, **kwargs: runtime)
     monkeypatch.setattr(transition, "_require_target_runtime", lambda *args, **kwargs: (COMMIT, target_files))
+    monkeypatch.setattr(transition, "_require_schema_compatibility", lambda *args: events.append("schema-compatible"))
     monkeypatch.setattr(transition, "_require_quiescent", lambda docker: events.append("quiescent"))
     monkeypatch.setattr(transition, "_stop_admission", lambda docker: events.append("stop-admission"))
     monkeypatch.setattr(transition, "_rollback", lambda *args, **kwargs: events.append("rollback"))
@@ -495,7 +665,7 @@ def test_explicit_rollback_requires_quiescence_and_restores_legacy_selection(mon
     )
 
     assert result["status"] == "rolled_back"
-    assert events == ["quiescent", "stop-admission", "quiescent", "rollback"]
+    assert events == ["schema-compatible", "quiescent", "stop-admission", "quiescent", "rollback"]
 
 
 def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, tmp_path):
@@ -511,15 +681,32 @@ def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, 
     monkeypatch.setattr(transition.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(transition, "_transition_lock", unlocked)
     monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
+    monkeypatch.setattr(transition, "_require_workspace_root_env", lambda path: None)
     monkeypatch.setattr(transition, "_validated_rollback_runtime", lambda *args, **kwargs: runtime)
-    monkeypatch.setattr(transition, "_require_target_runtime", lambda *args, **kwargs: (COMMIT, target_files))
+    target_runtime_calls = 0
+
+    def target_runtime(*args, **kwargs):
+        nonlocal target_runtime_calls
+        target_runtime_calls += 1
+        if target_runtime_calls > 1:
+            assert transition.os.environ.get("AI_PLATFORM_API_PORT") == "127.0.0.1:8020"
+            assert transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
+            assert transition.os.environ["SANDBOX_WORKSPACE_ROOT"] == transition.S75_WORKSPACE_ROOT
+            events.append("target-runtime-fenced")
+        return COMMIT, target_files
+
+    monkeypatch.setattr(transition, "_require_target_runtime", target_runtime)
+    monkeypatch.setattr(transition, "_require_schema_compatibility", lambda *args: None)
     monkeypatch.setattr(transition, "_require_quiescent", lambda docker: None)
     monkeypatch.setattr(transition, "_stop_admission", lambda docker: None)
     monkeypatch.setattr(transition, "_rollback", lambda *args, **kwargs: (_ for _ in ()).throw(transition.TransitionError("legacy start failed")))
     monkeypatch.setattr(transition, "_down", lambda *args, **kwargs: events.append("down-partial-legacy"))
-    monkeypatch.setattr(release_authority, "deploy_clean_commit", lambda *args, **kwargs: events.append("restore-target"))
+    def restore_target(*args, **kwargs):
+        assert transition.os.environ.get("AI_PLATFORM_API_PORT") == "127.0.0.1:8020"
+        assert transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
+        events.append("restore-target-fenced")
 
-    monkeypatch.setattr(transition, "_require_target_parity", lambda *args, **kwargs: events.append("target-parity"))
+    monkeypatch.setattr(release_authority, "deploy_clean_commit", restore_target)
 
     with pytest.raises(transition.TransitionError, match="target runtime restored"):
         transition.rollback(
@@ -533,7 +720,113 @@ def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, 
             legacy_executor_image=runtime.executor_image,
             docker_cmd="docker",
         )
-    assert events == ["down-partial-legacy", "restore-target", "target-parity"]
+    assert events == ["down-partial-legacy", "restore-target-fenced", "target-runtime-fenced"]
+
+
+def test_host_prerequisite_defers_health_to_target_container_parity(monkeypatch):
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return _completed(command)
+
+    monkeypatch.setattr(transition, "_run", run)
+
+    transition._require_host_prerequisites()
+
+    assert commands == [["systemctl", "is-active", "--quiet", "opensandbox.service"]]
+
+
+def test_target_lifecycle_is_reachable_from_api_and_worker(monkeypatch):
+    environment = ["OPENSANDBOX_BASE_URL=http://172.19.0.1:8080"]
+    containers = {
+        transition.CONTAINERS[service]: {"Config": {"Env": list(environment)}}
+        for service in ("api", "worker")
+    }
+    monkeypatch.setattr(
+        transition,
+        "_inspect_container",
+        lambda docker, name: containers[name],
+    )
+    calls = []
+    failing_service = {"name": ""}
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(
+            returncode=int(command[2] == failing_service["name"]),
+            stdout="",
+        )
+
+    monkeypatch.setattr(transition, "_run", run)
+
+    transition._require_target_lifecycle_reachable(["docker"])
+    assert [command[2] for command in calls] == [
+        transition.CONTAINERS["api"],
+        transition.CONTAINERS["worker"],
+    ]
+    assert all(command[-1] == "http://172.19.0.1:8080/health" for command in calls)
+
+    failing_service["name"] = transition.CONTAINERS["worker"]
+    with pytest.raises(transition.TransitionError, match="unreachable from worker"):
+        transition._require_target_lifecycle_reachable(["docker"])
+
+
+def test_target_executor_binding_matches_release_authority_image(monkeypatch):
+    environment = [
+        "SANDBOX_EXECUTOR_IMAGE=sha256:" + "a" * 64,
+        "OPENSANDBOX_EXECUTOR_IMAGE=sha256:" + "a" * 64,
+        "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST=sha256:" + "a" * 64,
+    ]
+    containers = {
+        transition.CONTAINERS[service]: {"Config": {"Env": list(environment)}}
+        for service in ("api", "worker")
+    }
+    monkeypatch.setattr(transition, "_inspect_container", lambda docker, name: containers[name])
+
+    transition._require_target_executor(["docker"])
+    containers[transition.CONTAINERS["worker"]]["Config"]["Env"][-1] = "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST=sha256:" + "b" * 64
+    with pytest.raises(transition.TransitionError, match="executor image mismatch"):
+        transition._require_target_executor(["docker"])
+
+
+def test_rollback_executor_reference_may_alias_verified_backend_image(monkeypatch, tmp_path):
+    backend_id = "sha256:" + "a" * 64
+    backend = "registry.example/backend@sha256:" + "1" * 64
+    frontend = "registry.example/frontend@sha256:" + "2" * 64
+    executor = backend_id
+    selection = _selection(tmp_path, transition.LEGACY_SELECTION)
+    monkeypatch.setattr(transition, "_assert_root_owned_checkout", lambda *args: COMMIT)
+    monkeypatch.setattr(release_authority, "resolve_compose_files", lambda *args: selection)
+    monkeypatch.setattr(release_authority, "authoritative_repository", lambda *args: release_authority.AUTHORITATIVE_REPOSITORY)
+    records = {
+        backend: {"id": backend_id},
+        frontend: {"id": "sha256:" + "b" * 64},
+        executor: {"id": backend_id},
+    }
+    monkeypatch.setattr(release_authority, "_image_record", lambda docker, reference: records[reference])
+    monkeypatch.setattr(release_authority, "_validate_release_image", lambda *args, **kwargs: None)
+
+    runtime = transition._validated_rollback_runtime(
+        ["docker"],
+        legacy_repo_root=tmp_path,
+        legacy_commit=COMMIT,
+        backend_image=backend,
+        frontend_image=frontend,
+        executor_image=executor,
+    )
+    assert runtime.executor_image == executor
+
+    records[executor] = {"id": "sha256:" + "c" * 64}
+    with pytest.raises(transition.TransitionError, match="verified backend image"):
+        transition._validated_rollback_runtime(
+            ["docker"],
+            legacy_repo_root=tmp_path,
+            legacy_commit=COMMIT,
+            backend_image=backend,
+            frontend_image=frontend,
+            executor_image=executor,
+        )
 
 
 def test_managed_environment_file_metadata_fails_closed_without_reading_contents():
@@ -562,6 +855,33 @@ def test_managed_environment_file_metadata_fails_closed_without_reading_contents
     ):
         with pytest.raises(transition.TransitionError, match="metadata mismatch"):
             transition._require_safe_env_file(invalid)
+
+
+def test_managed_workspace_root_configuration_fails_closed(monkeypatch, tmp_path):
+    env_file = tmp_path / "managed.env"
+    env_file.write_text(
+        f"UNRELATED=private-value\nSANDBOX_WORKSPACE_ROOT={transition.S75_WORKSPACE_ROOT}\n",
+        encoding="utf-8",
+    )
+    transition._require_workspace_root_env(env_file)
+
+    for contents in (
+        "UNRELATED=private-value\n",
+        "SANDBOX_WORKSPACE_ROOT=/wrong-workspace\n",
+        f"SANDBOX_WORKSPACE_ROOT={transition.S75_WORKSPACE_ROOT}\n"
+        f"SANDBOX_WORKSPACE_ROOT={transition.S75_WORKSPACE_ROOT}\n",
+    ):
+        env_file.write_text(contents, encoding="utf-8")
+        with pytest.raises(transition.TransitionError, match="workspace root configuration"):
+            transition._require_workspace_root_env(env_file)
+
+    env_file.write_text(
+        f"SANDBOX_WORKSPACE_ROOT={transition.S75_WORKSPACE_ROOT}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SANDBOX_WORKSPACE_ROOT", "/process-override")
+    with pytest.raises(transition.TransitionError, match="workspace root configuration"):
+        transition._require_workspace_root_env(env_file)
 
 
 def test_transition_lock_rejects_unsafe_metadata(monkeypatch):
