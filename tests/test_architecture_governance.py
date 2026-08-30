@@ -1493,12 +1493,232 @@ def test_multiple_declared_bridges_do_not_allow_new_source_logic(
     assert finding.exemptible is False
 
 
+def test_bridge_activation_rejects_undeclared_baseline_node_deletion(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _activate_all_migration_bridges(repo)
+    source_path = repo / "app/repositories.py"
+    source = source_path.read_text(encoding="utf-8")
+    unrelated_node = 'DEFAULT_RUN_EXECUTOR_TYPES = {"claude-agent-worker"}\n'
+    assert source.count(unrelated_node) == 1
+    source_path.write_text(source.replace(unrelated_node, ""), encoding="utf-8")
+    head = _commit(repo, "reject undeclared baseline deletion during bridge activation")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    finding = next(
+        item
+        for item in evaluation.findings
+        if item.code == "migration_bridge_source_logic"
+        and item.path == "app/repositories.py"
+    )
+    assert finding.exemptible is False
+    assert finding.details["undeclared_removed_nodes"] == 1
+
+
+@pytest.mark.parametrize("hidden_binding", ["starred", "named_expression"])
+def test_bridge_activation_rejects_hidden_undeclared_baseline_bindings(
+    governance_repo: tuple[Path, str],
+    hidden_binding: str,
+) -> None:
+    repo, authority = governance_repo
+    bridges = [
+        bridge
+        for bridge in _fixture_policy()["migration_bridges"]
+        if bridge["source_path"] == "app/repositories.py"
+    ]
+    first_symbol = bridges[0]["symbols"][0]
+    second_symbol = bridges[1]["symbols"][0]
+    mixed_node = (
+        f"({first_symbol}, *{second_symbol}) = values"
+        if hidden_binding == "starred"
+        else f"{first_symbol} = (UNDECLARED := value)"
+    )
+    source_path = repo / "app/repositories.py"
+    source_path.write_text(
+        source_path.read_text(encoding="utf-8") + f"\n{mixed_node}\n",
+        encoding="utf-8",
+    )
+    base = _commit(repo, f"accept {hidden_binding} baseline binding")
+    _activate_all_migration_bridges(repo)
+    head = _commit(repo, f"reject hidden {hidden_binding} deletion")
+
+    evaluation = _evaluate(repo, authority, base, head)
+
+    finding = next(
+        item
+        for item in evaluation.findings
+        if item.code == "migration_bridge_source_logic"
+        and item.path == "app/repositories.py"
+    )
+    assert finding.exemptible is False
+    assert finding.details["undeclared_removed_nodes"] == 1
+
+
+@pytest.mark.parametrize("declaration_kind", ["class", "function"])
+@pytest.mark.parametrize(
+    "module_state_form",
+    [
+        "global_statement",
+        "globals_subscript",
+        "builtins_globals_subscript",
+        "current_module_setattr",
+        "builtins_current_module_setattr",
+    ],
+)
+def test_bridge_activation_rejects_declaration_with_dynamic_module_state(
+    governance_repo: tuple[Path, str],
+    declaration_kind: str,
+    module_state_form: str,
+) -> None:
+    repo, authority = governance_repo
+    target_module = (
+        "app.platform.postgres.errors"
+        if declaration_kind == "class"
+        else "app.agent_apps.infrastructure.postgres"
+    )
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module=target_module,
+    )
+    symbol = bridge["symbols"][0]
+    module_state_body = {
+        "global_statement": "global UNDECLARED\n    UNDECLARED = value",
+        "globals_subscript": 'globals()["UNDECLARED"] = value',
+        "builtins_globals_subscript": (
+            'builtins.globals()["UNDECLARED"] = value'
+        ),
+        "current_module_setattr": (
+            'setattr(sys.modules[__name__], "UNDECLARED", value)'
+        ),
+        "builtins_current_module_setattr": (
+            'builtins.setattr(sys.modules[__name__], "UNDECLARED", value)'
+        ),
+    }[module_state_form]
+    if declaration_kind == "class":
+        plain_declaration = f"class {symbol}:\n    pass"
+        module_state_declaration = f"class {symbol}:\n    {module_state_body}"
+    else:
+        plain_declaration = (
+            f"async def {symbol}():\n"
+            f"    marker = {symbol!r}\n"
+            "    return marker"
+        )
+        module_state_declaration = (
+            f"async def {symbol}():\n"
+            f"    {module_state_body}\n"
+            "    return UNDECLARED"
+        )
+    source_path = repo / bridge["source_path"]
+    source = source_path.read_text(encoding="utf-8")
+    assert source.count(plain_declaration) == 1
+    source_path.write_text(
+        source.replace(plain_declaration, module_state_declaration),
+        encoding="utf-8",
+    )
+    base = _commit(repo, f"accept {declaration_kind} with {module_state_form}")
+    _activate_all_migration_bridges(repo)
+    head = _commit(repo, f"reject {declaration_kind} module-state move")
+
+    evaluation = _evaluate(repo, authority, base, head)
+
+    finding = next(
+        item
+        for item in evaluation.findings
+        if item.code == "migration_bridge_source_logic"
+        and item.path == bridge["source_path"]
+    )
+    assert finding.exemptible is False
+    assert finding.details["undeclared_removed_nodes"] == 1
+
+
+def test_bridge_activation_allows_unrelated_globals_method(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.agent_apps.infrastructure.postgres",
+    )
+    symbol = bridge["symbols"][0]
+    plain_declaration = (
+        f"async def {symbol}():\n"
+        f"    marker = {symbol!r}\n"
+        "    return marker"
+    )
+    method_declaration = (
+        f"async def {symbol}():\n"
+        "    return registry.globals()"
+    )
+    source_path = repo / bridge["source_path"]
+    source = source_path.read_text(encoding="utf-8")
+    assert source.count(plain_declaration) == 1
+    source_path.write_text(
+        source.replace(plain_declaration, method_declaration),
+        encoding="utf-8",
+    )
+    base = _commit(repo, "accept unrelated globals method")
+    _activate_all_migration_bridges(repo)
+    head = _commit(repo, "activate bridge with unrelated globals method")
+
+    evaluation = _evaluate(repo, authority, base, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.findings == ()
+
+
+def test_bridge_activation_rejects_deleting_non_declaration_node(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    bridge = next(
+        bridge
+        for bridge in _fixture_policy()["migration_bridges"]
+        if bridge["source_path"] == "app/repositories.py"
+    )
+    deletion = f"del {bridge['symbols'][0]}\n"
+    source_path = repo / "app/repositories.py"
+    source_path.write_text(
+        source_path.read_text(encoding="utf-8") + f"\n{deletion}",
+        encoding="utf-8",
+    )
+    base = _commit(repo, "accept baseline deletion node")
+    _activate_all_migration_bridges(repo)
+    head = _commit(repo, "reject removal of non-declaration node")
+
+    evaluation = _evaluate(repo, authority, base, head)
+
+    finding = next(
+        item
+        for item in evaluation.findings
+        if item.code == "migration_bridge_source_logic"
+        and item.path == "app/repositories.py"
+    )
+    assert finding.exemptible is False
+    assert finding.details["undeclared_removed_nodes"] == 1
+
+
 def test_exact_legacy_api_cutover_rewrites_only_declared_symbols(
     governance_repo: tuple[Path, str],
 ) -> None:
     repo, authority = governance_repo
     _activate_legacy_api_cutover(repo)
     head = _commit(repo, "cut over legacy policy to public Runs API")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.findings == ()
+
+
+def test_exact_legacy_api_cutover_composes_with_simultaneous_bridge_activation(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _activate_all_migration_bridges(repo)
+    _activate_legacy_api_cutover(repo)
+    head = _commit(repo, "activate persistence bridges and cut over public API")
 
     evaluation = _evaluate(repo, authority, authority, head)
 

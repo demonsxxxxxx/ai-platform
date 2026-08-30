@@ -692,6 +692,7 @@ class ArchitectureEvaluator:
             head_source = self._git.text(head, source_path, required=False)
             findings.extend(
                 _legacy_api_cutover_findings(
+                    policy,
                     cutover,
                     path=source_path,
                     old_path=old_path,
@@ -2794,6 +2795,8 @@ def _assignment_names(tree: ast.Module) -> set[str]:
 def _assignment_target_names(target: ast.expr) -> set[str]:
     if isinstance(target, ast.Name):
         return {target.id}
+    if isinstance(target, ast.Starred):
+        return _assignment_target_names(target.value)
     if isinstance(target, (ast.Tuple, ast.List)):
         names: set[str] = set()
         for element in target.elts:
@@ -2856,6 +2859,7 @@ def _active_migration_bridge_targets(
 
 
 def _legacy_api_cutover_findings(
+    policy: dict[str, Any],
     entry: dict[str, Any],
     *,
     path: str,
@@ -2973,8 +2977,23 @@ def _legacy_api_cutover_findings(
         )
     )
 
-    base_nodes = _legacy_api_cutover_canonical_nodes(base_tree, entry, baseline=True)
-    head_nodes = _legacy_api_cutover_canonical_nodes(head_tree, entry, baseline=False)
+    bridge_base_node_ids, bridge_head_node_ids = (
+        _migration_bridge_transition_node_ids(policy, path, base_tree, head_tree)
+    )
+    base_contract_tree = ast.Module(
+        body=[node for node in base_tree.body if id(node) not in bridge_base_node_ids],
+        type_ignores=base_tree.type_ignores,
+    )
+    head_contract_tree = ast.Module(
+        body=[node for node in head_tree.body if id(node) not in bridge_head_node_ids],
+        type_ignores=head_tree.type_ignores,
+    )
+    base_nodes = _legacy_api_cutover_canonical_nodes(
+        base_contract_tree, entry, baseline=True
+    )
+    head_nodes = _legacy_api_cutover_canonical_nodes(
+        head_contract_tree, entry, baseline=False
+    )
     base_lines = len(base_source.splitlines())
     head_lines = len(head_source.splitlines())
     if head_nodes != base_nodes or head_lines >= base_lines:
@@ -3026,6 +3045,52 @@ def _top_level_node_binding_names(node: ast.stmt) -> set[str]:
     if isinstance(node, ast.AnnAssign):
         return _assignment_target_names(node.target)
     return set()
+
+
+def _is_builtin_call(node: ast.AST, name: str) -> bool:
+    return isinstance(node, ast.Call) and (
+        (isinstance(node.func, ast.Name) and node.func.id == name)
+        or (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "builtins"
+            and node.func.attr == name
+        )
+    )
+
+
+def _is_current_module_setattr(node: ast.AST) -> bool:
+    if not (_is_builtin_call(node, "setattr") and len(node.args) >= 3):
+        return False
+    target = node.args[0]
+    return (
+        isinstance(target, ast.Subscript)
+        and isinstance(target.value, ast.Attribute)
+        and isinstance(target.value.value, ast.Name)
+        and target.value.value.id == "sys"
+        and target.value.attr == "modules"
+        and isinstance(target.slice, ast.Name)
+        and target.slice.id == "__name__"
+    )
+
+
+def _module_runtime_binding_names(node: ast.stmt) -> set[str]:
+    if not _top_level_node_binding_names(node) or any(
+        isinstance(child, ast.Global)
+        or (
+            isinstance(child, ast.Call)
+            and (
+                _is_builtin_call(child, "globals")
+                or _is_current_module_setattr(child)
+            )
+        )
+        for child in ast.walk(node)
+    ):
+        return set()
+    counts, _ = _migration_bridge_target_binding_contract(
+        ast.Module(body=[node], type_ignores=[])
+    )
+    return set(counts)
 
 
 def _legacy_api_cutover_canonical_nodes(
@@ -3112,6 +3177,36 @@ def _active_migration_bridge_nodes(
     return allowed_nodes
 
 
+def _migration_bridge_transition_node_ids(
+    policy: dict[str, Any],
+    path: str,
+    base_tree: ast.Module | None,
+    head_tree: ast.Module,
+) -> tuple[set[int], set[int]]:
+    activating_bridges = [
+        bridge
+        for bridge in policy["migration_bridges"]
+        if bridge["source_path"] == path
+        and base_tree is not None
+        and _bridge_import_count(base_tree, bridge) == 0
+        and _bridge_import_count(head_tree, bridge) == 1
+    ]
+    removable_base_node_ids = {
+        id(node)
+        for node in (base_tree.body if base_tree is not None else [])
+        if (bindings := _module_runtime_binding_names(node))
+        and any(bindings <= set(bridge["symbols"]) for bridge in activating_bridges)
+    }
+    added_head_node_ids = {
+        id(node)
+        for bridge in activating_bridges
+        for node in head_tree.body
+        if _is_bridge_import(node, bridge)
+        or _bridge_alias_assignment_name(node, bridge) is not None
+    }
+    return removable_base_node_ids, added_head_node_ids
+
+
 def _migration_bridge_findings(
     policy: dict[str, Any],
     *,
@@ -3144,6 +3239,9 @@ def _migration_bridge_findings(
         and _legacy_api_cutover_attempted(base_tree, head_tree, cutover)
     )
     active_bridge_nodes = _active_migration_bridge_nodes(policy, path, head_tree)
+    removable_base_node_ids, _ = _migration_bridge_transition_node_ids(
+        policy, path, base_tree, head_tree
+    )
     if cutover_attempted:
         active_bridge_nodes.update(
             id(node)
@@ -3311,12 +3409,28 @@ def _migration_bridge_findings(
                 )
             )
 
+        base_contract_tree = (
+            ast.Module(
+                body=[
+                    node
+                    for node in base_tree.body
+                    if id(node) not in removable_base_node_ids
+                ],
+                type_ignores=base_tree.type_ignores,
+            )
+            if base_tree is not None
+            else None
+        )
         base_nodes = (
-            Counter(_legacy_api_cutover_canonical_nodes(base_tree, cutover, baseline=True))
-            if cutover_attempted and base_tree is not None and cutover is not None
+            Counter(
+                _legacy_api_cutover_canonical_nodes(
+                    base_contract_tree, cutover, baseline=True
+                )
+            )
+            if cutover_attempted and base_contract_tree is not None and cutover is not None
             else Counter(
                 ast.dump(node, include_attributes=False)
-                for node in (base_tree.body if base_tree is not None else [])
+                for node in (base_contract_tree.body if base_contract_tree is not None else [])
             )
         )
         unexpected: list[ast.stmt] = []
@@ -3334,15 +3448,20 @@ def _migration_bridge_findings(
                 base_nodes[fingerprint] -= 1
             elif id(node) not in active_bridge_nodes:
                 unexpected.append(node)
-        if unexpected:
+        undeclared_removed_nodes = sum(base_nodes.values())
+        if unexpected or undeclared_removed_nodes:
             findings.append(
                 Finding(
                     "migration_bridge_source_logic",
-                    "migration bridge sources may only remove legacy definitions and retain the declared import and identity aliases",
+                    "migration bridge sources may only replace declared definitions with the declared import and identity aliases",
                     path,
                     min((getattr(node, "lineno", 0) for node in unexpected), default=0),
                     exemptible=False,
-                    details={**details, "unexpected_nodes": len(unexpected)},
+                    details={
+                        **details,
+                        "undeclared_removed_nodes": undeclared_removed_nodes,
+                        "unexpected_nodes": len(unexpected),
+                    },
                 )
             )
     return findings
