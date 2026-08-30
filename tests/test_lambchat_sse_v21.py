@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from app.auth import AuthPrincipal
 from app.routes import lambchat_compat as route
 from app.streaming.api import (
+    LivePublication,
     LiveSubscriptionClosed,
     V4StreamEntry,
     build_v4_control,
@@ -59,6 +60,26 @@ def lease():
         1,
         datetime.now(timezone.utc) + timedelta(seconds=15),
     )
+
+
+class FrameLeaseGate:
+    def __init__(self, *, valid=True, allowed_calls=None):
+        self.lease_id = "lease-a"
+        self.tenant_id = "tenant-a"
+        self.run_id = "run-a"
+        self.api_instance_id = "api-a"
+        self.connection_id = "connection-a"
+        self.authorization_epoch = 1
+        self.lease_not_after = datetime.now(timezone.utc) + timedelta(seconds=15)
+        self.valid = valid
+        self.allowed_calls = allowed_calls
+
+    def allows_frame(self, *, now):
+        if self.allowed_calls is not None:
+            if self.allowed_calls == 0:
+                return False
+            self.allowed_calls -= 1
+        return self.valid
 
 
 def entry(redis_id, event_id, event_type, payload):
@@ -155,6 +176,22 @@ class BlockingSubscription:
         self.closed = True
 
 
+class ExpiringSubscription:
+    def __init__(self, lease_gate, *, publication=None):
+        self.lease_gate = lease_gate
+        self.publication = publication
+        self.closed = False
+
+    async def next(self, *, timeout_seconds=None):
+        self.lease_gate.valid = False
+        if self.publication is None:
+            raise TimeoutError
+        return self.publication
+
+    async def aclose(self):
+        self.closed = True
+
+
 class FakeBridge:
     def __init__(
         self,
@@ -241,6 +278,15 @@ class FakeBridge:
         raise AssertionError("finite replay tests must not decode live publications")
 
 
+class LiveBridge(FakeBridge):
+    def __init__(self, rows, *, live_entry):
+        super().__init__(rows)
+        self.live_entry = live_entry
+
+    def decode_live_publication(self, **kwargs):
+        return self.live_entry
+
+
 class FakeHub:
     def __init__(self, bridge, *, on_subscribe=None, subscription=None):
         self.bridge = bridge
@@ -272,7 +318,7 @@ def request_without_runtime():
     )
 
 
-def patch_authority(monkeypatch, *, run=None, close_result=True):
+def patch_authority(monkeypatch, *, run=None, close_result=True, lease_value=None):
     async def get_run(conn, *, tenant_id, user_id, run_id):
         return run or {"id": run_id, "session_id": "session-a", "status": "running"}
 
@@ -280,7 +326,7 @@ def patch_authority(monkeypatch, *, run=None, close_result=True):
         return authority()
 
     async def acquire(conn, **kwargs):
-        return lease()
+        return lease_value or lease()
 
     async def close(conn, **kwargs):
         return close_result
@@ -292,15 +338,36 @@ def patch_authority(monkeypatch, *, run=None, close_result=True):
     monkeypatch.setattr(route, "close_sse_authority_lease", close)
 
 
-async def connect(bridge, *, last_event_id=None, on_subscribe=None):
-    response = await route.chat_session_stream(
+def deny_lease_renewal(monkeypatch):
+    async def deny(conn, **kwargs):
+        raise SseAuthorityConflictError("sse_authority_revoked")
+
+    monkeypatch.setattr(route, "acquire_sse_authority_lease", deny)
+
+
+async def open_response(
+    bridge, *, last_event_id=None, on_subscribe=None, subscription=None
+):
+    return await route.chat_session_stream(
         "session-a",
         "run-a",
-        request_for(bridge, on_subscribe=on_subscribe),
+        request_for(
+            bridge,
+            on_subscribe=on_subscribe,
+            subscription=subscription,
+        ),
         last_event_id=last_event_id,
         principal=AuthPrincipal(
             user_id="user-a", display_name="User", tenant_id="tenant-a"
         ),
+    )
+
+
+async def connect(bridge, *, last_event_id=None, on_subscribe=None):
+    response = await open_response(
+        bridge,
+        last_event_id=last_event_id,
+        on_subscribe=on_subscribe,
     )
     body = "".join([chunk async for chunk in response.body_iterator])
     return response, body
@@ -465,6 +532,117 @@ async def test_v4_trim_between_resume_and_replay_emits_gap_instead_of_omitting_r
     assert "event: stream.gap\n" in body
     assert '"reason": "stream_continuity_unproven"' in body
     assert "event: stream.open\n" not in body
+
+
+@pytest.mark.asyncio
+async def test_v4_trim_gap_checks_lease_immediately_before_write(monkeypatch):
+    lease_gate = FrameLeaseGate(valid=False)
+    patch_authority(monkeypatch, lease_value=lease_gate)
+    bridge = FakeBridge(
+        [open_entry()],
+        resume=ResumeDecision(
+            None, StreamGap("retained_history_unavailable", "run-a:1:1-0", 1, 1)
+        ),
+    )
+    response = await open_response(bridge, last_event_id="run-a:1:1-0")
+    deny_lease_renewal(monkeypatch)
+
+    body = "".join([chunk async for chunk in response.body_iterator])
+
+    assert body == ""
+
+
+@pytest.mark.asyncio
+async def test_v4_replay_frame_checks_lease_immediately_before_write(monkeypatch):
+    lease_gate = FrameLeaseGate(allowed_calls=1)
+    patch_authority(monkeypatch, lease_value=lease_gate)
+    response = await open_response(FakeBridge([open_entry()]))
+    deny_lease_renewal(monkeypatch)
+
+    body = "".join([chunk async for chunk in response.body_iterator])
+
+    assert body == ""
+
+
+@pytest.mark.asyncio
+async def test_v4_replay_frame_rejects_lease_expired_during_renewal(monkeypatch):
+    lease_gate = FrameLeaseGate(allowed_calls=1)
+    patch_authority(monkeypatch, lease_value=lease_gate)
+    response = await open_response(FakeBridge([open_entry()]))
+
+    async def renew_with_expired_lease(conn, **kwargs):
+        return FrameLeaseGate(valid=False)
+
+    monkeypatch.setattr(
+        route,
+        "acquire_sse_authority_lease",
+        renew_with_expired_lease,
+    )
+
+    body = "".join([chunk async for chunk in response.body_iterator])
+
+    assert body == ""
+
+
+@pytest.mark.asyncio
+async def test_v4_replay_gap_checks_lease_immediately_before_write(monkeypatch):
+    lease_gate = FrameLeaseGate(allowed_calls=1)
+    patch_authority(monkeypatch, lease_value=lease_gate)
+    response = await open_response(
+        FakeBridge(
+            [open_entry()],
+            replay_error=StreamContractError("stream_replay_continuity_unproven"),
+        )
+    )
+    deny_lease_renewal(monkeypatch)
+
+    body = "".join([chunk async for chunk in response.body_iterator])
+
+    assert body == ""
+
+
+@pytest.mark.asyncio
+async def test_v4_heartbeat_rechecks_lease_after_live_wait(monkeypatch):
+    lease_gate = FrameLeaseGate()
+    subscription = ExpiringSubscription(lease_gate)
+    patch_authority(monkeypatch, lease_value=lease_gate)
+    response = await open_response(
+        FakeBridge([open_entry()]),
+        subscription=subscription,
+    )
+    deny_lease_renewal(monkeypatch)
+    iterator = response.body_iterator
+
+    assert "event: stream.open" in await iterator.__anext__()
+    with pytest.raises(StopAsyncIteration):
+        await iterator.__anext__()
+
+    assert subscription.closed is True
+
+
+@pytest.mark.asyncio
+async def test_v4_live_frame_rechecks_lease_after_live_wait(monkeypatch):
+    lease_gate = FrameLeaseGate()
+    live_entry = entry("2-0", "sev-delta", "message.delta", {"delta": "late"})
+    subscription = ExpiringSubscription(
+        lease_gate,
+        publication=LivePublication(
+            "sse-live:scope-a:run-a:1", "2-0", '{"private":"ignored"}'
+        ),
+    )
+    patch_authority(monkeypatch, lease_value=lease_gate)
+    response = await open_response(
+        LiveBridge([open_entry()], live_entry=live_entry),
+        subscription=subscription,
+    )
+    deny_lease_renewal(monkeypatch)
+    iterator = response.body_iterator
+
+    assert "event: stream.open" in await iterator.__anext__()
+    with pytest.raises(StopAsyncIteration):
+        await iterator.__anext__()
+
+    assert subscription.closed is True
 
 
 @pytest.mark.asyncio
