@@ -104,6 +104,7 @@ def _run(
     check: bool = True,
     timeout: int = 300,
 ) -> subprocess.CompletedProcess[str]:
+    timeout = authority.bounded_parity_attempt_timeout(timeout)
     try:
         result = subprocess.run(
             list(command),
@@ -467,20 +468,22 @@ def _legacy_release_environment(runtime: LegacyRuntime) -> list[str]:
     ]
 
 
-def _require_target_broker(docker: Sequence[str], commit: str) -> None:
+def _target_broker_parity(docker: Sequence[str], commit: str) -> dict[str, bool]:
     broker = _inspect_container(docker, TARGET_BROKER_CONTAINER)
     labels = _labels(broker)
     state = broker.get("State")
+    health = state.get("Health") if isinstance(state, dict) else None
     if (
         labels.get("com.docker.compose.project") != authority.COMPOSE_PROJECT
         or labels.get("com.docker.compose.service") != "opensandbox-egress-proxy"
         or labels.get("ai-platform.source-commit") != commit
         or not isinstance(state, dict)
         or state.get("Running") is not True
-        or not isinstance(state.get("Health"), dict)
-        or state["Health"].get("Status") != "healthy"
+        or not isinstance(health, dict)
+        or health.get("Status") not in {"starting", "healthy"}
     ):
         raise TransitionError("target broker runtime is invalid")
+    return {"verified": health["Status"] == "healthy"}
 
 
 def _require_target_executor(docker: Sequence[str]) -> None:
@@ -542,15 +545,19 @@ def _require_target_parity(
     *,
     docker_cmd: str,
 ) -> None:
-    parity = authority.collect_live_parity(
-        repo_root,
-        commit,
-        docker_cmd=docker_cmd,
-        compose_files=TARGET_SELECTION,
+    def collect(_: float) -> dict[str, Any]:
+        parity = authority.collect_live_parity(
+            repo_root,
+            commit,
+            docker_cmd=docker_cmd,
+            compose_files=TARGET_SELECTION,
+        )
+        return parity if parity.get("verified") is not True else _target_broker_parity(docker, commit)
+
+    authority.converge_final_parity(
+        collect,
+        authority_error_type=authority.ReleaseAuthorityError,
     )
-    if parity.get("verified") is not True:
-        raise TransitionError("target runtime parity is invalid")
-    _require_target_broker(docker, commit)
     _require_target_executor(docker)
     _require_target_lifecycle_reachable(docker)
 
