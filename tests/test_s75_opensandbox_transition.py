@@ -632,6 +632,85 @@ def test_finalize_restores_loopback_fence_when_admitted_parity_fails(monkeypatch
     ]
 
 
+def test_rollback_waits_for_legacy_startup_convergence(monkeypatch, tmp_path):
+    runtime = _legacy_runtime(tmp_path / "legacy")
+    target_files = _selection(tmp_path / "target", transition.TARGET_SELECTION).absolute_paths
+    attempt = 0
+
+    monkeypatch.setattr(transition, "_down", lambda *args, **kwargs: None)
+    monkeypatch.setattr(transition, "_run", lambda *args, **kwargs: _completed(args[0]))
+    monkeypatch.setattr(transition, "_legacy_runtime", lambda *args: runtime)
+
+    def inspect(docker, name):
+        service = next(
+            service for service, container in transition.CONTAINERS.items() if container == name
+        )
+        if service in {"migrate", "workspace-init"}:
+            return {"State": {"Status": "exited", "Running": False, "ExitCode": 0}}
+        health = "starting" if service == "api" and attempt == 1 else "healthy"
+        return {
+            "State": {"Status": "running", "Running": True, "Health": {"Status": health}}
+        }
+
+    monkeypatch.setattr(transition, "_inspect_container", inspect)
+
+    def converge(collect, *, authority_error_type):
+        nonlocal attempt
+        assert authority_error_type is transition.TransitionError
+        attempt = 1
+        assert collect(45) == {"verified": False}
+        attempt = 2
+        assert collect(43) == {"verified": True}
+        return {"verified": True}
+
+    monkeypatch.setattr(release_authority, "converge_final_parity", converge)
+
+    transition._rollback(
+        ["docker"], runtime=runtime, target_files=target_files, env_file=tmp_path / ".env"
+    )
+    assert attempt == 2
+
+
+@pytest.mark.parametrize(
+    ("failed_service", "failed_state"),
+    [
+        ("api", {"Status": "running", "Running": True, "Health": {"Status": "unhealthy"}}),
+        ("api", {"Status": "exited", "Running": True, "Health": {"Status": "starting"}}),
+        ("migrate", {"Status": "running", "Running": False, "ExitCode": 1}),
+        ("workspace-init", {"Status": "created", "Running": True, "ExitCode": 0}),
+    ],
+)
+def test_legacy_convergence_rejects_hard_failures(
+    monkeypatch, tmp_path, failed_service, failed_state
+):
+    runtime = _legacy_runtime(tmp_path / "legacy")
+    monkeypatch.setattr(transition, "_legacy_runtime", lambda *args: runtime)
+
+    def inspect(docker, name):
+        service = next(
+            service for service, container in transition.CONTAINERS.items() if container == name
+        )
+        if service == failed_service:
+            return {"State": failed_state}
+        if service in {"migrate", "workspace-init"}:
+            return {"State": {"Status": "exited", "Running": False, "ExitCode": 0}}
+        return {
+            "State": {
+                "Status": "running",
+                "Running": True,
+                "Health": {"Status": "healthy"},
+            }
+        }
+
+    monkeypatch.setattr(transition, "_inspect_container", inspect)
+
+    with pytest.raises(
+        transition.TransitionError,
+        match=rf"legacy rollback state mismatch: {failed_service}",
+    ):
+        transition._legacy_convergence_report(["docker"], runtime)
+
+
 def test_explicit_rollback_requires_quiescence_and_restores_legacy_selection(monkeypatch, tmp_path):
     runtime = _legacy_runtime(tmp_path / "legacy")
     target_files = _selection(tmp_path / "target", transition.TARGET_SELECTION).absolute_paths
