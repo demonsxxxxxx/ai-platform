@@ -974,19 +974,78 @@ def test_target_lifecycle_is_reachable_from_api_and_worker(monkeypatch):
 
 
 def test_target_executor_binding_matches_release_authority_image(monkeypatch):
+    backend_id = "sha256:" + "a" * 64
+    digest = "sha256:" + "1" * 64
+    executor = f"{release_authority.PACKAGED_BACKEND_IMAGE_SUBJECT}@{digest}"
     environment = [
-        "SANDBOX_EXECUTOR_IMAGE=sha256:" + "a" * 64,
-        "OPENSANDBOX_EXECUTOR_IMAGE=sha256:" + "a" * 64,
-        "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST=sha256:" + "a" * 64,
+        f"SANDBOX_EXECUTOR_IMAGE={executor}",
+        f"OPENSANDBOX_EXECUTOR_IMAGE={executor}",
+        f"OPENSANDBOX_EXECUTOR_IMAGE_DIGEST={digest}",
     ]
     containers = {
-        transition.CONTAINERS[service]: {"Config": {"Env": list(environment)}}
+        transition.CONTAINERS[service]: {
+            "Config": {"Env": list(environment)},
+            "Image": backend_id,
+        }
         for service in ("api", "worker")
     }
     monkeypatch.setattr(transition, "_inspect_container", lambda docker, name: containers[name])
+    monkeypatch.setattr(
+        release_authority,
+        "_image_record",
+        lambda docker, reference: {
+            "id": backend_id,
+            "repo_digests": [executor],
+        },
+    )
 
     transition._require_target_executor(["docker"])
     containers[transition.CONTAINERS["worker"]]["Config"]["Env"][-1] = "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST=sha256:" + "b" * 64
+    with pytest.raises(transition.TransitionError, match="executor image mismatch"):
+        transition._require_target_executor(["docker"])
+
+
+def test_target_executor_binding_rejects_mutable_or_wrong_backend_image(monkeypatch):
+    backend_id = "sha256:" + "a" * 64
+    mutable = "ai-platform:latest"
+    environment = [
+        f"SANDBOX_EXECUTOR_IMAGE={mutable}",
+        f"OPENSANDBOX_EXECUTOR_IMAGE={mutable}",
+        f"OPENSANDBOX_EXECUTOR_IMAGE_DIGEST={mutable}",
+    ]
+    containers = {
+        transition.CONTAINERS[service]: {
+            "Config": {"Env": list(environment)},
+            "Image": backend_id,
+        }
+        for service in ("api", "worker")
+    }
+    monkeypatch.setattr(transition, "_inspect_container", lambda docker, name: containers[name])
+    monkeypatch.setattr(
+        release_authority,
+        "_image_record",
+        lambda docker, reference: {"id": backend_id, "repo_digests": []},
+    )
+
+    with pytest.raises(transition.TransitionError, match="executor image mismatch"):
+        transition._require_target_executor(["docker"])
+
+    digest = "sha256:" + "1" * 64
+    executor = f"{release_authority.PACKAGED_BACKEND_IMAGE_SUBJECT}@{digest}"
+    for container in containers.values():
+        container["Config"]["Env"] = [
+            f"SANDBOX_EXECUTOR_IMAGE={executor}",
+            f"OPENSANDBOX_EXECUTOR_IMAGE={executor}",
+            f"OPENSANDBOX_EXECUTOR_IMAGE_DIGEST={digest}",
+        ]
+    monkeypatch.setattr(
+        release_authority,
+        "_image_record",
+        lambda docker, reference: {
+            "id": "sha256:" + "b" * 64,
+            "repo_digests": [executor],
+        },
+    )
     with pytest.raises(transition.TransitionError, match="executor image mismatch"):
         transition._require_target_executor(["docker"])
 

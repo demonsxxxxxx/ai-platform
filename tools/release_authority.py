@@ -96,6 +96,7 @@ DEFAULT_MANAGED_ENV_RELATIVE_PATH = Path("deploy/ai-platform/.env")
 MANAGED_RELEASE_DIRECTORY_NAME = "releases"
 DIRECT_OPENSANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.opensandbox.yml"
 SANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.sandbox.yml"
+PACKAGED_BACKEND_IMAGE_SUBJECT = "ghcr.io/demonsxxxxxx/ai-platform-backend"
 DIRECT_OPENSANDBOX_SELECTION = (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), DIRECT_OPENSANDBOX_COMPOSE_RELATIVE_PATH)
 DIRECT_OPENSANDBOX_SELECTIONS = frozenset({DIRECT_OPENSANDBOX_SELECTION})
 GOVERNED_COMPOSE_SELECTIONS = frozenset(
@@ -2010,7 +2011,12 @@ def _docker_json(docker: list[str], *args: str) -> Any:
 
 def _image_record(docker: list[str], image: str) -> dict[str, Any]:
     payload = _docker_json(docker, "image", "inspect", image)[0]
-    return {"reference": image, "id": payload.get("Id"), "labels": payload.get("Config", {}).get("Labels") or {}}
+    return {
+        "reference": image,
+        "id": payload.get("Id"),
+        "labels": payload.get("Config", {}).get("Labels") or {},
+        "repo_digests": payload.get("RepoDigests") or [],
+    }
 
 
 def _validate_release_image(image: dict[str, Any], *, commit: str, repository: str, role: str) -> None:
@@ -2219,6 +2225,22 @@ def _immutable_sandbox_executor_reference(image: dict[str, Any]) -> str:
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
         raise ReleaseAuthorityError("sandbox executor image ID is not immutable")
     return image_id
+
+
+def _packaged_sandbox_executor_reference(image: dict[str, Any]) -> str:
+    """Return the unique published backend digest reference retained by Docker."""
+    subject = PACKAGED_BACKEND_IMAGE_SUBJECT
+    repo_digests = image.get("repo_digests")
+    values = repo_digests if isinstance(repo_digests, list) else []
+    candidates = {
+        reference
+        for value in values
+        if isinstance(value, str)
+        if re.fullmatch(rf"{re.escape(subject)}@sha256:[0-9a-f]{{64}}", reference := value.strip())
+    }
+    if len(candidates) != 1:
+        raise ReleaseAuthorityError("sandbox executor packaged image reference is not unique")
+    return candidates.pop()
 
 
 def _inspect_optional_container(docker: list[str], name: str) -> dict[str, Any] | None:
@@ -2593,7 +2615,11 @@ def collect_live_parity(
     )
     api_executor_image = _container_sandbox_executor_image(api_inspect)
     worker_executor_image = _container_sandbox_executor_image(worker_inspect)
-    sandbox_executor_image = _immutable_sandbox_executor_reference(images["backend"])
+    sandbox_executor_image = (
+        _packaged_sandbox_executor_reference(images["backend"])
+        if selection.relative_paths in DIRECT_OPENSANDBOX_SELECTIONS
+        else _immutable_sandbox_executor_reference(images["backend"])
+    )
     runtime = {
         "api_commit": str(api_health.get("runtime_commit") or ""),
         "api_health_status": api_health.get("status"),
@@ -2879,7 +2905,12 @@ def deploy_clean_commit(
                 [*docker, "container", "rm", "-f", ownership.manual_frontend_id]
             ),
         )
-    sandbox_executor_image = _immutable_sandbox_executor_reference(images["backend"])
+    is_direct_opensandbox = selection.relative_paths in DIRECT_OPENSANDBOX_SELECTIONS
+    sandbox_executor_image = (
+        _packaged_sandbox_executor_reference(images["backend"])
+        if is_direct_opensandbox
+        else _immutable_sandbox_executor_reference(images["backend"])
+    )
     compose_environment = [
         f"AI_PLATFORM_IMAGE={refs['backend']}",
         f"AI_PLATFORM_FRONTEND_IMAGE={refs['frontend']}",
@@ -2888,11 +2919,11 @@ def deploy_clean_commit(
         f"AI_PLATFORM_BUILD_COMMIT={normalized}",
         "AI_PLATFORM_BUILD_DIRTY=false",
     ]
-    if selection.relative_paths in DIRECT_OPENSANDBOX_SELECTIONS:
+    if is_direct_opensandbox:
         compose_environment.extend(
             (
                 f"OPENSANDBOX_EXECUTOR_IMAGE={sandbox_executor_image}",
-                f"OPENSANDBOX_EXECUTOR_IMAGE_DIGEST={sandbox_executor_image}",
+                f"OPENSANDBOX_EXECUTOR_IMAGE_DIGEST={sandbox_executor_image.rsplit('@', 1)[1]}",
             )
         )
     compose_command = _compose_command_with_environment(docker, compose_environment)
