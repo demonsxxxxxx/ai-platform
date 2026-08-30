@@ -147,7 +147,7 @@ def test_sanitizer_owned_secret_split_across_chunks_is_never_published(secret, s
     assert "[redacted-secret]" in public_text
 
 
-def test_unsealed_stream_withholds_only_a_possible_private_token_prefix():
+def test_unsealed_stream_rejects_an_incompatible_terminal_after_publication():
     gate = _gate()
 
     first = gate.accept("safe prefix mcp__")
@@ -157,7 +157,68 @@ def test_unsealed_stream_withholds_only_a_possible_private_token_prefix():
     assert first == ("safe prefix ",)
     assert second == ("mcp__not-the-private-token ",)
     assert finished.chunks == ()
-    assert finished.final_text == "safe terminal"
+    assert finished.final_text == ""
+    assert gate.failed is True
+
+
+def test_progressive_stream_releases_only_the_terminal_suffix_once():
+    gate = _gate()
+
+    published = gate.accept("progressive ")
+    finished = gate.finish(final_text="progressive answer", release=True)
+
+    assert published == ("progressive ",)
+    assert finished.chunks == ("answer",)
+    assert finished.final_text == "progressive answer"
+
+
+def test_progressive_stream_accepts_terminal_edge_whitespace_normalization():
+    gate = _gate()
+
+    published = gate.accept("progressive answer \n")
+    finished = gate.finish(final_text="progressive answer", release=True)
+
+    assert published == ("progressive answer \n",)
+    assert gate.failed is False
+    assert finished.chunks == ()
+    assert finished.final_text == "progressive answer \n"
+
+
+def test_progressive_stream_enforces_cumulative_bound_before_publication():
+    gate = PublicAnswerStreamGate(
+        private_replacements={IDENTITY: "external tool"},
+        sanitizer=_sanitize,
+        max_private_token_chars=64,
+        max_sealed_chars=16,
+    )
+
+    published = gate.accept("safe prefix ")
+    rejected = gate.accept("crosses the bound")
+
+    assert published == ("safe prefix ",)
+    assert rejected == ()
+    assert gate.failed is True
+    assert gate.finish(
+        final_text="safe prefix crosses the bound", release=True
+    ).chunks == ()
+
+
+def test_private_token_learned_before_later_text_is_redacted_progressively():
+    gate = _gate()
+
+    before = gate.accept("Safe answer before invocation. ")
+    gate.register_private_replacements({CALL_ID: "tool invocation"})
+    after = gate.accept(f"Used {CALL_ID} safely. ")
+    finished = gate.finish(
+        final_text=f"Safe answer before invocation. Used {CALL_ID} safely. ",
+        release=True,
+    )
+
+    public_text = "".join((*before, *after, *finished.chunks))
+    assert CALL_ID not in public_text
+    assert public_text == (
+        "Safe answer before invocation. Used tool invocation safely. "
+    )
 
 
 @pytest.mark.parametrize("split", [1, len(IDENTITY) // 2, len(IDENTITY) - 1])
@@ -252,6 +313,61 @@ def test_verified_capability_release_discards_pre_evidence_text_and_streams_late
     assert public_text == "Safe final answer."
     assert pre_evidence not in public_text
     assert finished.final_text == "Safe final answer."
+
+
+def test_unresolved_capability_boundary_never_releases_retained_terminal_text():
+    gate = _gate()
+
+    gate.seal(
+        {CALL_ID: "tool invocation"},
+        capability_boundary=True,
+    )
+    assert gate.accept("unverified capability output") == ()
+    finished = gate.finish(
+        final_text="unverified capability output",
+        release=True,
+    )
+
+    assert finished.chunks == ()
+    assert finished.final_text == ""
+
+
+def test_verified_capability_bounds_only_the_current_public_answer_boundary():
+    gate = PublicAnswerStreamGate(
+        private_replacements={IDENTITY: "external tool"},
+        sanitizer=_sanitize,
+        max_private_token_chars=64,
+        max_sealed_chars=16,
+    )
+
+    gate.seal(capability_boundary=True)
+    assert gate.accept("private body ") == ()
+    gate.release_after_verified_capability()
+    published = gate.accept("public body ")
+    cumulative_terminal = "private body public body "
+
+    assert gate.final_text_exceeds_bound(cumulative_terminal) is False
+    finished = gate.finish(final_text=cumulative_terminal, release=True)
+    assert "".join((*published, *finished.chunks)) == "public body "
+    assert finished.final_text == "public body "
+
+
+def test_verified_capability_fails_closed_on_incompatible_terminal_text():
+    gate = _gate()
+
+    gate.seal(capability_boundary=True)
+    assert gate.accept("private capability output") == ()
+    gate.release_after_verified_capability()
+    published = gate.accept("verified public answer ")
+    finished = gate.finish(
+        final_text="different terminal result",
+        release=True,
+    )
+
+    assert published == ("verified public answer ",)
+    assert gate.failed is True
+    assert finished.chunks == ()
+    assert finished.final_text == ""
 
 
 def test_verified_capability_release_never_falls_back_to_cumulative_terminal_text():
