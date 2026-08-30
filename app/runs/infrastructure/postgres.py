@@ -608,7 +608,7 @@ async def heartbeat_worker_run_attempt(
     lease_expires_at: datetime,
     last_heartbeat_at: datetime,
 ) -> dict[str, Any]:
-    """Advance queue lease timing without weakening the current attempt fence."""
+    """Converge queue lease timing without preserving future-skewed state."""
 
     owner_kind, owner_id = _validated_attempt_owner(
         owner_kind="queue_worker",
@@ -627,14 +627,8 @@ async def heartbeat_worker_run_attempt(
     cursor = await conn.execute(
         """
         update run_attempts
-        set last_heartbeat_at = greatest(
-              coalesce(last_heartbeat_at, %s),
-              %s
-            ),
-            lease_expires_at = greatest(
-              coalesce(lease_expires_at, %s),
-              %s
-            ),
+        set last_heartbeat_at = %s,
+            lease_expires_at = %s,
             updated_at = now()
         where tenant_id = %s
           and run_id = %s
@@ -645,12 +639,18 @@ async def heartbeat_worker_run_attempt(
           and owner_kind = %s
           and owner_id = %s
           and owner_generation = %s
+          and (
+            last_heartbeat_at is null
+            or last_heartbeat_at <= %s
+          )
+          and (
+            lease_expires_at is null
+            or lease_expires_at <= %s
+          )
         returning *
         """,
         (
             queue_lease[2],
-            queue_lease[2],
-            queue_lease[1],
             queue_lease[1],
             tenant_id,
             run_id,
@@ -660,6 +660,8 @@ async def heartbeat_worker_run_attempt(
             owner_kind,
             owner_id,
             expected_owner_generation,
+            queue_lease[2],
+            queue_lease[1],
         ),
     )
     row = await cursor.fetchone()

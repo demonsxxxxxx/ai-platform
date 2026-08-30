@@ -14,6 +14,7 @@ from redis.asyncio import Redis
 
 from app import queue, schema_migrations
 from app.models import QueueRunPayload
+from app.platform.postgres.errors import RepositoryConflictError
 from app.runs.api import heartbeat_worker_run_attempt
 from app.runs.application import attempt_lifecycle as attempt_lifecycle_application
 from app.runs.application.attempt_lifecycle import RunAttemptLifecycleService
@@ -31,6 +32,24 @@ import app.worker_main as worker_main
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
 REDIS_URL_ENV = "AI_PLATFORM_SSE_REDIS_TEST_URL"
+
+LEGACY_REQUEUE_IDENTITY_PROBE_SCRIPT = """
+-- Exact ownership behavior used by the v1 reclaimer before queue mutation.
+local metadata_json = redis.call("hget", KEYS[1], ARGV[1])
+if not metadata_json then
+  metadata_json = redis.call("hget", KEYS[2], ARGV[1])
+end
+local ok, metadata = pcall(cjson.decode, metadata_json or "")
+if not ok or type(metadata) ~= "table"
+  or tostring(metadata["message_id"] or "") ~= ARGV[1]
+  or tostring(metadata["attempt_id"] or "") ~= ARGV[2]
+  or tostring(metadata["owner_token"] or "") ~= ARGV[3] then
+  return cjson.encode({status = "stale_owner"})
+end
+redis.call("lrem", KEYS[3], 1, ARGV[4])
+redis.call("rpush", KEYS[4], ARGV[4])
+return cjson.encode({status = "requeued"})
+"""
 
 
 def _required_env(name: str) -> str:
@@ -328,6 +347,188 @@ async def test_real_redis_reclaim_rechecks_current_lease_activity(
             rel=0,
             abs=0.001,
         )
+    finally:
+        await redis.delete(*redis_keys)
+        await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_redis_protocol_v2_lease_is_invisible_to_v1_reclaimer(
+    monkeypatch,
+):
+    redis_url = _required_env(REDIS_URL_ENV)
+    suffix = uuid.uuid4().hex[:12]
+    queue_prefix = f"ai-platform:test:mixed-reclaimer:{suffix}"
+
+    class Settings:
+        queue_key_prefix = queue_prefix
+
+    async def get_redis():
+        return Redis.from_url(redis_url, decode_responses=True)
+
+    monkeypatch.setattr(queue, "get_settings", lambda: Settings())
+    monkeypatch.setattr(queue, "get_redis", get_redis)
+    redis = Redis.from_url(redis_url, decode_responses=True)
+    keys = queue.get_queue_keys()
+    redis_keys = tuple(getattr(keys, field.name) for field in fields(keys))
+    payload = QueueRunPayload(
+        tenant_id=f"tenant-{suffix}",
+        workspace_id=f"workspace-{suffix}",
+        user_id=f"user-{suffix}",
+        session_id=f"session-{suffix}",
+        run_id=f"run-{suffix}",
+        agent_id=f"agent-{suffix}",
+        skill_id=f"skill-{suffix}",
+        file_ids=[],
+        input={"message": "mixed reclaimer integration"},
+        executor_type="fake",
+        skill_version="version-a",
+        release_decision={
+            "schema_version": "ai-platform.skill-release-decision.v1",
+            "selected_version": "version-a",
+        },
+        skill_manifests=[
+            {
+                "skill_id": f"skill-{suffix}",
+                "content_hash": "version-a",
+            }
+        ],
+    )
+    raw = payload.model_dump_json()
+    try:
+        await redis.delete(*redis_keys)
+        await redis.rpush(keys.queued, raw)
+        message = await queue.lease_run(
+            timeout_seconds=1,
+            worker_id=f"worker-{suffix}",
+        )
+
+        assert message is not None
+        metadata = json.loads(
+            await redis.hget(keys.processing_meta, message.queue_message_id)
+        )
+        assert metadata["lease_protocol_version"] == 2
+        assert metadata["owner_token_v2"] == message.owner_token
+        assert "owner_token" not in metadata
+
+        legacy_result = json.loads(
+            await redis.eval(
+                LEGACY_REQUEUE_IDENTITY_PROBE_SCRIPT,
+                4,
+                keys.processing_meta,
+                keys.retry_meta,
+                keys.processing,
+                keys.queued,
+                message.queue_message_id,
+                message.attempt_id,
+                message.owner_token,
+                raw,
+            )
+        )
+
+        assert legacy_result == {"status": "stale_owner"}
+        assert await redis.lrange(keys.processing, 0, -1) == [raw]
+        assert await redis.lrange(keys.queued, 0, -1) == []
+    finally:
+        await redis.delete(*redis_keys)
+        await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_redis_reclaim_normalizes_abandoned_future_leases_then_expires_them(
+    monkeypatch,
+):
+    redis_url = _required_env(REDIS_URL_ENV)
+    suffix = uuid.uuid4().hex[:12]
+    queue_prefix = f"ai-platform:test:future-reclaim:{suffix}"
+
+    class Settings:
+        queue_key_prefix = queue_prefix
+
+    async def get_redis():
+        return Redis.from_url(redis_url, decode_responses=True)
+
+    monkeypatch.setattr(queue, "get_settings", lambda: Settings())
+    monkeypatch.setattr(queue, "get_redis", get_redis)
+    redis = Redis.from_url(redis_url, decode_responses=True)
+    keys = queue.get_queue_keys()
+    redis_keys = tuple(getattr(keys, field.name) for field in fields(keys))
+    seeded: list[tuple[str, str, int]] = []
+    try:
+        await redis.delete(*redis_keys)
+        future_epoch = await _redis_epoch(redis) + 3_600
+        for attempts in (1, 3):
+            marker = str(attempts)
+            payload = QueueRunPayload(
+                tenant_id=f"tenant-{suffix}-{marker}",
+                workspace_id=f"workspace-{suffix}-{marker}",
+                user_id=f"user-{suffix}-{marker}",
+                session_id=f"session-{suffix}-{marker}",
+                run_id=f"run-{suffix}-{marker}",
+                agent_id=f"agent-{suffix}-{marker}",
+                skill_id=f"skill-{suffix}-{marker}",
+                file_ids=[],
+                input={"message": "future reclaim integration"},
+                executor_type="fake",
+                skill_version="version-a",
+                release_decision={
+                    "schema_version": "ai-platform.skill-release-decision.v1",
+                    "selected_version": "version-a",
+                },
+                skill_manifests=[
+                    {
+                        "skill_id": f"skill-{suffix}-{marker}",
+                        "content_hash": "version-a",
+                    }
+                ],
+            )
+            raw = payload.model_dump_json()
+            message_id = queue.message_id_for_raw(raw)
+            metadata = {
+                "message_id": message_id,
+                "raw": raw,
+                "attempts": attempts,
+                "attempt_id": f"qat_{marker * 64}",
+                "lease_protocol_version": 2,
+                "owner_token_v2": f"qown_{marker * 64}",
+                "leased_at": future_epoch,
+                "heartbeat_at": future_epoch,
+                "worker_id": f"worker-{suffix}-{marker}",
+                "tenant_id": payload.tenant_id,
+                "user_id": payload.user_id,
+                "run_id": payload.run_id,
+            }
+            encoded = json.dumps(metadata, sort_keys=True)
+            await redis.lpush(keys.processing, raw)
+            await redis.hset(keys.processing_meta, message_id, encoded)
+            await redis.hset(keys.retry_meta, message_id, encoded)
+            seeded.append((raw, message_id, attempts))
+
+        normalized_before = await _redis_epoch(redis)
+        normalized = await queue.reclaim_expired_leases(
+            visibility_timeout_seconds=1,
+            max_attempts=3,
+            now=future_epoch + 3_600,
+        )
+        normalized_after = await _redis_epoch(redis)
+
+        assert normalized == {"reclaimed": 0, "dead_lettered": 0}
+        for _raw, message_id, _attempts in seeded:
+            for metadata_key in (keys.processing_meta, keys.retry_meta):
+                repaired = json.loads(await redis.hget(metadata_key, message_id))
+                assert normalized_before - 0.001 <= repaired["heartbeat_at"] <= normalized_after + 0.001
+                assert normalized_before - 0.001 <= repaired["leased_at"] <= normalized_after + 0.001
+
+        await asyncio.sleep(1.1)
+        expired = await queue.reclaim_expired_leases(
+            visibility_timeout_seconds=1,
+            max_attempts=3,
+            now=await _redis_epoch(redis),
+        )
+
+        assert expired == {"reclaimed": 1, "dead_lettered": 1}
+        assert len(await redis.lrange(keys.queued, 0, -1)) == 1
+        assert len(await redis.lrange(keys.dead_letter, 0, -1)) == 1
     finally:
         await redis.delete(*redis_keys)
         await redis.aclose()
@@ -648,6 +849,48 @@ async def test_real_worker_heartbeat_fails_closed_then_converges_after_postgres_
             }
         finally:
             await regression_conn.close()
+
+        future_durable_heartbeat = durable_heartbeat_at + timedelta(hours=1)
+        async with transaction_factory() as conn:
+            await conn.execute(
+                """
+                update run_attempts
+                set last_heartbeat_at = %s,
+                    lease_expires_at = %s
+                where tenant_id = %s and id = %s
+                """,
+                (
+                    future_durable_heartbeat,
+                    future_durable_heartbeat
+                    + timedelta(seconds=visibility_timeout_seconds),
+                    tenant_id,
+                    attempt_id,
+                ),
+            )
+        with pytest.raises(
+            schema_migrations.SchemaMigrationError,
+            match="run_attempt_future_heartbeat_requires_remediation",
+        ):
+            async with transaction_factory() as conn:
+                await schema_migrations._require_no_future_open_attempt_heartbeats(
+                    conn
+                )
+        with pytest.raises(
+            RepositoryConflictError,
+            match="run_attempt_worker_heartbeat_conflict",
+        ):
+            async with transaction_factory() as conn:
+                await heartbeat_worker_run_attempt(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    queue_attempt_id=queue_attempt_id,
+                    queue_message_id=queue_message_id,
+                    worker_id=worker_id,
+                    last_heartbeat_at=durable_heartbeat_at,
+                    lease_expires_at=durable_heartbeat_at
+                    + timedelta(seconds=visibility_timeout_seconds),
+                )
     finally:
         if redis_keys:
             await redis.delete(*redis_keys)

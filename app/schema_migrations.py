@@ -23,7 +23,9 @@ V4_CONCURRENT_DUE_INDEX_SCHEMA_VERSION = "2026.08.27.2"
 MODEL_CONTROL_PLANE_SCHEMA_VERSION = "2026.08.28.1"
 RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION = "2026.08.30.1"
 RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SCHEMA_VERSION = "2026.08.30.2"
-TARGET_SCHEMA_VERSION = RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SCHEMA_VERSION
+RUN_ATTEMPT_HEARTBEAT_CLOCK_SAFETY_SCHEMA_VERSION = "2026.08.30.3"
+TARGET_SCHEMA_VERSION = RUN_ATTEMPT_HEARTBEAT_CLOCK_SAFETY_SCHEMA_VERSION
+RUN_ATTEMPT_FUTURE_HEARTBEAT_TOLERANCE_SECONDS = 5
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
@@ -1215,6 +1217,46 @@ async def rollback_v4_publication_migration(conn: Any) -> None:
     )
 
 
+async def _require_no_future_open_attempt_heartbeats(conn: Any) -> None:
+    """Block the monotonic guard until clock-poisoned open rows are remediated."""
+
+    contract_cursor = await conn.execute(
+        """
+        select
+          to_regclass('run_attempts') is not null
+          and exists (
+            select 1
+            from pg_attribute
+            where attrelid = to_regclass('run_attempts')
+              and attname = 'last_heartbeat_at'
+              and not attisdropped
+          ) as supported
+        """
+    )
+    contract = await contract_cursor.fetchone() or {}
+    if not bool(contract.get("supported")):
+        return
+    future_cursor = await conn.execute(
+        """
+        select exists (
+          select 1
+          from run_attempts
+          where status in (
+            'created', 'queued', 'claimed', 'running',
+            'cancel_requested', 'expired'
+          )
+            and last_heartbeat_at > clock_timestamp() + make_interval(secs => %s)
+        ) as blocked
+        """,
+        (RUN_ATTEMPT_FUTURE_HEARTBEAT_TOLERANCE_SECONDS,),
+    )
+    future = await future_cursor.fetchone() or {}
+    if bool(future.get("blocked")):
+        raise SchemaMigrationError(
+            "run_attempt_future_heartbeat_requires_remediation"
+        )
+
+
 async def apply_migrations(
     *,
     transaction_factory: Callable[[], AbstractAsyncContextManager[Any]] = transaction,
@@ -1242,6 +1284,7 @@ async def apply_migrations(
                 if str(row.get("checksum_sha256") or "") != checksum:
                     raise SchemaMigrationError("schema_migration_checksum_mismatch")
             else:
+                await _require_no_future_open_attempt_heartbeats(conn)
                 await conn.execute(sql)
                 await conn.execute(
                     """

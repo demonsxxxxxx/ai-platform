@@ -264,6 +264,17 @@ retry, and resume reject full or mixed manifest payloads. This is a hard
 cutover: unfinished legacy Skill runs without private materializations cannot be
 resumed after deployment and must be submitted again.
 
+The durable queue-heartbeat schema activation also has a clock-safety gate. It
+stops with `run_attempt_future_heartbeat_requires_remediation` when an open
+attempt heartbeat is more than five seconds ahead of the PostgreSQL clock. Treat
+that as a deployment blocker: stop admission, preserve the database and Redis
+lease evidence, and identify the affected rows with a read-only query before an
+operator-approved lifecycle recovery. Do not install the monotonic guard over
+those rows. Forward mixed-version operation is bounded because protocol-v2
+leases are opaque to the v1 reclaimer; image rollback to a v1-only worker is
+allowed only after current workers have drained or recovered every protocol-v2
+processing lease.
+
 `ci_success` is the controller's admission result; the quickstart does not
 replace the controller's exact-run CI and packaging verification. Keep the
 selected managed env path stable across successive releases. The small image

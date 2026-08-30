@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 import json
 import sys
 from types import SimpleNamespace
@@ -159,7 +160,12 @@ async def test_queue_heartbeat_persists_the_exact_redis_timestamp(monkeypatch):
 
     async def heartbeat_attempt(conn, **kwargs):
         calls.append(("postgres", conn, kwargs))
-        return {"id": "rat-a", "status": "running"}
+        return {
+            "id": "rat-a",
+            "status": "running",
+            "last_heartbeat_at": kwargs["last_heartbeat_at"],
+            "lease_expires_at": kwargs["lease_expires_at"],
+        }
 
     monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
     monkeypatch.setattr(worker_main, "transaction", Transaction)
@@ -275,8 +281,67 @@ async def test_queue_heartbeat_fails_closed_when_postgres_cannot_commit(monkeypa
         async def __aexit__(self, _exc_type, _exc, _tb):
             raise OSError("postgres commit unavailable")
 
+    async def heartbeat_attempt(*_args, **kwargs):
+        return {
+            "id": "rat-a",
+            "status": "running",
+            "last_heartbeat_at": kwargs["last_heartbeat_at"],
+            "lease_expires_at": kwargs["lease_expires_at"],
+        }
+
+    monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
+    monkeypatch.setattr(worker_main, "transaction", Transaction)
+    monkeypatch.setattr(
+        worker_main,
+        "heartbeat_worker_run_attempt",
+        heartbeat_attempt,
+    )
+    ownership_lost = asyncio.Event()
+
+    await worker_main._heartbeat_until_done(
+        message,
+        "worker-a",
+        0,
+        30,
+        ownership_lost,
+    )
+
+    assert ownership_lost.is_set()
+
+
+@pytest.mark.asyncio
+async def test_queue_heartbeat_fails_closed_when_postgres_preserves_future_state(
+    monkeypatch,
+):
+    message = QueueMessage(
+        raw="raw-run",
+        payload={"tenant_id": "tenant-a", "run_id": "run-a"},
+        message_id="lease-handle-a",
+        queue_message_id="b" * 64,
+        attempt_id="qat-a",
+        owner_token="qown-a",
+        leased_at=90.0,
+        delivery_attempt=1,
+    )
+
+    async def heartbeat_run(*_args, **_kwargs):
+        return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
+
+    class Transaction:
+        async def __aenter__(self):
+            return "conn-a"
+
+        async def __aexit__(self, _exc_type, _exc, _tb):
+            return False
+
     async def heartbeat_attempt(*_args, **_kwargs):
-        return {"id": "rat-a", "status": "running"}
+        future_heartbeat = datetime.fromtimestamp(200.0, tz=timezone.utc)
+        return {
+            "id": "rat-a",
+            "status": "running",
+            "last_heartbeat_at": future_heartbeat,
+            "lease_expires_at": future_heartbeat + timedelta(seconds=30),
+        }
 
     monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
     monkeypatch.setattr(worker_main, "transaction", Transaction)
@@ -2615,6 +2680,10 @@ def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
         calls.append(("run_once", timeout_seconds))
         return WorkerOutcome(status="idle", run_id=None)
 
+    async def require_schema_current():
+        calls.append(("require_schema_current",))
+        return {"ready": True}
+
     async def fake_close_pool():
         calls.append(("close_pool",))
 
@@ -2623,6 +2692,7 @@ def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
 
     monkeypatch.setattr(sys, "argv", ["worker", "--once", "--timeout", "7"])
     monkeypatch.setattr("app.worker_main.configure_model_services", configure_model_services)
+    monkeypatch.setattr("app.worker_main.require_schema_current", require_schema_current)
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_pool", fake_close_pool)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_redis_client", fake_close_redis_client)
@@ -2631,6 +2701,7 @@ def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
 
     assert calls == [
         ("configure_model_services",),
+        ("require_schema_current",),
         ("run_once", 7),
         ("close_redis_client",),
         ("close_pool",),

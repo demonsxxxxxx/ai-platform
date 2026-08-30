@@ -163,19 +163,35 @@ the Redis-only extension remains bounded by the visibility window. Redis and
 PostgreSQL share the exact heartbeat value returned by the Redis authority.
 Lease acquisition, heartbeat refresh, and the final reclaim decision use Redis
 server time. A heartbeat normalizes future-skewed Redis lease and worker activity
-timestamps, while PostgreSQL continues to reject durable timestamp regression.
-The reclaim mutation atomically rechecks lease identity, reconciliation fence,
-and visibility expiry against that same Redis clock before changing queue state;
-the caller clock is only a scan hint. Deployment preflight must identify any
-future-dated durable PostgreSQL rows because the database invariant intentionally
-does not move them backward. Stale-run recovery moves the exact open attempt into
-reconciler-owned `expired` or `cancel_requested` before terminal drain, and
-permission, executor, and multi-agent maintenance writers mirror the exact
-terminal attempt in the same transaction. Callback and Redis reclaim paths still
-lack end-to-end expected `owner_generation` fencing and recoverable cross-store
-effects. The heartbeat path has real PostgreSQL/Redis rollback-and-convergence
-coverage; production Sandbox acceptance and mixed-version rollback evidence
-remain required before the migration can be called complete.
+timestamps. Reclaim independently normalizes an abandoned future-dated lease in
+both matching metadata hashes, grants one fresh visibility window, and only
+requeues or dead-letters it on a later expired pass. The reclaim mutation
+atomically rechecks lease identity, reconciliation fence, and visibility expiry
+against that same Redis clock before changing queue state; the caller clock is
+only a scan hint.
+
+Protocol-v2 leases store their owner credential in `owner_token_v2` with
+`lease_protocol_version = 2` and omit the legacy `owner_token` projection. A v1
+reclaimer therefore fails its existing owner check before mutation, while the
+current heartbeat, acknowledgement, failure, verification, and reclaim scripts
+accept both legacy and protocol-v2 leases. This provides a bounded forward
+mixed-version cutover on the shared queue namespace. Rollback to a v1-only fleet
+requires all protocol-v2 processing leases to be drained or explicitly recovered
+by a current reclaimer first.
+
+PostgreSQL continues to reject durable timestamp regression. Its heartbeat writer
+stores the exact Redis-authoritative window only when the existing row is not
+ahead, and the worker verifies the returned row before treating persistence as
+successful. Schema activation fails closed when an open attempt heartbeat is more
+than five seconds ahead of the PostgreSQL clock, so operators must remediate that
+state before installing the monotonic guard. Stale-run recovery moves the exact
+open attempt into reconciler-owned `expired` or `cancel_requested` before terminal
+drain, and permission, executor, and multi-agent maintenance writers mirror the
+exact terminal attempt in the same transaction. Callback and Redis reclaim paths
+still lack end-to-end expected `owner_generation` fencing and recoverable
+cross-store effects. The heartbeat path has real PostgreSQL/Redis
+rollback-and-convergence coverage; production Sandbox acceptance and rollback
+evidence remain required before the migration can be called complete.
 
 Redis reclaim must create a new durable ordinal attempt before a new worker can
 execute. It never overwrites the old attempt identity. Retry, resume, and copy
@@ -264,6 +280,9 @@ The attempt slice additionally requires:
 - rejection of non-`created` inserts, non-queued parent Runs, canonical
   JSON/JSONB drift, digest drift, and wrong same-named schema constraints;
 - real Redis lease/reclaim races mapped to durable ordinal attempts;
+- real Redis forward mixed-version proof that a v1 reclaimer cannot mutate a
+  protocol-v2 lease, plus future-clock normalization on retry and dead-letter
+  branches;
 - cancellation before dispatch, during execution, after provider stop failure,
   and cleanup retry;
 - stale queue owner, callback, Sandbox handle, terminalizer, and stream

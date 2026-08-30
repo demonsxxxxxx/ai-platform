@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import socket
 import time
+from typing import Any
 import uuid
 
 from app import queue
@@ -191,6 +192,21 @@ async def _worker_runtime_heartbeat_until_done(worker_id: str, interval_seconds:
         await asyncio.sleep(interval_seconds)
 
 
+def _require_durable_heartbeat_convergence(
+    persisted: dict[str, Any],
+    *,
+    last_heartbeat_at: datetime,
+    lease_expires_at: datetime,
+) -> None:
+    """Fail closed unless PostgreSQL stored the Redis-authoritative window."""
+
+    if (
+        persisted.get("last_heartbeat_at") != last_heartbeat_at
+        or persisted.get("lease_expires_at") != lease_expires_at
+    ):
+        raise RuntimeError("run_attempt_worker_heartbeat_not_converged")
+
+
 async def _heartbeat_until_done(
     message: queue.QueueMessage,
     worker_id: str,
@@ -212,8 +228,11 @@ async def _heartbeat_until_done(
                 heartbeat.heartbeat_at,
                 tz=timezone.utc,
             )
+            lease_expires_at = last_heartbeat_at + timedelta(
+                seconds=visibility_timeout_seconds
+            )
             async with transaction() as conn:
-                await heartbeat_worker_run_attempt(
+                persisted = await heartbeat_worker_run_attempt(
                     conn,
                     tenant_id=str(message.payload.get("tenant_id") or ""),
                     run_id=str(message.payload.get("run_id") or ""),
@@ -221,9 +240,14 @@ async def _heartbeat_until_done(
                     queue_message_id=message.queue_message_id,
                     worker_id=worker_id,
                     last_heartbeat_at=last_heartbeat_at,
-                    lease_expires_at=last_heartbeat_at
-                    + timedelta(seconds=visibility_timeout_seconds),
+                    lease_expires_at=lease_expires_at,
                 )
+                if persisted is not None:
+                    _require_durable_heartbeat_convergence(
+                        persisted,
+                        last_heartbeat_at=last_heartbeat_at,
+                        lease_expires_at=lease_expires_at,
+                    )
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -1097,6 +1121,7 @@ async def run_worker_pool(
 
 
 async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
+    await require_schema_current()
     worker_runtime = build_worker_v4_runtime(transaction)
     try:
         return await run_once(
