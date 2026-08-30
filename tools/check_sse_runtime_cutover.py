@@ -434,8 +434,58 @@ def _typescript_call_arguments(source: str, callee: str) -> list[str]:
 def _nginx_sse_contract_failures(source: str) -> list[str]:
     uncommented = "\n".join(line.split("#", 1)[0] for line in source.splitlines())
     marker = "location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/stream$ {"
-    if marker not in uncommented:
+    marker_count = uncommented.count(marker)
+    if marker_count == 0:
         return ["nginx.conf.template:sse_location_missing"]
+    if marker_count != 1:
+        return ["nginx.conf.template:sse_location_ambiguous"]
+    marker_offset = uncommented.index(marker)
+    server_starts = list(
+        re.finditer(r"(?m)^\s*server\s*\{", uncommented)
+    )
+    containing_server_index = next(
+        (
+            index
+            for index, match in reversed(list(enumerate(server_starts)))
+            if match.start() < marker_offset
+        ),
+        None,
+    )
+    if containing_server_index is None:
+        server_source = uncommented
+        server_marker_offset = marker_offset
+    else:
+        server_start = server_starts[containing_server_index].start()
+        next_server_index = containing_server_index + 1
+        server_end = (
+            server_starts[next_server_index].start()
+            if next_server_index < len(server_starts)
+            else len(uncommented)
+        )
+        server_source = uncommented[server_start:server_end]
+        server_marker_offset = marker_offset - server_start
+    sse_probe_path = "/api/chat/sessions/sse-probe/stream"
+    # Nginx selects the first matching regex location inside one server. Only
+    # an earlier regex that also matches this request can steal it.
+    for regex_match in re.finditer(
+        r"(?m)^\s*location\s+~(\*)?\s+(.+?)\s*\{",
+        server_source[:server_marker_offset],
+    ):
+        pattern = regex_match.group(2).strip('"\'')
+        flags = re.IGNORECASE if regex_match.group(1) else 0
+        try:
+            steals_sse_request = re.search(pattern, sse_probe_path, flags) is not None
+        except re.error:
+            steals_sse_request = True
+        if steals_sse_request:
+            return ["nginx.conf.template:sse_location_precedence_ambiguous"]
+    for prefix_match in re.finditer(
+        r"(?m)^\s*location\s+\^~\s+([^\s{]+)",
+        server_source,
+    ):
+        prefix = prefix_match.group(1).strip('"\'')
+        if sse_probe_path.startswith(prefix):
+            return ["nginx.conf.template:sse_location_precedence_ambiguous"]
     block = uncommented.split(marker, 1)[1].split("\n    }", 1)[0]
     required = (
         'proxy_set_header Connection "";',
@@ -445,6 +495,7 @@ def _nginx_sse_contract_failures(source: str) -> list[str]:
         "proxy_cache off;",
         "gzip off;",
         'add_header Cache-Control "no-cache, no-transform" always;',
+        "add_header X-Accel-Buffering no always;",
         "proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT};",
         "proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT};",
     )

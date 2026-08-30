@@ -208,6 +208,153 @@ Fifty-concurrency acceptance is a measured result, not inferred from unit tests
 or the `50 / 0.04 ~= 1250 frames/s` sizing model. Browser-chain closure requires
 the exact deployed subject and cannot be inferred from frontend tests.
 
+### Point-in-time acceptance procedure
+
+Each execution creates a uniquely identified, immutable evidence packet. The
+packet is a time-bounded observation of one deployed subject; it is not a
+repository status page and a later execution never opens or overwrites an
+earlier packet. Raw private capture stays in a separate restricted staging
+directory and is never part of the exportable packet.
+
+1. **Freeze the subject.** Record `observed_at_utc`, the full source SHA, API,
+   worker, executor, and frontend image digests, Nginx configuration fingerprint,
+   Redis/PostgreSQL versions, replica counts, network/security profile, browser
+   build, and the acceptance-harness revision. Stop if any digest or fingerprint
+   changes during the run.
+2. **Create exclusive staging and packet directories.** Generate a fresh UUID,
+   use `mkdir` without `-p`, and stop if either path already exists. Keep
+   authentication in an operator-owned curl configuration file with mode `0600`;
+   that file is never copied into staging or the packet. Example:
+
+   ```sh
+   umask 077
+   export SSE_ACCEPTANCE_PACKET_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(uuidgen | tr '[:upper:]' '[:lower:]')"
+   export SSE_ACCEPTANCE_STAGE="/var/tmp/ai-platform-sse-private/${SSE_ACCEPTANCE_PACKET_ID}"
+   export SSE_ACCEPTANCE_OUT="/var/tmp/ai-platform-sse-acceptance/${SSE_ACCEPTANCE_PACKET_ID}"
+   export SSE_ACCEPTANCE_BASE_URL=https://<accepted-host>
+   export SSE_ACCEPTANCE_SESSION_ID=<accepted-session-id>
+   export SSE_ACCEPTANCE_RUN_ID=<accepted-run-id>
+   export SSE_ACCEPTANCE_CURL_CONFIG=/secure/operator/sse-acceptance.curl.conf
+   test "$(stat -c %a "${SSE_ACCEPTANCE_CURL_CONFIG}")" = 600
+   mkdir "${SSE_ACCEPTANCE_STAGE}" "${SSE_ACCEPTANCE_OUT}"
+   chmod 0700 "${SSE_ACCEPTANCE_STAGE}" "${SSE_ACCEPTANCE_OUT}"
+   ```
+
+   Record the packet ID in every harness result and manifest. A missing `uuidgen`,
+   an unreadable credential file, an existing path, or a mode mismatch stops the
+   procedure before any request is sent.
+3. **Capture the gateway contract into private staging.** Run `nginx -T` inside
+   the exact deployed frontend gateway and fingerprint the capture. For a Docker
+   deployment the concrete form is:
+
+   ```sh
+   export SSE_ACCEPTANCE_GATEWAY_CONTAINER=<accepted-frontend-container>
+   docker exec "${SSE_ACCEPTANCE_GATEWAY_CONTAINER}" nginx -T \
+     >"${SSE_ACCEPTANCE_STAGE}/nginx.full.raw" 2>&1
+   sha256sum "${SSE_ACCEPTANCE_STAGE}/nginx.full.raw" \
+     >"${SSE_ACCEPTANCE_STAGE}/nginx.full.raw.sha256"
+   ```
+
+   Kubernetes or systemd deployments must record and run the equivalent exact
+   command against the frozen gateway instance. Open one admitted Run and use
+   curl tracing so connection and frame arrival times are present in the raw
+   evidence while client buffering stays disabled:
+
+   ```sh
+   curl --config "${SSE_ACCEPTANCE_CURL_CONFIG}" \
+     --no-buffer --fail-with-body --max-time 45 \
+     --trace-time --trace-ascii "${SSE_ACCEPTANCE_STAGE}/sse.trace.raw" \
+     --dump-header "${SSE_ACCEPTANCE_STAGE}/sse.headers.raw" \
+     --output "${SSE_ACCEPTANCE_STAGE}/sse.frames.raw" \
+     "${SSE_ACCEPTANCE_BASE_URL}/api/chat/sessions/${SSE_ACCEPTANCE_SESSION_ID}/stream?run_id=${SSE_ACCEPTANCE_RUN_ID}"
+   ```
+
+   The recorded response must contain `Content-Type: text/event-stream`,
+   `Cache-Control: no-cache, no-transform`, and `X-Accel-Buffering: no`. Record
+   connection time, first public delta, each heartbeat, terminal, gateway close,
+   and curl exit time from the harness clock. Treat the raw curl trace as
+   credential-bearing even when the client masks a header. Expire the short-lived
+   acceptance credential immediately after capture and record that revocation in
+   the private staging log.
+4. **Run one pinned recovery/load harness.** Before execution, record the full
+   harness source SHA, executable path, arguments, expected topology, and a
+   SHA-256 digest of its machine-readable case inventory. The pinned invocation
+   must accept `--packet-id`, `--private-stage`, `--output`, and `--manifest`, must
+   disable hidden retries, and must emit one JSON result for every declared case.
+   If the environment has no versioned harness satisfying that interface, record
+   `decision=unavailable`; a collection of hand-run commands cannot produce a
+   pass.
+
+   With at least two API replicas, the inventory includes: two readers on one
+   replica, readers across replicas, retained replay, forced trim and durable
+   hydrate, missing Redis key, Pub/Sub restart, attach-time publication, slow
+   consumer, authorization-epoch change during a blocked wait, renewal denial,
+   API instance loss, callback response loss, and terminal Redis unknown outcome.
+   Every case records expected and observed event/cursor, reconnect latency, last
+   accepted frame time, lease deadline, terminal state, cleanup result, raw
+   artifact reference, and `pass`, `fail`, or `unavailable`.
+5. **Run browser and 50-concurrent-Run observations through the same harness.**
+   In the frozen browser build, capture a private network trace and screen
+   recording for progressive rendering, manual reconnect, gap recovery, final
+   hydration, and truthful disconnected state. The load result records its input
+   shape, duration, event rate, entry sizes, reconnect and slow-consumer mix, raw
+   success counts, first/inter-delta and reconnect p50/p95/p99, Redis
+   latency/memory/client counts, PostgreSQL callback/renewal QPS and pool
+   occupancy, API/worker memory, and cleanup-to-baseline time. The manifest stores
+   the exact harness command and case-inventory digest needed to reproduce it.
+6. **Apply stop conditions.** End the run immediately on any frame after its
+   recorded lease deadline, privacy leak, cursor regression, unbounded queue or
+   memory growth, terminal disagreement, hidden harness retry, subject drift, or
+   missing raw evidence. Preserve the failure reason in the packet. Preserve raw
+   failed evidence only in the restricted staging directory under the operator's
+   retention policy; never upload or attach staging to a PR.
+7. **Derive and seal the exportable packet.** An allowlist transform copies only
+   the HTTP status line, `Content-Type`, `Cache-Control`, `X-Accel-Buffering`,
+   structural event names, cursor prefixes, timestamps, counts, aggregate metrics,
+   and digests into `${SSE_ACCEPTANCE_OUT}`. It rejects credentials, cookies,
+   prompt/delta content, private paths, environment files, and any unclassified
+   field. The operator then runs the repository privacy verifier, records its
+   version and result, generates `SHA256SUMS` over the derived packet, makes the
+   files read-only, and marks the manifest `pass`, `fail`, or `unavailable`.
+   Missing transform/verifier tooling forces `unavailable`. Generate and verify
+   the local read-only seal before export:
+
+   ```sh
+   (cd "${SSE_ACCEPTANCE_OUT}" && find . -type f ! -name SHA256SUMS -print0 \
+     | sort -z | xargs -0 sha256sum >SHA256SUMS)
+   (cd "${SSE_ACCEPTANCE_OUT}" && sha256sum --check SHA256SUMS)
+   find "${SSE_ACCEPTANCE_OUT}" -type f -exec chmod 0400 {} +
+   find "${SSE_ACCEPTANCE_OUT}" -type d -exec chmod 0500 {} +
+   ```
+
+   Local permissions are not an immutability boundary. A `pass` additionally
+   requires upload to an approved versioned evidence store with object lock or
+   equivalent WORM retention. Record the object version, retention deadline, and
+   returned digest, then download and re-verify `SHA256SUMS`. If no such store is
+   available, the decision is `unavailable`. A `pass` applies only to the exact
+   frozen subject and only after a second operator verifies the manifest, privacy
+   result, artifact digests, stop-condition result, and locked object version.
+
+The packet manifest contains these required top-level fields:
+
+| Field | Required content |
+| --- | --- |
+| `packet_id` | unique timestamp-plus-UUID identifier shared by every result |
+| `subject` | source SHA, immutable image digests, Nginx fingerprint, protocol/design versions |
+| `environment` | observed UTC window, topology, Redis/PostgreSQL/browser versions, security profile |
+| `harness` | repository/revision, executable digest, exact command arguments, case-inventory digest, workload shape, stop conditions, retry count |
+| `gateway_probe` | response headers, frame timestamps, heartbeat/timeout relation, browser trace refs |
+| `fault_matrix` | one record per case with expected/observed cursor, terminal, lease, cleanup, result |
+| `load_result` | samples, raw counts, p50/p95/p99, resource peaks, retained replay seconds |
+| `privacy_scan` | allowlist-transform revision, verifier revision, rejected fields, result |
+| `artifacts` | relative evidence paths and SHA-256 digests |
+| `decision` | `pass`, `fail`, or `unavailable`, operator, independent reviewer, reason, reviewed timestamp |
+
+The manifest and every referenced JSON result use canonical UTF-8 JSON with
+sorted object keys. Absolute paths and raw-stage paths are forbidden in the
+sealed packet. Any undeclared case, missing artifact, digest mismatch, duplicate
+packet ID, or non-zero hidden retry count invalidates the decision.
+
 ## Evidence states
 
 | State | Meaning |

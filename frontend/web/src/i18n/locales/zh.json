@@ -385,6 +385,14 @@
     "enterToSend": "发送",
     "errorPrefix": "错误：{{error}}",
     "commandTrigger": "打开命令：/ 或 $ 选择 Skills，/mcp 选择 MCP 工具",
+    "connectionStatus": {
+      "connecting": "正在连接任务更新…",
+      "disconnected": "实时更新已断开，请重新连接以继续接收任务进度。",
+      "reconnect": "重新连接",
+      "reconnecting": "连接中断，正在恢复任务更新…",
+      "reconnectingAction": "正在连接…",
+      "recovering_gap": "正在校准已接收内容和任务状态…"
+    },
     "featureMenu": {
       "enhance": "增强",
       "settings": "设置",

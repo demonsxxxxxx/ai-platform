@@ -80,5 +80,31 @@ test("keeps Agent workspace Chat routes and run-bound file affordances together"
   const source = readFileSync(new URL("../ChatView.tsx", import.meta.url), "utf8");
   assert.match(source, /sessionApi[\s\S]*\.getInputFiles\(sessionId\)/);
   assert.match(source, /navigate\(`\$\{sessionRouteBasePath\}\/\$\{response\.session\.id\}`\)/);
-  assert.match(source, /mergeProjectedSessionFiles\(messages, sessionFiles\)/);
+  assert.match(
+    source,
+    /mergeProjectedSessionFiles\(\s*messages,\s*visibleWorkspaceProjection\.inputFiles,\s*\)/,
+  );
+});
+
+test("connects the visible recovery projection to the existing reconnect action", () => {
+  const source = readFileSync(new URL("../ChatView.tsx", import.meta.url), "utf8");
+  const locale = JSON.parse(
+    readFileSync(
+      new URL("../../../../i18n/locales/zh.json", import.meta.url),
+      "utf8",
+    ),
+  );
+
+  assert.match(source, /<ChatConnectionStatus/);
+  assert.match(source, /status=\{visibleConnectionStatus\}/);
+  assert.match(source, /owner=\{activeConnectionOwner\}/);
+  assert.match(source, /onReconnect=\{onReconnect\}/);
+  assert.deepEqual(locale.chat.connectionStatus, {
+    connecting: "正在连接任务更新…",
+    disconnected: "实时更新已断开，请重新连接以继续接收任务进度。",
+    reconnect: "重新连接",
+    reconnecting: "连接中断，正在恢复任务更新…",
+    reconnectingAction: "正在连接…",
+    recovering_gap: "正在校准已接收内容和任务状态…",
+  });
 });
