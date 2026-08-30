@@ -546,6 +546,11 @@ create table if not exists agent_profile_revisions (
   primary key (tenant_id, agent_id, revision)
 );
 
+-- Existing pre-#701 tables do not gain columns from CREATE TABLE IF NOT EXISTS.
+-- Add the canonical status before any Knowledge constraint references it; the
+-- compatibility repair below deliberately needs this column to remain nullable.
+alter table agent_profile_revisions
+  add column if not exists revision_status text;
 alter table agent_profile_revisions
   add column if not exists knowledge_source_ids jsonb not null default '[]'::jsonb;
 alter table agent_profile_revisions
@@ -1039,7 +1044,6 @@ alter table runs add column if not exists model_value text;
 alter table runs add column if not exists model_gateway_revision bigint;
 alter table agent_profile_revisions add column if not exists published_from_revision bigint;
 alter table agent_profile_revisions add column if not exists withdrawn_from_revision bigint;
-alter table agent_profile_revisions add column if not exists revision_status text;
 alter table agent_profile_revisions add column if not exists avatar_ref text;
 alter table agent_profile_revisions add column if not exists avatar_asset_id text;
 alter table agent_profile_revisions add column if not exists avatar_seed text not null default '';

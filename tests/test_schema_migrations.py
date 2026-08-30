@@ -992,7 +992,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "1ba1f426fb2787eccb343675be158a9d1c4be2a49c85677e8de6074670b4becb"
+        "e392760cea7d4a5b946ebd536294cebd0a46df172ed1e6f479661c8dbdfac213"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "
@@ -1001,6 +1001,19 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     assert "rename column supported_file_types" not in schema
     assert "drop column supported_file_types" not in schema
     assert "legacy_supported_file_types" not in schema
+
+
+def test_agent_profile_revision_status_exists_before_knowledge_constraints():
+    schema = " ".join(schema_migrations.schema_sql().split()).lower()
+    add_revision_status = schema.index(
+        "alter table agent_profile_revisions add column if not exists revision_status text"
+    )
+    add_knowledge_constraint = schema.index(
+        "alter table agent_profile_revisions add constraint "
+        "chk_agent_profile_knowledge_bindings"
+    )
+
+    assert add_revision_status < add_knowledge_constraint
 
 
 def test_v4_publication_schema_is_additive_and_index_is_concurrent_only():
