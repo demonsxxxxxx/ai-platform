@@ -25,6 +25,9 @@ RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION = "2026.08.30.1"
 RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SCHEMA_VERSION = "2026.08.30.2"
 RUN_ATTEMPT_HEARTBEAT_CLOCK_SAFETY_SCHEMA_VERSION = "2026.08.30.3"
 TARGET_SCHEMA_VERSION = RUN_ATTEMPT_HEARTBEAT_CLOCK_SAFETY_SCHEMA_VERSION
+# Concurrent-index authority advances only when its exact index contract changes.
+# Keeping this ledger stable preserves readiness for the saved rollback binary.
+CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION
 RUN_ATTEMPT_FUTURE_HEARTBEAT_TOLERANCE_SECONDS = 5
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
@@ -241,6 +244,12 @@ CRITICAL_CONSTRAINTS = (
     ("sandbox_leases", "chk_sandbox_leases_executor_reconciliation_status"),
 )
 CRITICAL_TRIGGERS = (
+    (
+        "run_attempts",
+        "trg_run_attempt_heartbeat_monotonicity_guard",
+        "ai_platform_guard_run_attempt_heartbeat_monotonicity",
+        19,
+    ),
     (
         "run_attempts",
         "trg_run_attempt_transition_guard",
@@ -1090,7 +1099,7 @@ async def _apply_concurrent_indexes(conn: Any) -> bool:
         index_ready = await _index_is_ready(conn, migration)
         if (
             ledger_row is not None
-            and ledger_row.get("target_version") == TARGET_SCHEMA_VERSION
+            and ledger_row.get("target_version") == CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION
             and ledger_row.get("checksum_sha256") == migration.checksum_sha256
             and ledger_row.get("state") == "ready"
             and index_ready
@@ -1112,7 +1121,11 @@ async def _apply_concurrent_indexes(conn: Any) -> bool:
               last_error_code = null,
               updated_at = now()
             """,
-            (migration.name, TARGET_SCHEMA_VERSION, migration.checksum_sha256),
+            (
+                migration.name,
+                CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION,
+                migration.checksum_sha256,
+            ),
         )
         try:
             if not index_ready:
@@ -1136,7 +1149,11 @@ async def _apply_concurrent_indexes(conn: Any) -> bool:
             set state = 'ready', completed_at = now(), last_error_code = null, updated_at = now()
             where index_name = %s and target_version = %s and checksum_sha256 = %s
             """,
-            (migration.name, TARGET_SCHEMA_VERSION, migration.checksum_sha256),
+            (
+                migration.name,
+                CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION,
+                migration.checksum_sha256,
+            ),
         )
         applied = True
     cleanup = await conn.execute(
@@ -1315,7 +1332,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
     index_ledger_contract = tuple(
         (
             migration.name,
-            TARGET_SCHEMA_VERSION,
+            CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION,
             migration.checksum_sha256,
         )
         for migration in CONCURRENT_INDEX_MIGRATIONS

@@ -10,6 +10,7 @@ if __name__ == "__main__" and not sys.flags.isolated:
 from dataclasses import dataclass
 from http.client import HTTPException
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -39,7 +40,48 @@ OPENSANDBOX_HEALTH_PROBE = (
     "response = opener.open(url, timeout=10); "
     "raise SystemExit(0 if response.status == 200 and len(response.read(65537)) <= 65536 else 1)"
 )
+WORKER_RUNTIME_HEARTBEAT_PROBE = """
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import sys
+import time
+
+expected_commit = sys.argv[1]
+not_before = float(sys.argv[2])
+path = Path(os.environ.get("TMPDIR") or "/tmp") / "ai-platform-worker-runtime-heartbeat.json"
+payload = json.loads(path.read_text(encoding="utf-8"))
+if set(payload) != {"schema_version", "worker_id", "runtime_commit", "pid", "observed_at"}:
+    raise SystemExit(2)
+pid = payload["pid"]
+worker_id = payload["worker_id"]
+observed = datetime.fromisoformat(payload["observed_at"])
+if (
+    payload["schema_version"] != "ai-platform.worker-runtime-heartbeat.v1"
+    or not isinstance(worker_id, str)
+    or not worker_id.strip()
+    or payload["runtime_commit"] != expected_commit
+    or isinstance(pid, bool)
+    or not isinstance(pid, int)
+    or pid <= 0
+    or observed.tzinfo is None
+):
+    raise SystemExit(2)
+observed_at = observed.astimezone(timezone.utc).timestamp()
+now = time.time()
+if observed_at < not_before or observed_at > now + 5 or now - observed_at > 30:
+    raise SystemExit(2)
+os.kill(pid, 0)
+print(json.dumps({
+    "status": "ok",
+    "worker_id": worker_id,
+    "pid": pid,
+    "observed_at": observed_at,
+}, sort_keys=True))
+"""
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
+CONTAINER_ID = re.compile(r"[0-9a-f]{64}\Z")
 DIGEST_REF = re.compile(r"(?P<repository>[^@]+)@sha256:[0-9a-f]{64}\Z")
 SERVICES = ("api", "worker", "frontend", "postgres", "redis", "minio")
 PROJECT_SERVICES = (*SERVICES, "workspace-init", "migrate")
@@ -115,6 +157,9 @@ class QuickstartError(RuntimeError): ...
 class RollbackBlockedError(QuickstartError): ...
 
 
+class RollbackInterruptedError(QuickstartError): ...
+
+
 @dataclass(frozen=True)
 class Subject:
     commit: str
@@ -129,6 +174,15 @@ class Subject:
     @property
     def executor_image_digest(self) -> str:
         return self.executor_image.rsplit("@", 1)[1]
+
+
+@dataclass(frozen=True)
+class RecoveryWorkerSample:
+    container_id: str
+    restart_count: int
+    worker_id: str
+    pid: int
+    observed_at: float
 
 
 class Runner:
@@ -494,7 +548,134 @@ class Quickstart:
             raise QuickstartError("protocol-v2 lease state could not be proven") from None
         return total
 
+    def _recovery_worker_sample(
+        self,
+        subject: Subject,
+        *,
+        not_before: float,
+    ) -> RecoveryWorkerSample:
+        fmt = "\t".join((
+            "{{.Id}}",
+            '{{index .Config.Labels "ai-platform.source-commit"}}',
+            "{{.Config.Image}}",
+            "{{.RestartCount}}",
+            "{{.State.Status}}",
+            '{{index .Config.Labels "com.docker.compose.project"}}',
+            '{{index .Config.Labels "com.docker.compose.service"}}',
+            '{{index .Config.Labels "com.docker.compose.project.config_files"}}',
+        ))
+        fields = self.runner.run(
+            [
+                *self.docker,
+                "container",
+                "inspect",
+                "ai-platform-worker",
+                "--format",
+                fmt,
+            ],
+            output=True,
+            timeout=30,
+            environment=_docker_environment(),
+            strip_output=False,
+        ).split("\t")
+        expected_config = ",".join(str(self.repo / path) for path in COMPOSE_FILES)
+        try:
+            container_id, commit, image, raw_restarts, status, project, service, config = fields
+            restart_count = int(raw_restarts)
+        except (TypeError, ValueError):
+            raise QuickstartError("target recovery worker metadata is invalid") from None
+        if (
+            CONTAINER_ID.fullmatch(container_id) is None
+            or commit != subject.commit
+            or image != subject.backend_image
+            or restart_count < 0
+            or status != "running"
+            or project != PROJECT
+            or service != "worker"
+            or config != expected_config
+        ):
+            raise QuickstartError("target recovery worker metadata is invalid")
+        result = self.runner.run(
+            [
+                *self.docker,
+                "exec",
+                container_id,
+                "python",
+                "-I",
+                "-c",
+                WORKER_RUNTIME_HEARTBEAT_PROBE,
+                subject.commit,
+                repr(not_before),
+            ],
+            output=True,
+            timeout=30,
+            environment=_docker_environment(),
+        )
+        try:
+            heartbeat = json.loads(result)
+            if not isinstance(heartbeat, dict) or set(heartbeat) != {
+                "status", "worker_id", "pid", "observed_at",
+            }:
+                raise ValueError
+            worker_id = heartbeat["worker_id"]
+            pid = heartbeat["pid"]
+            observed_at = heartbeat["observed_at"]
+            if (
+                heartbeat["status"] != "ok"
+                or not isinstance(worker_id, str)
+                or not worker_id.strip()
+                or isinstance(pid, bool)
+                or not isinstance(pid, int)
+                or pid <= 0
+                or isinstance(observed_at, bool)
+                or not isinstance(observed_at, (int, float))
+                or not math.isfinite(observed_at)
+                or observed_at < not_before
+            ):
+                raise ValueError
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise QuickstartError("target recovery worker heartbeat is invalid") from None
+        return RecoveryWorkerSample(
+            container_id=container_id,
+            restart_count=restart_count,
+            worker_id=worker_id,
+            pid=pid,
+            observed_at=float(observed_at),
+        )
+
+    def _wait_recovery_worker(self, subject: Subject, *, not_before: float) -> None:
+        deadline = time.monotonic() + self.health_timeout
+        previous: RecoveryWorkerSample | None = None
+        while True:
+            try:
+                current = self._recovery_worker_sample(subject, not_before=not_before)
+                if (
+                    previous is not None
+                    and current.container_id == previous.container_id
+                    and current.restart_count == previous.restart_count
+                    and current.worker_id == previous.worker_id
+                    and current.pid == previous.pid
+                    and current.observed_at > previous.observed_at
+                ):
+                    return
+                previous = current
+            except (
+                OSError,
+                UnicodeError,
+                ValueError,
+                json.JSONDecodeError,
+                subprocess.SubprocessError,
+                QuickstartError,
+            ):
+                previous = None
+            if time.monotonic() >= deadline:
+                raise QuickstartError(
+                    "target recovery worker heartbeat did not converge"
+                ) from None
+            time.sleep(2)
+
     def _retain_target_recovery_worker(self, subject: Subject, env_file: Path) -> None:
+        started_at = time.time()
         self._compose(
             env_file,
             subject,
@@ -505,32 +686,81 @@ class Quickstart:
             "never",
             "worker",
         )
+        self._wait_recovery_worker(subject, not_before=started_at)
+
+    def _restore_target_recovery_worker(
+        self,
+        subject: Subject,
+        env_file: Path,
+    ) -> None:
+        self._compose(env_file, subject, "stop", "api", "worker")
+        self._retain_target_recovery_worker(subject, env_file)
 
     def _rollback(self, subject: Subject, previous: Subject, env_file: Path) -> None:
-        self._compose(env_file, subject, "stop", "api", "worker")
+        pending_signals: list[int] = []
+
+        def defer_interrupt(signum: int, _frame: object) -> None:
+            pending_signals.append(signum)
+
+        previous_handlers = {
+            signum: signal.signal(signum, defer_interrupt)
+            for signum in (signal.SIGINT, signal.SIGTERM)
+        }
         try:
-            protocol_v2_leases = self._protocol_v2_lease_count()
-        except (OSError, subprocess.SubprocessError, QuickstartError):
-            self._retain_target_recovery_worker(subject, env_file)
-            raise RollbackBlockedError(
-                "image rollback blocked because protocol-v2 lease state could not be proven; "
-                "the API remains stopped and the target recovery worker is running"
-            ) from None
-        if protocol_v2_leases:
-            self._retain_target_recovery_worker(subject, env_file)
-            raise RollbackBlockedError(
-                "image rollback blocked by active protocol-v2 leases; the API remains stopped "
-                "and the target recovery worker is running"
-            )
-        previous_repo = self.root / "releases" / previous.commit
-        self._verify_checkout(previous_repo, previous.commit)
-        current_repo, self.repo = self.repo, previous_repo
-        try:
-            self._compose(env_file, previous, "config", "--quiet")
-            self._compose(env_file, previous, "up", "-d", "--no-build", "--pull", "never")
-            self._wait_health(previous)
+            try:
+                self._compose(env_file, subject, "stop", "api", "worker")
+                try:
+                    protocol_v2_leases = self._protocol_v2_lease_count()
+                except (OSError, subprocess.SubprocessError, QuickstartError):
+                    self._retain_target_recovery_worker(subject, env_file)
+                    raise RollbackBlockedError(
+                        "image rollback blocked because protocol-v2 lease state could not be "
+                        "proven; the API remains stopped and the target recovery worker is verified"
+                    ) from None
+                if protocol_v2_leases:
+                    self._retain_target_recovery_worker(subject, env_file)
+                    raise RollbackBlockedError(
+                        "image rollback blocked by active protocol-v2 leases; the API remains "
+                        "stopped and the target recovery worker is verified"
+                    )
+                previous_repo = self.root / "releases" / previous.commit
+                self._verify_checkout(previous_repo, previous.commit)
+                current_repo, self.repo = self.repo, previous_repo
+                try:
+                    self._compose(env_file, previous, "config", "--quiet")
+                    self._compose(
+                        env_file,
+                        previous,
+                        "up",
+                        "-d",
+                        "--no-build",
+                        "--pull",
+                        "never",
+                    )
+                    self._wait_health(previous)
+                finally:
+                    self.repo = current_repo
+            except RollbackBlockedError:
+                raise
+            except KeyboardInterrupt:
+                self._restore_target_recovery_worker(subject, env_file)
+                raise RollbackInterruptedError(
+                    "rollback interruption was deferred until the API was stopped and the "
+                    "target recovery worker was verified"
+                ) from None
+            except (OSError, subprocess.SubprocessError, QuickstartError):
+                self._restore_target_recovery_worker(subject, env_file)
+                raise RollbackBlockedError(
+                    "image rollback could not complete; the API remains stopped and the target "
+                    "recovery worker is verified"
+                ) from None
         finally:
-            self.repo = current_repo
+            for signum, handler in previous_handlers.items():
+                signal.signal(signum, handler)
+        if pending_signals:
+            raise RollbackInterruptedError(
+                "rollback reached a verified safe runtime before honoring the termination request"
+            )
 
     def _preflight_rollback(self, previous: Subject, env_file: Path) -> None:
         previous_repo = self.root / "releases" / previous.commit
@@ -581,6 +811,8 @@ class Quickstart:
             try:
                 self._rollback(subject, previous, env_file)
             except RollbackBlockedError as exc:
+                raise QuickstartError(f"startup failed; {exc}") from None
+            except RollbackInterruptedError as exc:
                 raise QuickstartError(f"startup failed; {exc}") from None
             except (OSError, subprocess.SubprocessError, QuickstartError, KeyboardInterrupt):
                 raise QuickstartError("startup and rollback failed; data volumes were preserved") from None
