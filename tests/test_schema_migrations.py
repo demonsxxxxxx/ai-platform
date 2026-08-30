@@ -15,6 +15,10 @@ REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM = (
 REMOTE_CONCURRENT_DUE_INDEX_CHECKSUM = (
     "9bd4a01cc1db6cdbe445a4a1b4258bfd3513ca34ca6a6381d98ba97006ed2de2"
 )
+# Exact 2026.08.28.1 ledger checksum before reconciler takeover was added.
+REMOTE_MODEL_CONTROL_PLANE_CHECKSUM = (
+    "76ecf5642f302cbc6e132b077c75e9693c3fddb81203beca244baaafd7c686c5"
+)
 
 
 class FakeCursor:
@@ -320,9 +324,13 @@ async def test_schema_status_uses_exact_model_index_relation_keys_and_predicates
             schema_migrations.V4_CONCURRENT_DUE_INDEX_SCHEMA_VERSION,
             REMOTE_CONCURRENT_DUE_INDEX_CHECKSUM,
         ),
+        (
+            schema_migrations.MODEL_CONTROL_PLANE_SCHEMA_VERSION,
+            REMOTE_MODEL_CONTROL_PLANE_CHECKSUM,
+        ),
     ),
 )
-async def test_prior_schema_ledgers_advance_to_model_control_plane_schema(
+async def test_prior_schema_ledgers_advance_to_current_schema(
     installed_version: str,
     installed_checksum: str,
 ) -> None:
@@ -388,7 +396,11 @@ async def test_successor_activation_schema_advances_to_concurrent_due_index_sche
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.28.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.30.1"
+    assert (
+        schema_migrations.TARGET_SCHEMA_VERSION
+        == schema_migrations.RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION
+    )
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
