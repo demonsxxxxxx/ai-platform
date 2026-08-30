@@ -9,12 +9,12 @@ import unicodedata
 import httpx
 
 from app.models import DepartmentDirectoryNodeResponse, DepartmentDirectoryResponse
+from app.validation import assert_safe_department_authority_id
 
 PURE_DEPARTMENT_DIRECTORY_URL = "http://10.56.0.25:5033/api/DingTalk/departs/pure"
 PURE_DEPARTMENT_DIRECTORY_TIMEOUT_SECONDS = 5.0
 MAX_DIRECTORY_NODES = 5_000
 MAX_DIRECTORY_DEPTH = 12
-MAX_DIRECTORY_LABEL_LENGTH = 160
 MAX_DISTRIBUTION_DEPARTMENTS = 128
 ROOT_PARENT_ID = "1"
 _PURE_NODE_KEYS = frozenset({"value", "parentId", "label", "children"})
@@ -43,15 +43,10 @@ def _safe_numeric_id(value: object) -> str:
 def _safe_label(value: object) -> str:
     if not isinstance(value, str):
         raise DepartmentDirectoryError("department_directory_shape_invalid")
-    candidate = value
-    if (
-        not candidate
-        or candidate != candidate.strip()
-        or len(candidate) > MAX_DIRECTORY_LABEL_LENGTH
-        or any(unicodedata.category(character).startswith("C") for character in candidate)
-    ):
-        raise DepartmentDirectoryError("department_directory_shape_invalid")
-    return candidate
+    try:
+        return assert_safe_department_authority_id(value, "department")
+    except ValueError as exc:
+        raise DepartmentDirectoryError("department_directory_shape_invalid") from exc
 
 
 def _authority_key(label: str) -> str:

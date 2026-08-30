@@ -56,6 +56,8 @@ def test_projects_pure_tree_and_disables_normalized_label_collisions():
         [{"value": "2", "parentId": "1", "label": "QA\n", "children": []}],
         [{"value": "2", "parentId": "1", "label": "\tQA", "children": []}],
         [{"value": "2", "parentId": "1", "label": "\u0085QA", "children": []}],
+        [{"value": "2", "parentId": "1", "label": "QA,RD", "children": []}],
+        [{"value": "2", "parentId": "1", "label": "部" * 161, "children": []}],
         [{"value": " 2", "parentId": "1", "label": "QA", "children": []}],
         [
             {"value": "2", "parentId": "1", "label": "QA", "children": []},
@@ -71,6 +73,8 @@ def test_projects_pure_tree_and_disables_normalized_label_collisions():
         "newline-label",
         "tab-label",
         "nel-label",
+        "comma-label",
+        "overlong-label",
         "padded-id",
         "duplicate-id",
     ],

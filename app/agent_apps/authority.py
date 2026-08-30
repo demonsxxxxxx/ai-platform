@@ -15,6 +15,11 @@ from app.agent_apps.api import safe_agent_avatar_seed
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
+from app.department_directory import (
+    DepartmentDirectoryError,
+    fetch_department_directory,
+    validate_distribution_department_authorities,
+)
 from app.models import (
     AgentConversationIdentity,
     AgentProfileAdminProjection,
@@ -30,6 +35,8 @@ from app.models import (
 _AVATAR_REFS = {"builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"}
 _CATEGORIES = {"general", "support", "writing", "research", "operations"}
 _VISIBILITIES = {"tenant", "restricted"}
+_AGENT_PROFILE_DEPARTMENT_AUTHORITY_INVALID = "agent_profile_department_authority_invalid"
+_AGENT_PROFILE_DEPARTMENT_DIRECTORY_UNAVAILABLE = "agent_profile_department_directory_unavailable"
 _ROLLING_LEGACY_SUPPORTED_INPUT_TYPES = ["text", "file"]
 _PROFILE_MODEL_COMPATIBILITY_SENTINEL = "platform-selected"
 _ROLLING_LEGACY_SUPPORTED_FILE_TYPES = [
@@ -183,6 +190,29 @@ def profile_acl_allows(row: dict[str, Any], *, principal: AuthPrincipal) -> bool
     if allowed_roles and not allowed_roles.intersection(normalize_roles(principal.roles)):
         return False
     return bool(allowed_departments or allowed_roles)
+
+
+async def _validate_profile_department_authorities(
+    definition: AgentProfileDraftRequest,
+) -> None:
+    if not definition.allowed_department_ids:
+        return
+    try:
+        directory = await fetch_department_directory()
+        validate_distribution_department_authorities(
+            definition.allowed_department_ids,
+            directory,
+        )
+    except DepartmentDirectoryError as exc:
+        if str(exc) == "capability_distribution_department_authority_invalid":
+            raise HTTPException(
+                status_code=422,
+                detail=_AGENT_PROFILE_DEPARTMENT_AUTHORITY_INVALID,
+            ) from exc
+        raise HTTPException(
+            status_code=503,
+            detail=_AGENT_PROFILE_DEPARTMENT_DIRECTORY_UNAVAILABLE,
+        ) from exc
 
 
 def profile_public_projection(row: dict[str, Any]) -> dict[str, Any]:
@@ -867,6 +897,7 @@ class AgentProfileAuthority:
             definition = _merge_omitted_profile_fields(definition, prior_row=prior_row)
         if not definition.avatar_seed:
             definition = definition.model_copy(update={"avatar_seed": resolved_agent_id})
+        await _validate_profile_department_authorities(definition)
         await repositories.ensure_agent_profile_identity(
             conn,
             tenant_id=principal.tenant_id,
@@ -960,6 +991,7 @@ class AgentProfileAuthority:
         source_content_hash = str(draft_row.get("content_hash") or "")
         self._require_revision_integrity(draft_row)
         definition = _draft_from_row(draft_row)
+        await _validate_profile_department_authorities(definition)
         await self._validate_definition(conn, principal=principal, agent_id=agent_id, definition=definition)
         definition._legacy_model_id = _PROFILE_MODEL_COMPATIBILITY_SENTINEL
         row = await repositories.create_agent_profile_revision(
@@ -1175,6 +1207,7 @@ class AgentProfileAuthority:
             if prior_row is None:
                 raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
             definition = _merge_omitted_profile_fields(definition, prior_row=prior_row)
+        await _validate_profile_department_authorities(definition)
         if validation_agent_id is None:
             validation_agent_id = await repositories.get_tenant_profile_validation_agent(
                 conn,

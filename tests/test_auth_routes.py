@@ -459,8 +459,8 @@ def _install_company_department_login_fakes(monkeypatch, user_info, *, qa_depart
 def test_company_login_trusted_department_reaches_session_and_skill_projection(monkeypatch):
     _install_company_department_login_fakes(
         monkeypatch,
-        {"roles": ["user"], "department": " QA "},
-        qa_department_id="QA",
+        {"roles": ["user"], "department": "研发一部"},
+        qa_department_id="研发一部",
     )
     client = browser_client()
 
@@ -471,7 +471,9 @@ def test_company_login_trusted_department_reaches_session_and_skill_projection(m
     )
 
     assert login_response.status_code == 200
-    assert client.get("/api/ai/auth/me").json()["user_id"] == "user001"
+    current_principal = client.get("/api/ai/auth/me").json()
+    assert current_principal["user_id"] == "user001"
+    assert current_principal["department_id"] == "研发一部"
 
     skills_response = client.get("/api/skills/")
 
@@ -482,7 +484,7 @@ def test_company_login_trusted_department_reaches_session_and_skill_projection(m
 def test_company_login_department_authorization_is_case_sensitive(monkeypatch):
     _install_company_department_login_fakes(
         monkeypatch,
-        {"roles": ["user"], "department": " QA "},
+        {"roles": ["user"], "department": "QA"},
     )
     client = browser_client()
 
@@ -513,7 +515,7 @@ def test_company_login_ignores_unsupported_alias_metadata_when_top_level_departm
     monkeypatch,
     alias_metadata,
 ):
-    user_info = {"roles": ["user"], "department": " QA ", **alias_metadata}
+    user_info = {"roles": ["user"], "department": "QA", **alias_metadata}
     _install_company_department_login_fakes(
         monkeypatch,
         user_info,
@@ -559,6 +561,9 @@ def test_company_login_rejects_client_department_field(monkeypatch):
         {"roles": ["user"], "department": ["qa"]},
         {"roles": ["user"], "department": {"id": "qa"}},
         {"roles": ["user"], "department": "qa,rd"},
+        {"roles": ["user"], "department": " qa"},
+        {"roles": ["user"], "department": "qa "},
+        {"roles": ["user"], "department": "qa\n"},
         {"roles": ["user"], "department_id": "qa"},
         {"roles": ["user"], "departmentId": "qa"},
         {"roles": ["user"], "departmentName": "qa"},

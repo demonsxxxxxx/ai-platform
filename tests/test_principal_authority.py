@@ -8,6 +8,7 @@ from app.principal_authority import (
     AI_USER_PERMISSIONS,
     CURRENT_PRINCIPAL_DENIAL_REASON,
     PrincipalAuthorityDenied,
+    fetch_company_user_info,
     resolve_current_principal,
     resolve_login_principal,
 )
@@ -32,6 +33,40 @@ def _adapter(result):
         return result
 
     return fetch
+
+
+@pytest.mark.asyncio
+async def test_company_user_info_transport_ignores_environment_proxy(monkeypatch):
+    observed: dict[str, object] = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"workId": "user-a"}
+
+    class Client:
+        def __init__(self, **kwargs):
+            observed["client"] = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url):
+            observed["url"] = url
+            return Response()
+
+    monkeypatch.setattr("app.principal_authority.httpx.AsyncClient", Client)
+
+    assert await fetch_company_user_info("user-a", settings=_settings()) == {"workId": "user-a"}
+    assert observed == {
+        "client": {"timeout": 1, "trust_env": False},
+        "url": "https://company.test/api/userManage/user-a/info",
+    }
 
 
 async def _resolve(kind, result, *, settings=None, login_name="login-a"):
@@ -66,7 +101,7 @@ async def test_login_and_current_principal_accept_the_observed_legacy_company_re
 
     assert login.user_id == current.user_id == "user-a"
     assert login.tenant_id == current.tenant_id == "tenant-a"
-    assert login.department_id == current.department_id == ""
+    assert login.department_id == current.department_id == "研发一部"
     assert login.roles == current.roles == ["user"]
     assert login.permissions == current.permissions == list(AI_USER_PERMISSIONS)
 
@@ -164,7 +199,7 @@ async def test_current_principal_uses_current_identity_roles_department_and_deri
                 "workId": "user-a",
                 "tenantId": "tenant-a",
                 "roles": ["user"],
-                "department": " QA ",
+                "department": "QA",
                 "active": True,
                 "permissions": ["upstream:must-not-leak"],
             }
@@ -209,11 +244,18 @@ async def test_current_principal_recomputes_revoked_admin_role_from_the_same_aut
     ("department", "expected"),
     [
         ("rd", "rd"),
+        ("药品注册", "药品注册"),
         ("", ""),
         (None, ""),
         (42, ""),
         (["qa"], ""),
         ("qa,rd", ""),
+        (" qa", ""),
+        ("qa ", ""),
+        ("qa\n", ""),
+        ("\tqa", ""),
+        ("qa\u200b", ""),
+        ("部" * 161, ""),
     ],
 )
 @pytest.mark.asyncio
