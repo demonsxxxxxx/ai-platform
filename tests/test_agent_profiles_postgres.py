@@ -80,6 +80,65 @@ create table agents (
   constraint uq_agents_tenant_id unique (tenant_id, id)
 );
 
+create or replace function agent_profile_knowledge_source_ids_are_unique(source_ids jsonb)
+returns boolean
+language sql
+immutable
+strict
+parallel safe
+as $$
+  select case
+    when jsonb_typeof(source_ids) <> 'array' then false
+    else not exists (
+      select 1
+      from jsonb_array_elements_text(source_ids) as source_ids_table(source_id)
+      where source_id !~ '^[A-Za-z0-9_.:-]{1,160}$'
+    ) and (
+      select count(*) = count(distinct source_id)
+      from jsonb_array_elements_text(source_ids) as source_ids_table(source_id)
+    )
+  end;
+$$;
+
+create or replace function agent_profile_knowledge_bindings_are_valid(
+  source_ids jsonb,
+  retrieval_profile_id text,
+  bindings jsonb
+)
+returns boolean
+language sql
+immutable
+parallel safe
+as $$
+  select case
+    when jsonb_typeof(source_ids) <> 'array' or jsonb_typeof(bindings) <> 'array' then false
+    when jsonb_array_length(bindings) = 0 then true
+    when retrieval_profile_id is null then false
+    when jsonb_array_length(bindings) <> jsonb_array_length(source_ids) then false
+    else not exists (
+      select 1
+      from jsonb_array_elements(bindings) with ordinality as binding_rows(binding, position)
+      where jsonb_typeof(binding) <> 'object'
+         or not (binding ?& array[
+              'source_id', 'source_authorization_version', 'ordinal', 'required',
+              'retrieval_profile_id', 'retrieval_profile_revision'
+            ])
+         or binding - array[
+              'source_id', 'source_authorization_version', 'ordinal', 'required',
+              'retrieval_profile_id', 'retrieval_profile_revision'
+            ] <> '{}'::jsonb
+         or binding ->> 'source_id' is distinct from source_ids ->> (position - 1)::int
+         or jsonb_typeof(binding -> 'source_authorization_version') <> 'number'
+         or binding ->> 'source_authorization_version' !~ '^[1-9][0-9]*$'
+         or binding -> 'ordinal' <> to_jsonb(position - 1)
+         or binding -> 'required' <> 'true'::jsonb
+         or binding ->> 'retrieval_profile_id' is distinct from retrieval_profile_id
+         or jsonb_typeof(binding -> 'retrieval_profile_revision') <> 'number'
+         or binding ->> 'retrieval_profile_revision' !~ '^[1-9][0-9]*$'
+    )
+  end;
+$$;
+
 create table agent_profile_revisions (
   tenant_id text not null references tenants(id),
   agent_id text not null,
@@ -102,6 +161,10 @@ create table agent_profile_revisions (
   skill_version text not null,
   skill_set jsonb not null default '[]'::jsonb,
   mcp_tool_ids jsonb not null default '[]'::jsonb,
+  knowledge_enabled boolean not null default false,
+  knowledge_source_ids jsonb not null default '[]'::jsonb,
+  retrieval_profile_id text,
+  knowledge_bindings jsonb not null default '[]'::jsonb,
   content_hash text not null,
   avatar_ref text not null
     check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research')),
@@ -124,6 +187,46 @@ create table agent_profile_revisions (
     foreign key (tenant_id, agent_id) references agents(tenant_id, id),
   constraint chk_agent_profile_revisions_visibility
     check (visibility in ('tenant', 'restricted')),
+  constraint chk_agent_profile_knowledge_sources check (
+    jsonb_typeof(knowledge_source_ids) = 'array'
+    and jsonb_array_length(knowledge_source_ids) <= 8
+    and agent_profile_knowledge_source_ids_are_unique(knowledge_source_ids)
+  ),
+  constraint chk_agent_profile_knowledge_pair check (
+    (jsonb_array_length(knowledge_source_ids) = 0 and retrieval_profile_id is null)
+    or (
+      jsonb_array_length(knowledge_source_ids) > 0
+      and retrieval_profile_id is not null
+      and retrieval_profile_id = btrim(retrieval_profile_id)
+      and retrieval_profile_id ~ '^[A-Za-z0-9_.:-]{1,160}$'
+    )
+  ),
+  constraint chk_agent_profile_knowledge_bindings check (
+    jsonb_typeof(knowledge_bindings) = 'array'
+    and jsonb_array_length(knowledge_bindings) <= 8
+    and octet_length(knowledge_bindings::text) <= 8192
+    and jsonb_array_length(knowledge_bindings) in (
+      0,
+      jsonb_array_length(knowledge_source_ids)
+    )
+    and agent_profile_knowledge_bindings_are_valid(
+      knowledge_source_ids,
+      retrieval_profile_id,
+      knowledge_bindings
+    )
+    and (
+      revision_status <> 'published'
+      or (
+        knowledge_enabled
+        and jsonb_array_length(knowledge_source_ids) > 0
+        and jsonb_array_length(knowledge_bindings) = jsonb_array_length(knowledge_source_ids)
+      )
+      or (
+        not knowledge_enabled
+        and jsonb_array_length(knowledge_bindings) = 0
+      )
+    )
+  ),
   constraint uq_agent_profile_revision_publication
     unique (tenant_id, agent_id, revision, content_hash, revision_status),
   primary key (tenant_id, agent_id, revision)
@@ -497,6 +600,19 @@ async def test_create_agent_profile_revision_persists_draft_and_publish_in_postg
                 skill_id="general-chat",
                 skill_version="version-a",
                 mcp_tool_ids=["mcp-published"],
+                knowledge_enabled=True,
+                knowledge_source_ids=["ks_finance"],
+                retrieval_profile_id="krp_default",
+                knowledge_bindings=[
+                    {
+                        "source_id": "ks_finance",
+                        "source_authorization_version": 3,
+                        "ordinal": 0,
+                        "required": True,
+                        "retrieval_profile_id": "krp_default",
+                        "retrieval_profile_revision": 1,
+                    }
+                ],
                 content_hash="b" * 64,
                 created_by="creator-a",
                 published_by="publisher-a",
@@ -512,12 +628,17 @@ async def test_create_agent_profile_revision_persists_draft_and_publish_in_postg
         assert published["revision"] == 2
         assert published["status"] == "published"
         assert published["mcp_tool_ids"] == ["mcp-published"]
+        assert published["knowledge_enabled"] is True
+        assert published["knowledge_source_ids"] == ["ks_finance"]
+        assert published["retrieval_profile_id"] == "krp_default"
+        assert published["knowledge_bindings"][0]["source_authorization_version"] == 3
         assert published["content_hash"] == "b" * 64
         assert published["published_at"] == server_timestamp
 
         rows_cursor = await conn.execute(
             """
-            select revision, status, mcp_tool_ids, content_hash, created_by,
+            select revision, status, mcp_tool_ids, knowledge_source_ids,
+                   retrieval_profile_id, knowledge_bindings, content_hash, created_by,
                    published_by, published_at, published_from_revision
             from agent_profile_revisions
             where tenant_id = %s and agent_id = %s
@@ -531,6 +652,9 @@ async def test_create_agent_profile_revision_persists_draft_and_publish_in_postg
                 "revision": 1,
                 "status": "draft",
                 "mcp_tool_ids": ["mcp-draft"],
+                "knowledge_source_ids": [],
+                "retrieval_profile_id": None,
+                "knowledge_bindings": [],
                 "content_hash": "a" * 64,
                 "created_by": "creator-a",
                 "published_by": None,
@@ -541,6 +665,18 @@ async def test_create_agent_profile_revision_persists_draft_and_publish_in_postg
                 "revision": 2,
                 "status": "published",
                 "mcp_tool_ids": ["mcp-published"],
+                "knowledge_source_ids": ["ks_finance"],
+                "retrieval_profile_id": "krp_default",
+                "knowledge_bindings": [
+                    {
+                        "source_id": "ks_finance",
+                        "source_authorization_version": 3,
+                        "ordinal": 0,
+                        "required": True,
+                        "retrieval_profile_id": "krp_default",
+                        "retrieval_profile_revision": 1,
+                    }
+                ],
                 "content_hash": "b" * 64,
                 "created_by": "creator-a",
                 "published_by": "publisher-a",
@@ -548,6 +684,27 @@ async def test_create_agent_profile_revision_persists_draft_and_publish_in_postg
                 "published_from_revision": 1,
             },
         ]
+
+        with pytest.raises(psycopg.errors.CheckViolation):
+            async with conn.transaction():
+                await repositories.create_agent_profile_revision(
+                    conn,
+                    tenant_id="tenant-a",
+                    agent_id="agt_support",
+                    status="draft",
+                    name="Invalid duplicate binding",
+                    description="",
+                    instructions="Private draft instruction",
+                    legacy_model_id="model-a",
+                    skill_id="general-chat",
+                    skill_version="version-a",
+                    mcp_tool_ids=[],
+                    knowledge_source_ids=["ks_finance", "ks_finance"],
+                    retrieval_profile_id="krp_default",
+                    content_hash="c" * 64,
+                    created_by="creator-a",
+                    expected_previous_revision=2,
+                )
     finally:
         try:
             await conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))

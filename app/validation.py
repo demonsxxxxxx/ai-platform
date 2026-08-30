@@ -30,6 +30,39 @@ def assert_safe_principal_user_id(value: str, field_name: str = "user_id") -> st
     return value
 
 
+def normalize_capability_department_ids(values: list[str], field_name: str) -> list[str]:
+    normalized: list[str] = []
+    for value in values:
+        candidate = assert_safe_id(value.strip(), field_name)
+        if candidate not in normalized:
+            normalized.append(candidate)
+    return normalized
+
+
+def normalize_capability_roles(values: list[str], field_name: str) -> list[str]:
+    normalized: list[str] = []
+    for value in values:
+        candidate = assert_safe_id(value.strip().casefold(), field_name)
+        if candidate not in normalized:
+            normalized.append(candidate)
+    return normalized
+
+
+def normalize_agent_profile_user_ids(values: list[str], field_name: str) -> list[str]:
+    normalized: list[str] = []
+    for value in values:
+        candidate = assert_safe_principal_user_id(value.strip(), field_name)
+        if candidate not in normalized:
+            normalized.append(candidate)
+    return normalized
+
+
+def require_universal_agent_input_types(values: list[str]) -> list[str]:
+    if values != ["text", "file"]:
+        raise ValueError("supported_input_types must be the universal text/file capability")
+    return values
+
+
 def assert_canonical_sha256(value: object, error_code: str) -> str:
     if not isinstance(value, str) or not CANONICAL_SHA256_PATTERN.fullmatch(value):
         raise ValueError(error_code)

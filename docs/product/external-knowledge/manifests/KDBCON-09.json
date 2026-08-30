@@ -1,0 +1,23 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KDBCON-09",
+  "issue_number": 1311,
+  "summary": "Additive Knowledge schema and PostgreSQL authority candidate; PostgreSQL acceptance remains pending",
+  "atomic_case_ids": [
+    "KAC-FR-KCON-009",
+    "KAC-FR-KCON-010",
+    "KAC-FR-KCON-011",
+    "KAC-FR-KCON-035"
+  ],
+  "changed_paths": [
+    "app/knowledge/infrastructure/postgres.py",
+    "app/schema.sql",
+    "app/schema_migrations.py",
+    "docs/product/external-knowledge/manifests/KDBCON-09.json",
+    "tests/test_knowledge_postgres.py",
+    "tests/test_schema.py",
+    "tests/test_schema_migrations.py",
+    "tests/test_schema_migrations_postgres.py"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

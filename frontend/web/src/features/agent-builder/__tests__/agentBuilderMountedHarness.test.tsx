@@ -3,7 +3,11 @@ import test from "node:test";
 
 import React from "react";
 
-import type { AgentProfileAdminProjection, PublicSkillResponse } from "../../../types";
+import type {
+  AgentProfileAdminProjection,
+  KnowledgeBuilderCatalog,
+  PublicSkillResponse,
+} from "../../../types";
 import type { AgentBuilderWorkbenchCatalog } from "../AgentBuilderWorkbench";
 
 type Listener = (event: Record<string, unknown>) => void;
@@ -402,8 +406,17 @@ function catalog(
         description: "检索授权支持知识。",
       },
     ],
+    knowledgeSources: [],
+    retrievalProfiles: [],
+    loadKnowledgeSources: async () => ({
+      sources: [],
+      next_cursor: null,
+      limit: 50,
+      retrieval_profiles: [],
+    }),
     skillsResolved: true,
     mcpToolsResolved: true,
+    knowledgeResolved: true,
     effectivePermissionsKnown: true,
     isLoading: false,
     error: null,
@@ -492,6 +505,217 @@ test("mounted workbench hydrates, refreshes, and creates only an explicit local 
     assert.match(container.textContent, /本地未保存/);
     assert.equal(container.textContent.includes("local-draft-1"), false);
     assert.equal(container.textContent.includes("local-draft-2"), false);
+  } finally {
+    Object.assign(agentProfileApi, originals);
+    await React.act(async () => root.unmount());
+  }
+});
+
+test("mounted workbench loads the Knowledge catalog only after the expert opts in", async () => {
+  const document = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
+  const originals = { ...agentProfileApi };
+  let knowledgeLoadCalls = 0;
+  agentProfileApi.listAdmin = async () => ({
+    agent_profiles: [
+      profile({
+        knowledge_enabled: false,
+        knowledge_source_ids: [],
+        retrieval_profile_id: null,
+      }),
+    ],
+  });
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = ReactDOM.createRoot(container as never);
+  try {
+    await React.act(async () => {
+      root.render(React.createElement(AgentBuilderWorkbench, {
+        catalog: catalog({
+          knowledgeResolved: false,
+          loadKnowledgeSources: async () => {
+            knowledgeLoadCalls += 1;
+            return {
+              sources: [],
+              next_cursor: null,
+              limit: 50,
+              retrieval_profiles: [],
+            };
+          },
+        }),
+        canManageProfiles: true,
+      }));
+      await flush();
+    });
+    assert.equal(knowledgeLoadCalls, 0);
+
+    const knowledgeSwitch = container.querySelector('[aria-label="企业内部知识库"]');
+    assert.ok(knowledgeSwitch);
+    assert.equal(knowledgeSwitch.getAttribute("aria-checked"), "false");
+    await React.act(async () => {
+      await reactProps(knowledgeSwitch).onClick?.({} as never);
+      await flush();
+    });
+
+    assert.equal(knowledgeLoadCalls, 1);
+    assert.equal(knowledgeSwitch.getAttribute("aria-checked"), "true");
+  } finally {
+    Object.assign(agentProfileApi, originals);
+    await React.act(async () => root.unmount());
+  }
+});
+
+test("mounted workbench resolves retained Knowledge selections with one in-flight request", async () => {
+  const document = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
+  const originals = { ...agentProfileApi };
+  let selectedSourceLoadCalls = 0;
+  let resolveSelection: (value: KnowledgeBuilderCatalog) => void = () => {};
+  const selectionPage = new Promise<KnowledgeBuilderCatalog>((resolve) => {
+    resolveSelection = resolve;
+  });
+  agentProfileApi.listAdmin = async () => ({
+    agent_profiles: [
+      profile({
+        knowledge_enabled: true,
+        knowledge_source_ids: ["ks-retained"],
+        retrieval_profile_id: "krp-default",
+      }),
+    ],
+  });
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = ReactDOM.createRoot(container as never);
+  try {
+    await React.act(async () => {
+      root.render(React.createElement(AgentBuilderWorkbench, {
+        catalog: catalog({
+          knowledgeResolved: true,
+          knowledgeSources: [],
+          loadKnowledgeSources: async (params) => {
+            if (params?.selectedSourceIds?.includes("ks-retained")) {
+              selectedSourceLoadCalls += 1;
+              return selectionPage;
+            }
+            return undefined;
+          },
+        }),
+        canManageProfiles: true,
+      }));
+      await flush();
+    });
+
+    assert.equal(selectedSourceLoadCalls, 1);
+    await React.act(async () => {
+      resolveSelection({
+        sources: [
+          {
+            id: "ks-retained",
+            name: "保留知识源",
+            description: "已通过独立选择校验。",
+            authorization_version: 3,
+            connection_name: "企业 RAGFlow",
+            last_seen_at: null,
+            available: true,
+            source_status: "active",
+            connection_status: "active",
+            visibility: "enterprise",
+            allowed_department_count: 0,
+            allowed_department_ids: [],
+            allowed_roles: [],
+            allowed_user_ids: [],
+          },
+        ],
+        next_cursor: null,
+        limit: 50,
+        retrieval_profiles: [],
+      });
+      await flush();
+    });
+    assert.equal(selectedSourceLoadCalls, 1);
+    assert.equal(container.textContent.includes("1 项知识源不可用"), false);
+  } finally {
+    Object.assign(agentProfileApi, originals);
+    await React.act(async () => root.unmount());
+  }
+});
+
+test("mounted workbench reports retained Knowledge verification errors and retries without false unavailable state", async () => {
+  const document = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
+  const originals = { ...agentProfileApi };
+  let selectedSourceLoadCalls = 0;
+  agentProfileApi.listAdmin = async () => ({
+    agent_profiles: [
+      profile({
+        knowledge_enabled: true,
+        knowledge_source_ids: ["ks-retained"],
+        retrieval_profile_id: "krp-default",
+      }),
+    ],
+  });
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = ReactDOM.createRoot(container as never);
+  try {
+    await React.act(async () => {
+      root.render(React.createElement(AgentBuilderWorkbench, {
+        catalog: catalog({
+          knowledgeResolved: true,
+          knowledgeSources: [],
+          loadKnowledgeSources: async (params) => {
+            if (!params?.selectedSourceIds?.includes("ks-retained")) return undefined;
+            selectedSourceLoadCalls += 1;
+            if (selectedSourceLoadCalls === 1) return undefined;
+            return {
+              sources: [
+                {
+                  id: "ks-retained",
+                  name: "恢复后的知识源",
+                  description: "重试后通过独立选择校验。",
+                  authorization_version: 4,
+                  connection_name: "企业 RAGFlow",
+                  last_seen_at: null,
+                  available: true,
+                  source_status: "active",
+                  connection_status: "active",
+                  visibility: "enterprise",
+                  allowed_department_count: 0,
+                  allowed_department_ids: [],
+                  allowed_roles: [],
+                  allowed_user_ids: [],
+                },
+              ],
+              next_cursor: null,
+              limit: 50,
+              retrieval_profiles: [],
+            };
+          },
+        }),
+        canManageProfiles: true,
+      }));
+      await flush();
+    });
+
+    assert.equal(selectedSourceLoadCalls, 1);
+    assert.match(container.textContent, /无法核验已选知识源/);
+    assert.equal(container.textContent.includes("1 项知识源不可用"), false);
+
+    await React.act(async () => {
+      await reactProps(findButton(container, "重新校验")).onClick?.({} as never);
+      await flush();
+    });
+
+    assert.equal(selectedSourceLoadCalls, 2);
+    assert.match(container.textContent, /恢复后的知识源/);
+    assert.equal(container.textContent.includes("无法核验已选知识源"), false);
+    assert.equal(container.textContent.includes("1 项知识源不可用"), false);
   } finally {
     Object.assign(agentProfileApi, originals);
     await React.act(async () => root.unmount());

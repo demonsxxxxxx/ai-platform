@@ -162,6 +162,9 @@ the external-runtime P0 requirement.
 | KAGT-033 | KBLDTEST-30 | KAC-FR-KAGT-033 | KAC-TEST-005..KAC-TEST-008 | unit/integration |
 | KAGT-034 | KBLDTEST-30 | KAC-FR-KAGT-034 | KAC-TEST-005..KAC-TEST-008 | unit/integration |
 | KAGT-035 | KBLDTEST-30 | KAC-FR-KAGT-035 | KAC-TEST-005..KAC-TEST-008 | unit/integration |
+| KAGT-036 | KBUILD-29 | KAC-FR-KAGT-036 | KAC-DOM-021; KAC-UI-015; KAC-BR-015 | component/browser |
+| KAGT-037 | KPUB-32 | KAC-FR-KAGT-037 | KAC-AUTH-017; KAC-DOM-021 | PostgreSQL/integration |
+| KAGT-038 | KPUB-32 | KAC-FR-KAGT-038 | KAC-AUTH-017 | unit/integration |
 | KADM-001 | KMARKET-33 | KAC-FR-KADM-001 | KAC-AUTH-001..KAC-AUTH-016 | component/browser |
 | KADM-002 | KMARKET-33 | KAC-FR-KADM-002 | KAC-AUTH-001..KAC-AUTH-016 | component/browser |
 | KADM-003 | KMARKET-33 | KAC-FR-KADM-003 | KAC-AUTH-001..KAC-AUTH-016 | component/browser |
@@ -187,6 +190,8 @@ the external-runtime P0 requirement.
 | KADM-023 | KSNAP-35 | KAC-FR-KADM-023 | KAC-AUTH-001..KAC-AUTH-016 | PostgreSQL/integration |
 | KADM-024 | KSNAP-35 | KAC-FR-KADM-024 | KAC-AUTH-001..KAC-AUTH-016 | PostgreSQL/integration |
 | KADM-025 | KSNAP-35 | KAC-FR-KADM-025 | KAC-DB-029..KAC-DB-030 | PostgreSQL/concurrency |
+| KADM-026 | KSNAP-35 | KAC-FR-KADM-026 | KAC-RUN-016 | unit/integration |
+| KADM-027 | KMARKET-33 | KAC-FR-KADM-027 | KAC-PUB-011 | unit/component |
 | KRET-001 | KREXEC-36 | KAC-FR-KRET-001 | KAC-RUN-001..KAC-RUN-013 | unit/integration |
 | KRET-002 | KREXEC-36 | KAC-FR-KRET-002 | KAC-RUN-001..KAC-RUN-013 | unit/integration |
 | KRET-003 | KDOM-03 | KAC-FR-KRET-003 | KAC-RUN-001..KAC-RUN-013 | architecture/unit |

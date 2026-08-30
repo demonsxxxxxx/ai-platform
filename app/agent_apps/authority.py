@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -15,6 +17,7 @@ from app.agent_apps.api import safe_agent_avatar_seed
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
+from app.knowledge.api import authorize_agent_profile_knowledge_sources
 from app.models import (
     AgentConversationIdentity,
     AgentProfileAdminProjection,
@@ -60,6 +63,9 @@ _PRESENCE_AWARE_PROFILE_FIELDS = (
     "allowed_department_ids",
     "allowed_roles",
     "allowed_user_ids",
+    "knowledge_enabled",
+    "knowledge_source_ids",
+    "retrieval_profile_id",
 )
 _PROFILE_TRANSPORT_SELECTOR_PATHS = frozenset(
     {
@@ -134,6 +140,72 @@ def _mcp_tool_ids(row: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(raw))
 
 
+def _knowledge_source_ids(row: dict[str, Any]) -> list[str]:
+    raw = row.get("knowledge_source_ids")
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > 8:
+        raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    normalized = _safe_string_list(raw)
+    if len(normalized) != len(raw):
+        raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    return normalized
+
+
+def _knowledge_enabled(row: dict[str, Any]) -> bool:
+    raw = row.get("knowledge_enabled")
+    if raw is None:
+        # Rolling compatibility for rows projected by the previous binary.
+        return bool(_knowledge_source_ids(row))
+    if not isinstance(raw, bool):
+        raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    return raw
+
+
+def _knowledge_bindings(row: dict[str, Any]) -> list[dict[str, Any]]:
+    source_ids = _knowledge_source_ids(row)
+    retrieval_profile_id = (
+        str(row["retrieval_profile_id"])
+        if row.get("retrieval_profile_id")
+        else None
+    )
+    raw = row.get("knowledge_bindings")
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) not in {0, len(source_ids)}:
+        raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+    normalized: list[dict[str, Any]] = []
+    for ordinal, value in enumerate(raw):
+        if not isinstance(value, dict):
+            raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+        authorization_version = value.get("source_authorization_version")
+        profile_revision = value.get("retrieval_profile_revision")
+        if (
+            value.get("source_id") != source_ids[ordinal]
+            or value.get("ordinal") != ordinal
+            or value.get("required") is not True
+            or value.get("retrieval_profile_id") != retrieval_profile_id
+            or isinstance(authorization_version, bool)
+            or not isinstance(authorization_version, int)
+            or authorization_version < 1
+            or isinstance(profile_revision, bool)
+            or not isinstance(profile_revision, int)
+            or profile_revision < 1
+        ):
+            raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
+        normalized.append(
+            {
+                "source_id": source_ids[ordinal],
+                "source_authorization_version": authorization_version,
+                "ordinal": ordinal,
+                "required": True,
+                "retrieval_profile_id": retrieval_profile_id,
+                "retrieval_profile_revision": profile_revision,
+            }
+        )
+    return normalized
+
+
 def _effective_mcp_tool_ids(
     row: dict[str, Any],
     *,
@@ -188,6 +260,8 @@ def profile_acl_allows(row: dict[str, Any], *, principal: AuthPrincipal) -> bool
 def profile_public_projection(row: dict[str, Any]) -> dict[str, Any]:
     """Return the only Agent Profile card/detail fields available to ordinary users."""
 
+    knowledge_enabled = _knowledge_enabled(row)
+    knowledge_source_count = len(_knowledge_source_ids(row)) if knowledge_enabled else 0
     return {
         "agent_id": str(row["agent_id"]),
         "expected_revision": int(row["revision"]),
@@ -205,8 +279,26 @@ def profile_public_projection(row: dict[str, Any]) -> dict[str, Any]:
         "avatar_ref": _safe_avatar_ref(row.get("avatar_ref")),
         "avatar_seed": _safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         "category": _safe_category(row.get("category")),
+        "knowledge_capability": {
+            "enabled": knowledge_enabled,
+            "source_count": knowledge_source_count,
+            "freshness_at": (
+                _safe_knowledge_freshness(row.get("knowledge_freshness_at"))
+                if knowledge_enabled
+                else None
+            ),
+        },
         "published_at": row.get("published_at"),
     }
+
+
+def _safe_knowledge_freshness(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = value.isoformat() if isinstance(value, datetime) else str(value)
+    if not text or len(text) > 64 or any(ord(character) < 32 for character in text):
+        return None
+    return text
 
 
 def conversation_identity_projection(row: dict[str, Any]) -> AgentConversationIdentity:
@@ -245,6 +337,77 @@ def _revision_hash(definition: AgentProfileDraftRequest) -> str:
         "supported_input_types": definition.supported_input_types,
         # Old workers still hash and enforce this physical column during a rolling
         # upgrade. Keep it broad and server-owned; it is no longer a product field.
+        "supported_file_types": list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
+        "expected_outputs": definition.expected_outputs,
+        "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
+        "instructions": definition.instructions,
+        "model_id": definition._legacy_model_id,
+        "skill_set": [skill.model_dump(mode="json") for skill in definition.skill_set],
+        "mcp_tool_ids": definition.mcp_tool_ids,
+        "knowledge_enabled": definition.knowledge_enabled,
+        "knowledge_source_ids": definition.knowledge_source_ids,
+        "retrieval_profile_id": definition.retrieval_profile_id,
+        "avatar_ref": definition.avatar_ref,
+        "avatar_asset_id": definition.avatar_asset_id,
+        "avatar_seed": definition.avatar_seed,
+        "category": definition.category,
+        "visibility": definition.visibility,
+        "allowed_department_ids": definition.allowed_department_ids,
+        "allowed_roles": definition.allowed_roles,
+        "allowed_user_ids": definition.allowed_user_ids,
+    }
+    if definition._knowledge_bindings:
+        material["knowledge_bindings"] = definition._knowledge_bindings
+    encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _pre_knowledge_opt_in_revision_hash(definition: AgentProfileDraftRequest) -> str:
+    """Recompute the exact immediate predecessor hash that lacked the opt-in bit."""
+
+    material = {
+        "name": definition.name,
+        "description": definition.description,
+        "welcome_message": definition.welcome_message,
+        "starter_prompts": definition.starter_prompts,
+        "capability_summary": definition.capability_summary,
+        "recommended_tasks": definition.recommended_tasks,
+        "supported_input_types": definition.supported_input_types,
+        "supported_file_types": list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
+        "expected_outputs": definition.expected_outputs,
+        "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
+        "instructions": definition.instructions,
+        "model_id": definition._legacy_model_id,
+        "skill_set": [skill.model_dump(mode="json") for skill in definition.skill_set],
+        "mcp_tool_ids": definition.mcp_tool_ids,
+        "knowledge_source_ids": definition.knowledge_source_ids,
+        "retrieval_profile_id": definition.retrieval_profile_id,
+        "avatar_ref": definition.avatar_ref,
+        "avatar_asset_id": definition.avatar_asset_id,
+        "avatar_seed": definition.avatar_seed,
+        "category": definition.category,
+        "visibility": definition.visibility,
+        "allowed_department_ids": definition.allowed_department_ids,
+        "allowed_roles": definition.allowed_roles,
+        "allowed_user_ids": definition.allowed_user_ids,
+    }
+    if definition._knowledge_bindings:
+        material["knowledge_bindings"] = definition._knowledge_bindings
+    encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _pre_knowledge_revision_hash(definition: AgentProfileDraftRequest) -> str:
+    """Recompute the older pre-Knowledge hash for Knowledge-free revisions."""
+
+    material = {
+        "name": definition.name,
+        "description": definition.description,
+        "welcome_message": definition.welcome_message,
+        "starter_prompts": definition.starter_prompts,
+        "capability_summary": definition.capability_summary,
+        "recommended_tasks": definition.recommended_tasks,
+        "supported_input_types": definition.supported_input_types,
         "supported_file_types": list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
         "expected_outputs": definition.expected_outputs,
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
@@ -617,12 +780,36 @@ def _revision_hash_matches(row: dict[str, Any], content_hash: str) -> bool:
         )
     )
     raw_avatar_seed = row.get("avatar_seed")
+    knowledge_free = (
+        not definition.knowledge_enabled
+        and not definition.knowledge_source_ids
+        and definition.retrieval_profile_id is None
+    )
     if (
         current_shape
         and raw_avatar_seed == definition.avatar_seed
         and legacy_supported_input_types == list(_ROLLING_LEGACY_SUPPORTED_INPUT_TYPES)
         and legacy_supported_file_types == list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES)
         and content_hash == _revision_hash(definition)
+    ):
+        return True
+    if (
+        current_shape
+        and raw_avatar_seed == definition.avatar_seed
+        and legacy_supported_input_types == list(_ROLLING_LEGACY_SUPPORTED_INPUT_TYPES)
+        and legacy_supported_file_types == list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES)
+        and definition.knowledge_enabled == bool(definition.knowledge_source_ids)
+        and content_hash == _pre_knowledge_opt_in_revision_hash(definition)
+    ):
+        return True
+    if not knowledge_free:
+        return False
+    if (
+        current_shape
+        and raw_avatar_seed == definition.avatar_seed
+        and legacy_supported_input_types == list(_ROLLING_LEGACY_SUPPORTED_INPUT_TYPES)
+        and legacy_supported_file_types == list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES)
+        and content_hash == _pre_knowledge_revision_hash(definition)
     ):
         return True
     if current_shape and content_hash == _omitted_file_type_skill_set_revision_hash(
@@ -686,6 +873,13 @@ def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
         instructions=str(row["instructions"]),
         skill_set=_skill_set(row),
         mcp_tool_ids=_mcp_tool_ids(row),
+        knowledge_enabled=_knowledge_enabled(row),
+        knowledge_source_ids=_knowledge_source_ids(row),
+        retrieval_profile_id=(
+            str(row["retrieval_profile_id"])
+            if row.get("retrieval_profile_id")
+            else None
+        ),
         avatar_ref=_safe_avatar_ref(row.get("avatar_ref")),
         avatar_asset_id=(str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
         avatar_seed=_safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
@@ -697,6 +891,7 @@ def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
         expected_draft_revision=int(row["revision"]),
     )
     definition._legacy_model_id = str(row["model_id"])
+    definition._knowledge_bindings = _knowledge_bindings(row)
     return definition
 
 
@@ -741,6 +936,13 @@ def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
         skill_set=_skill_set(row),
         selected_skill=_skill_set(row)[0],
         mcp_tool_ids=_mcp_tool_ids(row),
+        knowledge_enabled=_knowledge_enabled(row),
+        knowledge_source_ids=_knowledge_source_ids(row),
+        retrieval_profile_id=(
+            str(row["retrieval_profile_id"])
+            if row.get("retrieval_profile_id")
+            else None
+        ),
         avatar_ref=_safe_avatar_ref(row.get("avatar_ref")),
         avatar_asset_id=(str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
         avatar_seed=_safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
@@ -783,7 +985,7 @@ class AgentProfileAuthority:
         agent_id: str,
         definition: AgentProfileDraftRequest,
     ) -> tuple[dict[str, Any], ...]:
-        """Revalidate current Skill and MCP authorization for a definition."""
+        """Revalidate current Skill, MCP, and Knowledge authorization."""
 
         if definition.avatar_asset_id:
             avatar_asset = await repositories.get_file(
@@ -827,8 +1029,39 @@ class AgentProfileAuthority:
                 is_admin=is_ai_admin(principal),
                 permissions=principal.permissions,
             )
+            if definition.knowledge_enabled and not definition.knowledge_source_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail="agent_profile_knowledge_selection_required",
+                )
+            knowledge_bindings = (
+                await authorize_agent_profile_knowledge_sources(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    source_ids=list(definition.knowledge_source_ids),
+                    retrieval_profile_id=definition.retrieval_profile_id,
+                    principal_user_id=principal.user_id,
+                    principal_department_id=principal.department_id,
+                    principal_roles=principal.roles,
+                    is_admin=is_ai_admin(principal),
+                    agent_visibility=definition.visibility,
+                    agent_department_ids=list(definition.allowed_department_ids),
+                    agent_roles=list(definition.allowed_roles),
+                    agent_user_ids=list(definition.allowed_user_ids),
+                )
+                if definition.knowledge_enabled
+                else ()
+            )
+            definition._knowledge_bindings = [dict(binding) for binding in knowledge_bindings]
         except repositories.RepositoryConflictError as exc:
-            raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
+            code = str(exc)
+            detail = (
+                code
+                if code.startswith("agent_profile_knowledge_")
+                or code == "agent_profile_retrieval_profile_unavailable"
+                else "agent_profile_revision_stale"
+            )
+            raise HTTPException(status_code=409, detail=detail) from exc
         except repositories.RepositoryAuthorizationError as exc:
             raise HTTPException(status_code=403, detail="agent_profile_capability_not_available") from exc
         return skills
@@ -867,6 +1100,18 @@ class AgentProfileAuthority:
             definition = _merge_omitted_profile_fields(definition, prior_row=prior_row)
         if not definition.avatar_seed:
             definition = definition.model_copy(update={"avatar_seed": resolved_agent_id})
+        # Save is an authority boundary too: an enabled draft must reference a
+        # currently authorized source set and active retrieval profile. Drafts
+        # remain non-executable, so the exact bindings produced by this check
+        # are discarded and regenerated at publish/admission time. A selection
+        # that becomes unavailable after save remains visible for remediation.
+        await self._validate_definition(
+            conn,
+            principal=principal,
+            agent_id=resolved_agent_id,
+            definition=definition,
+        )
+        definition._knowledge_bindings = []
         await repositories.ensure_agent_profile_identity(
             conn,
             tenant_id=principal.tenant_id,
@@ -887,6 +1132,10 @@ class AgentProfileAuthority:
             skill_version=definition.skill_set[0].expected_version,
             skill_set=[skill.model_dump(mode="json") for skill in definition.skill_set],
             mcp_tool_ids=definition.mcp_tool_ids,
+            knowledge_enabled=definition.knowledge_enabled,
+            knowledge_source_ids=definition.knowledge_source_ids,
+            retrieval_profile_id=definition.retrieval_profile_id,
+            knowledge_bindings=definition._knowledge_bindings,
             welcome_message=definition.welcome_message,
             starter_prompts=definition.starter_prompts,
             capability_summary=definition.capability_summary,
@@ -927,7 +1176,11 @@ class AgentProfileAuthority:
             target_type="agent_profile",
             target_id=resolved_agent_id,
             trace_id=standard_trace_id(resolved_agent_id),
-            payload_json={"revision": int(row["revision"]), "content_hash": str(row["content_hash"])},
+            payload_json={
+                "revision": int(row["revision"]),
+                "content_hash": str(row["content_hash"]),
+                "knowledge_validation": "validated_without_executable_bindings",
+            },
         )
         return _admin_projection(row), audit_id
 
@@ -975,6 +1228,10 @@ class AgentProfileAuthority:
             skill_version=definition.skill_set[0].expected_version,
             skill_set=[skill.model_dump(mode="json") for skill in definition.skill_set],
             mcp_tool_ids=definition.mcp_tool_ids,
+            knowledge_enabled=definition.knowledge_enabled,
+            knowledge_source_ids=definition.knowledge_source_ids,
+            retrieval_profile_id=definition.retrieval_profile_id,
+            knowledge_bindings=definition._knowledge_bindings,
             welcome_message=definition.welcome_message,
             starter_prompts=definition.starter_prompts,
             capability_summary=definition.capability_summary,
@@ -1086,6 +1343,10 @@ class AgentProfileAuthority:
             skill_version=definition.skill_set[0].expected_version,
             skill_set=[skill.model_dump(mode="json") for skill in definition.skill_set],
             mcp_tool_ids=definition.mcp_tool_ids,
+            knowledge_enabled=definition.knowledge_enabled,
+            knowledge_source_ids=definition.knowledge_source_ids,
+            retrieval_profile_id=definition.retrieval_profile_id,
+            knowledge_bindings=definition._knowledge_bindings,
             welcome_message=definition.welcome_message,
             starter_prompts=definition.starter_prompts,
             capability_summary=definition.capability_summary,
@@ -1405,12 +1666,24 @@ class AgentProfileAuthority:
             self._require_revision_integrity(current_acl_row)
         if not profile_acl_allows(current_acl_row, principal=principal):
             raise HTTPException(status_code=403, detail="agent_profile_not_authorized")
+        definition = _draft_from_row(row)
+        persisted_knowledge_bindings = [
+            dict(binding) for binding in definition._knowledge_bindings
+        ]
         validated_skills = await self._validate_definition(
             conn,
             principal=principal,
             agent_id=str(row["agent_id"]),
-            definition=_draft_from_row(row),
+            definition=definition,
         )
+        if (
+            definition.knowledge_enabled
+            and persisted_knowledge_bindings != definition._knowledge_bindings
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="agent_profile_knowledge_authorization_changed",
+            )
         skills = (
             validated_skills
             if isinstance(validated_skills, tuple)
@@ -1436,6 +1709,18 @@ class AgentProfileAuthority:
                 "content_hash": content_hash,
                 "instructions": str(row["instructions"]),
                 "skill_set": [skill.model_dump(mode="json") for skill in _skill_set(row)],
+                "knowledge_enabled": definition.knowledge_enabled,
+                **(
+                    {
+                        "knowledge_source_ids": list(definition.knowledge_source_ids),
+                        "retrieval_profile_id": definition.retrieval_profile_id,
+                        "knowledge_bindings": [
+                            dict(binding) for binding in definition._knowledge_bindings
+                        ],
+                    }
+                    if definition.knowledge_enabled
+                    else {}
+                ),
             },
             public_identity=conversation_identity_projection(row),
             configured_mcp_tool_ids=configured_mcp_tool_ids,
@@ -1460,7 +1745,7 @@ class AgentProfileAuthority:
         *,
         principal: AuthPrincipal,
         run_id: str,
-    ) -> None:
+    ) -> AgentProfileAdmission | None:
         """Reauthorize one persisted profile run before copy, retry, or resume side effects."""
 
         run = await repositories.get_authorized_run(
@@ -1483,7 +1768,7 @@ class AgentProfileAuthority:
             revision=revision,
             content_hash=str(content_hash or ""),
         )
-        profile_snapshot = snapshot.get("agent_profile")
+        raw_profile_snapshot = snapshot.get("agent_profile")
         execution_input = snapshot.get("input") if isinstance(snapshot.get("input"), dict) else {}
         try:
             execution_mcp_tool_ids = tuple(repositories.extract_run_mcp_tool_ids(execution_input))
@@ -1492,14 +1777,34 @@ class AgentProfileAuthority:
             repositories.RepositoryConflictError,
         ) as exc:
             raise repositories.RepositoryConflictError("agent_profile_snapshot_invalid") from exc
-        expected_profile_snapshot = dict(admission.private_execution_input)
         snapshot_skill_version = str(snapshot.get("skill_version") or "")
         authority_skill_id = str(admission.skill.get("skill_id") or "")
-        governed_profile_snapshot = isinstance(profile_snapshot, dict) and (
-            isinstance(profile_snapshot.get("skill_set"), list)
-            or "required_skill_id" in profile_snapshot
-            or "required_skill_version" in profile_snapshot
+        if not isinstance(raw_profile_snapshot, dict):
+            raise repositories.RepositoryConflictError("agent_profile_snapshot_invalid")
+        has_canonical_skill_set = isinstance(raw_profile_snapshot.get("skill_set"), list)
+        has_legacy_required_skill = (
+            "required_skill_id" in raw_profile_snapshot
+            or "required_skill_version" in raw_profile_snapshot
         )
+        if len(admission.skills) > 1 and not has_canonical_skill_set:
+            raise repositories.RepositoryConflictError("agent_profile_snapshot_invalid")
+        governed_profile_snapshot = has_canonical_skill_set or has_legacy_required_skill
+        profile_snapshot = dict(raw_profile_snapshot)
+        if "knowledge_enabled" not in profile_snapshot:
+            profile_snapshot["knowledge_enabled"] = bool(
+                {
+                    "knowledge_source_ids",
+                    "retrieval_profile_id",
+                    "knowledge_bindings",
+                }
+                & profile_snapshot.keys()
+            )
+        expected_profile_snapshot = deepcopy(admission.private_execution_input)
+        if not has_canonical_skill_set:
+            expected_profile_snapshot.pop("skill_set", None)
+            if has_legacy_required_skill:
+                expected_profile_snapshot["required_skill_id"] = authority_skill_id
+                expected_profile_snapshot["required_skill_version"] = snapshot_skill_version
         governed_mcp_tool_ids: tuple[str, ...] | None = None
         if governed_profile_snapshot:
             try:
@@ -1517,17 +1822,6 @@ class AgentProfileAuthority:
                 raise repositories.RepositoryConflictError(
                     "agent_profile_snapshot_invalid"
                 ) from exc
-            if isinstance(profile_snapshot, dict) and (
-                "required_skill_id" in profile_snapshot
-                or "required_skill_version" in profile_snapshot
-            ):
-                expected_profile_snapshot.pop("skill_set", None)
-                expected_profile_snapshot.update(
-                    {
-                        "required_skill_id": authority_skill_id,
-                        "required_skill_version": snapshot_skill_version,
-                    }
-                )
             primary_manifest = next(
                 (
                     manifest
@@ -1613,6 +1907,7 @@ class AgentProfileAuthority:
             or execution_mcp_tool_ids != admission.mcp_tool_ids
         ):
             raise repositories.RepositoryConflictError("agent_profile_snapshot_invalid")
+        return admission
 
     async def create_conversation(
         self,

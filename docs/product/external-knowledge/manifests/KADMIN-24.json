@@ -1,0 +1,41 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KADMIN-24",
+  "issue_number": 1311,
+  "summary": "Admin Knowledge connection route, catalog UI, typed client, pagination, and retry candidate",
+  "atomic_case_ids": [
+    "KAC-FR-KUI-001",
+    "KAC-FR-KUI-002",
+    "KAC-FR-KUI-003",
+    "KAC-FR-KUI-004",
+    "KAC-FR-KUI-024",
+    "KAC-FR-KUI-025"
+  ],
+  "changed_paths": [
+    "docs/product/external-knowledge/manifests/KADMIN-24.json",
+    "frontend/web/package.json",
+    "frontend/web/src/App.tsx",
+    "frontend/web/src/__tests__/App.test.tsx",
+    "frontend/web/src/__tests__/appRouteManifest.test.ts",
+    "frontend/web/src/appRouteManifest.ts",
+    "frontend/web/src/components/governance/workbenchAccessPolicy.ts",
+    "frontend/web/src/components/layout/AppContent/TabContent.tsx",
+    "frontend/web/src/components/layout/AppContent/types.ts",
+    "frontend/web/src/components/panels/KnowledgePanel.tsx",
+    "frontend/web/src/components/panels/SessionSidebar.tsx",
+    "frontend/web/src/components/panels/SidebarParts/SessionListContent.tsx",
+    "frontend/web/src/components/panels/SidebarParts/SidebarRail.tsx",
+    "frontend/web/src/components/panels/SidebarParts/__tests__/navigationState.test.ts",
+    "frontend/web/src/components/panels/SidebarParts/navigationState.ts",
+    "frontend/web/src/components/panels/__tests__/KnowledgePanel.test.tsx",
+    "frontend/web/src/features/knowledge/catalogFormat.ts",
+    "frontend/web/src/features/knowledge/components/CatalogPrimitives.tsx",
+    "frontend/web/src/features/knowledge/components/ConnectionForms.tsx",
+    "frontend/web/src/i18n/locales/zh.json",
+    "frontend/web/src/services/api.ts",
+    "frontend/web/src/services/api/__tests__/knowledge.test.ts",
+    "frontend/web/src/services/api/knowledge.ts",
+    "frontend/web/src/types/knowledge.ts"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

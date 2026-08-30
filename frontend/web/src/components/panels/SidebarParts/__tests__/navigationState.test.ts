@@ -14,6 +14,7 @@ test("maps authenticated workbench routes to sidebar navigation items", () => {
   assert.equal(getWorkbenchNavItemFromPathname("/marketplace"), null);
   assert.equal(getWorkbenchNavItemFromPathname("/files"), null);
   assert.equal(getWorkbenchNavItemFromPathname("/mcp"), "mcp");
+  assert.equal(getWorkbenchNavItemFromPathname("/knowledge"), "knowledge");
   assert.equal(getWorkbenchNavItemFromPathname("/models"), "models");
   assert.equal(getWorkbenchNavItemFromPathname("/runs"), "runs");
   assert.equal(getWorkbenchNavItemFromPathname("/roles"), null);
@@ -28,4 +29,12 @@ test("safe navigation redirects unauthorized management destinations before rout
   assert.equal(getSafeWorkbenchNavPath("agentBuilder", { is_admin: false }), "/agent-market");
   assert.equal(getSafeWorkbenchNavPath("agentBuilder", { is_admin: true }), "/agent-builder");
   assert.equal(getSafeWorkbenchNavPath("mcp", { is_admin: false }), "/mcp");
+  assert.equal(
+    getSafeWorkbenchNavPath("knowledge", { is_admin: false }),
+    "/agent-market",
+  );
+  assert.equal(
+    getSafeWorkbenchNavPath("knowledge", { is_admin: true }),
+    "/knowledge",
+  );
 });

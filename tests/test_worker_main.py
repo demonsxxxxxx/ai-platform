@@ -2217,6 +2217,9 @@ def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
     def configure_model_services():
         calls.append(("configure_model_services",))
 
+    def configure_knowledge_services():
+        calls.append(("configure_knowledge_services",))
+
     async def fake_run_once(timeout_seconds=5, *, v4_capabilities=None):
         assert v4_capabilities is _TEST_V4_CAPABILITIES
         calls.append(("run_once", timeout_seconds))
@@ -2230,6 +2233,7 @@ def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
 
     monkeypatch.setattr(sys, "argv", ["worker", "--once", "--timeout", "7"])
     monkeypatch.setattr("app.worker_main.configure_model_services", configure_model_services)
+    monkeypatch.setattr("app.worker_main.configure_knowledge_services", configure_knowledge_services)
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_pool", fake_close_pool)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_redis_client", fake_close_redis_client)
@@ -2238,6 +2242,7 @@ def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
 
     assert calls == [
         ("configure_model_services",),
+        ("configure_knowledge_services",),
         ("run_once", 7),
         ("close_redis_client",),
         ("close_pool",),
@@ -2251,6 +2256,9 @@ def test_worker_main_uses_configured_worker_concurrency(monkeypatch):
     def configure_model_services():
         calls.append(("configure_model_services",))
 
+    def configure_knowledge_services():
+        calls.append(("configure_knowledge_services",))
+
     class Settings:
         worker_concurrency = 10
 
@@ -2259,6 +2267,7 @@ def test_worker_main_uses_configured_worker_concurrency(monkeypatch):
 
     monkeypatch.setattr(sys, "argv", ["worker", "--timeout", "9"])
     monkeypatch.setattr("app.worker_main.configure_model_services", configure_model_services)
+    monkeypatch.setattr("app.worker_main.configure_knowledge_services", configure_knowledge_services)
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.run_worker_pool", fake_run_worker_pool)
 
@@ -2266,6 +2275,7 @@ def test_worker_main_uses_configured_worker_concurrency(monkeypatch):
 
     assert calls == [
         ("configure_model_services",),
+        ("configure_knowledge_services",),
         ("run_worker_pool", 10, 9),
     ]
 

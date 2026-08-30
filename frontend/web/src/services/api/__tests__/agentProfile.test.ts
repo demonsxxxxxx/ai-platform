@@ -35,6 +35,52 @@ test("builds server-authoritative catalog and detail URLs", () => {
   );
 });
 
+test("projects a bounded Knowledge capability without retaining private source identities", () => {
+  const projection = projectAgentProfilePublicProjection({
+    agent_id: "agt_support",
+    expected_revision: 7,
+    name: "支持助手",
+    description: "处理已授权的支持请求。",
+    supported_input_types: ["text", "file"],
+    avatar_ref: "builtin:assistant",
+    category: "support",
+    knowledge_capability: {
+      enabled: true,
+      source_count: 2,
+      freshness_at: "2026-08-30T01:00:00Z",
+      source_ids: ["private-source"],
+    },
+    knowledge_source_ids: ["private-source"],
+  });
+
+  assert.deepEqual(projection.knowledge_capability, {
+    enabled: true,
+    source_count: 2,
+    freshness_at: "2026-08-30T01:00:00Z",
+  });
+  assert.equal("knowledge_source_ids" in projection, false);
+  assert.equal(
+    "source_ids" in (projection.knowledge_capability as Record<string, unknown>),
+    false,
+  );
+
+  for (const invalidCapability of [
+    { enabled: false, source_count: 1, freshness_at: null },
+    { enabled: false, source_count: 0, freshness_at: "2026-08-30T01:00:00Z" },
+    { enabled: true, source_count: 0, freshness_at: null },
+  ]) {
+    assert.throws(
+      () => projectAgentProfilePublicProjection({
+        agent_id: "agt_support",
+        expected_revision: 7,
+        name: "支持助手",
+        knowledge_capability: invalidCapability,
+      }),
+      /invalid_agent_profile_projection/,
+    );
+  }
+});
+
 test("loads only the safe public Agent Profile projection", async () => {
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
@@ -78,6 +124,11 @@ test("loads only the safe public Agent Profile projection", async () => {
           avatar_ref: "builtin:assistant",
           avatar_seed: unicodeAvatarSeed,
           category: "support",
+          knowledge_capability: {
+            enabled: false,
+            source_count: 0,
+            freshness_at: null,
+          },
         },
       ],
     });
@@ -318,6 +369,7 @@ test("uses the current admin profile contract without retired file-type transpor
     selected_skill: { skill_id: "general-chat", expected_version: "version-a" },
     skill_set: [{ skill_id: "general-chat", expected_version: "version-a" }],
     mcp_tool_ids: [],
+    knowledge_enabled: false,
     avatar_ref: "builtin:agent" as const,
     avatar_seed: "support-assistant",
     avatar_asset_id: null,

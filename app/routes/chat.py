@@ -30,6 +30,7 @@ from app.capability_distribution import (
     CapabilityAuthorizationDenial,
 )
 from app.chat_session_projection import session_response
+from app.conversations.api import ConversationRunAdmissionError, create_admitted_run
 from app.context_builder import record_initial_context_snapshot
 from app.context.file_continuity import select_authorized_run_file_snapshot
 from app.control_plane_contracts import (
@@ -112,7 +113,6 @@ from app.skills.release_policy import (
 from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
-
 
 logger = logging.getLogger(__name__)
 _MISSING = object()
@@ -2230,7 +2230,7 @@ async def chat_stream(
                         "admitted_agent_profile_hash": admitted_agent_profile.content_hash,
                     }
                 )
-            run_id = await repositories.create_run(conn, **run_create_kwargs)
+            run_id = await create_admitted_run(conn, repositories.create_run, run_create_kwargs, agent_profile_execution_input)
             if selected_model is not None:
                 await bind_run_model(
                     conn,
@@ -2454,7 +2454,7 @@ async def chat_stream(
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=409, code=code) from exc
         raise HTTPException(status_code=409, detail=code) from exc
-    except RepositoryConflictError as exc:
+    except (RepositoryConflictError, ConversationRunAdmissionError) as exc:
         code = str(exc)
         await _persist_pre_persistence_rejection(
             principal=principal,

@@ -100,6 +100,11 @@ def test_agent_apps_public_profile_detail_uses_safe_authority_projection(monkeyp
         "avatar_ref": "builtin:assistant",
         "avatar_seed": "",
         "category": "support",
+        "knowledge_capability": {
+            "enabled": False,
+            "source_count": 0,
+            "freshness_at": None,
+        },
     }
 
 

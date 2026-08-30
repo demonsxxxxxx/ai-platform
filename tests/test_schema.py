@@ -29,8 +29,53 @@ def test_schema_declares_platform_fact_tables():
         "files",
         "artifacts",
         "audit_logs",
+        "platform_secret_records",
+        "knowledge_connections",
+        "knowledge_connection_revisions",
+        "knowledge_catalog_syncs",
+        "knowledge_connection_check_receipts",
+        "knowledge_catalog_sync_observations",
+        "knowledge_sources",
+        "knowledge_source_acl_versions",
+        "knowledge_source_update_receipts",
+        "knowledge_source_acl_departments",
+        "knowledge_source_acl_roles",
+        "knowledge_source_acl_users",
+        "knowledge_connection_lifecycle_receipts",
     ]:
         assert f"create table if not exists {table}" in schema
+
+
+def test_schema_declares_external_knowledge_authority_without_plaintext_credentials():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+    knowledge_start = schema.index("create table if not exists platform_secret_records")
+    knowledge_end = schema.index("create table if not exists audit_logs", knowledge_start)
+    knowledge = schema[knowledge_start:knowledge_end]
+
+    assert "ciphertext bytea not null" in knowledge
+    assert "secret_ref text not null" in knowledge
+    assert "create_request_hash text not null" in knowledge
+    assert "chk_knowledge_connection_create_hash" in knowledge
+    assert "api_key text" not in knowledge
+    assert "credential text" not in knowledge
+    assert "unique (tenant_id, connection_id, provider_resource_id)" in knowledge
+    assert "(active_revision_id is null) = (active_catalog_sync_id is null)" in knowledge
+    assert "unique (tenant_id, connection_id, operation_id)" in knowledge
+    assert "fk_knowledge_connection_candidate_revision" in knowledge
+    assert "fk_knowledge_acl_department_version" in knowledge
+    assert "chk_knowledge_acl_department_id" in knowledge
+    assert "chk_knowledge_acl_role_id" in knowledge
+    assert "chk_knowledge_acl_user_id" in knowledge
+    assert "create index if not exists idx_knowledge_sources_catalog" in knowledge
+
+
+def test_agent_profile_knowledge_bindings_are_structurally_bounded_in_postgres():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8").lower()
+
+    assert "agent_profile_knowledge_bindings_are_valid" in schema
+    assert "octet_length(knowledge_bindings::text) <= 8192" in schema
+    assert "source_authorization_version" in schema
+    assert "retrieval_profile_revision" in schema
 
 
 def test_schema_declares_agent_profile_aggregate_and_immutable_withdrawal_history():

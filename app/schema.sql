@@ -400,6 +400,73 @@ end $$;
 -- Agent Profile definitions are append-only. The shared agents row remains the
 -- durable identity used by sessions/runs; this table is the sole authority for
 -- mutable-looking definition state and preserves every saved/published revision.
+create or replace function agent_profile_knowledge_source_ids_are_unique(source_ids jsonb)
+returns boolean
+language sql
+immutable
+strict
+parallel safe
+as $$
+  select case
+    when jsonb_typeof(source_ids) <> 'array' then false
+    else not exists (
+      select 1
+      from jsonb_array_elements_text(source_ids) as source_ids_table(source_id)
+      where source_id !~ '^[A-Za-z0-9_.:-]{1,160}$'
+    ) and (
+      select count(*) = count(distinct source_id)
+      from jsonb_array_elements_text(source_ids) as source_ids_table(source_id)
+    )
+  end;
+$$;
+
+create or replace function agent_profile_knowledge_bindings_are_valid(
+  source_ids jsonb,
+  retrieval_profile_id text,
+  bindings jsonb
+)
+returns boolean
+language sql
+immutable
+parallel safe
+as $$
+  select case
+    when jsonb_typeof(source_ids) <> 'array' or jsonb_typeof(bindings) <> 'array' then false
+    when jsonb_array_length(bindings) = 0 then true
+    when retrieval_profile_id is null then false
+    when jsonb_array_length(bindings) <> jsonb_array_length(source_ids) then false
+    else not exists (
+      select 1
+      from jsonb_array_elements(bindings) with ordinality as binding_rows(binding, position)
+      where jsonb_typeof(binding) <> 'object'
+         or not (binding ?& array[
+              'source_id',
+              'source_authorization_version',
+              'ordinal',
+              'required',
+              'retrieval_profile_id',
+              'retrieval_profile_revision'
+            ])
+         or binding - array[
+              'source_id',
+              'source_authorization_version',
+              'ordinal',
+              'required',
+              'retrieval_profile_id',
+              'retrieval_profile_revision'
+            ] <> '{}'::jsonb
+         or binding ->> 'source_id' is distinct from source_ids ->> (position - 1)::int
+         or jsonb_typeof(binding -> 'source_authorization_version') <> 'number'
+         or binding ->> 'source_authorization_version' !~ '^[1-9][0-9]*$'
+         or binding -> 'ordinal' <> to_jsonb(position - 1)
+         or binding -> 'required' <> 'true'::jsonb
+         or binding ->> 'retrieval_profile_id' is distinct from retrieval_profile_id
+         or jsonb_typeof(binding -> 'retrieval_profile_revision') <> 'number'
+         or binding ->> 'retrieval_profile_revision' !~ '^[1-9][0-9]*$'
+    )
+  end;
+$$;
+
 create table if not exists agent_profile_revisions (
   tenant_id text not null references tenants(id),
   agent_id text not null,
@@ -425,6 +492,10 @@ create table if not exists agent_profile_revisions (
   skill_version text not null,
   skill_set jsonb not null default '[]'::jsonb,
   mcp_tool_ids jsonb not null default '[]'::jsonb,
+  knowledge_enabled boolean not null default false,
+  knowledge_source_ids jsonb not null default '[]'::jsonb,
+  retrieval_profile_id text,
+  knowledge_bindings jsonb not null default '[]'::jsonb,
   content_hash text not null,
   avatar_ref text not null
     check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research')),
@@ -445,12 +516,124 @@ create table if not exists agent_profile_revisions (
   withdrawn_from_revision bigint,
   constraint chk_agent_profile_revisions_visibility
     check (visibility in ('tenant', 'restricted')),
+  constraint chk_agent_profile_knowledge_sources check (
+    jsonb_typeof(knowledge_source_ids) = 'array'
+    and jsonb_array_length(knowledge_source_ids) <= 8
+    and not jsonb_path_exists(knowledge_source_ids, '$[*] ? (@.type() != "string")')
+    and not jsonb_path_exists(knowledge_source_ids, '$[*] ? (@ == "")')
+    and agent_profile_knowledge_source_ids_are_unique(knowledge_source_ids)
+  ),
+  constraint chk_agent_profile_knowledge_pair check (
+    (jsonb_array_length(knowledge_source_ids) = 0 and retrieval_profile_id is null)
+    or (jsonb_array_length(knowledge_source_ids) > 0 and retrieval_profile_id is not null)
+  ),
+  constraint chk_agent_profile_knowledge_bindings check (
+    jsonb_typeof(knowledge_bindings) = 'array'
+    and jsonb_array_length(knowledge_bindings) <= 8
+    and jsonb_array_length(knowledge_bindings) in (
+      0,
+      jsonb_array_length(knowledge_source_ids)
+    )
+    and (
+      revision_status <> 'published'
+      or (
+        knowledge_enabled
+        and jsonb_array_length(knowledge_source_ids) > 0
+        and jsonb_array_length(knowledge_bindings) = jsonb_array_length(knowledge_source_ids)
+      )
+      or (
+        not knowledge_enabled
+        and jsonb_array_length(knowledge_bindings) = 0
+      )
+    )
+  ),
   constraint uq_agent_profile_revision_publication
     unique (tenant_id, agent_id, revision, content_hash, revision_status),
   constraint fk_agent_profile_revisions_tenant_agent
     foreign key (tenant_id, agent_id) references agents(tenant_id, id),
   primary key (tenant_id, agent_id, revision)
 );
+
+-- Existing pre-#701 tables do not gain columns from CREATE TABLE IF NOT EXISTS.
+-- Add the canonical status before any Knowledge constraint references it; the
+-- compatibility repair below deliberately needs this column to remain nullable.
+alter table agent_profile_revisions
+  add column if not exists revision_status text;
+alter table agent_profile_revisions
+  add column if not exists knowledge_source_ids jsonb not null default '[]'::jsonb;
+-- Backfill only when the opt-in column is first introduced. Re-running the
+-- canonical schema must never re-enable a deliberately disabled Agent.
+do $$
+begin
+  if not exists (
+    select 1
+    from information_schema.columns
+    where table_schema = current_schema()
+      and table_name = 'agent_profile_revisions'
+      and column_name = 'knowledge_enabled'
+  ) then
+    alter table agent_profile_revisions
+      add column knowledge_enabled boolean not null default false;
+    update agent_profile_revisions
+    set knowledge_enabled = true
+    where jsonb_array_length(knowledge_source_ids) > 0;
+  end if;
+end $$;
+alter table agent_profile_revisions
+  add column if not exists retrieval_profile_id text;
+alter table agent_profile_revisions
+  add column if not exists knowledge_bindings jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions
+  drop constraint if exists chk_agent_profile_knowledge_sources;
+alter table agent_profile_revisions
+  add constraint chk_agent_profile_knowledge_sources check (
+    jsonb_typeof(knowledge_source_ids) = 'array'
+    and jsonb_array_length(knowledge_source_ids) <= 8
+    and not jsonb_path_exists(knowledge_source_ids, '$[*] ? (@.type() != "string")')
+    and not jsonb_path_exists(knowledge_source_ids, '$[*] ? (@ == "")')
+    and agent_profile_knowledge_source_ids_are_unique(knowledge_source_ids)
+  );
+alter table agent_profile_revisions
+  drop constraint if exists chk_agent_profile_knowledge_pair;
+alter table agent_profile_revisions
+  add constraint chk_agent_profile_knowledge_pair check (
+    (jsonb_array_length(knowledge_source_ids) = 0 and retrieval_profile_id is null)
+    or (
+      jsonb_array_length(knowledge_source_ids) > 0
+      and retrieval_profile_id is not null
+      and retrieval_profile_id = btrim(retrieval_profile_id)
+      and retrieval_profile_id ~ '^[A-Za-z0-9_.:-]{1,160}$'
+    )
+  );
+alter table agent_profile_revisions
+  drop constraint if exists chk_agent_profile_knowledge_bindings;
+alter table agent_profile_revisions
+  add constraint chk_agent_profile_knowledge_bindings check (
+    jsonb_typeof(knowledge_bindings) = 'array'
+    and jsonb_array_length(knowledge_bindings) <= 8
+    and octet_length(knowledge_bindings::text) <= 8192
+    and jsonb_array_length(knowledge_bindings) in (
+      0,
+      jsonb_array_length(knowledge_source_ids)
+    )
+    and agent_profile_knowledge_bindings_are_valid(
+      knowledge_source_ids,
+      retrieval_profile_id,
+      knowledge_bindings
+    )
+    and (
+      revision_status <> 'published'
+      or (
+        knowledge_enabled
+        and jsonb_array_length(knowledge_source_ids) > 0
+        and jsonb_array_length(knowledge_bindings) = jsonb_array_length(knowledge_source_ids)
+      )
+      or (
+        not knowledge_enabled
+        and jsonb_array_length(knowledge_bindings) = 0
+      )
+    )
+  );
 
 -- The aggregate is the only current-lifecycle authority. Revisions remain
 -- append-only history, so a saved draft never accidentally replaces a live
@@ -688,7 +871,8 @@ create table if not exists run_attempts (
     )
   ),
   unique (tenant_id, run_id, ordinal),
-  unique (tenant_id, run_id, queue_attempt_id)
+  unique (tenant_id, run_id, queue_attempt_id),
+  constraint uq_run_attempts_tenant_run_id unique (tenant_id, run_id, id)
 );
 
 create unique index if not exists uq_run_attempts_one_open
@@ -894,7 +1078,6 @@ alter table runs add column if not exists model_value text;
 alter table runs add column if not exists model_gateway_revision bigint;
 alter table agent_profile_revisions add column if not exists published_from_revision bigint;
 alter table agent_profile_revisions add column if not exists withdrawn_from_revision bigint;
-alter table agent_profile_revisions add column if not exists revision_status text;
 alter table agent_profile_revisions add column if not exists avatar_ref text;
 alter table agent_profile_revisions add column if not exists avatar_asset_id text;
 alter table agent_profile_revisions add column if not exists avatar_seed text not null default '';
@@ -2898,6 +3081,920 @@ alter table object_deletion_outbox add constraint chk_object_deletion_outbox_tar
       )
     )
   );
+
+create table if not exists platform_secret_records (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  purpose text not null,
+  ciphertext bytea not null,
+  key_version text not null,
+  fingerprint text not null,
+  status text not null default 'active',
+  created_by text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint chk_platform_secret_purpose
+    check (purpose in ('knowledge_provider')),
+  constraint chk_platform_secret_fingerprint
+    check (fingerprint ~ '^[0-9a-f]{16}$'),
+  constraint chk_platform_secret_status
+    check (status in ('active', 'revoked')),
+  unique (tenant_id, id)
+);
+
+create table if not exists knowledge_connections (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  name text not null,
+  provider_key text not null,
+  status text not null default 'draft',
+  active_revision_id text,
+  active_catalog_sync_id text,
+  candidate_revision_id text,
+  lifecycle_epoch bigint not null default 0,
+  last_authenticated_check_at timestamptz,
+  last_complete_sync_at timestamptz,
+  safe_failure_code text,
+  create_operation_id text not null,
+  create_request_hash text not null,
+  created_by text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint chk_knowledge_connection_name
+    check (length(name) between 1 and 120 and name = btrim(name)),
+  constraint chk_knowledge_connection_provider
+    check (provider_key in ('ragflow')),
+  constraint chk_knowledge_connection_status
+    check (status in ('draft', 'checking', 'cataloging', 'active', 'unavailable', 'disabled')),
+  constraint chk_knowledge_connection_epoch check (lifecycle_epoch >= 0),
+  constraint chk_knowledge_connection_create_hash
+    check (create_request_hash ~ '^[0-9a-f]{64}$'),
+  constraint chk_knowledge_connection_active_pair check (
+    (active_revision_id is null) = (active_catalog_sync_id is null)
+  ),
+  unique (tenant_id, id),
+  unique (tenant_id, name),
+  unique (tenant_id, create_operation_id)
+);
+
+create table if not exists knowledge_connection_revisions (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  connection_id text not null,
+  revision bigint not null,
+  provider_key text not null,
+  base_url text not null,
+  secret_ref text not null,
+  operation_id text not null,
+  transport_policy_json jsonb not null default '{}'::jsonb,
+  content_hash text not null,
+  checked_at timestamptz,
+  check_status text not null default 'pending',
+  created_by text not null,
+  created_at timestamptz not null default now(),
+  constraint fk_knowledge_revision_connection foreign key (tenant_id, connection_id)
+    references knowledge_connections(tenant_id, id),
+  constraint fk_knowledge_revision_secret foreign key (tenant_id, secret_ref)
+    references platform_secret_records(tenant_id, id),
+  constraint chk_knowledge_revision_positive check (revision > 0),
+  constraint chk_knowledge_revision_provider check (provider_key in ('ragflow')),
+  constraint chk_knowledge_revision_base_url check (length(base_url) between 1 and 2048),
+  constraint chk_knowledge_revision_transport check (
+    jsonb_typeof(transport_policy_json) = 'object'
+    and octet_length(transport_policy_json::text) <= 4096
+  ),
+  constraint chk_knowledge_revision_hash check (content_hash ~ '^[0-9a-f]{64}$'),
+  constraint chk_knowledge_revision_check_status
+    check (check_status in ('pending', 'passed', 'failed')),
+  unique (tenant_id, connection_id, revision),
+  unique (tenant_id, connection_id, operation_id),
+  unique (tenant_id, connection_id, id),
+  unique (tenant_id, id)
+);
+
+create table if not exists knowledge_catalog_syncs (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  connection_id text not null,
+  connection_revision_id text not null,
+  operation_id text not null,
+  requested_by text not null,
+  retry_of_sync_id text,
+  purpose text not null,
+  status text not null default 'requested',
+  lease_owner text,
+  lease_generation bigint not null default 0,
+  lease_expires_at timestamptz,
+  provider_cursor text,
+  observed_count integer not null default 0,
+  page_count integer not null default 0,
+  candidate_digest text,
+  safe_failure_code text,
+  requested_at timestamptz not null default now(),
+  started_at timestamptz,
+  completed_at timestamptz,
+  constraint fk_knowledge_sync_connection foreign key (tenant_id, connection_id)
+    references knowledge_connections(tenant_id, id),
+  constraint fk_knowledge_sync_revision foreign key (
+    tenant_id, connection_id, connection_revision_id
+  ) references knowledge_connection_revisions(tenant_id, connection_id, id),
+  constraint chk_knowledge_sync_purpose
+    check (purpose in ('manual_active_refresh', 'candidate_activation')),
+  constraint chk_knowledge_sync_status check (status in (
+    'requested', 'enumerating', 'committing', 'succeeded', 'failed',
+    'cancelled', 'reconcile_required'
+  )),
+  constraint chk_knowledge_sync_generation check (lease_generation >= 0),
+  constraint chk_knowledge_sync_counts check (observed_count >= 0 and page_count >= 0),
+  constraint chk_knowledge_sync_digest check (
+    candidate_digest is null or candidate_digest ~ '^[0-9a-f]{64}$'
+  ),
+  unique (tenant_id, connection_id, operation_id),
+  unique (tenant_id, connection_id, id),
+  unique (tenant_id, id)
+);
+
+create table if not exists knowledge_connection_check_receipts (
+  tenant_id text not null,
+  connection_id text not null,
+  connection_revision_id text not null,
+  operation_id text not null,
+  status text not null default 'checking',
+  lease_owner text,
+  lease_generation bigint not null default 1,
+  lease_expires_at timestamptz,
+  safe_failure_code text,
+  requested_by text not null,
+  requested_at timestamptz not null default now(),
+  completed_at timestamptz,
+  primary key (tenant_id, connection_id, operation_id),
+  constraint fk_knowledge_check_connection foreign key (tenant_id, connection_id)
+    references knowledge_connections(tenant_id, id),
+  constraint fk_knowledge_check_revision foreign key (
+    tenant_id, connection_id, connection_revision_id
+  ) references knowledge_connection_revisions(tenant_id, connection_id, id),
+  constraint chk_knowledge_check_status
+    check (status in ('checking', 'passed', 'failed', 'reconcile_required')),
+  constraint chk_knowledge_check_generation check (lease_generation > 0)
+);
+
+create table if not exists knowledge_catalog_sync_observations (
+  tenant_id text not null,
+  sync_id text not null,
+  lease_generation bigint not null,
+  provider_resource_id text not null,
+  provider_name text not null,
+  provider_metadata_json jsonb not null default '{}'::jsonb,
+  record_digest text not null,
+  primary key (tenant_id, sync_id, lease_generation, provider_resource_id),
+  constraint fk_knowledge_observation_sync foreign key (tenant_id, sync_id)
+    references knowledge_catalog_syncs(tenant_id, id) on delete cascade,
+  constraint chk_knowledge_observation_generation check (lease_generation > 0),
+  constraint chk_knowledge_observation_identity check (
+    length(provider_resource_id) between 1 and 512
+  ),
+  constraint chk_knowledge_observation_name check (length(provider_name) between 1 and 240),
+  constraint chk_knowledge_observation_metadata check (
+    jsonb_typeof(provider_metadata_json) = 'object'
+    and octet_length(provider_metadata_json::text) <= 8192
+  ),
+  constraint chk_knowledge_observation_digest check (record_digest ~ '^[0-9a-f]{64}$')
+);
+
+create table if not exists knowledge_sources (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  connection_id text not null,
+  provider_resource_id text not null,
+  provider_name text not null,
+  display_name text,
+  description text,
+  status text not null default 'pending_review',
+  authorization_version bigint not null default 1,
+  provider_metadata_json jsonb not null default '{}'::jsonb,
+  first_seen_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now(),
+  last_complete_sync_id text,
+  last_seen_connection_revision_id text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint fk_knowledge_source_connection foreign key (tenant_id, connection_id)
+    references knowledge_connections(tenant_id, id),
+  constraint fk_knowledge_source_sync foreign key (
+    tenant_id, connection_id, last_complete_sync_id
+  ) references knowledge_catalog_syncs(tenant_id, connection_id, id),
+  constraint fk_knowledge_source_revision foreign key (
+    tenant_id, connection_id, last_seen_connection_revision_id
+  ) references knowledge_connection_revisions(tenant_id, connection_id, id),
+  constraint chk_knowledge_source_identity check (
+    length(provider_resource_id) between 1 and 512
+    and provider_resource_id = btrim(provider_resource_id)
+  ),
+  constraint chk_knowledge_source_name check (
+    length(provider_name) between 1 and 240 and provider_name = btrim(provider_name)
+  ),
+  constraint chk_knowledge_source_display_name check (
+    display_name is null or length(display_name) between 1 and 240
+  ),
+  constraint chk_knowledge_source_description check (
+    description is null or length(description) <= 1000
+  ),
+  constraint chk_knowledge_source_status
+    check (status in ('pending_review', 'active', 'disabled', 'missing')),
+  constraint chk_knowledge_source_authorization_version check (authorization_version > 0),
+  constraint chk_knowledge_source_metadata check (
+    jsonb_typeof(provider_metadata_json) = 'object'
+    and octet_length(provider_metadata_json::text) <= 8192
+  ),
+  unique (tenant_id, id),
+  unique (tenant_id, connection_id, provider_resource_id)
+);
+
+create table if not exists knowledge_source_acl_versions (
+  tenant_id text not null references tenants(id),
+  source_id text not null,
+  authorization_version bigint not null,
+  visibility text not null,
+  operation_id text not null,
+  content_hash text not null,
+  created_by text not null,
+  created_at timestamptz not null default now(),
+  primary key (tenant_id, source_id, authorization_version),
+  constraint fk_knowledge_acl_source foreign key (tenant_id, source_id)
+    references knowledge_sources(tenant_id, id),
+  constraint chk_knowledge_acl_version check (authorization_version > 0),
+  constraint chk_knowledge_acl_visibility check (visibility in ('enterprise', 'restricted')),
+  constraint chk_knowledge_acl_hash check (content_hash ~ '^[0-9a-f]{64}$'),
+  unique (tenant_id, source_id, operation_id)
+);
+
+create table if not exists knowledge_source_update_receipts (
+  tenant_id text not null,
+  source_id text not null,
+  operation_id text not null,
+  request_hash text not null,
+  requested_by text not null,
+  created_at timestamptz not null default now(),
+  primary key (tenant_id, source_id, operation_id),
+  constraint fk_knowledge_source_update_receipt foreign key (tenant_id, source_id)
+    references knowledge_sources(tenant_id, id),
+  constraint chk_knowledge_source_update_hash check (request_hash ~ '^[0-9a-f]{64}$')
+);
+
+create table if not exists knowledge_source_acl_departments (
+  tenant_id text not null,
+  source_id text not null,
+  authorization_version bigint not null,
+  department_id text not null,
+  primary key (tenant_id, source_id, authorization_version, department_id),
+  constraint chk_knowledge_acl_department_id check (
+    department_id = btrim(department_id) and department_id <> ''
+    and length(department_id) <= 160
+  ),
+  constraint fk_knowledge_acl_department_version foreign key (
+    tenant_id, source_id, authorization_version
+  ) references knowledge_source_acl_versions(tenant_id, source_id, authorization_version)
+);
+
+create table if not exists knowledge_source_acl_roles (
+  tenant_id text not null,
+  source_id text not null,
+  authorization_version bigint not null,
+  role_id text not null,
+  primary key (tenant_id, source_id, authorization_version, role_id),
+  constraint chk_knowledge_acl_role_id check (
+    role_id = btrim(role_id) and role_id <> '' and length(role_id) <= 160
+  ),
+  constraint fk_knowledge_acl_role_version foreign key (
+    tenant_id, source_id, authorization_version
+  ) references knowledge_source_acl_versions(tenant_id, source_id, authorization_version)
+);
+
+create table if not exists knowledge_source_acl_users (
+  tenant_id text not null,
+  source_id text not null,
+  authorization_version bigint not null,
+  user_id text not null,
+  primary key (tenant_id, source_id, authorization_version, user_id),
+  constraint chk_knowledge_acl_user_id check (
+    user_id = btrim(user_id) and user_id <> '' and length(user_id) <= 160
+  ),
+  constraint fk_knowledge_acl_user_version foreign key (
+    tenant_id, source_id, authorization_version
+  ) references knowledge_source_acl_versions(tenant_id, source_id, authorization_version)
+);
+
+create table if not exists knowledge_connection_lifecycle_receipts (
+  tenant_id text not null,
+  connection_id text not null,
+  lifecycle_epoch bigint not null,
+  state text not null,
+  active_revision_id text,
+  active_catalog_sync_id text,
+  operation_id text not null,
+  requested_by text not null,
+  created_at timestamptz not null default now(),
+  primary key (tenant_id, connection_id, lifecycle_epoch),
+  constraint fk_knowledge_receipt_connection foreign key (tenant_id, connection_id)
+    references knowledge_connections(tenant_id, id),
+  constraint fk_knowledge_receipt_revision foreign key (
+    tenant_id, connection_id, active_revision_id
+  ) references knowledge_connection_revisions(tenant_id, connection_id, id),
+  constraint fk_knowledge_receipt_sync foreign key (
+    tenant_id, connection_id, active_catalog_sync_id
+  ) references knowledge_catalog_syncs(tenant_id, connection_id, id),
+  constraint chk_knowledge_receipt_epoch check (lifecycle_epoch > 0),
+  constraint chk_knowledge_receipt_state check (state in ('active', 'unavailable', 'disabled')),
+  constraint chk_knowledge_receipt_active_pair check (
+    (state = 'disabled' and active_revision_id is null and active_catalog_sync_id is null)
+    or (state <> 'disabled' and active_revision_id is not null and active_catalog_sync_id is not null)
+  ),
+  unique (tenant_id, connection_id, operation_id)
+);
+
+create table if not exists knowledge_retrieval_profiles (
+  id text not null,
+  revision bigint not null,
+  name text not null,
+  mode text not null,
+  top_k_per_source integer not null,
+  candidate_pool_size integer not null,
+  score_threshold double precision not null,
+  fusion_strategy text not null,
+  rrf_constant integer not null,
+  final_top_k integer not null,
+  per_source_timeout_ms integer not null,
+  overall_timeout_ms integer not null,
+  cancellation_grace_ms integer not null,
+  max_retries_per_source integer not null,
+  retry_backoff_base_ms integer not null,
+  retry_backoff_cap_ms integer not null,
+  retry_jitter_ratio double precision not null,
+  max_parallel_sources integer not null,
+  max_query_bytes integer not null,
+  max_chunk_bytes integer not null,
+  max_total_evidence_bytes integer not null,
+  status text not null,
+  content_hash text not null,
+  created_at timestamptz not null default now(),
+  primary key (id, revision),
+  constraint chk_knowledge_retrieval_profile_identity check (
+    id = btrim(id) and length(id) between 1 and 160 and revision > 0
+  ),
+  constraint chk_knowledge_retrieval_profile_name check (
+    name = btrim(name) and length(name) between 1 and 160
+  ),
+  constraint chk_knowledge_retrieval_profile_mode
+    check (mode = 'deterministic'),
+  constraint chk_knowledge_retrieval_profile_result_bounds check (
+    top_k_per_source between 1 and 20
+    and candidate_pool_size between 20 and 4096
+    and candidate_pool_size >= top_k_per_source
+    and score_threshold >= 0 and score_threshold <= 1
+    and fusion_strategy = 'rrf'
+    and rrf_constant > 0
+    and final_top_k between 1 and 20
+  ),
+  constraint chk_knowledge_retrieval_profile_time_bounds check (
+    per_source_timeout_ms between 100 and 30000
+    and overall_timeout_ms between 100 and 60000
+    and cancellation_grace_ms between 0 and 2000
+  ),
+  constraint chk_knowledge_retrieval_profile_retry_bounds check (
+    max_retries_per_source between 0 and 3
+    and retry_backoff_base_ms between 10 and 1000
+    and retry_backoff_cap_ms between 10 and 5000
+    and retry_backoff_cap_ms >= retry_backoff_base_ms
+    and retry_jitter_ratio >= 0 and retry_jitter_ratio <= 0.5
+  ),
+  constraint chk_knowledge_retrieval_profile_budget_bounds check (
+    max_parallel_sources between 1 and 8
+    and max_query_bytes between 1 and 16384
+    and max_chunk_bytes between 1 and 16384
+    and max_total_evidence_bytes between 1 and 131072
+  ),
+  constraint chk_knowledge_retrieval_profile_status
+    check (status in ('active', 'disabled')),
+  constraint chk_knowledge_retrieval_profile_hash
+    check (content_hash ~ '^[0-9a-f]{64}$')
+);
+
+insert into knowledge_retrieval_profiles(
+  id, revision, name, mode, top_k_per_source, candidate_pool_size,
+  score_threshold, fusion_strategy, rrf_constant, final_top_k,
+  per_source_timeout_ms, overall_timeout_ms, cancellation_grace_ms,
+  max_retries_per_source, retry_backoff_base_ms, retry_backoff_cap_ms,
+  retry_jitter_ratio, max_parallel_sources, max_query_bytes, max_chunk_bytes,
+  max_total_evidence_bytes, status, content_hash
+) values (
+  'krp_default', 1, '平台标准检索', 'deterministic', 8, 1024,
+  0.45, 'rrf', 60, 8, 8000, 12000, 250, 1, 100, 1000,
+  0.2, 4, 16384, 16384, 131072, 'active',
+  '7c2cef7efef2a50a3446ed8d56cbae8fb3d998700f828fabbffebf979a8edd73'
+)
+on conflict (id, revision) do nothing;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from knowledge_retrieval_profiles
+    where id = 'krp_default'
+      and revision = 1
+      and name = '平台标准检索'
+      and mode = 'deterministic'
+      and top_k_per_source = 8
+      and candidate_pool_size = 1024
+      and score_threshold = 0.45
+      and fusion_strategy = 'rrf'
+      and rrf_constant = 60
+      and final_top_k = 8
+      and per_source_timeout_ms = 8000
+      and overall_timeout_ms = 12000
+      and cancellation_grace_ms = 250
+      and max_retries_per_source = 1
+      and retry_backoff_base_ms = 100
+      and retry_backoff_cap_ms = 1000
+      and retry_jitter_ratio = 0.2
+      and max_parallel_sources = 4
+      and max_query_bytes = 16384
+      and max_chunk_bytes = 16384
+      and max_total_evidence_bytes = 131072
+      and status = 'active'
+      and content_hash = '7c2cef7efef2a50a3446ed8d56cbae8fb3d998700f828fabbffebf979a8edd73'
+  ) then
+    raise exception 'knowledge_retrieval_profile_seed_conflict' using errcode = '23514';
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'run_attempts'::regclass
+      and conname = 'uq_run_attempts_tenant_run_id'
+  ) then
+    alter table run_attempts add constraint uq_run_attempts_tenant_run_id
+      unique (tenant_id, run_id, id);
+  end if;
+end $$;
+
+create table if not exists run_knowledge_snapshots (
+  tenant_id text not null,
+  run_id text not null,
+  agent_id text not null,
+  profile_revision bigint not null,
+  profile_content_hash text not null,
+  retrieval_profile_id text not null,
+  retrieval_profile_revision bigint not null,
+  sources_json jsonb not null,
+  principal_policy_version integer not null,
+  authorized_at timestamptz not null,
+  content_hash text not null,
+  created_at timestamptz not null default now(),
+  primary key (tenant_id, run_id),
+  constraint fk_run_knowledge_snapshot_run foreign key (tenant_id, run_id)
+    references runs(tenant_id, id),
+  constraint fk_run_knowledge_snapshot_agent_profile foreign key (
+    tenant_id, agent_id, profile_revision
+  ) references agent_profile_revisions(tenant_id, agent_id, revision),
+  constraint fk_run_knowledge_snapshot_retrieval_profile foreign key (
+    retrieval_profile_id, retrieval_profile_revision
+  ) references knowledge_retrieval_profiles(id, revision),
+  constraint chk_run_knowledge_snapshot_profile_hash
+    check (profile_content_hash ~ '^[0-9a-f]{64}$'),
+  constraint chk_run_knowledge_snapshot_sources check (
+    jsonb_typeof(sources_json) = 'array'
+    and jsonb_array_length(sources_json) between 1 and 8
+    and octet_length(sources_json::text) <= 16384
+  ),
+  constraint chk_run_knowledge_snapshot_versions check (
+    profile_revision > 0
+    and retrieval_profile_revision > 0
+    and principal_policy_version > 0
+  ),
+  constraint chk_run_knowledge_snapshot_hash
+    check (content_hash ~ '^[0-9a-f]{64}$'),
+  constraint uq_run_knowledge_snapshot_fence
+    unique (tenant_id, run_id, content_hash)
+);
+
+create table if not exists knowledge_retrieval_attempts (
+  id text primary key,
+  tenant_id text not null,
+  run_id text not null,
+  attempt_id text not null,
+  generation bigint not null,
+  snapshot_hash text not null,
+  status text not null default 'requested',
+  source_count integer not null,
+  result_count integer not null default 0,
+  evidence_count integer not null default 0,
+  provider_retry_count integer not null default 0,
+  duration_ms integer,
+  safe_failure_code text,
+  cancel_requested_at timestamptz,
+  terminal_digest text,
+  started_at timestamptz,
+  deadline_at timestamptz,
+  completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint fk_knowledge_retrieval_attempt_run foreign key (tenant_id, run_id)
+    references runs(tenant_id, id),
+  constraint fk_knowledge_retrieval_attempt_run_attempt foreign key (
+    tenant_id, run_id, attempt_id
+  ) references run_attempts(tenant_id, run_id, id),
+  constraint fk_knowledge_retrieval_attempt_snapshot foreign key (
+    tenant_id, run_id, snapshot_hash
+  ) references run_knowledge_snapshots(tenant_id, run_id, content_hash),
+  constraint chk_knowledge_retrieval_attempt_status check (
+    status in ('requested', 'retrieving', 'succeeded', 'no_evidence', 'failed', 'cancelled')
+  ),
+  constraint chk_knowledge_retrieval_attempt_generation check (generation > 0),
+  constraint chk_knowledge_retrieval_attempt_counts check (
+    source_count between 1 and 8
+    and result_count between 0 and 160
+    and evidence_count between 0 and 20
+    and evidence_count <= result_count
+    and provider_retry_count between 0 and 24
+  ),
+  constraint chk_knowledge_retrieval_attempt_duration check (
+    duration_ms is null or duration_ms between 0 and 120000
+  ),
+  constraint chk_knowledge_retrieval_attempt_failure_code check (
+    (
+      status in ('requested', 'retrieving', 'succeeded', 'cancelled')
+      and safe_failure_code is null
+    )
+    or (status = 'no_evidence' and safe_failure_code = 'knowledge_no_evidence')
+    or (
+      status = 'failed'
+      and safe_failure_code in (
+        'knowledge_access_denied',
+        'knowledge_binding_invalid',
+        'knowledge_connection_invalid',
+        'knowledge_connection_unavailable',
+        'knowledge_profile_invalid',
+        'knowledge_provider_rejected',
+        'knowledge_provider_transient',
+        'knowledge_response_invalid',
+        'knowledge_retrieval_timeout',
+        'knowledge_source_disabled',
+        'knowledge_source_missing'
+      )
+    )
+  ),
+  constraint chk_knowledge_retrieval_attempt_digest check (
+    terminal_digest is null or terminal_digest ~ '^[0-9a-f]{64}$'
+  ),
+  constraint chk_knowledge_retrieval_attempt_timeline check (
+    (status = 'requested' and started_at is null and deadline_at is null and completed_at is null)
+    or (
+      status = 'retrieving'
+      and started_at is not null and deadline_at is not null and deadline_at >= started_at
+      and completed_at is null
+    )
+    or (
+      status in ('succeeded', 'no_evidence', 'failed', 'cancelled')
+      and started_at is not null and deadline_at is not null and completed_at is not null
+      and completed_at >= started_at
+      and (
+        (status in ('succeeded', 'no_evidence') and completed_at <= deadline_at)
+        or (
+          status = 'failed'
+          and (
+            (safe_failure_code = 'knowledge_retrieval_timeout' and completed_at >= deadline_at)
+            or (safe_failure_code <> 'knowledge_retrieval_timeout' and completed_at < deadline_at)
+          )
+        )
+        or (
+          status = 'cancelled'
+          and cancel_requested_at is not null
+          and cancel_requested_at <= deadline_at
+          and completed_at >= cancel_requested_at
+        )
+      )
+    )
+  ),
+  constraint chk_knowledge_retrieval_attempt_terminal_receipt check (
+    (
+      status in ('requested', 'retrieving')
+      and terminal_digest is null and duration_ms is null
+    )
+    or (
+      status in ('succeeded', 'no_evidence', 'failed', 'cancelled')
+      and terminal_digest is not null and duration_ms is not null
+    )
+  ),
+  constraint chk_knowledge_retrieval_attempt_terminal_counts check (
+    (status = 'succeeded' and evidence_count > 0)
+    or (status = 'no_evidence' and evidence_count = 0)
+    or status in ('requested', 'retrieving', 'failed', 'cancelled')
+  ),
+  constraint uq_knowledge_retrieval_attempt_fence
+    unique (tenant_id, run_id, attempt_id, generation),
+  constraint uq_knowledge_retrieval_attempt_identity
+    unique (tenant_id, run_id, id)
+);
+
+create table if not exists knowledge_evidence (
+  tenant_id text not null,
+  run_id text not null,
+  retrieval_attempt_id text not null,
+  evidence_id text not null,
+  source_id text not null,
+  provider_document_id text not null,
+  provider_chunk_id text,
+  title text not null,
+  content text not null,
+  content_sha256 text not null,
+  provider_score double precision not null,
+  fused_rank integer not null,
+  position_json jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  primary key (tenant_id, run_id, evidence_id),
+  constraint fk_knowledge_evidence_run foreign key (tenant_id, run_id)
+    references runs(tenant_id, id),
+  constraint fk_knowledge_evidence_attempt foreign key (
+    tenant_id, run_id, retrieval_attempt_id
+  ) references knowledge_retrieval_attempts(tenant_id, run_id, id),
+  constraint fk_knowledge_evidence_source foreign key (tenant_id, source_id)
+    references knowledge_sources(tenant_id, id),
+  constraint chk_knowledge_evidence_identity check (
+    length(evidence_id) between 1 and 160
+    and length(provider_document_id) between 1 and 512
+    and (provider_chunk_id is null or length(provider_chunk_id) between 1 and 512)
+  ),
+  constraint chk_knowledge_evidence_title check (
+    octet_length(convert_to(title, 'UTF8')) <= 512
+  ),
+  constraint chk_knowledge_evidence_content check (
+    octet_length(convert_to(content, 'UTF8')) between 1 and 16384
+  ),
+  constraint chk_knowledge_evidence_content_hash check (
+    content_sha256 ~ '^[0-9a-f]{64}$'
+    and content_sha256 = encode(sha256(convert_to(content, 'UTF8')), 'hex')
+  ),
+  constraint chk_knowledge_evidence_score check (
+    provider_score > '-Infinity'::double precision
+    and provider_score < 'Infinity'::double precision
+  ),
+  constraint chk_knowledge_evidence_rank check (fused_rank between 1 and 20),
+  constraint chk_knowledge_evidence_position check (
+    jsonb_typeof(position_json) in ('object', 'array')
+    and octet_length(position_json::text) <= 8192
+  ),
+  constraint uq_knowledge_evidence_attempt_rank
+    unique (tenant_id, run_id, retrieval_attempt_id, fused_rank)
+);
+
+create or replace function ai_platform_guard_knowledge_retrieval_profile_immutable()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.id is distinct from old.id
+     or new.revision is distinct from old.revision
+     or new.name is distinct from old.name
+     or new.mode is distinct from old.mode
+     or new.top_k_per_source is distinct from old.top_k_per_source
+     or new.candidate_pool_size is distinct from old.candidate_pool_size
+     or new.score_threshold is distinct from old.score_threshold
+     or new.fusion_strategy is distinct from old.fusion_strategy
+     or new.rrf_constant is distinct from old.rrf_constant
+     or new.final_top_k is distinct from old.final_top_k
+     or new.per_source_timeout_ms is distinct from old.per_source_timeout_ms
+     or new.overall_timeout_ms is distinct from old.overall_timeout_ms
+     or new.cancellation_grace_ms is distinct from old.cancellation_grace_ms
+     or new.max_retries_per_source is distinct from old.max_retries_per_source
+     or new.retry_backoff_base_ms is distinct from old.retry_backoff_base_ms
+     or new.retry_backoff_cap_ms is distinct from old.retry_backoff_cap_ms
+     or new.retry_jitter_ratio is distinct from old.retry_jitter_ratio
+     or new.max_parallel_sources is distinct from old.max_parallel_sources
+     or new.max_query_bytes is distinct from old.max_query_bytes
+     or new.max_chunk_bytes is distinct from old.max_chunk_bytes
+     or new.max_total_evidence_bytes is distinct from old.max_total_evidence_bytes
+     or new.content_hash is distinct from old.content_hash
+     or new.created_at is distinct from old.created_at then
+    raise exception 'knowledge_retrieval_profile_immutable' using errcode = '23514';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists trg_knowledge_retrieval_profile_immutable on knowledge_retrieval_profiles;
+create trigger trg_knowledge_retrieval_profile_immutable
+before update on knowledge_retrieval_profiles
+for each row execute function ai_platform_guard_knowledge_retrieval_profile_immutable();
+
+create or replace function ai_platform_guard_run_knowledge_snapshot_immutable()
+returns trigger
+language plpgsql
+as $$
+declare
+  source_value jsonb;
+  source_keys text[];
+  source_ids text[] := array[]::text[];
+  source_id_value text;
+  source_ordinal integer := 0;
+begin
+  if tg_op = 'UPDATE' and new is distinct from old then
+    raise exception 'run_knowledge_snapshot_immutable' using errcode = '23514';
+  end if;
+  if tg_op = 'INSERT' then
+    if jsonb_typeof(new.sources_json) is distinct from 'array'
+       or jsonb_array_length(new.sources_json) not between 1 and 8 then
+      raise exception 'run_knowledge_snapshot_sources_invalid' using errcode = '23514';
+    end if;
+    for source_value in
+      select items.value
+      from jsonb_array_elements(new.sources_json) with ordinality as items(value, ordinal)
+      order by items.ordinal
+    loop
+      if jsonb_typeof(source_value) is distinct from 'object' then
+        raise exception 'run_knowledge_snapshot_sources_invalid' using errcode = '23514';
+      end if;
+      select array_agg(keys.key order by keys.key)
+      into source_keys
+      from jsonb_object_keys(source_value) as keys(key);
+      if source_keys is distinct from array[
+        'connection_catalog_sync_id',
+        'connection_id',
+        'connection_lifecycle_epoch',
+        'connection_revision',
+        'connection_revision_id',
+        'ordinal',
+        'provider_resource_id',
+        'required',
+        'source_authorization_version',
+        'source_id'
+      ]::text[] then
+        raise exception 'run_knowledge_snapshot_sources_invalid' using errcode = '23514';
+      end if;
+      if jsonb_typeof(source_value -> 'source_id') is distinct from 'string'
+         or jsonb_typeof(source_value -> 'connection_id') is distinct from 'string'
+         or jsonb_typeof(source_value -> 'connection_revision_id') is distinct from 'string'
+         or jsonb_typeof(source_value -> 'connection_catalog_sync_id') is distinct from 'string'
+         or jsonb_typeof(source_value -> 'provider_resource_id') is distinct from 'string'
+         or jsonb_typeof(source_value -> 'required') is distinct from 'boolean'
+         or (source_value -> 'required') is distinct from 'true'::jsonb
+         or jsonb_typeof(source_value -> 'source_authorization_version') is distinct from 'number'
+         or jsonb_typeof(source_value -> 'connection_revision') is distinct from 'number'
+         or jsonb_typeof(source_value -> 'connection_lifecycle_epoch') is distinct from 'number'
+         or jsonb_typeof(source_value -> 'ordinal') is distinct from 'number'
+         or (source_value ->> 'source_authorization_version') !~ '^[1-9][0-9]{0,17}$'
+         or (source_value ->> 'connection_revision') !~ '^[1-9][0-9]{0,17}$'
+         or (source_value ->> 'connection_lifecycle_epoch') !~ '^[1-9][0-9]{0,17}$'
+         or (source_value ->> 'ordinal') !~ '^[0-7]$'
+         or (source_value ->> 'ordinal')::integer <> source_ordinal then
+        raise exception 'run_knowledge_snapshot_sources_invalid' using errcode = '23514';
+      end if;
+      if (source_value ->> 'source_id') is distinct from btrim(source_value ->> 'source_id')
+         or octet_length(source_value ->> 'source_id') not between 1 and 160
+         or (source_value ->> 'source_id') ~ '[[:cntrl:]]'
+         or (source_value ->> 'connection_id') is distinct from btrim(source_value ->> 'connection_id')
+         or octet_length(source_value ->> 'connection_id') not between 1 and 160
+         or (source_value ->> 'connection_id') ~ '[[:cntrl:]]'
+         or (source_value ->> 'connection_revision_id') is distinct from btrim(source_value ->> 'connection_revision_id')
+         or octet_length(source_value ->> 'connection_revision_id') not between 1 and 160
+         or (source_value ->> 'connection_revision_id') ~ '[[:cntrl:]]'
+         or (source_value ->> 'connection_catalog_sync_id') is distinct from btrim(source_value ->> 'connection_catalog_sync_id')
+         or octet_length(source_value ->> 'connection_catalog_sync_id') not between 1 and 160
+         or (source_value ->> 'connection_catalog_sync_id') ~ '[[:cntrl:]]'
+         or (source_value ->> 'provider_resource_id') is distinct from btrim(source_value ->> 'provider_resource_id')
+         or octet_length(source_value ->> 'provider_resource_id') not between 1 and 512
+         or (source_value ->> 'provider_resource_id') ~ '[[:cntrl:]]' then
+        raise exception 'run_knowledge_snapshot_sources_invalid' using errcode = '23514';
+      end if;
+      source_id_value := source_value ->> 'source_id';
+      if source_id_value = any(source_ids) then
+        raise exception 'run_knowledge_snapshot_sources_invalid' using errcode = '23514';
+      end if;
+      source_ids := array_append(source_ids, source_id_value);
+      source_ordinal := source_ordinal + 1;
+    end loop;
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists trg_run_knowledge_snapshot_immutable on run_knowledge_snapshots;
+create trigger trg_run_knowledge_snapshot_immutable
+before insert or update on run_knowledge_snapshots
+for each row execute function ai_platform_guard_run_knowledge_snapshot_immutable();
+
+create or replace function ai_platform_guard_knowledge_retrieval_attempt_transition()
+returns trigger
+language plpgsql
+as $$
+begin
+  if tg_op = 'INSERT' then
+    return new;
+  end if;
+  if old.status in ('succeeded', 'no_evidence', 'failed', 'cancelled')
+     and new is distinct from old then
+    raise exception 'knowledge_retrieval_attempt_terminal_immutable' using errcode = '23514';
+  end if;
+  if new.id is distinct from old.id
+     or new.tenant_id is distinct from old.tenant_id
+     or new.run_id is distinct from old.run_id
+     or new.attempt_id is distinct from old.attempt_id
+     or new.generation is distinct from old.generation
+     or new.snapshot_hash is distinct from old.snapshot_hash
+     or new.source_count is distinct from old.source_count
+     or (
+       (new.started_at is distinct from old.started_at
+        or new.deadline_at is distinct from old.deadline_at)
+       and not (
+         old.status = 'requested' and new.status = 'retrieving'
+         and old.started_at is null and old.deadline_at is null
+         and new.started_at is not null and new.deadline_at is not null
+       )
+     )
+     or new.created_at is distinct from old.created_at then
+    raise exception 'knowledge_retrieval_attempt_identity_immutable' using errcode = '23514';
+  end if;
+  if new.status is distinct from old.status
+     and not (
+       (old.status = 'requested' and new.status in ('retrieving', 'failed', 'cancelled'))
+       or (
+         old.status = 'retrieving'
+         and new.status in ('succeeded', 'no_evidence', 'failed', 'cancelled')
+       )
+     ) then
+    raise exception 'knowledge_retrieval_attempt_transition_invalid' using errcode = '23514';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists trg_knowledge_retrieval_attempt_transition on knowledge_retrieval_attempts;
+create trigger trg_knowledge_retrieval_attempt_transition
+before update on knowledge_retrieval_attempts
+for each row execute function ai_platform_guard_knowledge_retrieval_attempt_transition();
+
+create or replace function ai_platform_guard_knowledge_evidence_immutable()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new is distinct from old then
+    raise exception 'knowledge_evidence_immutable' using errcode = '23514';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists trg_knowledge_evidence_immutable on knowledge_evidence;
+create trigger trg_knowledge_evidence_immutable
+before update on knowledge_evidence
+for each row execute function ai_platform_guard_knowledge_evidence_immutable();
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'knowledge_connections'::regclass
+      and conname = 'fk_knowledge_connection_active_revision'
+  ) then
+    alter table knowledge_connections add constraint fk_knowledge_connection_active_revision
+      foreign key (tenant_id, id, active_revision_id)
+      references knowledge_connection_revisions(tenant_id, connection_id, id);
+  end if;
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'knowledge_connections'::regclass
+      and conname = 'fk_knowledge_connection_candidate_revision'
+  ) then
+    alter table knowledge_connections add constraint fk_knowledge_connection_candidate_revision
+      foreign key (tenant_id, id, candidate_revision_id)
+      references knowledge_connection_revisions(tenant_id, connection_id, id);
+  end if;
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'knowledge_connections'::regclass
+      and conname = 'fk_knowledge_connection_active_sync'
+  ) then
+    alter table knowledge_connections add constraint fk_knowledge_connection_active_sync
+      foreign key (tenant_id, id, active_catalog_sync_id)
+      references knowledge_catalog_syncs(tenant_id, connection_id, id);
+  end if;
+end $$;
+
+create index if not exists idx_knowledge_connections_status
+  on knowledge_connections(tenant_id, status, name, id);
+create index if not exists idx_knowledge_syncs_connection
+  on knowledge_catalog_syncs(tenant_id, connection_id, requested_at desc, id desc);
+create unique index if not exists uq_knowledge_syncs_one_active_connection
+  on knowledge_catalog_syncs(tenant_id, connection_id)
+  where status in ('requested', 'enumerating', 'committing');
+create index if not exists idx_knowledge_sources_catalog
+  on knowledge_sources(tenant_id, connection_id, status, provider_name, id);
+create unique index if not exists uq_knowledge_retrieval_attempt_one_open
+  on knowledge_retrieval_attempts(tenant_id, run_id)
+  where status in ('requested', 'retrieving');
+create index if not exists idx_knowledge_retrieval_attempt_due
+  on knowledge_retrieval_attempts(deadline_at, tenant_id, run_id, id)
+  where status = 'retrieving';
+create index if not exists idx_knowledge_evidence_attempt
+  on knowledge_evidence(tenant_id, run_id, retrieval_attempt_id, fused_rank);
 
 create table if not exists audit_logs (
   id text primary key,

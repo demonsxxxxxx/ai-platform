@@ -1,0 +1,23 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KSOURCE-22",
+  "issue_number": 1311,
+  "summary": "Logical Knowledge Source lifecycle and safe presentation API candidate",
+  "atomic_case_ids": [
+    "KAC-FR-KSRC-023",
+    "KAC-FR-KSRC-024",
+    "KAC-FR-KSRC-025",
+    "KAC-FR-KSRC-026",
+    "KAC-FR-KSRC-027",
+    "KAC-FR-KSRC-028",
+    "KAC-FR-KSRC-029",
+    "KAC-FR-KSRC-030",
+    "KAC-FR-KSRC-031",
+    "KAC-FR-KSRC-035",
+    "KAC-FR-KSRC-036"
+  ],
+  "changed_paths": [
+    "docs/product/external-knowledge/manifests/KSOURCE-22.json"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

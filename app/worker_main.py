@@ -12,6 +12,7 @@ import uuid
 
 from app import queue
 from app import repositories
+from app.bootstrap.knowledge import configure_knowledge_services
 from app.bootstrap.model_services import configure_model_services
 from app.bootstrap.streaming import build_worker_v4_runtime
 from app.bootstrap.worker_maintenance import (
@@ -972,6 +973,7 @@ def main() -> None:
     args = parser.parse_args()
 
     configure_model_services()
+    configure_knowledge_services()
     if args.once:
         outcome = asyncio.run(run_once_and_close(timeout_seconds=args.timeout))
         print(outcome)

@@ -1,0 +1,20 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KMARKET-33",
+  "issue_number": 1311,
+  "summary": "Authorized Agent Market Knowledge summary and bounded freshness presentation candidate",
+  "atomic_case_ids": [
+    "KAC-FR-KADM-001",
+    "KAC-FR-KADM-002",
+    "KAC-FR-KADM-003",
+    "KAC-FR-KADM-004",
+    "KAC-FR-KADM-027",
+    "KAC-FR-KUI-014",
+    "KAC-FR-KUI-015"
+  ],
+  "changed_paths": [
+    "docs/product/external-knowledge/manifests/KMARKET-33.json",
+    "frontend/web/src/features/agent-market/AgentMarketRoute.tsx"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

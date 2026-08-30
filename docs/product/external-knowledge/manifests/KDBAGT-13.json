@@ -1,0 +1,20 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KDBAGT-13",
+  "issue_number": 1311,
+  "summary": "Ordered Agent revision Knowledge bindings; source and focused PostgreSQL test source",
+  "atomic_case_ids": [
+    "KAC-FR-KAGT-003",
+    "KAC-FR-KAGT-004",
+    "KAC-FR-KAGT-005",
+    "KAC-FR-KAGT-014",
+    "KAC-FR-KAGT-015"
+  ],
+  "changed_paths": [
+    "app/agent_apps/infrastructure/postgres.py",
+    "app/knowledge/infrastructure/agent_profiles.py",
+    "docs/product/external-knowledge/manifests/KDBAGT-13.json",
+    "tests/test_agent_profiles_postgres.py"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

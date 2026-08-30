@@ -426,6 +426,7 @@ export const SessionSidebar = forwardRef<
               onOpenAgentBuilder={() => navigateWorkbenchItem("agentBuilder")}
               onOpenSkills={() => navigate("/skills")}
               onOpenMcp={() => navigate("/mcp")}
+              onOpenKnowledge={() => navigateWorkbenchItem("knowledge")}
               onOpenModels={() => navigateWorkbenchItem("models")}
               onOpenRuns={() => navigateWorkbenchItem("runs")}
               hideSessionDiscovery={agentWorkspace !== undefined}
@@ -467,6 +468,7 @@ export const SessionSidebar = forwardRef<
           onOpenAgentBuilder={() => navigateWorkbenchItem("agentBuilder")}
           onOpenSkills={() => navigate("/skills")}
           onOpenMcp={() => navigate("/mcp")}
+          onOpenKnowledge={() => navigateWorkbenchItem("knowledge")}
           onOpenModels={() => navigateWorkbenchItem("models")}
           onOpenRuns={() => navigateWorkbenchItem("runs")}
           hideSessionDiscovery={agentWorkspace !== undefined}

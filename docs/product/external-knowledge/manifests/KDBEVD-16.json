@@ -1,0 +1,11 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KDBEVD-16",
+  "issue_number": 1311,
+  "summary": "Bounded immutable evidence and atomic successful retrieval receipt persistence",
+  "atomic_case_ids": [],
+  "changed_paths": [
+    "docs/product/external-knowledge/manifests/KDBEVD-16.json"
+  ],
+  "evidence_layers": ["source", "unit", "postgresql"]
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KDBATT-15",
+  "issue_number": 1311,
+  "summary": "Retrieval-attempt persistence with exact Run attempt generation fence",
+  "atomic_case_ids": [
+    "KAC-FR-KRET-047",
+    "KAC-FR-KRET-048"
+  ],
+  "changed_paths": [
+    "docs/product/external-knowledge/manifests/KDBATT-15.json"
+  ],
+  "evidence_layers": ["source", "unit", "postgresql"]
+}

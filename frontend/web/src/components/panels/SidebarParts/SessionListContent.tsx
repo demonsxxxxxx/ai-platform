@@ -8,6 +8,7 @@ import {
   Bot,
   Cpu,
   Activity,
+  Database,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -149,6 +150,12 @@ export function SessionListContent({
       icon: Server,
       label: t("featureMenu.mcpTools"),
       onClick: () => navigate("/mcp"),
+    },
+    {
+      key: "knowledge",
+      icon: Database,
+      label: t("nav.knowledge"),
+      onClick: () => navigate("/knowledge"),
     },
     {
       key: "models",

@@ -1,0 +1,15 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KSYNC-21",
+  "issue_number": 1311,
+  "summary": "Manual catalog synchronization application candidate; scheduler and runtime evidence remain pending",
+  "atomic_case_ids": [
+    "KAC-FR-KSRC-001",
+    "KAC-FR-KSRC-002",
+    "KAC-FR-KSRC-034"
+  ],
+  "changed_paths": [
+    "docs/product/external-knowledge/manifests/KSYNC-21.json"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

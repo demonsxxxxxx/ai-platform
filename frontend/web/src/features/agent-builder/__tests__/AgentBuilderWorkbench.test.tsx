@@ -23,6 +23,10 @@ const avatarPickerSource = readFileSync(
   join(process.cwd(), "src/features/agent-builder/AgentAvatarPicker.tsx"),
   "utf8",
 );
+const knowledgeSectionSource = readFileSync(
+  join(process.cwd(), "src/features/agent-builder/AgentBuilderKnowledgeSection.tsx"),
+  "utf8",
+);
 
 test("server list and mutations are owned by the feature-local controller", () => {
   assert.match(controllerSource, /agentProfileApi/);
@@ -100,6 +104,16 @@ test("expert management follows the directory and first-class configuration layo
   assert.doesNotMatch(enterpriseFieldsSource, />全租户</);
   assert.match(workbenchSource, /Agent SDK 根据任务上下文自主决定/);
   assert.match(workbenchSource, /title="配置 Skill Set"/);
+  assert.match(workbenchSource, /AgentBuilderKnowledgeSection/);
+  assert.match(knowledgeSectionSource, /data-agent-builder-knowledge-settings/);
+  assert.match(knowledgeSectionSource, /role="switch"/);
+  assert.match(knowledgeSectionSource, /aria-label="企业内部知识库"/);
+  assert.match(knowledgeSectionSource, /按专家独立开启/);
+  assert.match(knowledgeSectionSource, /最多 \{MAX_KNOWLEDGE_SOURCES\} 项/);
+  assert.match(knowledgeSectionSource, /已保留绑定并阻止发布/);
+  assert.match(knowledgeSectionSource, /sourcesById\.get\(sourceId\)\?\.available !== true/);
+  assert.match(knowledgeSectionSource, /type="checkbox"/);
+  assert.match(knowledgeSectionSource, /type="radio"/);
   assert.match(enterpriseFieldsSource, /AgentAvatarPicker/);
   assert.match(avatarPickerSource, /头像风格/);
   assert.match(avatarPickerSource, /换一批/);

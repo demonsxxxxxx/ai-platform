@@ -1,0 +1,11 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KDBACL-12",
+  "issue_number": 1311,
+  "summary": "Immutable Knowledge Source ACL persistence candidate; PostgreSQL acceptance remains pending",
+  "atomic_case_ids": ["KAC-FR-KACL-017"],
+  "changed_paths": [
+    "docs/product/external-knowledge/manifests/KDBACL-12.json"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

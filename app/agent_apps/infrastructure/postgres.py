@@ -14,6 +14,28 @@ def _dumps_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+_KNOWLEDGE_FRESHNESS_SELECT = """
+case when agent_profile_revisions.knowledge_enabled then (
+  select case
+           when bool_and(connections.last_complete_sync_at is not null)
+             then min(connections.last_complete_sync_at)
+           else null
+         end
+  from jsonb_array_elements_text(
+    agent_profile_revisions.knowledge_source_ids
+  ) as bound_source(source_id)
+  join knowledge_sources sources
+    on sources.tenant_id = agent_profile_revisions.tenant_id
+   and sources.id = bound_source.source_id
+   and sources.status = 'active'
+  join knowledge_connections connections
+    on connections.tenant_id = sources.tenant_id
+   and connections.id = sources.connection_id
+   and connections.status = 'active'
+) else null end as knowledge_freshness_at
+"""
+
+
 async def ensure_agent_profile_identity(
     conn: AsyncConnection,
     *,
@@ -101,6 +123,10 @@ async def create_agent_profile_revision(
     expected_outputs: list[str] | None = None,
     permissions_and_data_access_notice: str = "",
     avatar_asset_id: str | None = None,
+    knowledge_enabled: bool = False,
+    knowledge_source_ids: list[str] | None = None,
+    retrieval_profile_id: str | None = None,
+    knowledge_bindings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Append one revision under an optimistic fence and transaction advisory lock."""
 
@@ -127,7 +153,9 @@ async def create_agent_profile_revision(
         """
         insert into agent_profile_revisions(
           tenant_id, agent_id, revision, status, revision_status, name, description, instructions,
-          model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
+          model_id, skill_id, skill_version, skill_set, mcp_tool_ids,
+          knowledge_enabled, knowledge_source_ids, retrieval_profile_id, knowledge_bindings,
+          content_hash,
           avatar_ref, avatar_seed, category, visibility, allowed_department_ids, allowed_roles,
           allowed_user_ids, welcome_message, starter_prompts, capability_summary,
           recommended_tasks, supported_input_types, supported_file_types, expected_outputs,
@@ -135,12 +163,15 @@ async def create_agent_profile_revision(
           created_by, published_by, published_at,
           published_from_revision, withdrawn_from_revision
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s,
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb,
+                %s, %s::jsonb, %s, %s::jsonb, %s,
                 %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s::jsonb,
                 %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s,
                 %s, %s, %s, case when %s::text is null then null else now() end, %s, %s)
         returning tenant_id, agent_id, revision, revision_status as status, name, description, instructions,
-                  model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
+                  model_id, skill_id, skill_version, skill_set, mcp_tool_ids,
+                  knowledge_enabled, knowledge_source_ids, retrieval_profile_id,
+                  knowledge_bindings, content_hash,
                   avatar_ref, avatar_seed, category, visibility, allowed_department_ids, allowed_roles,
                   allowed_user_ids, welcome_message, starter_prompts, capability_summary,
                   recommended_tasks, supported_input_types,
@@ -165,6 +196,10 @@ async def create_agent_profile_revision(
                 or [{"skill_id": skill_id, "expected_version": skill_version}]
             ),
             _dumps_json(mcp_tool_ids),
+            knowledge_enabled,
+            _dumps_json(knowledge_source_ids or []),
+            retrieval_profile_id,
+            _dumps_json(knowledge_bindings or []),
             content_hash,
             avatar_ref,
             avatar_seed,
@@ -223,7 +258,12 @@ async def get_agent_profile_revision(
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
                agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
                agent_profile_revisions.skill_set,
-               agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
+               agent_profile_revisions.mcp_tool_ids,
+               agent_profile_revisions.knowledge_enabled,
+               agent_profile_revisions.knowledge_source_ids,
+               agent_profile_revisions.retrieval_profile_id,
+               agent_profile_revisions.knowledge_bindings,
+               agent_profile_revisions.content_hash,
                agent_profile_revisions.avatar_ref, agent_profile_revisions.avatar_asset_id,
                agent_profile_revisions.avatar_seed,
                agent_profile_revisions.category,
@@ -272,7 +312,12 @@ async def list_latest_agent_profile_revisions(
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
                agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
                agent_profile_revisions.skill_set,
-               agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
+               agent_profile_revisions.mcp_tool_ids,
+               agent_profile_revisions.knowledge_enabled,
+               agent_profile_revisions.knowledge_source_ids,
+               agent_profile_revisions.retrieval_profile_id,
+               agent_profile_revisions.knowledge_bindings,
+               agent_profile_revisions.content_hash,
                agent_profile_revisions.avatar_ref, agent_profile_revisions.avatar_asset_id,
                agent_profile_revisions.avatar_seed,
                agent_profile_revisions.category,
@@ -443,7 +488,13 @@ async def get_current_published_agent_profile(
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
                agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
                agent_profile_revisions.skill_set,
-               agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
+               agent_profile_revisions.mcp_tool_ids,
+               agent_profile_revisions.knowledge_enabled,
+               agent_profile_revisions.knowledge_source_ids,
+               agent_profile_revisions.retrieval_profile_id,
+               agent_profile_revisions.knowledge_bindings,
+               {_KNOWLEDGE_FRESHNESS_SELECT},
+               agent_profile_revisions.content_hash,
                agent_profile_revisions.avatar_ref, agent_profile_revisions.avatar_asset_id,
                agent_profile_revisions.avatar_seed,
                agent_profile_revisions.category,
@@ -499,7 +550,12 @@ async def get_bound_published_agent_profile(
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
                agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
                agent_profile_revisions.skill_set,
-               agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
+               agent_profile_revisions.mcp_tool_ids,
+               agent_profile_revisions.knowledge_enabled,
+               agent_profile_revisions.knowledge_source_ids,
+               agent_profile_revisions.retrieval_profile_id,
+               agent_profile_revisions.knowledge_bindings,
+               agent_profile_revisions.content_hash,
                agent_profile_revisions.avatar_ref, agent_profile_revisions.avatar_asset_id,
                agent_profile_revisions.avatar_seed,
                agent_profile_revisions.category,
@@ -597,7 +653,13 @@ async def list_current_published_agent_profiles(
                agent_profile_revisions.instructions, agent_profile_revisions.model_id,
                agent_profile_revisions.skill_id, agent_profile_revisions.skill_version,
                agent_profile_revisions.skill_set,
-               agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
+               agent_profile_revisions.mcp_tool_ids,
+               agent_profile_revisions.knowledge_enabled,
+               agent_profile_revisions.knowledge_source_ids,
+               agent_profile_revisions.retrieval_profile_id,
+               agent_profile_revisions.knowledge_bindings,
+               {_KNOWLEDGE_FRESHNESS_SELECT},
+               agent_profile_revisions.content_hash,
                agent_profile_revisions.avatar_ref, agent_profile_revisions.avatar_asset_id,
                agent_profile_revisions.avatar_seed,
                agent_profile_revisions.category,
@@ -654,7 +716,12 @@ async def list_agent_profile_revision_history(
                agent_profile_revisions.instructions,
                agent_profile_revisions.model_id, agent_profile_revisions.skill_id,
                agent_profile_revisions.skill_version, agent_profile_revisions.skill_set,
-               agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
+               agent_profile_revisions.mcp_tool_ids,
+               agent_profile_revisions.knowledge_enabled,
+               agent_profile_revisions.knowledge_source_ids,
+               agent_profile_revisions.retrieval_profile_id,
+               agent_profile_revisions.knowledge_bindings,
+               agent_profile_revisions.content_hash,
                agent_profile_revisions.avatar_ref, agent_profile_revisions.avatar_asset_id,
                agent_profile_revisions.avatar_seed, agent_profile_revisions.category,
                agent_profile_revisions.visibility,

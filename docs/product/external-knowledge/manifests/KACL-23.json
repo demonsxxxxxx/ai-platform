@@ -1,0 +1,17 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KACL-23",
+  "issue_number": 1311,
+  "summary": "Department-governed Knowledge Source ACL API candidate; browser and authority outage evidence remain pending",
+  "atomic_case_ids": [
+    "KAC-FR-KACL-018",
+    "KAC-FR-KACL-019",
+    "KAC-FR-KACL-020",
+    "KAC-FR-KACL-021",
+    "KAC-FR-KACL-022"
+  ],
+  "changed_paths": [
+    "docs/product/external-knowledge/manifests/KACL-23.json"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

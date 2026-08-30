@@ -388,10 +388,27 @@ async def test_successor_activation_schema_advances_to_concurrent_due_index_sche
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.28.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.30.3"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
+        "platform_secret_records",
+        "knowledge_connections",
+        "knowledge_connection_revisions",
+        "knowledge_catalog_syncs",
+        "knowledge_connection_check_receipts",
+        "knowledge_catalog_sync_observations",
+        "knowledge_sources",
+        "knowledge_source_acl_versions",
+        "knowledge_source_update_receipts",
+        "knowledge_source_acl_departments",
+        "knowledge_source_acl_roles",
+        "knowledge_source_acl_users",
+        "knowledge_connection_lifecycle_receipts",
+        "knowledge_retrieval_profiles",
+        "run_knowledge_snapshots",
+        "knowledge_retrieval_attempts",
+        "knowledge_evidence",
         "runs",
         "model_gateway_revisions",
         "model_catalog_entries",
@@ -417,6 +434,12 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "agent_profile_revisions",
         "skill_set",
         "jsonb",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "agent_profile_revisions",
+        "knowledge_enabled",
+        "bool",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
     assert (
@@ -600,6 +623,30 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "agent_profile_legacy_insert_reconcile",
             5,
         ),
+        (
+            "knowledge_retrieval_profiles",
+            "trg_knowledge_retrieval_profile_immutable",
+            "ai_platform_guard_knowledge_retrieval_profile_immutable",
+            19,
+        ),
+        (
+            "run_knowledge_snapshots",
+            "trg_run_knowledge_snapshot_immutable",
+            "ai_platform_guard_run_knowledge_snapshot_immutable",
+            23,
+        ),
+        (
+            "knowledge_retrieval_attempts",
+            "trg_knowledge_retrieval_attempt_transition",
+            "ai_platform_guard_knowledge_retrieval_attempt_transition",
+            19,
+        ),
+        (
+            "knowledge_evidence",
+            "trg_knowledge_evidence_immutable",
+            "ai_platform_guard_knowledge_evidence_immutable",
+            19,
+        ),
     )
     trigger_contract = schema_migrations._critical_trigger_contract()
     assert [item[:4] for item in trigger_contract] == list(schema_migrations.CRITICAL_TRIGGERS)
@@ -694,6 +741,84 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "run_attempts_tenant_id_run_id_queue_attempt_id_key",
             "u",
             "UNIQUE (tenant_id, run_id, queue_attempt_id)",
+        ),
+        (
+            "run_attempts",
+            "uq_run_attempts_tenant_run_id",
+            "u",
+            "UNIQUE (tenant_id, run_id, id)",
+        ),
+        (
+            "run_knowledge_snapshots",
+            "fk_run_knowledge_snapshot_run",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id) REFERENCES runs(tenant_id, id)",
+        ),
+        (
+            "run_knowledge_snapshots",
+            "fk_run_knowledge_snapshot_agent_profile",
+            "f",
+            "FOREIGN KEY (tenant_id, agent_id, profile_revision) "
+            "REFERENCES agent_profile_revisions(tenant_id, agent_id, revision)",
+        ),
+        (
+            "run_knowledge_snapshots",
+            "fk_run_knowledge_snapshot_retrieval_profile",
+            "f",
+            "FOREIGN KEY (retrieval_profile_id, retrieval_profile_revision) "
+            "REFERENCES knowledge_retrieval_profiles(id, revision)",
+        ),
+        (
+            "run_knowledge_snapshots",
+            "uq_run_knowledge_snapshot_fence",
+            "u",
+            "UNIQUE (tenant_id, run_id, content_hash)",
+        ),
+        (
+            "knowledge_retrieval_attempts",
+            "fk_knowledge_retrieval_attempt_run_attempt",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id, attempt_id) "
+            "REFERENCES run_attempts(tenant_id, run_id, id)",
+        ),
+        (
+            "knowledge_retrieval_attempts",
+            "fk_knowledge_retrieval_attempt_snapshot",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id, snapshot_hash) "
+            "REFERENCES run_knowledge_snapshots(tenant_id, run_id, content_hash)",
+        ),
+        (
+            "knowledge_retrieval_attempts",
+            "uq_knowledge_retrieval_attempt_fence",
+            "u",
+            "UNIQUE (tenant_id, run_id, attempt_id, generation)",
+        ),
+        (
+            "knowledge_retrieval_attempts",
+            "uq_knowledge_retrieval_attempt_identity",
+            "u",
+            "UNIQUE (tenant_id, run_id, id)",
+        ),
+        (
+            "knowledge_evidence",
+            "fk_knowledge_evidence_attempt",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id, retrieval_attempt_id) "
+            "REFERENCES knowledge_retrieval_attempts(tenant_id, run_id, id)",
+        ),
+        (
+            "knowledge_evidence",
+            "fk_knowledge_evidence_source",
+            "f",
+            "FOREIGN KEY (tenant_id, source_id) "
+            "REFERENCES knowledge_sources(tenant_id, id)",
+        ),
+        (
+            "knowledge_evidence",
+            "uq_knowledge_evidence_attempt_rank",
+            "u",
+            "UNIQUE (tenant_id, run_id, retrieval_attempt_id, fused_rank)",
         ),
         (
             "run_events",
@@ -975,11 +1100,110 @@ def test_every_critical_run_attempt_constraint_has_an_exact_definition():
     assert defined == critical
 
 
+def test_external_knowledge_runtime_schema_is_a_readiness_contract():
+    schema = " ".join(schema_migrations.schema_sql().split()).lower()
+    for relation in (
+        "knowledge_retrieval_profiles",
+        "run_knowledge_snapshots",
+        "knowledge_retrieval_attempts",
+        "knowledge_evidence",
+    ):
+        assert relation in schema_migrations.CRITICAL_RELATIONS
+
+    for column in (
+        ("run_knowledge_snapshots", "sources_json", "jsonb", True),
+        ("run_knowledge_snapshots", "content_hash", "text", True),
+        ("knowledge_retrieval_attempts", "generation", "int8", True),
+        ("knowledge_retrieval_attempts", "snapshot_hash", "text", True),
+        ("knowledge_retrieval_attempts", "terminal_digest", "text", False),
+        ("knowledge_evidence", "content_sha256", "text", True),
+        ("knowledge_evidence", "position_json", "jsonb", True),
+    ):
+        assert column in schema_migrations.CRITICAL_COLUMNS
+
+    for constraint in (
+        ("run_attempts", "uq_run_attempts_tenant_run_id"),
+        ("run_knowledge_snapshots", "uq_run_knowledge_snapshot_fence"),
+        (
+            "knowledge_retrieval_attempts",
+            "fk_knowledge_retrieval_attempt_run_attempt",
+        ),
+        ("knowledge_retrieval_attempts", "uq_knowledge_retrieval_attempt_fence"),
+        ("knowledge_evidence", "chk_knowledge_evidence_content_hash"),
+        ("knowledge_evidence", "uq_knowledge_evidence_attempt_rank"),
+    ):
+        assert constraint in schema_migrations.CRITICAL_CONSTRAINTS
+
+    static_indexes = {
+        definition.name: definition
+        for definition in schema_migrations.STATIC_INDEX_DEFINITIONS
+    }
+    assert static_indexes["uq_knowledge_retrieval_attempt_one_open"].unique is True
+    assert static_indexes[
+        "uq_knowledge_retrieval_attempt_one_open"
+    ].predicate_expression == ("status = any array['requested', 'retrieving']")
+    assert static_indexes[
+        "idx_knowledge_retrieval_attempt_due"
+    ].predicate_expression == ("status = 'retrieving'")
+    assert static_indexes["idx_knowledge_evidence_attempt"].column_names == (
+        "tenant_id",
+        "run_id",
+        "retrieval_attempt_id",
+        "fused_rank",
+    )
+    assert "and status = 'active' and content_hash = '7c2cef7e" in schema
+    assert (
+        "create trigger trg_run_knowledge_snapshot_immutable "
+        "before insert or update on run_knowledge_snapshots"
+    ) in schema
+    snapshot_trigger = next(
+        item[4]
+        for item in schema_migrations._critical_trigger_contract()
+        if item[0] == "run_knowledge_snapshots"
+    )
+    for required_guard in (
+        "jsonb_object_keys(source_value)",
+        "source_keys is distinct from array[",
+        "source_id_value = any(source_ids)",
+        "(source_value -> 'required') is distinct from 'true'::jsonb",
+    ):
+        assert required_guard in snapshot_trigger
+    for forbidden_projection_key in ("base_url", "credential", "secret_ref"):
+        assert forbidden_projection_key not in snapshot_trigger
+
+
+def test_agent_knowledge_opt_in_is_persistent_and_backfilled_once():
+    schema = " ".join(schema_migrations.schema_sql().split()).lower()
+
+    assert "knowledge_enabled boolean not null default false" in schema
+    first_introduction = (
+        "if not exists ( select 1 from information_schema.columns "
+        "where table_schema = current_schema() "
+        "and table_name = 'agent_profile_revisions' "
+        "and column_name = 'knowledge_enabled' ) then "
+        "alter table agent_profile_revisions "
+        "add column knowledge_enabled boolean not null default false; "
+        "update agent_profile_revisions set knowledge_enabled = true "
+        "where jsonb_array_length(knowledge_source_ids) > 0;"
+    )
+    assert first_introduction in schema
+    assert schema.count("set knowledge_enabled = true") == 1
+    assert "add column if not exists knowledge_enabled" not in schema
+    assert (
+        "revision_status <> 'published' or ( knowledge_enabled "
+        "and jsonb_array_length(knowledge_source_ids) > 0"
+    ) in schema
+    assert (
+        "or ( not knowledge_enabled "
+        "and jsonb_array_length(knowledge_bindings) = 0 )"
+    ) in schema
+
+
 def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "76ecf5642f302cbc6e132b077c75e9693c3fddb81203beca244baaafd7c686c5"
+        "9774ffb6ee4f0e597166b665717119f90f4d4dbc74bfebfc4ee54a43b7ac3a06"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "
@@ -988,6 +1212,19 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     assert "rename column supported_file_types" not in schema
     assert "drop column supported_file_types" not in schema
     assert "legacy_supported_file_types" not in schema
+
+
+def test_agent_profile_revision_status_exists_before_knowledge_constraints():
+    schema = " ".join(schema_migrations.schema_sql().split()).lower()
+    add_revision_status = schema.index(
+        "alter table agent_profile_revisions add column if not exists revision_status text"
+    )
+    add_knowledge_constraint = schema.index(
+        "alter table agent_profile_revisions add constraint "
+        "chk_agent_profile_knowledge_bindings"
+    )
+
+    assert add_revision_status < add_knowledge_constraint
 
 
 def test_v4_publication_schema_is_additive_and_index_is_concurrent_only():

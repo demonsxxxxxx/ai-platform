@@ -20,6 +20,8 @@ from app.agent_apps.authority import (
     _mvp_revision_hash,
     _omitted_file_type_skill_set_revision_hash,
     _pre_avatar_seed_skill_set_revision_hash,
+    _pre_knowledge_opt_in_revision_hash,
+    _pre_knowledge_revision_hash,
     _revision_hash,
     _revision_hash_matches,
 )
@@ -230,6 +232,11 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         "avatar_ref": "builtin:agent",
         "avatar_seed": "agt_support",
         "category": "general",
+        "knowledge_capability": {
+            "enabled": False,
+            "source_count": 0,
+            "freshness_at": None,
+        },
         "welcome_message": "",
         "starter_prompts": [],
         "capability_summary": "",
@@ -249,6 +256,75 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
     }.intersection(projection)
 
 
+def test_profile_public_projection_exposes_only_a_safe_knowledge_summary():
+    projection = profile_public_projection(
+        {
+            "agent_id": "agt_finance",
+            "revision": 5,
+            "name": "Finance expert",
+            "knowledge_source_ids": ["ks_finance", "ks_policy"],
+            "retrieval_profile_id": "krp_default",
+            "knowledge_freshness_at": "2026-08-30T01:02:03+00:00",
+            "knowledge_bindings": [
+                {
+                    "source_id": "ks_finance",
+                    "source_authorization_version": 3,
+                    "ordinal": 0,
+                    "required": True,
+                    "retrieval_profile_id": "krp_default",
+                    "retrieval_profile_revision": 1,
+                },
+                {
+                    "source_id": "ks_policy",
+                    "source_authorization_version": 2,
+                    "ordinal": 1,
+                    "required": True,
+                    "retrieval_profile_id": "krp_default",
+                    "retrieval_profile_revision": 1,
+                },
+            ],
+        }
+    )
+
+    assert projection["knowledge_capability"] == {
+        "enabled": True,
+        "source_count": 2,
+        "freshness_at": "2026-08-30T01:02:03+00:00",
+    }
+    assert "knowledge_source_ids" not in projection
+    assert "retrieval_profile_id" not in projection
+    assert "knowledge_bindings" not in projection
+
+    disabled = profile_public_projection(
+        {
+            "agent_id": "agt_finance",
+            "revision": 6,
+            "name": "Finance expert",
+            "knowledge_enabled": False,
+            "knowledge_source_ids": ["ks_retained"],
+            "retrieval_profile_id": "krp_default",
+            "knowledge_bindings": [],
+            "knowledge_freshness_at": "2026-08-30T01:02:03+00:00",
+        }
+    )
+    assert disabled["knowledge_capability"] == {
+        "enabled": False,
+        "source_count": 0,
+        "freshness_at": None,
+    }
+
+    invalid = profile_public_projection(
+        {
+            "agent_id": "agt_finance",
+            "revision": 5,
+            "name": "Finance expert",
+            "knowledge_source_ids": ["ks_finance"],
+            "knowledge_freshness_at": "bad\nvalue",
+        }
+    )
+    assert invalid["knowledge_capability"]["freshness_at"] is None
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -260,6 +336,7 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         ("permissions_and_data_access_notice", "Uses tenant-authorized files only."),
         ("avatar_asset_id", "file-avatar-a"),
         ("avatar_seed", "stable-expert-avatar"),
+        ("knowledge_enabled", True),
     ],
 )
 def test_every_enterprise_profile_field_changes_the_immutable_revision_hash(field, value):
@@ -382,14 +459,114 @@ def test_legacy_profile_file_type_material_only_verifies_historical_hash():
     assert "supported_file_types" not in definition.model_dump(mode="json")
 
 
-def test_new_profile_hash_is_accepted_by_the_rolling_worker_contract():
+def test_new_profile_hash_extends_the_rolling_worker_contract_additively():
     definition = AgentProfileDraftRequest.model_validate(
         profile_draft_payload("Private instruction")
     ).model_copy(update={"avatar_seed": "agt_support"})
 
-    assert _revision_hash(definition) == _legacy_skill_set_revision_hash(
+    prior_hash = _legacy_skill_set_revision_hash(
         definition,
         legacy_supported_file_types=_ROLLING_LEGACY_SUPPORTED_FILE_TYPES,
+    )
+    assert _pre_knowledge_revision_hash(definition) == prior_hash
+    assert _revision_hash(definition) != prior_hash
+
+
+def test_pre_knowledge_hash_remains_valid_only_for_a_knowledge_free_revision():
+    definition = historical_profile_definition()
+    row = {
+        **definition.model_dump(mode="json"),
+        "agent_id": "agt_support",
+        "revision": 7,
+        "model_id": definition._legacy_model_id,
+        "legacy_supported_file_types": list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
+        "knowledge_source_ids": [],
+        "retrieval_profile_id": None,
+    }
+    historical_hash = _pre_knowledge_revision_hash(definition)
+
+    assert _revision_hash_matches(row, historical_hash)
+    assert not _revision_hash_matches(
+        {
+            **row,
+            "knowledge_source_ids": ["ks_finance"],
+            "retrieval_profile_id": "krp_default",
+        },
+        historical_hash,
+    )
+
+
+def test_immediate_pre_opt_in_hashes_survive_the_one_time_schema_backfill():
+    plain = historical_profile_definition()
+    plain_row = {
+        **plain.model_dump(mode="json"),
+        "agent_id": "agt_support",
+        "revision": 7,
+        "model_id": plain._legacy_model_id,
+        "legacy_supported_file_types": list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
+        "knowledge_enabled": False,
+    }
+    knowledge = historical_profile_definition().model_copy(
+        update={
+            "knowledge_enabled": True,
+            "knowledge_source_ids": ["ks_finance"],
+            "retrieval_profile_id": "krp_default",
+        }
+    )
+    knowledge._knowledge_bindings = [
+        {
+            "source_id": "ks_finance",
+            "source_authorization_version": 3,
+            "ordinal": 0,
+            "required": True,
+            "retrieval_profile_id": "krp_default",
+            "retrieval_profile_revision": 1,
+        }
+    ]
+    knowledge_row = {
+        **knowledge.model_dump(mode="json"),
+        "agent_id": "agt_support",
+        "revision": 8,
+        "model_id": knowledge._legacy_model_id,
+        "legacy_supported_file_types": list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
+        "knowledge_enabled": True,
+        "knowledge_bindings": [dict(binding) for binding in knowledge._knowledge_bindings],
+    }
+    plain_predecessor_hash = (
+        "16d4d53e90ca61cf1e95b80052f274b8915ac235d0ea6e47bd54411608af6b07"
+    )
+    knowledge_predecessor_hash = (
+        "9ce5baa592ccacc40a79c84ae05eb8f320d8605abe2899351a3f4e26393bb776"
+    )
+
+    assert _pre_knowledge_opt_in_revision_hash(plain) == plain_predecessor_hash
+    assert _pre_knowledge_opt_in_revision_hash(knowledge) == knowledge_predecessor_hash
+    assert _revision_hash_matches(plain_row, plain_predecessor_hash)
+    assert _revision_hash_matches(knowledge_row, knowledge_predecessor_hash)
+    assert not _revision_hash_matches(
+        {**plain_row, "knowledge_enabled": True},
+        plain_predecessor_hash,
+    )
+    assert not _revision_hash_matches(
+        {**knowledge_row, "knowledge_enabled": False},
+        knowledge_predecessor_hash,
+    )
+    assert not _revision_hash_matches(
+        {**plain_row, "instructions": "tampered"},
+        plain_predecessor_hash,
+    )
+    assert not _revision_hash_matches(
+        {
+            **knowledge_row,
+            "knowledge_source_ids": ["ks_other"],
+            "knowledge_bindings": [
+                {
+                    **knowledge_row["knowledge_bindings"][0],
+                    "source_id": "ks_other",
+                }
+            ],
+        },
+        knowledge_predecessor_hash,
     )
 
 
@@ -423,7 +600,8 @@ def test_profile_integrity_accepts_each_exact_historical_hash_schema_only_for_un
         "pre_avatar": "fafc5e59592db25119f09339c91fd1ba8513fe3a88dbfbf50185363800cc82b0",
         "legacy_skill_set": "af5557ab47e5308b0045df18146100853adf4578455e99331db813d592767868",
         "omitted_file_type": "8a44048869a0b50df4f742ee00cc63e0c2ba366591d23b8c67cb91ed156b5c14",
-        "current": "e1726cfffa53cf6ec393543e144ef98ca3c7e47d0ca6665c01b5108bfd65e147",
+        "pre_knowledge": "e1726cfffa53cf6ec393543e144ef98ca3c7e47d0ca6665c01b5108bfd65e147",
+        "current": "2b386b00b6c3a681a5beb22d476d6e6decb038186272eec5ea35d705d9feae2b",
     }
     generated_hashes = {
         "mvp": _mvp_revision_hash(definition),
@@ -444,6 +622,7 @@ def test_profile_integrity_accepts_each_exact_historical_hash_schema_only_for_un
             legacy_supported_file_types=["application/pdf"],
         ),
         "omitted_file_type": _omitted_file_type_skill_set_revision_hash(definition),
+        "pre_knowledge": _pre_knowledge_revision_hash(definition),
         "current": _revision_hash(definition),
     }
     rows_by_schema = {
@@ -453,6 +632,7 @@ def test_profile_integrity_accepts_each_exact_historical_hash_schema_only_for_un
         "pre_avatar": pre_avatar_row,
         "legacy_skill_set": legacy_skill_set_row,
         "omitted_file_type": current_row,
+        "pre_knowledge": current_row,
         "current": current_row,
     }
 
@@ -702,6 +882,11 @@ def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
                     "avatar_ref": "builtin:agent",
                     "avatar_seed": "",
                     "category": "general",
+                    "knowledge_capability": {
+                        "enabled": False,
+                        "source_count": 0,
+                        "freshness_at": None,
+                    },
                     "welcome_message": "",
                     "starter_prompts": [],
                     "capability_summary": "",
@@ -1356,6 +1541,7 @@ async def test_replay_authority_revalidates_exact_profile_snapshot_and_leaves_ge
                 "revision": 4,
                 "content_hash": "a" * 64,
                 "instructions": "private profile instruction",
+                "knowledge_enabled": False,
             },
             public_identity=AgentConversationIdentity(
                 agent_id="agt_support",
@@ -1382,6 +1568,94 @@ async def test_replay_authority_revalidates_exact_profile_snapshot_and_leaves_ge
     assert [(call["agent_id"], call["revision"], call["content_hash"]) for call in bound_calls] == [
         ("agt_support", 4, "a" * 64)
     ]
+
+
+@pytest.mark.asyncio
+async def test_replay_authority_normalizes_a_pre_opt_in_knowledge_snapshot(monkeypatch):
+    from app.agent_apps import AgentProfileAdmission, AgentProfileAuthority
+    from app.models import AgentConversationIdentity
+
+    binding = {
+        "source_id": "ks_finance",
+        "source_authorization_version": 3,
+        "ordinal": 0,
+        "required": True,
+        "retrieval_profile_id": "krp_default",
+        "retrieval_profile_revision": 1,
+    }
+    source = {
+        "id": "run-profile",
+        "agent_id": "agt_support",
+        "skill_id": "profile-skill",
+        "admitted_agent_profile_revision": 4,
+        "admitted_agent_profile_hash": "a" * 64,
+        "input_json": {
+            "input": {"message": "retry"},
+            "executor_type": "claude-agent-worker",
+            "skill_version": "version-a",
+            "model_id": "model-a",
+            "model_value": "provider-model-a",
+            "agent_profile": {
+                "agent_id": "agt_support",
+                "revision": 4,
+                "content_hash": "a" * 64,
+                "instructions": "private profile instruction",
+                "knowledge_source_ids": ["ks_finance"],
+                "retrieval_profile_id": "krp_default",
+                "knowledge_bindings": [binding],
+            },
+        },
+    }
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="tenant-a",
+        roles=["user"],
+    )
+
+    async def get_run(*_args, **_kwargs):
+        return source
+
+    async def resolve_bound(*_args, **_kwargs):
+        return AgentProfileAdmission(
+            agent_id="agt_support",
+            revision=4,
+            content_hash="a" * 64,
+            skill={
+                "skill_id": "profile-skill",
+                "skill_version": "version-a",
+                "executor_type": "claude-agent-worker",
+            },
+            mcp_tool_ids=(),
+            private_execution_input={
+                "agent_id": "agt_support",
+                "revision": 4,
+                "content_hash": "a" * 64,
+                "instructions": "private profile instruction",
+                "knowledge_enabled": True,
+                "knowledge_source_ids": ["ks_finance"],
+                "retrieval_profile_id": "krp_default",
+                "knowledge_bindings": [binding],
+            },
+            public_identity=AgentConversationIdentity(
+                agent_id="agt_support",
+                revision=4,
+                name="Finance expert",
+            ),
+        )
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_authorized_run",
+        get_run,
+    )
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "resolve_bound_for_submission", resolve_bound)
+
+    await authority.reauthorize_pinned_run_for_replay(
+        object(),
+        principal=principal,
+        run_id="run-profile",
+    )
 
 
 @pytest.mark.asyncio
@@ -1454,13 +1728,13 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
             "skill_manifests": manifest_refs,
             "model_id": "model-a",
             "model_value": "provider-model-a",
-                "agent_profile": {
-                    "agent_id": "agt_support",
-                    "revision": 4,
-                    "content_hash": "a" * 64,
-                    "instructions": "private profile instruction",
-                    "skill_set": skill_set,
-                },
+            "agent_profile": {
+                "agent_id": "agt_support",
+                "revision": 4,
+                "content_hash": "a" * 64,
+                "instructions": "private profile instruction",
+                "skill_set": [dict(item) for item in skill_set],
+            },
         },
     }
 
@@ -1485,6 +1759,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
                 "content_hash": "a" * 64,
                 "instructions": "private profile instruction",
                 "skill_set": skill_set,
+                "knowledge_enabled": False,
             },
             public_identity=AgentConversationIdentity(
                 agent_id="agt_support",
@@ -1545,6 +1820,49 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
     assert replay_validation_calls[0]["source_identity"]["pinned_version"] == locked_version
     assert replay_validation_calls[1]["manifest_validation"]["pinned_version"] == locked_version
     assert replay_validation_calls[1]["manifest_validation"]["skill_set"] == skill_set
+
+    profile_snapshot = source["input_json"]["agent_profile"]
+    canonical_skill_set = profile_snapshot.pop("skill_set")
+    with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):
+        await authority.reauthorize_pinned_run_for_replay(
+            object(),
+            principal=principal,
+            run_id="run-profile",
+        )
+    profile_snapshot["skill_set"] = canonical_skill_set
+
+    profile_snapshot["forged_server_field"] = "forged"
+    with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):
+        await authority.reauthorize_pinned_run_for_replay(
+            object(),
+            principal=principal,
+            run_id="run-profile",
+        )
+    profile_snapshot.pop("forged_server_field")
+
+    profile_snapshot.update(
+        {
+            "required_skill_id": "profile-skill",
+            "required_skill_version": locked_version,
+        }
+    )
+    with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):
+        await authority.reauthorize_pinned_run_for_replay(
+            object(),
+            principal=principal,
+            run_id="run-profile",
+        )
+    profile_snapshot.pop("required_skill_id")
+    profile_snapshot.pop("required_skill_version")
+
+    profile_snapshot["skill_set"][0]["forged_server_field"] = "forged"
+    with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):
+        await authority.reauthorize_pinned_run_for_replay(
+            object(),
+            principal=principal,
+            run_id="run-profile",
+        )
+    profile_snapshot["skill_set"][0].pop("forged_server_field")
 
     for invalid_refs in (
         [manifest_refs[0], "unexpected"],
@@ -1670,6 +1988,7 @@ async def test_replay_authority_accepts_legacy_required_skill_snapshot_without_c
                 "content_hash": "a" * 64,
                 "instructions": "private profile instruction",
                 "skill_set": [{"skill_id": "profile-skill", "expected_version": version}],
+                "knowledge_enabled": False,
             },
             public_identity=AgentConversationIdentity(
                 agent_id="agt_support",

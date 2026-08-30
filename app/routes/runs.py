@@ -13,6 +13,10 @@ from app.capabilities import get_capability
 from app.context_builder import record_initial_context_snapshot
 from app.context.file_continuity import has_file_input_mode, primary_file_ids_for_run
 from app.context_manifest import public_context_manifest_projection
+from app.conversations.api import (
+    ConversationRunAdmissionError,
+    admit_created_run_knowledge,
+)
 from app.db import transaction
 from app.execution.api import resolve_chat_model_selection
 from app.models import (
@@ -815,6 +819,27 @@ async def prepare_copied_run_for_queue(
     return queue_payload
 
 
+async def _admit_copied_run_knowledge(
+    conn: Any,
+    *,
+    copied: dict[str, Any],
+    principal: AuthPrincipal,
+    profile_admission: Any,
+) -> None:
+    if profile_admission is None:
+        return
+    await admit_created_run_knowledge(
+        conn,
+        run_id=str(copied["run_id"]),
+        tenant_id=principal.tenant_id,
+        agent_id=profile_admission.agent_id,
+        profile_revision=profile_admission.revision,
+        profile_content_hash=profile_admission.content_hash,
+        principal_policy_version=principal.authz_policy_version,
+        agent_profile_execution_input=profile_admission.private_execution_input,
+    )
+
+
 def resolve_run_selector(request: CreateRunRequest, principal: AuthPrincipal) -> tuple[str, str | None]:
     requested_agent_id = internal_agent_id_for_request(request.agent_id) or request.agent_id
     if request.selected_skill is not None:
@@ -1177,7 +1202,7 @@ async def copy_run(
     try:
         async with transaction() as conn:
             await enforce_user_active_run_limit(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
-            await reauthorize_pinned_run_for_replay(
+            profile_admission = await reauthorize_pinned_run_for_replay(
                 conn,
                 principal=principal,
                 run_id=run_id,
@@ -1202,6 +1227,12 @@ async def copy_run(
                     source="copy_run",
                     authorized_source_run_id=run_id,
                 )
+                await _admit_copied_run_knowledge(
+                    conn,
+                    copied=copied,
+                    principal=principal,
+                    profile_admission=profile_admission,
+                )
     except HTTPException as exc:
         await _audit_wrapped_capability_denial(principal, exc, source="copy_run")
         raise
@@ -1213,7 +1244,7 @@ async def copy_run(
     except RepositoryNotFoundError as exc:
         _raise_if_capability_revoked(exc)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RepositoryConflictError as exc:
+    except (RepositoryConflictError, ConversationRunAdmissionError) as exc:
         _raise_if_capability_revoked(exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if copied is None:
@@ -1389,7 +1420,7 @@ async def _mutate_run_control_child(
                     tenant_id=principal.tenant_id,
                     user_id=principal.user_id,
                 )
-                await reauthorize_pinned_run_for_replay(
+                profile_admission = await reauthorize_pinned_run_for_replay(
                     conn,
                     principal=principal,
                     run_id=run_id,
@@ -1419,6 +1450,12 @@ async def _mutate_run_control_child(
                         source=f"{action}_run",
                         authorized_source_run_id=run_id,
                     )
+                    await _admit_copied_run_knowledge(
+                        conn,
+                        copied=copied,
+                        principal=principal,
+                        profile_admission=profile_admission,
+                    )
                     await repositories.record_run_control_operation(
                         conn,
                         tenant_id=principal.tenant_id,
@@ -1439,7 +1476,7 @@ async def _mutate_run_control_child(
     except RepositoryNotFoundError as exc:
         _raise_if_capability_revoked(exc)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RepositoryConflictError as exc:
+    except (RepositoryConflictError, ConversationRunAdmissionError) as exc:
         _raise_if_capability_revoked(exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if retired_control_rejected:

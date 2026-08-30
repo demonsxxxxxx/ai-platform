@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BadgeCheck,
   Bot,
@@ -15,9 +15,15 @@ import {
 } from "lucide-react";
 
 import { AgentBuilderDialog } from "../../components/agent-builder/AgentBuilderDialog";
-import type { PublicSkillResponse } from "../../types";
+import type {
+  KnowledgeBuilderCatalog,
+  KnowledgeBuilderSource,
+  KnowledgeRetrievalProfile,
+  PublicSkillResponse,
+} from "../../types";
 import { AgentBuilderEnterpriseFields } from "./AgentBuilderEnterpriseFields";
 import { AgentBuilderLifecycle } from "./AgentBuilderLifecycle";
+import { AgentBuilderKnowledgeSection } from "./AgentBuilderKnowledgeSection";
 import { AgentIdentityAvatar } from "../../components/agent/AgentIdentityAvatar";
 import {
   agentBuilderBlockReason,
@@ -34,8 +40,17 @@ import { AgentBuilderController } from "./agentBuilderController";
 export interface AgentBuilderWorkbenchCatalog {
   skills: readonly PublicSkillResponse[];
   tools: readonly AgentBuilderSafeMcpTool[];
+  knowledgeSources: readonly KnowledgeBuilderSource[];
+  retrievalProfiles: readonly KnowledgeRetrievalProfile[];
+  loadKnowledgeSources: (params?: {
+    cursor?: string | null;
+    q?: string;
+    selectedSourceIds?: readonly string[];
+    replace?: boolean;
+  }) => Promise<KnowledgeBuilderCatalog | undefined>;
   skillsResolved: boolean;
   mcpToolsResolved: boolean;
+  knowledgeResolved: boolean;
   effectivePermissionsKnown: boolean;
   isLoading: boolean;
   error: string | null;
@@ -51,6 +66,8 @@ type PendingEditorAction =
   | { kind: "new" }
   | { kind: "profile"; agentId: string }
   | { kind: "refresh" };
+
+type KnowledgeSelectionStatus = "idle" | "pending" | "resolved" | "error";
 
 function profileStatusLabel(status: "draft" | "published" | "withdrawn") {
   if (status === "published") return "已发布";
@@ -84,7 +101,17 @@ export function AgentBuilderWorkbench({
   const [dialog, setDialog] = useState<"skills" | "tools" | null>(null);
   const [pendingEditorAction, setPendingEditorAction] = useState<PendingEditorAction | null>(null);
   const [profileQuery, setProfileQuery] = useState("");
+  const [knowledgeSelectionCheck, setKnowledgeSelectionCheck] = useState<{
+    key: string;
+    status: KnowledgeSelectionStatus;
+    missingIds: string[];
+    sources: KnowledgeBuilderSource[];
+  }>({ key: "", status: "idle", missingIds: [], sources: [] });
+  const knowledgeSelectionRequestGeneration = useRef(0);
   const retryCatalog = catalog.retry;
+  const knowledgeResolved = catalog.knowledgeResolved;
+  const knowledgeSources = catalog.knowledgeSources;
+  const loadKnowledgeSources = catalog.loadKnowledgeSources;
 
   useEffect(() => controller.subscribe(setWorkbench), [controller]);
   useEffect(() => {
@@ -93,24 +120,162 @@ export function AgentBuilderWorkbench({
     return () => controller.cancelPending();
   }, [canManageProfiles, controller]);
 
+  const activeEditor = workbench.activeEditor;
+  const knowledgeSelectionKey = (
+    activeEditor?.knowledgeEnabled ? activeEditor.knowledgeSourceIds : []
+  ).join("\u0000");
+  const resolvedKnowledgeSources = useMemo(() => {
+    const byId = new Map<string, KnowledgeBuilderSource>();
+    if (knowledgeSelectionCheck.key === knowledgeSelectionKey) {
+      knowledgeSelectionCheck.sources.forEach((source) => byId.set(source.id, source));
+    }
+    knowledgeSources.forEach((source) => byId.set(source.id, source));
+    return [...byId.values()];
+  }, [
+    knowledgeSelectionCheck.key,
+    knowledgeSelectionCheck.sources,
+    knowledgeSelectionKey,
+    knowledgeSources,
+  ]);
   const currentCatalog = useMemo<AgentBuilderCurrentCatalog>(
     () => ({
       skills: catalog.skills,
       mcpTools: catalog.tools,
+      knowledgeSources: resolvedKnowledgeSources,
+      retrievalProfiles: catalog.retrievalProfiles,
       skillsResolved: catalog.skillsResolved,
       mcpToolsResolved: catalog.mcpToolsResolved,
+      knowledgeResolved: catalog.knowledgeResolved,
+      knowledgeSelectionResolved:
+        knowledgeSelectionCheck.key ===
+          (workbench.activeEditor?.knowledgeEnabled
+            ? workbench.activeEditor.knowledgeSourceIds
+            : []
+          ).join("\u0000") &&
+        knowledgeSelectionCheck.status === "resolved",
+      missingKnowledgeSourceIds:
+        knowledgeSelectionCheck.status === "resolved"
+          ? knowledgeSelectionCheck.missingIds
+          : [],
       effectivePermissionsKnown: catalog.effectivePermissionsKnown,
     }),
     [
       catalog.effectivePermissionsKnown,
+      catalog.knowledgeResolved,
       catalog.mcpToolsResolved,
+      catalog.retrievalProfiles,
       catalog.skills,
       catalog.skillsResolved,
       catalog.tools,
+      knowledgeSelectionCheck.key,
+      knowledgeSelectionCheck.missingIds,
+      knowledgeSelectionCheck.status,
+      resolvedKnowledgeSources,
+      workbench.activeEditor?.knowledgeEnabled,
+      workbench.activeEditor?.knowledgeSourceIds,
     ],
   );
 
-  const activeEditor = workbench.activeEditor;
+  useEffect(
+    () => () => {
+      knowledgeSelectionRequestGeneration.current += 1;
+    },
+    [],
+  );
+  useEffect(() => {
+    if (!activeEditor?.knowledgeEnabled || catalog.knowledgeResolved) return;
+    void loadKnowledgeSources({ replace: true });
+  }, [activeEditor?.knowledgeEnabled, catalog.knowledgeResolved, loadKnowledgeSources]);
+  useEffect(() => {
+    const sourceIds = activeEditor?.knowledgeEnabled
+      ? activeEditor.knowledgeSourceIds
+      : [];
+    if (sourceIds.length === 0) {
+      knowledgeSelectionRequestGeneration.current += 1;
+      if (
+        knowledgeSelectionCheck.key !== "" ||
+        knowledgeSelectionCheck.status !== "idle" ||
+        knowledgeSelectionCheck.missingIds.length > 0 ||
+        knowledgeSelectionCheck.sources.length > 0
+      ) {
+        setKnowledgeSelectionCheck({ key: "", status: "idle", missingIds: [], sources: [] });
+      }
+      return;
+    }
+    if (!knowledgeResolved) return;
+    if (
+      knowledgeSelectionCheck.key === knowledgeSelectionKey &&
+      knowledgeSelectionCheck.status !== "idle"
+    ) {
+      return;
+    }
+    const knownIds = new Set(knowledgeSources.map((source) => source.id));
+    if (sourceIds.every((sourceId) => knownIds.has(sourceId))) {
+      setKnowledgeSelectionCheck({
+        key: knowledgeSelectionKey,
+        status: "resolved",
+        missingIds: [],
+        sources: knowledgeSources.filter((source) => sourceIds.includes(source.id)),
+      });
+      return;
+    }
+    const requestGeneration = ++knowledgeSelectionRequestGeneration.current;
+    setKnowledgeSelectionCheck({
+      key: knowledgeSelectionKey,
+      status: "pending",
+      missingIds: [],
+      sources: [],
+    });
+    void loadKnowledgeSources({ selectedSourceIds: sourceIds })
+      .then((page) => {
+        if (knowledgeSelectionRequestGeneration.current !== requestGeneration) return;
+        if (!page) {
+          setKnowledgeSelectionCheck({
+            key: knowledgeSelectionKey,
+            status: "error",
+            missingIds: [],
+            sources: [],
+          });
+          return;
+        }
+        const returnedIds = new Set(page.sources.map((source) => source.id));
+        setKnowledgeSelectionCheck({
+          key: knowledgeSelectionKey,
+          status: "resolved",
+          missingIds: sourceIds.filter((sourceId) => !returnedIds.has(sourceId)),
+          sources: page.sources.filter((source) => sourceIds.includes(source.id)),
+        });
+      })
+      .catch(() => {
+        if (knowledgeSelectionRequestGeneration.current === requestGeneration) {
+          setKnowledgeSelectionCheck({
+            key: knowledgeSelectionKey,
+            status: "error",
+            missingIds: [],
+            sources: [],
+          });
+        }
+      });
+  }, [
+    activeEditor?.knowledgeEnabled,
+    activeEditor?.knowledgeSourceIds,
+    knowledgeResolved,
+    knowledgeSources,
+    loadKnowledgeSources,
+    knowledgeSelectionCheck.key,
+    knowledgeSelectionCheck.missingIds.length,
+    knowledgeSelectionCheck.status,
+    knowledgeSelectionCheck.sources.length,
+    knowledgeSelectionKey,
+  ]);
+  const retryKnowledgeSelection = useCallback(() => {
+    knowledgeSelectionRequestGeneration.current += 1;
+    setKnowledgeSelectionCheck((current) => (
+      current.key === knowledgeSelectionKey
+        ? { key: knowledgeSelectionKey, status: "idle", missingIds: [], sources: [] }
+        : current
+    ));
+  }, [knowledgeSelectionKey]);
   const saveBlock = getAgentProfileSaveBlock(activeEditor, currentCatalog);
   const publishBlock = getAgentProfilePublishBlock(activeEditor, currentCatalog);
   const mutationBusy =
@@ -606,6 +771,23 @@ export function AgentBuilderWorkbench({
                 }
               />
 
+              <AgentBuilderKnowledgeSection
+                disabled={interactionBusy}
+                editor={activeEditor}
+                knowledgeResolved={catalog.knowledgeResolved}
+                knowledgeSelectionStatus={knowledgeSelectionCheck.status}
+                loadKnowledgeSources={catalog.loadKnowledgeSources}
+                onChange={(patch) =>
+                  updateEditor((editor) => ({
+                    ...editor,
+                    ...patch,
+                  }))
+                }
+                retrievalProfiles={catalog.retrievalProfiles}
+                retryKnowledgeSelection={retryKnowledgeSelection}
+                sources={resolvedKnowledgeSources}
+              />
+
               <section aria-labelledby="agent-mcp-heading">
                 <details
                   className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4"
@@ -675,7 +857,7 @@ export function AgentBuilderWorkbench({
                   <Rocket size={17} className="text-[var(--theme-text-secondary)]" aria-hidden="true" />
                   <h3 id="agent-version-heading" className="text-sm font-semibold">状态与版本</h3>
                 </div>
-                <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-3">
+                <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
                   <div>
                     <dt className="text-[var(--theme-text-secondary)]">状态</dt>
                     <dd className="mt-1 font-medium">{editorStatusLabel(activeEditor)}</dd>
@@ -687,6 +869,14 @@ export function AgentBuilderWorkbench({
                   <div>
                     <dt className="text-[var(--theme-text-secondary)]">MCP 工具</dt>
                     <dd className="mt-1 font-medium tabular-nums">{activeEditor.selectedMcpToolIds.length}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-[var(--theme-text-secondary)]">知识源</dt>
+                    <dd className="mt-1 font-medium tabular-nums">
+                      {activeEditor.knowledgeEnabled
+                        ? `${activeEditor.knowledgeSourceIds.length} 项`
+                        : "未开启"}
+                    </dd>
                   </div>
                 </dl>
 

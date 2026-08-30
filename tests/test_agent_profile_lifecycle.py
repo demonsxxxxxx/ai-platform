@@ -100,6 +100,11 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "avatar_ref": "builtin:assistant",
         "avatar_seed": "agt_support",
         "category": "support",
+        "knowledge_capability": {
+            "enabled": False,
+            "source_count": 0,
+            "freshness_at": None,
+        },
     }
 
 
@@ -358,6 +363,332 @@ async def test_publish_rejects_a_tampered_draft_before_validation_or_append(monk
         "agent_profile_revision_integrity_mismatch",
     )
     assert calls == ["read"]
+
+
+@pytest.mark.asyncio
+async def test_publish_hashes_and_persists_server_resolved_knowledge_bindings(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+    from app.agent_apps.authority import _draft_from_row, _revision_hash
+
+    draft = _profile_row(status="draft", revision=7)
+    draft.update(
+        {
+            "knowledge_source_ids": ["ks_finance"],
+            "retrieval_profile_id": "krp_default",
+            "knowledge_bindings": [],
+        }
+    )
+    draft["content_hash"] = _revision_hash(_draft_from_row(draft))
+    writes: list[dict[str, object]] = []
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def read_draft(*_args, **_kwargs):
+        return draft
+
+    async def validate(*_args, **kwargs):
+        kwargs["definition"]._knowledge_bindings = [
+            {
+                "source_id": "ks_finance",
+                "source_authorization_version": 3,
+                "ordinal": 0,
+                "required": True,
+                "retrieval_profile_id": "krp_default",
+                "retrieval_profile_revision": 1,
+            }
+        ]
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
+
+    async def append_revision(*_args, **kwargs):
+        writes.append(kwargs)
+        row = _profile_row(
+            status="published",
+            revision=8,
+            content_hash=str(kwargs["content_hash"]),
+        )
+        row.update(
+            {
+                "knowledge_source_ids": list(kwargs["knowledge_source_ids"]),
+                "retrieval_profile_id": kwargs["retrieval_profile_id"],
+                "knowledge_bindings": list(kwargs["knowledge_bindings"]),
+            }
+        )
+        return row
+
+    async def audit(*_args, **_kwargs):
+        return "aud_profile"
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.ensure_submission_principal",
+        noop,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock",
+        noop,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_agent_profile_revision",
+        read_draft,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.create_agent_profile_revision",
+        append_revision,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.record_agent_profile_publication",
+        noop,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.append_audit_log",
+        audit,
+    )
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+
+    await authority.publish_draft(
+        object(),
+        principal=_principal(roles=["admin"]),
+        agent_id="agt_support",
+        expected_revision=7,
+    )
+
+    assert writes[0]["knowledge_source_ids"] == ["ks_finance"]
+    assert writes[0]["knowledge_enabled"] is True
+    assert writes[0]["retrieval_profile_id"] == "krp_default"
+    assert writes[0]["knowledge_bindings"] == [
+        {
+            "source_id": "ks_finance",
+            "source_authorization_version": 3,
+            "ordinal": 0,
+            "required": True,
+            "retrieval_profile_id": "krp_default",
+            "retrieval_profile_revision": 1,
+        }
+    ]
+    published_row = {
+        **draft,
+        "revision": 8,
+        "status": "published",
+        "model_id": "platform-selected",
+        "knowledge_bindings": writes[0]["knowledge_bindings"],
+    }
+    assert writes[0]["content_hash"] == _revision_hash(_draft_from_row(published_row))
+
+
+@pytest.mark.asyncio
+async def test_agent_knowledge_opt_in_alone_controls_knowledge_authorization(monkeypatch):
+    from app import repositories
+    from app.agent_apps import AgentProfileAuthority
+    from app.models import AgentProfileDraftRequest, SelectedSkillRequest
+
+    knowledge_calls: list[dict[str, object]] = []
+    binding = {
+        "source_id": "ks_finance",
+        "source_authorization_version": 3,
+        "ordinal": 0,
+        "required": True,
+        "retrieval_profile_id": "krp_default",
+        "retrieval_profile_revision": 1,
+    }
+
+    async def authorize_mcp(*_args, **_kwargs):
+        return None
+
+    async def authorize_skill(*_args, **_kwargs):
+        return {"skill_id": "general-chat", "skill_version": "version-a"}
+
+    async def authorize_knowledge(*_args, **kwargs):
+        knowledge_calls.append(kwargs)
+        return (binding,)
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.authorize_selected_run_capabilities",
+        authorize_skill,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.authorize_selected_chat_mcp_tools",
+        authorize_mcp,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.authorize_agent_profile_knowledge_sources",
+        authorize_knowledge,
+    )
+
+    authority = AgentProfileAuthority()
+    principal = _principal(roles=["admin"])
+    disabled = AgentProfileDraftRequest(
+        name="Finance expert",
+        instructions="Answer finance questions.",
+        knowledge_enabled=False,
+        knowledge_source_ids=["ks_finance"],
+        retrieval_profile_id="krp_default",
+        selected_skill=SelectedSkillRequest(
+            skill_id="general-chat",
+            expected_version="version-a",
+        ),
+        expected_draft_revision=0,
+    )
+    disabled._knowledge_bindings = [dict(binding)]
+
+    assert await authority._validate_definition(
+        object(),
+        principal=principal,
+        agent_id="agt_finance",
+        definition=disabled,
+    ) == ({"skill_id": "general-chat", "skill_version": "version-a"},)
+    assert knowledge_calls == []
+    assert disabled._knowledge_bindings == []
+
+    enabled_without_source = AgentProfileDraftRequest(
+        name="Finance expert",
+        instructions="Answer finance questions.",
+        knowledge_enabled=True,
+        selected_skill=SelectedSkillRequest(
+            skill_id="general-chat",
+            expected_version="version-a",
+        ),
+        expected_draft_revision=0,
+    )
+    with pytest.raises(HTTPException) as caught:
+        await authority._validate_definition(
+            object(),
+            principal=principal,
+            agent_id="agt_finance",
+            definition=enabled_without_source,
+        )
+    assert (caught.value.status_code, caught.value.detail) == (
+        400,
+        "agent_profile_knowledge_selection_required",
+    )
+    assert knowledge_calls == []
+
+    enabled = disabled.model_copy(deep=True, update={"knowledge_enabled": True})
+    assert await authority._validate_definition(
+        object(),
+        principal=principal,
+        agent_id="agt_finance",
+        definition=enabled,
+    ) == ({"skill_id": "general-chat", "skill_version": "version-a"},)
+    assert len(knowledge_calls) == 1
+    assert knowledge_calls[0]["source_ids"] == ["ks_finance"]
+    assert knowledge_calls[0]["retrieval_profile_id"] == "krp_default"
+    assert enabled._knowledge_bindings == [binding]
+
+    async def unavailable_profile(*_args, **_kwargs):
+        raise repositories.RepositoryConflictError(
+            "agent_profile_retrieval_profile_unavailable"
+        )
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.authorize_agent_profile_knowledge_sources",
+        unavailable_profile,
+    )
+    with pytest.raises(HTTPException) as caught:
+        await authority._validate_definition(
+            object(),
+            principal=principal,
+            agent_id="agt_finance",
+            definition=enabled,
+        )
+    assert (caught.value.status_code, caught.value.detail) == (
+        409,
+        "agent_profile_retrieval_profile_unavailable",
+    )
+
+
+@pytest.mark.asyncio
+async def test_save_enabled_knowledge_draft_reauthorizes_before_revision_or_audit(monkeypatch):
+    from app import repositories
+    from app.agent_apps import AgentProfileAuthority
+    from app.models import AgentProfileDraftRequest, SelectedSkillRequest
+
+    order: list[str] = []
+
+    async def ensure_user(*_args, **_kwargs):
+        order.append("user")
+
+    async def lock_profile(*_args, **_kwargs):
+        order.append("lock")
+
+    async def authorize_skill(*_args, **_kwargs):
+        order.append("skill")
+        return {"skill_id": "general-chat", "skill_version": "version-a"}
+
+    async def authorize_mcp(*_args, **_kwargs):
+        order.append("mcp")
+
+    async def unavailable_source(*_args, **_kwargs):
+        order.append("knowledge")
+        raise repositories.RepositoryConflictError(
+            "agent_profile_knowledge_source_unavailable"
+        )
+
+    async def forbidden_write(*_args, **_kwargs):
+        raise AssertionError("invalid enabled Knowledge draft must not persist")
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.ensure_submission_principal",
+        ensure_user,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock",
+        lock_profile,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.authorize_selected_run_capabilities",
+        authorize_skill,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.authorize_selected_chat_mcp_tools",
+        authorize_mcp,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.authorize_agent_profile_knowledge_sources",
+        unavailable_source,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.ensure_agent_profile_identity",
+        forbidden_write,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.create_agent_profile_revision",
+        forbidden_write,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.record_agent_profile_draft",
+        forbidden_write,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.append_audit_log",
+        forbidden_write,
+    )
+
+    definition = AgentProfileDraftRequest(
+        name="Finance expert",
+        instructions="Answer finance questions.",
+        knowledge_enabled=True,
+        knowledge_source_ids=["ks_finance"],
+        retrieval_profile_id="krp_default",
+        selected_skill=SelectedSkillRequest(
+            skill_id="general-chat",
+            expected_version="version-a",
+        ),
+        expected_draft_revision=0,
+    )
+    with pytest.raises(HTTPException) as caught:
+        await AgentProfileAuthority().save_draft(
+            object(),
+            principal=_principal(roles=["admin"]),
+            definition=definition,
+            agent_id=None,
+        )
+
+    assert (caught.value.status_code, caught.value.detail) == (
+        409,
+        "agent_profile_knowledge_source_unavailable",
+    )
+    assert order == ["user", "lock", "skill", "mcp", "knowledge"]
 
 
 @pytest.mark.parametrize("invalid_hash", ["", "not-a-sha256", "a" * 63])
@@ -1310,6 +1641,22 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
     from app.agent_apps.authority import _draft_from_row, _revision_hash
 
     row = _profile_row()
+    row.update(
+        {
+            "knowledge_source_ids": ["ks_finance"],
+            "retrieval_profile_id": "krp_default",
+            "knowledge_bindings": [
+                {
+                    "source_id": "ks_finance",
+                    "source_authorization_version": 3,
+                    "ordinal": 0,
+                    "required": True,
+                    "retrieval_profile_id": "krp_default",
+                    "retrieval_profile_revision": 1,
+                }
+            ],
+        }
+    )
     row["content_hash"] = _revision_hash(_draft_from_row(row))
     calls: list[tuple[str, object]] = []
 
@@ -1351,6 +1698,19 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
         "instructions": "private instruction",
         "skill_set": [
             {"skill_id": "general-chat", "expected_version": "version-a"}
+        ],
+        "knowledge_enabled": True,
+        "knowledge_source_ids": ["ks_finance"],
+        "retrieval_profile_id": "krp_default",
+        "knowledge_bindings": [
+            {
+                "source_id": "ks_finance",
+                "source_authorization_version": 3,
+                "ordinal": 0,
+                "required": True,
+                "retrieval_profile_id": "krp_default",
+                "retrieval_profile_revision": 1,
+            }
         ],
     }
     assert [name for name, _ in calls] == ["bound", "validate"]

@@ -20,3 +20,13 @@ test("App registers Run Monitor as an admin-only authenticated route", () => {
     /<ProtectedRoute requireAdmin redirectTo=\{APP_ROUTE_PATHS\.agentMarket\}>\s*<RunsPage \/>\s*<\/ProtectedRoute>/,
   );
 });
+
+test("App registers Knowledge as an admin-only authenticated route", () => {
+  const source = readFileSync(join(process.cwd(), "src/App.tsx"), "utf8");
+
+  assert.match(source, /path=\{APP_ROUTE_PATHS\.knowledge\}/);
+  assert.match(
+    source,
+    /<ProtectedRoute requireAdmin redirectTo=\{APP_ROUTE_PATHS\.agentMarket\}>\s*<KnowledgePage \/>\s*<\/ProtectedRoute>/,
+  );
+});

@@ -1,0 +1,18 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KSRCUI-25",
+  "issue_number": 1311,
+  "summary": "Knowledge Source catalog, freshness, connection health, synchronization, and department ACL UI candidate",
+  "atomic_case_ids": [
+    "KAC-FR-KUI-005",
+    "KAC-FR-KUI-006",
+    "KAC-FR-KUI-007",
+    "KAC-FR-KUI-008"
+  ],
+  "changed_paths": [
+    "docs/product/external-knowledge/manifests/KSRCUI-25.json",
+    "frontend/web/src/features/knowledge/components/KnowledgeCatalogs.tsx",
+    "frontend/web/src/features/knowledge/components/SourceForms.tsx"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

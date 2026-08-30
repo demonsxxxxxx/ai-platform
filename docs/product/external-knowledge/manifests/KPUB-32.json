@@ -1,0 +1,27 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KPUB-32",
+  "issue_number": 1311,
+  "summary": "Publish-time Knowledge source and profile reauthorization candidate; runtime evidence remains pending",
+  "atomic_case_ids": [
+    "KAC-FR-KAGT-016",
+    "KAC-FR-KAGT-017",
+    "KAC-FR-KAGT-018",
+    "KAC-FR-KAGT-019",
+    "KAC-FR-KAGT-020",
+    "KAC-FR-KAGT-021",
+    "KAC-FR-KAGT-022",
+    "KAC-FR-KAGT-023",
+    "KAC-FR-KAGT-024",
+    "KAC-FR-KAGT-025",
+    "KAC-FR-KAGT-026",
+    "KAC-FR-KAGT-027",
+    "KAC-FR-KAGT-037",
+    "KAC-FR-KAGT-038"
+  ],
+  "changed_paths": [
+    "docs/product/external-knowledge/manifests/KPUB-32.json",
+    "tests/test_agent_profile_knowledge.py"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

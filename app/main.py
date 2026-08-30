@@ -8,6 +8,7 @@ from app.bootstrap.model_services import (
     build_model_management_router,
     configure_model_services,
 )
+from app.bootstrap.knowledge import build_knowledge_router, configure_knowledge_services
 from app.bootstrap.run_lifecycle import build_run_cancellation_use_case
 from app.bootstrap.streaming import build_run_stream_runtime
 from app.db import close_pool, transaction
@@ -66,6 +67,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     configure_model_services()
+    configure_knowledge_services()
     app = FastAPI(title="AI Platform API", version="0.1.0", lifespan=lifespan)
     settings = get_settings()
     app.add_middleware(
@@ -91,6 +93,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_skills_router, prefix="/api/ai")
     app.include_router(admin_tool_policies_router, prefix="/api/ai")
     app.include_router(build_model_management_router(), prefix="/api/ai")
+    app.include_router(build_knowledge_router(), prefix="/api/ai")
     app.include_router(capability_distributions_router, prefix="/api")
     app.include_router(skills_marketplace_router, prefix="/api")
     app.include_router(browser_runtime_config_router, prefix="/api")
