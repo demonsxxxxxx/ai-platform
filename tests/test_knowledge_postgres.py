@@ -34,6 +34,50 @@ async def _set_search_path(conn: psycopg.AsyncConnection, schema_name: str) -> N
 
 
 @pytest.mark.asyncio
+async def test_catalog_commit_locks_sources_before_connection() -> None:
+    class StopAfterLockOrderObserved(Exception):
+        pass
+
+    class SourceCursor:
+        async def fetchall(self) -> list[dict[str, object]]:
+            return []
+
+    class Connection:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        async def execute(self, query: str, _params: object) -> SourceCursor:
+            normalized = " ".join(query.split())
+            self.queries.append(normalized)
+            if len(self.queries) == 1:
+                return SourceCursor()
+            raise StopAfterLockOrderObserved
+
+    conn = Connection()
+    with pytest.raises(StopAfterLockOrderObserved):
+        await PostgresKnowledgeRepository().commit_catalog(
+            conn,
+            tenant_id="tenant-a",
+            connection_id="kconn-a",
+            revision_id="krev-a",
+            purpose="candidate_activation",
+            operation_id="operation-a",
+            sync_id="ksync-a",
+            lease_owner="worker-a",
+            lease_generation=1,
+            actor_id="admin-a",
+            records=(),
+            page_count=1,
+        )
+
+    assert len(conn.queries) == 2
+    assert "from knowledge_sources" in conn.queries[0]
+    assert "order by id for update" in conn.queries[0]
+    assert "from knowledge_connections" in conn.queries[1]
+    assert "for update" in conn.queries[1]
+
+
+@pytest.mark.asyncio
 async def test_knowledge_catalog_commit_is_fenced_idempotent_and_defaults_restricted() -> None:
     dsn = _postgres_dsn()
     schema_name = f"knowledge_catalog_{uuid.uuid4().hex}"
@@ -190,6 +234,7 @@ async def test_knowledge_catalog_commit_is_fenced_idempotent_and_defaults_restri
                 failure_code=None,
                 cataloging=True,
             )
+        async with conn.transaction():
             sync = await repository.commit_catalog(
                 conn,
                 tenant_id="tenant-a",

@@ -16,6 +16,7 @@ from app.auth import AuthPrincipal
 from app.capability_distribution import CapabilityAuthorizationDenial
 from app.main import create_app
 from app.execution.api import RunModelSelection
+from app.knowledge.domain import KnowledgeError
 from app.models import (
     ChatSessionRequest,
     ChatStreamRequest,
@@ -4357,6 +4358,7 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
         ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", True, False, None),
         (None, False, False, "before_publish"),
         (None, False, False, "definitive_rejection"),
+        ("6a0c7a42-1f32-4d65-a9bf-d6a6a40bc905", False, False, "knowledge_failure"),
         ("8f2cf18b-e414-4ddd-b99e-c21c32d4f086", False, True, None),
         (
             "9c356f6d-360b-41d0-a97e-3ab16d70a874",
@@ -4372,6 +4374,7 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
         "keyed-rollback",
         "unkeyed-publish-failure",
         "unkeyed-definitive-rejection",
+        "keyed-knowledge-snapshot-failure",
         "restored-continuation",
         "restored-lost-ack",
     ],
@@ -4485,6 +4488,18 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
                         "expected_version": secondary_profile_manifest["content_hash"],
                     },
                 ],
+                "knowledge_source_ids": ["ksrc_support"],
+                "retrieval_profile_id": "krp_default",
+                "knowledge_bindings": [
+                    {
+                        "source_id": "ksrc_support",
+                        "source_authorization_version": 3,
+                        "ordinal": 0,
+                        "required": True,
+                        "retrieval_profile_id": "krp_default",
+                        "retrieval_profile_revision": 1,
+                    }
+                ],
             },
             public_identity=AgentConversationIdentity(
                 agent_id="agt_support",
@@ -4568,6 +4583,34 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
             "input_json": kwargs["input_json"],
         }
         return "run-profile-lock-order"
+
+    async def admit_knowledge(conn, **kwargs):
+        assert transaction_depth == 1
+        assert conn.run is not None
+        calls.append("knowledge_snapshot")
+        assert kwargs == {
+            "tenant_id": "tenant-a",
+            "run_id": "run-profile-lock-order",
+            "agent_id": "agt_support",
+            "profile_revision": 7,
+            "profile_content_hash": "a" * 64,
+            "principal_policy_version": 1,
+            "knowledge_source_ids": ["ksrc_support"],
+            "retrieval_profile_id": "krp_default",
+            "knowledge_bindings": [
+                {
+                    "source_id": "ksrc_support",
+                    "source_authorization_version": 3,
+                    "ordinal": 0,
+                    "required": True,
+                    "retrieval_profile_id": "krp_default",
+                    "retrieval_profile_revision": 1,
+                }
+            ],
+        }
+        if enqueue_failure_mode == "knowledge_failure":
+            raise KnowledgeError("knowledge_snapshot_authority_stale")
+        return {"content_hash": "b" * 64}
 
     async def append_message(*_args, **_kwargs):
         return "msg-profile-lock-order"
@@ -4659,7 +4702,18 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     async def noop(*_args, **_kwargs):
         return None
 
+    async def default_model_selection(*_args, **_kwargs):
+        return RunModelSelection(
+            model_id="legacy",
+            model_value="legacy",
+            connection_revision=None,
+        )
+
     monkeypatch.setattr("app.routes.chat.transaction", tracked_transaction)
+    monkeypatch.setattr(
+        "app.routes.chat.resolve_chat_model_selection",
+        default_model_selection,
+    )
     monkeypatch.setattr(
         "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
         admission_lock,
@@ -4690,6 +4744,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     )
     monkeypatch.setattr("app.routes.chat.repositories.create_session", create_session)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", create_run)
+    monkeypatch.setattr("app.routes.chat.admit_run_knowledge", admit_knowledge)
     monkeypatch.setattr("app.routes.chat.repositories.insert_run_skill_snapshots_at_creation", noop)
     monkeypatch.setattr("app.routes.chat.repositories.append_message", append_message)
     monkeypatch.setattr("app.routes.chat.repositories.claim_chat_submission", claim_submission)
@@ -4746,6 +4801,30 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         assert "enqueue" not in calls
         return
 
+    if enqueue_failure_mode == "knowledge_failure":
+        with pytest.raises(HTTPException) as exc_info:
+            await chat_stream(
+                chat_request,
+                agent_id=query_agent_id,
+                principal=principal(),
+            )
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["code"] == "knowledge_snapshot_authority_stale"
+        assert (
+            exc_info.value.detail["submission_disposition"]
+            == "rejected_before_persist"
+        )
+        assert committed_run is None
+        assert committed_submission is not None
+        assert committed_submission["state"] == "rejected_before_persist"
+        assert (
+            committed_submission["rejection_code"]
+            == "knowledge_snapshot_authority_stale"
+        )
+        assert calls.count("knowledge_snapshot") == 1
+        assert "enqueue" not in calls
+        return
+
     if enqueue_failure_mode == "definitive_rejection":
         with pytest.raises(HTTPException) as exc_info:
             await chat_stream(
@@ -4774,6 +4853,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
             "claim",
             "create_session",
             "create_run",
+            "knowledge_snapshot",
             "profile_reauth",
             "enqueue",
             "terminalize_run",
@@ -4805,7 +4885,9 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         expected_calls.insert(expected_calls.index("workspace_auth"), "list_reusable_files")
     if not restored_continuation:
         expected_calls.append("create_session")
-    expected_calls.extend(["create_run", "profile_reauth", "enqueue"])
+    expected_calls.extend(
+        ["create_run", "knowledge_snapshot", "profile_reauth", "enqueue"]
+    )
     assert initial_calls == expected_calls
     if restored_continuation:
         assert "session" not in persisted
@@ -4833,6 +4915,18 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
                 "skill_id": "profile-reference-search",
                 "expected_version": secondary_profile_manifest["content_hash"],
             },
+        ],
+        "knowledge_source_ids": ["ksrc_support"],
+        "retrieval_profile_id": "krp_default",
+        "knowledge_bindings": [
+            {
+                "source_id": "ksrc_support",
+                "source_authorization_version": 3,
+                "ordinal": 0,
+                "required": True,
+                "retrieval_profile_id": "krp_default",
+                "retrieval_profile_revision": 1,
+            }
         ],
     }
     assert {

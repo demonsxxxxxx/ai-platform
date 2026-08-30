@@ -14,6 +14,10 @@ from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
 
+from app.agent_profile_execution_validation import (
+    validate_agent_profile_execution_input,
+)
+from app.knowledge.application.run_admission import RunKnowledgeAdmissionService
 from app.knowledge.domain import (
     KnowledgeError,
     KnowledgeEvidence,
@@ -102,6 +106,54 @@ def test_run_knowledge_snapshot_rejects_order_duplicates_and_ninth_source() -> N
                 )
                 for index in range(9)
             )
+        )
+
+
+def test_agent_execution_snapshot_preserves_only_canonical_knowledge_bindings() -> None:
+    binding = {
+        "source_id": "ksrc_policy",
+        "source_authorization_version": 1,
+        "ordinal": 0,
+        "required": True,
+        "retrieval_profile_id": "krp_default",
+        "retrieval_profile_revision": 1,
+    }
+    profile = {
+        "agent_id": "agent-knowledge-runtime",
+        "revision": 1,
+        "content_hash": "a" * 64,
+        "instructions": "Use admitted evidence.",
+        "skill_set": [
+            {
+                "skill_id": "skill-knowledge-runtime",
+                "expected_version": "1.0.0",
+            }
+        ],
+        "knowledge_source_ids": ["ksrc_policy"],
+        "retrieval_profile_id": "krp_default",
+        "knowledge_bindings": [binding],
+    }
+
+    validated = validate_agent_profile_execution_input(
+        profile,
+        agent_id="agent-knowledge-runtime",
+        execution_kind="skill",
+        skill_id="skill-knowledge-runtime",
+        skill_version="1.0.0",
+    )
+
+    assert validated["knowledge_source_ids"] == ["ksrc_policy"]
+    assert validated["retrieval_profile_id"] == "krp_default"
+    assert validated["knowledge_bindings"] == [binding]
+    invalid = dict(profile)
+    invalid["knowledge_bindings"] = [{**binding, "secret_ref": "forbidden"}]
+    with pytest.raises(ValueError, match="knowledge_snapshot_profile_mismatch"):
+        validate_agent_profile_execution_input(
+            invalid,
+            agent_id="agent-knowledge-runtime",
+            execution_kind="skill",
+            skill_id="skill-knowledge-runtime",
+            skill_version="1.0.0",
         )
 
 
@@ -203,6 +255,212 @@ async def test_terminalize_rejects_unknown_failure_code_before_database_io() -> 
             duration_ms=1,
             safe_failure_code="provider_internal_stacktrace",
         )
+
+
+@pytest.mark.asyncio
+async def test_run_knowledge_admission_service_forwards_only_valid_bindings() -> None:
+    calls: list[tuple[object, dict[str, object]]] = []
+
+    class Repository:
+        async def create_run_snapshot_from_bindings(
+            self, conn: object, **kwargs: object
+        ) -> dict[str, object]:
+            calls.append((conn, kwargs))
+            return {"content_hash": "b" * 64}
+
+    service = RunKnowledgeAdmissionService(Repository())
+    conn = object()
+    binding = {
+        "source_id": "ksrc_policy",
+        "source_authorization_version": 1,
+        "ordinal": 0,
+        "required": True,
+        "retrieval_profile_id": "krp_default",
+        "retrieval_profile_revision": 1,
+    }
+
+    stored = await service.admit(
+        conn,
+        tenant_id="tenant-knowledge-runtime",
+        run_id="run-knowledge-runtime",
+        agent_id="agent-knowledge-runtime",
+        profile_revision=1,
+        profile_content_hash="a" * 64,
+        principal_policy_version=1,
+        knowledge_source_ids=["ksrc_policy"],
+        retrieval_profile_id="krp_default",
+        knowledge_bindings=[binding],
+    )
+
+    assert stored == {"content_hash": "b" * 64}
+    assert calls == [
+        (
+            conn,
+            {
+                "tenant_id": "tenant-knowledge-runtime",
+                "run_id": "run-knowledge-runtime",
+                "agent_id": "agent-knowledge-runtime",
+                "profile_revision": 1,
+                "profile_content_hash": "a" * 64,
+                "principal_policy_version": 1,
+                "knowledge_source_ids": ("ksrc_policy",),
+                "retrieval_profile_id": "krp_default",
+                "knowledge_bindings": (binding,),
+            },
+        )
+    ]
+    with pytest.raises(KnowledgeError, match="knowledge_snapshot_profile_mismatch"):
+        await service.admit(
+            conn,
+            tenant_id="tenant-knowledge-runtime",
+            run_id="run-knowledge-runtime",
+            agent_id="agent-knowledge-runtime",
+            profile_revision=1,
+            profile_content_hash="a" * 64,
+            principal_policy_version=1,
+            knowledge_source_ids=[],
+            retrieval_profile_id="krp_default",
+            knowledge_bindings=[],
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_snapshot_locks_sources_before_connections() -> None:
+    snapshot = _snapshot()
+    bindings = [
+        {
+            "source_id": "ksrc_policy",
+            "source_authorization_version": 1,
+            "ordinal": 0,
+            "required": True,
+            "retrieval_profile_id": "krp_default",
+            "retrieval_profile_revision": 1,
+        }
+    ]
+
+    class Cursor:
+        def __init__(
+            self,
+            *,
+            one: dict[str, object] | None = None,
+            many: list[dict[str, object]] | None = None,
+        ) -> None:
+            self._one = one
+            self._many = many or []
+
+        async def fetchone(self) -> dict[str, object] | None:
+            return self._one
+
+        async def fetchall(self) -> list[dict[str, object]]:
+            return self._many
+
+    inserted = {
+        "run_id": snapshot.run_id,
+        "agent_id": snapshot.agent_id,
+        "profile_revision": snapshot.profile_revision,
+        "profile_content_hash": snapshot.profile_content_hash,
+        "retrieval_profile_id": snapshot.retrieval_profile_id,
+        "retrieval_profile_revision": snapshot.retrieval_profile_revision,
+        "sources_json": snapshot.sources_projection(),
+        "principal_policy_version": snapshot.principal_policy_version,
+        "authorized_at": None,
+        "content_hash": snapshot.content_hash(),
+        "created_at": None,
+    }
+    responses = [
+        Cursor(),
+        Cursor(
+            one={
+                "agent_id": snapshot.agent_id,
+                "admitted_agent_profile_revision": snapshot.profile_revision,
+                "admitted_agent_profile_hash": snapshot.profile_content_hash,
+                "authz_policy_version": snapshot.principal_policy_version,
+                "profile_content_hash": snapshot.profile_content_hash,
+                "knowledge_bindings": bindings,
+            }
+        ),
+        Cursor(
+            many=[
+                {
+                    "id": "ksrc_policy",
+                    "connection_id": "kconn_policy",
+                    "provider_resource_id": "dataset-policy",
+                    "status": "active",
+                    "authorization_version": 1,
+                    "last_complete_sync_id": "ksync_policy_1",
+                    "last_seen_connection_revision_id": "krev_policy_1",
+                }
+            ]
+        ),
+        Cursor(
+            many=[
+                {
+                    "id": "kconn_policy",
+                    "status": "active",
+                    "lifecycle_epoch": 1,
+                    "active_revision_id": "krev_policy_1",
+                    "active_catalog_sync_id": "ksync_policy_1",
+                }
+            ]
+        ),
+        Cursor(one={"active": 1}),
+        Cursor(
+            many=[
+                {
+                    "id": "krev_policy_1",
+                    "connection_id": "kconn_policy",
+                    "revision": 1,
+                    "check_status": "passed",
+                }
+            ]
+        ),
+        Cursor(
+            many=[
+                {
+                    "id": "ksync_policy_1",
+                    "connection_id": "kconn_policy",
+                    "connection_revision_id": "krev_policy_1",
+                    "status": "succeeded",
+                }
+            ]
+        ),
+        Cursor(one=inserted),
+    ]
+
+    class Connection:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        async def execute(self, query: str, _params: object) -> Cursor:
+            self.queries.append(" ".join(query.split()))
+            return responses.pop(0)
+
+    conn = Connection()
+    stored = await PostgresKnowledgeRuntimeRepository().create_run_snapshot(
+        conn,
+        snapshot=snapshot,
+    )
+
+    assert stored["content_hash"] == snapshot.content_hash()
+    assert responses == []
+    connection_lock = next(
+        index
+        for index, query in enumerate(conn.queries)
+        if "from knowledge_connections" in query and "for update" in query
+    )
+    source_lock = next(
+        index
+        for index, query in enumerate(conn.queries)
+        if "from knowledge_sources" in query and "for update" in query
+    )
+    assert source_lock < connection_lock
+    profile_lock = next(
+        index
+        for index, query in enumerate(conn.queries)
+        if "from knowledge_retrieval_profiles" in query
+    )
+    assert connection_lock < profile_lock
+    assert "for share" in conn.queries[profile_lock]
 
 
 def _postgres_dsn() -> str:
@@ -456,11 +714,44 @@ async def test_runtime_repository_pins_snapshot_fences_generation_and_commits_ev
         await _seed_runtime_authority(conn)
 
         snapshot = _snapshot()
+        knowledge_bindings = (
+            {
+                "source_id": "ksrc_policy",
+                "source_authorization_version": 1,
+                "ordinal": 0,
+                "required": True,
+                "retrieval_profile_id": "krp_default",
+                "retrieval_profile_revision": 1,
+            },
+        )
         async with conn.transaction():
-            stored = await repository.create_run_snapshot(conn, snapshot=snapshot)
-            replay = await repository.create_run_snapshot(conn, snapshot=snapshot)
+            stored = await repository.create_run_snapshot_from_bindings(
+                conn,
+                tenant_id=snapshot.tenant_id,
+                run_id=snapshot.run_id,
+                agent_id=snapshot.agent_id,
+                profile_revision=snapshot.profile_revision,
+                profile_content_hash=snapshot.profile_content_hash,
+                principal_policy_version=snapshot.principal_policy_version,
+                knowledge_source_ids=("ksrc_policy",),
+                retrieval_profile_id="krp_default",
+                knowledge_bindings=knowledge_bindings,
+            )
+            replay = await repository.create_run_snapshot_from_bindings(
+                conn,
+                tenant_id=snapshot.tenant_id,
+                run_id=snapshot.run_id,
+                agent_id=snapshot.agent_id,
+                profile_revision=snapshot.profile_revision,
+                profile_content_hash=snapshot.profile_content_hash,
+                principal_policy_version=snapshot.principal_policy_version,
+                knowledge_source_ids=("ksrc_policy",),
+                retrieval_profile_id="krp_default",
+                knowledge_bindings=knowledge_bindings,
+            )
         assert stored["content_hash"] == snapshot.content_hash()
         assert replay["content_hash"] == snapshot.content_hash()
+        assert stored["sources"] == snapshot.sources_projection()
 
         invalid_sources = snapshot.sources_projection()
         invalid_sources[0]["secret_ref"] = "must-not-enter-run-authority"

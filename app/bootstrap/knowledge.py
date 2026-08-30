@@ -12,14 +12,17 @@ from app.department_directory import (
 from app.knowledge.application import (
     AgentProfileKnowledgeAuthorizationService,
     KnowledgeControlPlane,
+    RunKnowledgeAdmissionService,
     configure_agent_profile_knowledge_authorization,
     configure_knowledge_control_plane,
+    configure_run_knowledge_admission,
 )
 from app.knowledge.domain import KnowledgeError
 from app.knowledge.infrastructure import (
     KnowledgeCredentialVault,
     PostgresAgentProfileKnowledgeAuthorizationRepository,
     PostgresKnowledgeRepository,
+    PostgresKnowledgeRuntimeRepository,
 )
 from app.knowledge.infrastructure.providers import RagFlowKnowledgeProvider
 from app.knowledge.transport import build_knowledge_admin_router
@@ -44,6 +47,9 @@ def configure_knowledge_services() -> None:
         AgentProfileKnowledgeAuthorizationService(
             PostgresAgentProfileKnowledgeAuthorizationRepository()
         )
+    )
+    configure_run_knowledge_admission(
+        RunKnowledgeAdmissionService(PostgresKnowledgeRuntimeRepository())
     )
     configure_knowledge_control_plane(
         KnowledgeControlPlane(

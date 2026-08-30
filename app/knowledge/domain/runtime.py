@@ -36,6 +36,16 @@ _POSITION_KEYS = frozenset(
         "y",
     }
 )
+_PROFILE_BINDING_KEYS = frozenset(
+    {
+        "ordinal",
+        "required",
+        "retrieval_profile_id",
+        "retrieval_profile_revision",
+        "source_authorization_version",
+        "source_id",
+    }
+)
 
 
 def _bounded_identifier(value: str, *, max_bytes: int = 512) -> str:
@@ -103,6 +113,87 @@ def _validate_position_projection(value: Any, *, depth: int = 0) -> None:
     ):
         return
     raise KnowledgeError("knowledge_evidence_invalid")
+
+
+def canonical_run_knowledge_bindings(
+    *,
+    source_ids: Any,
+    retrieval_profile_id: Any,
+    bindings: Any,
+) -> tuple[dict[str, Any], ...]:
+    """Validate the exact credential-free Agent-to-Run Knowledge projection."""
+
+    if (
+        not isinstance(source_ids, (list, tuple))
+        or not 1 <= len(source_ids) <= 8
+        or not isinstance(retrieval_profile_id, str)
+        or not isinstance(bindings, (list, tuple))
+        or len(bindings) != len(source_ids)
+    ):
+        raise KnowledgeError("knowledge_snapshot_profile_mismatch")
+    try:
+        normalized_profile_id = _bounded_identifier(
+            retrieval_profile_id,
+            max_bytes=160,
+        )
+    except KnowledgeError as exc:
+        raise KnowledgeError("knowledge_snapshot_profile_mismatch") from exc
+    if normalized_profile_id != retrieval_profile_id:
+        raise KnowledgeError("knowledge_snapshot_profile_mismatch")
+    normalized_source_ids: list[str] = []
+    for source_id in source_ids:
+        if not isinstance(source_id, str):
+            raise KnowledgeError("knowledge_snapshot_profile_mismatch")
+        try:
+            normalized_source_id = _bounded_identifier(source_id, max_bytes=160)
+        except KnowledgeError as exc:
+            raise KnowledgeError("knowledge_snapshot_profile_mismatch") from exc
+        if normalized_source_id != source_id:
+            raise KnowledgeError("knowledge_snapshot_profile_mismatch")
+        normalized_source_ids.append(normalized_source_id)
+    if len(normalized_source_ids) != len(set(normalized_source_ids)):
+        raise KnowledgeError("knowledge_snapshot_profile_mismatch")
+
+    normalized_bindings: list[dict[str, Any]] = []
+    retrieval_profile_revision: int | None = None
+    for ordinal, (source_id, binding) in enumerate(
+        zip(normalized_source_ids, bindings, strict=True)
+    ):
+        if not isinstance(binding, dict) or set(binding) != _PROFILE_BINDING_KEYS:
+            raise KnowledgeError("knowledge_snapshot_profile_mismatch")
+        source_authorization_version = binding.get("source_authorization_version")
+        binding_ordinal = binding.get("ordinal")
+        binding_profile_revision = binding.get("retrieval_profile_revision")
+        if (
+            binding.get("source_id") != source_id
+            or isinstance(source_authorization_version, bool)
+            or not isinstance(source_authorization_version, int)
+            or source_authorization_version <= 0
+            or isinstance(binding_ordinal, bool)
+            or not isinstance(binding_ordinal, int)
+            or binding_ordinal != ordinal
+            or binding.get("required") is not True
+            or binding.get("retrieval_profile_id") != normalized_profile_id
+            or isinstance(binding_profile_revision, bool)
+            or not isinstance(binding_profile_revision, int)
+            or binding_profile_revision <= 0
+        ):
+            raise KnowledgeError("knowledge_snapshot_profile_mismatch")
+        if retrieval_profile_revision is None:
+            retrieval_profile_revision = binding_profile_revision
+        elif retrieval_profile_revision != binding_profile_revision:
+            raise KnowledgeError("knowledge_snapshot_profile_mismatch")
+        normalized_bindings.append(
+            {
+                "source_id": source_id,
+                "source_authorization_version": source_authorization_version,
+                "ordinal": ordinal,
+                "required": True,
+                "retrieval_profile_id": normalized_profile_id,
+                "retrieval_profile_revision": binding_profile_revision,
+            }
+        )
+    return tuple(normalized_bindings)
 
 
 @dataclass(frozen=True)

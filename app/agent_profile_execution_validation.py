@@ -6,6 +6,7 @@ from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_HARNESS_CHAT,
     RUN_EXECUTION_KIND_SKILL,
 )
+from app.knowledge.domain import KnowledgeError, canonical_run_knowledge_bindings
 from app.validation import (
     MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
     assert_canonical_sha256,
@@ -116,10 +117,38 @@ def validate_agent_profile_execution_input(
             raise ValueError("agent_profile_required_skill_version_invalid")
     else:
         raise ValueError("agent_profile_execution_kind_invalid")
-    return {
+    projection: dict[str, Any] = {
         "agent_id": assert_safe_id(profile_agent_id, "agent_profile.agent_id"),
         "revision": revision,
         "content_hash": content_hash,
         "instructions": instructions,
         "skill_set": skill_set,
     }
+    knowledge_keys = {
+        "knowledge_source_ids",
+        "retrieval_profile_id",
+        "knowledge_bindings",
+    }
+    if knowledge_keys & set(value):
+        if not knowledge_keys <= set(value):
+            raise ValueError("knowledge_snapshot_profile_mismatch")
+        try:
+            knowledge_bindings = canonical_run_knowledge_bindings(
+                source_ids=value.get("knowledge_source_ids"),
+                retrieval_profile_id=value.get("retrieval_profile_id"),
+                bindings=value.get("knowledge_bindings"),
+            )
+        except KnowledgeError as exc:
+            raise ValueError(exc.code) from exc
+        projection.update(
+            {
+                "knowledge_source_ids": [
+                    binding["source_id"] for binding in knowledge_bindings
+                ],
+                "retrieval_profile_id": knowledge_bindings[0][
+                    "retrieval_profile_id"
+                ],
+                "knowledge_bindings": [dict(binding) for binding in knowledge_bindings],
+            }
+        )
+    return projection

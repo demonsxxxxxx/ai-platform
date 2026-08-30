@@ -5,9 +5,13 @@
   "summary": "Immutable Run Knowledge Snapshot and generation-fenced runtime repository",
   "atomic_case_ids": [],
   "changed_paths": [
+    "app/agent_profile_execution_validation.py",
+    "app/knowledge/application/run_admission.py",
     "app/knowledge/domain/runtime.py",
     "app/knowledge/infrastructure/runtime_postgres.py",
+    "app/routes/chat.py",
     "docs/product/external-knowledge/manifests/KDBRUN-14.json",
+    "tests/test_chat_routes.py",
     "tests/test_knowledge_runtime.py"
   ],
   "evidence_layers": ["source", "unit", "postgresql"]

@@ -8,7 +8,13 @@ import uuid
 from datetime import datetime
 from typing import Any, Iterable
 
-from app.knowledge.domain import KnowledgeError, KnowledgeEvidence, RunKnowledgeSnapshot
+from app.knowledge.domain import (
+    KnowledgeError,
+    KnowledgeEvidence,
+    RunKnowledgeSnapshot,
+    RunKnowledgeSourceSnapshot,
+    canonical_run_knowledge_bindings,
+)
 
 
 _TERMINAL_STATUSES = frozenset({"succeeded", "no_evidence", "failed", "cancelled"})
@@ -186,6 +192,97 @@ def _validate_terminal_counts(
 class PostgresKnowledgeRuntimeRepository:
     """Persistence boundary; every mutating method requires the caller transaction."""
 
+    async def create_run_snapshot_from_bindings(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_id: str,
+        agent_id: str,
+        profile_revision: int,
+        profile_content_hash: str,
+        principal_policy_version: int,
+        knowledge_source_ids: tuple[str, ...],
+        retrieval_profile_id: str,
+        knowledge_bindings: tuple[dict[str, Any], ...],
+    ) -> dict[str, Any]:
+        canonical_bindings = canonical_run_knowledge_bindings(
+            source_ids=knowledge_source_ids,
+            retrieval_profile_id=retrieval_profile_id,
+            bindings=knowledge_bindings,
+        )
+        source_ids = [str(binding["source_id"]) for binding in canonical_bindings]
+        retrieval_profile_revision = int(
+            canonical_bindings[0]["retrieval_profile_revision"]
+        )
+
+        source_cursor = await conn.execute(
+            """
+            select sources.id as source_id, sources.connection_id,
+                   sources.provider_resource_id, sources.authorization_version,
+                   sources.last_complete_sync_id as connection_catalog_sync_id,
+                   sources.last_seen_connection_revision_id as connection_revision_id,
+                   connections.lifecycle_epoch as connection_lifecycle_epoch,
+                   revisions.revision as connection_revision
+            from knowledge_sources sources
+            join knowledge_connections connections
+              on connections.tenant_id = sources.tenant_id
+             and connections.id = sources.connection_id
+            left join knowledge_connection_revisions revisions
+              on revisions.tenant_id = sources.tenant_id
+             and revisions.connection_id = sources.connection_id
+             and revisions.id = sources.last_seen_connection_revision_id
+            where sources.tenant_id = %s and sources.id = any(%s)
+            order by sources.id
+            """,
+            (tenant_id, sorted(source_ids)),
+        )
+        source_rows = {
+            str(row["source_id"]): dict(row) for row in await source_cursor.fetchall()
+        }
+        if set(source_rows) != set(source_ids):
+            raise KnowledgeError("knowledge_snapshot_source_unavailable")
+
+        sources: list[RunKnowledgeSourceSnapshot] = []
+        for binding in canonical_bindings:
+            source_id = str(binding["source_id"])
+            row = source_rows[source_id]
+            if row.get("connection_revision") is None:
+                raise KnowledgeError("knowledge_snapshot_authority_stale")
+            try:
+                sources.append(
+                    RunKnowledgeSourceSnapshot(
+                        source_id=source_id,
+                        source_authorization_version=int(
+                            binding["source_authorization_version"]
+                        ),
+                        connection_id=row["connection_id"],
+                        connection_revision_id=row["connection_revision_id"],
+                        connection_revision=int(row["connection_revision"]),
+                        connection_catalog_sync_id=row["connection_catalog_sync_id"],
+                        connection_lifecycle_epoch=int(
+                            row["connection_lifecycle_epoch"]
+                        ),
+                        provider_resource_id=row["provider_resource_id"],
+                        ordinal=int(binding["ordinal"]),
+                        required=True,
+                    )
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise KnowledgeError("knowledge_snapshot_authority_stale") from exc
+        snapshot = RunKnowledgeSnapshot(
+            tenant_id=tenant_id,
+            run_id=run_id,
+            agent_id=agent_id,
+            profile_revision=profile_revision,
+            profile_content_hash=profile_content_hash,
+            retrieval_profile_id=retrieval_profile_id,
+            retrieval_profile_revision=retrieval_profile_revision,
+            sources=tuple(sources),
+            principal_policy_version=principal_policy_version,
+        )
+        return await self.create_run_snapshot(conn, snapshot=snapshot)
+
     async def create_run_snapshot(
         self,
         conn: Any,
@@ -237,17 +334,9 @@ class PostgresKnowledgeRuntimeRepository:
             raise KnowledgeError("knowledge_snapshot_run_mismatch")
         _validate_profile_bindings(snapshot, run.get("knowledge_bindings"))
 
-        profile_cursor = await conn.execute(
-            """
-            select 1
-            from knowledge_retrieval_profiles
-            where id = %s and revision = %s and status = 'active'
-            """,
-            (snapshot.retrieval_profile_id, snapshot.retrieval_profile_revision),
-        )
-        if await profile_cursor.fetchone() is None:
-            raise KnowledgeError("knowledge_retrieval_profile_unavailable")
-
+        # Source -> connection is the global authority lock order shared with
+        # catalog commits and lifecycle writers.  IDs are sorted independently
+        # of Agent binding order so concurrent multi-source admission converges.
         source_ids = sorted(source.source_id for source in snapshot.sources)
         source_cursor = await conn.execute(
             """
@@ -282,6 +371,18 @@ class PostgresKnowledgeRuntimeRepository:
         connections_by_id = {str(row["id"]): row for row in connection_rows}
         if set(connections_by_id) != set(connection_ids):
             raise KnowledgeError("knowledge_snapshot_connection_unavailable")
+
+        profile_cursor = await conn.execute(
+            """
+            select 1
+            from knowledge_retrieval_profiles
+            where id = %s and revision = %s and status = 'active'
+            for share
+            """,
+            (snapshot.retrieval_profile_id, snapshot.retrieval_profile_revision),
+        )
+        if await profile_cursor.fetchone() is None:
+            raise KnowledgeError("knowledge_retrieval_profile_unavailable")
 
         revision_ids = sorted(
             {source.connection_revision_id for source in snapshot.sources}

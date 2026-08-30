@@ -781,10 +781,23 @@ class PostgresKnowledgeRepository:
         records: tuple[ProviderSourceRecord, ...],
         page_count: int,
     ) -> dict[str, Any]:
-        # Connection -> sync is the repository-wide lock order for catalog
-        # lifecycle mutations.  Separate selects make the order explicit; a
+        # Source -> connection -> sync is the repository-wide authority lock
+        # order.  Catalog replacement can mark any existing source missing, so
+        # it locks the complete current catalog by stable source ID before the
+        # connection epoch.  Separate selects keep the order explicit; a
         # multi-table FOR UPDATE does not guarantee which row PostgreSQL locks
         # first.
+        source_cursor = await conn.execute(
+            """
+            select id
+            from knowledge_sources
+            where tenant_id = %s and connection_id = %s
+            order by id
+            for update
+            """,
+            (tenant_id, connection_id),
+        )
+        await source_cursor.fetchall()
         connection_cursor = await conn.execute(
             """
             select active_revision_id, candidate_revision_id, status, lifecycle_epoch
