@@ -21,7 +21,7 @@ from app.knowledge.infrastructure import (
     PostgresAgentProfileKnowledgeAuthorizationRepository,
     PostgresKnowledgeRepository,
 )
-from app.knowledge.infrastructure.providers import RagFlowCatalogProvider
+from app.knowledge.infrastructure.providers import RagFlowKnowledgeProvider
 from app.knowledge.transport import build_knowledge_admin_router
 from app.platform.audit import PostgresAuditWriter
 from app.platform.credentials import PlatformCredentialVault
@@ -54,7 +54,7 @@ def configure_knowledge_services() -> None:
                 PlatformCredentialVault(settings_provider=get_settings)
             ),
             audit_writer=PostgresAuditWriter(),
-            providers=(RagFlowCatalogProvider(settings_provider=get_settings),),
+            providers=(RagFlowKnowledgeProvider(settings_provider=get_settings),),
             department_authority_validator=_validate_knowledge_department_authorities,
         )
     )

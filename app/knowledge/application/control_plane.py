@@ -13,12 +13,12 @@ import uuid
 from app.knowledge.domain import (
     KnowledgeConnectionDefinition,
     KnowledgeError,
-    ProviderCatalogSnapshot,
     canonical_connection_name,
     canonical_knowledge_role_id,
     canonical_knowledge_user_id,
     canonical_origin,
 )
+from .provider import KnowledgeProvider
 
 
 class TransactionFactory(Protocol):
@@ -77,19 +77,6 @@ class AuditWriter(Protocol):
     async def append(self, conn: Any, **kwargs: Any) -> str: ...
 
 
-class KnowledgeCatalogProvider(Protocol):
-    provider_key: str
-
-    async def check(self, *, base_url: str, credential: str) -> None: ...
-
-    async def list_sources(
-        self,
-        *,
-        base_url: str,
-        credential: str,
-    ) -> ProviderCatalogSnapshot: ...
-
-
 class KnowledgeControlPlane:
     def __init__(
         self,
@@ -99,7 +86,7 @@ class KnowledgeControlPlane:
         repository: KnowledgeRepository,
         credential_vault: CredentialVault,
         audit_writer: AuditWriter,
-        providers: tuple[KnowledgeCatalogProvider, ...],
+        providers: tuple[KnowledgeProvider, ...],
         department_authority_validator: Callable[[list[str]], Awaitable[list[str]]]
         | None = None,
     ) -> None:
@@ -267,7 +254,7 @@ class KnowledgeControlPlane:
             )
             return result
 
-    def _provider(self, key: str) -> KnowledgeCatalogProvider:
+    def _provider(self, key: str) -> KnowledgeProvider:
         provider = self._providers.get(key)
         if provider is None:
             raise KnowledgeError("knowledge_provider_unsupported")

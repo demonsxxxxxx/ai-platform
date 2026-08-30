@@ -1,0 +1,23 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KPRVRET-19",
+  "issue_number": 1311,
+  "summary": "Bounded one-source RAGFlow native retrieval adapter",
+  "atomic_case_ids": [
+    "KAC-FR-KRET-006",
+    "KAC-FR-KRET-007",
+    "KAC-FR-KRET-008",
+    "KAC-FR-KRET-009",
+    "KAC-FR-KRET-010",
+    "KAC-FR-KRET-011",
+    "KAC-FR-KRET-012",
+    "KAC-FR-KRET-013",
+    "KAC-FR-KRET-046"
+  ],
+  "changed_paths": [
+    "app/knowledge/infrastructure/providers/ragflow_retrieval.py",
+    "docs/product/external-knowledge/manifests/KPRVRET-19.json",
+    "tests/test_knowledge_ragflow_retrieval.py"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

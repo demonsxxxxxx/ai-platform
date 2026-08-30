@@ -13,8 +13,10 @@
   ],
   "changed_paths": [
     "app/knowledge/__init__.py",
+    "app/knowledge/application/provider.py",
     "app/knowledge/domain/__init__.py",
     "app/knowledge/domain/connection.py",
+    "app/knowledge/domain/provider.py",
     "docs/product/external-knowledge/manifests/KDOM-03.json"
   ],
   "evidence_layers": ["source", "unit"]

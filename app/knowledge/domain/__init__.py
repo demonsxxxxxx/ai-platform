@@ -18,6 +18,14 @@ from .retrieval import (
     DEFAULT_RETRIEVAL_PROFILE_REVISION,
     default_retrieval_profile_projection,
 )
+from .provider import (
+    ProviderCallControl,
+    ProviderChunkCandidate,
+    ProviderRetrievalChunk,
+    ProviderRetrievalRequest,
+    ProviderRetrievalResult,
+)
+from .normalization import normalize_provider_chunk, normalize_provider_result
 
 __all__ = [
     "KnowledgeAcl",
@@ -32,6 +40,13 @@ __all__ = [
     "DEFAULT_RETRIEVAL_PROFILE_ID",
     "DEFAULT_RETRIEVAL_PROFILE_REVISION",
     "default_retrieval_profile_projection",
+    "ProviderCallControl",
+    "ProviderChunkCandidate",
+    "ProviderRetrievalChunk",
+    "ProviderRetrievalRequest",
+    "ProviderRetrievalResult",
+    "normalize_provider_chunk",
+    "normalize_provider_result",
     "canonical_connection_name",
     "canonical_origin",
 ]
