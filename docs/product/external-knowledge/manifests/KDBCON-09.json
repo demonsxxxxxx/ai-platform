@@ -16,7 +16,8 @@
     "docs/product/external-knowledge/manifests/KDBCON-09.json",
     "tests/test_knowledge_postgres.py",
     "tests/test_schema.py",
-    "tests/test_schema_migrations.py"
+    "tests/test_schema_migrations.py",
+    "tests/test_schema_migrations_postgres.py"
   ],
   "evidence_layers": ["source", "unit"]
 }

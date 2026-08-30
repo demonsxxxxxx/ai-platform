@@ -276,14 +276,17 @@ async def _seed_runtime_authority(conn: psycopg.AsyncConnection) -> None:
         """
         insert into agent_profile_revisions(
           tenant_id, agent_id, revision, status, revision_status, name,
-          instructions, model_id, skill_id, skill_version, knowledge_source_ids,
+          instructions, model_id, skill_id, skill_version, skill_set,
+          knowledge_source_ids,
           retrieval_profile_id, knowledge_bindings, content_hash, avatar_ref,
           category, visibility, allowed_department_ids, allowed_roles,
           allowed_user_ids, created_by
         ) values (
           %s, 'agent-knowledge-runtime', 1, 'published', 'published',
           'Knowledge Runtime', 'Use admitted evidence.', 'profile-managed',
-          'skill-knowledge-runtime', '1.0.0', '["ksrc_policy"]'::jsonb,
+          'skill-knowledge-runtime', '1.0.0',
+          '[{"skill_id":"skill-knowledge-runtime","expected_version":"1.0.0"}]'::jsonb,
+          '["ksrc_policy"]'::jsonb,
           'krp_default', %s::jsonb, %s, 'builtin:agent', 'research', 'tenant',
           '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, 'user-knowledge-runtime'
         )

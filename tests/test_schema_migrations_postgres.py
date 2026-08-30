@@ -98,9 +98,88 @@ where state = 'admission_pending'
 
 """
 
+POST_SUCCESSOR_CONCURRENT_INDEXES = frozenset(
+    {
+        "idx_run_events_v4_due_scope",
+        "uq_knowledge_syncs_one_active_connection",
+    }
+)
+
+
+def _strip_exact_section(value: str, start: str, end: str) -> str:
+    assert value.count(start) == 1
+    assert value.count(end) == 1
+    start_at = value.index(start)
+    end_at = value.index(end, start_at)
+    return value[:start_at] + value[end_at:]
+
+
+def _without_external_knowledge_schema(current_sql: str) -> str:
+    current_sql = _strip_exact_section(
+        current_sql,
+        "create or replace function "
+        "agent_profile_knowledge_source_ids_are_unique(source_ids jsonb)\n",
+        "create table if not exists agent_profile_revisions (\n",
+    )
+    for fragment in (
+        "  knowledge_source_ids jsonb not null default '[]'::jsonb,\n",
+        "  retrieval_profile_id text,\n",
+        "  knowledge_bindings jsonb not null default '[]'::jsonb,\n",
+    ):
+        assert current_sql.count(fragment) == 1
+        current_sql = current_sql.replace(fragment, "")
+    current_sql = _strip_exact_section(
+        current_sql,
+        "  constraint chk_agent_profile_knowledge_sources check (\n",
+        "  constraint uq_agent_profile_revision_publication\n",
+    )
+    current_sql = _strip_exact_section(
+        current_sql,
+        "-- Existing pre-#701 tables do not gain columns from "
+        "CREATE TABLE IF NOT EXISTS.\n",
+        "-- The aggregate is the only current-lifecycle authority. Revisions remain\n",
+    )
+    current_run_attempt_identity = (
+        "  unique (tenant_id, run_id, queue_attempt_id),\n"
+        "  constraint uq_run_attempts_tenant_run_id unique "
+        "(tenant_id, run_id, id)\n"
+    )
+    historical_run_attempt_identity = (
+        "  unique (tenant_id, run_id, queue_attempt_id)\n"
+    )
+    assert current_sql.count(current_run_attempt_identity) == 1
+    current_sql = current_sql.replace(
+        current_run_attempt_identity,
+        historical_run_attempt_identity,
+    )
+    current_revision_columns = (
+        "alter table agent_profile_revisions add column if not exists "
+        "withdrawn_from_revision bigint;\n"
+        "alter table agent_profile_revisions add column if not exists avatar_ref text;\n"
+    )
+    historical_revision_columns = (
+        "alter table agent_profile_revisions add column if not exists "
+        "withdrawn_from_revision bigint;\n"
+        "alter table agent_profile_revisions add column if not exists "
+        "revision_status text;\n"
+        "alter table agent_profile_revisions add column if not exists avatar_ref text;\n"
+    )
+    assert current_sql.count(current_revision_columns) == 1
+    current_sql = current_sql.replace(
+        current_revision_columns,
+        historical_revision_columns,
+    )
+    return _strip_exact_section(
+        current_sql,
+        "create table if not exists platform_secret_records (\n",
+        "create table if not exists audit_logs (\n",
+    )
+
 
 def _remote_successor_activation_schema_sql() -> str:
-    current_sql = Path("app/schema.sql").read_text(encoding="utf-8")
+    current_sql = _without_external_knowledge_schema(
+        Path("app/schema.sql").read_text(encoding="utf-8")
+    )
     for fragment in MODEL_CONTROL_PLANE_SCHEMA_FRAGMENTS:
         assert current_sql.count(fragment) == 1
         current_sql = current_sql.replace(fragment, "")
@@ -116,13 +195,20 @@ def _remote_successor_activation_schema_sql() -> str:
     remote_index_contract = "\n".join(
         f"{migration.name}:{migration.checksum_sha256}"
         for migration in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
-        if migration.name != "idx_run_events_v4_due_scope"
+        if migration.name not in POST_SUCCESSOR_CONCURRENT_INDEXES
     )
     remote_checksum = hashlib.sha256(
         f"{remote_sql}\n-- concurrent-index-contract\n{remote_index_contract}".encode()
     ).hexdigest()
     assert remote_checksum == REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM
     return remote_sql
+
+
+def test_remote_successor_activation_schema_reconstruction_remains_exact() -> None:
+    remote_sql = _remote_successor_activation_schema_sql()
+    assert "create table if not exists schema_migrations" in remote_sql
+    assert "knowledge_connections" not in remote_sql
+    assert "model_gateway_revisions" not in remote_sql
 
 
 def _postgres_dsn() -> str:
