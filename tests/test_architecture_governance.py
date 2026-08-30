@@ -2165,6 +2165,74 @@ def test_conversation_migration_bridge_authority_is_exact() -> None:
     ]
 
 
+def test_context_snapshot_persistence_bridge_authority_is_exact_and_pending() -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.context.infrastructure.snapshot_postgres",
+    )
+
+    assert bridge == {
+        "source_path": "app/repositories.py",
+        "target_module": "app.context.infrastructure.snapshot_postgres",
+        "module_alias": "context_snapshot_persistence",
+        "symbols": [
+            "CONTEXT_SNAPSHOT_MEMBER_BATCH_LIMIT",
+            "_normalize_context_snapshot_member_ids",
+            "create_context_snapshot",
+            "get_bound_executor_context_snapshot",
+            "get_context_snapshot_for_worker",
+            "get_latest_authorized_executor_context_snapshot",
+            "list_context_share_snapshots_for_target_session",
+            "list_context_snapshots",
+            "update_run_context_snapshot_ref",
+        ],
+        "owner": "context",
+        "reason": (
+            "The frozen global repository may expose these existing immutable "
+            "Context snapshot persistence symbols only as exact identity aliases "
+            "while their implementation moves to the Context snapshot adapter."
+        ),
+        "removal_condition": (
+            "After the Context snapshot persistence move, migrate supported internal "
+            "callers to the Context API, inventory external imports, and remove this "
+            "bridge in an authority-only change before deleting the repositories "
+            "aliases."
+        ),
+    }
+
+    target_path = REPO_ROOT / "app/context/infrastructure/snapshot_postgres.py"
+    source_tree = ast.parse((REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8"))
+
+    assert not target_path.exists()
+    assert [
+        (imported.name, imported.asname)
+        for node in source_tree.body
+        if isinstance(node, ast.Import)
+        for imported in node.names
+        if imported.name == bridge["target_module"]
+    ] == []
+    source_binding_counts = architecture_governance._top_level_local_binding_counts(source_tree)
+    assert {symbol: source_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]} == {
+        symbol: 1 for symbol in bridge["symbols"]
+    }
+    assert {
+        node.name
+        for node in source_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in bridge["symbols"]
+    } == set(bridge["symbols"][1:])
+    batch_limit_assignments = [
+        node
+        for node in source_tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == "CONTEXT_SNAPSHOT_MEMBER_BATCH_LIMIT"
+    ]
+    assert len(batch_limit_assignments) == 1
+    assert ast.literal_eval(batch_limit_assignments[0].value) == 128
+
+
 def test_live_context_source_persistence_bridge_is_exact_and_active() -> None:
     bridge = _migration_bridge(
         source_path="app/repositories.py",
@@ -2714,6 +2782,7 @@ def test_authority_rejects_reused_bridge_alias_within_one_source(
     assert {bridge["target_module"] for bridge in bridges} == {
         "app.agent_apps.infrastructure.postgres",
         "app.context.infrastructure.postgres",
+        "app.context.infrastructure.snapshot_postgres",
         "app.context.infrastructure.sources_postgres",
         "app.conversations.infrastructure.postgres",
         "app.platform.postgres.errors",
@@ -2741,6 +2810,7 @@ def test_authority_rejects_reused_bridge_symbol_within_one_source(
     assert {bridge["target_module"] for bridge in bridges} == {
         "app.agent_apps.infrastructure.postgres",
         "app.context.infrastructure.postgres",
+        "app.context.infrastructure.snapshot_postgres",
         "app.context.infrastructure.sources_postgres",
         "app.conversations.infrastructure.postgres",
         "app.platform.postgres.errors",
