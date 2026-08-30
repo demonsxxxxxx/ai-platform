@@ -2165,7 +2165,7 @@ def test_conversation_migration_bridge_authority_is_exact() -> None:
     ]
 
 
-def test_context_snapshot_persistence_bridge_authority_is_exact_and_pending() -> None:
+def test_live_context_snapshot_persistence_bridge_is_exact_and_active() -> None:
     bridge = _migration_bridge(
         source_path="app/repositories.py",
         target_module="app.context.infrastructure.snapshot_postgres",
@@ -2203,27 +2203,55 @@ def test_context_snapshot_persistence_bridge_authority_is_exact_and_pending() ->
     target_path = REPO_ROOT / "app/context/infrastructure/snapshot_postgres.py"
     source_tree = ast.parse((REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8"))
 
-    assert not target_path.exists()
+    assert target_path.exists()
+    target_tree = ast.parse(target_path.read_text(encoding="utf-8"))
+    source_local_definitions = {
+        node.name
+        for node in source_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    target_local_definitions = [
+        node.name
+        for node in target_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in bridge["symbols"]
+    ]
+
+    assert set(bridge["symbols"][1:]).isdisjoint(source_local_definitions)
+    assert sorted(target_local_definitions) == bridge["symbols"][1:]
     assert [
         (imported.name, imported.asname)
         for node in source_tree.body
         if isinstance(node, ast.Import)
         for imported in node.names
         if imported.name == bridge["target_module"]
-    ] == []
+    ] == [(bridge["target_module"], bridge["module_alias"])]
+
     source_binding_counts = architecture_governance._top_level_local_binding_counts(source_tree)
     assert {symbol: source_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]} == {
         symbol: 1 for symbol in bridge["symbols"]
     }
-    assert {
-        node.name
+    source_aliases = [
+        (target.id, node.value.value.id, node.value.attr)
         for node in source_tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name in bridge["symbols"]
-    } == set(bridge["symbols"][1:])
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance((target := node.targets[0]), ast.Name)
+        and target.id in bridge["symbols"]
+        and isinstance(node.value, ast.Attribute)
+        and isinstance(node.value.value, ast.Name)
+    ]
+    assert sorted(source_aliases) == [
+        (symbol, bridge["module_alias"], symbol) for symbol in bridge["symbols"]
+    ]
+    target_binding_counts = architecture_governance._top_level_local_binding_counts(target_tree)
+    assert {symbol: target_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]} == {
+        symbol: 1 for symbol in bridge["symbols"]
+    }
+
     batch_limit_assignments = [
         node
-        for node in source_tree.body
+        for node in target_tree.body
         if isinstance(node, ast.Assign)
         and len(node.targets) == 1
         and isinstance(node.targets[0], ast.Name)
@@ -2231,6 +2259,26 @@ def test_context_snapshot_persistence_bridge_authority_is_exact_and_pending() ->
     ]
     assert len(batch_limit_assignments) == 1
     assert ast.literal_eval(batch_limit_assignments[0].value) == 128
+
+    from app import repositories
+    from app.context.infrastructure import snapshot_postgres
+
+    for symbol in bridge["symbols"]:
+        assert getattr(repositories, symbol) is getattr(snapshot_postgres, symbol)
+
+    program = """
+import sys
+
+import app.context.infrastructure.snapshot_postgres
+
+assert "app.context.retrieval" not in sys.modules
+assert "app.repositories" not in sys.modules
+"""
+    subprocess.run(
+        [sys.executable, "-c", program],
+        cwd=REPO_ROOT,
+        check=True,
+    )
 
 
 def test_live_context_source_persistence_bridge_is_exact_and_active() -> None:
