@@ -28,6 +28,7 @@ from app.runs.infrastructure.postgres import (
     transition_run_attempt,
 )
 import app.worker_main as worker_main
+from tools import sandbox_quickstart as quickstart
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
@@ -431,6 +432,69 @@ async def test_real_redis_protocol_v2_lease_is_invisible_to_v1_reclaimer(
         assert await redis.lrange(keys.queued, 0, -1) == []
     finally:
         await redis.delete(*redis_keys)
+        await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_redis_rollback_probe_counts_processing_and_retry_only_v2_leases():
+    redis_url = _required_env(REDIS_URL_ENV)
+    suffix = uuid.uuid4().hex[:12]
+    prefix = f"ai-platform:test:rollback-probe:{suffix}"
+    processing_meta_key = f"{prefix}:processing-meta"
+    retry_meta_key = f"{prefix}:retry-meta"
+    processing_message_id = "a" * 64
+    retry_only_message_id = "b" * 64
+    redis = Redis.from_url(redis_url, decode_responses=True)
+    try:
+        await redis.delete(processing_meta_key, retry_meta_key)
+        processing_metadata = json.dumps(
+            {
+                "message_id": processing_message_id,
+                "attempt_id": f"qat_{'c' * 64}",
+                "lease_protocol_version": 2,
+                "owner_token_v2": f"qown_{'d' * 64}",
+            },
+            sort_keys=True,
+        )
+        retry_only_metadata = json.dumps(
+            {
+                "message_id": retry_only_message_id,
+                "attempt_id": f"qat_{'e' * 64}",
+                "lease_protocol_version": 2,
+                "owner_token_v2": f"qown_{'f' * 64}",
+            },
+            sort_keys=True,
+        )
+        await redis.hset(
+            processing_meta_key,
+            mapping={processing_message_id: processing_metadata},
+        )
+        await redis.hset(
+            retry_meta_key,
+            mapping={
+                processing_message_id: processing_metadata,
+                retry_only_message_id: retry_only_metadata,
+            },
+        )
+
+        result = json.loads(
+            await redis.eval(
+                quickstart.ROLLBACK_PROTOCOL_V2_LEASE_PROBE,
+                2,
+                processing_meta_key,
+                retry_meta_key,
+                quickstart.ROLLBACK_LEASE_SCAN_LIMIT,
+            )
+        )
+
+        assert result == {
+            "status": "ok",
+            "processing": 1,
+            "retry": 2,
+            "total": 2,
+        }
+    finally:
+        await redis.delete(processing_meta_key, retry_meta_key)
         await redis.aclose()
 
 
