@@ -1207,3 +1207,26 @@ def test_runbook_exposes_the_zero_argument_quickstart() -> None:
 def test_shell_entry_uses_python_isolated_mode() -> None:
     entry = (ROOT / "scripts/quickstart-s72.sh").read_text(encoding="utf-8")
     assert "python3 -I" in entry
+
+
+def test_shell_target_imports_when_executed_as_an_isolated_file() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            (
+                "import runpy, sys; "
+                "runpy.run_path(sys.argv[1], run_name='sandbox_quickstart_import_smoke')"
+            ),
+            str(ROOT / "tools/sandbox_quickstart.py"),
+        ],
+        cwd=ROOT,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr

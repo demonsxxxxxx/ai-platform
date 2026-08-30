@@ -9,6 +9,7 @@ if __name__ == "__main__" and not sys.flags.isolated:
 
 from dataclasses import dataclass
 from http.client import HTTPException
+from importlib.util import module_from_spec, spec_from_file_location
 import json
 import math
 import os
@@ -24,7 +25,13 @@ from urllib.request import urlopen
 if __package__:
     from tools.release_parity_convergence import compose_identity_mismatches
 else:
-    from release_parity_convergence import compose_identity_mismatches
+    _parity_path = Path(__file__).with_name("release_parity_convergence.py")
+    _parity_spec = spec_from_file_location("release_parity_convergence", _parity_path)
+    if _parity_spec is None or _parity_spec.loader is None:
+        raise ImportError(f"cannot load release parity helper from {_parity_path}")
+    _parity_module = module_from_spec(_parity_spec)
+    _parity_spec.loader.exec_module(_parity_module)
+    compose_identity_mismatches = _parity_module.compose_identity_mismatches
 
 
 MANAGED_ROOT = Path("/data/ai-platform-internal-test")
