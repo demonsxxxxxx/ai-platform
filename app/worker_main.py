@@ -219,47 +219,61 @@ async def _heartbeat_until_done(
 ) -> None:
     attempt_creation_deadline = monotonic() + visibility_timeout_seconds
     durable_attempt_seen = False
+
+    async def heartbeat_once() -> bool | None:
+        await asyncio.sleep(interval_seconds)
+        heartbeat = await queue.heartbeat_run(
+            message.message_id,
+            worker_id=worker_id,
+        )
+        if not heartbeat.succeeded or heartbeat.heartbeat_at is None:
+            return None
+        last_heartbeat_at = datetime.fromtimestamp(
+            heartbeat.heartbeat_at,
+            tz=timezone.utc,
+        )
+        lease_expires_at = last_heartbeat_at + timedelta(
+            seconds=visibility_timeout_seconds
+        )
+        async with transaction() as conn:
+            persisted = await heartbeat_worker_run_attempt(
+                conn,
+                tenant_id=str(message.payload.get("tenant_id") or ""),
+                run_id=str(message.payload.get("run_id") or ""),
+                queue_attempt_id=message.attempt_id,
+                queue_message_id=message.queue_message_id,
+                worker_id=worker_id,
+                last_heartbeat_at=last_heartbeat_at,
+                lease_expires_at=lease_expires_at,
+            )
+        if persisted is not None:
+            _require_durable_heartbeat_convergence(
+                persisted,
+                last_heartbeat_at=last_heartbeat_at,
+                lease_expires_at=lease_expires_at,
+            )
+            return True
+        return False
+
     try:
         while True:
-            await asyncio.sleep(interval_seconds)
-            if (
-                not durable_attempt_seen
-                and monotonic() >= attempt_creation_deadline
-            ):
+            remaining = visibility_timeout_seconds
+            if not durable_attempt_seen:
+                remaining = attempt_creation_deadline - monotonic()
+            if remaining <= 0:
                 ownership_lost.set()
                 return
-            heartbeat = await queue.heartbeat_run(
-                message.message_id,
-                worker_id=worker_id,
-            )
-            if not heartbeat.succeeded or heartbeat.heartbeat_at is None:
+
+            try:
+                async with asyncio.timeout(remaining):
+                    heartbeat_result = await heartbeat_once()
+            except TimeoutError:
                 ownership_lost.set()
                 return
-            last_heartbeat_at = datetime.fromtimestamp(
-                heartbeat.heartbeat_at,
-                tz=timezone.utc,
-            )
-            lease_expires_at = last_heartbeat_at + timedelta(
-                seconds=visibility_timeout_seconds
-            )
-            async with transaction() as conn:
-                persisted = await heartbeat_worker_run_attempt(
-                    conn,
-                    tenant_id=str(message.payload.get("tenant_id") or ""),
-                    run_id=str(message.payload.get("run_id") or ""),
-                    queue_attempt_id=message.attempt_id,
-                    queue_message_id=message.queue_message_id,
-                    worker_id=worker_id,
-                    last_heartbeat_at=last_heartbeat_at,
-                    lease_expires_at=lease_expires_at,
-                )
-                if persisted is not None:
-                    _require_durable_heartbeat_convergence(
-                        persisted,
-                        last_heartbeat_at=last_heartbeat_at,
-                        lease_expires_at=lease_expires_at,
-                    )
-                    durable_attempt_seen = True
+            if heartbeat_result is None:
+                ownership_lost.set()
+                return
+            durable_attempt_seen = durable_attempt_seen or heartbeat_result
     except asyncio.CancelledError:
         raise
     except Exception:
