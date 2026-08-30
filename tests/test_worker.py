@@ -3645,6 +3645,7 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
     assert create_call["user_id"] == "user-a"
     assert create_call["session_id"] == "session-a"
     assert create_call["run_id"] == "run-a"
+    assert create_call["attempt_id"] == "qat-test-attempt"
     assert create_call["trace_id"] == "trace-run-a"
     assert create_call["sandbox_mode"] == "ephemeral"
     assert create_call["provider"] == "fake"
@@ -3658,6 +3659,7 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
         "source": "sdk_only_lifecycle_placeholder",
         "evidence_class": "sdk_only_lifecycle_placeholder",
         "executor_type": "fake",
+        "attempt_id": "qat-test-attempt",
         "worker_id": "worker-a",
     }
     assert create_call["lease_payload_json"].get("probe") != "foundation_runtime"
