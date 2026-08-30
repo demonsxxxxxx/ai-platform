@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any
 
 from app.knowledge.domain import (
+    DEFAULT_RETRIEVAL_PROFILE_ID,
     KnowledgeConnectionDefinition,
     KnowledgeError,
     ProviderSourceRecord,
@@ -130,6 +131,20 @@ def _builder_source_projection(row: dict[str, Any]) -> dict[str, Any]:
         "allowed_roles": list(row.get("allowed_roles") or []),
         "allowed_user_ids": list(row.get("allowed_user_ids") or []),
     }
+
+
+def _builder_retrieval_profile_projection(row: dict[str, Any]) -> dict[str, Any]:
+    projection = default_retrieval_profile_projection()
+    projection.update(
+        {
+            "id": str(row["id"]),
+            "revision": int(row["revision"]),
+            "name": str(row["name"]),
+            "status": str(row["status"]),
+            "content_hash": str(row["content_hash"]),
+        }
+    )
+    return projection
 
 
 _CONNECTION_SELECT = """
@@ -1391,11 +1406,26 @@ class PostgresKnowledgeRepository:
         }
         for row in selected_rows:
             projected_by_id[str(row["id"])] = _builder_source_projection(row)
+        profile_cursor = await conn.execute(
+            """
+            select id, revision, name, status, content_hash
+            from knowledge_retrieval_profiles
+            where id = %s and status = 'active'
+            order by revision desc
+            limit 1
+            """,
+            (DEFAULT_RETRIEVAL_PROFILE_ID,),
+        )
+        profile_row = await profile_cursor.fetchone()
         return {
             "sources": list(projected_by_id.values()),
             "next_cursor": next_cursor,
             "limit": limit,
-            "retrieval_profiles": [default_retrieval_profile_projection()],
+            "retrieval_profiles": (
+                [_builder_retrieval_profile_projection(profile_row)]
+                if profile_row is not None
+                else []
+            ),
         }
 
     async def get_source(

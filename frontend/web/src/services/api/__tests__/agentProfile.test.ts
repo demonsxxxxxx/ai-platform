@@ -63,6 +63,22 @@ test("projects a bounded Knowledge capability without retaining private source i
     "source_ids" in (projection.knowledge_capability as Record<string, unknown>),
     false,
   );
+
+  for (const invalidCapability of [
+    { enabled: false, source_count: 1, freshness_at: null },
+    { enabled: false, source_count: 0, freshness_at: "2026-08-30T01:00:00Z" },
+    { enabled: true, source_count: 0, freshness_at: null },
+  ]) {
+    assert.throws(
+      () => projectAgentProfilePublicProjection({
+        agent_id: "agt_support",
+        expected_revision: 7,
+        name: "支持助手",
+        knowledge_capability: invalidCapability,
+      }),
+      /invalid_agent_profile_projection/,
+    );
+  }
 });
 
 test("loads only the safe public Agent Profile projection", async () => {
@@ -353,6 +369,7 @@ test("uses the current admin profile contract without retired file-type transpor
     selected_skill: { skill_id: "general-chat", expected_version: "version-a" },
     skill_set: [{ skill_id: "general-chat", expected_version: "version-a" }],
     mcp_tool_ids: [],
+    knowledge_enabled: false,
     avatar_ref: "builtin:agent" as const,
     avatar_seed: "support-assistant",
     avatar_asset_id: null,

@@ -122,6 +122,7 @@ def _without_external_knowledge_schema(current_sql: str) -> str:
         "create table if not exists agent_profile_revisions (\n",
     )
     for fragment in (
+        "  knowledge_enabled boolean not null default false,\n",
         "  knowledge_source_ids jsonb not null default '[]'::jsonb,\n",
         "  retrieval_profile_id text,\n",
         "  knowledge_bindings jsonb not null default '[]'::jsonb,\n",
@@ -329,6 +330,127 @@ async def test_real_postgres_concurrent_migrations_use_one_global_lock_and_ledge
             )
     finally:
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_opt_in_backfill_runs_once_and_enforces_published_bindings():
+    dsn = _postgres_dsn()
+    schema_name = f"schema_knowledge_opt_in_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    schema_sql = Path("app/schema.sql").read_text(encoding="utf-8")
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await admin.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+        await admin.execute(schema_sql)
+        await admin.execute(
+            """
+            alter table agent_profile_revisions
+              drop constraint chk_agent_profile_knowledge_bindings;
+            alter table agent_profile_revisions
+              drop column knowledge_enabled;
+            alter table agent_profile_revisions
+              add constraint chk_agent_profile_knowledge_bindings check (
+                jsonb_typeof(knowledge_bindings) = 'array'
+                and jsonb_array_length(knowledge_bindings) in (
+                  0,
+                  jsonb_array_length(knowledge_source_ids)
+                )
+                and agent_profile_knowledge_bindings_are_valid(
+                  knowledge_source_ids,
+                  retrieval_profile_id,
+                  knowledge_bindings
+                )
+                and (
+                  revision_status <> 'published'
+                  or jsonb_array_length(knowledge_source_ids) = 0
+                  or jsonb_array_length(knowledge_bindings) =
+                    jsonb_array_length(knowledge_source_ids)
+                )
+              );
+            """
+        )
+        await admin.execute(
+            """
+            insert into agent_profile_revisions(
+              tenant_id, agent_id, revision, status, revision_status,
+              name, instructions, model_id, skill_id, skill_version,
+              knowledge_source_ids, retrieval_profile_id, knowledge_bindings,
+              content_hash, avatar_ref, avatar_seed, category, visibility,
+              allowed_department_ids, allowed_roles, allowed_user_ids
+            ) values
+              (
+                'default', 'general-agent', 101, 'published', 'published',
+                'Plain expert', 'Plain instructions', 'platform-selected',
+                'ragflow-knowledge-search', '0.1.0', '[]'::jsonb, null, '[]'::jsonb,
+                repeat('a', 64), 'builtin:agent', 'plain-expert', 'general', 'tenant',
+                '[]'::jsonb, '[]'::jsonb, '[]'::jsonb
+              ),
+              (
+                'default', 'sop-assistant', 102, 'published', 'published',
+                'Knowledge expert', 'Knowledge instructions', 'platform-selected',
+                'ragflow-knowledge-search', '0.1.0', '["ks_finance"]'::jsonb,
+                'krp_default',
+                '[{"source_id":"ks_finance","source_authorization_version":3,'
+                '"ordinal":0,"required":true,"retrieval_profile_id":"krp_default",'
+                '"retrieval_profile_revision":1}]'::jsonb,
+                repeat('b', 64), 'builtin:research', 'knowledge-expert', 'research', 'tenant',
+                '[]'::jsonb, '[]'::jsonb, '[]'::jsonb
+              )
+            """
+        )
+
+        await admin.execute(schema_sql)
+        rows = await (
+            await admin.execute(
+                """
+                select agent_id, knowledge_enabled
+                from agent_profile_revisions
+                where revision in (101, 102)
+                order by revision
+                """
+            )
+        ).fetchall()
+        assert rows == [
+            {"agent_id": "general-agent", "knowledge_enabled": False},
+            {"agent_id": "sop-assistant", "knowledge_enabled": True},
+        ]
+
+        await admin.execute(
+            """
+            update agent_profile_revisions
+            set knowledge_enabled = false,
+                knowledge_bindings = '[]'::jsonb
+            where agent_id = 'sop-assistant' and revision = 102
+            """
+        )
+        await admin.execute(schema_sql)
+        disabled = await (
+            await admin.execute(
+                """
+                select knowledge_enabled, knowledge_bindings
+                from agent_profile_revisions
+                where agent_id = 'sop-assistant' and revision = 102
+                """
+            )
+        ).fetchone()
+        assert disabled == {"knowledge_enabled": False, "knowledge_bindings": []}
+
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await admin.execute(
+                """
+                update agent_profile_revisions
+                set knowledge_bindings =
+                  '[{"source_id":"ks_finance","source_authorization_version":3,'
+                  '"ordinal":0,"required":true,"retrieval_profile_id":"krp_default",'
+                  '"retrieval_profile_revision":1}]'::jsonb
+                where agent_id = 'sop-assistant' and revision = 102
+                """
+            )
+    finally:
+        await admin.execute(
+            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name))
+        )
         await admin.close()
 
 

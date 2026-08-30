@@ -31,14 +31,19 @@ export function AgentBuilderRoute() {
     error: toolsError,
     refreshTools,
   } = useTools({ enabled: true });
-  const knowledgeLoadGeneration = useRef(0);
+  const knowledgeRequestGeneration = useRef(0);
+  const knowledgeBlockingGeneration = useRef(0);
+  const knowledgeSourceGenerations = useRef(new Map<string, number>());
+  const knowledgeProfileGeneration = useRef(0);
+  const knowledgeRouteMounted = useRef(true);
   const [knowledgeCatalog, setKnowledgeCatalog] = useState<KnowledgeBuilderCatalog>({
     sources: [],
     next_cursor: null,
     limit: 50,
     retrieval_profiles: [],
   });
-  const [knowledgeLoading, setKnowledgeLoading] = useState(true);
+  const [knowledgeLoaded, setKnowledgeLoaded] = useState(false);
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
 
   const loadKnowledgeCatalog = useCallback(async (params: {
@@ -47,50 +52,73 @@ export function AgentBuilderRoute() {
     selectedSourceIds?: readonly string[];
     replace?: boolean;
   } = {}) => {
-    const generation = ++knowledgeLoadGeneration.current;
+    const generation = ++knowledgeRequestGeneration.current;
     const blocking = params.replace === true;
+    const blockingGeneration = blocking
+      ? ++knowledgeBlockingGeneration.current
+      : null;
     if (blocking) {
       setKnowledgeLoading(true);
       setKnowledgeError(null);
     }
     try {
       const next = await knowledgeApi.builderCatalog(params);
-      if (generation !== knowledgeLoadGeneration.current) return next;
+      if (!knowledgeRouteMounted.current) return next;
+      setKnowledgeLoaded(true);
       setKnowledgeCatalog((current) => {
-        if (params.replace === true) return next;
         const sources = new Map(
           current.sources.map((source) => [source.id, source]),
         );
-        next.sources.forEach((source) => sources.set(source.id, source));
+        next.sources.forEach((source) => {
+          const appliedGeneration = knowledgeSourceGenerations.current.get(source.id) ?? 0;
+          if (generation < appliedGeneration) return;
+          sources.set(source.id, source);
+          knowledgeSourceGenerations.current.set(source.id, generation);
+        });
+        const retrievalProfiles = generation >= knowledgeProfileGeneration.current
+          ? next.retrieval_profiles
+          : current.retrieval_profiles;
+        if (generation >= knowledgeProfileGeneration.current) {
+          knowledgeProfileGeneration.current = generation;
+        }
         return {
-          ...next,
+          ...current,
           sources: [...sources.values()],
+          retrieval_profiles: retrievalProfiles,
         };
       });
       return next;
     } catch {
-      if (generation !== knowledgeLoadGeneration.current) return;
-      if (blocking) setKnowledgeError(BUILDER_CATALOG_LOAD_ERROR);
+      if (
+        knowledgeRouteMounted.current &&
+        blocking &&
+        blockingGeneration === knowledgeBlockingGeneration.current
+      ) {
+        setKnowledgeError(BUILDER_CATALOG_LOAD_ERROR);
+      }
     } finally {
-      if (blocking && generation === knowledgeLoadGeneration.current) {
+      if (
+        knowledgeRouteMounted.current &&
+        blocking &&
+        blockingGeneration === knowledgeBlockingGeneration.current
+      ) {
         setKnowledgeLoading(false);
       }
     }
   }, []);
 
   useEffect(() => {
-    void loadKnowledgeCatalog({ replace: true });
+    knowledgeRouteMounted.current = true;
     return () => {
-      knowledgeLoadGeneration.current += 1;
+      knowledgeRouteMounted.current = false;
     };
-  }, [loadKnowledgeCatalog]);
+  }, []);
 
   const retryCatalog = useCallback(() => {
     void fetchSkills();
     void refreshTools();
-    void loadKnowledgeCatalog({ replace: true });
-  }, [fetchSkills, loadKnowledgeCatalog, refreshTools]);
-  const catalogError = skillsError || toolsError || knowledgeError
+  }, [fetchSkills, refreshTools]);
+  const catalogError = skillsError || toolsError
     ? BUILDER_CATALOG_LOAD_ERROR
     : null;
 
@@ -107,9 +135,9 @@ export function AgentBuilderRoute() {
       loadKnowledgeSources: loadKnowledgeCatalog,
       skillsResolved: catalogReadResolved,
       mcpToolsResolved: !toolsLoading && toolsError === null,
-      knowledgeResolved: !knowledgeLoading && knowledgeError === null,
+      knowledgeResolved: knowledgeLoaded && !knowledgeLoading && knowledgeError === null,
       effectivePermissionsKnown,
-      isLoading: skillsLoading || toolsLoading || knowledgeLoading,
+      isLoading: skillsLoading || toolsLoading,
       error: catalogError,
       retry: retryCatalog,
     }),
@@ -120,6 +148,7 @@ export function AgentBuilderRoute() {
       knowledgeCatalog.retrieval_profiles,
       knowledgeCatalog.sources,
       knowledgeError,
+      knowledgeLoaded,
       knowledgeLoading,
       loadKnowledgeCatalog,
       retryCatalog,

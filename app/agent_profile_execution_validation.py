@@ -124,12 +124,22 @@ def validate_agent_profile_execution_input(
         "instructions": instructions,
         "skill_set": skill_set,
     }
+    raw_knowledge_enabled = value.get("knowledge_enabled")
     knowledge_keys = {
         "knowledge_source_ids",
         "retrieval_profile_id",
         "knowledge_bindings",
     }
-    if knowledge_keys & set(value):
+    if raw_knowledge_enabled is None:
+        # Rolling compatibility for private execution snapshots created before
+        # the explicit per-Agent opt-in field existed.
+        knowledge_enabled = bool(knowledge_keys & set(value))
+    elif isinstance(raw_knowledge_enabled, bool):
+        knowledge_enabled = raw_knowledge_enabled
+    else:
+        raise ValueError("knowledge_snapshot_profile_mismatch")
+    projection["knowledge_enabled"] = knowledge_enabled
+    if knowledge_enabled:
         if not knowledge_keys <= set(value):
             raise ValueError("knowledge_snapshot_profile_mismatch")
         try:
@@ -151,4 +161,6 @@ def validate_agent_profile_execution_input(
                 "knowledge_bindings": [dict(binding) for binding in knowledge_bindings],
             }
         )
+    elif knowledge_keys & set(value):
+        raise ValueError("knowledge_snapshot_profile_mismatch")
     return projection

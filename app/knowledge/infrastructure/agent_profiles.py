@@ -6,7 +6,6 @@ from typing import Any
 
 from app.knowledge.domain import (
     DEFAULT_RETRIEVAL_PROFILE_ID,
-    DEFAULT_RETRIEVAL_PROFILE_REVISION,
     KnowledgeAcl,
 )
 from app.platform.postgres.errors import (
@@ -67,6 +66,22 @@ async def authorize_agent_profile_knowledge_sources(
         raise RepositoryConflictError("agent_profile_retrieval_profile_unavailable")
     if len(source_ids) > 8 or len(source_ids) != len(set(source_ids)):
         raise RepositoryConflictError("agent_profile_knowledge_selection_invalid")
+
+    profile_cursor = await conn.execute(
+        """
+        select id, revision
+        from knowledge_retrieval_profiles
+        where id = %s and status = 'active'
+        order by revision desc
+        limit 1
+        for share
+        """,
+        (retrieval_profile_id,),
+    )
+    profile_row = await profile_cursor.fetchone()
+    if profile_row is None:
+        raise RepositoryConflictError("agent_profile_retrieval_profile_unavailable")
+    retrieval_profile_revision = int(profile_row["revision"])
 
     cursor = await conn.execute(
         """
@@ -141,8 +156,8 @@ async def authorize_agent_profile_knowledge_sources(
                 "source_authorization_version": int(row["authorization_version"]),
                 "ordinal": ordinal,
                 "required": True,
-                "retrieval_profile_id": DEFAULT_RETRIEVAL_PROFILE_ID,
-                "retrieval_profile_revision": DEFAULT_RETRIEVAL_PROFILE_REVISION,
+                "retrieval_profile_id": str(profile_row["id"]),
+                "retrieval_profile_revision": retrieval_profile_revision,
             }
         )
     return tuple(bindings)

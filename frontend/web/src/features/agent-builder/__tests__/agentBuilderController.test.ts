@@ -298,6 +298,7 @@ test("edit disables publish, save fences the exact revision, then publish adopts
         expected_version: "2026.07.28",
       }],
       mcp_tool_ids: ["mcp:knowledge:search"],
+      knowledge_enabled: false,
       knowledge_source_ids: [],
       retrieval_profile_id: null,
       avatar_ref: "builtin:document",

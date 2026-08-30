@@ -21,7 +21,7 @@ V4_PENDING_ADMISSION_SCHEMA_VERSION = "2026.08.26.2"
 V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION = "2026.08.27.1"
 V4_CONCURRENT_DUE_INDEX_SCHEMA_VERSION = "2026.08.27.2"
 MODEL_CONTROL_PLANE_SCHEMA_VERSION = "2026.08.28.1"
-EXTERNAL_KNOWLEDGE_SCHEMA_VERSION = "2026.08.30.2"
+EXTERNAL_KNOWLEDGE_SCHEMA_VERSION = "2026.08.30.3"
 TARGET_SCHEMA_VERSION = EXTERNAL_KNOWLEDGE_SCHEMA_VERSION
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
@@ -140,6 +140,7 @@ CRITICAL_COLUMNS = (
     ("knowledge_evidence", "position_json", "jsonb", True),
     ("sessions", "title_source", "text", True),
     ("agent_profile_revisions", "skill_set", "jsonb", True),
+    ("agent_profile_revisions", "knowledge_enabled", "bool", True),
     ("agent_profile_revisions", "knowledge_source_ids", "jsonb", True),
     ("agent_profile_revisions", "retrieval_profile_id", "text", False),
     ("agent_profile_revisions", "knowledge_bindings", "jsonb", True),

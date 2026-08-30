@@ -12,7 +12,12 @@ from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
 
-from app.knowledge.domain import KnowledgeConnectionDefinition, KnowledgeError, ProviderSourceRecord
+from app.knowledge.domain import (
+    KnowledgeConnectionDefinition,
+    KnowledgeError,
+    ProviderSourceRecord,
+    default_retrieval_profile_projection,
+)
 from app.knowledge.infrastructure.postgres import PostgresKnowledgeRepository
 from app.platform.credentials import PlatformCredentialVault
 
@@ -362,6 +367,13 @@ async def test_knowledge_catalog_commit_is_fenced_idempotent_and_defaults_restri
             item for item in source_page["items"] if item["id"] != source["id"]
         )
         async with conn.transaction():
+            await conn.execute(
+                """
+                update knowledge_retrieval_profiles
+                set revision = 2, content_hash = repeat('2', 64)
+                where id = 'krp_default' and revision = 1
+                """
+            )
             builder_catalog = await repository.list_builder_catalog(
                 conn,
                 tenant_id="tenant-a",
@@ -378,6 +390,13 @@ async def test_knowledge_catalog_commit_is_fenced_idempotent_and_defaults_restri
         assert builder_sources[source["id"]]["allowed_roles"] == []
         assert builder_sources[source["id"]]["allowed_user_ids"] == []
         assert builder_catalog["limit"] == 1
+        assert builder_catalog["retrieval_profiles"] == [
+            {
+                **default_retrieval_profile_projection(),
+                "revision": 2,
+                "content_hash": "2" * 64,
+            }
+        ]
 
         with pytest.raises(psycopg.errors.CheckViolation):
             async with conn.transaction():

@@ -15,7 +15,9 @@
     "KAC-FR-KAGT-024",
     "KAC-FR-KAGT-025",
     "KAC-FR-KAGT-026",
-    "KAC-FR-KAGT-027"
+    "KAC-FR-KAGT-027",
+    "KAC-FR-KAGT-037",
+    "KAC-FR-KAGT-038"
   ],
   "changed_paths": [
     "docs/product/external-knowledge/manifests/KPUB-32.json",

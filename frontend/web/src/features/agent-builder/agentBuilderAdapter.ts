@@ -44,6 +44,7 @@ export interface AgentBuilderEditor {
   instructions: string;
   selectedSkills: SelectedSkillRequest[];
   selectedMcpToolIds: string[];
+  knowledgeEnabled: boolean;
   knowledgeSourceIds: string[];
   retrievalProfileId: string | null;
   avatarRef: AgentProfileDraftRequest["avatar_ref"];
@@ -186,6 +187,7 @@ export function createUnsavedAgentEditor(): AgentBuilderEditor {
     instructions: "",
     selectedSkills: [],
     selectedMcpToolIds: [],
+    knowledgeEnabled: false,
     knowledgeSourceIds: [],
     retrievalProfileId: null,
     avatarRef: "builtin:agent",
@@ -226,6 +228,8 @@ export function hydrateAgentProfileEditor(
       : [profile.selected_skill]
     ).map((skill) => ({ ...skill })),
     selectedMcpToolIds: [...profile.mcp_tool_ids],
+    knowledgeEnabled:
+      profile.knowledge_enabled ?? Boolean(profile.knowledge_source_ids?.length),
     knowledgeSourceIds: [...(profile.knowledge_source_ids ?? [])],
     retrievalProfileId: profile.retrieval_profile_id ?? null,
     avatarRef: profile.avatar_ref,
@@ -244,6 +248,8 @@ export function hydrateAgentProfileEditor(
         : [profile.selected_skill]
       ).map((skill) => ({ ...skill })),
       mcp_tool_ids: [...profile.mcp_tool_ids],
+      knowledge_enabled:
+        profile.knowledge_enabled ?? Boolean(profile.knowledge_source_ids?.length),
       knowledge_source_ids: [...(profile.knowledge_source_ids ?? [])],
       retrieval_profile_id: profile.retrieval_profile_id ?? null,
       starter_prompts: [...profile.starter_prompts],
@@ -272,6 +278,7 @@ function editorDefinition(editor: AgentBuilderEditor) {
     selected_skill: editor.selectedSkills[0] ?? null,
     skill_set: editor.selectedSkills,
     mcp_tool_ids: editor.selectedMcpToolIds,
+    knowledge_enabled: editor.knowledgeEnabled,
     knowledge_source_ids: editor.knowledgeSourceIds,
     retrieval_profile_id: editor.retrievalProfileId,
     avatar_ref: editor.avatarRef,
@@ -300,6 +307,8 @@ function profileDefinition(profile: AgentProfileAdminProjection) {
     selected_skill: profile.selected_skill,
     skill_set: profile.skill_set?.length ? profile.skill_set : [profile.selected_skill],
     mcp_tool_ids: profile.mcp_tool_ids,
+    knowledge_enabled:
+      profile.knowledge_enabled ?? Boolean(profile.knowledge_source_ids?.length),
     knowledge_source_ids: profile.knowledge_source_ids ?? [],
     retrieval_profile_id: profile.retrieval_profile_id ?? null,
     avatar_ref: profile.avatar_ref,
@@ -340,6 +349,7 @@ export function hasUnsavedAgentProfileEdits(editor: AgentBuilderEditor): boolean
     editor.instructions.trim() ||
     editor.selectedSkills.length > 0 ||
     editor.selectedMcpToolIds.length > 0 ||
+    editor.knowledgeEnabled ||
     editor.knowledgeSourceIds.length > 0 ||
     editor.retrievalProfileId !== null ||
     editor.avatarRef !== "builtin:agent" ||
@@ -396,14 +406,16 @@ export function validateAgentProfileEditor(
     }
   }
 
-  const knowledgeEnabled = editor.knowledgeSourceIds.length > 0;
-  if (knowledgeEnabled !== Boolean(editor.retrievalProfileId)) {
+  if (
+    editor.knowledgeEnabled &&
+    (editor.knowledgeSourceIds.length === 0 || !editor.retrievalProfileId)
+  ) {
     return { code: "knowledge_selection_incomplete" };
   }
   if (editor.knowledgeSourceIds.length > 8) {
     return { code: "knowledge_source_limit_exceeded" };
   }
-  if (knowledgeEnabled) {
+  if (editor.knowledgeEnabled) {
     if (!catalog.knowledgeResolved) return { code: "catalog_unavailable" };
     if (catalog.knowledgeSelectionResolved === false) {
       return { code: "catalog_unavailable" };
@@ -491,6 +503,7 @@ export function buildAgentProfileDraftRequest(
     selected_skill: { ...editor.selectedSkills[0] },
     skill_set: editor.selectedSkills.map((skill) => ({ ...skill })),
     mcp_tool_ids: [...editor.selectedMcpToolIds],
+    knowledge_enabled: editor.knowledgeEnabled,
     knowledge_source_ids: [...editor.knowledgeSourceIds],
     retrieval_profile_id: editor.retrievalProfileId,
     avatar_ref: editor.avatarRef,

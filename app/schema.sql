@@ -492,6 +492,7 @@ create table if not exists agent_profile_revisions (
   skill_version text not null,
   skill_set jsonb not null default '[]'::jsonb,
   mcp_tool_ids jsonb not null default '[]'::jsonb,
+  knowledge_enabled boolean not null default false,
   knowledge_source_ids jsonb not null default '[]'::jsonb,
   retrieval_profile_id text,
   knowledge_bindings jsonb not null default '[]'::jsonb,
@@ -535,8 +536,15 @@ create table if not exists agent_profile_revisions (
     )
     and (
       revision_status <> 'published'
-      or jsonb_array_length(knowledge_source_ids) = 0
-      or jsonb_array_length(knowledge_bindings) = jsonb_array_length(knowledge_source_ids)
+      or (
+        knowledge_enabled
+        and jsonb_array_length(knowledge_source_ids) > 0
+        and jsonb_array_length(knowledge_bindings) = jsonb_array_length(knowledge_source_ids)
+      )
+      or (
+        not knowledge_enabled
+        and jsonb_array_length(knowledge_bindings) = 0
+      )
     )
   ),
   constraint uq_agent_profile_revision_publication
@@ -553,6 +561,24 @@ alter table agent_profile_revisions
   add column if not exists revision_status text;
 alter table agent_profile_revisions
   add column if not exists knowledge_source_ids jsonb not null default '[]'::jsonb;
+-- Backfill only when the opt-in column is first introduced. Re-running the
+-- canonical schema must never re-enable a deliberately disabled Agent.
+do $$
+begin
+  if not exists (
+    select 1
+    from information_schema.columns
+    where table_schema = current_schema()
+      and table_name = 'agent_profile_revisions'
+      and column_name = 'knowledge_enabled'
+  ) then
+    alter table agent_profile_revisions
+      add column knowledge_enabled boolean not null default false;
+    update agent_profile_revisions
+    set knowledge_enabled = true
+    where jsonb_array_length(knowledge_source_ids) > 0;
+  end if;
+end $$;
 alter table agent_profile_revisions
   add column if not exists retrieval_profile_id text;
 alter table agent_profile_revisions
@@ -597,8 +623,15 @@ alter table agent_profile_revisions
     )
     and (
       revision_status <> 'published'
-      or jsonb_array_length(knowledge_source_ids) = 0
-      or jsonb_array_length(knowledge_bindings) = jsonb_array_length(knowledge_source_ids)
+      or (
+        knowledge_enabled
+        and jsonb_array_length(knowledge_source_ids) > 0
+        and jsonb_array_length(knowledge_bindings) = jsonb_array_length(knowledge_source_ids)
+      )
+      or (
+        not knowledge_enabled
+        and jsonb_array_length(knowledge_bindings) = 0
+      )
     )
   );
 

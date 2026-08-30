@@ -12,22 +12,31 @@
     "KAC-FR-KAGT-011",
     "KAC-FR-KAGT-012",
     "KAC-FR-KAGT-013",
+    "KAC-FR-KAGT-036",
     "KAC-FR-KUI-010",
     "KAC-FR-KUI-011",
     "KAC-FR-KUI-012",
     "KAC-FR-KUI-013"
   ],
   "changed_paths": [
+    "docs/product/external-knowledge/acceptance-matrix.md",
+    "docs/product/external-knowledge/domain-and-api-contract.md",
+    "docs/product/external-knowledge/functional-requirements.md",
     "docs/product/external-knowledge/manifests/KBUILD-29.json",
+    "docs/product/external-knowledge/product-requirements.md",
+    "docs/product/external-knowledge/traceability-matrix.md",
     "frontend/web/src/features/agent-builder/AgentBuilderKnowledgeSection.tsx",
     "frontend/web/src/features/agent-builder/AgentBuilderRoute.tsx",
     "frontend/web/src/features/agent-builder/AgentBuilderWorkbench.tsx",
+    "frontend/web/src/features/agent-builder/__tests__/AgentBuilderRoute.test.tsx",
     "frontend/web/src/features/agent-builder/__tests__/AgentBuilderWorkbench.test.tsx",
     "frontend/web/src/features/agent-builder/__tests__/agentBuilderAdapter.test.ts",
     "frontend/web/src/features/agent-builder/__tests__/agentBuilderController.test.ts",
     "frontend/web/src/features/agent-builder/__tests__/agentBuilderMountedHarness.test.tsx",
     "frontend/web/src/features/agent-builder/agentBuilderAdapter.ts",
-    "frontend/web/src/features/agent-builder/agentBuilderController.ts"
+    "frontend/web/src/features/agent-builder/agentBuilderController.ts",
+    "tests/test_external_knowledge_architecture.py",
+    "tests/test_external_knowledge_slice_manifest.py"
   ],
   "evidence_layers": ["source", "unit"]
 }

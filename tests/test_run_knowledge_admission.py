@@ -33,6 +33,7 @@ def test_agent_execution_snapshot_preserves_only_canonical_knowledge_bindings() 
                 "expected_version": "1.0.0",
             }
         ],
+        "knowledge_enabled": True,
         "knowledge_source_ids": ["ksrc_policy"],
         "retrieval_profile_id": "krp_default",
         "knowledge_bindings": [binding],
@@ -47,6 +48,7 @@ def test_agent_execution_snapshot_preserves_only_canonical_knowledge_bindings() 
     )
 
     assert validated["knowledge_source_ids"] == ["ksrc_policy"]
+    assert validated["knowledge_enabled"] is True
     assert validated["retrieval_profile_id"] == "krp_default"
     assert validated["knowledge_bindings"] == [binding]
     invalid = dict(profile)
@@ -54,6 +56,45 @@ def test_agent_execution_snapshot_preserves_only_canonical_knowledge_bindings() 
     with pytest.raises(ValueError, match="knowledge_snapshot_profile_mismatch"):
         validate_agent_profile_execution_input(
             invalid,
+            agent_id="agent-knowledge-runtime",
+            execution_kind="skill",
+            skill_id="skill-knowledge-runtime",
+            skill_version="1.0.0",
+        )
+
+
+def test_agent_execution_snapshot_requires_explicit_enabled_state_to_match_payload() -> None:
+    base = {
+        "agent_id": "agent-knowledge-runtime",
+        "revision": 1,
+        "content_hash": "a" * 64,
+        "instructions": "Use admitted evidence.",
+        "skill_set": [
+            {
+                "skill_id": "skill-knowledge-runtime",
+                "expected_version": "1.0.0",
+            }
+        ],
+        "knowledge_enabled": False,
+    }
+    validated = validate_agent_profile_execution_input(
+        base,
+        agent_id="agent-knowledge-runtime",
+        execution_kind="skill",
+        skill_id="skill-knowledge-runtime",
+        skill_version="1.0.0",
+    )
+    assert validated["knowledge_enabled"] is False
+    assert "knowledge_source_ids" not in validated
+
+    with pytest.raises(ValueError, match="knowledge_snapshot_profile_mismatch"):
+        validate_agent_profile_execution_input(
+            {
+                **base,
+                "knowledge_source_ids": ["ksrc_policy"],
+                "retrieval_profile_id": "krp_default",
+                "knowledge_bindings": [_binding()],
+            },
             agent_id="agent-knowledge-runtime",
             execution_kind="skill",
             skill_id="skill-knowledge-runtime",

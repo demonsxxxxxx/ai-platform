@@ -27,12 +27,27 @@ class _Cursor:
     async def fetchall(self) -> list[dict[str, Any]]:
         return self._rows
 
+    async def fetchone(self) -> dict[str, Any] | None:
+        return self._rows[0] if self._rows else None
+
 
 class _Connection:
-    def __init__(self, rows: list[dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        profile_rows: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.rows = rows
+        self.profile_rows = (
+            [{"id": "krp_default", "revision": 1}]
+            if profile_rows is None
+            else profile_rows
+        )
 
-    async def execute(self, _sql: str, _params: tuple[Any, ...]) -> _Cursor:
+    async def execute(self, sql: str, _params: tuple[Any, ...]) -> _Cursor:
+        if "from knowledge_retrieval_profiles" in " ".join(sql.split()).lower():
+            return _Cursor(self.profile_rows)
         return _Cursor(self.rows)
 
 
@@ -110,7 +125,10 @@ async def test_agent_profile_authority_uses_the_configured_knowledge_public_boun
 @pytest.mark.asyncio
 async def test_authorized_builder_binding_returns_ordered_server_versions() -> None:
     bindings = await authorize_agent_profile_knowledge_sources(
-        _Connection([_source_row()]),
+        _Connection(
+            [_source_row()],
+            profile_rows=[{"id": "krp_default", "revision": 2}],
+        ),
         tenant_id="default",
         source_ids=["ks_finance"],
         retrieval_profile_id="krp_default",
@@ -131,9 +149,31 @@ async def test_authorized_builder_binding_returns_ordered_server_versions() -> N
             "ordinal": 0,
             "required": True,
             "retrieval_profile_id": "krp_default",
-            "retrieval_profile_revision": 1,
+            "retrieval_profile_revision": 2,
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_builder_rejects_a_missing_or_disabled_retrieval_profile() -> None:
+    with pytest.raises(
+        RepositoryConflictError,
+        match="agent_profile_retrieval_profile_unavailable",
+    ):
+        await authorize_agent_profile_knowledge_sources(
+            _Connection([_source_row()], profile_rows=[]),
+            tenant_id="default",
+            source_ids=["ks_finance"],
+            retrieval_profile_id="krp_default",
+            principal_user_id="admin-a",
+            principal_department_id="dept-admin",
+            principal_roles=["ai_admin"],
+            is_admin=True,
+            agent_visibility="restricted",
+            agent_department_ids=["dept-finance"],
+            agent_roles=[],
+            agent_user_ids=[],
+        )
 
 
 @pytest.mark.asyncio

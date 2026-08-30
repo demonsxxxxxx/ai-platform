@@ -388,7 +388,7 @@ async def test_successor_activation_schema_advances_to_concurrent_due_index_sche
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.30.2"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.30.3"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -434,6 +434,12 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "agent_profile_revisions",
         "skill_set",
         "jsonb",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "agent_profile_revisions",
+        "knowledge_enabled",
+        "bool",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
     assert (
@@ -1166,11 +1172,38 @@ def test_external_knowledge_runtime_schema_is_a_readiness_contract():
         assert forbidden_projection_key not in snapshot_trigger
 
 
+def test_agent_knowledge_opt_in_is_persistent_and_backfilled_once():
+    schema = " ".join(schema_migrations.schema_sql().split()).lower()
+
+    assert "knowledge_enabled boolean not null default false" in schema
+    first_introduction = (
+        "if not exists ( select 1 from information_schema.columns "
+        "where table_schema = current_schema() "
+        "and table_name = 'agent_profile_revisions' "
+        "and column_name = 'knowledge_enabled' ) then "
+        "alter table agent_profile_revisions "
+        "add column knowledge_enabled boolean not null default false; "
+        "update agent_profile_revisions set knowledge_enabled = true "
+        "where jsonb_array_length(knowledge_source_ids) > 0;"
+    )
+    assert first_introduction in schema
+    assert schema.count("set knowledge_enabled = true") == 1
+    assert "add column if not exists knowledge_enabled" not in schema
+    assert (
+        "revision_status <> 'published' or ( knowledge_enabled "
+        "and jsonb_array_length(knowledge_source_ids) > 0"
+    ) in schema
+    assert (
+        "or ( not knowledge_enabled "
+        "and jsonb_array_length(knowledge_bindings) = 0 )"
+    ) in schema
+
+
 def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "1bc471390c286b0d244df7af2990bbea72d414f781022f1697911de49c775c5e"
+        "9774ffb6ee4f0e597166b665717119f90f4d4dbc74bfebfc4ee54a43b7ac3a06"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

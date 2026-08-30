@@ -21,6 +21,7 @@ def _run_create_kwargs() -> dict[str, object]:
 
 def _execution_input() -> dict[str, object]:
     return {
+        "knowledge_enabled": True,
         "knowledge_source_ids": ["ksrc-a"],
         "retrieval_profile_id": "krp-default",
         "knowledge_bindings": [
@@ -106,3 +107,33 @@ async def test_create_admitted_run_sanitizes_knowledge_failure(
 
     assert exc_info.value.code == "knowledge_snapshot_unavailable"
     assert str(exc_info.value) == "knowledge_snapshot_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_create_admitted_run_skips_snapshot_when_agent_knowledge_is_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    async def create_run(_conn: object, **_kwargs: object) -> str:
+        calls.append("run")
+        return "run-a"
+
+    async def unexpected_admit(_conn: object, **_kwargs: object) -> dict[str, object]:
+        calls.append("snapshot")
+        return {}
+
+    monkeypatch.setattr(
+        "app.conversations.application.run_admission.admit_run_knowledge",
+        unexpected_admit,
+    )
+
+    run_id = await create_admitted_run(
+        object(),
+        create_run,
+        _run_create_kwargs(),
+        {"knowledge_enabled": False},
+    )
+
+    assert run_id == "run-a"
+    assert calls == ["run"]

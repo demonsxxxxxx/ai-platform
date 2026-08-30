@@ -121,6 +121,12 @@ function projectKnowledgeCapability(
   if (record.freshness_at !== null && typeof record.freshness_at !== "string") {
     throw new Error(code);
   }
+  if (
+    (!record.enabled && (record.source_count !== 0 || record.freshness_at !== null)) ||
+    (record.enabled && record.source_count === 0)
+  ) {
+    throw new Error(code);
+  }
   return {
     enabled: record.enabled,
     source_count: record.source_count as number,
@@ -270,6 +276,7 @@ export interface AgentProfileDraftRequest {
   selected_skill: SelectedSkillRequest;
   skill_set: SelectedSkillRequest[];
   mcp_tool_ids: string[];
+  knowledge_enabled: boolean;
   knowledge_source_ids?: string[];
   retrieval_profile_id?: string | null;
   avatar_ref: AgentProfileAvatarRef;
@@ -288,12 +295,14 @@ export interface AgentProfileAdminProjection extends Omit<
   AgentProfileDraftRequest,
   | "avatar_seed"
   | "expected_draft_revision"
+  | "knowledge_enabled"
   | "knowledge_source_ids"
   | "retrieval_profile_id"
   | "skill_set"
 > {
   supported_input_types: UniversalAgentInputTypes;
   avatar_seed?: string;
+  knowledge_enabled?: boolean;
   knowledge_source_ids?: string[];
   retrieval_profile_id?: string | null;
   skill_set?: SelectedSkillRequest[];

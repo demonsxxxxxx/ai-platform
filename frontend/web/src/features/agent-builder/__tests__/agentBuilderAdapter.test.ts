@@ -25,6 +25,7 @@ import {
 test("a pristine unsaved editor does not trigger a discard warning", () => {
   const editor = createUnsavedAgentEditor();
   assert.equal(editor.avatarSeed, "");
+  assert.equal(editor.knowledgeEnabled, false);
   assert.equal(hasUnsavedAgentProfileEdits(editor), false);
 });
 
@@ -76,6 +77,7 @@ function profile(
       expected_version: "2026.07.28",
     },
     mcp_tool_ids: ["mcp:knowledge:search"],
+    knowledge_enabled: false,
     knowledge_source_ids: [],
     retrieval_profile_id: null,
     content_hash: "a".repeat(64),
@@ -224,6 +226,7 @@ test("materializes create and update requests with the exact optimistic revision
       expected_version: "2026.07.28",
     }],
     mcp_tool_ids: ["mcp:knowledge:search"],
+    knowledge_enabled: false,
     knowledge_source_ids: [],
     retrieval_profile_id: null,
     avatar_ref: "builtin:agent",
@@ -378,6 +381,7 @@ test("supports zero or up to eight governed knowledge sources and retains stale 
   }));
   const selected = {
     ...base,
+    knowledgeEnabled: true,
     knowledgeSourceIds: eightSources.map((source) => source.id),
     retrievalProfileId: "krp_default",
   };
@@ -395,6 +399,7 @@ test("supports zero or up to eight governed knowledge sources and retains stale 
 
   const stale = {
     ...base,
+    knowledgeEnabled: true,
     knowledgeSourceIds: ["ks_removed"],
     retrievalProfileId: "krp_default",
   };
@@ -409,6 +414,7 @@ test("blocks a Knowledge source whose department scope cannot contain the Agent"
     profile({
       visibility: "restricted",
       allowed_department_ids: ["finance", "legal"],
+      knowledge_enabled: true,
       knowledge_source_ids: ["ks_finance"],
       retrieval_profile_id: "krp_default",
     }),
@@ -442,6 +448,7 @@ test("blocks a Knowledge source whose department scope cannot contain the Agent"
 test("requires a server-listed retrieval profile for a Knowledge binding", () => {
   const editor = {
     ...hydrateAgentProfileEditor(profile()),
+    knowledgeEnabled: true,
     knowledgeSourceIds: ["ks_finance"],
     retrievalProfileId: "krp_removed",
   };
@@ -449,10 +456,28 @@ test("requires a server-listed retrieval profile for a Knowledge binding", () =>
     validateAgentProfileEditor(editor, catalog())?.code,
     "retrieval_profile_unavailable",
   );
-  assert.deepEqual(buildAgentProfileDraftRequest({
+  const request = buildAgentProfileDraftRequest({
     ...editor,
     retrievalProfileId: "krp_default",
-  }).knowledge_source_ids, ["ks_finance"]);
+  });
+  assert.equal(request.knowledge_enabled, true);
+  assert.deepEqual(request.knowledge_source_ids, ["ks_finance"]);
+});
+
+test("disabled enterprise Knowledge retains configuration without requiring its catalog", () => {
+  const editor = hydrateAgentProfileEditor(profile({
+    knowledge_enabled: false,
+    knowledge_source_ids: ["ks_retained"],
+    retrieval_profile_id: "krp_default",
+  }));
+
+  assert.equal(editor.knowledgeEnabled, false);
+  assert.equal(
+    validateAgentProfileEditor(editor, catalog({ knowledgeResolved: false })),
+    null,
+  );
+  assert.equal(buildAgentProfileDraftRequest(editor).knowledge_enabled, false);
+  assert.deepEqual(buildAgentProfileDraftRequest(editor).knowledge_source_ids, ["ks_retained"]);
 });
 
 test("publish requires one clean successfully saved draft", () => {

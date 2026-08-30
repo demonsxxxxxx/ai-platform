@@ -207,6 +207,7 @@ class AgentProfileDraftRequest(BaseModel):
     skill_set: list[SelectedSkillRequest] = Field(default_factory=list, max_length=32)
     selected_skill: SelectedSkillRequest | None = None
     mcp_tool_ids: list[str] = Field(default_factory=list)
+    knowledge_enabled: bool = False
     knowledge_source_ids: list[str] = Field(default_factory=list, max_length=8)
     retrieval_profile_id: str | None = None
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
@@ -412,9 +413,7 @@ class AgentProfilePublicProjection(BaseModel):
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
     avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
-    knowledge_capability: AgentKnowledgeCapabilityProjection = Field(
-        default_factory=AgentKnowledgeCapabilityProjection
-    )
+    knowledge_capability: AgentKnowledgeCapabilityProjection = Field(default_factory=AgentKnowledgeCapabilityProjection)
     published_at: Any | None = None
 
     _validate_supported_input_types = field_validator("supported_input_types")(
@@ -452,6 +451,7 @@ class AgentProfileAdminProjection(BaseModel):
     skill_set: list[SelectedSkillRequest] = Field(default_factory=list)
     selected_skill: SelectedSkillRequest
     mcp_tool_ids: list[str] = Field(default_factory=list)
+    knowledge_enabled: bool = False
     knowledge_source_ids: list[str] = Field(default_factory=list, max_length=8)
     retrieval_profile_id: str | None = None
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"

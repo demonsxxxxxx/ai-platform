@@ -140,15 +140,20 @@ from current server-owned identity facts.
 ### 5.4 Bind knowledge to an Agent Profile Revision
 
 1. An Agent author opens a draft.
-2. The author selects up to eight active knowledge sources.
-3. The author selects a governed retrieval profile.
-4. The Builder shows source names, visibility summaries and connection health;
+2. Enterprise Knowledge is off by default for that expert; the author must
+   explicitly enable it for the new Agent Profile Revision.
+3. When enabled, the author selects one to eight active knowledge sources.
+4. The author selects a governed retrieval profile.
+5. The Builder shows source names, visibility summaries and connection health;
    it does not show provider resource IDs or credentials.
-5. Draft save preserves the selected logical source identities.
-6. Publish validates that the Agent visibility is contained by every required
+6. Disabling the capability may retain authoring choices, but no executable
+   Knowledge binding or Run snapshot may be derived from them.
+7. Draft save preserves the selected logical source identities.
+8. Publish validates that the Agent visibility is contained by every required
    source visibility.
-7. Publication creates an immutable revision containing the exact bindings and
-   retrieval profile version.
+9. Publication always stores the explicit enable flag. An enabled revision
+   also stores the exact executable bindings and retrieval profile version; a
+   disabled revision stores no executable Knowledge bindings.
 
 ### 5.5 Use a knowledge-backed expert
 

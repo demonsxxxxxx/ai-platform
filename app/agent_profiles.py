@@ -104,10 +104,12 @@ async def resolve_bound_profile_for_submission(
     return await _authority.resolve_bound_for_submission(conn, **authority_kwargs)
 
 
-async def reauthorize_pinned_run_for_replay(conn, *, principal, run_id) -> None:
+async def reauthorize_pinned_run_for_replay(
+    conn, *, principal, run_id
+) -> AgentProfileAdmission | None:
     """Reauthorize a persisted run through the sole Agent Profile authority."""
 
-    await _authority.reauthorize_pinned_run_for_replay(
+    return await _authority.reauthorize_pinned_run_for_replay(
         conn,
         principal=principal,
         run_id=run_id,

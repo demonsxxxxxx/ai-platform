@@ -15,6 +15,7 @@ interface AgentBuilderKnowledgeSectionProps {
   disabled: boolean;
   editor: AgentBuilderEditor;
   knowledgeResolved: boolean;
+  knowledgeSelectionStatus: "idle" | "pending" | "resolved" | "error";
   retrievalProfiles: readonly KnowledgeRetrievalProfile[];
   sources: readonly KnowledgeBuilderSource[];
   loadKnowledgeSources: (params?: {
@@ -23,8 +24,14 @@ interface AgentBuilderKnowledgeSectionProps {
     selectedSourceIds?: readonly string[];
     replace?: boolean;
   }) => Promise<KnowledgeBuilderCatalog | undefined>;
+  retryKnowledgeSelection: () => void;
   onChange: (
-    patch: Pick<AgentBuilderEditor, "knowledgeSourceIds" | "retrievalProfileId">,
+    patch: Partial<
+      Pick<
+        AgentBuilderEditor,
+        "knowledgeEnabled" | "knowledgeSourceIds" | "retrievalProfileId"
+      >
+    >,
   ) => void;
 }
 
@@ -33,13 +40,14 @@ export function AgentBuilderKnowledgeSection({
   disabled,
   editor,
   knowledgeResolved,
+  knowledgeSelectionStatus,
   retrievalProfiles,
   sources,
   loadKnowledgeSources,
+  retryKnowledgeSelection,
   onChange,
 }: AgentBuilderKnowledgeSectionProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [expanded, setExpanded] = useState(editor.knowledgeSourceIds.length > 0);
   const [sourceQuery, setSourceQuery] = useState("");
   const [resultIds, setResultIds] = useState<string[] | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -50,8 +58,12 @@ export function AgentBuilderKnowledgeSection({
     () => new Map(sources.map((source) => [source.id, source])),
     [sources],
   );
-  const unavailableSourceIds = knowledgeResolved
-    ? editor.knowledgeSourceIds.filter((sourceId) => !sourcesById.has(sourceId))
+  const knowledgeSelectionResolved =
+    editor.knowledgeSourceIds.length === 0 || knowledgeSelectionStatus === "resolved";
+  const unavailableSourceIds = knowledgeResolved && knowledgeSelectionResolved
+    ? editor.knowledgeSourceIds.filter(
+        (sourceId) => sourcesById.get(sourceId)?.available !== true,
+      )
     : [];
   const activeRetrievalProfiles = retrievalProfiles.filter(
     (profile) => profile.status === "active",
@@ -106,6 +118,10 @@ export function AgentBuilderKnowledgeSection({
     };
   }, [dialogOpen, knowledgeResolved, loadSourcePage]);
 
+  useEffect(() => {
+    if (!editor.knowledgeEnabled) setDialogOpen(false);
+  }, [editor.knowledgeEnabled]);
+
   const toggleSource = (sourceId: string) => {
     const selected = editor.knowledgeSourceIds.includes(sourceId);
     const knowledgeSourceIds = selected
@@ -134,29 +150,114 @@ export function AgentBuilderKnowledgeSection({
 
   return (
     <>
-      <section aria-labelledby="agent-knowledge-heading">
-        <details
-          className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4"
-          data-agent-builder-knowledge-settings
-          onToggle={(event) => setExpanded(event.currentTarget.open)}
-          open={expanded}
-        >
-          <summary className="cursor-pointer text-sm font-medium">
-            企业知识库（可选） · 已选择 {editor.knowledgeSourceIds.length} 项
-          </summary>
-          <p className="mt-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
-            将已治理的 RAGFlow 知识源绑定到专家。发布和每次运行都会由服务端重新校验状态与访问范围。
-          </p>
-          <div className="mb-4 mt-4 flex flex-wrap items-center justify-between gap-3">
+      <section
+        aria-labelledby="agent-knowledge-heading"
+        className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4"
+        data-agent-builder-knowledge-settings
+      >
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex min-w-0 items-start gap-3">
+            <BookOpen
+              aria-hidden="true"
+              className="mt-0.5 shrink-0 text-[var(--theme-text-secondary)]"
+              size={18}
+            />
+            <div>
+              <h3 id="agent-knowledge-heading" className="text-sm font-semibold">
+                企业内部知识库
+              </h3>
+              <p className="mt-1 text-sm leading-6 text-[var(--theme-text-secondary)]">
+                按专家独立开启。关闭时不执行企业知识绑定，也不创建知识快照。
+              </p>
+            </div>
+          </div>
+          <button
+            aria-checked={editor.knowledgeEnabled}
+            aria-label="企业内部知识库"
+            className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-3 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+              editor.knowledgeEnabled
+                ? "border-[var(--theme-success-ring)] bg-[var(--theme-success-soft)] text-[var(--theme-success)]"
+                : "border-[var(--theme-border-strong)] text-[var(--theme-text-secondary)]"
+            }`}
+            disabled={disabled}
+            onClick={() => onChange({ knowledgeEnabled: !editor.knowledgeEnabled })}
+            role="switch"
+            type="button"
+          >
+            <span
+              aria-hidden="true"
+              className={`relative h-5 w-9 rounded-full transition-colors ${
+                editor.knowledgeEnabled
+                  ? "bg-[var(--theme-success)]"
+                  : "bg-[var(--theme-border-strong)]"
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                  editor.knowledgeEnabled ? "translate-x-[18px]" : "translate-x-0.5"
+                }`}
+              />
+            </span>
+            {editor.knowledgeEnabled ? "已开启" : "开启"}
+          </button>
+        </div>
+
+        {editor.knowledgeEnabled ? (
+          <div className="mt-4 border-t border-[var(--theme-border)] pt-4">
+            <p className="mt-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
+              将已治理的 RAGFlow 知识源绑定到专家。发布和每次运行都会由服务端重新校验状态与访问范围。
+            </p>
+            {!knowledgeResolved ? (
+              <div
+                className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-md bg-[var(--theme-warning-soft)] p-3 text-sm text-[var(--theme-warning)]"
+                role="status"
+              >
+                <span>企业知识目录正在加载或暂不可用，当前不能保存知识配置。</span>
+                <button
+                  className="btn-secondary"
+                  disabled={disabled}
+                  onClick={() => void loadKnowledgeSources({ replace: true })}
+                  type="button"
+                >
+                  重新加载
+                </button>
+              </div>
+            ) : null}
+            {knowledgeResolved && knowledgeSelectionStatus === "pending" ? (
+              <p
+                className="mt-4 flex items-center gap-2 rounded-md bg-[var(--theme-workbench-canvas)] p-3 text-sm text-[var(--theme-text-secondary)]"
+                role="status"
+              >
+                <Loader2 aria-hidden="true" className="animate-spin" size={16} />
+                正在核验已选知识源的最新状态与权限。
+              </p>
+            ) : null}
+            {knowledgeResolved && knowledgeSelectionStatus === "error" ? (
+              <div
+                className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-md bg-[var(--theme-danger-soft)] p-3 text-sm text-[var(--theme-danger)]"
+                role="alert"
+              >
+                <span>无法核验已选知识源，当前不会把它们判定为不可用。</span>
+                <button
+                  className="btn-secondary"
+                  disabled={disabled}
+                  onClick={retryKnowledgeSelection}
+                  type="button"
+                >
+                  重新校验
+                </button>
+              </div>
+            ) : null}
+            <div className="mb-4 mt-4 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <BookOpen
                 aria-hidden="true"
                 className="text-[var(--theme-text-secondary)]"
                 size={17}
               />
-              <h3 id="agent-knowledge-heading" className="text-sm font-semibold">
+              <h4 className="text-sm font-semibold">
                 知识源
-              </h3>
+              </h4>
             </div>
             <button
               className="btn-secondary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
@@ -167,27 +268,30 @@ export function AgentBuilderKnowledgeSection({
               <Database aria-hidden="true" size={15} />
               配置知识库
             </button>
-          </div>
+            </div>
 
-          {editor.knowledgeSourceIds.length === 0 ? (
+            {editor.knowledgeSourceIds.length === 0 ? (
             <p className="text-sm text-[var(--theme-text-secondary)]">
-              未绑定知识源；该专家仍可作为普通 Skills Agent 保存和发布。
+              已开启企业知识库；请至少配置一个知识源后再保存或发布。
             </p>
           ) : (
             <div className="divide-y divide-[var(--theme-border)] border-y border-[var(--theme-border)]">
               {editor.knowledgeSourceIds.map((sourceId) => {
                 const source = sourcesById.get(sourceId);
-                const unavailable = knowledgeResolved && (!source || !source.available);
+                const unavailable =
+                  knowledgeResolved &&
+                  knowledgeSelectionResolved &&
+                  (!source || !source.available);
                 return (
                   <div key={sourceId} className="flex items-start gap-3 py-3">
                     <span
                       aria-hidden="true"
                       className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
-                        !knowledgeResolved
+                        !knowledgeResolved || !knowledgeSelectionResolved
                           ? "bg-[var(--theme-border-strong)]"
-                          : source
-                            ? "bg-[var(--theme-success)]"
-                            : "bg-[var(--theme-danger)]"
+                          : unavailable
+                            ? "bg-[var(--theme-danger)]"
+                            : "bg-[var(--theme-success)]"
                       }`}
                     />
                     <span className="min-w-0 flex-1">
@@ -203,15 +307,19 @@ export function AgentBuilderKnowledgeSection({
                       >
                         {!knowledgeResolved
                           ? "知识目录尚未完整加载，已保留服务端绑定。"
-                          : source
-                            ? source.available
-                              ? `${source.connection_name} · ${
-                                  source.visibility === "enterprise"
-                                    ? "全公司可用"
-                                    : `限定 ${source.allowed_department_count} 个部门`
-                                } · 权限版本 ${source.authorization_version}`
-                              : "知识源或连接当前不可用，已保留绑定并阻止发布。"
-                            : "当前目录中不可用，已保留绑定并阻止发布。"}
+                          : knowledgeSelectionStatus === "error"
+                            ? "知识源校验失败，已保留绑定；重新校验前不会误判为不可用。"
+                            : !knowledgeSelectionResolved
+                              ? "正在核验知识源状态与权限，已保留服务端绑定。"
+                              : source
+                                ? source.available
+                                  ? `${source.connection_name} · ${
+                                      source.visibility === "enterprise"
+                                        ? "全公司可用"
+                                        : `限定 ${source.allowed_department_count} 个部门`
+                                    } · 权限版本 ${source.authorization_version}`
+                                  : "知识源或连接当前不可用，已保留绑定并阻止发布。"
+                                : "当前目录中不可用，已保留绑定并阻止发布。"}
                       </span>
                     </span>
                     <button
@@ -227,28 +335,36 @@ export function AgentBuilderKnowledgeSection({
                 );
               })}
             </div>
-          )}
+            )}
 
-          {editor.knowledgeSourceIds.length > 0 ? (
+            {editor.knowledgeSourceIds.length > 0 ? (
             <div className="mt-4 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] p-3 text-sm">
               <span className="text-[var(--theme-text-secondary)]">检索策略</span>
               <span className="ml-2 font-medium">
                 {selectedRetrievalProfile?.name ?? editor.retrievalProfileId ?? "尚未选择"}
               </span>
             </div>
-          ) : null}
+            ) : null}
 
-          {unavailableSourceIds.length > 0 ? (
+            {unavailableSourceIds.length > 0 ? (
             <p className="mt-3 flex items-start gap-2 text-sm text-[var(--theme-danger)]" role="alert">
               <CircleAlert aria-hidden="true" className="mt-0.5 shrink-0" size={16} />
               <span>{unavailableSourceIds.length} 项知识源不可用，请明确移除或重新选择。</span>
             </p>
-          ) : null}
-        </details>
+            ) : null}
+          </div>
+        ) : (
+          <p className="mt-4 rounded-md bg-[var(--theme-workbench-canvas)] p-3 text-sm text-[var(--theme-text-secondary)]">
+            当前专家不会使用企业知识库。
+            {editor.knowledgeSourceIds.length > 0
+              ? ` 已保留 ${editor.knowledgeSourceIds.length} 项配置，重新开启后会再次校验权限。`
+              : " 需要时开启并选择知识源即可。"}
+          </p>
+        )}
       </section>
 
       <AgentBuilderDialog
-        isOpen={dialogOpen}
+        isOpen={dialogOpen && editor.knowledgeEnabled}
         onClose={() => setDialogOpen(false)}
         title="配置企业知识库"
       >

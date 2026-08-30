@@ -4488,6 +4488,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
                         "expected_version": secondary_profile_manifest["content_hash"],
                     },
                 ],
+                "knowledge_enabled": True,
                 "knowledge_source_ids": ["ksrc_support"],
                 "retrieval_profile_id": "krp_default",
                 "knowledge_bindings": [
@@ -4919,6 +4920,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
                 "expected_version": secondary_profile_manifest["content_hash"],
             },
         ],
+        "knowledge_enabled": True,
         "knowledge_source_ids": ["ksrc_support"],
         "retrieval_profile_id": "krp_default",
         "knowledge_bindings": [

@@ -161,6 +161,7 @@ create table agent_profile_revisions (
   skill_version text not null,
   skill_set jsonb not null default '[]'::jsonb,
   mcp_tool_ids jsonb not null default '[]'::jsonb,
+  knowledge_enabled boolean not null default false,
   knowledge_source_ids jsonb not null default '[]'::jsonb,
   retrieval_profile_id text,
   knowledge_bindings jsonb not null default '[]'::jsonb,
@@ -215,8 +216,15 @@ create table agent_profile_revisions (
     )
     and (
       revision_status <> 'published'
-      or jsonb_array_length(knowledge_source_ids) = 0
-      or jsonb_array_length(knowledge_bindings) = jsonb_array_length(knowledge_source_ids)
+      or (
+        knowledge_enabled
+        and jsonb_array_length(knowledge_source_ids) > 0
+        and jsonb_array_length(knowledge_bindings) = jsonb_array_length(knowledge_source_ids)
+      )
+      or (
+        not knowledge_enabled
+        and jsonb_array_length(knowledge_bindings) = 0
+      )
     )
   ),
   constraint uq_agent_profile_revision_publication
@@ -592,6 +600,7 @@ async def test_create_agent_profile_revision_persists_draft_and_publish_in_postg
                 skill_id="general-chat",
                 skill_version="version-a",
                 mcp_tool_ids=["mcp-published"],
+                knowledge_enabled=True,
                 knowledge_source_ids=["ks_finance"],
                 retrieval_profile_id="krp_default",
                 knowledge_bindings=[
@@ -619,6 +628,7 @@ async def test_create_agent_profile_revision_persists_draft_and_publish_in_postg
         assert published["revision"] == 2
         assert published["status"] == "published"
         assert published["mcp_tool_ids"] == ["mcp-published"]
+        assert published["knowledge_enabled"] is True
         assert published["knowledge_source_ids"] == ["ks_finance"]
         assert published["retrieval_profile_id"] == "krp_default"
         assert published["knowledge_bindings"][0]["source_authorization_version"] == 3

@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -502,6 +503,17 @@ def test_copy_run_reauthorizes_exact_pinned_profile_before_child_persistence(mon
         assert conn["transaction"] == expected_transaction
         assert active_transactions == {expected_transaction}
         calls.append(("profile_authority", kwargs["run_id"], expected_transaction))
+        return SimpleNamespace(
+            agent_id="agt_profile",
+            revision=4,
+            content_hash="a" * 64,
+            private_execution_input={
+                "knowledge_enabled": True,
+                "knowledge_source_ids": ["ks-support"],
+                "retrieval_profile_id": "krp_default",
+                "knowledge_bindings": [{"source_id": "ks-support"}],
+            },
+        )
 
     async def copy(*_args, **kwargs):
         calls.append(("copy", kwargs["run_id"]))
@@ -517,6 +529,11 @@ def test_copy_run_reauthorizes_exact_pinned_profile_before_child_persistence(mon
         calls.append(("prepare", kwargs["copied"]["run_id"]))
         return {"run_id": "run-copy"}
 
+    async def admit_knowledge(conn, **kwargs):
+        assert conn["transaction"] == 1
+        assert active_transactions == {1}
+        calls.append(("knowledge_snapshot", kwargs["run_id"], kwargs["profile_revision"]))
+
     async def enqueue(payload):
         assert active_transactions == {2}
         calls.append(("enqueue", payload["run_id"], 2))
@@ -531,6 +548,7 @@ def test_copy_run_reauthorizes_exact_pinned_profile_before_child_persistence(mon
     monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", reauthorize, raising=False)
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", copy)
     monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", prepare)
+    monkeypatch.setattr("app.routes.runs.admit_created_run_knowledge", admit_knowledge)
     monkeypatch.setattr("app.routes.runs.enqueue_run", enqueue)
     monkeypatch.setattr("app.routes.runs.get_queue_insight", queue_insight)
 
@@ -543,6 +561,7 @@ def test_copy_run_reauthorizes_exact_pinned_profile_before_child_persistence(mon
         ("profile_authority", "run-source", 1),
         ("copy", "run-source"),
         ("prepare", "run-copy"),
+        ("knowledge_snapshot", "run-copy", 4),
         ("transaction_exit", 1),
         ("transaction_enter", 2),
         ("profile_authority", "run-copy", 2),
@@ -1027,7 +1046,14 @@ def test_copy_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
 
 
 def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
-    calls = {"retry": [], "inherit": [], "enqueue": [], "step": [], "execution_snapshot": []}
+    calls = {
+        "retry": [],
+        "inherit": [],
+        "enqueue": [],
+        "step": [],
+        "execution_snapshot": [],
+        "knowledge": [],
+    }
 
     async def fake_retry_run_as_new_task(conn, *, tenant_id, user_id, run_id):
         calls["retry_conn"] = conn
@@ -1099,6 +1125,22 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
     async def fake_append_event(conn, **kwargs):
         return None
 
+    async def reauthorize(conn, **kwargs):
+        return SimpleNamespace(
+            agent_id="general-agent",
+            revision=7,
+            content_hash="a" * 64,
+            private_execution_input={
+                "knowledge_enabled": True,
+                "knowledge_source_ids": ["ks-support"],
+                "retrieval_profile_id": "krp_default",
+                "knowledge_bindings": [{"source_id": "ks-support"}],
+            },
+        )
+
+    async def admit_knowledge(conn, **kwargs):
+        calls["knowledge"].append(kwargs)
+
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(
@@ -1116,6 +1158,8 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", reauthorize, raising=False)
+    monkeypatch.setattr("app.routes.runs.admit_created_run_knowledge", admit_knowledge)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
     monkeypatch.setattr("app.routes.runs.get_queue_insight", fake_get_queue_insight)
     client = TestClient(create_app())
@@ -1144,6 +1188,22 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
     assert calls["active_limit"] == ("default", "user-a", 3)
     assert calls["enqueue"][0]["run_id"] == "run-retry"
     assert calls["enqueue"][0]["context_snapshot_id"] == "ctx-retry"
+    assert calls["knowledge"] == [
+        {
+            "run_id": "run-retry",
+            "tenant_id": "default",
+            "agent_id": "general-agent",
+            "profile_revision": 7,
+            "profile_content_hash": "a" * 64,
+            "principal_policy_version": 1,
+            "agent_profile_execution_input": {
+                "knowledge_enabled": True,
+                "knowledge_source_ids": ["ks-support"],
+                "retrieval_profile_id": "krp_default",
+                "knowledge_bindings": [{"source_id": "ks-support"}],
+            },
+        }
+    ]
     assert calls["execution_snapshot"] == [
         {
             "tenant_id": "default",
@@ -1806,6 +1866,7 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
         "step": [],
         "execution_snapshot": [],
         "inherit": [],
+        "knowledge": [],
         "order": [],
     }
 
@@ -1889,6 +1950,21 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
 
     async def reauthorize(conn, **kwargs):
         calls["order"].append(("profile_authority", kwargs["run_id"]))
+        return SimpleNamespace(
+            agent_id="general-agent",
+            revision=8,
+            content_hash="b" * 64,
+            private_execution_input={
+                "knowledge_enabled": True,
+                "knowledge_source_ids": ["ks-operations"],
+                "retrieval_profile_id": "krp_default",
+                "knowledge_bindings": [{"source_id": "ks-operations"}],
+            },
+        )
+
+    async def admit_knowledge(conn, **kwargs):
+        calls["order"].append(("knowledge_snapshot", kwargs["run_id"]))
+        calls["knowledge"].append(kwargs)
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
@@ -1908,6 +1984,7 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
     )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_context)
+    monkeypatch.setattr("app.routes.runs.admit_created_run_knowledge", admit_knowledge)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
     monkeypatch.setattr("app.routes.runs.get_queue_insight", fake_get_queue_insight)
     client = TestClient(create_app())
@@ -1942,7 +2019,24 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
         "user_lock",
         ("profile_authority", "run-failed"),
         "resume",
+        ("knowledge_snapshot", "run-resume-new"),
         ("profile_authority", "run-resume-new"),
+    ]
+    assert calls["knowledge"] == [
+        {
+            "run_id": "run-resume-new",
+            "tenant_id": "default",
+            "agent_id": "general-agent",
+            "profile_revision": 8,
+            "profile_content_hash": "b" * 64,
+            "principal_policy_version": 1,
+            "agent_profile_execution_input": {
+                "knowledge_enabled": True,
+                "knowledge_source_ids": ["ks-operations"],
+                "retrieval_profile_id": "krp_default",
+                "knowledge_bindings": [{"source_id": "ks-operations"}],
+            },
+        }
     ]
     assert calls["context"][0]["source"] == "resume_run"
     assert calls["context"][0]["source_run_id"] == "run-failed"

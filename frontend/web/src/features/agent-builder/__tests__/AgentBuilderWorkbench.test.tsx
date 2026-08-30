@@ -106,8 +106,12 @@ test("expert management follows the directory and first-class configuration layo
   assert.match(workbenchSource, /title="配置 Skill Set"/);
   assert.match(workbenchSource, /AgentBuilderKnowledgeSection/);
   assert.match(knowledgeSectionSource, /data-agent-builder-knowledge-settings/);
+  assert.match(knowledgeSectionSource, /role="switch"/);
+  assert.match(knowledgeSectionSource, /aria-label="企业内部知识库"/);
+  assert.match(knowledgeSectionSource, /按专家独立开启/);
   assert.match(knowledgeSectionSource, /最多 \{MAX_KNOWLEDGE_SOURCES\} 项/);
   assert.match(knowledgeSectionSource, /已保留绑定并阻止发布/);
+  assert.match(knowledgeSectionSource, /sourcesById\.get\(sourceId\)\?\.available !== true/);
   assert.match(knowledgeSectionSource, /type="checkbox"/);
   assert.match(knowledgeSectionSource, /type="radio"/);
   assert.match(enterpriseFieldsSource, /AgentAvatarPicker/);

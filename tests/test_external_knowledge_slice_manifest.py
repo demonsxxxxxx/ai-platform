@@ -70,7 +70,7 @@ def test_repository_manifests_match_exact_traceability_ownership():
     }
     assert by_slice["KTRACE-62"].atomic_case_ids == ("KAC-FR-KOPS-035",)
     assert by_slice["KSNAP-35"].atomic_case_ids == tuple(
-        f"KAC-FR-KADM-{index:03d}" for index in range(18, 26)
+        f"KAC-FR-KADM-{index:03d}" for index in range(18, 27)
     )
 
 

@@ -11,18 +11,22 @@
     "KAC-FR-KADM-022",
     "KAC-FR-KADM-023",
     "KAC-FR-KADM-024",
-    "KAC-FR-KADM-025"
+    "KAC-FR-KADM-025",
+    "KAC-FR-KADM-026"
   ],
   "changed_paths": [
     "app/agent_profile_execution_validation.py",
+    "app/agent_profiles.py",
     "app/conversations/api.py",
     "app/conversations/application/__init__.py",
     "app/conversations/application/run_admission.py",
     "app/knowledge/application/run_admission.py",
     "app/routes/chat.py",
+    "app/routes/runs.py",
     "docs/product/external-knowledge/manifests/KSNAP-35.json",
     "tests/test_chat_routes.py",
     "tests/test_conversation_run_admission.py",
+    "tests/test_run_control_routes.py",
     "tests/test_run_knowledge_admission.py"
   ],
   "evidence_layers": ["source", "unit", "integration"]
