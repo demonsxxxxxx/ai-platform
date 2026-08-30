@@ -40,6 +40,7 @@ from app.routes.sandbox_runtime_cleanup import (
 from app.runs.api import (
     assert_worker_run_attempt_current,
     get_latest_run_attempt,
+    heartbeat_worker_run_attempt,
     prepare_stale_run_attempt_reconciliation,
     request_run_attempt_cancel,
     run_attempt_id_for_queue_attempt,
@@ -191,17 +192,38 @@ async def _worker_runtime_heartbeat_until_done(worker_id: str, interval_seconds:
 
 
 async def _heartbeat_until_done(
-    message_id: str,
+    message: queue.QueueMessage,
     worker_id: str,
     interval_seconds: float,
+    visibility_timeout_seconds: int,
     ownership_lost: asyncio.Event,
 ) -> None:
     try:
         while True:
             await asyncio.sleep(interval_seconds)
-            if not await queue.heartbeat_run(message_id, worker_id=worker_id):
+            heartbeat = await queue.heartbeat_run(
+                message.message_id,
+                worker_id=worker_id,
+            )
+            if not heartbeat.succeeded or heartbeat.heartbeat_at is None:
                 ownership_lost.set()
                 return
+            last_heartbeat_at = datetime.fromtimestamp(
+                heartbeat.heartbeat_at,
+                tz=timezone.utc,
+            )
+            async with transaction() as conn:
+                await heartbeat_worker_run_attempt(
+                    conn,
+                    tenant_id=str(message.payload.get("tenant_id") or ""),
+                    run_id=str(message.payload.get("run_id") or ""),
+                    queue_attempt_id=message.attempt_id,
+                    queue_message_id=message.queue_message_id,
+                    worker_id=worker_id,
+                    last_heartbeat_at=last_heartbeat_at,
+                    lease_expires_at=last_heartbeat_at
+                    + timedelta(seconds=visibility_timeout_seconds),
+                )
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -823,9 +845,10 @@ async def run_once(
     ownership_lost = asyncio.Event()
     heartbeat_task = asyncio.create_task(
         _heartbeat_until_done(
-            message.message_id,
+            message,
             resolved_worker_id,
             heartbeat_interval_seconds,
+            int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900)),
             ownership_lost,
         )
     )

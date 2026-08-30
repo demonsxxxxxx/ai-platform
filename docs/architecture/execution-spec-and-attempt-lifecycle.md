@@ -2,10 +2,11 @@
 
 Status: normative source-architecture decision; implementation is incremental
 
-Current stacked foundation: the worker compiles an in-memory specification
-before dispatch, and Runs owns the durable attempt schema plus create/transition
-writers. Existing queue, worker, callback, and Sandbox paths are not yet cut over
-to those writers.
+Current stacked foundation: the worker compiles and persists the immutable
+specification before dispatch, Runs owns the durable attempt schema and
+transitions, and ordinary queue workers bind the initial Redis lease plus every
+successful heartbeat to the exact attempt owner fence. Callback, Redis reclaim,
+and remaining Sandbox paths are not yet fully cut over to that fence.
 
 Owner: `runs` bounded context
 
@@ -152,15 +153,22 @@ identity for executor, Sandbox, callback, stream, cancellation, and terminal
 projection paths. Pre-dispatch failures that never produce a valid specification
 remain compatible Run-only terminal paths.
 
-This is not the complete attempt migration. Redis reclaim still does not persist
-queue-message, lease-expiry, or heartbeat facts on the durable attempt. Stale-run
-recovery now moves the exact open attempt into reconciler-owned `expired` or
-`cancel_requested` before terminal drain, and permission, executor, and
-multi-agent maintenance writers mirror the exact terminal attempt in the same
-transaction. Callback and Redis reclaim paths still lack end-to-end expected
-`owner_generation` fencing. Real PostgreSQL/Redis/Sandbox acceptance and
-mixed-version rollback evidence also remain required before the migration can be
-called complete.
+This is not the complete attempt migration. The ordinary worker records the
+initial queue-message identity and lease window during `created -> queued`, then
+persists each Redis-fenced heartbeat with the exact attempt identity, queue
+identity, worker owner, and current `owner_generation`. A Redis heartbeat whose
+PostgreSQL write or commit fails stops worker execution and is not treated as
+durable success: the worker does not acknowledge or fail the queue message, and
+the Redis-only extension remains bounded by the visibility window. Redis and
+PostgreSQL timestamps are monotonic, so an out-of-order heartbeat cannot move
+either authority backward. Stale-run recovery moves the exact open attempt into
+reconciler-owned `expired` or `cancel_requested` before terminal drain, and
+permission, executor, and multi-agent maintenance writers mirror the exact
+terminal attempt in the same transaction. Callback and Redis reclaim paths still
+lack end-to-end expected `owner_generation` fencing and recoverable cross-store
+effects. The heartbeat path has real PostgreSQL/Redis rollback-and-convergence
+coverage; production Sandbox acceptance and mixed-version rollback evidence
+remain required before the migration can be called complete.
 
 Redis reclaim must create a new durable ordinal attempt before a new worker can
 execute. It never overwrites the old attempt identity. Retry, resume, and copy

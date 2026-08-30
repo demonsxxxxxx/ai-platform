@@ -236,6 +236,8 @@ def test_schema_declares_attempt_identity_state_and_fences():
     assert "skill_id is not distinct from nullif(" in schema
     assert "set status = projected_run_status" in schema
     assert "run_attempt_owner_generation_invalid" in schema
+    assert "run_attempt_heartbeat_regression" in schema
+    assert "run_attempt_lease_expiry_regression" in schema
     assert "old.status = 'cancel_requested'" in schema
     assert "new.owner_kind = 'reconciler'" in schema
     assert "run_attempt_expiry_reconciler_required" in schema

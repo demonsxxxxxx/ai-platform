@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 import re
 import secrets
 import time
@@ -755,7 +756,7 @@ return cjson.encode({status = "dead_lettered"})
 
 
 HEARTBEAT_WITH_FENCE_SCRIPT = """
--- ai-platform:heartbeat-run-with-fence:v1
+-- ai-platform:heartbeat-run-with-fence:v2
 local raw_metadata = redis.call("hget", KEYS[1], ARGV[1])
 if not raw_metadata then
   return cjson.encode({status = "missing"})
@@ -774,10 +775,27 @@ local fence_key = ARGV[6] .. ":" .. tostring(metadata["tenant_id"] or "") .. ":"
 if redis.call("exists", fence_key) == 1 then
   return cjson.encode({status = "reconciliation_fenced"})
 end
-metadata["heartbeat_at"] = tonumber(ARGV[5])
+local heartbeat_at = tonumber(ARGV[5])
+if heartbeat_at == nil or heartbeat_at ~= heartbeat_at
+  or heartbeat_at == math.huge or heartbeat_at == -math.huge then
+  return cjson.encode({status = "inconclusive"})
+end
+local existing_heartbeat_at = tonumber(metadata["heartbeat_at"])
+if existing_heartbeat_at ~= nil and existing_heartbeat_at > heartbeat_at then
+  heartbeat_at = existing_heartbeat_at
+end
+local leased_at = tonumber(metadata["leased_at"])
+if leased_at ~= nil and leased_at > heartbeat_at then
+  heartbeat_at = leased_at
+end
+metadata["heartbeat_at"] = heartbeat_at
 redis.call("hset", KEYS[1], ARGV[1], cjson.encode(metadata))
-redis.call("hset", KEYS[2], ARGV[4], ARGV[5])
-return cjson.encode({status = "heartbeat"})
+local worker_heartbeat_at = tonumber(redis.call("hget", KEYS[2], ARGV[4]))
+if worker_heartbeat_at == nil or worker_heartbeat_at < heartbeat_at then
+  worker_heartbeat_at = heartbeat_at
+end
+redis.call("hset", KEYS[2], ARGV[4], tostring(worker_heartbeat_at))
+return cjson.encode({status = "heartbeat", heartbeat_at = heartbeat_at})
 """
 
 
@@ -909,6 +927,18 @@ class LeaseMutationOutcome:
         """Return whether the requested lease operation reached its exact success state."""
 
         return self.status in {"acked", "failed", "current"}
+
+
+@dataclass(frozen=True)
+class QueueHeartbeatOutcome:
+    """Exact result and timestamp of one Redis-fenced queue heartbeat."""
+
+    status: str
+    heartbeat_at: float | None = None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.status == "heartbeat" and self.heartbeat_at is not None
 
 
 QUEUE_ATTEMPT_ID_FIELD = "_queue_attempt_id"
@@ -2219,29 +2249,48 @@ async def verify_lease_ownership(message: QueueMessage, *, worker_id: str) -> Le
         await redis.aclose()
 
 
-async def heartbeat_run(message_id: str, *, worker_id: str) -> bool:
+async def heartbeat_run(
+    message_id: str,
+    *,
+    worker_id: str,
+) -> QueueHeartbeatOutcome:
     keys = get_queue_keys()
     redis = await get_redis()
     try:
         lease = _parse_lease_handle(message_id)
         if lease is None:
-            return False
+            return QueueHeartbeatOutcome("invalid_lease")
         queue_message_id, attempt_id, owner_token = lease
+        heartbeat_at = _now()
         result = _decode_redis_script_result(
             await redis.eval(
-            HEARTBEAT_WITH_FENCE_SCRIPT,
-            2,
-            keys.processing_meta,
-            keys.worker_heartbeat,
-            queue_message_id,
-            attempt_id,
-            owner_token,
-            worker_id,
-            _now(),
-            keys.reconciliation_fence_prefix,
+                HEARTBEAT_WITH_FENCE_SCRIPT,
+                2,
+                keys.processing_meta,
+                keys.worker_heartbeat,
+                queue_message_id,
+                attempt_id,
+                owner_token,
+                worker_id,
+                heartbeat_at,
+                keys.reconciliation_fence_prefix,
             )
         )
-        return str(result.get("status") or "") == "heartbeat"
+        status = str(result.get("status") or "inconclusive")
+        effective_heartbeat_at: float | None = None
+        if status == "heartbeat":
+            try:
+                effective_heartbeat_at = float(result.get("heartbeat_at"))
+            except (TypeError, ValueError):
+                status = "inconclusive"
+            else:
+                if not math.isfinite(effective_heartbeat_at):
+                    effective_heartbeat_at = None
+                    status = "inconclusive"
+        return QueueHeartbeatOutcome(
+            status,
+            heartbeat_at=effective_heartbeat_at,
+        )
     finally:
         await redis.aclose()
 

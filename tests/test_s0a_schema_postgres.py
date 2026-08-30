@@ -17,7 +17,11 @@ from app.runs.domain.execution_spec import (
     EXECUTION_SPEC_SCHEMA_VERSION,
     compile_execution_spec,
 )
-from app.runs.infrastructure.postgres import create_run_attempt, transition_run_attempt
+from app.runs.infrastructure.postgres import (
+    create_run_attempt,
+    heartbeat_worker_run_attempt,
+    transition_run_attempt,
+)
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
@@ -219,6 +223,83 @@ async def test_s0a_schema_workspace_scope_and_runtime_handle_apply_idempotently(
             expected_owner_generation=2,
         )
         assert claimed_attempt["owner_generation"] == 3
+        running_attempt = await transition_run_attempt(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            expected_status="claimed",
+            requested_status="running",
+            expected_owner_kind="queue_worker",
+            expected_owner_id="worker-a",
+            expected_owner_generation=3,
+        )
+        heartbeat_at = last_heartbeat_at + timedelta(minutes=1)
+        heartbeat_expiry = heartbeat_at + timedelta(minutes=15)
+        heartbeat_attempt = await heartbeat_worker_run_attempt(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            queue_attempt_id="queue-attempt-a",
+            queue_message_id="b" * 64,
+            worker_id="worker-a",
+            expected_owner_generation=int(running_attempt["owner_generation"]),
+            last_heartbeat_at=heartbeat_at,
+            lease_expires_at=heartbeat_expiry,
+        )
+        assert heartbeat_attempt["last_heartbeat_at"] == heartbeat_at
+        assert heartbeat_attempt["lease_expires_at"] == heartbeat_expiry
+        with pytest.raises(
+            psycopg.errors.CheckViolation,
+            match="run_attempt_heartbeat_regression",
+        ):
+            await conn.execute(
+                """
+                update run_attempts
+                set last_heartbeat_at = %s
+                where tenant_id = 'tenant-a' and id = 'attempt-a'
+                """,
+                (heartbeat_at - timedelta(seconds=1),),
+            )
+        with pytest.raises(
+            psycopg.errors.CheckViolation,
+            match="run_attempt_lease_expiry_regression",
+        ):
+            await conn.execute(
+                """
+                update run_attempts
+                set lease_expires_at = null
+                where tenant_id = 'tenant-a' and id = 'attempt-a'
+                """
+            )
+        with pytest.raises(
+            psycopg.errors.CheckViolation,
+            match="run_attempt_heartbeat_regression",
+        ):
+            await conn.execute(
+                """
+                update run_attempts
+                set status = 'failed',
+                    owner_generation = owner_generation + 1,
+                    last_heartbeat_at = %s,
+                    finished_at = now(),
+                    terminal_reason = 'regressing_terminal_transition'
+                where tenant_id = 'tenant-a' and id = 'attempt-a'
+                """,
+                (heartbeat_at - timedelta(seconds=1),),
+            )
+        heartbeat_cursor = await conn.execute(
+            """
+            select last_heartbeat_at, lease_expires_at
+            from run_attempts
+            where tenant_id = 'tenant-a' and id = 'attempt-a'
+            """
+        )
+        assert await heartbeat_cursor.fetchone() == {
+            "last_heartbeat_at": heartbeat_at,
+            "lease_expires_at": heartbeat_expiry,
+        }
         await conn.execute(
             "update runs set status = 'succeeded', finished_at = now() where id = 'run-a'"
         )
@@ -231,11 +312,11 @@ async def test_s0a_schema_workspace_scope_and_runtime_handle_apply_idempotently(
                 tenant_id="tenant-a",
                 run_id="run-a",
                 attempt_id="attempt-a",
-                expected_status="claimed",
+                expected_status="running",
                 requested_status="failed",
                 expected_owner_kind="queue_worker",
                 expected_owner_id="worker-a",
-                expected_owner_generation=3,
+                expected_owner_generation=4,
                 terminal_reason="legacy_terminal_conflict",
             )
         conflict_cursor = await conn.execute(
@@ -248,7 +329,7 @@ async def test_s0a_schema_workspace_scope_and_runtime_handle_apply_idempotently(
         )
         assert await conflict_cursor.fetchone() == {
             "run_status": "succeeded",
-            "attempt_status": "claimed",
+            "attempt_status": "running",
         }
         with pytest.raises(psycopg.errors.CheckViolation):
             await conn.execute(
