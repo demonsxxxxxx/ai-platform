@@ -13,7 +13,8 @@ behind an adapter.
 | Agent definition | Immutable `agent_profiles` revisions and publication lifecycle | Public/admin profile projections |
 | Skill release | Admin Skill review, materialization, promote, and rollback lifecycle | Marketplace read and tenant distribution routes |
 | Harness execution | The registered Harness adapter selected by run admission | Claude Agent SDK today; a future Pi adapter must implement the same platform contract |
-| MCP and external knowledge | Governed MCP server and tool catalog | RAGFlow is an MCP/tool capability, never an independent chat executor |
+| MCP | Governed MCP server and tool catalog | MCP transports may delegate to product APIs but do not own provider connections or product data |
+| External Knowledge | Governed connection revisions, logical sources, source ACL, retrieval profiles, Run snapshots, evidence and citations | RAGFlow is the first provider adapter; Agent Apps, Runs, Conversations and Engine adapters consume Knowledge APIs and safe projections |
 | Streaming | `app.streaming` event replay, cursor, heartbeat, and terminal contract | Chat and compatibility routes only translate the shared stream |
 | Context | Pinned platform context snapshot and governed memory selection | Engine adapters receive the snapshot; they do not rebuild platform context |
 | Files and artifacts | Platform file/artifact records and authenticated download contract | Sandbox staging and SDK upload helpers only transfer bytes for an authorized run |

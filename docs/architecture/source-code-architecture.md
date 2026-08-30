@@ -49,6 +49,7 @@ app/
     settings.py
   kernel/                    # tiny framework-neutral shared vocabulary
   platform/                  # shared technical clients; no product decisions
+    credentials/
     postgres/
       migrations/
     redis/
@@ -56,6 +57,7 @@ app/
     observability/
   identity/
   agent_apps/
+  knowledge/
   skills/
   conversations/
   runs/
@@ -93,6 +95,7 @@ expose concrete infrastructure adapters.
 | --- | --- | --- |
 | `identity` | authenticated principal, company identity projection, session identity, workspace/user scope, role/access facts | Agent App ACL policy, run admission, frontend-only state |
 | `agent_apps` | immutable Agent Profile revisions, publication, visibility/ACL, Agent App admission definition | conversation history, Skill release, executor behavior |
+| `knowledge` | provider connection revisions, logical source catalog, source ACL versions, retrieval profiles, Run Knowledge Snapshots, normalized evidence and citation snapshots | provider document ingestion, Agent publication, Run lifecycle, Conversation messages, MCP catalog, Engine execution |
 | `skills` | Skill catalog, version/release lifecycle, distribution, governed material identity | Harness chat, SDK execution loop, arbitrary uploaded data |
 | `conversations` | conversation/session ownership, messages, history, builder-test purpose, conversation projections | run state machine, executor dispatch, profile publication |
 | `runs` | run identity, admission result, attempt/generation, retry/resume/copy/cancel policy, tool-permission facts | queue transport, Harness-private events, conversation ownership |
@@ -108,14 +111,19 @@ expose concrete infrastructure adapters.
 Admin and Workbench views are projections of the owning contexts. They MUST NOT
 become a second write authority or a generic `admin` domain. Compatible-endpoint
 connection revisions, the shared model catalog, model-selection policy, and the
-bounded upstream proxy belong to `execution`; encrypted provider credentials and
-network/security clients remain Execution infrastructure adapters assembled by
-`bootstrap`. Bootstrap also supplies the deployment-backed legacy catalog and
-authentication callbacks, so Execution adapters and transport do not import legacy
-root modules. `runs` alone writes the immutable admitted model ID, upstream value,
-and connection revision snapshot, including Copy/Retry/Resume inheritance, through
-its public application API on the caller's existing transaction. General Harness
-chat and specialized Skills remain separate identities under
+bounded upstream proxy belong to `execution`. Execution owns the model/Engine
+credential reference and the authorization to resolve it; `knowledge` separately
+owns each external-Knowledge `secret_ref` and its resolution authorization. Shared
+`platform.credentials` infrastructure owns encrypted credential bytes, encryption
+keys, and their technical lifecycle under distinct purpose namespaces, while the
+corresponding network/security clients remain bounded-context infrastructure
+adapters assembled by `bootstrap`. Neither bounded context may resolve the other's
+credential reference. Bootstrap also supplies the deployment-backed legacy catalog
+and authentication callbacks, so Execution adapters and transport do not import
+legacy root modules. `runs` alone writes the immutable admitted model ID, upstream
+value, and connection revision snapshot, including Copy/Retry/Resume inheritance,
+through its public application API on the caller's existing transaction. General
+Harness chat and specialized Skills remain separate identities under
 [`../adr/0005-harness-chat-is-not-a-skill.md`](../adr/0005-harness-chat-is-not-a-skill.md).
 The Agent Apps application, persistence, transaction, composition, and
 compatibility target is defined by
@@ -248,6 +256,7 @@ This section maps source placement; the business authority remains
 | Object storage | `files` and `artifacts` adapters using `platform.object_storage` | bytes only; PostgreSQL records authorize identity/lifecycle |
 | Object deletion loop | `object_lifecycle.application` and its target-owned ports | one typed outbox claim/receipt/retry protocol; eligibility remains with target owners |
 | Harness SDK | `execution.infrastructure/harness/<provider>` | private model/tool loop; cannot mint platform authority |
+| External knowledge provider | `knowledge.infrastructure/providers/<provider>` | translates governed catalog and retrieval calls; provider state and payloads are not platform authority |
 | Sandbox provider | `sandbox.infrastructure/providers/<provider>` | translates governed lifecycle; provider state is not business truth |
 
 The attempt-bound callback-batch receipt remains part of the Sandbox Runtime
@@ -516,6 +525,7 @@ ledger. It names the target owner for future bounded migrations.
 | `app/data_retention.py` and maintenance scheduling | `bootstrap.maintenance` orchestrating `object_lifecycle`, `artifacts`, and `context` public APIs |
 | `app/streaming/**`, run-event repositories and SSE projection | `streaming` |
 | `app/mcp/**` and MCP sections of the global repository | `mcp` |
+| RAGFlow connection, dataset catalog, source ACL, retrieval evidence and citation special cases | `knowledge`; generic MCP transport remains `mcp` |
 | `app/runtime/sandbox/**` and Sandbox Runtime routes | `sandbox` |
 | `app/db.py`, `app/storage.py`, and connection/client construction | `platform.postgres`, `platform.object_storage`, and `bootstrap` wiring; no business repository logic |
 | `app/schema.sql` and `app/schema_migrations.py` | versioned `platform.postgres.migrations`; every business table/change still names its bounded-context owner |

@@ -129,6 +129,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_trivy_failure_evidence.py",
         "tests/test_release_image_manifest.py",
         "tests/test_external_knowledge_slice_manifest.py",
+        "tests/test_external_knowledge_architecture.py",
     ),
     "release-governance-authority": (
         "tests/test_governance_readiness.py",
@@ -254,7 +255,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
         "release-governance-authority": ("", ""),
     }
     all_selectors = [selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors]
-    assert len(all_selectors) == len(set(all_selectors)) == 70
+    assert len(all_selectors) == len(set(all_selectors)) == 71
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job

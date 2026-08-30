@@ -46,6 +46,35 @@ not describe storage, routes, frameworks, or current runtime state.
   Its runs use the normal governed execution path and its records remain
   explicitly distinguishable from ordinary-user conversations.
 
+**Knowledge Connection**
+: A platform-governed, revisioned connection to one external knowledge provider.
+  It exposes a safe administrative projection while provider credentials and
+  private resource identities remain server-side.
+
+**Knowledge Source**
+: A stable platform identity projecting one provider-owned dataset. Its current
+  status and authorization version determine whether an Agent revision may bind
+  it and whether a new Run may use it.
+
+**Retrieval Profile**
+: A versioned, bounded platform policy for candidate count, accepted evidence,
+  fusion, retry, and deadline behavior. It never contains provider credentials
+  or private dataset identities.
+
+**Run Knowledge Snapshot**
+: The immutable set of logical sources, source authorization versions,
+  connection revisions, lifecycle epochs, and retrieval profile admitted for
+  one Agent Run before dispatch.
+
+**Knowledge Evidence**
+: A bounded, normalized passage accepted by the platform for one Run. Evidence
+  preserves source and provider receipt identity without exposing provider
+  credentials or raw response payloads.
+
+**Knowledge Citation**
+: A durable, user-safe projection from an assistant message to accepted
+  Knowledge Evidence. Refresh and reconnect hydrate the same citation identity.
+
 ## Capability Truth
 
 **Capability Selected**

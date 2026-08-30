@@ -5,7 +5,6 @@
   "summary": "External Knowledge product, domain, acceptance, traceability, delivery, and baseline contracts",
   "atomic_case_ids": [],
   "changed_paths": [
-    "docs/README.md",
     "docs/product/README.md",
     "docs/product/external-knowledge/acceptance-matrix.md",
     "docs/product/external-knowledge/baseline-disposition.md",

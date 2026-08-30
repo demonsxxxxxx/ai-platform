@@ -8,7 +8,6 @@
   ],
   "changed_paths": [
     ".github/workflows/ai-platform-backend.yml",
-    "docs/product/external-knowledge/README.md",
     "docs/product/external-knowledge/manifests/KTRACE-62.json",
     "schemas/external-knowledge-slice-manifest.v1.schema.json",
     "tests/test_backend_ci_workflow.py",

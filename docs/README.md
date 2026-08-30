@@ -46,6 +46,9 @@ does not represent deployed runtime state.
   governed Skill Set while its Agent SDK autonomously decides whether and which
   registered Skill to invoke; Skill file capability is not a per-run upload
   requirement.
+- `adr/0013-external-knowledge-authority.md` establishes the Knowledge bounded
+  context, RAGFlow provider boundary, cross-context transaction owners, and
+  credential isolation used by Agent Apps, Runs, Conversations, and citations.
 - `architecture/opensandbox-ephemeral-model-credentials.md` defines the
   attempt-bound model-route admission, Run-pinned compatible-endpoint revision,
   and trusted encrypted credential/proxy boundary.
