@@ -17,6 +17,7 @@ import pytest
 import yaml
 
 import tools.release_authority as release_authority
+from tools.release_image_manifest import SUBJECTS as PACKAGED_IMAGE_SUBJECTS
 
 from tools.release_authority import (
     ReleaseAuthorityError,
@@ -2799,6 +2800,21 @@ def test_governed_sandbox_executor_handoff_requires_a_local_immutable_image_id(i
         release_authority._immutable_sandbox_executor_reference({"id": image_id})
 
 
+def test_direct_opensandbox_executor_handoff_requires_one_packaged_backend_digest():
+    subject = release_authority.PACKAGED_BACKEND_IMAGE_SUBJECT
+    assert subject == PACKAGED_IMAGE_SUBJECTS["backend"]
+    reference = f"{subject}@sha256:" + "1" * 64
+    assert release_authority._packaged_sandbox_executor_reference({"repo_digests": [reference]}) == reference
+
+    for repo_digests in (
+        [],
+        ["sha256:" + "1" * 64],
+        [reference, f"{subject}@sha256:" + "2" * 64],
+    ):
+        with pytest.raises(ReleaseAuthorityError, match="not unique"):
+            release_authority._packaged_sandbox_executor_reference({"repo_digests": repo_digests})
+
+
 def test_deploy_rejects_executor_preflight_without_compose_mutation(monkeypatch, tmp_path):
     commit = "6" * 40
     _write_compose_files(tmp_path)
@@ -3033,10 +3049,13 @@ def test_deploy_uses_211_sudo_env_compose_command(monkeypatch, tmp_path):
     commit = "5" * 40
     _write_provider_compose_files(tmp_path)
     repository = AUTHORITATIVE_REPOSITORY
+    packaged_digest = "sha256:" + "1" * 64
+    packaged_executor = f"{release_authority.PACKAGED_BACKEND_IMAGE_SUBJECT}@{packaged_digest}"
     commands: list[list[str]] = []
     image_records = {
         f"ai-platform:{commit}": {
             "id": SANDBOX_IMAGE_ID,
+            "repo_digests": [packaged_executor],
             "labels": {
                 "ai-platform.source-commit": commit,
                 "org.opencontainers.image.revision": commit,
@@ -3087,9 +3106,9 @@ def test_deploy_uses_211_sudo_env_compose_command(monkeypatch, tmp_path):
     assert compose[:3] == ["sudo", "-n", "env"]
     assert f"AI_PLATFORM_IMAGE=ai-platform:{commit}" in compose
     assert f"AI_PLATFORM_FRONTEND_IMAGE=ai-platform-frontend:{commit}" in compose
-    assert f"SANDBOX_EXECUTOR_IMAGE={SANDBOX_IMAGE_ID}" in compose
-    assert f"OPENSANDBOX_EXECUTOR_IMAGE={SANDBOX_IMAGE_ID}" in compose
-    assert f"OPENSANDBOX_EXECUTOR_IMAGE_DIGEST={SANDBOX_IMAGE_ID}" in compose
+    assert f"SANDBOX_EXECUTOR_IMAGE={packaged_executor}" in compose
+    assert f"OPENSANDBOX_EXECUTOR_IMAGE={packaged_executor}" in compose
+    assert f"OPENSANDBOX_EXECUTOR_IMAGE_DIGEST={packaged_digest}" in compose
     assert release_authority.COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER not in compose
     assert compose[compose.index("compose") :] == [
         "compose",

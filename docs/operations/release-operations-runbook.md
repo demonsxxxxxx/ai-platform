@@ -300,7 +300,10 @@ success. Native bridge network policy permits only the distinct stateless
 egress-proxy address.
 The proxy strips sandbox credentials, forwards the callback-derived per-attempt
 model capability, injects the internal proxy token, and forwards callbacks to
-the existing API callback-token validators.
+the existing API callback-token validators. Direct-OpenSandbox releases bind the
+Executor to the Packaging-qualified Backend `repository@sha256` reference and
+bind its digest field to the matching `sha256` value; target parity resolves that
+reference and requires the resulting image ID to equal the API and Worker image.
 
 The s75 deployment keeps Compose project `ai-platform-internal` and the four
 existing named data/workspace volumes. It also preserves the authenticated

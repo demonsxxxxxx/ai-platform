@@ -487,15 +487,35 @@ def _target_broker_parity(docker: Sequence[str], commit: str) -> dict[str, bool]
 
 
 def _require_target_executor(docker: Sequence[str]) -> None:
+    bindings: set[tuple[str, str, str]] = set()
+    backend_image_ids: set[str] = set()
     for service in ("api", "worker"):
-        environment = _container_environment(_inspect_container(docker, CONTAINERS[service]))
-        executor_image = environment.get("SANDBOX_EXECUTOR_IMAGE", "").strip()
-        if (
-            not executor_image
-            or environment.get("OPENSANDBOX_EXECUTOR_IMAGE", "").strip() != executor_image
-            or environment.get("OPENSANDBOX_EXECUTOR_IMAGE_DIGEST", "").strip() != executor_image
-        ):
-            raise TransitionError("target OpenSandbox executor image mismatch")
+        container = _inspect_container(docker, CONTAINERS[service])
+        environment = _container_environment(container)
+        bindings.add(
+            (
+                environment.get("SANDBOX_EXECUTOR_IMAGE", "").strip(),
+                environment.get("OPENSANDBOX_EXECUTOR_IMAGE", "").strip(),
+                environment.get("OPENSANDBOX_EXECUTOR_IMAGE_DIGEST", "").strip(),
+            )
+        )
+        backend_image_ids.add(str(container.get("Image") or "").strip())
+    if len(bindings) != 1 or len(backend_image_ids) != 1:
+        raise TransitionError("target OpenSandbox executor image mismatch")
+    executor_image, opensandbox_image, executor_digest = bindings.pop()
+    backend_image_id = backend_image_ids.pop()
+    try:
+        image = authority._image_record(list(docker), executor_image)
+        packaged_reference = authority._packaged_sandbox_executor_reference(image)
+    except (OSError, subprocess.CalledProcessError, IndexError, json.JSONDecodeError, authority.ReleaseAuthorityError):
+        raise TransitionError("target OpenSandbox executor image mismatch") from None
+    if (
+        executor_image != packaged_reference
+        or opensandbox_image != packaged_reference
+        or executor_digest != packaged_reference.rsplit("@", 1)[1]
+        or image.get("id") != backend_image_id
+    ):
+        raise TransitionError("target OpenSandbox executor image mismatch")
 
 
 def _require_target_lifecycle_reachable(docker: Sequence[str]) -> None:
