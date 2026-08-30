@@ -46,6 +46,7 @@ server {
         proxy_cache off;
         gzip off;
         add_header Cache-Control "no-cache, no-transform" always;
+        add_header X-Accel-Buffering no always;
         proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT};
         proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT};
     }

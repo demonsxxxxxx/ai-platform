@@ -2,6 +2,8 @@ import type { Message } from "../../../types";
 import type { SessionConfig } from "../../../hooks/useAgent/types";
 import type { ConnectionStatus } from "../../../types";
 
+export type VisibleConnectionStatus = Exclude<ConnectionStatus, "connected">;
+
 export function isSessionRunning(
   messages: Pick<Message, "isStreaming">[],
   isLoading: boolean,
@@ -31,6 +33,21 @@ export function shouldShowStreamingFooterSkeleton({
     messageCount > 0 &&
     !hasVisibleStreamingMessage
   );
+}
+
+export function getVisibleConnectionStatus({
+  connectionStatus,
+  sessionId,
+  currentRunId,
+}: {
+  connectionStatus?: ConnectionStatus;
+  sessionId: string | null;
+  currentRunId: string | null;
+}): VisibleConnectionStatus | null {
+  if (!sessionId || !currentRunId || connectionStatus === "connected") {
+    return null;
+  }
+  return connectionStatus ?? null;
 }
 
 export function getRestoredModelSelection(
