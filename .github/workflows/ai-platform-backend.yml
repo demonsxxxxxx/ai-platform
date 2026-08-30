@@ -174,7 +174,6 @@ jobs:
             test_files: >-
               tests/test_schema_migrations.py
               tests/test_schema_migrations_postgres.py
-              tests/test_s0a_schema_postgres.py
           - shard: v4-durable-streaming
             postgres_image: postgres:16-alpine
             postgres_url: postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform

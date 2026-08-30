@@ -14,10 +14,13 @@ from redis.asyncio import Redis
 
 from app import queue, schema_migrations
 from app.runs.api import heartbeat_worker_run_attempt
+from app.runs.application import attempt_lifecycle as attempt_lifecycle_application
+from app.runs.application.attempt_lifecycle import RunAttemptLifecycleService
 from app.runs.domain.execution_spec import (
     EXECUTION_SPEC_SCHEMA_VERSION,
     compile_execution_spec,
 )
+from app.runs.infrastructure import postgres as run_attempt_persistence
 from app.runs.infrastructure.postgres import (
     create_run_attempt,
     transition_run_attempt,
@@ -277,6 +280,11 @@ async def test_real_worker_heartbeat_fails_closed_then_converges_after_postgres_
         monkeypatch.setattr(queue, "get_settings", lambda: Settings())
         monkeypatch.setattr(queue, "get_redis", get_redis)
         monkeypatch.setattr(queue, "_now", lambda: advanced_epoch)
+        monkeypatch.setattr(
+            attempt_lifecycle_application,
+            "_service",
+            RunAttemptLifecycleService(persistence=run_attempt_persistence),
+        )
         keys = queue.get_queue_keys()
         redis_keys = tuple(getattr(keys, field.name) for field in fields(keys))
         await redis.delete(*redis_keys)
@@ -312,10 +320,24 @@ async def test_real_worker_heartbeat_fails_closed_then_converges_after_postgres_
             delivery_attempt=1,
         )
 
+        uncommitted_write: dict[str, datetime] = {}
+
         @asynccontextmanager
         async def transaction_that_cannot_commit():
             async with transaction_factory() as conn:
                 yield conn
+                staged = await (
+                    await conn.execute(
+                        """
+                        select last_heartbeat_at, lease_expires_at
+                        from run_attempts
+                        where tenant_id = %s and id = %s
+                        """,
+                        (tenant_id, attempt_id),
+                    )
+                ).fetchone()
+                assert staged is not None
+                uncommitted_write.update(staged)
                 raise OSError("postgres commit unavailable")
 
         monkeypatch.setattr(worker_main, "transaction", transaction_that_cannot_commit)
@@ -330,6 +352,17 @@ async def test_real_worker_heartbeat_fails_closed_then_converges_after_postgres_
         )
 
         assert ownership_lost.is_set()
+        assert uncommitted_write == {
+            "last_heartbeat_at": datetime.fromtimestamp(
+                advanced_epoch,
+                tz=timezone.utc,
+            ),
+            "lease_expires_at": datetime.fromtimestamp(
+                advanced_epoch,
+                tz=timezone.utc,
+            )
+            + timedelta(seconds=visibility_timeout_seconds),
+        }
         redis_metadata = json.loads(
             await redis.hget(keys.processing_meta, queue_message_id)
         )
@@ -410,6 +443,79 @@ async def test_real_worker_heartbeat_fails_closed_then_converges_after_postgres_
             "lease_expires_at": durable_heartbeat_at
             + timedelta(seconds=visibility_timeout_seconds),
         }
+        regression_conn = await psycopg.AsyncConnection.connect(
+            dsn,
+            autocommit=True,
+            options=f"-c search_path={schema_name}",
+            row_factory=dict_row,
+        )
+        try:
+            with pytest.raises(
+                psycopg.errors.CheckViolation,
+                match="run_attempt_heartbeat_regression",
+            ):
+                await regression_conn.execute(
+                    """
+                    update run_attempts
+                    set last_heartbeat_at = %s
+                    where tenant_id = %s and id = %s
+                    """,
+                    (
+                        durable_heartbeat_at - timedelta(seconds=1),
+                        tenant_id,
+                        attempt_id,
+                    ),
+                )
+            with pytest.raises(
+                psycopg.errors.CheckViolation,
+                match="run_attempt_lease_expiry_regression",
+            ):
+                await regression_conn.execute(
+                    """
+                    update run_attempts
+                    set lease_expires_at = null
+                    where tenant_id = %s and id = %s
+                    """,
+                    (tenant_id, attempt_id),
+                )
+            with pytest.raises(
+                psycopg.errors.CheckViolation,
+                match="run_attempt_heartbeat_regression",
+            ):
+                await regression_conn.execute(
+                    """
+                    update run_attempts
+                    set status = 'failed',
+                        owner_generation = owner_generation + 1,
+                        last_heartbeat_at = %s,
+                        finished_at = now(),
+                        terminal_reason = 'regressing_terminal_transition'
+                    where tenant_id = %s and id = %s
+                    """,
+                    (
+                        durable_heartbeat_at - timedelta(seconds=1),
+                        tenant_id,
+                        attempt_id,
+                    ),
+                )
+            unchanged = await (
+                await regression_conn.execute(
+                    """
+                    select status, last_heartbeat_at, lease_expires_at
+                    from run_attempts
+                    where tenant_id = %s and id = %s
+                    """,
+                    (tenant_id, attempt_id),
+                )
+            ).fetchone()
+            assert unchanged == {
+                "status": "running",
+                "last_heartbeat_at": durable_heartbeat_at,
+                "lease_expires_at": durable_heartbeat_at
+                + timedelta(seconds=visibility_timeout_seconds),
+            }
+        finally:
+            await regression_conn.close()
     finally:
         if redis_keys:
             await redis.delete(*redis_keys)
