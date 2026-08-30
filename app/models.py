@@ -31,7 +31,7 @@ from app.skills.release_policy import (
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
 
 from app.validation import (
-    MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
+    MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS, assert_safe_department_authority_id,
     assert_safe_id,
     assert_safe_principal_user_id,
     assert_upstream_model_id,
@@ -41,7 +41,7 @@ from app.validation import (
 def _normalize_capability_department_ids(values: list[str], field_name: str) -> list[str]:
     normalized: list[str] = []
     for value in values:
-        candidate = assert_safe_id(value.strip(), field_name)
+        candidate = assert_safe_department_authority_id(value, field_name)
         if candidate not in normalized:
             normalized.append(candidate)
     return normalized

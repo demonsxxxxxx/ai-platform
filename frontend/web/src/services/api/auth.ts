@@ -21,6 +21,7 @@ interface PrincipalResponseWire {
   user_name?: string;
   display_name: string;
   tenant_id: string;
+  department_id: string;
   roles: string[];
   permissions: string[];
   is_admin: boolean;
@@ -76,6 +77,7 @@ function mapPrincipalToUser(principal: PrincipalResponseWire): User {
   return {
     id: principal.user_id,
     tenant_id: principal.tenant_id,
+    department_id: principal.department_id,
     username: principal.user_name || principal.user_id,
     email: "",
     avatar_url: undefined,

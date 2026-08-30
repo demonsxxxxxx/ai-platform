@@ -69,7 +69,7 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "avatar_seed": "agt_support",
         "category": "support",
         "visibility": "restricted",
-        "allowed_department_ids": ["support"],
+        "allowed_department_ids": ["研发一部"],
         "allowed_roles": ["user"],
         "allowed_user_ids": [],
         "instructions": "private instruction",
@@ -80,8 +80,8 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "content_hash": "a" * 64,
     }
 
-    assert profile_acl_allows(row, principal=_principal(department_id="support")) is True
-    assert profile_acl_allows(row, principal=_principal(department_id="finance")) is False
+    assert profile_acl_allows(row, principal=_principal(department_id="研发一部")) is True
+    assert profile_acl_allows(row, principal=_principal(department_id="研发二部")) is False
     invalid_visibility = {**row, "visibility": "unknown", "allowed_department_ids": [], "allowed_roles": []}
     assert profile_acl_allows(invalid_visibility, principal=_principal(department_id="support")) is False
     assert profile_public_projection(row) == {
@@ -101,6 +101,68 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "avatar_seed": "agt_support",
         "category": "support",
     }
+
+
+@pytest.mark.asyncio
+async def test_profile_department_authority_accepts_only_current_selectable_directory_ids(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+    from app.department_directory import (
+        DepartmentDirectoryError,
+        normalize_department_directory,
+        validate_profile_department_authorities,
+    )
+    from app.models import AgentProfileDraftRequest, SelectedSkillRequest
+
+    directory = normalize_department_directory(
+        [
+            {"value": "1", "parentId": "1", "label": "药品注册", "children": []},
+            {"value": "2", "parentId": "1", "label": "Research", "children": []},
+            {"value": "3", "parentId": "1", "label": "Ｒｅｓｅａｒｃｈ", "children": []},
+        ]
+    )
+
+    async def fetch_directory():
+        return directory
+
+    monkeypatch.setattr("app.department_directory.fetch_department_directory", fetch_directory)
+    authority = AgentProfileAuthority(
+        department_authority_validator=validate_profile_department_authorities,
+    )
+    definition = AgentProfileDraftRequest(
+        name="Support assistant",
+        instructions="private instruction",
+        visibility="restricted",
+        allowed_department_ids=["药品注册"],
+        selected_skill=SelectedSkillRequest(
+            skill_id="general-chat",
+            expected_version="version-a",
+        ),
+        expected_draft_revision=0,
+    )
+
+    await authority._validate_profile_department_authorities(definition)
+    for invalid_department_id in ("Research", "目录外部门"):
+        with pytest.raises(HTTPException) as exc_info:
+            await authority._validate_profile_department_authorities(
+                definition.model_copy(
+                    update={"allowed_department_ids": [invalid_department_id]},
+                )
+            )
+        assert (exc_info.value.status_code, exc_info.value.detail) == (
+            422,
+            "agent_profile_department_authority_invalid",
+        )
+
+    async def unavailable_directory():
+        raise DepartmentDirectoryError("private_upstream_detail")
+
+    monkeypatch.setattr("app.department_directory.fetch_department_directory", unavailable_directory)
+    with pytest.raises(HTTPException) as exc_info:
+        await authority._validate_profile_department_authorities(definition)
+    assert (exc_info.value.status_code, exc_info.value.detail) == (
+        503,
+        "agent_profile_department_directory_unavailable",
+    )
 
 
 @pytest.mark.asyncio
@@ -215,14 +277,25 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
     async def read_draft(*_args, **_kwargs):
         order.append("revision_read")
         row = _profile_row(status="draft", revision=7)
+        row.update(
+            visibility="restricted",
+            allowed_department_ids=["药品注册"],
+        )
         row["content_hash"] = _revision_hash(_draft_from_row(row))
         return row
+
+    async def validation_agent(*_args, **_kwargs):
+        return "agt_support"
 
     async def record_publication(*_args, **_kwargs):
         order.append("aggregate_update")
 
     async def audit(*_args, **_kwargs):
         return "aud_profile"
+
+    async def validate_departments(values):
+        assert values == ["药品注册"]
+        order.append("department_validation")
 
     async def validate(*_args, **_kwargs):
         return ({"skill_id": "general-chat", "skill_version": "version-a"},)
@@ -237,14 +310,22 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
     monkeypatch.setattr("app.agent_apps.authority.repositories.create_agent_profile_revision", append_revision)
     monkeypatch.setattr("app.agent_apps.authority.repositories.record_agent_profile_draft", record_draft)
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_revision", read_draft)
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_tenant_profile_validation_agent",
+        validation_agent,
+    )
     monkeypatch.setattr("app.agent_apps.authority.repositories.record_agent_profile_publication", record_publication)
     monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
-    authority = AgentProfileAuthority()
+    authority = AgentProfileAuthority(
+        department_authority_validator=validate_departments,
+    )
     monkeypatch.setattr(authority, "_validate_definition", validate)
     definition = AgentProfileDraftRequest(
         name="Support assistant",
         description="Approved support help.",
         instructions="private instruction",
+        visibility="restricted",
+        allowed_department_ids=["药品注册"],
         selected_skill=SelectedSkillRequest(skill_id="general-chat", expected_version="version-a"),
         expected_draft_revision=7,
     )
@@ -256,7 +337,7 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
         agent_id="agt_support",
     )
     assert order.index("user") < order.index("advisory_lock") < order.index("revision_append")
-    assert order.index("advisory_lock") < order.index("revision_append")
+    assert order.index("advisory_lock") < order.index("department_validation") < order.index("revision_append")
     assert order.index("advisory_lock") < order.index("aggregate_update")
     assert revision_writes[-1]["supported_input_types"] == ["text", "file"]
     assert revision_writes[-1]["legacy_supported_file_types"] == [
@@ -282,8 +363,8 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
         expected_revision=7,
     )
     assert order.index("advisory_lock") < order.index("revision_read")
+    assert order.index("revision_read") < order.index("department_validation") < order.index("revision_append")
     assert order.index("user") < order.index("advisory_lock") < order.index("revision_append")
-    assert order.index("advisory_lock") < order.index("revision_append")
     assert order.index("advisory_lock") < order.index("aggregate_update")
     assert revision_writes[-1]["supported_input_types"] == ["text", "file"]
     assert revision_writes[-1]["legacy_supported_file_types"] == [
@@ -300,6 +381,15 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
     ]
     assert revision_writes[-1]["legacy_model_id"] == "platform-selected"
     assert "model_id" not in revision_writes[-1]
+
+    order.clear()
+    await authority.validate_draft(
+        object(),
+        principal=_principal(roles=["admin"]),
+        definition=definition,
+        agent_id=None,
+    )
+    assert order == ["user", "department_validation"]
 
 
 @pytest.mark.asyncio
@@ -524,7 +614,7 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
     monkeypatch.setattr("app.agent_apps.authority.repositories.record_agent_profile_draft", noop)
     monkeypatch.setattr("app.agent_apps.authority.repositories.record_agent_profile_publication", noop)
     monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
-    authority = AgentProfileAuthority()
+    authority = AgentProfileAuthority(department_authority_validator=noop)
 
     async def validate(*_args, **_kwargs):
         return ({"skill_id": "general-chat", "skill_version": "version-a"},)
@@ -649,7 +739,7 @@ async def test_draft_preview_uses_presence_aware_effective_existing_definition(m
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_aggregate", read_aggregate)
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_revision", read_prior)
     monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
-    authority = AgentProfileAuthority()
+    authority = AgentProfileAuthority(department_authority_validator=noop)
     monkeypatch.setattr(authority, "_validate_definition", validate)
     omitted = AgentProfileDraftRequest(
         name="Updated support assistant",
@@ -748,7 +838,8 @@ async def test_public_detail_uses_the_same_acl_as_catalog(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
 
     restricted = _profile_row()
-    restricted.update({"visibility": "restricted", "allowed_department_ids": ["support"]})
+    restricted.update({"visibility": "restricted", "allowed_department_ids": ["药品注册"]})
+    _seal_profile_row(restricted)
 
     async def get_current(*_args, **_kwargs):
         return restricted
@@ -760,9 +851,24 @@ async def test_public_detail_uses_the_same_acl_as_catalog(monkeypatch):
     monkeypatch.setattr("app.agent_apps.authority.repositories.list_current_published_agent_profiles", list_current)
     authority = AgentProfileAuthority()
 
-    assert await authority.list_public(object(), principal=_principal(department_id="finance")) == []
+    async def validate(*_args, **_kwargs):
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
+
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+
+    assert await authority.list_public(object(), principal=_principal(department_id="药品注册"))
+    assert await authority.get_public(
+        object(),
+        principal=_principal(department_id="药品注册"),
+        agent_id="agt_support",
+    )
+    assert await authority.list_public(object(), principal=_principal(department_id="药品注冊")) == []
     with pytest.raises(HTTPException) as caught:
-        await authority.get_public(object(), principal=_principal(department_id="finance"), agent_id="agt_support")
+        await authority.get_public(
+            object(),
+            principal=_principal(department_id="药品注冊"),
+            agent_id="agt_support",
+        )
     assert (caught.value.status_code, caught.value.detail) == (404, "agent_profile_not_found")
 
 
@@ -925,6 +1031,11 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
 
     observed: dict[str, object] = {}
     profile_row = _profile_row()
+    profile_row.update(
+        visibility="restricted",
+        allowed_department_ids=["药品注册"],
+    )
+    _seal_profile_row(profile_row)
 
     async def get_current(*_args, **kwargs):
         observed["for_update"] = kwargs.get("for_update")
@@ -957,7 +1068,7 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
 
     response = await authority.create_conversation(
         object(),
-        principal=_principal(),
+        principal=_principal(department_id="药品注册"),
         workspace_id="default",
         selection=SelectedAgentProfileRequest(agent_id="agt_support", expected_revision=7),
         title="",
@@ -1307,10 +1418,13 @@ async def test_revision_bound_conversations_stay_on_their_publication_until_unpu
 @pytest.mark.asyncio
 async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
-    from app.agent_apps.authority import _draft_from_row, _revision_hash
 
     row = _profile_row()
-    row["content_hash"] = _revision_hash(_draft_from_row(row))
+    row.update(
+        visibility="restricted",
+        allowed_department_ids=["药品注册"],
+    )
+    _seal_profile_row(row)
     calls: list[tuple[str, object]] = []
 
     async def get_bound(*_args, **kwargs):
@@ -1337,7 +1451,7 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
 
     admission = await authority.resolve_bound_for_worker_dispatch(
         object(),
-        principal=_principal(),
+        principal=_principal(department_id="药品注册"),
         agent_id="agt_support",
         revision=7,
         content_hash=str(row["content_hash"]),
@@ -1423,9 +1537,9 @@ async def test_worker_dispatch_profile_reauthorization_fails_closed(monkeypatch,
         current_row = _profile_row(revision=9)
         current_row.update(
             visibility="restricted",
-            allowed_department_ids=[],
+            allowed_department_ids=["药品注册"],
             allowed_roles=[],
-            allowed_user_ids=["other-user"],
+            allowed_user_ids=[],
         )
         _seal_profile_row(current_row)
 
@@ -1455,7 +1569,7 @@ async def test_worker_dispatch_profile_reauthorization_fails_closed(monkeypatch,
 
     admission = await authority.resolve_bound_for_worker_dispatch(
         object(),
-        principal=_principal(),
+        principal=_principal(department_id="药品注冊") if denial == "acl" else _principal(),
         agent_id="agt_support",
         revision=7,
         content_hash=expected_hash,

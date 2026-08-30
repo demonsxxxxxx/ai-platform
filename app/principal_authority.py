@@ -12,7 +12,7 @@ from app.auth import (
     normalize_roles,
 )
 from app.settings import get_settings
-from app.validation import assert_safe_id
+from app.validation import assert_safe_department_authority_id
 
 
 CURRENT_PRINCIPAL_DENIAL_REASON = "current_principal_authority_denied"
@@ -95,7 +95,10 @@ async def fetch_company_user_info(work_id: str, *, settings: Any | None = None) 
 
     effective_settings = settings or get_settings()
     base_url = effective_settings.existing_user_info_base_url.rstrip("/")
-    async with httpx.AsyncClient(timeout=effective_settings.existing_auth_timeout_seconds) as client:
+    async with httpx.AsyncClient(
+        timeout=effective_settings.existing_auth_timeout_seconds,
+        trust_env=False,
+    ) as client:
         response = await client.get(f"{base_url}/api/userManage/{work_id}/info")
         response.raise_for_status()
         return response.json()
@@ -282,11 +285,11 @@ def _department_from_user_info(payload: dict[str, Any]) -> str:
     value = payload.get("department")
     if not isinstance(value, str):
         return ""
-    candidate = value.strip()
+    candidate = value
     if not candidate:
         return ""
     try:
-        return assert_safe_id(candidate, "department")
+        return assert_safe_department_authority_id(candidate, "department")
     except ValueError:
         # Empty is intentionally unscoped: it cannot match a non-empty
         # department allowlist and never invents authority from display data.
