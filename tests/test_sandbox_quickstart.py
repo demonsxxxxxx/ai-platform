@@ -566,6 +566,127 @@ def test_keyboard_interrupt_after_up_runs_small_rollback(
     assert events.count("rollback") == 1
 
 
+def test_protocol_v2_lease_probe_reads_processing_and_retry_metadata(
+    tmp_path: Path,
+) -> None:
+    commands: list[list[str]] = []
+
+    class ProbeRunner(quickstart.Runner):
+        def run(self, command: object, **_: object) -> str:
+            commands.append(list(command))
+            return json.dumps(
+                {"status": "ok", "processing": 1, "retry": 2, "total": 2}
+            )
+
+    release = quickstart.Quickstart(tmp_path, runner=ProbeRunner())
+    release.docker = ["docker", "--context", "default"]
+
+    assert release._protocol_v2_lease_count() == 2
+    assert commands == [
+        [
+            "docker",
+            "--context",
+            "default",
+            "exec",
+            "ai-platform-redis",
+            "redis-cli",
+            "--raw",
+            "EVAL",
+            quickstart.ROLLBACK_PROTOCOL_V2_LEASE_PROBE,
+            "2",
+            quickstart.ROLLBACK_PROCESSING_META_KEY,
+            quickstart.ROLLBACK_RETRY_META_KEY,
+            str(quickstart.ROLLBACK_LEASE_SCAN_LIMIT),
+        ]
+    ]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        '{"status":"unproven","reason":"invalid_metadata"}',
+        '{"status":"ok","processing":1,"retry":0,"total":2}',
+        "not-json",
+    ],
+)
+def test_protocol_v2_lease_probe_fails_closed(
+    tmp_path: Path,
+    response: str,
+) -> None:
+    class ProbeRunner(quickstart.Runner):
+        def run(self, _command: object, **_: object) -> str:
+            return response
+
+    release = quickstart.Quickstart(tmp_path, runner=ProbeRunner())
+    release.docker = ["docker"]
+
+    with pytest.raises(quickstart.QuickstartError, match="lease state could not be proven"):
+        release._protocol_v2_lease_count()
+
+
+def test_rollback_with_v2_lease_keeps_api_stopped_and_target_worker_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, str]] = []
+    target = quickstart.Subject(COMMIT, BACKEND, FRONTEND)
+    previous = quickstart.Subject(OLD_COMMIT, BACKEND, FRONTEND)
+    release = quickstart.Quickstart(tmp_path, tmp_path / "managed")
+    monkeypatch.setattr(
+        release,
+        "_compose",
+        lambda _env, used_subject, *args: events.append(
+            (used_subject.commit, " ".join(args))
+        ),
+    )
+    monkeypatch.setattr(release, "_protocol_v2_lease_count", lambda: 1)
+
+    with pytest.raises(quickstart.RollbackBlockedError, match="active protocol-v2 leases"):
+        release._rollback(target, previous, tmp_path / ".env")
+
+    assert events == [
+        (COMMIT, "stop api worker"),
+        (COMMIT, "up -d --no-build --pull never worker"),
+    ]
+    assert release.repo == tmp_path.resolve()
+
+
+def test_rollback_switches_images_only_after_proving_no_v2_leases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "managed"
+    previous_repo = root / "releases" / OLD_COMMIT
+    target = quickstart.Subject(COMMIT, BACKEND, FRONTEND)
+    previous = quickstart.Subject(OLD_COMMIT, BACKEND, FRONTEND)
+    release = quickstart.Quickstart(tmp_path, root)
+    events: list[tuple[str, str, Path]] = []
+    monkeypatch.setattr(release, "_verify_checkout", lambda *_: None)
+    monkeypatch.setattr(release, "_protocol_v2_lease_count", lambda: 0)
+    monkeypatch.setattr(
+        release,
+        "_compose",
+        lambda _env, used_subject, *args: events.append(
+            (used_subject.commit, " ".join(args), release.repo)
+        ),
+    )
+    monkeypatch.setattr(
+        release,
+        "_wait_health",
+        lambda used_subject: events.append((used_subject.commit, "health", release.repo)),
+    )
+
+    release._rollback(target, previous, tmp_path / ".env")
+
+    assert events == [
+        (COMMIT, "stop api worker", tmp_path.resolve()),
+        (OLD_COMMIT, "config --quiet", previous_repo),
+        (OLD_COMMIT, "up -d --no-build --pull never", previous_repo),
+        (OLD_COMMIT, "health", previous_repo),
+    ]
+    assert release.repo == tmp_path.resolve()
+
+
 @pytest.mark.parametrize(
     "status", [" M deploy/ai-platform/docker-compose.yml", "?? tools/json.py"]
 )

@@ -270,7 +270,13 @@ without reading or printing its values, and runs Compose semantic preflight
 before either pull or up. It uses only the base file plus
 `docker-compose.opensandbox-internal-test.yml` and never builds on the managed
 host. It never runs `down`, `down -v`, or volume deletion. If startup or smoke
-fails, it performs one `--no-build --pull never` up of the saved previous subject;
+fails,
+it first stops target API admission and the target worker, then atomically checks
+both queue processing and retry metadata for protocol-v2 leases. It performs one
+`--no-build --pull never` up of the saved previous subject only when that check
+proves no v2 lease remains. If any processing or retry-only v2 lease remains, or
+the check is inconclusive, the API stays stopped, the exact target worker is
+restarted to recover stored work, and image rollback stops for operator action.
 Postgres, Redis, MinIO, and workspace volumes remain untouched.
 
 The backend artifact also contains the OpenSandbox executor application. The
@@ -296,7 +302,9 @@ operator-approved lifecycle recovery. Do not install the monotonic guard over
 those rows. Forward mixed-version operation is bounded because protocol-v2
 leases are opaque to the v1 reclaimer; image rollback to a v1-only worker is
 allowed only after current workers have drained or recovered every protocol-v2
-processing lease.
+processing or retry-only lease. The automatic quickstart enforces the same gate;
+after its recovery worker drains the queue, rerun the release or perform an
+operator-approved recovery before retrying image rollback.
 
 `ci_success` is written only after exact-run Actions and packaging evidence
 verification. Keep the selected managed env path stable across successive

@@ -43,9 +43,76 @@ COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST_REF = re.compile(r"(?P<repository>[^@]+)@sha256:[0-9a-f]{64}\Z")
 SERVICES = ("api", "worker", "frontend", "postgres", "redis", "minio")
 PROJECT_SERVICES = (*SERVICES, "workspace-init", "migrate")
+ROLLBACK_QUEUE_KEY_PREFIX = "ai-platform:runs"
+ROLLBACK_PROCESSING_META_KEY = f"{ROLLBACK_QUEUE_KEY_PREFIX}:processing-meta"
+ROLLBACK_RETRY_META_KEY = f"{ROLLBACK_QUEUE_KEY_PREFIX}:retry-meta"
+ROLLBACK_LEASE_SCAN_LIMIT = 10_000
+ROLLBACK_PROTOCOL_V2_LEASE_PROBE = """
+-- ai-platform:rollback-protocol-v2-lease-probe:v1
+local scan_limit = tonumber(ARGV[1])
+if not scan_limit or scan_limit < 1 then
+  return cjson.encode({status = "unproven", reason = "invalid_scan_limit"})
+end
+
+local seen = {}
+local processing_count = 0
+local retry_count = 0
+
+for key_index, metadata_key in ipairs(KEYS) do
+  if redis.call("hlen", metadata_key) > scan_limit then
+    return cjson.encode({status = "unproven", reason = "scan_limit_exceeded"})
+  end
+  local entries = redis.call("hgetall", metadata_key)
+  for index = 1, #entries, 2 do
+    local message_id = tostring(entries[index] or "")
+    local ok, metadata = pcall(cjson.decode, entries[index + 1] or "")
+    if not ok or type(metadata) ~= "table" then
+      return cjson.encode({status = "unproven", reason = "invalid_metadata"})
+    end
+    local raw_protocol = metadata["lease_protocol_version"]
+    local protocol = tonumber(raw_protocol)
+    if raw_protocol ~= nil and (not protocol or protocol ~= math.floor(protocol)) then
+      return cjson.encode({status = "unproven", reason = "invalid_protocol"})
+    end
+    if metadata["owner_token_v2"] ~= nil and (not protocol or protocol < 2) then
+      return cjson.encode({status = "unproven", reason = "unversioned_v2_owner"})
+    end
+    if protocol and protocol >= 2 then
+      local owner_token = tostring(metadata["owner_token_v2"] or "")
+      local attempt_id = tostring(metadata["attempt_id"] or "")
+      if tostring(metadata["message_id"] or "") ~= message_id
+        or #message_id ~= 64 or not string.match(message_id, "^[0-9a-f]+$")
+        or #owner_token ~= 69 or not string.match(owner_token, "^qown_[0-9a-f]+$")
+        or #attempt_id ~= 68 or not string.match(attempt_id, "^qat_[0-9a-f]+$") then
+        return cjson.encode({status = "unproven", reason = "invalid_v2_identity"})
+      end
+      seen[message_id] = true
+      if key_index == 1 then
+        processing_count = processing_count + 1
+      else
+        retry_count = retry_count + 1
+      end
+    end
+  end
+end
+
+local total = 0
+for _ in pairs(seen) do
+  total = total + 1
+end
+return cjson.encode({
+  status = "ok",
+  processing = processing_count,
+  retry = retry_count,
+  total = total,
+})
+"""
 
 
 class QuickstartError(RuntimeError): ...
+
+
+class RollbackBlockedError(QuickstartError): ...
 
 
 @dataclass(frozen=True)
@@ -390,7 +457,71 @@ class Quickstart:
                     raise QuickstartError("runtime health did not converge") from None
                 time.sleep(2)
 
-    def _rollback(self, previous: Subject, env_file: Path) -> None:
+    def _protocol_v2_lease_count(self) -> int:
+        result = self.runner.run(
+            [
+                *self.docker,
+                "exec",
+                "ai-platform-redis",
+                "redis-cli",
+                "--raw",
+                "EVAL",
+                ROLLBACK_PROTOCOL_V2_LEASE_PROBE,
+                "2",
+                ROLLBACK_PROCESSING_META_KEY,
+                ROLLBACK_RETRY_META_KEY,
+                str(ROLLBACK_LEASE_SCAN_LIMIT),
+            ],
+            output=True,
+            timeout=30,
+            environment=_docker_environment(),
+        )
+        try:
+            value = json.loads(result)
+            if not isinstance(value, dict) or value.get("status") != "ok":
+                raise ValueError
+            if set(value) != {"status", "processing", "retry", "total"}:
+                raise ValueError
+            processing = value["processing"]
+            retry = value["retry"]
+            total = value["total"]
+            if any(
+                isinstance(item, bool) or not isinstance(item, int) or item < 0
+                for item in (processing, retry, total)
+            ) or total > processing + retry:
+                raise ValueError
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise QuickstartError("protocol-v2 lease state could not be proven") from None
+        return total
+
+    def _retain_target_recovery_worker(self, subject: Subject, env_file: Path) -> None:
+        self._compose(
+            env_file,
+            subject,
+            "up",
+            "-d",
+            "--no-build",
+            "--pull",
+            "never",
+            "worker",
+        )
+
+    def _rollback(self, subject: Subject, previous: Subject, env_file: Path) -> None:
+        self._compose(env_file, subject, "stop", "api", "worker")
+        try:
+            protocol_v2_leases = self._protocol_v2_lease_count()
+        except (OSError, subprocess.SubprocessError, QuickstartError):
+            self._retain_target_recovery_worker(subject, env_file)
+            raise RollbackBlockedError(
+                "image rollback blocked because protocol-v2 lease state could not be proven; "
+                "the API remains stopped and the target recovery worker is running"
+            ) from None
+        if protocol_v2_leases:
+            self._retain_target_recovery_worker(subject, env_file)
+            raise RollbackBlockedError(
+                "image rollback blocked by active protocol-v2 leases; the API remains stopped "
+                "and the target recovery worker is running"
+            )
         previous_repo = self.root / "releases" / previous.commit
         self._verify_checkout(previous_repo, previous.commit)
         current_repo, self.repo = self.repo, previous_repo
@@ -448,7 +579,9 @@ class Quickstart:
             self._wait_health(subject)
         except (OSError, subprocess.SubprocessError, QuickstartError, KeyboardInterrupt):
             try:
-                self._rollback(previous, env_file)
+                self._rollback(subject, previous, env_file)
+            except RollbackBlockedError as exc:
+                raise QuickstartError(f"startup failed; {exc}") from None
             except (OSError, subprocess.SubprocessError, QuickstartError, KeyboardInterrupt):
                 raise QuickstartError("startup and rollback failed; data volumes were preserved") from None
             raise QuickstartError(
