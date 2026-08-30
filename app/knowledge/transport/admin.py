@@ -10,9 +10,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.knowledge.application.control_plane import configured_knowledge_control_plane
-from app.knowledge.domain import KnowledgeError
-from app.platform.credentials.vault import PlatformCredentialError
-from app.validation import assert_safe_id
+from app.knowledge.domain import KnowledgeError, canonical_knowledge_source_id
 
 
 PrincipalDependency = Callable[..., Any]
@@ -154,7 +152,7 @@ def _http_error(exc: Exception) -> HTTPException:
 async def _call(awaitable: Any) -> Any:
     try:
         return await awaitable
-    except (KnowledgeError, PlatformCredentialError) as exc:
+    except KnowledgeError as exc:
         raise _http_error(exc) from exc
 
 
@@ -370,10 +368,10 @@ def build_knowledge_admin_router(
             raise HTTPException(status_code=422, detail="knowledge_builder_selection_invalid")
         try:
             selected_source_ids = [
-                assert_safe_id(value.strip(), "selected_source_id")
+                canonical_knowledge_source_id(value)
                 for value in selected_source_id
             ]
-        except ValueError as exc:
+        except KnowledgeError as exc:
             raise HTTPException(
                 status_code=422,
                 detail="knowledge_builder_selection_invalid",

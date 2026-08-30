@@ -10,19 +10,15 @@ from typing import Any, Awaitable, Callable, Protocol
 import unicodedata
 import uuid
 
-from app.department_directory import (
-    DepartmentDirectoryError,
-    validate_distribution_department_authorities,
-)
 from app.knowledge.domain import (
     KnowledgeConnectionDefinition,
     KnowledgeError,
     ProviderCatalogSnapshot,
     canonical_connection_name,
+    canonical_knowledge_role_id,
+    canonical_knowledge_user_id,
     canonical_origin,
 )
-from app.platform.credentials.vault import credential_fingerprint
-from app.validation import assert_safe_id, assert_safe_principal_user_id
 
 
 class TransactionFactory(Protocol):
@@ -104,14 +100,15 @@ class KnowledgeControlPlane:
         credential_vault: CredentialVault,
         audit_writer: AuditWriter,
         providers: tuple[KnowledgeCatalogProvider, ...],
-        department_directory_provider: Callable[[], Awaitable[Any]] | None = None,
+        department_authority_validator: Callable[[list[str]], Awaitable[list[str]]]
+        | None = None,
     ) -> None:
         self._transaction = transaction_factory
         self._settings_provider = settings_provider
         self._repository = repository
         self._credential_vault = credential_vault
         self._audit_writer = audit_writer
-        self._department_directory_provider = department_directory_provider
+        self._department_authority_validator = department_authority_validator
         self._providers = {provider.provider_key: provider for provider in providers}
         if set(self._providers) != {provider.provider_key for provider in providers}:
             raise RuntimeError("knowledge_provider_registry_duplicate")
@@ -143,6 +140,10 @@ class KnowledgeControlPlane:
             ).encode("utf-8")
         ).hexdigest()
 
+    @staticmethod
+    def _credential_fingerprint(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
     async def create_connection(
         self,
         *,
@@ -158,7 +159,7 @@ class KnowledgeControlPlane:
         request_hash = self._request_hash(
             {
                 "base_url": normalized_url,
-                "credential_fingerprint": credential_fingerprint(credential.strip()),
+                "credential_fingerprint": self._credential_fingerprint(credential.strip()),
                 "name": normalized_name,
                 "provider_key": "ragflow",
             }
@@ -223,7 +224,7 @@ class KnowledgeControlPlane:
                 tenant_id=tenant_id,
                 connection_id=connection_id,
                 operation_id=operation_id,
-                credential_fingerprint=credential_fingerprint(credential.strip()),
+                credential_fingerprint=self._credential_fingerprint(credential.strip()),
             )
             if connection is None:
                 return None
@@ -810,18 +811,12 @@ class KnowledgeControlPlane:
         preserved_users = source.get("allowed_user_ids", []) if visibility == "restricted" else []
         normalized_roles: list[str] = []
         for value in preserved_roles:
-            try:
-                candidate = assert_safe_id(value.strip().casefold(), "role_id")
-            except ValueError as exc:
-                raise KnowledgeError("knowledge_source_acl_identity_invalid") from exc
+            candidate = canonical_knowledge_role_id(value)
             if candidate not in normalized_roles:
                 normalized_roles.append(candidate)
         normalized_users: list[str] = []
         for value in preserved_users:
-            try:
-                candidate = assert_safe_principal_user_id(value.strip(), "user_id")
-            except ValueError as exc:
-                raise KnowledgeError("knowledge_source_acl_identity_invalid") from exc
+            candidate = canonical_knowledge_user_id(value)
             if candidate not in normalized_users:
                 normalized_users.append(candidate)
         normalized = [
@@ -834,21 +829,11 @@ class KnowledgeControlPlane:
         if visibility == "restricted" and not any(normalized):
             raise KnowledgeError("knowledge_source_acl_scope_required")
         if normalized[0]:
-            if self._department_directory_provider is None:
+            if self._department_authority_validator is None:
                 raise KnowledgeError("knowledge_source_acl_identity_authority_unavailable")
-            try:
-                directory = await self._department_directory_provider()
-                normalized[0] = tuple(
-                    validate_distribution_department_authorities(
-                        list(normalized[0]),
-                        directory,
-                    )
-                )
-            except DepartmentDirectoryError as exc:
-                code = str(exc)
-                if code == "capability_distribution_department_authority_invalid":
-                    raise KnowledgeError("knowledge_source_acl_identity_invalid") from exc
-                raise KnowledgeError("knowledge_source_acl_identity_authority_unavailable") from exc
+            normalized[0] = tuple(
+                await self._department_authority_validator(list(normalized[0]))
+            )
         content_hash = self._request_hash(
             {
                 "department_ids": normalized[0],

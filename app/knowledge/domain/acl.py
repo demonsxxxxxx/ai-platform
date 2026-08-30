@@ -3,9 +3,35 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Iterable, Literal
 
+from .connection import KnowledgeError
+
 KnowledgeVisibility = Literal["enterprise", "restricted"]
+_SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_SAFE_USER_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,127}$")
+
+
+def canonical_knowledge_source_id(value: str) -> str:
+    candidate = value.strip()
+    if not _SAFE_ID_PATTERN.fullmatch(candidate):
+        raise KnowledgeError("knowledge_builder_selection_invalid")
+    return candidate
+
+
+def canonical_knowledge_role_id(value: str) -> str:
+    candidate = value.strip().casefold()
+    if not _SAFE_ID_PATTERN.fullmatch(candidate):
+        raise KnowledgeError("knowledge_source_acl_identity_invalid")
+    return candidate
+
+
+def canonical_knowledge_user_id(value: str) -> str:
+    candidate = value.strip()
+    if not _SAFE_USER_ID_PATTERN.fullmatch(candidate) or ".." in candidate:
+        raise KnowledgeError("knowledge_source_acl_identity_invalid")
+    return candidate
 
 
 def _normalized(values: Iterable[str]) -> frozenset[str]:

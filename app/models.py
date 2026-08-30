@@ -1,15 +1,8 @@
 from typing import Any, ClassVar, Literal
 from uuid import RFC_4122, UUID
 
-from pydantic import (
-    AliasChoices,
-    BaseModel,
-    ConfigDict,
-    Field,
-    PrivateAttr,
-    field_validator,
-    model_validator,
-)
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import field_validator, model_validator
 
 from app.control_plane_contracts import (
     HARNESS_CHAT_EXECUTOR_TYPE,

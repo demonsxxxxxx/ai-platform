@@ -1,4 +1,10 @@
-from .acl import KnowledgeAcl, KnowledgeVisibility
+from .acl import (
+    KnowledgeAcl,
+    KnowledgeVisibility,
+    canonical_knowledge_role_id,
+    canonical_knowledge_source_id,
+    canonical_knowledge_user_id,
+)
 from .connection import (
     KnowledgeConnectionDefinition,
     KnowledgeError,
@@ -16,6 +22,9 @@ from .retrieval import (
 __all__ = [
     "KnowledgeAcl",
     "KnowledgeVisibility",
+    "canonical_knowledge_role_id",
+    "canonical_knowledge_source_id",
+    "canonical_knowledge_user_id",
     "KnowledgeConnectionDefinition",
     "KnowledgeError",
     "ProviderCatalogSnapshot",

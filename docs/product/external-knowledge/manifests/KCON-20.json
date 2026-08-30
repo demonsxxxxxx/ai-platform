@@ -42,6 +42,7 @@
     "app/bootstrap/knowledge.py",
     "app/knowledge/application/__init__.py",
     "app/knowledge/application/control_plane.py",
+    "app/knowledge/infrastructure/credential_vault.py",
     "app/knowledge/transport/__init__.py",
     "app/knowledge/transport/admin.py",
     "app/main.py",

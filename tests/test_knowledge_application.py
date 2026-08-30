@@ -5,13 +5,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.department_directory import normalize_department_directory
+from app.department_directory import (
+    normalize_department_directory,
+    validate_distribution_department_authorities,
+)
 from app.knowledge.application.control_plane import KnowledgeControlPlane
 from app.knowledge.domain import (
     KnowledgeError,
     ProviderCatalogSnapshot,
     ProviderSourceRecord,
 )
+from app.knowledge.infrastructure.credential_vault import KnowledgeCredentialVault
+from app.platform.credentials.vault import PlatformCredentialError
 
 
 @asynccontextmanager
@@ -58,7 +63,7 @@ def _service(*, repository, provider=None, vault=None, audit=None, directory=Non
         credential_vault=vault or _Vault(),
         audit_writer=audit or _Audit(),
         providers=(provider or _Provider(),),
-        department_directory_provider=directory,
+        department_authority_validator=directory,
     )
 
 
@@ -67,6 +72,18 @@ def test_catalog_snapshot_rejects_duplicate_provider_identities() -> None:
 
     with pytest.raises(KnowledgeError, match="knowledge_provider_catalog_invalid"):
         ProviderCatalogSnapshot(records=(duplicate, duplicate), page_count=1)
+
+
+@pytest.mark.asyncio
+async def test_knowledge_credential_adapter_translates_platform_failures() -> None:
+    class Vault:
+        async def store(self, _conn, **_kwargs):
+            raise PlatformCredentialError("platform_credential_key_invalid")
+
+    adapter = KnowledgeCredentialVault(Vault())
+
+    with pytest.raises(KnowledgeError, match="platform_credential_key_invalid"):
+        await adapter.store(object(), value="secret")
 
 
 @pytest.mark.asyncio
@@ -179,8 +196,8 @@ async def test_department_acl_update_preserves_existing_role_and_user_scopes() -
             self.replacement = kwargs
             return {**source, "authorization_version": 2, "visibility": "restricted"}
 
-    async def directory():
-        return normalize_department_directory(
+    async def directory(values: list[str]) -> list[str]:
+        authority = normalize_department_directory(
             [
                 {
                     "value": "100",
@@ -190,6 +207,7 @@ async def test_department_acl_update_preserves_existing_role_and_user_scopes() -
                 }
             ]
         )
+        return validate_distribution_department_authorities(values, authority)
 
     repository = Repository()
     service = _service(repository=repository, directory=directory)
