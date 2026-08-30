@@ -265,6 +265,9 @@ async def test_concurrent_migrations_serialize_and_apply_schema_once():
     assert state.schema_execute_count == 1
     assert state.index_execute_count == len(schema_migrations.CONCURRENT_INDEX_MIGRATIONS)
     assert state.ledger[schema_migrations.TARGET_SCHEMA_VERSION] == schema_migrations.schema_checksum()
+    assert {
+        row["target_version"] for row in state.index_ledger.values()
+    } == {schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION}
 
 
 @pytest.mark.asyncio
@@ -644,6 +647,12 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "chk_sandbox_leases_executor_reconciliation_status",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert schema_migrations.CRITICAL_TRIGGERS == (
+        (
+            "run_attempts",
+            "trg_run_attempt_heartbeat_monotonicity_guard",
+            "ai_platform_guard_run_attempt_heartbeat_monotonicity",
+            19,
+        ),
         (
             "run_attempts",
             "trg_run_attempt_transition_guard",
@@ -1041,7 +1050,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "63f6fe428c51631d844a375149b1c76527338d4889c6f0cbe30893fe8c3a774b"
+        "71a56fcac63635e51a2372a1de30f4c7cd0b3d3db7d3d8bacaec2bcbcba6e4ce"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import urllib.request
 from http.client import BadStatusLine
 from pathlib import Path
@@ -624,7 +625,108 @@ def test_protocol_v2_lease_probe_fails_closed(
         release._protocol_v2_lease_count()
 
 
-def test_rollback_with_v2_lease_keeps_api_stopped_and_target_worker_running(
+def test_recovery_worker_sample_proves_exact_runtime_and_live_heartbeat(
+    tmp_path: Path,
+) -> None:
+    container_id = "a" * 64
+    expected_config = ",".join(str(tmp_path / path) for path in quickstart.COMPOSE_FILES)
+    commands: list[list[str]] = []
+
+    class RecoveryRunner(quickstart.Runner):
+        def run(self, command: object, **_: object) -> str:
+            command = list(command)
+            commands.append(command)
+            if "inspect" in command:
+                return "\t".join(
+                    (
+                        container_id,
+                        COMMIT,
+                        BACKEND,
+                        "0",
+                        "running",
+                        quickstart.PROJECT,
+                        "worker",
+                        expected_config,
+                    )
+                )
+            return json.dumps(
+                {
+                    "status": "ok",
+                    "worker_id": "worker-a",
+                    "pid": 17,
+                    "observed_at": 101.0,
+                }
+            )
+
+    release = quickstart.Quickstart(tmp_path, runner=RecoveryRunner())
+    release.docker = ["docker"]
+
+    sample = release._recovery_worker_sample(
+        quickstart.Subject(COMMIT, BACKEND, FRONTEND),
+        not_before=100.0,
+    )
+
+    assert sample == quickstart.RecoveryWorkerSample(
+        container_id=container_id,
+        restart_count=0,
+        worker_id="worker-a",
+        pid=17,
+        observed_at=101.0,
+    )
+    assert commands[1][2:6] == [container_id, "python", "-I", "-c"]
+    assert commands[1][-2:] == [COMMIT, "100.0"]
+
+
+def test_recovery_worker_wait_requires_stable_identity_and_advancing_heartbeat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = quickstart.Quickstart(tmp_path, health_timeout=10)
+    samples = iter(
+        (
+            quickstart.RecoveryWorkerSample("a" * 64, 0, "worker-a", 17, 101.0),
+            quickstart.RecoveryWorkerSample("a" * 64, 0, "worker-a", 17, 101.0),
+            quickstart.RecoveryWorkerSample("a" * 64, 0, "worker-a", 17, 106.0),
+        )
+    )
+    calls = 0
+
+    def sample(*_args: object, **_kwargs: object) -> quickstart.RecoveryWorkerSample:
+        nonlocal calls
+        calls += 1
+        return next(samples)
+
+    monkeypatch.setattr(release, "_recovery_worker_sample", sample)
+    monkeypatch.setattr(quickstart.time, "sleep", lambda _seconds: None)
+
+    release._wait_recovery_worker(
+        quickstart.Subject(COMMIT, BACKEND, FRONTEND),
+        not_before=100.0,
+    )
+
+    assert calls == 3
+
+
+def test_recovery_worker_wait_fails_closed_without_heartbeat_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = quickstart.Quickstart(tmp_path, health_timeout=0)
+    sample = quickstart.RecoveryWorkerSample("a" * 64, 0, "worker-a", 17, 101.0)
+    monkeypatch.setattr(
+        release,
+        "_recovery_worker_sample",
+        lambda *_args, **_kwargs: sample,
+    )
+
+    with pytest.raises(quickstart.QuickstartError, match="did not converge"):
+        release._wait_recovery_worker(
+            quickstart.Subject(COMMIT, BACKEND, FRONTEND),
+            not_before=100.0,
+        )
+
+
+def test_rollback_with_v2_lease_keeps_api_stopped_and_target_worker_verified(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -640,6 +742,14 @@ def test_rollback_with_v2_lease_keeps_api_stopped_and_target_worker_running(
         ),
     )
     monkeypatch.setattr(release, "_protocol_v2_lease_count", lambda: 1)
+    verified: list[tuple[str, float]] = []
+    monkeypatch.setattr(
+        release,
+        "_wait_recovery_worker",
+        lambda used_subject, *, not_before: verified.append(
+            (used_subject.commit, not_before)
+        ),
+    )
 
     with pytest.raises(quickstart.RollbackBlockedError, match="active protocol-v2 leases"):
         release._rollback(target, previous, tmp_path / ".env")
@@ -648,6 +758,8 @@ def test_rollback_with_v2_lease_keeps_api_stopped_and_target_worker_running(
         (COMMIT, "stop api worker"),
         (COMMIT, "up -d --no-build --pull never worker"),
     ]
+    assert len(verified) == 1
+    assert verified[0][0] == COMMIT
     assert release.repo == tmp_path.resolve()
 
 
@@ -684,6 +796,128 @@ def test_rollback_switches_images_only_after_proving_no_v2_leases(
         (OLD_COMMIT, "up -d --no-build --pull never", previous_repo),
         (OLD_COMMIT, "health", previous_repo),
     ]
+    assert release.repo == tmp_path.resolve()
+
+
+def test_interrupt_after_target_stop_restores_and_verifies_target_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, str]] = []
+    target = quickstart.Subject(COMMIT, BACKEND, FRONTEND)
+    previous = quickstart.Subject(OLD_COMMIT, BACKEND, FRONTEND)
+    release = quickstart.Quickstart(tmp_path, tmp_path / "managed")
+    monkeypatch.setattr(
+        release,
+        "_compose",
+        lambda _env, used_subject, *args: events.append(
+            (used_subject.commit, " ".join(args))
+        ),
+    )
+    monkeypatch.setattr(
+        release,
+        "_protocol_v2_lease_count",
+        lambda: (_ for _ in ()).throw(KeyboardInterrupt),
+    )
+    monkeypatch.setattr(release, "_wait_recovery_worker", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(quickstart.RollbackInterruptedError, match="worker was verified"):
+        release._rollback(target, previous, tmp_path / ".env")
+
+    assert events == [
+        (COMMIT, "stop api worker"),
+        (COMMIT, "stop api worker"),
+        (COMMIT, "up -d --no-build --pull never worker"),
+    ]
+
+
+def test_interrupt_during_previous_up_restores_and_verifies_target_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "managed"
+    previous_repo = root / "releases" / OLD_COMMIT
+    target = quickstart.Subject(COMMIT, BACKEND, FRONTEND)
+    previous = quickstart.Subject(OLD_COMMIT, BACKEND, FRONTEND)
+    release = quickstart.Quickstart(tmp_path, root)
+    events: list[tuple[str, str, Path]] = []
+    interrupted = False
+
+    def compose(_env: Path, used_subject: quickstart.Subject, *args: str) -> None:
+        nonlocal interrupted
+        events.append((used_subject.commit, " ".join(args), release.repo))
+        if used_subject == previous and args and args[0] == "up" and not interrupted:
+            interrupted = True
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(release, "_verify_checkout", lambda *_: None)
+    monkeypatch.setattr(release, "_protocol_v2_lease_count", lambda: 0)
+    monkeypatch.setattr(release, "_compose", compose)
+    monkeypatch.setattr(release, "_wait_recovery_worker", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(quickstart.RollbackInterruptedError, match="worker was verified"):
+        release._rollback(target, previous, tmp_path / ".env")
+
+    assert events == [
+        (COMMIT, "stop api worker", tmp_path.resolve()),
+        (OLD_COMMIT, "config --quiet", previous_repo),
+        (OLD_COMMIT, "up -d --no-build --pull never", previous_repo),
+        (COMMIT, "stop api worker", tmp_path.resolve()),
+        (COMMIT, "up -d --no-build --pull never worker", tmp_path.resolve()),
+    ]
+    assert release.repo == tmp_path.resolve()
+
+
+def test_signal_during_rollback_is_deferred_until_previous_runtime_is_healthy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "managed"
+    previous_repo = root / "releases" / OLD_COMMIT
+    target = quickstart.Subject(COMMIT, BACKEND, FRONTEND)
+    previous = quickstart.Subject(OLD_COMMIT, BACKEND, FRONTEND)
+    release = quickstart.Quickstart(tmp_path, root)
+    events: list[str] = []
+    handlers: dict[int, object] = {
+        signal.SIGINT: object(),
+        signal.SIGTERM: object(),
+    }
+
+    def install(signum: int, handler: object) -> object:
+        old = handlers[signum]
+        handlers[signum] = handler
+        return old
+
+    def probe() -> int:
+        handler = handlers[signal.SIGTERM]
+        assert callable(handler)
+        handler(signal.SIGTERM, None)
+        events.append("signal-latched")
+        return 0
+
+    monkeypatch.setattr(quickstart.signal, "signal", install)
+    monkeypatch.setattr(release, "_verify_checkout", lambda *_: None)
+    monkeypatch.setattr(release, "_protocol_v2_lease_count", probe)
+    monkeypatch.setattr(
+        release,
+        "_compose",
+        lambda _env, used_subject, *args: events.append(
+            f"{used_subject.commit}:{' '.join(args)}:{release.repo}"
+        ),
+    )
+    monkeypatch.setattr(
+        release,
+        "_wait_health",
+        lambda used_subject: events.append(
+            f"{used_subject.commit}:health:{release.repo}"
+        ),
+    )
+
+    with pytest.raises(quickstart.RollbackInterruptedError, match="verified safe runtime"):
+        release._rollback(target, previous, tmp_path / ".env")
+
+    assert events[-1] == f"{OLD_COMMIT}:health:{previous_repo}"
+    assert not callable(handlers[signal.SIGTERM])
     assert release.repo == tmp_path.resolve()
 
 
@@ -748,6 +982,8 @@ def test_runbook_exposes_the_zero_argument_quickstart() -> None:
     assert "./scripts/quickstart-s72.sh" in runbook
     assert "incoming/latest-main.json" in runbook
     assert "never runs `down`, `down -v`, or volume deletion" in runbook
+    assert "across two advancing fresh runtime heartbeats" in runbook
+    assert "saved previous binary's exact" in runbook
 
 
 def test_shell_entry_uses_python_isolated_mode() -> None:

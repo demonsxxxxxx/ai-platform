@@ -209,6 +209,7 @@ jobs:
             test_files: >-
               tests/test_governance_readiness.py
               tests/test_release_authority.py
+              tests/test_sandbox_quickstart.py
               tests/test_s75_opensandbox_transition.py
     env:
       BACKEND_TEST_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}

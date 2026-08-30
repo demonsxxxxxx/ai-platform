@@ -254,6 +254,11 @@ both queue processing and retry metadata for protocol-v2 leases. It performs one
 proves no v2 lease remains. If any processing or retry-only v2 lease remains, or
 the check is inconclusive, the API stays stopped, the exact target worker is
 restarted to recover stored work, and image rollback stops for operator action.
+Recovery is accepted only after the container retains the exact target commit,
+image, Compose identity, container identity, restart count, and process identity
+across two advancing fresh runtime heartbeats. Termination signals received after
+rollback begins are deferred until either that target recovery worker is verified
+or the previous runtime passes its complete health gate.
 Postgres, Redis, MinIO, and workspace volumes remain untouched.
 
 The backend artifact also contains the OpenSandbox executor application. The
@@ -285,9 +290,10 @@ operator-approved recovery before retrying image rollback.
 `ci_success` is the controller's admission result; the quickstart does not
 replace the controller's exact-run CI and packaging verification. Keep the
 selected managed env path stable across successive releases. The small image
-rollback only proves that the previous images became healthy again; it does not
-reverse database migrations, which must remain backward-compatible or use a
-separate operator recovery.
+rollback proves that the previous images became healthy again. Every schema
+change admitted to this path must also preserve the saved previous binary's exact
+schema-readiness contract; the real PostgreSQL compatibility test installs that
+exact base before applying the candidate schema.
 
 Before running, s72 must be able to reach both GitHub and GHCR through the
 operator-approved proxy. The quickstart only inherits standard proxy
