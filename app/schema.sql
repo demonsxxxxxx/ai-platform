@@ -769,12 +769,21 @@ begin
     raise exception 'run_attempt_queue_identity_immutable' using errcode = '23514';
   end if;
   if new.status is not distinct from old.status then
-    if new.owner_generation is distinct from old.owner_generation
-       or new.owner_kind is distinct from old.owner_kind
-       or new.owner_id is distinct from old.owner_id then
-      raise exception 'run_attempt_owner_transition_invalid' using errcode = '23514';
+    if new.owner_generation is not distinct from old.owner_generation
+       and new.owner_kind is not distinct from old.owner_kind
+       and new.owner_id is not distinct from old.owner_id then
+      return new;
     end if;
-    return new;
+    if old.status = 'cancel_requested'
+       and new.owner_kind = 'reconciler'
+       and new.owner_generation = old.owner_generation + 1
+       and (
+         new.owner_kind is distinct from old.owner_kind
+         or new.owner_id is distinct from old.owner_id
+       ) then
+      return new;
+    end if;
+    raise exception 'run_attempt_owner_transition_invalid' using errcode = '23514';
   end if;
   if new.owner_generation is distinct from old.owner_generation + 1 then
     raise exception 'run_attempt_owner_generation_invalid' using errcode = '23514';

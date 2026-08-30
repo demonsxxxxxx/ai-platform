@@ -151,6 +151,27 @@ def default_sandbox_cleanup(monkeypatch):
         assert worker_id
         return LeaseMutationOutcome("current")
 
+    async def assert_worker_run_attempt_current(*_args, **_kwargs):
+        return None
+
+    async def request_run_attempt_cancel(*_args, **_kwargs):
+        return None
+
+    async def terminalize_run_attempt(*_args, **_kwargs):
+        return None
+
+    async def prepare_stale_run_attempt_reconciliation(*_args, **_kwargs):
+        return None
+
+    async def get_latest_run_attempt(*_args, **_kwargs):
+        return None
+
+    async def terminalize_latest_run_attempt(*_args, **_kwargs):
+        return None
+
+    async def get_run(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr(
         "app.worker_main.cleanup_expired_sandbox_leases",
         cleanup_expired_sandbox_leases,
@@ -191,6 +212,31 @@ def default_sandbox_cleanup(monkeypatch):
         verify_lease_ownership,
         raising=False,
     )
+    monkeypatch.setattr(
+        "app.worker_main.assert_worker_run_attempt_current",
+        assert_worker_run_attempt_current,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.request_run_attempt_cancel",
+        request_run_attempt_cancel,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.terminalize_run_attempt",
+        terminalize_run_attempt,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.prepare_stale_run_attempt_reconciliation",
+        prepare_stale_run_attempt_reconciliation,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.get_latest_run_attempt",
+        get_latest_run_attempt,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.terminalize_latest_run_attempt",
+        terminalize_latest_run_attempt,
+    )
+    monkeypatch.setattr("app.worker_main.repositories.get_run", get_run)
     monkeypatch.setattr(
         "app.worker_main.build_worker_v4_runtime",
         lambda _transaction: _TestWorkerV4Runtime(),
@@ -359,8 +405,29 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
             {"tenant_id": "tenant-b", "run_id": "run-b"},
         ]
 
+    async def get_run(_conn, *, tenant_id, run_id, for_update):
+        assert for_update is True
+        if (tenant_id, run_id) == ("tenant-a", "run-a"):
+            return {"permission_terminalization_error_code": "worker_failed"}
+        return None
+
+    async def get_latest_attempt(_conn, *, tenant_id, run_id, for_update):
+        assert for_update is True
+        if (tenant_id, run_id) == ("tenant-a", "run-a"):
+            return {"id": "rat-a"}
+        return None
+
     async def drain(**kwargs):
-        calls.append(("drain", kwargs["tenant_id"], kwargs["run_id"], kwargs["max_batches"]))
+        calls.append(
+            (
+                "drain",
+                kwargs["tenant_id"],
+                kwargs["run_id"],
+                kwargs["max_batches"],
+                kwargs["attempt_id"],
+                kwargs["attempt_error_code"],
+            )
+        )
         return RunTerminalizationProgress(
             completed=kwargs["run_id"] == "run-a",
             status="failed",
@@ -380,6 +447,8 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
         _ORIGINAL_PERMISSION_TERMINALIZATION_MAINTENANCE,
     )
     monkeypatch.setattr("app.worker_main.repositories.list_runs_requiring_tool_permission_terminalization", list_runs)
+    monkeypatch.setattr("app.worker_main.repositories.get_run", get_run)
+    monkeypatch.setattr("app.worker_main.get_latest_run_attempt", get_latest_attempt)
     monkeypatch.setattr("app.worker_main.repositories.list_multi_agent_terminal_children_requiring_reconciliation", recovery_candidates)
     monkeypatch.setattr("app.worker_main.repositories.list_multi_agent_parent_runs_requiring_finalization", parent_recovery_candidates)
     monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
@@ -390,8 +459,8 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
 
     assert calls == [
         ("list", 2),
-        ("drain", "tenant-a", "run-a", 4),
-        ("drain", "tenant-b", "run-b", 4),
+        ("drain", "tenant-a", "run-a", 4, "rat-a", "worker_failed"),
+        ("drain", "tenant-b", "run-b", 4, None, None),
         ("recovery", 2),
         ("parent_recovery", 2),
     ]
@@ -621,8 +690,26 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
         calls.append(("stage", kwargs["run_id"], kwargs["expected_status"], kwargs["terminal_status"]))
         return {"tenant_id": "tenant-a", "run_id": "run-cancel", "terminal_status": "cancelled"}
 
+    async def prepare_attempt(_conn, **kwargs):
+        calls.append(
+            (
+                "attempt_prepare",
+                kwargs["run_id"],
+                kwargs["terminal_status"],
+                kwargs["reconciler_id"],
+            )
+        )
+        return {"id": "rat-run-cancel", "status": "cancel_requested"}
+
     async def drain(**kwargs):
-        calls.append(("drain", kwargs["tenant_id"], kwargs["run_id"]))
+        calls.append(
+            (
+                "drain",
+                kwargs["tenant_id"],
+                kwargs["run_id"],
+                kwargs["attempt_id"],
+            )
+        )
         return RunTerminalizationProgress(True, "cancelled", True, True)
 
     async def reconcile(**kwargs):
@@ -637,6 +724,10 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
     monkeypatch.setattr("app.worker_main.queue.acquire_run_reconciliation_fence", acquire_fence)
     monkeypatch.setattr("app.worker_main.queue.release_run_reconciliation_fence", release_fence)
     monkeypatch.setattr("app.worker_main.stage_stale_run_reconciliation", stage)
+    monkeypatch.setattr(
+        "app.worker_main.prepare_stale_run_attempt_reconciliation",
+        prepare_attempt,
+    )
     monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
     monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
 
@@ -649,7 +740,13 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
     ]
     assert ("fence", "tenant-a", "run-cancel", 500, 300) in calls
     assert ("stage", "run-cancel", "running", "cancelled") in calls
-    assert ("drain", "tenant-a", "run-cancel") in calls
+    assert (
+        "attempt_prepare",
+        "run-cancel",
+        "cancelled",
+        "stale-run-maintenance",
+    ) in calls
+    assert ("drain", "tenant-a", "run-cancel", "rat-run-cancel") in calls
     assert ("reconcile", "tenant-a", "run-cancel") in calls
     assert ("release", "token") in calls
 
@@ -1516,6 +1613,7 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
     terminal_call,
 ):
     calls = []
+    pending_attempts = []
     payload = {
         "tenant_id": "tenant-a",
         "workspace_id": "workspace-a",
@@ -1553,11 +1651,30 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
             calls.append(("tx_exit", exc_type))
             return False
 
+    class PendingAdmissions(_EmptyV4PendingAdmissions):
+        async def prepare_pending_authority_in_transaction(
+            self,
+            _transaction,
+            *,
+            tenant_id,
+            run_id,
+            attempt_id,
+        ):
+            pending_attempts.append(attempt_id)
+
+    capabilities = SimpleNamespace(
+        authority=_TEST_V4_CAPABILITIES.authority,
+        pending_admissions=PendingAdmissions(),
+        publication_claims=_TEST_V4_CAPABILITIES.publication_claims,
+        publication_transport=_TEST_V4_CAPABILITIES.publication_transport,
+        event_persistence=_TEST_V4_CAPABILITIES.event_persistence,
+    )
+
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
         return QueueMessage(raw="raw-run", payload=payload, message_id="msg-a", queue_message_id="msg-a", attempt_id="qat-test-attempt", owner_token="qown-test-owner")
 
     async def process_run_payload(payload, registry=None, worker_id=None, *, v4_capabilities=None):
-        assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert v4_capabilities is capabilities
         raise RuntimeError("snapshot persistence failed")
 
     async def get_run(_conn, *, tenant_id, run_id, for_update):
@@ -1617,6 +1734,7 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
         heartbeat_interval_seconds=60,
         run_initial_maintenance=False,
         run_background_maintenance=False,
+        v4_capabilities=capabilities,
     )
 
     assert outcome.status == expected_status
@@ -1628,6 +1746,13 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
     else:
         assert any(call[0] == terminal_call for call in calls)
         assert ("reconcile", "tenant-a", "run-a", expected_status) in calls
+        assert pending_attempts == [
+            worker_main.run_attempt_id_for_queue_attempt(
+                tenant_id="tenant-a",
+                run_id="run-a",
+                queue_attempt_id="qat-test-attempt",
+            )
+        ]
     if terminal_call == "fail":
         failure = next(call for call in calls if call[0] == "fail")
         assert failure[3:] == (

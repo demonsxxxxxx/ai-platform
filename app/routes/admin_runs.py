@@ -183,6 +183,7 @@ async def admin_run_cancel(
             run_id=run_id,
             capabilities=runtime.worker_capabilities,
             transaction_factory=transaction,
+            attempt_id=cancellation.attempt_id if cancellation is not None else None,
         )
         if progress is not None and progress.is_terminal():
             progressed_status = str(progress.status or result["status"])

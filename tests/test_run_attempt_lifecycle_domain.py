@@ -10,6 +10,7 @@ from app.runs.api import (
     TERMINAL_RUN_ATTEMPT_STATUSES,
     RunAttemptTransitionError,
     decide_run_attempt_transition,
+    run_attempt_id_for_queue_attempt,
 )
 
 
@@ -45,6 +46,23 @@ def test_run_attempt_status_sets_are_exact_and_immutable():
     assert RUN_ATTEMPT_OWNER_KINDS == frozenset(
         {"queue_worker", "reconciler", "operator"}
     )
+
+
+def test_run_attempt_id_is_stable_and_distinct_from_queue_identity():
+    first = run_attempt_id_for_queue_attempt(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        queue_attempt_id="qat-a",
+    )
+    replay = run_attempt_id_for_queue_attempt(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        queue_attempt_id="qat-a",
+    )
+
+    assert first == replay
+    assert first.startswith("rat_")
+    assert first != "qat-a"
 
 
 def test_run_attempt_database_status_constraint_matches_domain_authority():

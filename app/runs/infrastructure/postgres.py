@@ -16,6 +16,7 @@ from app.runs.domain.attempt_lifecycle import (
     RUN_ATTEMPT_OWNER_KINDS,
     TERMINAL_RUN_ATTEMPT_STATUSES,
     decide_run_attempt_transition,
+    run_attempt_id_for_queue_attempt,
 )
 from app.runs.domain.execution_spec import ExecutionSpec
 from app.runs.domain.model_snapshot import legacy_queue_model_snapshot
@@ -45,9 +46,9 @@ async def load_current_terminal_event_fact(
 ) -> RunTerminalEventFact | None:
     """Lock and return the current terminal Run fact.
 
-    Active SSE attempt identity remains owned by the Streaming authority. The
-    additive ``run_attempts`` foundation is not a worker lifecycle authority
-    until its separately governed dual-write cutover.
+    Streaming remains the publication authority. Worker-owned executions use
+    the durable attempt identity while legacy pre-attempt terminal paths may
+    still publish from the compatible Run projection during the cutover.
     """
 
     cursor = await conn.execute(
@@ -131,6 +132,195 @@ async def create_run_attempt(
     if row is None:
         raise RepositoryConflictError("run_attempt_create_conflict")
     return dict(row)
+
+
+async def get_run_attempt_for_queue_attempt(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    queue_attempt_id: str,
+    for_update: bool = False,
+) -> dict[str, Any] | None:
+    """Return the durable attempt mapped to one exact queue lease attempt."""
+
+    lock_clause = "for update" if for_update else ""
+    cursor = await conn.execute(
+        f"""
+        select *
+        from run_attempts
+        where tenant_id = %s
+          and run_id = %s
+          and queue_attempt_id = %s
+        {lock_clause}
+        """,
+        (tenant_id, run_id, queue_attempt_id),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
+async def get_run_attempt(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    for_update: bool = False,
+) -> dict[str, Any] | None:
+    """Return one durable attempt by its Runs-owned identity."""
+
+    lock_clause = "for update" if for_update else ""
+    cursor = await conn.execute(
+        f"""
+        select *
+        from run_attempts
+        where tenant_id = %s
+          and run_id = %s
+          and id = %s
+        {lock_clause}
+        """,
+        (tenant_id, run_id, attempt_id),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
+async def get_latest_run_attempt(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    for_update: bool = False,
+) -> dict[str, Any] | None:
+    """Return the highest durable attempt ordinal for one Run."""
+
+    lock_clause = "for update" if for_update else ""
+    cursor = await conn.execute(
+        f"""
+        select *
+        from run_attempts
+        where tenant_id = %s and run_id = %s
+        order by ordinal desc
+        limit 1
+        {lock_clause}
+        """,
+        (tenant_id, run_id),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
+async def lock_queued_run_for_attempt(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+) -> dict[str, Any] | None:
+    """Lock one session-consistent queued Run without projecting it to running."""
+
+    cursor = await conn.execute(
+        """
+        select runs.id, runs.tenant_id, runs.workspace_id, runs.user_id,
+               runs.session_id, runs.agent_id, runs.execution_kind,
+               runs.skill_id, runs.trace_id,
+               runs.principal_roles, runs.principal_department_id, runs.auth_source,
+               runs.admitted_agent_profile_revision,
+               runs.admitted_agent_profile_hash,
+               sessions.admitted_agent_profile_revision
+                 as session_admitted_agent_profile_revision,
+               sessions.admitted_agent_profile_hash
+                 as session_admitted_agent_profile_hash,
+               runs.input_json
+        from runs
+        join sessions
+          on sessions.id = runs.session_id
+         and sessions.tenant_id = runs.tenant_id
+         and sessions.workspace_id = runs.workspace_id
+         and sessions.user_id = runs.user_id
+         and sessions.agent_id = runs.agent_id
+        where runs.tenant_id = %s
+          and runs.id = %s
+          and runs.status = 'queued'
+        for update of runs
+        """,
+        (tenant_id, run_id),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
+async def start_worker_run_attempt(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    queue_attempt_id: str,
+    worker_id: str,
+    execution_spec: ExecutionSpec,
+) -> dict[str, Any]:
+    """Create and advance one worker-owned attempt through the dispatch boundary."""
+
+    owner_kind, owner_id = _validated_attempt_owner(
+        owner_kind="queue_worker",
+        owner_id=worker_id,
+    )
+    existing = await get_run_attempt_for_queue_attempt(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        queue_attempt_id=queue_attempt_id,
+        for_update=True,
+    )
+    if existing is not None:
+        if (
+            str(existing.get("status") or "") == "running"
+            and str(existing.get("owner_kind") or "") == owner_kind
+            and str(existing.get("owner_id") or "") == owner_id
+            and str(existing.get("execution_spec_sha256") or "")
+            == execution_spec.spec_sha256
+        ):
+            return existing
+        raise RepositoryConflictError("run_attempt_worker_start_conflict")
+
+    ordinal_cursor = await conn.execute(
+        """
+        select coalesce(max(ordinal), 0) + 1 as next_ordinal
+        from run_attempts
+        where tenant_id = %s and run_id = %s
+        """,
+        (tenant_id, run_id),
+    )
+    ordinal_row = await ordinal_cursor.fetchone()
+    ordinal = int(ordinal_row["next_ordinal"] if ordinal_row else 1)
+    attempt = await create_run_attempt(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        attempt_id=run_attempt_id_for_queue_attempt(
+            tenant_id=tenant_id,
+            run_id=run_id,
+            queue_attempt_id=queue_attempt_id,
+        ),
+        ordinal=ordinal,
+        owner_kind=owner_kind,
+        owner_id=owner_id,
+        queue_attempt_id=queue_attempt_id,
+        execution_spec=execution_spec,
+    )
+    for requested_status in ("queued", "claimed", "running"):
+        attempt = await transition_run_attempt(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=str(attempt["id"]),
+            expected_status=str(attempt["status"]),
+            requested_status=requested_status,
+            expected_owner_kind=str(attempt["owner_kind"]),
+            expected_owner_id=str(attempt["owner_id"]),
+            expected_owner_generation=int(attempt["owner_generation"]),
+        )
+    return attempt
 
 
 async def transition_run_attempt(
@@ -312,6 +502,273 @@ async def transition_run_attempt(
     if row is None:
         raise RepositoryConflictError("run_attempt_transition_conflict")
     return dict(row)
+
+
+def _assert_worker_attempt_owner(
+    row: dict[str, Any],
+    *,
+    queue_attempt_id: str,
+    worker_id: str,
+) -> None:
+    if (
+        str(row.get("queue_attempt_id") or "") != queue_attempt_id
+        or str(row.get("owner_kind") or "") != "queue_worker"
+        or str(row.get("owner_id") or "") != worker_id
+    ):
+        raise RepositoryConflictError("run_attempt_worker_authority_stale")
+
+
+async def assert_worker_run_attempt_current(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    queue_attempt_id: str,
+    worker_id: str,
+) -> dict[str, Any] | None:
+    """Fence one worker write against its exact durable attempt owner."""
+
+    row = await get_run_attempt_for_queue_attempt(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        queue_attempt_id=queue_attempt_id,
+        for_update=True,
+    )
+    if row is None:
+        return None
+    _assert_worker_attempt_owner(
+        row,
+        queue_attempt_id=queue_attempt_id,
+        worker_id=worker_id,
+    )
+    if str(row.get("status") or "") in TERMINAL_RUN_ATTEMPT_STATUSES:
+        raise RepositoryConflictError("run_attempt_worker_authority_terminal")
+    return row
+
+
+async def request_run_attempt_cancel(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    next_owner_kind: str | None = None,
+    next_owner_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Advance one active attempt to cancel_requested before Run cancellation."""
+
+    if (next_owner_kind is None) is not (next_owner_id is None):
+        raise ValueError("run_attempt_next_owner_incomplete")
+    row = await get_run_attempt(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        for_update=True,
+    )
+    if row is None:
+        return None
+    status = str(row.get("status") or "")
+    if status == "cancel_requested":
+        if next_owner_kind is None or next_owner_id is None:
+            return row
+        next_owner = _validated_attempt_owner(
+            owner_kind=next_owner_kind,
+            owner_id=next_owner_id,
+        )
+        current_owner = _validated_attempt_owner(
+            owner_kind=str(row["owner_kind"]),
+            owner_id=str(row["owner_id"]),
+        )
+        if next_owner == current_owner:
+            return row
+        if next_owner[0] != "reconciler":
+            raise ValueError("run_attempt_cancel_takeover_reconciler_required")
+        cursor = await conn.execute(
+            """
+            update run_attempts
+            set owner_kind = %s,
+                owner_id = %s,
+                owner_generation = owner_generation + 1,
+                updated_at = now()
+            where tenant_id = %s
+              and run_id = %s
+              and id = %s
+              and status = 'cancel_requested'
+              and owner_kind = %s
+              and owner_id = %s
+              and owner_generation = %s
+            returning *
+            """,
+            (
+                next_owner[0],
+                next_owner[1],
+                tenant_id,
+                run_id,
+                attempt_id,
+                current_owner[0],
+                current_owner[1],
+                int(row["owner_generation"]),
+            ),
+        )
+        transferred = await cursor.fetchone()
+        if transferred is None:
+            raise RepositoryConflictError("run_attempt_cancel_takeover_conflict")
+        return dict(transferred)
+    if status in TERMINAL_RUN_ATTEMPT_STATUSES:
+        return row
+    if status in {"created", "queued"}:
+        return row
+    if status not in {"claimed", "running"}:
+        raise RepositoryConflictError("run_attempt_cancel_request_conflict")
+    return await transition_run_attempt(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        expected_status=status,
+        requested_status="cancel_requested",
+        expected_owner_kind=str(row["owner_kind"]),
+        expected_owner_id=str(row["owner_id"]),
+        expected_owner_generation=int(row["owner_generation"]),
+        next_owner_kind=next_owner_kind,
+        next_owner_id=next_owner_id,
+    )
+
+
+async def terminalize_run_attempt(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    status: str,
+    terminal_reason: str,
+    error_code: str | None = None,
+) -> dict[str, Any] | None:
+    """Mirror one committed Run terminal fact onto the exact durable attempt."""
+
+    if status not in TERMINAL_RUN_ATTEMPT_STATUSES:
+        raise ValueError("run_attempt_terminal_status_invalid")
+    row = await get_run_attempt(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        for_update=True,
+    )
+    if row is None:
+        return None
+    current_status = str(row.get("status") or "")
+    if current_status in TERMINAL_RUN_ATTEMPT_STATUSES and current_status != status:
+        raise RepositoryConflictError("run_attempt_terminal_projection_conflict")
+    if status == "cancelled" and current_status in {"claimed", "running"}:
+        raise RepositoryConflictError("run_attempt_cancel_request_missing")
+    return await transition_run_attempt(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        expected_status=current_status,
+        requested_status=status,
+        expected_owner_kind=str(row["owner_kind"]),
+        expected_owner_id=str(row["owner_id"]),
+        expected_owner_generation=int(row["owner_generation"]),
+        terminal_reason=terminal_reason,
+        error_code=error_code,
+    )
+
+
+async def prepare_stale_run_attempt_reconciliation(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    terminal_status: str,
+    reconciler_id: str,
+) -> dict[str, Any] | None:
+    """Fence an ownerless current attempt before a stale Run is terminalized."""
+
+    if terminal_status not in {"failed", "cancelled"}:
+        raise ValueError("run_attempt_reconciliation_terminal_status_invalid")
+    owner_kind, owner_id = _validated_attempt_owner(
+        owner_kind="reconciler",
+        owner_id=reconciler_id,
+    )
+    attempt = await get_latest_run_attempt(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        for_update=True,
+    )
+    if attempt is None:
+        return None
+    status = str(attempt.get("status") or "")
+    if status in TERMINAL_RUN_ATTEMPT_STATUSES:
+        raise RepositoryConflictError("run_attempt_reconciliation_terminal_conflict")
+
+    if terminal_status == "cancelled":
+        if status in {"claimed", "running", "cancel_requested"}:
+            return await request_run_attempt_cancel(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                attempt_id=str(attempt["id"]),
+                next_owner_kind=owner_kind,
+                next_owner_id=owner_id,
+            )
+        if status in {"created", "queued", "expired"}:
+            return attempt
+        raise RepositoryConflictError("run_attempt_reconciliation_cancel_conflict")
+
+    if status == "created":
+        attempt = await transition_run_attempt(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=str(attempt["id"]),
+            expected_status=status,
+            requested_status="queued",
+            expected_owner_kind=str(attempt["owner_kind"]),
+            expected_owner_id=str(attempt["owner_id"]),
+            expected_owner_generation=int(attempt["owner_generation"]),
+            next_owner_kind=owner_kind,
+            next_owner_id=owner_id,
+        )
+        status = "queued"
+    if status == "queued":
+        attempt = await transition_run_attempt(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=str(attempt["id"]),
+            expected_status=status,
+            requested_status="claimed",
+            expected_owner_kind=str(attempt["owner_kind"]),
+            expected_owner_id=str(attempt["owner_id"]),
+            expected_owner_generation=int(attempt["owner_generation"]),
+            next_owner_kind=owner_kind,
+            next_owner_id=owner_id,
+        )
+        status = "claimed"
+    if status in {"claimed", "running"}:
+        return await transition_run_attempt(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=str(attempt["id"]),
+            expected_status=status,
+            requested_status="expired",
+            expected_owner_kind=str(attempt["owner_kind"]),
+            expected_owner_id=str(attempt["owner_id"]),
+            expected_owner_generation=int(attempt["owner_generation"]),
+            next_owner_kind=owner_kind,
+            next_owner_id=owner_id,
+        )
+    if status == "expired":
+        return attempt
+    raise RepositoryConflictError("run_attempt_reconciliation_failure_conflict")
 
 
 async def count_active_runs_for_user(
@@ -820,21 +1277,13 @@ class PostgresRunCancellationPersistence:
         row = await cursor.fetchone()
         if not row:
             return None
-        attempt_cursor = await conn.execute(
-            """
-            select id
-            from run_attempts
-            where tenant_id = %s and run_id = %s
-            order by ordinal desc
-            limit 1
-            for update
-            """,
-            (tenant_id, run_id),
+        attempt_row = await get_latest_run_attempt(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            for_update=True,
         )
-        attempt_row = await attempt_cursor.fetchone()
-        if not attempt_row or not attempt_row.get("id"):
-            raise RepositoryConflictError("run_attempt_missing")
-        attempt_id = str(attempt_row["id"])
+        attempt_id = str(attempt_row["id"]) if attempt_row is not None else None
         newly_requested = bool(row.get("cancel_requested_newly"))
         if newly_requested:
             await self._append_event(
@@ -852,6 +1301,13 @@ class PostgresRunCancellationPersistence:
                 },
             )
         target_status = "cancelled" if row["status"] == "queued" else "cancel_requested"
+        if attempt_id is not None and target_status == "cancel_requested":
+            await request_run_attempt_cancel(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                attempt_id=attempt_id,
+            )
         await _stage_run_tool_permission_terminalization(
             conn,
             tenant_id=tenant_id,
@@ -917,21 +1373,13 @@ class PostgresRunCancellationPersistence:
         row = await cursor.fetchone()
         if not row:
             return None
-        attempt_cursor = await conn.execute(
-            """
-            select id
-            from run_attempts
-            where tenant_id = %s and run_id = %s
-            order by ordinal desc
-            limit 1
-            for update
-            """,
-            (tenant_id, run_id),
+        attempt_row = await get_latest_run_attempt(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            for_update=True,
         )
-        attempt_row = await attempt_cursor.fetchone()
-        if not attempt_row or not attempt_row.get("id"):
-            raise RepositoryConflictError("run_attempt_missing")
-        attempt_id = str(attempt_row["id"])
+        attempt_id = str(attempt_row["id"]) if attempt_row is not None else None
         newly_requested = bool(row.get("cancel_requested_newly"))
         if newly_requested:
             await self._append_event(
@@ -951,6 +1399,13 @@ class PostgresRunCancellationPersistence:
                 },
             )
         target_status = "cancelled" if row["status"] == "queued" else "cancel_requested"
+        if attempt_id is not None and target_status == "cancel_requested":
+            await request_run_attempt_cancel(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                attempt_id=attempt_id,
+            )
         await _stage_run_tool_permission_terminalization(
             conn,
             tenant_id=tenant_id,
@@ -978,6 +1433,19 @@ class PostgresRunCancellationPersistence:
         authority: CancelRequestAuthority,
         progress: RunTerminalizationProgress | None,
     ) -> CancelRequestResult:
+        if (
+            authority.attempt_id is not None
+            and progress is not None
+            and progress.is_terminal("cancelled")
+        ):
+            await terminalize_run_attempt(
+                conn,
+                tenant_id=tenant_id,
+                run_id=authority.run_id,
+                attempt_id=authority.attempt_id,
+                status="cancelled",
+                terminal_reason="run_cancelled",
+            )
         active_leases = await self._list_active_sandbox_leases(
             conn,
             tenant_id=tenant_id,

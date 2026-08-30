@@ -184,3 +184,52 @@ def restored_sandbox_run_payload(
         if "agent_profile_transport_lost" not in diagnostics:
             diagnostics.append("agent_profile_transport_lost")
     return run_payload
+
+
+def restored_executor_reconciliation_queue_payload(
+    context: object,
+    *,
+    result: dict[str, Any],
+    run_payload_factory: Callable[..., Any],
+    queue_payload_factory: Callable[..., Any],
+) -> tuple[Any, str]:
+    """Restore one persisted executor snapshot into its strict queue payload."""
+
+    if not isinstance(context, dict):
+        raise ValueError("executor_reconciliation_context_missing")
+    if not isinstance(context.get("adapter_context"), dict):
+        raise ValueError("executor_reconciliation_adapter_context_missing")
+    run_payload_value = context.get("run_payload")
+    if not isinstance(run_payload_value, dict):
+        raise ValueError("executor_reconciliation_run_payload_missing")
+    run_payload = restored_sandbox_run_payload(
+        run_payload_value,
+        run_payload_factory,
+        result,
+    )
+    adapter_name = str(context.get("adapter_name") or "").strip()
+    if not adapter_name:
+        raise ValueError("executor_reconciliation_adapter_name_missing")
+    queue_payload = queue_payload_factory(
+        tenant_id=run_payload.tenant_id,
+        workspace_id=run_payload.workspace_id,
+        user_id=run_payload.user_id,
+        session_id=run_payload.session_id,
+        run_id=run_payload.run_id,
+        agent_id=run_payload.agent_id,
+        execution_kind=run_payload.execution_kind,
+        skill_id=run_payload.skill_id,
+        file_ids=run_payload.file_ids,
+        input={},
+        executor_type=adapter_name,
+        skill_version=run_payload.skill_version or None,
+        release_decision=run_payload.release_decision,
+        skill_manifests=run_payload.skill_manifests,
+        context_snapshot_id=run_payload.context_snapshot_id or None,
+        context_snapshot=run_payload.context_snapshot,
+        model_id=run_payload.model_id or None,
+        model_value=run_payload.model_value or None,
+        agent_profile=run_payload.agent_profile or None,
+        schema_version=run_payload.schema_version,
+    )
+    return queue_payload, str(run_payload.attempt_id)

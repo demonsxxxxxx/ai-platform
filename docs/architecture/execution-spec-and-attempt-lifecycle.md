@@ -144,15 +144,25 @@ the row.
 `expired` remains an open arbitration state: a reconciler must fence the old
 owner and finish that attempt before a later ordinal can be created.
 
-This foundation is not the worker cutover. Existing queue, worker, callback,
-Sandbox, event/audit, and terminalization writers do not yet create or advance
-`run_attempts`; they remain on the legacy Run/Sandbox authorities until the
-dual-write phase below. Real PostgreSQL DDL/readiness proof, event/audit
-publication, Redis reclaim, callback/Sandbox binding, and mixed-version runtime
-acceptance are therefore still required before the attempt migration can be
+The first worker cutover slice derives a Runs-owned `rat_*` identity from the
+opaque Redis `qat_*` lease identity without changing `QueueRunPayload`, compiles
+the immutable specification immediately before dispatch, advances the durable
+attempt through `created -> queued -> claimed -> running`, and uses the durable
+identity for executor, Sandbox, callback, stream, cancellation, and terminal
+projection paths. Pre-dispatch failures that never produce a valid specification
+remain compatible Run-only terminal paths.
+
+This is not the complete attempt migration. Redis reclaim still does not persist
+queue-message, lease-expiry, or heartbeat facts on the durable attempt. Stale-run
+recovery now moves the exact open attempt into reconciler-owned `expired` or
+`cancel_requested` before terminal drain, and permission, executor, and
+multi-agent maintenance writers mirror the exact terminal attempt in the same
+transaction. Callback and Redis reclaim paths still lack end-to-end expected
+`owner_generation` fencing. Real PostgreSQL/Redis/Sandbox acceptance and
+mixed-version rollback evidence also remain required before the migration can be
 called complete.
 
-Redis reclaim creates a new durable ordinal attempt before a new worker can
+Redis reclaim must create a new durable ordinal attempt before a new worker can
 execute. It never overwrites the old attempt identity. Retry, resume, and copy
 continue to create a new Run under the current product contract; they do not
 copy an attempt, queue lease, Sandbox handle, callback token, credential lease,

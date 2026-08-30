@@ -37,6 +37,15 @@ from app.routes.sandbox_runtime_cleanup import (
     cleanup_expired_sandbox_leases as _cleanup_expired_sandbox_lease_records,
     cleanup_expired_sandbox_runtime_leases,
 )
+from app.runs.api import (
+    assert_worker_run_attempt_current,
+    get_latest_run_attempt,
+    prepare_stale_run_attempt_reconciliation,
+    request_run_attempt_cancel,
+    run_attempt_id_for_queue_attempt,
+    terminalize_latest_run_attempt,
+    terminalize_run_attempt,
+)
 from app.schema_migrations import require_schema_current
 from app.settings import get_settings
 from app.tool_permission_lifecycle import (
@@ -277,12 +286,30 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
         run_id = str(candidate.get("run_id") or "")
         if not tenant_id or not run_id:
             continue
+        async with transaction() as conn:
+            run = await repositories.get_run(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                for_update=True,
+            )
+            attempt = await get_latest_run_attempt(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                for_update=True,
+            )
         outcome = await drain_run_tool_permission_terminalization(
             tenant_id=tenant_id,
             run_id=run_id,
             capabilities=v4_capabilities,
             transaction_factory=transaction,
             max_batches=4,
+            attempt_id=str((attempt or {}).get("id") or "") or None,
+            attempt_error_code=(
+                str((run or {}).get("permission_terminalization_error_code") or "")
+                or None
+            ),
         )
         if outcome is not None and outcome.did_transition and outcome.needs_reconcile:
             await reconcile_terminalized_permission_run(
@@ -324,11 +351,31 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
         if not tenant_id or not parent_run_id:
             continue
         async with transaction() as conn:
-            await repositories.finalize_multi_agent_parent_run_if_ready(
+            finalized = await repositories.finalize_multi_agent_parent_run_if_ready(
                 conn,
                 tenant_id=tenant_id,
                 parent_run_id=parent_run_id,
             )
+            if finalized is not None:
+                parent_run = await repositories.get_run(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=parent_run_id,
+                    for_update=True,
+                )
+                parent_status = str(finalized.get("status") or "")
+                await terminalize_latest_run_attempt(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=parent_run_id,
+                    status=parent_status,
+                    terminal_reason=f"multi_agent_parent_{parent_status}",
+                    error_code=(
+                        str((parent_run or {}).get("error_code") or "") or None
+                        if parent_status == "failed"
+                        else None
+                    ),
+                )
     return progress
 
 
@@ -384,6 +431,7 @@ async def reconcile_stale_runs_for_worker(
             if terminal_status == "cancelled"
             else "Run interrupted because no live execution owner remains."
         )
+        attempt_id: str | None = None
         try:
             async with _ReconciliationFenceGuard(fence, ttl_seconds=fence_ttl_seconds) as fence_guard:
                 fenced_transaction = _fenced_transaction_factory(fence_guard)
@@ -404,6 +452,19 @@ async def reconcile_stale_runs_for_worker(
                             append_event=repositories.append_event,
                             append_audit_log=repositories.append_audit_log,
                         )
+                        if staged is not None:
+                            attempt = await prepare_stale_run_attempt_reconciliation(
+                                conn,
+                                tenant_id=tenant_id,
+                                run_id=run_id,
+                                terminal_status=terminal_status,
+                                reconciler_id="stale-run-maintenance",
+                            )
+                            attempt_id = (
+                                str(attempt.get("id") or "")
+                                if attempt is not None
+                                else None
+                            )
                 except ReconciliationFenceLost:
                     results.append(
                         {"tenant_id": tenant_id, "run_id": run_id, "status": "fence_renewal_failed", "did_transition": False}
@@ -426,6 +487,8 @@ async def reconcile_stale_runs_for_worker(
                         capabilities=v4_capabilities,
                         transaction_factory=fenced_transaction,
                         max_batches=4,
+                        attempt_id=attempt_id,
+                        attempt_error_code=error_code,
                     )
                     await fence_guard.ensure_live()
                     if outcome is not None and outcome.did_transition and outcome.needs_reconcile:
@@ -546,7 +609,12 @@ async def _terminalize_escaped_process_exception(
     try:
         envelope = parse_leased_queue_envelope(message.payload)
         payload = envelope.payload
-        attempt_id = envelope.attempt_id
+        queue_attempt_id = envelope.attempt_id
+        attempt_id = run_attempt_id_for_queue_attempt(
+            tenant_id=payload.tenant_id,
+            run_id=payload.run_id,
+            queue_attempt_id=queue_attempt_id,
+        )
     except Exception:
         raw_run_id = message.payload.get("run_id")
         return WorkerOutcome(
@@ -609,10 +677,24 @@ async def _terminalize_escaped_process_exception(
             run_id=run_id,
             attempt_id=attempt_id,
         )
+        attempt_authority = await assert_worker_run_attempt_current(
+            conn,
+            tenant_id=payload.tenant_id,
+            run_id=run_id,
+            queue_attempt_id=queue_attempt_id,
+            worker_id=worker_id,
+        )
         cancel_requested = bool(locked_run.get("cancel_requested_at")) or str(
             locked_run.get("permission_terminalization_target") or ""
         ) in {"cancel_requested", "cancelled"}
         if cancel_requested:
+            if attempt_authority is not None:
+                attempt_authority = await request_run_attempt_cancel(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=run_id,
+                    attempt_id=str(attempt_authority["id"]),
+                )
             progress = await cancel_run_with_v4(
                 conn,
                 capabilities=v4_capabilities,
@@ -630,6 +712,16 @@ async def _terminalize_escaped_process_exception(
                 error_message=error_message,
                 result_json={"message": "Worker processing failed unexpectedly."},
             )
+        if progress is not None and progress.is_terminal() and attempt_authority is not None:
+            await terminalize_run_attempt(
+                conn,
+                tenant_id=payload.tenant_id,
+                run_id=run_id,
+                attempt_id=str(attempt_authority["id"]),
+                status=str(progress.status),
+                terminal_reason=f"run_{progress.status}",
+                error_code=error_code if progress.status == "failed" else None,
+            )
 
     if progress is None or not progress.is_terminal():
         progress = await drain_run_tool_permission_terminalization(
@@ -638,6 +730,8 @@ async def _terminalize_escaped_process_exception(
             capabilities=v4_capabilities,
             transaction_factory=transaction,
             max_batches=4,
+            attempt_id=attempt_id,
+            attempt_error_code=error_code,
         )
     if progress is not None and progress.did_transition and progress.needs_reconcile:
         try:

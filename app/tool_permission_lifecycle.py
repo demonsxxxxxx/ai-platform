@@ -6,7 +6,11 @@ from dataclasses import dataclass
 from time import monotonic as system_monotonic
 from typing import Any, Callable
 
-from app.runs.api import RunTerminalizationProgress
+from app.runs.api import (
+    RunTerminalizationProgress,
+    terminalize_latest_run_attempt,
+    terminalize_run_attempt,
+)
 from app.streaming.api import WorkerV4Capabilities, append_run_terminal_v4_row
 
 
@@ -249,6 +253,8 @@ async def drain_run_tool_permission_terminalization(
     transaction_factory: Callable[[], Any],
     capabilities: WorkerV4Capabilities,
     max_batches: int = 4,
+    attempt_id: str | None = None,
+    attempt_error_code: str | None = None,
 ) -> RunTerminalizationProgress | None:
     """Commit a bounded number of durable terminalization batches for one exact run."""
 
@@ -261,6 +267,18 @@ async def drain_run_tool_permission_terminalization(
                 run_id=run_id,
                 capabilities=capabilities,
             )
+            if attempt_id is not None and result is not None and result.is_terminal():
+                await terminalize_run_attempt(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                    status=str(result.status),
+                    terminal_reason=f"run_{result.status}",
+                    error_code=(
+                        attempt_error_code if result.status == "failed" else None
+                    ),
+                )
         if result is None or result.completed or result.status is None:
             return result
     return result
@@ -292,4 +310,26 @@ async def reconcile_terminalized_permission_run(
             error_code=str(run.get("error_code") or "") or None,
             error_message=str(run.get("error_message") or "") or None,
         )
+        if reconciled is not None:
+            parent_run_id = str(reconciled.get("parent_run_id") or "")
+            parent_run = await repositories.get_run(
+                conn,
+                tenant_id=tenant_id,
+                run_id=parent_run_id,
+                for_update=True,
+            )
+            parent_status = str((parent_run or {}).get("status") or "")
+            if parent_status in {"succeeded", "failed", "cancelled"}:
+                await terminalize_latest_run_attempt(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=parent_run_id,
+                    status=parent_status,
+                    terminal_reason=f"multi_agent_parent_{parent_status}",
+                    error_code=(
+                        str((parent_run or {}).get("error_code") or "") or None
+                        if parent_status == "failed"
+                        else None
+                    ),
+                )
     return reconciled
