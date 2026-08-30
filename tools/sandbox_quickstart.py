@@ -21,6 +21,11 @@ import time
 from typing import Any, Sequence
 from urllib.request import urlopen
 
+if __package__:
+    from tools.release_parity_convergence import compose_identity_mismatches
+else:
+    from release_parity_convergence import compose_identity_mismatches
+
 
 MANAGED_ROOT = Path("/data/ai-platform-internal-test")
 PROJECT = "ai-platform-internal"
@@ -177,9 +182,42 @@ class Subject:
 
 
 @dataclass(frozen=True)
-class RecoveryWorkerSample:
+class RuntimeContainer:
+    container_id: str
+    commit: str
+    image: str
+    restart_count: int
+    status: str
+    health: str
+    project: str
+    service: str
+    config_files: str
+    release_owner: str
+    release_role: str
+    source_dirty: str
+    working_dir: str
+    one_off: str
+    config_hash: str
+
+    @property
+    def compose_labels(self) -> dict[str, str]:
+        return {
+            "ai-platform.release-owner": self.release_owner,
+            "ai-platform.release-role": self.release_role,
+            "com.docker.compose.project.working_dir": self.working_dir,
+            "com.docker.compose.project.config_files": self.config_files,
+            "com.docker.compose.project": self.project,
+            "com.docker.compose.service": self.service,
+            "com.docker.compose.oneoff": self.one_off,
+            "com.docker.compose.config-hash": self.config_hash,
+        }
+
+
+@dataclass(frozen=True)
+class WorkerRuntimeSample:
     container_id: str
     restart_count: int
+    config_hash: str
     worker_id: str
     pid: int
     observed_at: float
@@ -197,6 +235,7 @@ class Runner:
             stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             stdout=subprocess.PIPE if output else subprocess.DEVNULL,
             text=True, timeout=timeout,
+            start_new_session=os.name == "posix",
         )
         if result.returncode:
             raise QuickstartError("command failed")
@@ -303,8 +342,53 @@ def _docker_environment() -> dict[str, str]:
     return {key: os.environ[key] for key in allowed if key in os.environ}
 
 
-def _interrupt(*_args: object) -> None:
-    raise KeyboardInterrupt
+class TerminationPolicy:
+    """Keep runtime transitions recoverable while honoring termination requests."""
+
+    def __init__(self) -> None:
+        self._runtime_transition = False
+        self._pending_signals: list[int] = []
+        self._previous_handlers: dict[int, Any] = {}
+
+    @property
+    def pending_count(self) -> int:
+        return len(self._pending_signals)
+
+    def __enter__(self) -> "TerminationPolicy":
+        if self._previous_handlers:
+            raise RuntimeError("termination policy is already installed")
+        self._runtime_transition = False
+        self._pending_signals.clear()
+        try:
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                self._previous_handlers[signum] = signal.signal(signum, self._handle)
+        except BaseException:
+            for signum, handler in self._previous_handlers.items():
+                signal.signal(signum, handler)
+            self._previous_handlers.clear()
+            raise
+        return self
+
+    def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
+        for signum, handler in self._previous_handlers.items():
+            signal.signal(signum, handler)
+        self._previous_handlers.clear()
+
+    def _handle(self, signum: int, _frame: object) -> None:
+        if self._runtime_transition:
+            self._pending_signals.append(signum)
+            return
+        raise KeyboardInterrupt
+
+    def protect_runtime_transition(self) -> None:
+        self._runtime_transition = True
+
+    def mark_safe_runtime(self) -> None:
+        self._runtime_transition = False
+        if self._pending_signals:
+            raise RollbackInterruptedError(
+                "termination request was honored after a runtime was verified"
+            )
 
 
 class Quickstart:
@@ -317,6 +401,7 @@ class Quickstart:
         self.runner = runner or Runner()
         self.health_timeout = health_timeout
         self.docker: list[str] = []
+        self.termination = TerminationPolicy()
 
     def _detect_docker(self) -> None:
         for candidate in (
@@ -337,22 +422,90 @@ class Quickstart:
             return
         raise QuickstartError("Docker with Compose is unavailable")
 
-    def _inspect(self, service: str) -> list[str]:
+    def _inspect(self, service: str) -> RuntimeContainer:
         fmt = "\t".join((
-            '{{index .Config.Labels "ai-platform.source-commit"}}', "{{.Config.Image}}",
-            "{{.RestartCount}}", "{{.State.Status}}",
+            "{{.Id}}",
+            '{{index .Config.Labels "ai-platform.source-commit"}}',
+            "{{.Config.Image}}",
+            "{{.RestartCount}}",
+            "{{.State.Status}}",
             "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
             '{{index .Config.Labels "com.docker.compose.project"}}',
             '{{index .Config.Labels "com.docker.compose.service"}}',
             '{{index .Config.Labels "com.docker.compose.project.config_files"}}',
+            '{{index .Config.Labels "ai-platform.release-owner"}}',
+            '{{index .Config.Labels "ai-platform.release-role"}}',
+            '{{index .Config.Labels "ai-platform.source-dirty"}}',
+            '{{index .Config.Labels "com.docker.compose.project.working_dir"}}',
+            '{{index .Config.Labels "com.docker.compose.oneoff"}}',
+            '{{index .Config.Labels "com.docker.compose.config-hash"}}',
         ))
         fields = self.runner.run(
             [*self.docker, "container", "inspect", f"ai-platform-{service}", "--format", fmt],
             output=True, timeout=30, environment=_docker_environment(), strip_output=False,
         ).split("\t")
-        if len(fields) != 8:
+        try:
+            (
+                container_id,
+                commit,
+                image,
+                raw_restart_count,
+                status,
+                health,
+                project,
+                compose_service,
+                config_files,
+                release_owner,
+                release_role,
+                source_dirty,
+                working_dir,
+                one_off,
+                config_hash,
+            ) = fields
+            restart_count = int(raw_restart_count)
+        except (TypeError, ValueError):
+            raise QuickstartError("runtime metadata is invalid") from None
+        if CONTAINER_ID.fullmatch(container_id) is None or restart_count < 0:
             raise QuickstartError("runtime metadata is invalid")
-        return fields
+        return RuntimeContainer(
+            container_id=container_id,
+            commit=commit,
+            image=image,
+            restart_count=restart_count,
+            status=status,
+            health=health,
+            project=project,
+            service=compose_service,
+            config_files=config_files,
+            release_owner=release_owner,
+            release_role=release_role,
+            source_dirty=source_dirty,
+            working_dir=working_dir,
+            one_off=one_off,
+            config_hash=config_hash,
+        )
+
+    def _expected_compose_config(self, repo: Path | None = None) -> str:
+        selected_repo = self.repo if repo is None else repo
+        return ",".join(str(selected_repo / path) for path in COMPOSE_FILES)
+
+    def _app_compose_identity_mismatches(
+        self,
+        container: RuntimeContainer,
+        service: str,
+        *,
+        repo: Path | None = None,
+    ) -> list[str]:
+        selected_repo = self.repo if repo is None else repo
+        mismatches = compose_identity_mismatches(
+            container.compose_labels,
+            service,
+            expected_compose_dir=str(selected_repo / COMPOSE_FILES[0].parent),
+            expected_config_files=self._expected_compose_config(selected_repo),
+        )
+        if container.source_dirty != "false":
+            mismatches.append(f"{service}_container_dirty_label_mismatch")
+        return mismatches
 
     def _current_runtime(self) -> Subject:
         values = {service: self._inspect(service) for service in PROJECT_SERVICES}
@@ -363,28 +516,44 @@ class Quickstart:
             output=True, timeout=30, environment=_docker_environment(),
         ).splitlines()
         app_values = {role: values[role] for role in ("api", "worker", "frontend")}
-        commits = {item[0] for item in app_values.values()}
+        commits = {item.commit for item in app_values.values()}
         commit = next(iter(commits)) if len(commits) == 1 else ""
         expected_config = ",".join(
             str(self.root / "releases" / commit / path) for path in COMPOSE_FILES
         )
+        runtime_repo = self.root / "releases" / commit
         if (
             COMMIT.fullmatch(commit) is None
             or sorted(observed_services) != sorted(PROJECT_SERVICES)
             or any(
-                item[5:] != [PROJECT, service, expected_config]
+                (
+                    item.project != PROJECT
+                    or item.service != service
+                    or item.config_files != expected_config
+                )
                 for service, item in values.items()
+            )
+            or any(
+                self._app_compose_identity_mismatches(
+                    app_values[service],
+                    service,
+                    repo=runtime_repo,
+                )
+                for service in app_values
             )
         ):
             raise QuickstartError("current runtime subject is invalid")
-        backend = app_values["api"][1]
-        if app_values["worker"][1] != backend:
+        backend = app_values["api"].image
+        if app_values["worker"].image != backend:
             raise QuickstartError("current runtime subject is invalid")
-        for ref, repository in ((backend, BACKEND_REPOSITORY), (app_values["frontend"][1], FRONTEND_REPOSITORY)):
+        for ref, repository in (
+            (backend, BACKEND_REPOSITORY),
+            (app_values["frontend"].image, FRONTEND_REPOSITORY),
+        ):
             match = DIGEST_REF.fullmatch(ref)
             if match is None or match.group("repository") != repository:
                 raise QuickstartError("current runtime subject is invalid")
-        return Subject(commit, backend, app_values["frontend"][1])
+        return Subject(commit, backend, app_values["frontend"].image)
 
     def _validate_env(self, path: Path) -> Path:
         try:
@@ -484,15 +653,28 @@ class Quickstart:
         if health.get("status") != "ok" or ready.get("status") != "ready" or ready.get("runtime_commit") != subject.commit:
             raise QuickstartError("API health failed")
         for service in SERVICES:
-            commit, image, _restarts, status, container_health, project, compose_service, _config = self._inspect(service)
-            healthy = service == "worker" or container_health == "healthy"
-            if project != PROJECT or compose_service != service or status != "running" or not healthy:
+            container = self._inspect(service)
+            healthy = service == "worker" or container.health == "healthy"
+            if (
+                container.project != PROJECT
+                or container.service != service
+                or container.config_files != self._expected_compose_config()
+                or container.status != "running"
+                or not healthy
+            ):
                 raise QuickstartError("container health failed")
-            if service in {"api", "worker", "frontend"} and commit != subject.commit:
-                raise QuickstartError("runtime commit mismatch")
-            expected_image = subject.frontend_image if service == "frontend" else subject.backend_image
-            if service in {"api", "worker", "frontend"} and image != expected_image:
-                raise QuickstartError("runtime image mismatch")
+            if service in {"api", "worker", "frontend"}:
+                if self._app_compose_identity_mismatches(container, service):
+                    raise QuickstartError("container identity failed")
+                if container.commit != subject.commit:
+                    raise QuickstartError("runtime commit mismatch")
+                expected_image = (
+                    subject.frontend_image
+                    if service == "frontend"
+                    else subject.backend_image
+                )
+                if container.image != expected_image:
+                    raise QuickstartError("runtime image mismatch")
         if self.runner.run(["systemctl", "is-active", "opensandbox.service"], output=True, timeout=15) != "active":
             raise QuickstartError("OpenSandbox is not active")
         self._probe_opensandbox_lifecycle()
@@ -548,58 +730,25 @@ class Quickstart:
             raise QuickstartError("protocol-v2 lease state could not be proven") from None
         return total
 
-    def _recovery_worker_sample(
+    def _worker_runtime_sample(
         self,
         subject: Subject,
         *,
         not_before: float,
-    ) -> RecoveryWorkerSample:
-        fmt = "\t".join((
-            "{{.Id}}",
-            '{{index .Config.Labels "ai-platform.source-commit"}}',
-            "{{.Config.Image}}",
-            "{{.RestartCount}}",
-            "{{.State.Status}}",
-            '{{index .Config.Labels "com.docker.compose.project"}}',
-            '{{index .Config.Labels "com.docker.compose.service"}}',
-            '{{index .Config.Labels "com.docker.compose.project.config_files"}}',
-        ))
-        fields = self.runner.run(
-            [
-                *self.docker,
-                "container",
-                "inspect",
-                "ai-platform-worker",
-                "--format",
-                fmt,
-            ],
-            output=True,
-            timeout=30,
-            environment=_docker_environment(),
-            strip_output=False,
-        ).split("\t")
-        expected_config = ",".join(str(self.repo / path) for path in COMPOSE_FILES)
-        try:
-            container_id, commit, image, raw_restarts, status, project, service, config = fields
-            restart_count = int(raw_restarts)
-        except (TypeError, ValueError):
-            raise QuickstartError("target recovery worker metadata is invalid") from None
+    ) -> WorkerRuntimeSample:
+        container = self._inspect("worker")
         if (
-            CONTAINER_ID.fullmatch(container_id) is None
-            or commit != subject.commit
-            or image != subject.backend_image
-            or restart_count < 0
-            or status != "running"
-            or project != PROJECT
-            or service != "worker"
-            or config != expected_config
+            container.commit != subject.commit
+            or container.image != subject.backend_image
+            or container.status != "running"
+            or self._app_compose_identity_mismatches(container, "worker")
         ):
-            raise QuickstartError("target recovery worker metadata is invalid")
+            raise QuickstartError("worker runtime metadata is invalid")
         result = self.runner.run(
             [
                 *self.docker,
                 "exec",
-                container_id,
+                container.container_id,
                 "python",
                 "-I",
                 "-c",
@@ -634,25 +783,27 @@ class Quickstart:
             ):
                 raise ValueError
         except (TypeError, ValueError, json.JSONDecodeError):
-            raise QuickstartError("target recovery worker heartbeat is invalid") from None
-        return RecoveryWorkerSample(
-            container_id=container_id,
-            restart_count=restart_count,
+            raise QuickstartError("worker runtime heartbeat is invalid") from None
+        return WorkerRuntimeSample(
+            container_id=container.container_id,
+            restart_count=container.restart_count,
+            config_hash=container.config_hash,
             worker_id=worker_id,
             pid=pid,
             observed_at=float(observed_at),
         )
 
-    def _wait_recovery_worker(self, subject: Subject, *, not_before: float) -> None:
+    def _wait_worker_runtime(self, subject: Subject, *, not_before: float) -> None:
         deadline = time.monotonic() + self.health_timeout
-        previous: RecoveryWorkerSample | None = None
+        previous: WorkerRuntimeSample | None = None
         while True:
             try:
-                current = self._recovery_worker_sample(subject, not_before=not_before)
+                current = self._worker_runtime_sample(subject, not_before=not_before)
                 if (
                     previous is not None
                     and current.container_id == previous.container_id
                     and current.restart_count == previous.restart_count
+                    and current.config_hash == previous.config_hash
                     and current.worker_id == previous.worker_id
                     and current.pid == previous.pid
                     and current.observed_at > previous.observed_at
@@ -670,7 +821,7 @@ class Quickstart:
                 previous = None
             if time.monotonic() >= deadline:
                 raise QuickstartError(
-                    "target recovery worker heartbeat did not converge"
+                    "worker runtime heartbeat did not converge"
                 ) from None
             time.sleep(2)
 
@@ -686,7 +837,7 @@ class Quickstart:
             "never",
             "worker",
         )
-        self._wait_recovery_worker(subject, not_before=started_at)
+        self._wait_worker_runtime(subject, not_before=started_at)
 
     def _restore_target_recovery_worker(
         self,
@@ -697,70 +848,60 @@ class Quickstart:
         self._retain_target_recovery_worker(subject, env_file)
 
     def _rollback(self, subject: Subject, previous: Subject, env_file: Path) -> None:
-        pending_signals: list[int] = []
-
-        def defer_interrupt(signum: int, _frame: object) -> None:
-            pending_signals.append(signum)
-
-        previous_handlers = {
-            signum: signal.signal(signum, defer_interrupt)
-            for signum in (signal.SIGINT, signal.SIGTERM)
-        }
         try:
+            self._compose(env_file, subject, "stop", "api", "worker")
             try:
-                self._compose(env_file, subject, "stop", "api", "worker")
-                try:
-                    protocol_v2_leases = self._protocol_v2_lease_count()
-                except (OSError, subprocess.SubprocessError, QuickstartError):
-                    self._retain_target_recovery_worker(subject, env_file)
-                    raise RollbackBlockedError(
-                        "image rollback blocked because protocol-v2 lease state could not be "
-                        "proven; the API remains stopped and the target recovery worker is verified"
-                    ) from None
-                if protocol_v2_leases:
-                    self._retain_target_recovery_worker(subject, env_file)
-                    raise RollbackBlockedError(
-                        "image rollback blocked by active protocol-v2 leases; the API remains "
-                        "stopped and the target recovery worker is verified"
-                    )
-                previous_repo = self.root / "releases" / previous.commit
-                self._verify_checkout(previous_repo, previous.commit)
-                current_repo, self.repo = self.repo, previous_repo
-                try:
-                    self._compose(env_file, previous, "config", "--quiet")
-                    self._compose(
-                        env_file,
-                        previous,
-                        "up",
-                        "-d",
-                        "--no-build",
-                        "--pull",
-                        "never",
-                    )
-                    self._wait_health(previous)
-                finally:
-                    self.repo = current_repo
-            except RollbackBlockedError:
-                raise
-            except KeyboardInterrupt:
-                self._restore_target_recovery_worker(subject, env_file)
-                raise RollbackInterruptedError(
-                    "rollback interruption was deferred until the API was stopped and the "
-                    "target recovery worker was verified"
-                ) from None
+                protocol_v2_leases = self._protocol_v2_lease_count()
             except (OSError, subprocess.SubprocessError, QuickstartError):
-                self._restore_target_recovery_worker(subject, env_file)
+                self._retain_target_recovery_worker(subject, env_file)
+                self.termination.mark_safe_runtime()
                 raise RollbackBlockedError(
-                    "image rollback could not complete; the API remains stopped and the target "
-                    "recovery worker is verified"
+                    "image rollback blocked because protocol-v2 lease state could not be "
+                    "proven; the API remains stopped and the target recovery worker is verified"
                 ) from None
-        finally:
-            for signum, handler in previous_handlers.items():
-                signal.signal(signum, handler)
-        if pending_signals:
+            if protocol_v2_leases:
+                self._retain_target_recovery_worker(subject, env_file)
+                self.termination.mark_safe_runtime()
+                raise RollbackBlockedError(
+                    "image rollback blocked by active protocol-v2 leases; the API remains "
+                    "stopped and the target recovery worker is verified"
+                )
+            previous_repo = self.root / "releases" / previous.commit
+            self._verify_checkout(previous_repo, previous.commit)
+            current_repo, self.repo = self.repo, previous_repo
+            try:
+                self._compose(env_file, previous, "config", "--quiet")
+                previous_started_at = time.time()
+                self._compose(
+                    env_file,
+                    previous,
+                    "up",
+                    "-d",
+                    "--no-build",
+                    "--pull",
+                    "never",
+                )
+                self._wait_health(previous)
+                self._wait_worker_runtime(previous, not_before=previous_started_at)
+            finally:
+                self.repo = current_repo
+        except (RollbackBlockedError, RollbackInterruptedError):
+            raise
+        except KeyboardInterrupt:
+            self._restore_target_recovery_worker(subject, env_file)
+            self.termination.mark_safe_runtime()
             raise RollbackInterruptedError(
-                "rollback reached a verified safe runtime before honoring the termination request"
-            )
+                "rollback interruption was deferred until the API was stopped and the "
+                "target recovery worker was verified"
+            ) from None
+        except (OSError, subprocess.SubprocessError, QuickstartError):
+            self._restore_target_recovery_worker(subject, env_file)
+            self.termination.mark_safe_runtime()
+            raise RollbackBlockedError(
+                "image rollback could not complete; the API remains stopped and the target "
+                "recovery worker is verified"
+            ) from None
+        self.termination.mark_safe_runtime()
 
     def _preflight_rollback(self, previous: Subject, env_file: Path) -> None:
         previous_repo = self.root / "releases" / previous.commit
@@ -777,62 +918,75 @@ class Quickstart:
             self.repo = current_repo
 
     def run(self) -> Subject:
-        self._detect_docker()
-        subject = _load_subject(self.subject_path, self.root)
-        self._verify_source(subject)
-        previous = self._current_runtime()
-        if subject.env_file is None:
-            raise QuickstartError("latest main subject is missing the managed env path")
-        env_file = self._validate_env(subject.env_file)
-        self._compose(env_file, subject, "config", "--quiet")
-        print("preflight: ok")
-        # The backend artifact also contains the executor app. Pulling this exact
-        # digest on the OpenSandbox Docker host removes first-run registry latency.
-        for image in dict.fromkeys((subject.backend_image, subject.frontend_image)):
-            self._validate_env(env_file)
+        with self.termination:
+            self._detect_docker()
+            subject = _load_subject(self.subject_path, self.root)
+            self._verify_source(subject)
+            previous = self._current_runtime()
+            if subject.env_file is None:
+                raise QuickstartError("latest main subject is missing the managed env path")
+            env_file = self._validate_env(subject.env_file)
+            self._compose(env_file, subject, "config", "--quiet")
+            print("preflight: ok")
+            # The backend artifact also contains the executor app. Pulling this exact
+            # digest on the OpenSandbox Docker host removes first-run registry latency.
+            for image in dict.fromkeys((subject.backend_image, subject.frontend_image)):
+                self._validate_env(env_file)
+                self.runner.run(
+                    [*self.docker, "pull", image], timeout=900,
+                    environment=_docker_environment(),
+                )
             self.runner.run(
-                [*self.docker, "pull", image], timeout=900,
+                [*self.docker, "image", "inspect", subject.executor_image],
+                timeout=30,
                 environment=_docker_environment(),
             )
-        self.runner.run(
-            [*self.docker, "image", "inspect", subject.executor_image],
-            timeout=30,
-            environment=_docker_environment(),
-        )
-        print("pull: ok (OpenSandbox executor cached)")
-        self._verify_source(subject)
-        if self._current_runtime() != previous:
-            raise QuickstartError("runtime changed while quickstart was preparing images")
-        self._preflight_rollback(previous, env_file)
-        try:
-            self._compose(env_file, subject, "up", "-d", "--no-build", "--pull", "never")
-            self._wait_health(subject)
-        except (OSError, subprocess.SubprocessError, QuickstartError, KeyboardInterrupt):
+            print("pull: ok (OpenSandbox executor cached)")
+            self._verify_source(subject)
+            if self._current_runtime() != previous:
+                raise QuickstartError("runtime changed while quickstart was preparing images")
+            self._preflight_rollback(previous, env_file)
+            self.termination.protect_runtime_transition()
+            target_started_at = time.time()
             try:
-                self._rollback(subject, previous, env_file)
-            except RollbackBlockedError as exc:
-                raise QuickstartError(f"startup failed; {exc}") from None
-            except RollbackInterruptedError as exc:
-                raise QuickstartError(f"startup failed; {exc}") from None
+                self._compose(
+                    env_file,
+                    subject,
+                    "up",
+                    "-d",
+                    "--no-build",
+                    "--pull",
+                    "never",
+                )
+                self._wait_health(subject)
+                self._wait_worker_runtime(subject, not_before=target_started_at)
             except (OSError, subprocess.SubprocessError, QuickstartError, KeyboardInterrupt):
-                raise QuickstartError("startup and rollback failed; data volumes were preserved") from None
-            raise QuickstartError(
-                "startup failed; previous images are healthy again (database changes were not reversed)"
-            ) from None
-        print("up: ok")
-        print("health: api=ok ready=ok containers=ok opensandbox=ok")
-        print(f"commit: {subject.commit}")
-        print(f"backend: {subject.backend_image}")
-        print(f"frontend: {subject.frontend_image}")
-        return subject
+                try:
+                    self._rollback(subject, previous, env_file)
+                except RollbackBlockedError as exc:
+                    raise QuickstartError(f"startup failed; {exc}") from None
+                except RollbackInterruptedError as exc:
+                    raise QuickstartError(f"startup failed; {exc}") from None
+                except (OSError, subprocess.SubprocessError, QuickstartError, KeyboardInterrupt):
+                    raise QuickstartError(
+                        "startup and rollback failed; data volumes were preserved"
+                    ) from None
+                raise QuickstartError(
+                    "startup failed; previous images are healthy again "
+                    "(database changes were not reversed)"
+                ) from None
+            else:
+                self.termination.mark_safe_runtime()
+            print("up: ok")
+            print("health: api=ok ready=ok worker=ok containers=ok opensandbox=ok")
+            print(f"commit: {subject.commit}")
+            print(f"backend: {subject.backend_image}")
+            print(f"frontend: {subject.frontend_image}")
+            return subject
 
 
 def main() -> int:
     repo = Path(__file__).resolve().parents[1]
-    previous_handlers = {
-        signum: signal.signal(signum, _interrupt)
-        for signum in (signal.SIGINT, signal.SIGTERM)
-    }
     try:
         Quickstart(repo).run()
     except QuickstartError as exc:
@@ -841,9 +995,6 @@ def main() -> int:
     except (OSError, subprocess.SubprocessError, KeyboardInterrupt):
         print("sandbox quickstart: failed: command error (no data volumes were removed)")
         return 2
-    finally:
-        for signum, handler in previous_handlers.items():
-            signal.signal(signum, handler)
     return 0
 
 

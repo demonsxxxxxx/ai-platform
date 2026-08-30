@@ -259,6 +259,68 @@ async def test_queue_heartbeat_tolerates_attempt_precreation_gap(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_queue_heartbeat_stops_after_one_precreation_visibility_window(
+    monkeypatch,
+):
+    redis_calls = 0
+    postgres_calls = 0
+    monotonic_values = iter((0.0, 1.0, 31.0))
+    message = QueueMessage(
+        raw="raw-run",
+        payload={"tenant_id": "tenant-a", "run_id": "run-a"},
+        message_id="lease-handle-a",
+        queue_message_id="b" * 64,
+        attempt_id="qat-a",
+        owner_token="qown-a",
+        leased_at=90.0,
+        delivery_attempt=1,
+    )
+
+    async def heartbeat_run(*_args, **_kwargs):
+        nonlocal redis_calls
+        redis_calls += 1
+        return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
+
+    class Transaction:
+        async def __aenter__(self):
+            return "conn-a"
+
+        async def __aexit__(self, _exc_type, _exc, _tb):
+            return False
+
+    async def heartbeat_attempt(*_args, **_kwargs):
+        nonlocal postgres_calls
+        postgres_calls += 1
+        return None
+
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
+    monkeypatch.setattr(worker_main, "transaction", Transaction)
+    monkeypatch.setattr(
+        worker_main,
+        "heartbeat_worker_run_attempt",
+        heartbeat_attempt,
+    )
+    monkeypatch.setattr(worker_main.asyncio, "sleep", no_wait)
+    ownership_lost = asyncio.Event()
+
+    await worker_main._heartbeat_until_done(
+        message,
+        "worker-a",
+        10,
+        30,
+        ownership_lost,
+        monotonic=lambda: next(monotonic_values),
+    )
+
+    assert redis_calls == 1
+    assert postgres_calls == 1
+    assert ownership_lost.is_set()
+
+
+@pytest.mark.asyncio
 async def test_queue_heartbeat_fails_closed_when_postgres_cannot_commit(monkeypatch):
     message = QueueMessage(
         raw="raw-run",

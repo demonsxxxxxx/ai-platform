@@ -120,6 +120,9 @@ jobs:
             redis_url: redis://localhost:6379/15
             test_files: >-
               tests/test_repositories.py
+              tests/test_queue.py
+              tests/test_run_attempt_application.py
+              tests/test_run_attempt_repository.py
               tests/test_worker_main.py
               tests/test_worker_heartbeat_postgres_redis_integration.py
               tests/test_sse_runtime_cutover.py
@@ -174,6 +177,7 @@ jobs:
             test_files: >-
               tests/test_schema_migrations.py
               tests/test_schema_migrations_postgres.py
+              tests/test_schema.py::test_schema_declares_attempt_identity_state_and_fences
           - shard: v4-durable-streaming
             postgres_image: postgres:16-alpine
             postgres_url: postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform
