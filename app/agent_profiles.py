@@ -6,9 +6,12 @@ from app.agent_apps.authority import (
     profile_public_projection,
     reject_profile_selector_conflicts,
 )
+from app.department_directory import validate_profile_department_authorities
 
 
-_authority = AgentProfileAuthority()
+_authority = AgentProfileAuthority(
+    department_authority_validator=validate_profile_department_authorities,
+)
 
 __all__ = [
     "AgentProfileAdmission",

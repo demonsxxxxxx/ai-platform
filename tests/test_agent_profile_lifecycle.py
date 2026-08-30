@@ -105,9 +105,11 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
 
 @pytest.mark.asyncio
 async def test_profile_department_authority_accepts_only_current_selectable_directory_ids(monkeypatch):
-    from app.agent_apps.authority import _validate_profile_department_authorities
-    from app.department_directory import DepartmentDirectoryError, normalize_department_directory
-    from app.models import AgentProfileDraftRequest, SelectedSkillRequest
+    from app.department_directory import (
+        DepartmentDirectoryError,
+        normalize_department_directory,
+        validate_profile_department_authorities,
+    )
 
     directory = normalize_department_directory(
         [
@@ -120,28 +122,12 @@ async def test_profile_department_authority_accepts_only_current_selectable_dire
     async def fetch_directory():
         return directory
 
-    monkeypatch.setattr("app.agent_apps.authority.fetch_department_directory", fetch_directory)
-    definition = AgentProfileDraftRequest(
-        name="Support assistant",
-        description="Approved support help.",
-        instructions="private instruction",
-        visibility="restricted",
-        allowed_department_ids=["药品注册"],
-        selected_skill=SelectedSkillRequest(
-            skill_id="general-chat",
-            expected_version="version-a",
-        ),
-        expected_draft_revision=0,
-    )
+    monkeypatch.setattr("app.department_directory.fetch_department_directory", fetch_directory)
 
-    await _validate_profile_department_authorities(definition)
+    await validate_profile_department_authorities(["药品注册"])
     for invalid_department_id in ("Research", "目录外部门"):
         with pytest.raises(HTTPException) as exc_info:
-            await _validate_profile_department_authorities(
-                definition.model_copy(
-                    update={"allowed_department_ids": [invalid_department_id]},
-                )
-            )
+            await validate_profile_department_authorities([invalid_department_id])
         assert (exc_info.value.status_code, exc_info.value.detail) == (
             422,
             "agent_profile_department_authority_invalid",
@@ -150,9 +136,9 @@ async def test_profile_department_authority_accepts_only_current_selectable_dire
     async def unavailable_directory():
         raise DepartmentDirectoryError("private_upstream_detail")
 
-    monkeypatch.setattr("app.agent_apps.authority.fetch_department_directory", unavailable_directory)
+    monkeypatch.setattr("app.department_directory.fetch_department_directory", unavailable_directory)
     with pytest.raises(HTTPException) as exc_info:
-        await _validate_profile_department_authorities(definition)
+        await validate_profile_department_authorities(["药品注册"])
     assert (exc_info.value.status_code, exc_info.value.detail) == (
         503,
         "agent_profile_department_directory_unavailable",
@@ -271,6 +257,10 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
     async def read_draft(*_args, **_kwargs):
         order.append("revision_read")
         row = _profile_row(status="draft", revision=7)
+        row.update(
+            visibility="restricted",
+            allowed_department_ids=["药品注册"],
+        )
         row["content_hash"] = _revision_hash(_draft_from_row(row))
         return row
 
@@ -283,7 +273,8 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
     async def audit(*_args, **_kwargs):
         return "aud_profile"
 
-    async def validate_departments(*_args, **_kwargs):
+    async def validate_departments(values):
+        assert values == ["药品注册"]
         order.append("department_validation")
 
     async def validate(*_args, **_kwargs):
@@ -305,16 +296,16 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
     )
     monkeypatch.setattr("app.agent_apps.authority.repositories.record_agent_profile_publication", record_publication)
     monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
-    monkeypatch.setattr(
-        "app.agent_apps.authority._validate_profile_department_authorities",
-        validate_departments,
+    authority = AgentProfileAuthority(
+        department_authority_validator=validate_departments,
     )
-    authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "_validate_definition", validate)
     definition = AgentProfileDraftRequest(
         name="Support assistant",
         description="Approved support help.",
         instructions="private instruction",
+        visibility="restricted",
+        allowed_department_ids=["药品注册"],
         selected_skill=SelectedSkillRequest(skill_id="general-chat", expected_version="version-a"),
         expected_draft_revision=7,
     )
@@ -603,8 +594,7 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
     monkeypatch.setattr("app.agent_apps.authority.repositories.record_agent_profile_draft", noop)
     monkeypatch.setattr("app.agent_apps.authority.repositories.record_agent_profile_publication", noop)
     monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
-    monkeypatch.setattr("app.agent_apps.authority._validate_profile_department_authorities", noop)
-    authority = AgentProfileAuthority()
+    authority = AgentProfileAuthority(department_authority_validator=noop)
 
     async def validate(*_args, **_kwargs):
         return ({"skill_id": "general-chat", "skill_version": "version-a"},)
@@ -729,8 +719,7 @@ async def test_draft_preview_uses_presence_aware_effective_existing_definition(m
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_aggregate", read_aggregate)
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_revision", read_prior)
     monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
-    monkeypatch.setattr("app.agent_apps.authority._validate_profile_department_authorities", noop)
-    authority = AgentProfileAuthority()
+    authority = AgentProfileAuthority(department_authority_validator=noop)
     monkeypatch.setattr(authority, "_validate_definition", validate)
     omitted = AgentProfileDraftRequest(
         name="Updated support assistant",

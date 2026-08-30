@@ -6,6 +6,7 @@ from app.agent_apps import AgentProfileAuthority
 from app.agent_profiles import list_admin_profiles, list_public_profiles, publish_draft, save_draft
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
+from app.department_directory import validate_profile_department_authorities
 from app.models import (
     AgentProfileAdminListResponse,
     AgentAppRunRequest,
@@ -29,7 +30,9 @@ from app.models import (
 from app.validation import assert_safe_id
 
 router = APIRouter()
-_authority = AgentProfileAuthority()
+_authority = AgentProfileAuthority(
+    department_authority_validator=validate_profile_department_authorities,
+)
 _DEDICATED_OVERRIDE_HEADERS = frozenset(
     {
         "x-agent-id",
