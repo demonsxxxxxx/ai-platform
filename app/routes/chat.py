@@ -30,6 +30,7 @@ from app.capability_distribution import (
     CapabilityAuthorizationDenial,
 )
 from app.chat_session_projection import session_response
+from app.conversations.api import ConversationRunAdmissionError, create_admitted_run
 from app.context_builder import record_initial_context_snapshot
 from app.context.file_continuity import select_authorized_run_file_snapshot
 from app.control_plane_contracts import (
@@ -48,8 +49,6 @@ from app.intent_router import (
     fallback_to_general_chat,
     route_intent,
 )
-from app.knowledge.application import admit_run_knowledge
-from app.knowledge.domain import KnowledgeError
 from app.execution.api import RunModelSelection, parse_requested_model_selection, resolve_chat_model_selection
 from app.models import (
     CapabilitySuggestionResponse,
@@ -114,7 +113,6 @@ from app.skills.release_policy import (
 from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
-
 
 logger = logging.getLogger(__name__)
 _MISSING = object()
@@ -2232,30 +2230,7 @@ async def chat_stream(
                         "admitted_agent_profile_hash": admitted_agent_profile.content_hash,
                     }
                 )
-            run_id = await repositories.create_run(conn, **run_create_kwargs)
-            if (
-                agent_profile_execution_input is not None
-                and "knowledge_source_ids" in agent_profile_execution_input
-            ):
-                assert admitted_agent_profile is not None
-                await admit_run_knowledge(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    run_id=run_id,
-                    agent_id=admitted_agent_profile.agent_id,
-                    profile_revision=admitted_agent_profile.revision,
-                    profile_content_hash=admitted_agent_profile.content_hash,
-                    principal_policy_version=principal.authz_policy_version,
-                    knowledge_source_ids=agent_profile_execution_input.get(
-                        "knowledge_source_ids"
-                    ),
-                    retrieval_profile_id=agent_profile_execution_input.get(
-                        "retrieval_profile_id"
-                    ),
-                    knowledge_bindings=agent_profile_execution_input.get(
-                        "knowledge_bindings"
-                    ),
-                )
+            run_id = await create_admitted_run(conn, repositories.create_run, run_create_kwargs, agent_profile_execution_input)
             if selected_model is not None:
                 await bind_run_model(
                     conn,
@@ -2479,24 +2454,7 @@ async def chat_stream(
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=409, code=code) from exc
         raise HTTPException(status_code=409, detail=code) from exc
-    except KnowledgeError as exc:
-        code = _safe_submission_code(
-            exc.code,
-            fallback="knowledge_snapshot_unavailable",
-        )
-        await _persist_pre_persistence_rejection(
-            principal=principal,
-            submission_id=submission_id,
-            request=request,
-            query_agent_id=query_agent_id,
-            workspace_id=effective_workspace_id,
-            session_id=request.session_id,
-            code=code,
-        )
-        if submission_id is not None:
-            raise _chat_submission_http_error(status_code=409, code=code) from exc
-        raise HTTPException(status_code=409, detail=code) from exc
-    except RepositoryConflictError as exc:
+    except (RepositoryConflictError, ConversationRunAdmissionError) as exc:
         code = str(exc)
         await _persist_pre_persistence_rejection(
             principal=principal,

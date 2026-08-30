@@ -4744,7 +4744,10 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     )
     monkeypatch.setattr("app.routes.chat.repositories.create_session", create_session)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", create_run)
-    monkeypatch.setattr("app.routes.chat.admit_run_knowledge", admit_knowledge)
+    monkeypatch.setattr(
+        "app.conversations.application.run_admission.admit_run_knowledge",
+        admit_knowledge,
+    )
     monkeypatch.setattr("app.routes.chat.repositories.insert_run_skill_snapshots_at_creation", noop)
     monkeypatch.setattr("app.routes.chat.repositories.append_message", append_message)
     monkeypatch.setattr("app.routes.chat.repositories.claim_chat_submission", claim_submission)

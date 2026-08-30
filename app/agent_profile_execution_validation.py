@@ -6,7 +6,7 @@ from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_HARNESS_CHAT,
     RUN_EXECUTION_KIND_SKILL,
 )
-from app.knowledge.domain import KnowledgeError, canonical_run_knowledge_bindings
+from app.knowledge.api import KnowledgeError, canonical_run_knowledge_bindings
 from app.validation import (
     MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
     assert_canonical_sha256,
