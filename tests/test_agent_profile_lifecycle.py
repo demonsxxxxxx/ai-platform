@@ -1425,6 +1425,22 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
     from app.agent_apps.authority import _draft_from_row, _revision_hash
 
     row = _profile_row()
+    row.update(
+        {
+            "knowledge_source_ids": ["ks_finance"],
+            "retrieval_profile_id": "krp_default",
+            "knowledge_bindings": [
+                {
+                    "source_id": "ks_finance",
+                    "source_authorization_version": 3,
+                    "ordinal": 0,
+                    "required": True,
+                    "retrieval_profile_id": "krp_default",
+                    "retrieval_profile_revision": 1,
+                }
+            ],
+        }
+    )
     row["content_hash"] = _revision_hash(_draft_from_row(row))
     calls: list[tuple[str, object]] = []
 
@@ -1466,6 +1482,18 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
         "instructions": "private instruction",
         "skill_set": [
             {"skill_id": "general-chat", "expected_version": "version-a"}
+        ],
+        "knowledge_source_ids": ["ks_finance"],
+        "retrieval_profile_id": "krp_default",
+        "knowledge_bindings": [
+            {
+                "source_id": "ks_finance",
+                "source_authorization_version": 3,
+                "ordinal": 0,
+                "required": True,
+                "retrieval_profile_id": "krp_default",
+                "retrieval_profile_revision": 1,
+            }
         ],
     }
     assert [name for name, _ in calls] == ["bound", "validate"]

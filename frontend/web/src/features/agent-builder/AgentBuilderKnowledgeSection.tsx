@@ -77,6 +77,7 @@ export function AgentBuilderKnowledgeSection({
     const page = await loadKnowledgeSources({
       cursor,
       q: sourceQuery.trim(),
+      selectedSourceIds: editor.knowledgeSourceIds,
     });
     if (epoch !== searchEpoch.current) return;
     if (!page) {
@@ -92,7 +93,7 @@ export function AgentBuilderKnowledgeSection({
     );
     setNextCursor(page.next_cursor);
     setSearchLoading(false);
-  }, [loadKnowledgeSources, sourceQuery]);
+  }, [editor.knowledgeSourceIds, loadKnowledgeSources, sourceQuery]);
 
   useEffect(() => {
     if (!dialogOpen || !knowledgeResolved) return;

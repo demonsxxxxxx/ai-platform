@@ -1623,6 +1623,17 @@ class AgentProfileAuthority:
                 "content_hash": content_hash,
                 "instructions": str(row["instructions"]),
                 "skill_set": [skill.model_dump(mode="json") for skill in _skill_set(row)],
+                **(
+                    {
+                        "knowledge_source_ids": list(definition.knowledge_source_ids),
+                        "retrieval_profile_id": definition.retrieval_profile_id,
+                        "knowledge_bindings": [
+                            dict(binding) for binding in definition._knowledge_bindings
+                        ],
+                    }
+                    if definition.knowledge_source_ids
+                    else {}
+                ),
             },
             public_identity=conversation_identity_projection(row),
             configured_mcp_tool_ids=configured_mcp_tool_ids,

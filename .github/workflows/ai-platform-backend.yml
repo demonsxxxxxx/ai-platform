@@ -342,7 +342,11 @@ jobs:
               tests/test_agent_profile_lifecycle.py \
               tests/test_agent_profile_routes.py \
               tests/test_agent_profiles_postgres.py \
+              tests/test_agent_profile_knowledge.py \
               tests/test_model_management_postgres.py \
+              tests/test_knowledge_acl.py \
+              tests/test_knowledge_application.py \
+              tests/test_knowledge_control_plane.py \
               tests/test_knowledge_postgres.py \
               tests/test_authorized_skill_catalog.py \
               tests/test_skill_dependencies.py \

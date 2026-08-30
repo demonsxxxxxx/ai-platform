@@ -38,7 +38,11 @@ AGENT_SKILL_CONTRACT_TESTS = (
     "tests/test_agent_profile_lifecycle.py",
     "tests/test_agent_profile_routes.py",
     "tests/test_agent_profiles_postgres.py",
+    "tests/test_agent_profile_knowledge.py",
     "tests/test_model_management_postgres.py",
+    "tests/test_knowledge_acl.py",
+    "tests/test_knowledge_application.py",
+    "tests/test_knowledge_control_plane.py",
     "tests/test_knowledge_postgres.py",
     "tests/test_authorized_skill_catalog.py",
     "tests/test_skill_dependencies.py",
@@ -193,7 +197,11 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert preflight_job.count("run: python tools/check_sse_runtime_cutover.py") == 1
     assert "fetch-depth: 0" in preflight_job
     assert "KNOWLEDGE_MANIFEST_BASE_COMMIT" in preflight_job
-    assert preflight_job.count("python tools/validate_external_knowledge_slice_manifest.py") == 3
+    manifest_command = (
+        "uv run --locked --extra test python "
+        "tools/validate_external_knowledge_slice_manifest.py"
+    )
+    assert preflight_job.count(manifest_command) == 3
     assert "--base-ref \"$KNOWLEDGE_MANIFEST_BASE_COMMIT\"" in preflight_job
     assert "--head-ref \"$BACKEND_PREFLIGHT_SOURCE_COMMIT\"" in preflight_job
     assert 'test "$KNOWLEDGE_MANIFEST_BASE_COMMIT" = "0000000000000000000000000000000000000000"' in preflight_job
