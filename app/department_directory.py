@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+import json
 import unicodedata
 
 import httpx
@@ -13,6 +14,7 @@ from app.validation import assert_safe_department_authority_id
 
 PURE_DEPARTMENT_DIRECTORY_URL = "http://10.56.0.25:5033/api/DingTalk/departs/pure"
 PURE_DEPARTMENT_DIRECTORY_TIMEOUT_SECONDS = 5.0
+MAX_DIRECTORY_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_DIRECTORY_NODES = 5_000
 MAX_DIRECTORY_DEPTH = 12
 MAX_DISTRIBUTION_DEPARTMENTS = 128
@@ -149,15 +151,20 @@ async def fetch_department_directory() -> DepartmentDirectoryResponse:
             follow_redirects=False,
             trust_env=False,
         ) as client:
-            response = await client.get(PURE_DEPARTMENT_DIRECTORY_URL)
-        if response.status_code < 200 or response.status_code >= 300:
-            raise DepartmentDirectoryError("department_directory_upstream_unavailable")
-        return normalize_department_directory(response.json())
+            async with client.stream("GET", PURE_DEPARTMENT_DIRECTORY_URL) as response:
+                if response.status_code < 200 or response.status_code >= 300:
+                    raise DepartmentDirectoryError("department_directory_upstream_unavailable")
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(body) + len(chunk) > MAX_DIRECTORY_RESPONSE_BYTES:
+                        raise DepartmentDirectoryError("department_directory_upstream_unavailable")
+                    body.extend(chunk)
+        return normalize_department_directory(json.loads(body))
     except DepartmentDirectoryError:
         raise
     except httpx.TimeoutException as exc:
         raise DepartmentDirectoryError("department_directory_timeout") from exc
-    except (httpx.HTTPError, ValueError) as exc:
+    except (httpx.HTTPError, UnicodeError, ValueError, RecursionError) as exc:
         raise DepartmentDirectoryError("department_directory_upstream_unavailable") from exc
 
 

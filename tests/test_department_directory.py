@@ -143,22 +143,37 @@ def test_authority_update_request_preserves_labels_for_route_proof_and_bounds_co
 @pytest.mark.parametrize(
     ("mode", "expected_code"),
     [
+        ("success", None),
         ("timeout", "department_directory_timeout"),
         ("non-success", "department_directory_upstream_unavailable"),
         ("bad-json", "department_directory_upstream_unavailable"),
+        ("oversized", "department_directory_upstream_unavailable"),
+        ("deep-json", "department_directory_upstream_unavailable"),
     ],
 )
 async def test_adapter_maps_transport_failures_to_stable_codes(monkeypatch, mode, expected_code):
     client_options = {}
-    requested_urls = []
+    requested = []
 
     class FakeResponse:
         status_code = 502 if mode == "non-success" else 200
 
-        def json(self):
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def aiter_bytes(self):
+            if mode == "timeout":
+                raise httpx.ReadTimeout("private timeout")
             if mode == "bad-json":
-                raise ValueError("private response")
-            return []
+                yield b"{"
+            elif mode == "oversized":
+                yield b"[" * 8
+                yield b"]"
+            else:
+                yield b"[]"
 
     class FakeClient:
         async def __aenter__(self):
@@ -167,21 +182,29 @@ async def test_adapter_maps_transport_failures_to_stable_codes(monkeypatch, mode
         async def __aexit__(self, *_args):
             return None
 
-        async def get(self, url):
-            requested_urls.append(url)
-            if mode == "timeout":
-                raise httpx.ReadTimeout("private timeout")
+        def stream(self, method, url):
+            requested.append((method, url))
             return FakeResponse()
 
     directory_module = importlib.import_module("app.department_directory")
+    if mode == "oversized":
+        monkeypatch.setattr(directory_module, "MAX_DIRECTORY_RESPONSE_BYTES", 8)
+    elif mode == "deep-json":
+        def fail_deep_json(_body):
+            raise RecursionError("private parser detail")
+
+        monkeypatch.setattr(directory_module.json, "loads", fail_deep_json)
     monkeypatch.setattr(
         directory_module.httpx,
         "AsyncClient",
         lambda **kwargs: (client_options.update(kwargs), FakeClient())[1],
     )
 
-    with pytest.raises(DepartmentDirectoryError, match=expected_code):
-        await fetch_department_directory()
+    if expected_code is None:
+        assert (await fetch_department_directory()).departments == []
+    else:
+        with pytest.raises(DepartmentDirectoryError, match=expected_code):
+            await fetch_department_directory()
 
-    assert requested_urls == ["http://10.56.0.25:5033/api/DingTalk/departs/pure"]
+    assert requested == [("GET", "http://10.56.0.25:5033/api/DingTalk/departs/pure")]
     assert client_options == {"timeout": 5.0, "follow_redirects": False, "trust_env": False}
