@@ -38,7 +38,14 @@ export interface AgentProfilePublicProjection extends SelectedAgentProfileReques
   avatar_ref: AgentProfileAvatarRef;
   avatar_seed?: string;
   category: AgentProfileCategory;
+  knowledge_capability?: AgentKnowledgeCapabilityProjection;
   published_at: string | null;
+}
+
+export interface AgentKnowledgeCapabilityProjection {
+  enabled: boolean;
+  source_count: number;
+  freshness_at: string | null;
 }
 
 /** Safe immutable identity recovered from a server-owned Agent Conversation. */
@@ -93,6 +100,32 @@ function projectAvatarSeed(record: Record<string, unknown>, code: string): strin
     return fallback;
   }
   return seed;
+}
+
+function projectKnowledgeCapability(
+  value: unknown,
+  code: string,
+): AgentKnowledgeCapabilityProjection {
+  if (value === undefined) {
+    return { enabled: false, source_count: 0, freshness_at: null };
+  }
+  const record = requireRecord(value, code);
+  if (typeof record.enabled !== "boolean") throw new Error(code);
+  if (
+    !Number.isInteger(record.source_count) ||
+    (record.source_count as number) < 0 ||
+    (record.source_count as number) > 8
+  ) {
+    throw new Error(code);
+  }
+  if (record.freshness_at !== null && typeof record.freshness_at !== "string") {
+    throw new Error(code);
+  }
+  return {
+    enabled: record.enabled,
+    source_count: record.source_count as number,
+    freshness_at: record.freshness_at as string | null,
+  };
 }
 
 function requirePositiveRevision(value: unknown, code: string): number {
@@ -184,6 +217,10 @@ export function projectAgentProfilePublicProjection(value: unknown): AgentProfil
     avatar_ref: requireOneOf(record.avatar_ref, AGENT_PROFILE_AVATAR_REFS, PROFILE_ERROR),
     avatar_seed: projectAvatarSeed(record, PROFILE_ERROR),
     category: requireOneOf(record.category, AGENT_PROFILE_CATEGORIES, PROFILE_ERROR),
+    knowledge_capability: projectKnowledgeCapability(
+      record.knowledge_capability,
+      PROFILE_ERROR,
+    ),
   };
 }
 
@@ -233,6 +270,8 @@ export interface AgentProfileDraftRequest {
   selected_skill: SelectedSkillRequest;
   skill_set: SelectedSkillRequest[];
   mcp_tool_ids: string[];
+  knowledge_source_ids?: string[];
+  retrieval_profile_id?: string | null;
   avatar_ref: AgentProfileAvatarRef;
   avatar_seed: string;
   avatar_asset_id: string | null;
@@ -247,10 +286,16 @@ export interface AgentProfileDraftRequest {
 
 export interface AgentProfileAdminProjection extends Omit<
   AgentProfileDraftRequest,
-  "avatar_seed" | "expected_draft_revision" | "skill_set"
+  | "avatar_seed"
+  | "expected_draft_revision"
+  | "knowledge_source_ids"
+  | "retrieval_profile_id"
+  | "skill_set"
 > {
   supported_input_types: UniversalAgentInputTypes;
   avatar_seed?: string;
+  knowledge_source_ids?: string[];
+  retrieval_profile_id?: string | null;
   skill_set?: SelectedSkillRequest[];
   agent_id: string;
   revision: number;

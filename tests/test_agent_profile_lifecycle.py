@@ -100,6 +100,11 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "avatar_ref": "builtin:assistant",
         "avatar_seed": "agt_support",
         "category": "support",
+        "knowledge_capability": {
+            "enabled": False,
+            "source_count": 0,
+            "freshness_at": None,
+        },
     }
 
 
@@ -358,6 +363,116 @@ async def test_publish_rejects_a_tampered_draft_before_validation_or_append(monk
         "agent_profile_revision_integrity_mismatch",
     )
     assert calls == ["read"]
+
+
+@pytest.mark.asyncio
+async def test_publish_hashes_and_persists_server_resolved_knowledge_bindings(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+    from app.agent_apps.authority import _draft_from_row, _revision_hash
+
+    draft = _profile_row(status="draft", revision=7)
+    draft.update(
+        {
+            "knowledge_source_ids": ["ks_finance"],
+            "retrieval_profile_id": "krp_default",
+            "knowledge_bindings": [],
+        }
+    )
+    draft["content_hash"] = _revision_hash(_draft_from_row(draft))
+    writes: list[dict[str, object]] = []
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def read_draft(*_args, **_kwargs):
+        return draft
+
+    async def validate(*_args, **kwargs):
+        kwargs["definition"]._knowledge_bindings = [
+            {
+                "source_id": "ks_finance",
+                "source_authorization_version": 3,
+                "ordinal": 0,
+                "required": True,
+                "retrieval_profile_id": "krp_default",
+                "retrieval_profile_revision": 1,
+            }
+        ]
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
+
+    async def append_revision(*_args, **kwargs):
+        writes.append(kwargs)
+        row = _profile_row(
+            status="published",
+            revision=8,
+            content_hash=str(kwargs["content_hash"]),
+        )
+        row.update(
+            {
+                "knowledge_source_ids": list(kwargs["knowledge_source_ids"]),
+                "retrieval_profile_id": kwargs["retrieval_profile_id"],
+                "knowledge_bindings": list(kwargs["knowledge_bindings"]),
+            }
+        )
+        return row
+
+    async def audit(*_args, **_kwargs):
+        return "aud_profile"
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.ensure_submission_principal",
+        noop,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock",
+        noop,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.get_agent_profile_revision",
+        read_draft,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.create_agent_profile_revision",
+        append_revision,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.record_agent_profile_publication",
+        noop,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.append_audit_log",
+        audit,
+    )
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+
+    await authority.publish_draft(
+        object(),
+        principal=_principal(roles=["admin"]),
+        agent_id="agt_support",
+        expected_revision=7,
+    )
+
+    assert writes[0]["knowledge_source_ids"] == ["ks_finance"]
+    assert writes[0]["retrieval_profile_id"] == "krp_default"
+    assert writes[0]["knowledge_bindings"] == [
+        {
+            "source_id": "ks_finance",
+            "source_authorization_version": 3,
+            "ordinal": 0,
+            "required": True,
+            "retrieval_profile_id": "krp_default",
+            "retrieval_profile_revision": 1,
+        }
+    ]
+    published_row = {
+        **draft,
+        "revision": 8,
+        "status": "published",
+        "model_id": "platform-selected",
+        "knowledge_bindings": writes[0]["knowledge_bindings"],
+    }
+    assert writes[0]["content_hash"] == _revision_hash(_draft_from_row(published_row))
 
 
 @pytest.mark.parametrize("invalid_hash", ["", "not-a-sha256", "a" * 63])

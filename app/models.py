@@ -241,9 +241,12 @@ class AgentProfileDraftRequest(BaseModel):
     permissions_and_data_access_notice: str = Field(default="", max_length=4_000)
     instructions: str = Field(min_length=1, max_length=MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
     _legacy_model_id: str = PrivateAttr(default="platform-selected")
+    _knowledge_bindings: list[dict[str, Any]] = PrivateAttr(default_factory=list)
     skill_set: list[SelectedSkillRequest] = Field(default_factory=list, max_length=32)
     selected_skill: SelectedSkillRequest | None = None
     mcp_tool_ids: list[str] = Field(default_factory=list)
+    knowledge_source_ids: list[str] = Field(default_factory=list, max_length=8)
+    retrieval_profile_id: str | None = None
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
     avatar_asset_id: str | None = None
     avatar_seed: str = Field(default="", max_length=128)
@@ -307,6 +310,25 @@ class AgentProfileDraftRequest(BaseModel):
                 raise ValueError("mcp_tool_ids contains duplicates")
             normalized.append(tool_id)
         return normalized
+
+    @field_validator("knowledge_source_ids")
+    @classmethod
+    def validate_knowledge_source_ids(cls, value: list[str]):
+        normalized = [assert_safe_id(item.strip(), "knowledge_source_ids") for item in value]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("knowledge_source_ids contains duplicates")
+        return normalized
+
+    @field_validator("retrieval_profile_id")
+    @classmethod
+    def validate_retrieval_profile_id(cls, value: str | None):
+        return assert_safe_id(value.strip(), "retrieval_profile_id") if value else None
+
+    @model_validator(mode="after")
+    def validate_knowledge_selection(self):
+        if bool(self.knowledge_source_ids) != bool(self.retrieval_profile_id):
+            raise ValueError("knowledge selection requires sources and a retrieval profile")
+        return self
 
     @field_validator("allowed_department_ids")
     @classmethod
@@ -399,6 +421,16 @@ class AgentAppRunRequest(BaseModel):
         return normalized
 
 
+class AgentKnowledgeCapabilityProjection(BaseModel):
+    """Safe public knowledge capability without source or provider identities."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    source_count: int = Field(default=0, ge=0, le=8)
+    freshness_at: str | None = Field(default=None, max_length=64)
+
+
 class AgentProfilePublicProjection(BaseModel):
     """Ordinary-user market projection without executable configuration."""
 
@@ -418,6 +450,9 @@ class AgentProfilePublicProjection(BaseModel):
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
     avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    knowledge_capability: AgentKnowledgeCapabilityProjection = Field(
+        default_factory=AgentKnowledgeCapabilityProjection
+    )
     published_at: Any | None = None
 
     _validate_supported_input_types = field_validator("supported_input_types")(
@@ -455,6 +490,8 @@ class AgentProfileAdminProjection(BaseModel):
     skill_set: list[SelectedSkillRequest] = Field(default_factory=list)
     selected_skill: SelectedSkillRequest
     mcp_tool_ids: list[str] = Field(default_factory=list)
+    knowledge_source_ids: list[str] = Field(default_factory=list, max_length=8)
+    retrieval_profile_id: str | None = None
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
     avatar_asset_id: str | None = None
     avatar_seed: str = ""

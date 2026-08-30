@@ -8,6 +8,7 @@ import {
   Bot,
   Cpu,
   Activity,
+  Database,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation } from "react-router-dom";
@@ -39,6 +40,7 @@ interface SidebarRailProps {
   onOpenAgentBuilder: () => void;
   onOpenSkills: () => void;
   onOpenMcp: () => void;
+  onOpenKnowledge: () => void;
   onOpenModels: () => void;
   onOpenRuns: () => void;
   hideSessionDiscovery?: boolean;
@@ -60,6 +62,7 @@ export function SidebarRail({
   onOpenAgentBuilder,
   onOpenSkills,
   onOpenMcp,
+  onOpenKnowledge,
   onOpenModels,
   onOpenRuns,
   hideSessionDiscovery = false,
@@ -219,6 +222,20 @@ export function SidebarRail({
         >
           <Server size={20} />
         </LibreChatRailButton>
+        {isAiAdmin ? (
+          <LibreChatRailButton
+            type="button"
+            onClick={onOpenKnowledge}
+            className={railBtn}
+            aria-current={isRailItemActive("knowledge") ? "page" : undefined}
+            title={t("nav.knowledge")}
+            aria-label={t("nav.knowledge")}
+            itemKey="knowledge"
+            active={isRailItemActive("knowledge")}
+          >
+            <Database size={20} />
+          </LibreChatRailButton>
+        ) : null}
         {canAccessWorkbenchItem(user, "models") && (
           <LibreChatRailButton
             type="button"

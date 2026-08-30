@@ -9,6 +9,7 @@ export type TabType =
   | "roles"
   | "settings"
   | "mcp"
+  | "knowledge"
   | "feedback"
   | "models"
   | "runs"

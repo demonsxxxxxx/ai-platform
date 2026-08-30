@@ -508,7 +508,7 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
                 return SingleRowCursor({"current_revision": 7})
             if "insert into agent_profile_revisions" in normalized:
                 return SingleRowCursor(
-                    {"published_at": None if params[32] is None else "database-timestamp"}
+                    {"published_at": None if params[35] is None else "database-timestamp"}
                 )
             return SingleRowCursor(None)
 
@@ -537,7 +537,8 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
         """
         insert into agent_profile_revisions(
           tenant_id, agent_id, revision, status, revision_status, name, description, instructions,
-          model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
+          model_id, skill_id, skill_version, skill_set, mcp_tool_ids,
+          knowledge_source_ids, retrieval_profile_id, knowledge_bindings, content_hash,
           avatar_ref, avatar_seed, category, visibility, allowed_department_ids, allowed_roles,
           allowed_user_ids, welcome_message, starter_prompts, capability_summary,
           recommended_tasks, supported_input_types, supported_file_types, expected_outputs,
@@ -545,12 +546,14 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
           created_by, published_by, published_at,
           published_from_revision, withdrawn_from_revision
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s,
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb,
+                %s::jsonb, %s, %s::jsonb, %s,
                 %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s::jsonb,
                 %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s,
                 %s, %s, %s, case when %s::text is null then null else now() end, %s, %s)
         returning tenant_id, agent_id, revision, revision_status as status, name, description, instructions,
-                  model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
+                  model_id, skill_id, skill_version, skill_set, mcp_tool_ids,
+                  knowledge_source_ids, retrieval_profile_id, knowledge_bindings, content_hash,
                   avatar_ref, avatar_seed, category, visibility, allowed_department_ids, allowed_roles,
                   allowed_user_ids, welcome_message, starter_prompts, capability_summary,
                   recommended_tasks, supported_input_types,
@@ -559,13 +562,14 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
                   created_at, published_at
         """.split()
     )
-    assert len(params) == insert_sql.count("%s") == 35
+    assert len(params) == insert_sql.count("%s") == 38
     assert params == (
         "tenant-a", "agt_support", 8, expected_legacy_status, status,
         "Support assistant", "Approved support helper.",
         "Private instruction", "model-a", "general-chat", "version-a",
         '[{"skill_id": "general-chat", "expected_version": "version-a"}]',
         '["mcp-a", "mcp-b"]',
+        "[]", None, "[]",
         "a" * 64, "builtin:agent", "", "general", "tenant", "[]", "[]", "[]",
         "", "[]", "", "[]", '["text"]', "[]", "[]", "", None,
         "creator-a", published_by, published_by, published_from_revision, None,

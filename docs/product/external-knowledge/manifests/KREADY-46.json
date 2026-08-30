@@ -1,0 +1,18 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KREADY-46",
+  "issue_number": 1311,
+  "summary": "Deployment configuration surface for credential encryption, allowlisted hosts, and provider timeout",
+  "atomic_case_ids": [
+    "KAC-FR-KOPS-007",
+    "KAC-FR-KOPS-008",
+    "KAC-FR-KOPS-009",
+    "KAC-FR-KOPS-010"
+  ],
+  "changed_paths": [
+    "deploy/ai-platform/.env.example",
+    "deploy/ai-platform/docker-compose.yml",
+    "docs/product/external-knowledge/manifests/KREADY-46.json"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

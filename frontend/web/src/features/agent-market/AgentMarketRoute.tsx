@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   ArrowRight,
   BadgeCheck,
+  BookOpen,
   MessageCircle,
   RefreshCw,
   Search,
@@ -29,6 +30,7 @@ import {
   selectPublishedMarketProfile,
 } from "./agentMarketSelection";
 import { AgentIdentityAvatar } from "../../components/agent/AgentIdentityAvatar";
+import { formatDateTimeShort } from "../../utils/datetime";
 
 type LoadPhase = "loading" | "ready" | "error" | "unavailable";
 interface LoadState<T> {
@@ -52,6 +54,10 @@ const MARKET_CATEGORIES: ReadonlyArray<{ value: AgentProfileCategory | "all"; la
     label: AGENT_PROFILE_CATEGORY_LABELS[value],
   })),
 ];
+
+function knowledgeFreshnessLabel(value: string | null): string {
+  return value ? `更新于 ${formatDateTimeShort(value)}` : "尚无完整同步";
+}
 
 /** Reuse the production shell and session sidebar for the ordinary-user market. */
 function AgentMarketShell({ children }: { children: ReactNode }) {
@@ -256,6 +262,13 @@ function ExpertMarketCard({
               </span>
             ))}
           </div>
+        ) : null}
+        {profile.knowledge_capability?.enabled ? (
+          <p className="mt-4 inline-flex items-center gap-1.5 text-xs font-medium text-[var(--theme-primary)]">
+            <BookOpen aria-hidden="true" size={14} />
+            企业知识 · {profile.knowledge_capability.source_count} 个知识源 ·{" "}
+            {knowledgeFreshnessLabel(profile.knowledge_capability.freshness_at)}
+          </p>
         ) : null}
       </div>
       <div className="grid grid-cols-[1fr_auto] border-t border-[var(--theme-border)]">
@@ -545,6 +558,12 @@ function AgentMarketDetail({
                 <span className="rounded-full bg-[var(--theme-bg-sidebar)] px-2.5 py-1 text-xs text-[var(--theme-text-secondary)]">
                   版本 {profile.expected_revision}
                 </span>
+                {profile.knowledge_capability?.enabled ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-[var(--theme-primary-light)] px-2.5 py-1 text-xs text-[var(--theme-primary)]">
+                    <BookOpen aria-hidden="true" size={13} />
+                    企业知识 {profile.knowledge_capability.source_count} 项
+                  </span>
+                ) : null}
               </div>
               <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">{profile.name}</h1>
               <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)] sm:text-base">
@@ -606,6 +625,14 @@ function AgentMarketDetail({
             <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-[var(--theme-text-secondary)]">
               {profile.permissions_and_data_access_notice || "遵循企业当前授权策略。"}
             </p>
+            {profile.knowledge_capability?.enabled ? (
+              <p className="mt-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
+                已接入 {profile.knowledge_capability.source_count} 个企业知识源；进入任务时会按当前账号权限重新校验。
+                <span className="mt-1 block">
+                  知识目录{knowledgeFreshnessLabel(profile.knowledge_capability.freshness_at)}。
+                </span>
+              </p>
+            ) : null}
           </div>
         </section>
 

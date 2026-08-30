@@ -21,12 +21,26 @@ V4_PENDING_ADMISSION_SCHEMA_VERSION = "2026.08.26.2"
 V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION = "2026.08.27.1"
 V4_CONCURRENT_DUE_INDEX_SCHEMA_VERSION = "2026.08.27.2"
 MODEL_CONTROL_PLANE_SCHEMA_VERSION = "2026.08.28.1"
-TARGET_SCHEMA_VERSION = MODEL_CONTROL_PLANE_SCHEMA_VERSION
+EXTERNAL_KNOWLEDGE_SCHEMA_VERSION = "2026.08.30.1"
+TARGET_SCHEMA_VERSION = EXTERNAL_KNOWLEDGE_SCHEMA_VERSION
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
     "schema_migrations",
     "schema_index_migrations",
+    "platform_secret_records",
+    "knowledge_connections",
+    "knowledge_connection_revisions",
+    "knowledge_catalog_syncs",
+    "knowledge_connection_check_receipts",
+    "knowledge_catalog_sync_observations",
+    "knowledge_sources",
+    "knowledge_source_acl_versions",
+    "knowledge_source_update_receipts",
+    "knowledge_source_acl_departments",
+    "knowledge_source_acl_roles",
+    "knowledge_source_acl_users",
+    "knowledge_connection_lifecycle_receipts",
     "runs",
     "model_gateway_revisions",
     "model_catalog_entries",
@@ -43,8 +57,42 @@ CRITICAL_RELATIONS = (
     "sandbox_leases",
 )
 CRITICAL_COLUMNS = (
+    ("platform_secret_records", "ciphertext", "bytea", True),
+    ("platform_secret_records", "purpose", "text", True),
+    ("platform_secret_records", "fingerprint", "text", True),
+    ("platform_secret_records", "status", "text", True),
+    ("knowledge_connections", "candidate_revision_id", "text", False),
+    ("knowledge_connections", "active_revision_id", "text", False),
+    ("knowledge_connections", "active_catalog_sync_id", "text", False),
+    ("knowledge_connections", "lifecycle_epoch", "int8", True),
+    ("knowledge_connections", "create_request_hash", "text", True),
+    ("knowledge_connection_revisions", "secret_ref", "text", True),
+    ("knowledge_connection_revisions", "operation_id", "text", True),
+    ("knowledge_connection_revisions", "transport_policy_json", "jsonb", True),
+    ("knowledge_connection_revisions", "content_hash", "text", True),
+    ("knowledge_catalog_syncs", "operation_id", "text", True),
+    ("knowledge_catalog_syncs", "lease_generation", "int8", True),
+    ("knowledge_catalog_syncs", "candidate_digest", "text", False),
+    ("knowledge_connection_check_receipts", "operation_id", "text", True),
+    ("knowledge_connection_check_receipts", "lease_generation", "int8", True),
+    ("knowledge_connection_check_receipts", "status", "text", True),
+    ("knowledge_catalog_sync_observations", "lease_generation", "int8", True),
+    ("knowledge_catalog_sync_observations", "provider_resource_id", "text", True),
+    ("knowledge_catalog_sync_observations", "record_digest", "text", True),
+    ("knowledge_sources", "provider_resource_id", "text", True),
+    ("knowledge_sources", "authorization_version", "int8", True),
+    ("knowledge_sources", "provider_metadata_json", "jsonb", True),
+    ("knowledge_source_acl_versions", "visibility", "text", True),
+    ("knowledge_source_acl_versions", "operation_id", "text", True),
+    ("knowledge_source_acl_versions", "content_hash", "text", True),
+    ("knowledge_source_update_receipts", "operation_id", "text", True),
+    ("knowledge_source_update_receipts", "request_hash", "text", True),
+    ("knowledge_connection_lifecycle_receipts", "lifecycle_epoch", "int8", True),
     ("sessions", "title_source", "text", True),
     ("agent_profile_revisions", "skill_set", "jsonb", True),
+    ("agent_profile_revisions", "knowledge_source_ids", "jsonb", True),
+    ("agent_profile_revisions", "retrieval_profile_id", "text", False),
+    ("agent_profile_revisions", "knowledge_bindings", "jsonb", True),
     ("agent_profile_revisions", "avatar_seed", "text", True),
     # Temporary physical compatibility for the previous binary; product DTOs ignore it.
     ("agent_profile_revisions", "supported_file_types", "jsonb", True),
@@ -185,6 +233,47 @@ CRITICAL_COLUMNS = (
     ("sandbox_leases", "executor_reconciled_at", "timestamptz", False),
 )
 CRITICAL_CONSTRAINTS = (
+    ("platform_secret_records", "chk_platform_secret_purpose"),
+    ("platform_secret_records", "chk_platform_secret_fingerprint"),
+    ("platform_secret_records", "chk_platform_secret_status"),
+    ("knowledge_connections", "chk_knowledge_connection_status"),
+    ("knowledge_connections", "chk_knowledge_connection_active_pair"),
+    ("knowledge_connections", "chk_knowledge_connection_create_hash"),
+    ("knowledge_connections", "fk_knowledge_connection_active_revision"),
+    ("knowledge_connections", "fk_knowledge_connection_candidate_revision"),
+    ("knowledge_connections", "fk_knowledge_connection_active_sync"),
+    ("knowledge_connection_revisions", "fk_knowledge_revision_connection"),
+    ("knowledge_connection_revisions", "fk_knowledge_revision_secret"),
+    ("knowledge_connection_revisions", "chk_knowledge_revision_hash"),
+    ("knowledge_catalog_syncs", "fk_knowledge_sync_connection"),
+    ("knowledge_catalog_syncs", "fk_knowledge_sync_revision"),
+    ("knowledge_catalog_syncs", "chk_knowledge_sync_status"),
+    ("knowledge_connection_check_receipts", "fk_knowledge_check_connection"),
+    ("knowledge_connection_check_receipts", "fk_knowledge_check_revision"),
+    ("knowledge_connection_check_receipts", "chk_knowledge_check_status"),
+    ("knowledge_connection_check_receipts", "chk_knowledge_check_generation"),
+    ("knowledge_catalog_sync_observations", "fk_knowledge_observation_sync"),
+    ("knowledge_catalog_sync_observations", "chk_knowledge_observation_digest"),
+    ("knowledge_sources", "fk_knowledge_source_connection"),
+    ("knowledge_sources", "fk_knowledge_source_sync"),
+    ("knowledge_sources", "fk_knowledge_source_revision"),
+    ("knowledge_sources", "chk_knowledge_source_status"),
+    ("knowledge_source_acl_versions", "fk_knowledge_acl_source"),
+    ("knowledge_source_acl_versions", "chk_knowledge_acl_visibility"),
+    ("knowledge_source_acl_versions", "chk_knowledge_acl_hash"),
+    ("knowledge_source_update_receipts", "fk_knowledge_source_update_receipt"),
+    ("knowledge_source_update_receipts", "chk_knowledge_source_update_hash"),
+    ("knowledge_source_acl_departments", "fk_knowledge_acl_department_version"),
+    ("knowledge_source_acl_departments", "chk_knowledge_acl_department_id"),
+    ("knowledge_source_acl_roles", "fk_knowledge_acl_role_version"),
+    ("knowledge_source_acl_roles", "chk_knowledge_acl_role_id"),
+    ("knowledge_source_acl_users", "fk_knowledge_acl_user_version"),
+    ("knowledge_source_acl_users", "chk_knowledge_acl_user_id"),
+    ("knowledge_connection_lifecycle_receipts", "fk_knowledge_receipt_connection"),
+    ("knowledge_connection_lifecycle_receipts", "chk_knowledge_receipt_active_pair"),
+    ("agent_profile_revisions", "chk_agent_profile_knowledge_sources"),
+    ("agent_profile_revisions", "chk_agent_profile_knowledge_pair"),
+    ("agent_profile_revisions", "chk_agent_profile_knowledge_bindings"),
     ("runs", "fk_runs_model_gateway_revision"),
     ("model_gateway_revisions", "chk_model_gateway_revision_positive"),
     ("model_gateway_revisions", "chk_model_gateway_base_url"),
@@ -638,6 +727,18 @@ class StaticIndexDefinition:
 
 CONCURRENT_INDEX_MIGRATIONS = (
     ConcurrentIndexMigration(
+        "uq_knowledge_syncs_one_active_connection",
+        "create unique index concurrently if not exists "
+        "uq_knowledge_syncs_one_active_connection "
+        "on knowledge_catalog_syncs(tenant_id, connection_id) "
+        "where status in ('requested', 'enumerating', 'committing')",
+        "knowledge_catalog_syncs",
+        ("tenant_id", "connection_id"),
+        (False, False),
+        "status = any array['requested', 'enumerating', 'committing']",
+        unique=True,
+    ),
+    ConcurrentIndexMigration(
         "idx_run_events_stream_publication_retry",
         "create index concurrently if not exists idx_run_events_stream_publication_retry "
         "on run_events(stream_publication_next_attempt_at asc, created_at asc, id asc) "
@@ -817,6 +918,24 @@ CONCURRENT_INDEX_MIGRATIONS = (
     ),
 )
 STATIC_INDEX_DEFINITIONS = (
+    StaticIndexDefinition(
+        "idx_knowledge_connections_status",
+        "knowledge_connections",
+        ("tenant_id", "status", "name", "id"),
+        (False, False, False, False),
+    ),
+    StaticIndexDefinition(
+        "idx_knowledge_syncs_connection",
+        "knowledge_catalog_syncs",
+        ("tenant_id", "connection_id", "requested_at", "id"),
+        (False, False, True, True),
+    ),
+    StaticIndexDefinition(
+        "idx_knowledge_sources_catalog",
+        "knowledge_sources",
+        ("tenant_id", "connection_id", "status", "provider_name", "id"),
+        (False, False, False, False, False),
+    ),
     StaticIndexDefinition(
         "uq_run_events_tenant_run_sequence",
         "run_events",

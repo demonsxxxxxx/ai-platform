@@ -89,6 +89,21 @@ function safeErrorCopy(
   if (code === "agent_profile_capability_not_available") {
     return "所选 Skill 或 MCP 工具已不可用，请刷新目录后重新选择。";
   }
+  if (
+    code === "agent_profile_knowledge_source_unavailable" ||
+    code === "agent_profile_retrieval_profile_unavailable"
+  ) {
+    return "所选知识源或检索策略已不可用，请刷新知识目录后重新选择。";
+  }
+  if (code === "agent_profile_knowledge_scope_incompatible") {
+    return "专家的可见范围超出了知识源授权范围，请收窄专家范围或调整知识源部门权限。";
+  }
+  if (code === "agent_profile_knowledge_authorization_changed") {
+    return "知识源权限版本已变化，请刷新目录并重新发布专家。";
+  }
+  if (code === "agent_profile_knowledge_selection_invalid") {
+    return "知识库配置不完整，请重新选择知识源与检索策略。";
+  }
   if (code === "not_ai_admin" || status === 403) {
     return "当前账号没有管理专家的权限。";
   }
@@ -131,6 +146,8 @@ function cloneProfile(profile: AgentProfileAdminProjection): AgentProfileAdminPr
     ...profile,
     selected_skill: { ...profile.selected_skill },
     mcp_tool_ids: [...profile.mcp_tool_ids],
+    knowledge_source_ids: [...(profile.knowledge_source_ids ?? [])],
+    retrieval_profile_id: profile.retrieval_profile_id ?? null,
     starter_prompts: [...profile.starter_prompts],
     recommended_tasks: [...profile.recommended_tasks],
     supported_input_types: [...profile.supported_input_types],

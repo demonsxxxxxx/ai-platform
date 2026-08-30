@@ -35,6 +35,36 @@ test("builds server-authoritative catalog and detail URLs", () => {
   );
 });
 
+test("projects a bounded Knowledge capability without retaining private source identities", () => {
+  const projection = projectAgentProfilePublicProjection({
+    agent_id: "agt_support",
+    expected_revision: 7,
+    name: "支持助手",
+    description: "处理已授权的支持请求。",
+    supported_input_types: ["text", "file"],
+    avatar_ref: "builtin:assistant",
+    category: "support",
+    knowledge_capability: {
+      enabled: true,
+      source_count: 2,
+      freshness_at: "2026-08-30T01:00:00Z",
+      source_ids: ["private-source"],
+    },
+    knowledge_source_ids: ["private-source"],
+  });
+
+  assert.deepEqual(projection.knowledge_capability, {
+    enabled: true,
+    source_count: 2,
+    freshness_at: "2026-08-30T01:00:00Z",
+  });
+  assert.equal("knowledge_source_ids" in projection, false);
+  assert.equal(
+    "source_ids" in (projection.knowledge_capability as Record<string, unknown>),
+    false,
+  );
+});
+
 test("loads only the safe public Agent Profile projection", async () => {
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
@@ -78,6 +108,11 @@ test("loads only the safe public Agent Profile projection", async () => {
           avatar_ref: "builtin:assistant",
           avatar_seed: unicodeAvatarSeed,
           category: "support",
+          knowledge_capability: {
+            enabled: false,
+            source_count: 0,
+            freshness_at: null,
+          },
         },
       ],
     });

@@ -388,10 +388,23 @@ async def test_successor_activation_schema_advances_to_concurrent_due_index_sche
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.28.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.30.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
+        "platform_secret_records",
+        "knowledge_connections",
+        "knowledge_connection_revisions",
+        "knowledge_catalog_syncs",
+        "knowledge_connection_check_receipts",
+        "knowledge_catalog_sync_observations",
+        "knowledge_sources",
+        "knowledge_source_acl_versions",
+        "knowledge_source_update_receipts",
+        "knowledge_source_acl_departments",
+        "knowledge_source_acl_roles",
+        "knowledge_source_acl_users",
+        "knowledge_connection_lifecycle_receipts",
         "runs",
         "model_gateway_revisions",
         "model_catalog_entries",
@@ -979,7 +992,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "76ecf5642f302cbc6e132b077c75e9693c3fddb81203beca244baaafd7c686c5"
+        "1ba1f426fb2787eccb343675be158a9d1c4be2a49c85677e8de6074670b4becb"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

@@ -1,0 +1,12 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KPROFDM-06",
+  "issue_number": 1311,
+  "summary": "Provider-neutral retrieval profile projection; source and unit evidence only",
+  "atomic_case_ids": [],
+  "changed_paths": [
+    "app/knowledge/domain/retrieval.py",
+    "docs/product/external-knowledge/manifests/KPROFDM-06.json"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

@@ -20,6 +20,7 @@ from app.agent_apps.authority import (
     _mvp_revision_hash,
     _omitted_file_type_skill_set_revision_hash,
     _pre_avatar_seed_skill_set_revision_hash,
+    _pre_knowledge_revision_hash,
     _revision_hash,
     _revision_hash_matches,
 )
@@ -230,6 +231,11 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         "avatar_ref": "builtin:agent",
         "avatar_seed": "agt_support",
         "category": "general",
+        "knowledge_capability": {
+            "enabled": False,
+            "source_count": 0,
+            "freshness_at": None,
+        },
         "welcome_message": "",
         "starter_prompts": [],
         "capability_summary": "",
@@ -247,6 +253,57 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         "mcp_tool_ids",
         "content_hash",
     }.intersection(projection)
+
+
+def test_profile_public_projection_exposes_only_a_safe_knowledge_summary():
+    projection = profile_public_projection(
+        {
+            "agent_id": "agt_finance",
+            "revision": 5,
+            "name": "Finance expert",
+            "knowledge_source_ids": ["ks_finance", "ks_policy"],
+            "retrieval_profile_id": "krp_default",
+            "knowledge_freshness_at": "2026-08-30T01:02:03+00:00",
+            "knowledge_bindings": [
+                {
+                    "source_id": "ks_finance",
+                    "source_authorization_version": 3,
+                    "ordinal": 0,
+                    "required": True,
+                    "retrieval_profile_id": "krp_default",
+                    "retrieval_profile_revision": 1,
+                },
+                {
+                    "source_id": "ks_policy",
+                    "source_authorization_version": 2,
+                    "ordinal": 1,
+                    "required": True,
+                    "retrieval_profile_id": "krp_default",
+                    "retrieval_profile_revision": 1,
+                },
+            ],
+        }
+    )
+
+    assert projection["knowledge_capability"] == {
+        "enabled": True,
+        "source_count": 2,
+        "freshness_at": "2026-08-30T01:02:03+00:00",
+    }
+    assert "knowledge_source_ids" not in projection
+    assert "retrieval_profile_id" not in projection
+    assert "knowledge_bindings" not in projection
+
+    invalid = profile_public_projection(
+        {
+            "agent_id": "agt_finance",
+            "revision": 5,
+            "name": "Finance expert",
+            "knowledge_source_ids": ["ks_finance"],
+            "knowledge_freshness_at": "bad\nvalue",
+        }
+    )
+    assert invalid["knowledge_capability"]["freshness_at"] is None
 
 
 @pytest.mark.parametrize(
@@ -382,14 +439,40 @@ def test_legacy_profile_file_type_material_only_verifies_historical_hash():
     assert "supported_file_types" not in definition.model_dump(mode="json")
 
 
-def test_new_profile_hash_is_accepted_by_the_rolling_worker_contract():
+def test_new_profile_hash_extends_the_rolling_worker_contract_additively():
     definition = AgentProfileDraftRequest.model_validate(
         profile_draft_payload("Private instruction")
     ).model_copy(update={"avatar_seed": "agt_support"})
 
-    assert _revision_hash(definition) == _legacy_skill_set_revision_hash(
+    prior_hash = _legacy_skill_set_revision_hash(
         definition,
         legacy_supported_file_types=_ROLLING_LEGACY_SUPPORTED_FILE_TYPES,
+    )
+    assert _pre_knowledge_revision_hash(definition) == prior_hash
+    assert _revision_hash(definition) != prior_hash
+
+
+def test_pre_knowledge_hash_remains_valid_only_for_a_knowledge_free_revision():
+    definition = historical_profile_definition()
+    row = {
+        **definition.model_dump(mode="json"),
+        "agent_id": "agt_support",
+        "revision": 7,
+        "model_id": definition._legacy_model_id,
+        "legacy_supported_file_types": list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
+        "knowledge_source_ids": [],
+        "retrieval_profile_id": None,
+    }
+    historical_hash = _pre_knowledge_revision_hash(definition)
+
+    assert _revision_hash_matches(row, historical_hash)
+    assert not _revision_hash_matches(
+        {
+            **row,
+            "knowledge_source_ids": ["ks_finance"],
+            "retrieval_profile_id": "krp_default",
+        },
+        historical_hash,
     )
 
 
@@ -423,7 +506,8 @@ def test_profile_integrity_accepts_each_exact_historical_hash_schema_only_for_un
         "pre_avatar": "fafc5e59592db25119f09339c91fd1ba8513fe3a88dbfbf50185363800cc82b0",
         "legacy_skill_set": "af5557ab47e5308b0045df18146100853adf4578455e99331db813d592767868",
         "omitted_file_type": "8a44048869a0b50df4f742ee00cc63e0c2ba366591d23b8c67cb91ed156b5c14",
-        "current": "e1726cfffa53cf6ec393543e144ef98ca3c7e47d0ca6665c01b5108bfd65e147",
+        "pre_knowledge": "e1726cfffa53cf6ec393543e144ef98ca3c7e47d0ca6665c01b5108bfd65e147",
+        "current": "16d4d53e90ca61cf1e95b80052f274b8915ac235d0ea6e47bd54411608af6b07",
     }
     generated_hashes = {
         "mvp": _mvp_revision_hash(definition),
@@ -444,6 +528,7 @@ def test_profile_integrity_accepts_each_exact_historical_hash_schema_only_for_un
             legacy_supported_file_types=["application/pdf"],
         ),
         "omitted_file_type": _omitted_file_type_skill_set_revision_hash(definition),
+        "pre_knowledge": _pre_knowledge_revision_hash(definition),
         "current": _revision_hash(definition),
     }
     rows_by_schema = {
@@ -453,6 +538,7 @@ def test_profile_integrity_accepts_each_exact_historical_hash_schema_only_for_un
         "pre_avatar": pre_avatar_row,
         "legacy_skill_set": legacy_skill_set_row,
         "omitted_file_type": current_row,
+        "pre_knowledge": current_row,
         "current": current_row,
     }
 
@@ -702,6 +788,11 @@ def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
                     "avatar_ref": "builtin:agent",
                     "avatar_seed": "",
                     "category": "general",
+                    "knowledge_capability": {
+                        "enabled": False,
+                        "source_count": 0,
+                        "freshness_at": None,
+                    },
                     "welcome_message": "",
                     "starter_prompts": [],
                     "capability_summary": "",

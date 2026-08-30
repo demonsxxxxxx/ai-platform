@@ -1,0 +1,30 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KACLDM-05",
+  "issue_number": 1311,
+  "summary": "Pure Knowledge ACL evaluation and scope containment; source and unit evidence only",
+  "atomic_case_ids": [
+    "KAC-FR-KACL-001",
+    "KAC-FR-KACL-002",
+    "KAC-FR-KACL-003",
+    "KAC-FR-KACL-004",
+    "KAC-FR-KACL-005",
+    "KAC-FR-KACL-006",
+    "KAC-FR-KACL-007",
+    "KAC-FR-KACL-008",
+    "KAC-FR-KACL-009",
+    "KAC-FR-KACL-010",
+    "KAC-FR-KACL-011",
+    "KAC-FR-KACL-012",
+    "KAC-FR-KACL-013",
+    "KAC-FR-KACL-014",
+    "KAC-FR-KACL-015",
+    "KAC-FR-KACL-016"
+  ],
+  "changed_paths": [
+    "app/knowledge/domain/acl.py",
+    "docs/product/external-knowledge/manifests/KACLDM-05.json",
+    "tests/test_knowledge_acl.py"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

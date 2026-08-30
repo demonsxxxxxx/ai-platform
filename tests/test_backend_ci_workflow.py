@@ -39,6 +39,7 @@ AGENT_SKILL_CONTRACT_TESTS = (
     "tests/test_agent_profile_routes.py",
     "tests/test_agent_profiles_postgres.py",
     "tests/test_model_management_postgres.py",
+    "tests/test_knowledge_postgres.py",
     "tests/test_authorized_skill_catalog.py",
     "tests/test_skill_dependencies.py",
     "tests/test_skill_lifecycle.py",

@@ -239,6 +239,15 @@ function MCPPage() {
   return <AppContent key="mcp" activeTab="mcp" />;
 }
 
+function KnowledgePage() {
+  useSEO({
+    title: "知识库",
+    description: "管理 RAGFlow 连接、知识源和部门权限",
+    path: "/knowledge",
+  });
+  return <AppContent key="knowledge" activeTab="knowledge" />;
+}
+
 function FeedbackPage() {
   useSEO({
     title: "seo.feedback.title",
@@ -446,6 +455,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <MCPPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path={APP_ROUTE_PATHS.knowledge}
+              element={
+                <ProtectedRoute requireAdmin redirectTo={APP_ROUTE_PATHS.agentMarket}>
+                  <KnowledgePage />
                 </ProtectedRoute>
               }
             />

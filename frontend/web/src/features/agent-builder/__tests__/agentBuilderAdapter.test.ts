@@ -17,6 +17,7 @@ import {
   isAgentProfileEditorDirty,
   mapAuthorizedBuilderSkills,
   mapSafeBuilderMcpTools,
+  knowledgeSourceContainsEditorScope,
   validateAgentProfileEditor,
   type AgentBuilderCurrentCatalog,
 } from "../agentBuilderAdapter";
@@ -75,6 +76,8 @@ function profile(
       expected_version: "2026.07.28",
     },
     mcp_tool_ids: ["mcp:knowledge:search"],
+    knowledge_source_ids: [],
+    retrieval_profile_id: null,
     content_hash: "a".repeat(64),
     ...overrides,
   };
@@ -92,8 +95,37 @@ function catalog(
         description: "Search the authorized knowledge base.",
       },
     ],
+    knowledgeSources: [
+      {
+        id: "ks_finance",
+        name: "财务制度",
+        description: "已治理的财务制度知识源。",
+        authorization_version: 3,
+        connection_name: "公司 RAGFlow",
+        last_seen_at: "2026-08-30T01:00:00Z",
+        available: true,
+        source_status: "active",
+        connection_status: "active",
+        visibility: "enterprise",
+        allowed_department_count: 0,
+        allowed_department_ids: [],
+        allowed_roles: [],
+        allowed_user_ids: [],
+      },
+    ],
+    retrievalProfiles: [
+      {
+        id: "krp_default",
+        revision: 1,
+        name: "标准检索",
+        description: "平台默认确定性检索策略。",
+        status: "active",
+        content_hash: "b".repeat(64),
+      },
+    ],
     skillsResolved: true,
     mcpToolsResolved: true,
+    knowledgeResolved: true,
     effectivePermissionsKnown: true,
     ...overrides,
   };
@@ -192,6 +224,8 @@ test("materializes create and update requests with the exact optimistic revision
       expected_version: "2026.07.28",
     }],
     mcp_tool_ids: ["mcp:knowledge:search"],
+    knowledge_source_ids: [],
+    retrieval_profile_id: null,
     avatar_ref: "builtin:agent",
     avatar_seed: "新智能体",
     avatar_asset_id: null,
@@ -316,6 +350,109 @@ test("fails closed while selected catalogs are unresolved", () => {
     validateAgentProfileEditor(editor, catalog({ mcpToolsResolved: false }))?.code,
     "catalog_unavailable",
   );
+});
+
+test("supports zero or up to eight governed knowledge sources and retains stale pins", () => {
+  const base = hydrateAgentProfileEditor(profile());
+  assert.equal(
+    validateAgentProfileEditor(base, catalog({ knowledgeResolved: false })),
+    null,
+    "knowledge-free drafts do not depend on the optional Knowledge catalog",
+  );
+
+  const eightSources = Array.from({ length: 8 }, (_, index) => ({
+    id: `ks_${index}`,
+    name: `知识源 ${index}`,
+    description: "",
+    authorization_version: 1,
+    connection_name: "公司 RAGFlow",
+    last_seen_at: null,
+    available: true,
+    source_status: "active" as const,
+    connection_status: "active" as const,
+    visibility: "enterprise" as const,
+    allowed_department_count: 0,
+    allowed_department_ids: [],
+    allowed_roles: [],
+    allowed_user_ids: [],
+  }));
+  const selected = {
+    ...base,
+    knowledgeSourceIds: eightSources.map((source) => source.id),
+    retrievalProfileId: "krp_default",
+  };
+  assert.equal(
+    validateAgentProfileEditor(selected, catalog({ knowledgeSources: eightSources })),
+    null,
+  );
+  assert.equal(
+    validateAgentProfileEditor(
+      { ...selected, knowledgeSourceIds: [...selected.knowledgeSourceIds, "ks_8"] },
+      catalog({ knowledgeSources: eightSources }),
+    )?.code,
+    "knowledge_source_limit_exceeded",
+  );
+
+  const stale = {
+    ...base,
+    knowledgeSourceIds: ["ks_removed"],
+    retrievalProfileId: "krp_default",
+  };
+  const issue = validateAgentProfileEditor(stale, catalog());
+  assert.equal(issue?.code, "selected_knowledge_source_unavailable");
+  assert.deepEqual(issue?.unavailableKnowledgeSourceIds, ["ks_removed"]);
+  assert.deepEqual(stale.knowledgeSourceIds, ["ks_removed"]);
+});
+
+test("blocks a Knowledge source whose department scope cannot contain the Agent", () => {
+  const base = hydrateAgentProfileEditor(
+    profile({
+      visibility: "restricted",
+      allowed_department_ids: ["finance", "legal"],
+      knowledge_source_ids: ["ks_finance"],
+      retrieval_profile_id: "krp_default",
+    }),
+  );
+  const restrictedSource = {
+    ...catalog().knowledgeSources[0]!,
+    visibility: "restricted" as const,
+    allowed_department_count: 1,
+    allowed_department_ids: ["finance"],
+  };
+
+  assert.equal(knowledgeSourceContainsEditorScope(restrictedSource, base), false);
+  const issue = validateAgentProfileEditor(
+    base,
+    catalog({ knowledgeSources: [restrictedSource] }),
+  );
+  assert.equal(issue?.code, "knowledge_scope_incompatible");
+  assert.deepEqual(issue?.unavailableKnowledgeSourceIds, ["ks_finance"]);
+
+  const narrowed = { ...base, allowedDepartmentIds: ["finance"] };
+  assert.equal(knowledgeSourceContainsEditorScope(restrictedSource, narrowed), true);
+  assert.equal(
+    validateAgentProfileEditor(
+      narrowed,
+      catalog({ knowledgeSources: [restrictedSource] }),
+    ),
+    null,
+  );
+});
+
+test("requires a server-listed retrieval profile for a Knowledge binding", () => {
+  const editor = {
+    ...hydrateAgentProfileEditor(profile()),
+    knowledgeSourceIds: ["ks_finance"],
+    retrievalProfileId: "krp_removed",
+  };
+  assert.equal(
+    validateAgentProfileEditor(editor, catalog())?.code,
+    "retrieval_profile_unavailable",
+  );
+  assert.deepEqual(buildAgentProfileDraftRequest({
+    ...editor,
+    retrievalProfileId: "krp_default",
+  }).knowledge_source_ids, ["ks_finance"]);
 });
 
 test("publish requires one clean successfully saved draft", () => {
