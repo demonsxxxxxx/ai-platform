@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+from collections.abc import Callable
 import contextlib
 from datetime import datetime, timedelta, timezone
 import json
@@ -213,10 +214,20 @@ async def _heartbeat_until_done(
     interval_seconds: float,
     visibility_timeout_seconds: int,
     ownership_lost: asyncio.Event,
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> None:
+    attempt_creation_deadline = monotonic() + visibility_timeout_seconds
+    durable_attempt_seen = False
     try:
         while True:
             await asyncio.sleep(interval_seconds)
+            if (
+                not durable_attempt_seen
+                and monotonic() >= attempt_creation_deadline
+            ):
+                ownership_lost.set()
+                return
             heartbeat = await queue.heartbeat_run(
                 message.message_id,
                 worker_id=worker_id,
@@ -248,6 +259,7 @@ async def _heartbeat_until_done(
                         last_heartbeat_at=last_heartbeat_at,
                         lease_expires_at=lease_expires_at,
                     )
+                    durable_attempt_seen = True
     except asyncio.CancelledError:
         raise
     except Exception:

@@ -257,9 +257,17 @@ restarted to recover stored work, and image rollback stops for operator action.
 Recovery is accepted only after the container retains the exact target commit,
 image, Compose identity, container identity, restart count, and process identity
 across two advancing fresh runtime heartbeats. Termination signals received after
-rollback begins are deferred until either that target recovery worker is verified
-or the previous runtime passes its complete health gate.
+the target runtime transition begins are deferred until the target, its recovery
+worker, or the previous runtime passes its complete health gate.
 Postgres, Redis, MinIO, and workspace volumes remain untouched.
+
+The target and saved previous runtime use the same worker gate: two fresh,
+advancing process heartbeats with stable container, restart, configuration, and
+process identity. API readiness plus a merely running worker container is not a
+successful release or rollback. The quickstart installs one stateful termination
+policy before preflight, isolates child commands in their own process sessions,
+and begins deferring termination before the target `up`; repeated signals are
+honored only after one runtime has passed its complete gate.
 
 The backend artifact also contains the OpenSandbox executor application. The
 quickstart binds `OPENSANDBOX_EXECUTOR_IMAGE` and its digest to that exact
