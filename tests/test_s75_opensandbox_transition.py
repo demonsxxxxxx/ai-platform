@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import stat
 import subprocess
 from contextlib import contextmanager
@@ -735,6 +736,127 @@ def test_host_prerequisite_defers_health_to_target_container_parity(monkeypatch)
     transition._require_host_prerequisites()
 
     assert commands == [["systemctl", "is-active", "--quiet", "opensandbox.service"]]
+
+
+def test_target_parity_waits_for_platform_and_broker_startup(monkeypatch, tmp_path):
+    platform_reports = iter((False, True, True))
+    broker_statuses = iter(("starting", "healthy"))
+    attempts = []
+    checks = []
+
+    monkeypatch.setattr(
+        release_authority,
+        "collect_live_parity",
+        lambda *args, **kwargs: {"verified": next(platform_reports)},
+    )
+
+    def inspect(docker, name):
+        assert name == transition.TARGET_BROKER_CONTAINER
+        return {
+            "Config": {
+                "Labels": {
+                    "com.docker.compose.project": release_authority.COMPOSE_PROJECT,
+                    "com.docker.compose.service": "opensandbox-egress-proxy",
+                    "ai-platform.source-commit": COMMIT,
+                }
+            },
+            "State": {"Running": True, "Health": {"Status": next(broker_statuses)}},
+        }
+
+    def converge(collect, *, authority_error_type):
+        assert authority_error_type is release_authority.ReleaseAuthorityError
+        for _ in range(3):
+            report = collect(45)
+            attempts.append(report["verified"])
+            if report["verified"]:
+                return report
+        raise AssertionError("target parity did not converge")
+
+    monkeypatch.setattr(transition, "_inspect_container", inspect)
+    monkeypatch.setattr(release_authority, "converge_final_parity", converge)
+    monkeypatch.setattr(transition, "_require_target_executor", lambda docker: checks.append("executor"))
+    monkeypatch.setattr(transition, "_require_target_lifecycle_reachable", lambda docker: checks.append("lifecycle"))
+
+    transition._require_target_parity(["docker"], tmp_path, COMMIT, docker_cmd="docker")
+
+    assert attempts == [False, False, True]
+    assert checks == ["executor", "lifecycle"]
+
+
+def test_target_broker_inspection_uses_parity_attempt_budget(monkeypatch):
+    broker = {
+        "Config": {
+            "Labels": {
+                "com.docker.compose.project": release_authority.COMPOSE_PROJECT,
+                "com.docker.compose.service": "opensandbox-egress-proxy",
+                "ai-platform.source-commit": COMMIT,
+            }
+        },
+        "State": {"Running": True, "Health": {"Status": "healthy"}},
+    }
+    timeouts = []
+
+    def run(command, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        return _completed(command, stdout=json.dumps([broker]))
+
+    monkeypatch.setattr(transition.subprocess, "run", run)
+
+    report = release_authority.converge_final_parity(
+        lambda _: transition._target_broker_parity(["docker"], COMMIT),
+        authority_error_type=release_authority.ReleaseAuthorityError,
+        timeout_seconds=1,
+    )
+
+    assert report == {"verified": True}
+    assert len(timeouts) == 1
+    assert 0 < timeouts[0] <= 1
+
+
+def test_target_broker_parity_rejects_unhealthy_or_wrong_identity(monkeypatch):
+    def record(
+        *,
+        project=release_authority.COMPOSE_PROJECT,
+        service="opensandbox-egress-proxy",
+        source_commit=COMMIT,
+        running=True,
+        health="healthy",
+    ):
+        state = {"Running": running}
+        if health is not None:
+            state["Health"] = {"Status": health} if isinstance(health, str) else health
+        return {
+            "Config": {
+                "Labels": {
+                    "com.docker.compose.project": project,
+                    "com.docker.compose.service": service,
+                    "ai-platform.source-commit": source_commit,
+                }
+            },
+            "State": state,
+        }
+
+    current = [record(health="starting")]
+    monkeypatch.setattr(transition, "_inspect_container", lambda docker, name: current[0])
+
+    assert transition._target_broker_parity(["docker"], COMMIT) == {"verified": False}
+    current[0] = record()
+    assert transition._target_broker_parity(["docker"], COMMIT) == {"verified": True}
+
+    for invalid in (
+        record(project="wrong-project"),
+        record(service="wrong-service"),
+        record(source_commit="b" * 40),
+        record(running=False),
+        record(health=None),
+        record(health=[]),
+        record(health={}),
+        record(health="unhealthy"),
+        record(health="restarting"),
+    ):
+        current[0] = invalid
+        with pytest.raises(transition.TransitionError, match="broker runtime is invalid"):
+            transition._target_broker_parity(["docker"], COMMIT)
 
 
 def test_target_lifecycle_is_reachable_from_api_and_worker(monkeypatch):
