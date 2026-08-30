@@ -149,7 +149,6 @@ async def test_ragflow_retrieval_maps_http_failures_without_response_body(
 
     assert marker not in str(caught.value)
 
-
 @pytest.mark.asyncio
 async def test_ragflow_retrieval_rejects_mismatched_dataset_identity(monkeypatch) -> None:
     provider = _provider(
@@ -226,4 +225,3 @@ async def test_ragflow_retrieval_rejects_oversized_success_body_without_echo(mon
         )
 
     assert marker not in str(caught.value)
-

@@ -71,7 +71,6 @@ def test_provider_chunk_normalization_rejects_each_unsafe_field(
             max_chunk_bytes=max_chunk_bytes,
         )
 
-
 def test_provider_result_rejects_more_rows_than_the_admitted_page() -> None:
     with pytest.raises(KnowledgeError, match="knowledge_response_invalid"):
         normalize_provider_result(
@@ -80,4 +79,3 @@ def test_provider_result_rejects_more_rows_than_the_admitted_page() -> None:
             max_chunk_bytes=1024,
             result_limit=1,
         )
-

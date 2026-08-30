@@ -95,7 +95,6 @@ def normalize_provider_chunk(
         position_json=_safe_position(candidate.position),
     )
 
-
 def normalize_provider_result(
     candidates: Iterable[ProviderChunkCandidate],
     *,
@@ -116,4 +115,3 @@ def normalize_provider_result(
             for candidate in rows
         )
     )
-

@@ -32,4 +32,3 @@ class KnowledgeProvider(Protocol):
         request: ProviderRetrievalRequest,
         control: ProviderCallControl,
     ) -> ProviderRetrievalResult: ...
-

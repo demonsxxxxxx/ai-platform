@@ -139,4 +139,3 @@ class RagFlowKnowledgeProvider(RagFlowCatalogProvider):
             max_chunk_bytes=request.max_chunk_bytes,
             result_limit=request.page_size,
         )
-
