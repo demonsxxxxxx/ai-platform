@@ -25,6 +25,13 @@ EGRESS_IMAGE = "ghcr.io/example/opensandbox-egress@sha256:" + "8" * 64
 SERVER_IMAGE_ID = "sha256:" + "7" * 64
 
 
+@pytest.fixture(autouse=True)
+def _accepted_network_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        bootstrap.transition, "_require_network_guard", lambda _checkout: None
+    )
+
+
 def _secure_file(path: Path, text: str, mode: int = 0o600) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
@@ -40,7 +47,6 @@ def _server_environment(socket_gid: int, **changes: str) -> str:
         "OPENSANDBOX_SERVER_GID": str(max(1, bootstrap.os.getgid())),
         "OPENSANDBOX_DOCKER_SOCKET_GID": str(socket_gid),
         "OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS": "10.40.0.10",
-        "OPENSANDBOX_EGRESS_LISTEN_ADDRESS": "10.40.0.11",
         **changes,
     }
     return "\n".join(f"{key}={value}" for key, value in values.items()) + "\n"
@@ -52,6 +58,7 @@ def _server_config(**changes: str) -> str:
         "execd_image": EXECD_IMAGE,
         "egress_image": EGRESS_IMAGE,
         "host_ip": "10.40.0.10",
+        "network_mode": bootstrap.authority.DIRECT_OPENSANDBOX_NETWORK_NAME,
         "allowed_host_paths": "[]",
         "sandbox_env": "{}",
         "sandbox_binds": "[]",
@@ -60,7 +67,7 @@ def _server_config(**changes: str) -> str:
     }
     return f"""
 [server]
-host = "0.0.0.0"
+host = "{values["host_ip"]}"
 port = 8080
 max_sandbox_timeout_seconds = 86400
 api_key = "{values["api_key"]}"
@@ -87,7 +94,7 @@ type = "sqlite"
 path = "/var/lib/ai-platform-opensandbox/opensandbox.db"
 
 [docker]
-network_mode = "bridge"
+network_mode = "{values["network_mode"]}"
 host_ip = "{values["host_ip"]}"
 drop_capabilities = ["AUDIT_WRITE", "MKNOD", "NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_TIME", "SYS_TTY_CONFIG"]
 no_new_privileges = true
@@ -112,7 +119,6 @@ def _application_environment(**changes: str) -> str:
     values = {
         "OPENSANDBOX_BASE_URL": "http://10.40.0.10:8080",
         "OPENSANDBOX_API_KEY": "a" * 32,
-        "OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS": "10.40.0.11",
         "OPENSANDBOX_EXECUTOR_IMAGE": BACKEND,
         "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST": "sha256:" + "3" * 64,
         **changes,
@@ -130,7 +136,6 @@ def _host_config() -> bootstrap.OpenSandboxHostConfig:
         server_gid=max(1, bootstrap.os.getgid()),
         docker_socket_gid=max(1, bootstrap.os.getgid()),
         lifecycle_address="10.40.0.10",
-        egress_address="10.40.0.11",
         api_key_sha256=bootstrap.hashlib.sha256(("a" * 32).encode("utf-8")).hexdigest(),
         config_sha256="9" * 64,
     )
@@ -174,7 +179,6 @@ def test_host_config_requires_secure_consistent_production_values(
     assert config.execd_image == EXECD_IMAGE
     assert config.egress_image == EGRESS_IMAGE
     assert config.lifecycle_address == "10.40.0.10"
-    assert config.egress_address == "10.40.0.11"
     assert bootstrap.re.fullmatch(r"[0-9a-f]{64}", config.config_sha256)
 
 
@@ -187,9 +191,9 @@ def test_host_config_requires_secure_consistent_production_values(
             "image digest mismatch",
         ),
         (
-            {"OPENSANDBOX_EGRESS_LISTEN_ADDRESS": "10.40.0.10"},
             {},
-            "addresses must differ",
+            {"network_mode": "bridge"},
+            "violates production policy",
         ),
         (
             {"OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS": "8.8.8.8"},
@@ -342,7 +346,6 @@ def test_host_config_rejects_writable_parent_chain(
     [
         {"OPENSANDBOX_BASE_URL": "http://10.40.0.12:8080"},
         {"OPENSANDBOX_API_KEY": "b" * 32},
-        {"OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS": "10.40.0.12"},
     ],
 )
 def test_application_environment_must_match_the_host_contract(
@@ -365,18 +368,8 @@ def test_application_environment_must_match_the_host_contract(
 
 
 class HostRunner:
-    def __init__(
-        self,
-        *,
-        active: bool = False,
-        network_exists: bool = False,
-        network_owner: str = "production-bootstrap",
-        network_containers: dict[str, dict[str, str]] | None = None,
-    ) -> None:
+    def __init__(self, *, active: bool = False) -> None:
         self.active = active
-        self.network_exists = network_exists
-        self.network_owner = network_owner
-        self.network_containers = network_containers or {}
         self.commands: list[list[str]] = []
 
     def run(
@@ -394,24 +387,6 @@ class HostRunner:
         returncode = 0
         if "info" in command:
             stdout = json.dumps({"runc": {}, "runsc": {}})
-        elif command[-3:] == ["network", "inspect", bootstrap.LIFECYCLE_NETWORK]:
-            if self.network_exists:
-                stdout = json.dumps(
-                    [
-                        {
-                            "Name": bootstrap.LIFECYCLE_NETWORK,
-                            "Driver": "bridge",
-                            "Scope": "local",
-                            "Internal": False,
-                            "Labels": {"ai-platform.release-owner": self.network_owner},
-                            "Containers": self.network_containers,
-                        }
-                    ]
-                )
-            else:
-                returncode = 1
-        elif "network" in command and "create" in command:
-            self.network_exists = True
         elif command[:3] == ["systemctl", "is-active", "--quiet"]:
             returncode = 0 if self.active else 3
         elif command[:2] == ["systemctl", "start"]:
@@ -424,7 +399,6 @@ class HostRunner:
 
 
 def _server_container(commit: str = COMMIT) -> dict[str, object]:
-    bindings = [{"HostIp": "10.40.0.10", "HostPort": "8080"}]
     return {
         "Image": SERVER_IMAGE_ID,
         "Config": {
@@ -448,16 +422,16 @@ def _server_container(commit: str = COMMIT) -> dict[str, object]:
             "CapDrop": ["ALL"],
             "SecurityOpt": ["no-new-privileges"],
             "PidsLimit": 512,
-            "NetworkMode": bootstrap.LIFECYCLE_NETWORK,
+            "NetworkMode": "host",
             "GroupAdd": [str(max(1, bootstrap.os.getgid()))],
             "Binds": None,
-            "PortBindings": {"8080/tcp": bindings},
+            "PortBindings": {},
             "Tmpfs": {"/tmp": "rw,noexec,nosuid,nodev,size=64m"},
         },
         "State": {"Running": True},
         "NetworkSettings": {
-            "Networks": {bootstrap.LIFECYCLE_NETWORK: {}},
-            "Ports": {"8080/tcp": bindings},
+            "Networks": {"host": {}},
+            "Ports": {"8080/tcp": None},
         },
         "Mounts": [
             {
@@ -539,6 +513,28 @@ def test_server_runtime_validation_requires_exact_unit_source_and_safety() -> No
         )
 
     host_config["Privileged"] = False
+    host_config["NetworkMode"] = "bridge"
+    with pytest.raises(bootstrap.BootstrapError, match="identity mismatch"):
+        bootstrap._validate_server_container(
+            ContainerInspectRunner(container),
+            _host_config(),
+            COMMIT,
+        )
+
+    host_config["NetworkMode"] = "host"
+    network_settings = container["NetworkSettings"]
+    assert isinstance(network_settings, dict)
+    network_settings["Ports"] = {
+        "8080/tcp": [{"HostIp": "0.0.0.0", "HostPort": "8080"}]
+    }
+    with pytest.raises(bootstrap.BootstrapError, match="identity mismatch"):
+        bootstrap._validate_server_container(
+            ContainerInspectRunner(container),
+            _host_config(),
+            COMMIT,
+        )
+
+    network_settings["Ports"] = {"8080/tcp": None}
     config = container["Config"]
     assert isinstance(config, dict)
     config["Entrypoint"] = ["/bin/sh"]
@@ -673,7 +669,7 @@ def _checkout_with_unit(tmp_path: Path) -> Path:
     return checkout
 
 
-def test_host_bootstrap_creates_network_installs_unit_and_starts_service(
+def test_host_bootstrap_installs_unit_and_starts_service(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     checkout = _checkout_with_unit(tmp_path)
@@ -703,9 +699,6 @@ def test_host_bootstrap_creates_network_installs_unit_and_starts_service(
     assert f"ai-platform.source-commit={COMMIT}" in unit_path.read_text(
         encoding="utf-8"
     )
-    assert any(
-        "network" in command and "create" in command for command in runner.commands
-    )
     assert [command[-1] for command in runner.commands if "pull" in command] == [
         SERVER_IMAGE,
         EXECD_IMAGE,
@@ -715,16 +708,34 @@ def test_host_bootstrap_creates_network_installs_unit_and_starts_service(
     assert events == ["container", "health:10.40.0.10"]
 
 
-def test_existing_lifecycle_network_rejects_foreign_owner_or_endpoint() -> None:
-    for runner in (
-        HostRunner(network_exists=True, network_owner="foreign"),
-        HostRunner(
-            network_exists=True,
-            network_containers={"foreign-id": {"Name": "foreign-container"}},
+def test_host_bootstrap_rejects_missing_network_guard_before_unit_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkout = _checkout_with_unit(tmp_path)
+    unit_path = tmp_path / "systemd" / "opensandbox.service"
+    runner = HostRunner()
+    monkeypatch.setattr(
+        bootstrap, "load_opensandbox_host_config", lambda *_: _host_config()
+    )
+    monkeypatch.setattr(bootstrap, "_require_host_address_available", lambda *_: None)
+    monkeypatch.setattr(
+        bootstrap.transition,
+        "_require_network_guard",
+        lambda _checkout: (_ for _ in ()).throw(
+            bootstrap.transition.TransitionError("guard invalid")
         ),
-    ):
-        with pytest.raises(bootstrap.BootstrapError, match="network is invalid"):
-            bootstrap._ensure_lifecycle_network(runner)
+    )
+
+    with pytest.raises(bootstrap.BootstrapError, match="host-input guard is invalid"):
+        bootstrap.HostBootstrap(
+            checkout,
+            runner=runner,
+            health_probe=lambda _address: None,
+            unit_path=unit_path,
+        ).run(COMMIT)
+
+    assert not unit_path.exists()
+    assert not any("pull" in command for command in runner.commands)
 
 
 def test_equivalent_managed_unit_does_not_restart_active_service(
@@ -742,7 +753,7 @@ def test_equivalent_managed_unit_does_not_restart_active_service(
         encoding="utf-8",
     )
     unit_path.chmod(0o644)
-    runner = HostRunner(active=True, network_exists=True)
+    runner = HostRunner(active=True)
     monkeypatch.setattr(
         bootstrap, "load_opensandbox_host_config", lambda *_: _host_config()
     )
@@ -788,7 +799,7 @@ def test_changed_host_unit_can_restore_the_previous_running_service(
     previous = previous.replace("KillMode=control-group", "KillMode=process")
     unit_path.write_text(previous, encoding="utf-8")
     unit_path.chmod(0o644)
-    runner = HostRunner(active=True, network_exists=True)
+    runner = HostRunner(active=True)
     observed_commits: list[str] = []
     monkeypatch.setattr(
         bootstrap, "load_opensandbox_host_config", lambda *_: _host_config()
@@ -868,7 +879,7 @@ def test_existing_runtime_rejects_opensandbox_host_configuration_drift(
         encoding="utf-8",
     )
     unit_path.chmod(0o644)
-    runner = HostRunner(active=True, network_exists=True)
+    runner = HostRunner(active=True)
     monkeypatch.setattr(
         bootstrap, "load_opensandbox_host_config", lambda *_: _host_config()
     )
@@ -1446,14 +1457,15 @@ def test_shell_entry_is_isolated_and_targets_the_production_controller() -> None
     assert '"$@"' in entry
 
 
-def test_production_unit_is_distinctly_managed_and_keeps_lifecycle_guard() -> None:
+def test_production_unit_is_distinctly_managed_and_uses_host_network_guard() -> None:
     unit = (ROOT / bootstrap.UNIT_TEMPLATE).read_text(encoding="utf-8")
     assert unit.count("@@SOURCE_COMMIT@@") == 3
     assert unit.count("@@HOST_CONFIG_SHA256@@") == 1
     assert "ai-platform.release-owner=production-bootstrap" in unit
-    assert "--network ai-platform-opensandbox-lifecycle" in unit
-    assert "--publish ${OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS}:8080:8080" in unit
-    assert "addresses[0] != addresses[1]" in unit
+    assert "--network host" in unit
+    assert "--publish" not in unit
+    assert "OPENSANDBOX_EGRESS_LISTEN_ADDRESS" not in unit
+    assert "Requires=docker.service ai-platform-opensandbox-network-guard.service" in unit
     assert "python3 -I /data/ai-platform-prod/releases/" in unit
     assert unit.count("tools/opensandbox_unit_guard.py") == 2
     assert "docker rm -f ai-platform-opensandbox-server" not in unit
@@ -1488,6 +1500,10 @@ def test_readme_runbook_and_examples_expose_the_production_profile() -> None:
     assert "REQUIRED_RANDOM_LIFECYCLE_API_KEY_AT_LEAST_32_BYTES" in config
     assert "root:<OPENSANDBOX_SERVER_GID> mode 0640" in config
     assert 'docker_runtime = "runsc"' in config
+    assert 'host = "REQUIRED_PRIVATE_LIFECYCLE_IPV4_ADDRESS"' in config
+    assert (
+        'network_mode = "ai-platform-opensandbox-egress-internal-v1"' in config
+    )
     assert 'mode = "dns+nft"' in config
     assert "allowed_host_paths = []" in config
     assert "sandbox_binds = []" in config

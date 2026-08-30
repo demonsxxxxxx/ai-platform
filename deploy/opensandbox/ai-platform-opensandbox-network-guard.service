@@ -1,0 +1,25 @@
+[Unit]
+Description=AI Platform OpenSandbox host-input guard
+Before=docker.service opensandbox.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=-/usr/sbin/iptables -w 30 -N AI_PLATFORM_OPENSANDBOX
+ExecStart=/usr/sbin/iptables -w 30 -F AI_PLATFORM_OPENSANDBOX
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OPENSANDBOX -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OPENSANDBOX -j DROP
+ExecStart=-/usr/sbin/iptables -w 30 -D INPUT -i br-osb-egress -j AI_PLATFORM_OPENSANDBOX
+ExecStart=/usr/sbin/iptables -w 30 -I INPUT 1 -i br-osb-egress -j AI_PLATFORM_OPENSANDBOX
+ExecStart=-/usr/sbin/iptables -w 30 -N DOCKER-USER
+ExecStart=-/usr/sbin/iptables -w 30 -N AI_PLATFORM_OSB_FORWARD
+ExecStart=/usr/sbin/iptables -w 30 -F AI_PLATFORM_OSB_FORWARD
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -d 172.31.75.2/32 -p tcp -m tcp --dport 8080 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -s 172.31.75.2/32 -p tcp -m tcp --sport 8080 -m conntrack --ctstate ESTABLISHED -j ACCEPT
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -j DROP
+ExecStart=-/usr/sbin/iptables -w 30 -D DOCKER-USER -i br-osb-egress -o br-osb-egress -j AI_PLATFORM_OSB_FORWARD
+ExecStart=/usr/sbin/iptables -w 30 -I DOCKER-USER 1 -i br-osb-egress -o br-osb-egress -j AI_PLATFORM_OSB_FORWARD
+
+[Install]
+WantedBy=multi-user.target
+RequiredBy=docker.service opensandbox.service

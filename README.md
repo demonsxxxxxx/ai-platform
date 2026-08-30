@@ -72,17 +72,20 @@ The initial OpenSandbox file shapes are documented in
 `deploy/opensandbox/server-production.toml.example`; real values never belong
 in Git.
 
-The application env must use the same lifecycle URL/API key and egress bind
-address as those host files. Its OpenSandbox executor is the release-authority
-backend workload image, not the host service's `runtime.execd_image`. Pin the
-OpenSandbox server, execd, and egress sidecar by digest; the server digest must
-have been verified against an approved `server/v0.1.13` or newer release. The
-production TOML denies host bind mounts and uses `dns+nft` for the IP-address
-egress rule.
+The application env must use the same lifecycle URL and API key as those host
+files. Its OpenSandbox executor is the release-authority backend workload image,
+not the host service's `runtime.execd_image`. Pin the OpenSandbox server, execd,
+and egress sidecar by digest; the server digest must have been verified against
+an approved `server/v0.1.13` or newer release. The production TOML binds the
+trusted Server container to the private lifecycle address, selects the fixed
+internal sandbox network, denies host bind mounts, and retains `dns+nft` only as
+the pinned upstream egress-sidecar configuration; application requests omit the
+incompatible SDK `networkPolicy`.
 
-Docker with Compose v2, systemd, and the Docker `runsc` runtime must already be
-installed. The root Docker account must be logged in to GHCR, and GitHub
-Contents/Actions read credentials must be available to the command.
+Docker with Compose v2, systemd, the Docker `runsc` runtime, and the exact
+active `ai-platform-opensandbox-network-guard.service` from the target checkout
+must already be installed. The root Docker account must be logged in to GHCR,
+and GitHub Contents/Actions read credentials must be available to the command.
 
 Then rebuild the OpenSandbox host service and production application from the
 newest fully approved exact-main images:

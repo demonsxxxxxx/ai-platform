@@ -421,7 +421,7 @@ def is_governed_egress_proof(
         or proof.get("default_deny_outbound") is not True
         or proof.get("governed_callback_exception") is not True
         or proof.get("policy_bound_enforcement") is not True
-        or proof.get("network_internal") is not (provider == "docker")
+        or proof.get("network_internal") is not True
     ):
         return False
     issued_at = _parse_timestamp(proof.get("issued_at"))

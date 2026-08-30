@@ -28,6 +28,7 @@ SANDBOX_SECURITY_PROFILE_GOVERNED = "governed"
 SANDBOX_SECURITY_PROFILE_INTERNAL_TEST = "internal-test"
 SANDBOX_SECURITY_PROFILE_LABEL = "ai-platform.security_profile"
 DIRECT_OPENSANDBOX_PROFILE_ID = "direct-opensandbox"
+DIRECT_OPENSANDBOX_NETWORK_NAME = "ai-platform-opensandbox-egress-internal-v1"
 DIRECT_OPENSANDBOX_POLICY_SUBJECT = "stateless-nginx-egress"
 DIRECT_OPENSANDBOX_CALLBACK_SUBJECT = "api-callback-token-validation"
 DIRECT_OPENSANDBOX_DENIAL_SUBJECT = "ai-platform-sandbox-runtime"
@@ -460,7 +461,8 @@ def _governed_cleanup_expected_binding(
         != SANDBOX_SECURITY_PROFILE_GOVERNED
         or _required_remote_string(labels, "ai-platform.external_egress.runtime_identity")
         != _OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_IDENTITY
-        or _required_remote_string(labels, "ai-platform.external_egress.network_mode") != "bridge"
+        or _required_remote_string(labels, "ai-platform.external_egress.network_mode")
+        != DIRECT_OPENSANDBOX_NETWORK_NAME
         or _required_remote_string(labels, "ai-platform.external_egress.profile_version") != "v1"
         or _required_remote_string(labels, "ai-platform.external_egress.upstream_bridge_version") != "v1"
     ):

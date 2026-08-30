@@ -1,6 +1,6 @@
 # Restore the production file as root:<OPENSANDBOX_SERVER_GID> mode 0640.
 [server]
-host = "0.0.0.0"
+host = "REQUIRED_PRIVATE_LIFECYCLE_IPV4_ADDRESS"
 port = 8080
 max_sandbox_timeout_seconds = 86400
 api_key = "REQUIRED_RANDOM_LIFECYCLE_API_KEY_AT_LEAST_32_BYTES"
@@ -27,7 +27,7 @@ type = "sqlite"
 path = "/var/lib/ai-platform-opensandbox/opensandbox.db"
 
 [docker]
-network_mode = "bridge"
+network_mode = "ai-platform-opensandbox-egress-internal-v1"
 host_ip = "REQUIRED_PRIVATE_LIFECYCLE_IPV4_ADDRESS"
 drop_capabilities = ["AUDIT_WRITE", "MKNOD", "NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_TIME", "SYS_TTY_CONFIG"]
 no_new_privileges = true

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import shlex
 import stat
 import subprocess
 import sys
+import tomllib
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -81,6 +83,16 @@ ACCEPTANCE_PORT_ENVIRONMENT = {
 TERMINAL_RUN_STATUSES = ("succeeded", "failed", "cancelled")
 TERMINAL_ATTEMPT_STATUSES = ("succeeded", "failed", "cancelled")
 LOCK_PATH = Path("/run/lock/ai-platform-s75-opensandbox-transition.lock")
+OPENSANDBOX_SERVER_CONFIG_PATH = Path("/etc/ai-platform/opensandbox/server.toml")
+OPENSANDBOX_NETWORK_GUARD_SERVICE = "ai-platform-opensandbox-network-guard.service"
+OPENSANDBOX_NETWORK_GUARD_CHAIN = "AI_PLATFORM_OPENSANDBOX"
+OPENSANDBOX_FORWARD_GUARD_CHAIN = "AI_PLATFORM_OSB_FORWARD"
+OPENSANDBOX_NETWORK_GUARD_SOURCE = Path(
+    "deploy/opensandbox/ai-platform-opensandbox-network-guard.service"
+)
+OPENSANDBOX_NETWORK_GUARD_UNIT_PATH = Path(
+    "/etc/systemd/system/ai-platform-opensandbox-network-guard.service"
+)
 
 
 class TransitionError(RuntimeError):
@@ -384,10 +396,148 @@ def _require_schema_compatibility(repo_root: Path, legacy_commit: str, target_co
             raise TransitionError("target schema is not legacy-rollback compatible")
 
 
-def _require_host_prerequisites() -> None:
-    for service in ("opensandbox.service",):
-        if _run(["systemctl", "is-active", "--quiet", service], check=False, timeout=15).returncode != 0:
+def _require_opensandbox_server_profile(
+    config_path: Path = OPENSANDBOX_SERVER_CONFIG_PATH,
+) -> None:
+    try:
+        metadata = config_path.lstat()
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        server = config["server"]
+        runtime = config["runtime"]
+        docker = config["docker"]
+        secure_runtime = config["secure_runtime"]
+        address = ipaddress.ip_address(server.get("host"))
+    except (
+        KeyError,
+        OSError,
+        TypeError,
+        UnicodeError,
+        ValueError,
+        tomllib.TOMLDecodeError,
+    ) as exc:
+        raise TransitionError("OpenSandbox Server configuration is invalid") from exc
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or config_path.is_symlink()
+        or metadata.st_uid != 0
+        or stat.S_IMODE(metadata.st_mode) != 0o640
+    ):
+        raise TransitionError("OpenSandbox Server configuration is invalid")
+    if (
+        not isinstance(address, ipaddress.IPv4Address)
+        or not address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+        or server.get("port") != 8080
+        or runtime.get("type") != "docker"
+        or docker.get("host_ip") != str(address)
+        or docker.get("network_mode") != authority.DIRECT_OPENSANDBOX_NETWORK_NAME
+        or docker.get("no_new_privileges") is not True
+        or secure_runtime.get("type") != "gvisor"
+        or secure_runtime.get("docker_runtime") != "runsc"
+    ):
+        raise TransitionError("OpenSandbox Server isolation profile is invalid")
+
+
+def _require_network_guard(
+    repo_root: Path,
+    unit_path: Path = OPENSANDBOX_NETWORK_GUARD_UNIT_PATH,
+) -> None:
+    source_path = repo_root / OPENSANDBOX_NETWORK_GUARD_SOURCE
+    try:
+        metadata = unit_path.lstat()
+        unit_matches = unit_path.read_bytes() == source_path.read_bytes()
+    except OSError as exc:
+        raise TransitionError("OpenSandbox host-input guard unit is invalid") from exc
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or unit_path.is_symlink()
+        or metadata.st_uid != 0
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+        or not unit_matches
+    ):
+        raise TransitionError("OpenSandbox host-input guard unit is invalid")
+    lines = [
+        line.strip()
+        for line in _run(["iptables-save", "-t", "filter"]).stdout.splitlines()
+    ]
+    input_rules = [line for line in lines if line.startswith("-A INPUT ")]
+    chain_rules = [
+        line
+        for line in lines
+        if line.startswith(f"-A {OPENSANDBOX_NETWORK_GUARD_CHAIN} ")
+    ]
+    docker_user_rules = [
+        line for line in lines if line.startswith("-A DOCKER-USER ")
+    ]
+    forward_chain_rules = [
+        line
+        for line in lines
+        if line.startswith(f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} ")
+    ]
+    expected_jump = (
+        f"-A INPUT -i {authority.DIRECT_OPENSANDBOX_BRIDGE_NAME} "
+        f"-j {OPENSANDBOX_NETWORK_GUARD_CHAIN}"
+    )
+    expected_forward_jump = (
+        f"-A DOCKER-USER -i {authority.DIRECT_OPENSANDBOX_BRIDGE_NAME} "
+        f"-o {authority.DIRECT_OPENSANDBOX_BRIDGE_NAME} "
+        f"-j {OPENSANDBOX_FORWARD_GUARD_CHAIN}"
+    )
+    expected_forward_rules = [
+        f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} "
+        f"-d {authority.DIRECT_OPENSANDBOX_PROXY_IPV4}/32 -p tcp -m tcp "
+        f"--dport {authority.DIRECT_OPENSANDBOX_PROXY_PORT} -m conntrack "
+        "--ctstate NEW,ESTABLISHED -j ACCEPT",
+        f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} "
+        f"-s {authority.DIRECT_OPENSANDBOX_PROXY_IPV4}/32 -p tcp -m tcp "
+        f"--sport {authority.DIRECT_OPENSANDBOX_PROXY_PORT} -m conntrack "
+        "--ctstate ESTABLISHED -j ACCEPT",
+        f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} -j DROP",
+    ]
+    if (
+        not input_rules
+        or input_rules[0] != expected_jump
+        or chain_rules
+        != [
+            f"-A {OPENSANDBOX_NETWORK_GUARD_CHAIN} -m conntrack "
+            "--ctstate RELATED,ESTABLISHED -j ACCEPT",
+            f"-A {OPENSANDBOX_NETWORK_GUARD_CHAIN} -j DROP",
+        ]
+        or not docker_user_rules
+        or docker_user_rules[0] != expected_forward_jump
+        or forward_chain_rules != expected_forward_rules
+    ):
+        raise TransitionError("OpenSandbox network guard is invalid")
+
+
+def _require_opensandbox_server_container(docker: Sequence[str]) -> None:
+    payload = _docker_json(docker, "container", "inspect", "ai-platform-opensandbox-server")
+    if (
+        not isinstance(payload, list)
+        or len(payload) != 1
+        or not authority._valid_opensandbox_server_network_topology(payload[0])
+    ):
+        raise TransitionError("OpenSandbox Server container topology is invalid")
+
+
+def _require_host_prerequisites(repo_root: Path, docker: Sequence[str]) -> None:
+    for service in ("opensandbox.service", OPENSANDBOX_NETWORK_GUARD_SERVICE):
+        if (
+            _run(
+                ["systemctl", "is-active", "--quiet", service],
+                check=False,
+                timeout=15,
+            ).returncode
+            != 0
+        ):
             raise TransitionError(f"host prerequisite inactive: {service}")
+    _require_opensandbox_server_profile()
+    _require_opensandbox_server_container(docker)
+    _require_network_guard(repo_root)
 
 
 def _quiescence_counts(docker: Sequence[str]) -> tuple[int, int, int]:
@@ -558,6 +708,55 @@ def _require_target_lifecycle_reachable(docker: Sequence[str]) -> None:
             raise TransitionError(f"target OpenSandbox lifecycle unreachable from {service}")
 
 
+def _require_target_network(docker: Sequence[str]) -> None:
+    payload = _docker_json(
+        docker, "network", "inspect", authority.DIRECT_OPENSANDBOX_NETWORK_NAME
+    )
+    if not isinstance(payload, list) or len(payload) != 1 or not isinstance(payload[0], dict):
+        raise TransitionError("target OpenSandbox network inspection is invalid")
+    network = payload[0]
+    options = network.get("Options") or {}
+    labels = network.get("Labels") or {}
+    members = network.get("Containers") or {}
+    member_names = {
+        value.get("Name")
+        for value in members.values()
+        if isinstance(value, dict)
+    }
+    member_addresses = {
+        value.get("IPv4Address")
+        for value in members.values()
+        if isinstance(value, dict)
+    }
+    ipam = network.get("IPAM")
+    ipam_config = ipam.get("Config") if isinstance(ipam, dict) else None
+    expected_options = {
+        "com.docker.network.bridge.name": authority.DIRECT_OPENSANDBOX_BRIDGE_NAME,
+        "com.docker.network.bridge.enable_ip_masquerade": "false",
+        "com.docker.network.bridge.enable_icc": "false",
+    }
+    if (
+        network.get("Name") != authority.DIRECT_OPENSANDBOX_NETWORK_NAME
+        or network.get("Driver") != "bridge"
+        or network.get("Internal") is not True
+        or network.get("EnableIPv4") is not True
+        or network.get("EnableIPv6") is not False
+        or options != expected_options
+        or not isinstance(ipam_config, list)
+        or len(ipam_config) != 1
+        or not isinstance(ipam_config[0], dict)
+        or ipam_config[0].get("Subnet") != authority.DIRECT_OPENSANDBOX_SUBNET
+        or labels.get("com.docker.compose.project") != authority.COMPOSE_PROJECT
+        or labels.get("com.docker.compose.network")
+        != authority.DIRECT_OPENSANDBOX_NETWORK_KEY
+        or len(members) != 1
+        or member_names != {TARGET_BROKER_CONTAINER}
+        or member_addresses
+        != {f"{authority.DIRECT_OPENSANDBOX_PROXY_IPV4}/24"}
+    ):
+        raise TransitionError("target OpenSandbox network isolation is invalid")
+
+
 def _require_target_parity(
     docker: Sequence[str],
     repo_root: Path,
@@ -578,6 +777,8 @@ def _require_target_parity(
         collect,
         authority_error_type=authority.ReleaseAuthorityError,
     )
+    _require_host_prerequisites(repo_root, docker)
+    _require_target_network(docker)
     _require_target_executor(docker)
     _require_target_lifecycle_reachable(docker)
 
@@ -746,13 +947,13 @@ def _migrate_locked(
     safe_env_file = _require_safe_env_file(env_file)
     _require_workspace_root_env(safe_env_file)
     runtime = _legacy_runtime(docker, legacy_repo_root, legacy_commit)
-    _require_host_prerequisites()
-    _require_quiescent(docker)
     normalized = authority.assert_managed_target_checkout(
         target_repo_root,
         target_commit,
         target_repo_root.parent,
     )
+    _require_host_prerequisites(target_repo_root, docker)
+    _require_quiescent(docker)
     _require_schema_compatibility(target_repo_root, runtime.commit, normalized)
     target_selection = authority.resolve_compose_files(target_repo_root, TARGET_SELECTION)
     authority.prepare_packaged_release_images(

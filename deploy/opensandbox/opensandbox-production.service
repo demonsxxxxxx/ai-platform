@@ -1,15 +1,15 @@
 [Unit]
 Description=AI Platform managed production OpenSandbox server
-After=docker.service network-online.target
-Requires=docker.service
+After=docker.service network-online.target ai-platform-opensandbox-network-guard.service
+Requires=docker.service ai-platform-opensandbox-network-guard.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 EnvironmentFile=/etc/ai-platform/opensandbox/server.env
-ExecStartPre=/usr/bin/python3 -I -c "import ipaddress, os, sys; addresses = [ipaddress.ip_address(os.environ[key]) for key in ('OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS', 'OPENSANDBOX_EGRESS_LISTEN_ADDRESS')]; valid = all(address.version == 4 and address.is_private and not (address.is_loopback or address.is_link_local or address.is_multicast or address.is_reserved or address.is_unspecified) for address in addresses) and addresses[0] != addresses[1]; sys.exit(0 if valid else 1)"
+ExecStartPre=/usr/bin/python3 -I -c "import ipaddress, os, sys, tomllib; expected = os.environ['OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS']; host = tomllib.load(open('/etc/ai-platform/opensandbox/server.toml', 'rb'))['server']['host']; address = ipaddress.ip_address(host); valid = host == expected and address.version == 4 and address.is_private and not (address.is_loopback or address.is_link_local or address.is_multicast or address.is_reserved or address.is_unspecified); sys.exit(0 if valid else 1)"
 ExecStartPre=/usr/bin/python3 -I /data/ai-platform-prod/releases/@@SOURCE_COMMIT@@/tools/opensandbox_unit_guard.py
-ExecStart=/usr/bin/docker run --rm --name ai-platform-opensandbox-server --label ai-platform.source-commit=@@SOURCE_COMMIT@@ --label ai-platform.host-config-sha256=@@HOST_CONFIG_SHA256@@ --label ai-platform.release-owner=production-bootstrap --label ai-platform.release-role=opensandbox-server --label ai-platform.security-domain=execution-controller --user ${OPENSANDBOX_SERVER_UID}:${OPENSANDBOX_SERVER_GID} --group-add ${OPENSANDBOX_DOCKER_SOCKET_GID} --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --network ai-platform-opensandbox-lifecycle --publish ${OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS}:8080:8080 --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock,readonly --mount type=bind,src=/etc/ai-platform/opensandbox/server.toml,dst=/etc/opensandbox/config.toml,readonly --mount type=bind,src=/var/lib/ai-platform-opensandbox,dst=/var/lib/ai-platform-opensandbox --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m ${OPENSANDBOX_SERVER_IMAGE} --config /etc/opensandbox/config.toml
+ExecStart=/usr/bin/docker run --rm --name ai-platform-opensandbox-server --label ai-platform.source-commit=@@SOURCE_COMMIT@@ --label ai-platform.host-config-sha256=@@HOST_CONFIG_SHA256@@ --label ai-platform.release-owner=production-bootstrap --label ai-platform.release-role=opensandbox-server --label ai-platform.security-domain=execution-controller --user ${OPENSANDBOX_SERVER_UID}:${OPENSANDBOX_SERVER_GID} --group-add ${OPENSANDBOX_DOCKER_SOCKET_GID} --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --network host --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock,readonly --mount type=bind,src=/etc/ai-platform/opensandbox/server.toml,dst=/etc/opensandbox/config.toml,readonly --mount type=bind,src=/var/lib/ai-platform-opensandbox,dst=/var/lib/ai-platform-opensandbox --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m ${OPENSANDBOX_SERVER_IMAGE} --config /etc/opensandbox/config.toml
 ExecStop=/usr/bin/python3 -I /data/ai-platform-prod/releases/@@SOURCE_COMMIT@@/tools/opensandbox_unit_guard.py
 Restart=on-failure
 RestartSec=2s

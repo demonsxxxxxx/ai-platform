@@ -21,6 +21,7 @@ from app.runtime.sandbox.providers.opensandbox import metadata as opensandbox_me
 from app.runtime.sandbox.opensandbox_policy import (
     DIRECT_OPENSANDBOX_CALLBACK_SUBJECT,
     DIRECT_OPENSANDBOX_DENIAL_SUBJECT,
+    DIRECT_OPENSANDBOX_NETWORK_NAME,
     DIRECT_OPENSANDBOX_POLICY_SUBJECT,
     DIRECT_OPENSANDBOX_PROFILE_ID,
 )
@@ -91,8 +92,8 @@ def opensandbox_cleanup_proof(*, signing_key=TEST_PROOF_KEY, key_id="current"):
             DIRECT_OPENSANDBOX_DENIAL_SUBJECT,
         ),
         network_id=DIRECT_OPENSANDBOX_PROFILE_ID,
-        network_name="http://opensandbox.local:8080",
-        network_internal=False,
+        network_name=DIRECT_OPENSANDBOX_NETWORK_NAME,
+        network_internal=True,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
         user_id="user-a",
@@ -864,9 +865,11 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
         "ai-platform.security_profile": "governed",
         "ai-platform.external_egress.profile_version": "v1",
         "ai-platform.external_egress.profile_id": DIRECT_OPENSANDBOX_PROFILE_ID,
-        "ai-platform.external_egress.endpoint_sha256": proof["network_name_sha256"],
+        "ai-platform.external_egress.endpoint_sha256": hashlib.sha256(
+            "http://opensandbox.local:8080".encode("utf-8")
+        ).hexdigest(),
         "ai-platform.external_egress.runtime_identity": "runsc",
-        "ai-platform.external_egress.network_mode": "bridge",
+        "ai-platform.external_egress.network_mode": DIRECT_OPENSANDBOX_NETWORK_NAME,
         "ai-platform.runtime_subject": "runtime-subject-a",
         "ai-platform.external_egress.gateway_policy_subject": DIRECT_OPENSANDBOX_POLICY_SUBJECT,
         "ai-platform.external_egress.callback_boundary_subject": DIRECT_OPENSANDBOX_CALLBACK_SUBJECT,
