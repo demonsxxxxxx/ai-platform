@@ -1,0 +1,21 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KDOC-00",
+  "issue_number": 1311,
+  "summary": "External Knowledge product, domain, acceptance, traceability, delivery, and baseline contracts",
+  "atomic_case_ids": [],
+  "changed_paths": [
+    "docs/product/README.md",
+    "docs/product/external-knowledge/acceptance-matrix.md",
+    "docs/product/external-knowledge/baseline-disposition.md",
+    "docs/product/external-knowledge/domain-and-api-contract.md",
+    "docs/product/external-knowledge/functional-requirements.md",
+    "docs/product/external-knowledge/implementation-slices.md",
+    "docs/product/external-knowledge/manifests/KDOC-00.json",
+    "docs/product/external-knowledge/product-requirements.md",
+    "docs/product/external-knowledge/traceability-matrix.md"
+  ],
+  "evidence_layers": [
+    "source"
+  ]
+}

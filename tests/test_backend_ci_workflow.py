@@ -128,6 +128,8 @@ BACKEND_TEST_SHARDS = {
         "tests/test_packaging_publish_workflow.py",
         "tests/test_trivy_failure_evidence.py",
         "tests/test_release_image_manifest.py",
+        "tests/test_external_knowledge_slice_manifest.py",
+        "tests/test_external_knowledge_architecture.py",
     ),
     "release-governance-authority": (
         "tests/test_governance_readiness.py",
@@ -188,6 +190,14 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert "timeout-minutes: 10" in preflight_job
     assert preflight_job.count("- name: Enforce SSE v4 release-atomic cutover") == 1
     assert preflight_job.count("run: python tools/check_sse_runtime_cutover.py") == 1
+    assert "fetch-depth: 0" in preflight_job
+    assert "KNOWLEDGE_MANIFEST_BASE_COMMIT" in preflight_job
+    assert preflight_job.count("python tools/validate_external_knowledge_slice_manifest.py") == 3
+    assert "--base-ref \"$KNOWLEDGE_MANIFEST_BASE_COMMIT\"" in preflight_job
+    assert "--head-ref \"$BACKEND_PREFLIGHT_SOURCE_COMMIT\"" in preflight_job
+    assert 'test "$KNOWLEDGE_MANIFEST_BASE_COMMIT" = "0000000000000000000000000000000000000000"' in preflight_job
+    assert "github.event_name == 'workflow_dispatch'" in preflight_job
+    assert "continue-on-error" not in preflight_job
     assert "runs-on: ubuntu-latest" in tests_job
     assert "needs: backend-preflight" in tests_job
     assert "timeout-minutes: 15" in tests_job
@@ -245,7 +255,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
         "release-governance-authority": ("", ""),
     }
     all_selectors = [selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors]
-    assert len(all_selectors) == len(set(all_selectors)) == 69
+    assert len(all_selectors) == len(set(all_selectors)) == 71
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job

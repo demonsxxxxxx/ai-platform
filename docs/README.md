@@ -46,6 +46,9 @@ does not represent deployed runtime state.
   governed Skill Set while its Agent SDK autonomously decides whether and which
   registered Skill to invoke; Skill file capability is not a per-run upload
   requirement.
+- `adr/0013-external-knowledge-authority.md` establishes the Knowledge bounded
+  context, RAGFlow provider boundary, cross-context transaction owners, and
+  credential isolation used by Agent Apps, Runs, Conversations, and citations.
 - `architecture/opensandbox-ephemeral-model-credentials.md` defines the
   attempt-bound model-route admission, Run-pinned compatible-endpoint revision,
   and trusted encrypted credential/proxy boundary.
@@ -72,6 +75,14 @@ does not represent deployed runtime state.
 
 The repository-root `../CONTEXT.md` defines the compressed Agent App ubiquitous
 language used by source, product, and acceptance contracts.
+
+## Product Requirements
+
+- `product/README.md` indexes durable user-facing product requirement
+  contracts. It is not a roadmap or implementation-status board.
+- `product/external-knowledge/README.md` indexes the external Knowledge
+  product contract for governed connection to the company's existing RAGFlow
+  datasets, Agent revision binding, retrieval admission, evidence and citations.
 
 ## Operations
 
