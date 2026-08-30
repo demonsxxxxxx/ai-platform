@@ -412,6 +412,20 @@
     },
     {
       "source_path": "app/repositories.py",
+      "target_module": "app.identity.infrastructure.postgres",
+      "module_alias": "identity_persistence",
+      "symbols": [
+        "ensure_submission_principal",
+        "ensure_user",
+        "get_user",
+        "tenant_exists"
+      ],
+      "owner": "identity",
+      "reason": "The frozen global repository may expose these existing tenant and principal persistence symbols only as exact identity aliases while their implementation moves to the Identity PostgreSQL adapter.",
+      "removal_condition": "After the Identity principal persistence move, migrate supported internal callers to the Identity API, inventory external imports, and remove this bridge in an authority-only change before deleting the repositories aliases."
+    },
+    {
+      "source_path": "app/repositories.py",
       "target_module": "app.platform.postgres.errors",
       "module_alias": "postgres_errors",
       "symbols": [
