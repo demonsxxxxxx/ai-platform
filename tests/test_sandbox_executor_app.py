@@ -2,7 +2,6 @@ import asyncio
 import functools
 import gc
 import hashlib
-import io
 import json
 import os
 import shutil
@@ -11,18 +10,13 @@ import time
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
-from xml.etree import ElementTree
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from openpyxl import Workbook
 
 from app.execution.api import ClaudeAgentEventCandidate
 from app.executors.claude_agent_sdk_runner import build_skill_prompt
-from app.file_parser_contracts import (
-    build_attachment_preprocessing_contract,
-)
 from app.public_execution import PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
 from app.platform.public_payload import sanitize_public_payload
 from app.required_tool_contract import (
@@ -276,34 +270,6 @@ def write_minimal_docx(path: Path) -> None:
         )
 
 
-def write_dimensionless_validation_xlsx(path: Path) -> None:
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "Validation"
-    sheet.append(["Requirement", "Evidence"])
-    sheet.append(["GMP-VAL-002 Requirement", "ACCEPT-XLSX-9472"])
-    workbook.save(path)
-    workbook.close()
-
-    source = io.BytesIO(path.read_bytes())
-    output = io.BytesIO()
-    worksheet_path = "xl/worksheets/sheet1.xml"
-    with zipfile.ZipFile(source, "r") as archive, zipfile.ZipFile(output, "w") as rewritten:
-        for entry in archive.infolist():
-            payload = archive.read(entry.filename)
-            if entry.filename == worksheet_path:
-                root = ElementTree.fromstring(payload)
-                dimension = root.find("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}dimension")
-                assert dimension is not None
-                root.remove(dimension)
-                payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
-            rewritten.writestr(entry, payload)
-    path.write_bytes(output.getvalue())
-    with zipfile.ZipFile(path, "r") as archive:
-        root = ElementTree.fromstring(archive.read(worksheet_path))
-        assert root.find("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}dimension") is None
-
-
 def selected_baoyu_skill_policy() -> list[dict[str, object]]:
     return [
         {
@@ -323,25 +289,6 @@ def selected_baoyu_skill_policy() -> list[dict[str, object]]:
 
 def skill_only_baoyu_policy() -> list[dict[str, object]]:
     return [subject for subject in selected_baoyu_skill_policy() if subject["identity"] == "Skill"]
-
-
-def context_stage_policy() -> list[dict[str, object]]:
-    return [
-        {
-            "identity": "mcp__ai-platform-context__stage_context_file_to_workspace",
-            "registered": True,
-            "declared": True,
-            "active": True,
-            "distributed": True,
-            "identity_authorized": True,
-            "object_authorized": True,
-            "parameters_authorized": True,
-            "risk_level": "medium",
-            "write_capable": True,
-            "allowed_parameter_keys": ["file_id", "max_bytes"],
-            "required_parameter_keys": ["file_id"],
-        }
-    ]
 
 
 def selected_mcp_task_payload() -> dict[str, object]:
@@ -2735,7 +2682,7 @@ def test_executor_execute_rehydrates_context_retrieval_for_manifest(tmp_path, mo
     payload["config"]["context_manifest"] = {
         "queue_attempt_id": "qat-attempt-a",
         "schema_version": "ai-platform.context-manifest.v1",
-        "available_retrieval_tools": ["read_context_file"],
+        "available_retrieval_tools": ["stage_context_file_to_workspace"],
     }
     payload["config"]["context_retrieval_scope"] = {
         "tenant_id": "tenant-a",
@@ -2811,242 +2758,6 @@ async def test_default_executor_runs_raw_xlsx_from_inputs_without_typed_attachme
     assert (inputs / "book.xlsx").read_bytes() == b"not-a-workbook"
 
 
-@pytest.mark.asyncio
-async def test_default_executor_uses_raw_xlsx_without_typed_context(tmp_path, monkeypatch):
-    source = tmp_path / "source.xlsx"
-    write_dimensionless_validation_xlsx(source)
-    raw = source.read_bytes()
-    source.unlink()
-    captured = {}
-
-    class StubSettings:
-        claude_agent_sdk_enabled = True
-
-    async def fake_stage(_self, *, file_id, workspace_root, max_bytes, **scope):
-        assert file_id == "file-a"
-        assert max_bytes == 1024 * 1024
-        assert scope == {
-            "tenant_id": "tenant-a",
-            "workspace_id": "workspace-a",
-            "user_id": "user-a",
-            "session_id": "session-a",
-            "run_id": "run-a",
-        }
-        target = Path(workspace_root) / "context" / "file-a" / "book.xlsx"
-        target.parent.mkdir(parents=True)
-        target.write_bytes(raw)
-        return {
-            "file_id": file_id,
-            "workspace_path": "context/file-a/book.xlsx",
-            "bytes_staged": len(raw),
-            "max_bytes": max_bytes,
-        }
-
-    async def fake_sdk(**kwargs):
-        captured.update(kwargs)
-        return sdk_result(
-            "xlsx answer",
-            used_skills=["qa-rag-skill"],
-            used_skills_source="executor_hook",
-        )
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
-    monkeypatch.setattr(
-        "app.runtime.sandbox.executor_app.PlatformContextRetrievalClient.stage_context_file_to_workspace",
-        fake_stage,
-    )
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_sdk)
-    payload = task_payload()
-    payload["config"].update(
-        {
-            "skill_ids": ["qa-rag-skill"],
-            "input_files": ["file-a"],
-            "materialized_file_names": ["book.xlsx"],
-            "tool_policy_subjects": context_stage_policy(),
-            "context_manifest": {
-                "queue_attempt_id": "qat-attempt-a",
-                "schema_version": "ai-platform.context-manifest.v1",
-                "available_retrieval_tools": ["stage_context_file_to_workspace"],
-                "files": [{"file_id": "file-a"}],
-                "attachment_preprocessing": build_attachment_preprocessing_contract(
-                    file_ids=["file-a"],
-                    file_names=["book.xlsx"],
-                ),
-            },
-            "context_retrieval_scope": {
-                "tenant_id": "tenant-a",
-                "workspace_id": "workspace-a",
-                "user_id": "user-a",
-                "session_id": "session-a",
-                "run_id": "run-a",
-                "agent_id": "general-agent",
-            },
-        }
-    )
-    request = ExecutorTaskRequest.model_validate(payload)
-
-    async def emit_event(_event):
-        return None
-
-    result = await _default_executor_runner(request, tmp_path, emit_event)
-
-    assert result["status"] == "completed"
-    assert "attachment_contexts" not in captured
-
-
-@pytest.mark.asyncio
-async def test_default_executor_allows_malformed_xlsx_for_skill_handling(tmp_path, monkeypatch):
-    class StubSettings:
-        claude_agent_sdk_enabled = True
-
-    async def fake_stage(_self, *, file_id, workspace_root, max_bytes, **_scope):
-        target = Path(workspace_root) / "context" / file_id / "book.xlsx"
-        target.parent.mkdir(parents=True)
-        target.write_bytes(b"not-a-workbook")
-        return {
-            "file_id": file_id,
-            "workspace_path": f"context/{file_id}/book.xlsx",
-            "bytes_staged": len(b"not-a-workbook"),
-            "max_bytes": max_bytes,
-        }
-
-    async def fail_sdk(**_kwargs):
-        return sdk_result("raw input answer", used_skills=["qa-rag-skill"])
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
-    monkeypatch.setattr(
-        "app.runtime.sandbox.executor_app.PlatformContextRetrievalClient.stage_context_file_to_workspace",
-        fake_stage,
-    )
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fail_sdk)
-    payload = task_payload()
-    payload["config"].update(
-        {
-            "skill_ids": ["qa-rag-skill"],
-            "input_files": ["file-a"],
-            "materialized_file_names": ["book.xlsx"],
-            "tool_policy_subjects": context_stage_policy(),
-            "context_manifest": {
-                "queue_attempt_id": "qat-attempt-a",
-                "schema_version": "ai-platform.context-manifest.v1",
-                "files": [{"file_id": "file-a"}],
-                "attachment_preprocessing": build_attachment_preprocessing_contract(
-                    file_ids=["file-a"],
-                    file_names=["book.xlsx"],
-                ),
-            },
-            "context_retrieval_scope": {
-                "tenant_id": "tenant-a",
-                "workspace_id": "workspace-a",
-                "user_id": "user-a",
-                "session_id": "session-a",
-                "run_id": "run-a",
-                "agent_id": "general-agent",
-            },
-        }
-    )
-    request = ExecutorTaskRequest.model_validate(payload)
-
-    async def emit_event(_event):
-        return None
-
-    result = await _default_executor_runner(request, tmp_path, emit_event)
-
-    assert result["status"] == "completed"
-
-
-@pytest.mark.asyncio
-async def test_default_executor_does_not_require_parser_stage_authorization(tmp_path, monkeypatch):
-    class StubSettings:
-        claude_agent_sdk_enabled = True
-
-    async def fake_sdk(**_kwargs):
-        return sdk_result("raw input answer", used_skills=["qa-rag-skill"])
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_sdk)
-    payload = task_payload()
-    payload["config"].update(
-        {
-            "skill_ids": ["qa-rag-skill"],
-            "input_files": ["file-a"],
-            "materialized_file_names": ["book.xlsx"],
-            "context_manifest": {
-                "queue_attempt_id": "qat-attempt-a",
-                "schema_version": "ai-platform.context-manifest.v1",
-                "files": [{"file_id": "file-a"}],
-                "attachment_preprocessing": build_attachment_preprocessing_contract(
-                    file_ids=["file-a"],
-                    file_names=["book.xlsx"],
-                ),
-            },
-            "context_retrieval_scope": {
-                "tenant_id": "tenant-a",
-                "workspace_id": "workspace-a",
-                "user_id": "user-a",
-                "session_id": "session-a",
-                "run_id": "run-a",
-                "agent_id": "general-agent",
-            },
-        }
-    )
-    request = ExecutorTaskRequest.model_validate(payload)
-
-    async def emit_event(_event):
-        return None
-
-    result = await _default_executor_runner(request, tmp_path, emit_event)
-
-    assert result["status"] == "completed"
-
-
-@pytest.mark.asyncio
-async def test_default_executor_ignores_legacy_parser_manifest_entries(tmp_path, monkeypatch):
-    class StubSettings:
-        claude_agent_sdk_enabled = True
-
-    async def fake_sdk(**_kwargs):
-        return sdk_result("raw input answer", used_skills=["qa-rag-skill"])
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_sdk)
-    payload = task_payload()
-    payload["config"].update(
-        {
-            "skill_ids": ["qa-rag-skill"],
-            "input_files": ["file-a"],
-            "materialized_file_names": ["book.xlsx"],
-            "tool_policy_subjects": context_stage_policy(),
-            "context_manifest": {
-                "queue_attempt_id": "qat-attempt-a",
-                "schema_version": "ai-platform.context-manifest.v1",
-                "files": [{"file_id": "file-other"}],
-                "available_retrieval_tools": ["stage_context_file_to_workspace"],
-                "attachment_preprocessing": build_attachment_preprocessing_contract(
-                    file_ids=["file-a"],
-                    file_names=["book.xlsx"],
-                ),
-            },
-            "context_retrieval_scope": {
-                "tenant_id": "tenant-a",
-                "workspace_id": "workspace-a",
-                "user_id": "user-a",
-                "session_id": "session-a",
-                "run_id": "run-a",
-                "agent_id": "general-agent",
-            },
-        }
-    )
-    request = ExecutorTaskRequest.model_validate(payload)
-
-    async def emit_event(_event):
-        return None
-
-    result = await _default_executor_runner(request, tmp_path, emit_event)
-
-    assert result["status"] == "completed"
-
-
 def test_executor_execute_fails_closed_for_manifest_without_valid_scope(tmp_path, monkeypatch):
     class StubSettings:
         claude_agent_sdk_enabled = True
@@ -3057,7 +2768,7 @@ def test_executor_execute_fails_closed_for_manifest_without_valid_scope(tmp_path
     payload["config"]["context_manifest"] = {
         "queue_attempt_id": "qat-attempt-a",
         "schema_version": "ai-platform.context-manifest.v1",
-        "available_retrieval_tools": ["read_context_file"],
+        "available_retrieval_tools": ["stage_context_file_to_workspace"],
     }
     payload["config"]["context_retrieval_scope"] = {"tenant_id": "tenant-a"}
 
@@ -3081,7 +2792,7 @@ def test_executor_execute_rejects_context_scope_for_different_run(tmp_path, monk
     payload["config"]["context_manifest"] = {
         "queue_attempt_id": "qat-attempt-a",
         "schema_version": "ai-platform.context-manifest.v1",
-        "available_retrieval_tools": ["read_context_file"],
+        "available_retrieval_tools": ["stage_context_file_to_workspace"],
     }
     payload["config"]["context_retrieval_scope"] = {
         "tenant_id": "tenant-a",

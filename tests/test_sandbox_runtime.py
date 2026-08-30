@@ -8,7 +8,6 @@ from typing import Any
 
 import pytest
 
-from app.file_parser_contracts import build_attachment_preprocessing_contract
 from app.repositories import RepositoryConflictError
 from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import FakeContainerProvider
@@ -302,9 +301,7 @@ async def test_runtime_opensandbox_workspace_stage_failure_stops_and_releases_on
         opensandbox_use_server_proxy = False
         opensandbox_executor_image = "sha256:" + "a" * 64
         opensandbox_executor_image_digest = "sha256:" + "a" * 64
-        opensandbox_external_egress_callback_base_url = "https://bridge.internal.example:18443"
-        opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
-        opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
+        opensandbox_egress_proxy_url = "https://172.18.0.1:18443"
 
         sandbox_lease_ttl_seconds = 1800
     class TrustedOpenSandboxProvider(FakeContainerProvider):
@@ -862,9 +859,7 @@ async def test_runtime_uses_opensandbox_external_bridge_callback_without_changin
         sandbox_container_provider = "opensandbox"
         sandbox_callback_base_url = "http://api.sandbox.internal:8020"
         sandbox_callback_token = "settings-token"
-        opensandbox_external_egress_callback_base_url = "https://bridge.internal.example:18443"
-        opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
-        opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
+        opensandbox_egress_proxy_url = "https://172.18.0.1:18443"
 
         sandbox_lease_ttl_seconds = 1800
     class OpenSandboxProvider(FakeContainerProvider):
@@ -888,9 +883,9 @@ async def test_runtime_uses_opensandbox_external_bridge_callback_without_changin
 
     await runtime.submit(request())
 
-    assert sent[0].callback_base_url == "https://bridge.internal.example:18443"
+    assert sent[0].callback_base_url == "https://172.18.0.1:18443"
     assert sent[0].callback_url == (
-        "https://bridge.internal.example:18443/api/ai/runtime/callbacks/executor"
+        "https://172.18.0.1:18443/api/ai/runtime/callbacks/executor"
     )
     assert StubSettings.sandbox_callback_base_url == "http://api.sandbox.internal:8020"
 
@@ -996,7 +991,10 @@ async def test_runtime_validation_cleanup_failure_keeps_persistent_lease_fail_cl
 
 
 @pytest.mark.asyncio
-async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(tmp_path, monkeypatch):
+async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(
+    tmp_path_factory,
+    monkeypatch,
+):
     sent = []
 
     class StubSettings:
@@ -1011,7 +1009,7 @@ async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(tmp
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
 
     runtime = SandboxRuntime(
-        workspace_root=tmp_path,
+        workspace_root=tmp_path_factory.mktemp("r"),
         provider=FakeContainerProvider(executor_url="http://executor.test"),
         execute_task=execute,
         callback_token_resolver=lambda token_id: "secret-token",
@@ -1023,11 +1021,7 @@ async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(tmp
         request(
             context_manifest={
                 "schema_version": "ai-platform.context-manifest.v1",
-                "available_retrieval_tools": ["read_context_file"],
-                "attachment_preprocessing": build_attachment_preprocessing_contract(
-                    file_ids=["file-a"],
-                    file_names=["book.xlsx"],
-                ),
+                "available_retrieval_tools": ["stage_context_file_to_workspace"],
             },
             context_retrieval_scope={
                 "tenant_id": "tenant-a",
@@ -1040,10 +1034,10 @@ async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(tmp
         )
     )
 
-    assert sent[0].config["context_manifest"]["available_retrieval_tools"] == ["read_context_file"]
-    requirement = sent[0].config["context_manifest"]["attachment_preprocessing"]["requirements"][0]
-    assert requirement["file_id"] == "file-a"
-    assert requirement["parser_id"] == "ai-platform.xlsx.openpyxl"
+    assert (
+        sent[0].config["context_manifest"]["available_retrieval_tools"]
+        == ["stage_context_file_to_workspace"]
+    )
     assert sent[0].config["context_retrieval_scope"]["user_id"] == "user-a"
     assert sent[0].callback_url == "http://platform.test/api/ai/runtime/callbacks/executor"
     assert sent[0].callback_token_id == "cbt:run-a:qat_test-runtime-attempt"
@@ -1428,9 +1422,7 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
         sandbox_egress_proof_signing_key = signing_key
-        opensandbox_external_egress_callback_base_url = "https://bridge.internal.example:18443"
-        opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
-        opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
+        opensandbox_egress_proxy_url = "https://172.18.0.1:18443"
 
         sandbox_lease_ttl_seconds = 1800
     class OpenSandboxProvider(FakeContainerProvider):
@@ -1731,9 +1723,7 @@ async def test_runtime_default_db_record_rejects_incomplete_trusted_runtime_hand
     class StubSettings:
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
-        opensandbox_external_egress_callback_base_url = "https://bridge.internal.example:18443"
-        opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
-        opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
+        opensandbox_egress_proxy_url = "https://172.18.0.1:18443"
 
         sandbox_lease_ttl_seconds = 1800
     class IncompleteProvider(FakeContainerProvider):
@@ -1787,9 +1777,7 @@ async def test_runtime_records_opensandbox_provider_as_platform_db_lease(tmp_pat
     settings = SimpleNamespace(
         sandbox_callback_base_url="http://platform.test",
         sandbox_callback_token="settings-token",
-        opensandbox_external_egress_callback_base_url="https://bridge.internal.example:18443",
-        opensandbox_external_egress_openai_base_url="https://bridge.internal.example:18443/openai/v1",
-        opensandbox_external_egress_anthropic_base_url="https://bridge.internal.example:18443/anthropic",
+        opensandbox_egress_proxy_url="https://172.18.0.1:18443",
     )
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: settings)
 
@@ -1856,9 +1844,7 @@ async def test_runtime_passes_private_executor_headers_to_dispatch_without_db_le
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
         sandbox_egress_proof_signing_key = "runtime-test-proof-key-with-enough-entropy-2026"
-        opensandbox_external_egress_callback_base_url = "https://bridge.internal.example:18443"
-        opensandbox_external_egress_openai_base_url = "https://bridge.internal.example:18443/openai/v1"
-        opensandbox_external_egress_anthropic_base_url = "https://bridge.internal.example:18443/anthropic"
+        opensandbox_egress_proxy_url = "https://172.18.0.1:18443"
 
         sandbox_lease_ttl_seconds = 1800
     class HeaderProvider(FakeContainerProvider):

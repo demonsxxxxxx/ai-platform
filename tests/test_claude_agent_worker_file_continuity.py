@@ -32,15 +32,32 @@ def _unsafe_pdf_bytes() -> bytes:
     return stream.getvalue()
 
 
-def _unsafe_docx_bytes() -> bytes:
+def _docx_with_opaque_content_bytes() -> bytes:
+    source = ZipFile(io.BytesIO(_docx_bytes()))
     stream = io.BytesIO()
-    with ZipFile(stream, "w", compression=ZIP_DEFLATED) as archive:
-        archive.writestr("[Content_Types].xml", "<Types />")
-        archive.writestr("word/document.xml", "<document />")
-        archive.writestr(
-            "word/_rels/document.xml.rels",
-            '<Relationships><Relationship TargetMode="External" Target="https://example.test" /></Relationships>',
-        )
+    with source, ZipFile(stream, "w", compression=ZIP_DEFLATED) as archive:
+        for entry in source.infolist():
+            payload = source.read(entry)
+            if entry.filename == "[Content_Types].xml":
+                payload = payload.replace(
+                    b"</Types>",
+                    b'<Default Extension="bin" ContentType="application/octet-stream" /></Types>',
+                )
+            elif entry.filename == "word/_rels/document.xml.rels":
+                payload = payload.replace(
+                    b"</Relationships>",
+                    (
+                        b'<Relationship Id="rId900" '
+                        b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/package" '
+                        b'Target="embeddings/opaque-package.bin" />'
+                        b'<Relationship Id="rId901" '
+                        b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate" '
+                        b'Target="https://example.invalid/template.dotx" TargetMode="External" />'
+                        b"</Relationships>"
+                    ),
+                )
+            archive.writestr(entry, payload)
+        archive.writestr("word/embeddings/opaque-package.bin", b"opaque package bytes")
     return stream.getvalue()
 
 
@@ -78,7 +95,7 @@ async def test_materialize_files_accepts_prior_run_file_authorized_by_current_sn
 ):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    raw = _docx_bytes()
+    raw = _docx_with_opaque_content_bytes()
     display_name = "参考文件1-IP248A项目基本信息收集表.docx"
 
     class FakeStorage:
@@ -279,32 +296,14 @@ async def test_materialize_files_rejects_declared_total_before_object_reads(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("name", "content_type", "raw", "error_code"),
-    [
-        (
-            "unsafe.pdf",
-            PDF_CONTENT_TYPE,
-            _unsafe_pdf_bytes(),
-            "context_file_pdf_active_content_unsupported",
-        ),
-        (
-            "unsafe.docx",
-            DOCX_CONTENT_TYPE,
-            _unsafe_docx_bytes(),
-            "context_file_docx_external_relationship_unsupported",
-        ),
-    ],
-    ids=("pdf-javascript", "docx-external-relationship"),
-)
 async def test_materialize_files_rejects_unsafe_content_before_workspace_write(
     monkeypatch,
     tmp_path,
-    name,
-    content_type,
-    raw,
-    error_code,
 ):
+    name = "unsafe.pdf"
+    content_type = PDF_CONTENT_TYPE
+    raw = _unsafe_pdf_bytes()
+    error_code = "context_file_pdf_active_content_unsupported"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
@@ -338,7 +337,7 @@ async def test_materialize_files_rejects_unsafe_content_before_workspace_write(
         await adapter._materialize_files(payload(file_ids=["file-unsafe"]), workspace)
 
     assert captured.value.attachment_index == 1
-    assert captured.value.file_kind in {"docx", "pdf"}
+    assert captured.value.file_kind == "pdf"
 
     assert list(workspace.iterdir()) == []
 

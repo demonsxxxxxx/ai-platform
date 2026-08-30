@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 
 import pytest
 from contextlib import asynccontextmanager
@@ -17,6 +18,12 @@ from app.runtime.sandbox.container_provider import (
 )
 from app.runtime.sandbox.contracts import StopResult
 from app.runtime.sandbox.providers.opensandbox import metadata as opensandbox_metadata
+from app.runtime.sandbox.opensandbox_policy import (
+    DIRECT_OPENSANDBOX_CALLBACK_SUBJECT,
+    DIRECT_OPENSANDBOX_DENIAL_SUBJECT,
+    DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+    DIRECT_OPENSANDBOX_PROFILE_ID,
+)
 
 
 TEST_PROOF_KEY = "cleanup-test-proof-key-with-enough-entropy-2026"
@@ -72,18 +79,18 @@ def internal_test_cleanup_labels() -> dict[str, str]:
     return internal_test_orphan_cleanup_expected_labels(filters, InternalTestCleanupSettings()) or {}
 
 
-def opensandbox_cleanup_proof():
+def opensandbox_cleanup_proof(*, signing_key=TEST_PROOF_KEY, key_id="current"):
     return build_governed_egress_proof(
-        signing_key=TEST_PROOF_KEY,
+        signing_key=signing_key,
         provider="opensandbox",
         runtime_subject=_opensandbox_governed_runtime_subject("runsc", "runtime-subject-a"),
-        policy_subject="gateway-policy-subject-a",
-        callback_subject="callback-boundary-subject-a",
+        policy_subject=DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+        callback_subject=DIRECT_OPENSANDBOX_CALLBACK_SUBJECT,
         denial_subject=_opensandbox_governed_denial_subject(
-            "gateway-deny-audit-subject-a",
-            "gateway-deny-counter-subject-a",
+            DIRECT_OPENSANDBOX_DENIAL_SUBJECT,
+            DIRECT_OPENSANDBOX_DENIAL_SUBJECT,
         ),
-        network_id="profile-a",
+        network_id=DIRECT_OPENSANDBOX_PROFILE_ID,
         network_name="http://opensandbox.local:8080",
         network_internal=False,
         tenant_id="tenant-a",
@@ -97,6 +104,7 @@ def opensandbox_cleanup_proof():
         authorized_skill_scope="cleanup-skill-scope",
         authorized_native_tool_scope="cleanup-native-tool-scope",
         lease_identity="opensandbox:opensandbox-run-a:osb-run-a",
+        key_id=key_id,
         issued_at=TEST_PROOF_NOW,
         expires_at=TEST_PROOF_NOW + timedelta(seconds=120),
     )
@@ -608,6 +616,33 @@ async def test_cleanup_expired_sandbox_runtime_leases_uses_verified_handle_and_c
     assert calls[1] == ("release", "tenant-a", "expired", ["lease-a"], None)
 
 
+def test_opensandbox_cleanup_accepts_configured_previous_key_and_rejects_it_when_removed(monkeypatch):
+    from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
+
+    previous_key = "cleanup-previous-proof-key-with-enough-entropy-2026"
+    proof = opensandbox_cleanup_proof(signing_key=previous_key, key_id="previous")
+    row = expired_lease_row(
+        provider="opensandbox",
+        runtime_container_id="osb-run-a",
+        runtime_container_name="opensandbox-run-a",
+        runtime_executor_url="http://opensandbox-executor.test:18000",
+        runtime_workspace_container_path="/workspace",
+        lease_payload_json={
+            "attempt_id": "attempt-a",
+            "governed_egress_proof": proof,
+        },
+    )
+
+    settings = CleanupProofSettings()
+    settings.sandbox_egress_proof_signing_key = "cleanup-current-proof-key-with-enough-entropy-2026"
+    settings.sandbox_egress_proof_previous_keys_json = '{"previous":"' + previous_key + '"}'
+    monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.get_settings", lambda: settings)
+    assert container_lease_from_persisted_row(row) is not None
+
+    settings.sandbox_egress_proof_previous_keys_json = ""
+    assert container_lease_from_persisted_row(row) is None
+
+
 @pytest.mark.asyncio
 async def test_opensandbox_cleanup_without_signed_proof_retains_db_lease(monkeypatch):
     from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, cleanup_expired_sandbox_runtime_leases
@@ -645,126 +680,6 @@ async def test_opensandbox_cleanup_without_signed_proof_retains_db_lease(monkeyp
             object(),
             tenant_id="tenant-a",
             provider_factory=lambda _provider_name: pytest.fail("provider must not receive an unverifiable lease"),
-        )
-
-    assert releases == []
-
-
-@pytest.mark.asyncio
-async def test_trusted_internal_cleanup_rebuilds_verified_scope_without_governed_proof(monkeypatch):
-    from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
-
-    labels = {
-        "ai-platform.owner": "sandbox-runtime",
-        "ai-platform.tenant_id": "tenant-a",
-        "ai-platform.workspace_id": "workspace-a",
-        "ai-platform.user_id": "user-a",
-        "ai-platform.session_id": "session-a",
-        "ai-platform.run_id": "run-a",
-        "ai-platform.attempt_id": "attempt-a",
-        "ai-platform.sandbox_mode": "ephemeral",
-        "ai-platform.browser_enabled": "false",
-        "ai-platform.provider_backend": "opensandbox",
-        "ai-platform.security_profile": "trusted_internal",
-    }
-    row = expired_lease_row(
-        provider="opensandbox",
-        runtime_container_id="osb-run-a",
-        runtime_container_name="opensandbox-run-a",
-        runtime_executor_url="http://opensandbox-executor.test:18000",
-        lease_payload_json={
-            "attempt_id": "attempt-a",
-            "container_id": "osb-run-a",
-            "container_name": "opensandbox-run-a",
-            "executor_url": "http://opensandbox-executor.test:18000",
-            "workspace_container_path": "/workspace",
-            "security_profile": "trusted_internal",
-            "labels": labels,
-        },
-    )
-    stopped = []
-
-    class FakeProvider:
-        async def stop(self, lease, *, reason):
-            stopped.append(lease)
-            return StopResult(container_id=lease.container_id, status="stopped", message=reason)
-
-    async def list_expired(*_args, **_kwargs):
-        return [row]
-
-    async def release_stopped(*_args, **_kwargs):
-        return [row]
-
-    monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.sandbox_lease_repository.list_expired_active_sandbox_leases",
-        list_expired,
-    )
-    monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.release_stopped_sandbox_leases",
-        release_stopped,
-    )
-
-    cleaned = await cleanup_expired_sandbox_runtime_leases(
-        object(), tenant_id="tenant-a", provider_factory=lambda _provider: FakeProvider()
-    )
-
-    assert cleaned == [row]
-    assert stopped[0].labels == labels
-    assert GOVERNED_EGRESS_PROOF_LABEL not in stopped[0].labels
-
-
-@pytest.mark.asyncio
-async def test_trusted_internal_cleanup_rejects_cross_scope_persisted_payload(monkeypatch):
-    from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, cleanup_expired_sandbox_runtime_leases
-
-    row = expired_lease_row(
-        provider="opensandbox",
-        runtime_container_id="osb-run-a",
-        runtime_container_name="opensandbox-run-a",
-        runtime_executor_url="http://opensandbox-executor.test:18000",
-        lease_payload_json={
-            "attempt_id": "attempt-a",
-            "container_id": "osb-run-a",
-            "container_name": "opensandbox-run-a",
-            "executor_url": "http://opensandbox-executor.test:18000",
-            "workspace_container_path": "/workspace",
-            "security_profile": "trusted_internal",
-            "labels": {
-                "ai-platform.owner": "sandbox-runtime",
-                "ai-platform.tenant_id": "tenant-b",
-                "ai-platform.workspace_id": "workspace-a",
-                "ai-platform.user_id": "user-a",
-                "ai-platform.session_id": "session-a",
-                "ai-platform.run_id": "run-a",
-                "ai-platform.attempt_id": "attempt-a",
-                "ai-platform.sandbox_mode": "ephemeral",
-                "ai-platform.browser_enabled": "false",
-                "ai-platform.provider_backend": "opensandbox",
-                "ai-platform.security_profile": "trusted_internal",
-            },
-        },
-    )
-    releases = []
-
-    async def list_expired(*_args, **_kwargs):
-        return [row]
-
-    async def release_stopped(*_args, **kwargs):
-        releases.append(kwargs)
-        return [row]
-
-    monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.sandbox_lease_repository.list_expired_active_sandbox_leases", list_expired
-    )
-    monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.release_stopped_sandbox_leases", release_stopped
-    )
-
-    with pytest.raises(SandboxRuntimeCleanupError):
-        await cleanup_expired_sandbox_runtime_leases(
-            object(),
-            tenant_id="tenant-a",
-            provider_factory=lambda _provider: pytest.fail("cross-scope payload must not reach a provider"),
         )
 
     assert releases == []
@@ -917,6 +832,7 @@ async def test_opensandbox_cleanup_without_canonical_attempt_retains_db_lease(mo
     "failure_mode",
     (
         "expired-authorized",
+        "expired-authorized-after-rollout",
         "failed-receipt-authorized",
         "attempt-mismatch",
         "ambiguous-identity",
@@ -945,24 +861,29 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
         "ai-platform.sandbox_mode": "ephemeral",
         "ai-platform.browser_enabled": "false",
         "ai-platform.provider_backend": "opensandbox",
-        "ai-platform.executor.requested_image": image,
-        "ai-platform.executor.requested_image_digest": "sha256:" + "a" * 64,
-        "ai-platform.executor.user": "10001:10001",
-        "ai-platform.executor.uid": "10001",
-        "ai-platform.executor.gid": "10001",
-        "ai-platform.executor.identity_evidence": "authenticated-runtime-endpoint",
+        "ai-platform.security_profile": "governed",
         "ai-platform.external_egress.profile_version": "v1",
-        "ai-platform.external_egress.profile_id": "profile-a",
+        "ai-platform.external_egress.profile_id": DIRECT_OPENSANDBOX_PROFILE_ID,
         "ai-platform.external_egress.endpoint_sha256": proof["network_name_sha256"],
         "ai-platform.external_egress.runtime_identity": "runsc",
+        "ai-platform.external_egress.network_mode": "bridge",
         "ai-platform.runtime_subject": "runtime-subject-a",
-        "ai-platform.external_egress.gateway_policy_subject": "gateway-policy-subject-a",
-        "ai-platform.external_egress.callback_boundary_subject": "callback-boundary-subject-a",
-        "ai-platform.external_egress.deny_audit_subject": "gateway-deny-audit-subject-a",
-        "ai-platform.external_egress.deny_counter_subject": "gateway-deny-counter-subject-a",
-        "ai-platform.external_egress.profile_requested_image": image,
-        "ai-platform.external_egress.profile_requested_image_digest": "sha256:" + "a" * 64,
-        "ai-platform.external_egress.profile_expires_at": proof["expires_at"],
+        "ai-platform.external_egress.gateway_policy_subject": DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+        "ai-platform.external_egress.callback_boundary_subject": DIRECT_OPENSANDBOX_CALLBACK_SUBJECT,
+        "ai-platform.external_egress.deny_audit_subject": DIRECT_OPENSANDBOX_DENIAL_SUBJECT,
+        "ai-platform.external_egress.deny_counter_subject": DIRECT_OPENSANDBOX_DENIAL_SUBJECT,
+        "ai-platform.external_egress.executor_image": image,
+        "ai-platform.external_egress.executor_image_digest": "sha256:" + "a" * 64,
+        "ai-platform.external_egress.upstream_bridge_version": "v1",
+        "ai-platform.external_egress.callback_base_url_sha256": hashlib.sha256(
+            b"http://bridge.internal.example:18043"
+        ).hexdigest(),
+        "ai-platform.external_egress.openai_base_url_sha256": hashlib.sha256(
+            b"http://bridge.internal.example:18043/openai/run-a/attempt-a/v1"
+        ).hexdigest(),
+        "ai-platform.external_egress.anthropic_base_url_sha256": hashlib.sha256(
+            b"http://bridge.internal.example:18043/anthropic/run-a/attempt-a"
+        ).hexdigest(),
         GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof),
     }
     metadata.update(
@@ -1016,11 +937,23 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
             self.kwargs = kwargs
 
     class Settings(CleanupProofSettings):
-        opensandbox_api_key = ""
-        opensandbox_domain = "opensandbox.local:8080"
-        opensandbox_protocol = "http"
+        sandbox_container_provider = "opensandbox"
+        sandbox_runtime_subject = "runtime-subject-a"
+        opensandbox_base_url = "http://opensandbox.local:8080"
+        opensandbox_api_key = "test-opensandbox-key"
+        opensandbox_executor_image = (
+            "registry.example/ai-platform@sha256:" + "b" * 64
+            if failure_mode == "expired-authorized-after-rollout"
+            else image
+        )
+        opensandbox_executor_image_digest = (
+            "sha256:" + "b" * 64
+            if failure_mode == "expired-authorized-after-rollout"
+            else "sha256:" + "a" * 64
+        )
+        opensandbox_egress_proxy_url = "http://bridge.internal.example:18043"
         opensandbox_request_timeout_seconds = 30
-        opensandbox_use_server_proxy = False
+        opensandbox_use_server_proxy = True
 
     received_leases = []
 
@@ -1032,7 +965,6 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
     provider = RecordingOpenSandboxContainerProvider(
         sandbox_class=FakeSandboxClass,
         connection_config_class=FakeConnectionConfig,
-        utcnow=lambda: TEST_PROOF_NOW + timedelta(days=1),
     )
     row = expired_lease_row(
         provider="opensandbox",
@@ -1113,7 +1045,7 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
         assert finalized[0]["lease_id"] == "lease-a"
         return
 
-    if failure_mode == "expired-authorized":
+    if failure_mode in {"expired-authorized", "expired-authorized-after-rollout"}:
         cleaned = await cleanup_expired_sandbox_runtime_leases(
             object(),
             tenant_id="tenant-a",

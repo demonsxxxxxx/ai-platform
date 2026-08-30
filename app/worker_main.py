@@ -13,6 +13,7 @@ import uuid
 from app import queue
 from app import repositories
 from app.bootstrap.mcp import configure_mcp_runtime
+from app.bootstrap.model_services import configure_model_services
 from app.bootstrap.streaming import build_worker_v4_runtime
 from app.bootstrap.worker_maintenance import (
     close_runtime_clients as _close_runtime_clients,
@@ -975,6 +976,7 @@ def main() -> None:
     parser.add_argument("--timeout", type=int, default=5, help="Queue lease timeout in seconds")
     args = parser.parse_args()
 
+    configure_model_services()
     if args.once:
         outcome = asyncio.run(run_once_and_close(timeout_seconds=args.timeout))
         print(outcome)

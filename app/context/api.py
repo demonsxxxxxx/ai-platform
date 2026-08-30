@@ -12,6 +12,7 @@ from app.context.domain.conversation import (
 
 
 CONTEXT_FILE_FAILURE_SCHEMA_VERSION = "ai-platform.context-file-failure.v1"
+# Persisted legacy codes remain valid for historical terminal projection.
 CONTEXT_FILE_ERROR_CODES = frozenset(
     {
         "attachment_materialized_fact_invalid",
@@ -47,6 +48,7 @@ CONTEXT_FILE_ERROR_CODES = frozenset(
         "context_file_too_large",
         "context_file_type_unsupported",
         "context_file_unavailable",
+        "context_file_xlsx_archive_invalid",
         "xlsx_archive_too_large",
         "xlsx_cell_limit_exceeded",
         "xlsx_content_types_structure_unsupported",

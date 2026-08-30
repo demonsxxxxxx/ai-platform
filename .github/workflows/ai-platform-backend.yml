@@ -108,6 +108,7 @@ jobs:
               tests/test_settings.py
               tests/test_sandbox_container_provider.py
               tests/test_opensandbox_live_credential_isolation.py
+              tests/test_opensandbox_client_ca.py
               tests/test_sandbox_runtime.py
               tests/test_sandbox_runtime_cleanup.py
               tests/test_sandbox_runtime_evidence_script.py
@@ -137,8 +138,6 @@ jobs:
             redis_url: ""
             test_files: >-
               tests/test_model_management.py
-              tests/test_opensandbox_gateway.py
-              tests/test_opensandbox_model_route_credentials.py
               tests/test_lambchat_frontend_compat.py::test_lambchat_model_catalog_comes_from_settings
               tests/test_lambchat_frontend_compat.py::test_lambchat_governed_model_catalog_preempts_legacy_upstream_and_preserves_raw_ids
               tests/test_execution_spec.py::test_execution_spec_preserves_raw_upstream_model_identity
@@ -197,7 +196,6 @@ jobs:
               tests/test_source_authority_docs.py
               tests/test_ci_image_scope.py
               tests/test_require_zero_junit_skips.py
-              tests/test_s72_release_contract.py
               tests/test_packaging_contract.py
               tests/test_packaging_publish_workflow.py
               tests/test_trivy_failure_evidence.py
@@ -208,9 +206,9 @@ jobs:
             redis_image: ""
             redis_url: ""
             test_files: >-
-              tests/test_s72_atomic_recovery_authority.py
               tests/test_governance_readiness.py
               tests/test_release_authority.py
+              tests/test_s75_opensandbox_transition.py
     env:
       BACKEND_TEST_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
       AI_PLATFORM_S0A_SCHEMA_TEST_DSN: ${{ matrix.postgres_url }}

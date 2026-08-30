@@ -2,12 +2,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
+
+yaml.SafeLoader.add_constructor(
+    "!reset", lambda loader, node: loader.construct_sequence(node, deep=True)
+)
+
+
 DEPLOY_DIR = Path("deploy/ai-platform")
 COMPOSE_FILE = DEPLOY_DIR / "docker-compose.yml"
 SANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.sandbox.yml"
 OPENSANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.opensandbox.yml"
-OPENSANDBOX_INTERNAL_TEST_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.opensandbox-internal-test.yml"
-S72_COLOCATION_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.s72-colocation.yml"
+OPENSANDBOX_EGRESS_TEMPLATE = DEPLOY_DIR / "opensandbox-egress-nginx.conf.template"
 ENV_EXAMPLE_FILE = DEPLOY_DIR / ".env.example"
 REPOSITORY_DEPLOY_ENV = "${PROJECT_DIR}/deploy/ai-platform/.env"
 
@@ -459,7 +466,7 @@ def test_compose_exposes_sandbox_runtime_configuration():
     assert "SANDBOX_CONTAINER_PROVIDER: docker" in sandbox_text
 
 
-def test_opensandbox_overlay_pins_governed_profile_and_requires_bridge_inputs():
+def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
     import yaml
 
     compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
@@ -472,53 +479,62 @@ def test_opensandbox_overlay_pins_governed_profile_and_requires_bridge_inputs():
         assert environment["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
         assert environment["SANDBOX_SECURITY_PROFILE"] == "governed"
         assert environment["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
+        assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == "bridge"
+        assert environment["OPENSANDBOX_EGRESS_PROXY_URL"].startswith("${")
+        assert ":?set " in environment["OPENSANDBOX_EGRESS_PROXY_URL"]
         for required in (
             "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
-            "SANDBOX_RUNTIME_SUBJECT",
-            "OPENSANDBOX_DOMAIN",
-            "OPENSANDBOX_PROTOCOL",
+            "OPENSANDBOX_BASE_URL",
             "OPENSANDBOX_API_KEY",
             "OPENSANDBOX_EXECUTOR_IMAGE",
             "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
-            "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL",
-            "OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN",
-            "OPENSANDBOX_EXTERNAL_EGRESS_GATEWAY_POLICY_SUBJECT",
-            "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BOUNDARY_SUBJECT",
-            "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL",
-            "OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL",
-            "OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL",
         ):
             assert environment[required].startswith("${")
             assert ":?set " in environment[required]
 
-    frontend = overlay["services"]["frontend"]
-    assert frontend["environment"]["NGINX_ENVSUBST_TEMPLATE_DIR"] == "/etc/nginx/templates-opensandbox"
-    assert frontend["ports"] == ["${AI_PLATFORM_S72_BRIDGE_PORT:-18443}:8443"]
-    assert len(frontend["volumes"]) == 2
-    assert set(overlay["services"]) == {"api", "worker", "frontend"}
+    proxy = overlay["services"]["opensandbox-egress-proxy"]
+    assert proxy["ports"] == [
+        "${OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS:?set OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS}:${OPENSANDBOX_EGRESS_PROXY_PORT:-18043}:8080"
+    ]
+    assert proxy["labels"]["ai-platform.release-role"] == "opensandbox-egress-proxy"
+    assert set(overlay["services"]) == {
+        "api",
+        "worker",
+        "workspace-init",
+        "postgres",
+        "redis",
+        "minio",
+        "opensandbox-egress-proxy",
+    }
+    workspace_root = "${SANDBOX_WORKSPACE_ROOT:?set SANDBOX_WORKSPACE_ROOT}"
+    assert overlay["services"]["workspace-init"]["volumes"] == [
+        f"{workspace_root}:/runtime-workspaces"
+    ]
+    for service_name in ("api", "worker"):
+        assert overlay["services"][service_name]["volumes"] == [
+            f"{workspace_root}:{workspace_root}"
+        ]
+    for service_name in ("postgres", "redis", "minio"):
+        assert overlay["services"][service_name]["ports"] == []
     assert "SANDBOX_SECURITY_PROFILE=governed" in env_example
     assert "trusted_internal" not in env_example
     assert "OPENSANDBOX_TRUSTED_INTERNAL_" not in env_example
 
 
-def test_opensandbox_internal_test_overlay_explicitly_forwards_model_credentials():
-    import yaml
+def test_opensandbox_egress_proxy_preserves_existing_model_and_callback_authorities():
+    template = OPENSANDBOX_EGRESS_TEMPLATE.read_text(encoding="utf-8")
 
-    overlay = yaml.safe_load(OPENSANDBOX_INTERNAL_TEST_COMPOSE_FILE.read_text(encoding="utf-8"))
-
-    assert set(overlay["services"]) == {"api", "worker"}
-    for service_name in ("api", "worker"):
-        environment = overlay["services"][service_name]["environment"]
-        assert environment["DEPLOYMENT_ENVIRONMENT"] == "test"
-        assert environment["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
-        assert environment["SANDBOX_SECURITY_PROFILE"] == "internal-test"
-        assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == "bridge"
-        assert environment["OPENSANDBOX_INTERNAL_TEST_FORWARD_MODEL_CREDENTIALS"] == "true"
-        assert environment["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
-        assert environment["OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL"] == ""
-        assert environment["OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN"] == ""
-        assert "SANDBOX_EGRESS_PROOF_SIGNING_KEY" not in environment
-        assert "volumes" not in overlay["services"][service_name]
+    assert "/api/ai/runtime/callbacks/(executor|context-retrieval|tool-permission)" in template
+    assert 'location ~ "^/openai/(?<openai_run_id>[A-Za-z0-9_-]{1,128})/(?<openai_attempt_id>[A-Za-z0-9_-]{1,128})/(?<openai_model_path>v1/(chat/completions|responses))$" {' in template
+    assert 'location ~ "^/anthropic/(?<anthropic_run_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_attempt_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_model_path>v1/messages(?:/count_tokens)?)$" {' in template
+    assert "/api/ai/internal/model-proxy/openai/" in template
+    assert "/api/ai/internal/model-proxy/anthropic/" in template
+    assert template.count("proxy_set_header Authorization \"\";") == 3
+    assert template.count("proxy_set_header X-AI-Platform-Internal-Token ${MODEL_PROXY_INTERNAL_TOKEN};") == 2
+    assert template.count("proxy_set_header X-AI-Platform-Model-Authorization $http_authorization;") == 2
+    assert template.count("proxy_set_header X-AI-Platform-Model-Api-Key $http_x_api_key;") == 2
+    assert "location / {\n        return 404;\n    }" in template
+    assert "gateway" not in template.casefold()
 
 
 def test_compose_does_not_mount_docker_socket_by_default():
@@ -542,7 +558,7 @@ def test_compose_requires_non_empty_sandbox_callback_token():
 
 def test_env_example_documents_sandbox_egress_policy_defaults():
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
-    colocation_text = S72_COLOCATION_COMPOSE_FILE.read_text(encoding="utf-8")
+    direct_text = OPENSANDBOX_COMPOSE_FILE.read_text(encoding="utf-8")
 
     for expected in [
         "SANDBOX_CONTAINER_PROVIDER=opensandbox",
@@ -562,17 +578,11 @@ def test_env_example_documents_sandbox_egress_policy_defaults():
 
     assert "SANDBOX_CONTAINER_PROVIDER=fake" not in env_example_text
     assert "SANDBOX_CALLBACK_TOKEN=change_me_sandbox_callback_token" not in env_example_text
-    assert colocation_text.count("SANDBOX_CONTAINER_PROVIDER: opensandbox") == 2
-    assert colocation_text.count("SANDBOX_SECURITY_PROFILE: governed") == 2
-    assert colocation_text.count(
-        "OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL: http://127.0.0.1:18043"
-    ) == 2
-    assert colocation_text.count(
-        "OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL: http://127.0.0.1:18043/openai/v1"
-    ) == 2
-    assert colocation_text.count(
-        "OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL: http://127.0.0.1:18043/anthropic"
-    ) == 2
+    assert direct_text.count("SANDBOX_CONTAINER_PROVIDER: opensandbox") == 2
+    assert direct_text.count("SANDBOX_SECURITY_PROFILE: governed") == 2
+    assert direct_text.count('OPENSANDBOX_USE_SERVER_PROXY: "true"') == 2
+    assert direct_text.count("OPENSANDBOX_EXPECTED_NETWORK_MODE: bridge") == 2
+    assert direct_text.count("      OPENSANDBOX_EGRESS_PROXY_URL:") == 2
 
 
 def test_compose_passes_sandbox_egress_policy_env_to_api_and_worker():

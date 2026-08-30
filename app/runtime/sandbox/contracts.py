@@ -30,7 +30,7 @@ _TRUSTED_CALLBACK_HOSTS = {
     "gateway.docker.internal",
 }
 _TRUSTED_CALLBACK_SUFFIXES = (".test", ".localhost", ".invalid", ".internal")
-_TRUSTED_CALLBACK_PORTS = {80, 443, 8000, 8020, 18443}
+_TRUSTED_CALLBACK_PORTS = {80, 443, 8000, 8020, 18043, 18443}
 
 
 def executor_callback_receipt_event_count(*, input_event_count: int) -> int:

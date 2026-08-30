@@ -94,7 +94,7 @@ timeout --signal=INT --kill-after=30s 24000s \
   "${MIRROR_ARGS[@]}" \
   --docker-cmd "sudo -n docker" \
   --compose-file deploy/ai-platform/docker-compose.yml \
-  --compose-file deploy/ai-platform/docker-compose.sandbox.yml
+  --compose-file deploy/ai-platform/docker-compose.opensandbox-internal-test.yml
 ```
 
 `SOURCE` is the coordination checkout: it supplies the authority executable and
@@ -139,32 +139,14 @@ do not exist until after a build are replaced only inside that read-only parser
 process with a fixed `.invalid` preflight placeholder; the convergence command is
 constructed separately from verified target image references.
 
-For the existing base plus OpenSandbox selection, an operator may perform this
-additional read-only check after secure provisioning and before granting the
-release mutation lease. It emits no resolved configuration or environment value;
-the raw parser error is deliberately discarded, and only the exit status is used.
-On failure, keep build/deploy authorization blocked and use release-authority's
-bounded key-name-only preflight diagnostic rather than printing or copying the
-managed environment file.
-
-```bash
-if ! sudo -n env \
-  AI_PLATFORM_IMAGE=release-authority-preflight.invalid/compose-config-only/backend \
-  AI_PLATFORM_FRONTEND_IMAGE=release-authority-preflight.invalid/compose-config-only/frontend \
-  SANDBOX_EXECUTOR_IMAGE=release-authority-preflight.invalid/compose-config-only/sandbox-executor \
-  AI_PLATFORM_SOURCE_COMMIT="$TARGET" \
-  AI_PLATFORM_BUILD_COMMIT="$TARGET" \
-  AI_PLATFORM_BUILD_DIRTY=false \
-  docker compose -p ai-platform-phaseb \
-  --env-file "$ROOT/deploy/ai-platform/.env" \
-  -f "$ROOT/releases/$TARGET/deploy/ai-platform/docker-compose.yml" \
-  -f "$ROOT/releases/$TARGET/deploy/ai-platform/docker-compose.opensandbox.yml" \
-  config --quiet >/dev/null 2>/dev/null; then
-  printf '%s\n' "Compose semantic preflight failed; build and deploy remain blocked" >&2
-  exit 1
-fi
-```
-
+For a direct OpenSandbox selection, do not render resolved config manually. The
+release authority uses Compose JSON rendering to verify API/Worker provider
+parity, direct SDK mode, governed profile, bridge networking, proxy binding,
+model-proxy token presence, and reset host ports. The same-project transition
+keeps `ai-platform-internal` and its exact named volumes; never invokes a
+project migration or volume aliases. On failure, keep deployment authorization
+blocked and use only the authority's bounded key-name diagnostic; never print
+or copy the managed environment file.
 The authority permits at most 32 distinct required keys and at most 33 parser
 attempts. Each parser attempt is capped at 15 seconds. When one or more required
 keys are absent, it reports only the fixed `missing-required-config` category and
@@ -219,24 +201,25 @@ read only for signed `released` or `expired` history; active acquisition and
 dispatch require the current key and a fresh proof. Keep the raw values in the
 host environment file only.
 
-### s72 direct official OpenSandbox functional acceptance
+### s72 direct OpenSandbox functional acceptance
 
-`docker-compose.opensandbox-internal-test.yml` is a separate, non-default
-functional-acceptance overlay. It pins API and worker to
-`DEPLOYMENT_ENVIRONMENT=test`, `SANDBOX_CONTAINER_PROVIDER=opensandbox`,
-`SANDBOX_SECURITY_PROFILE=internal-test`, and
-`OPENSANDBOX_EXPECTED_NETWORK_MODE=bridge`. Use it only with the base Compose
-file and an exact merged backend SHA; do not combine it with the governed
-OpenSandbox overlay or the Docker-socket sandbox overlay.
+`docker-compose.opensandbox.yml` is the single direct-OpenSandbox overlay. It
+pins API and worker to `SANDBOX_CONTAINER_PROVIDER=opensandbox`,
+`SANDBOX_SECURITY_PROFILE=governed`,
+`OPENSANDBOX_EXPECTED_NETWORK_MODE=bridge`, native server proxying, and the
+stateless model/callback egress entry. Use it only with the base Compose file;
+do not combine it with the Docker-socket sandbox overlay.
 
 This mode connects directly to the official OpenSandbox lifecycle API. It does
-not require the capability gateway, model broker, a custom `/attestation`
-endpoint, or a governed-egress proof key. The official API key remains an
-operator-held secret and must never appear in commands, logs, or evidence.
+not require a lifecycle gateway, mailbox relay, custom `/attestation` endpoint,
+or a provider-specific credential path. Model traffic uses the existing
+platform model control plane through the stateless Nginx egress entry. The
+OpenSandbox API key remains an operator-held secret and must never appear in
+commands, logs, or evidence.
 Unknown profiles, production selection, non-OpenSandbox providers, or a
 one-sided network-mode change fail during process startup.
 
-For the s72 internal-test release, the controller first verifies that fresh
+For the s72 direct OpenSandbox release, the controller first verifies that fresh
 `origin/main` has successful backend, frontend, and packaging runs. It then
 atomically prepares `/data/ai-platform-internal-test/incoming/latest-main.json`
 as a non-secret owner-managed file with exactly these fields:
@@ -262,7 +245,7 @@ checkout with no release arguments:
 The quickstart rechecks fresh `origin/main`, requires immutable role-specific
 image refs, validates the existing runtime-scoped managed `.env` as an
 owner-matching `0600` regular file without reading or printing its values, and
-runs Compose `config --quiet` before either pull or up. It uses only the base
+runs Compose semantic preflight before either pull or up. It uses only the base
 file plus `docker-compose.opensandbox-internal-test.yml`, never builds on s72,
 and never runs `down`, `down -v`, or volume deletion. If startup or smoke fails,
 it performs one `--no-build --pull never` up of the saved previous subject;
@@ -305,100 +288,102 @@ the s72 host, inspect that exact sandbox container and record
 proof. Keep the governed profile as the production default and track network
 closure as separate follow-up work.
 
-### s72 pinned-HTTPS bridge listener
+The production release uses the base Compose file plus
+`docker-compose.opensandbox.yml`. API and Worker use the official
+OpenSandbox SDK directly with `OPENSANDBOX_USE_SERVER_PROXY=true`. The
+OpenSandbox Server remains an independently managed root service using runsc;
+its lifecycle port is published only on a dedicated private host address distinct
+from the egress bridge address. The server process binds its isolated service
+container internally, while Docker owns that exact host publication. Target
+parity probes `/health` from both API and Worker before migration can report
+success. Native bridge network policy permits only the distinct stateless
+egress-proxy address.
+The proxy strips sandbox credentials, forwards the callback-derived per-attempt
+model capability, injects the internal proxy token, and forwards callbacks to
+the existing API callback-token validators.
 
-The Docker/global callback and model bases above remain unchanged. When
-`SANDBOX_CONTAINER_PROVIDER=opensandbox`, API and worker instead require these
-separate, exact bridge-v1 settings:
+The s75 deployment keeps Compose project `ai-platform-internal` and the four
+existing named data/workspace volumes. It also preserves the authenticated
+`/data/ai-platform-prod/runtime-workspaces` platform bind for `workspace-init`,
+API, and Worker; OpenSandbox sandboxes never receive that host path and continue
+to use bounded SDK file transfer. A bounded transition stops admission,
+proves zero nonterminal Runs/RunAttempts/leases and zero sandbox containers,
+changes the overlay in place, and revalidates exact volume and bind mount identities.
+Rollback uses the same project and volumes, plus the same platform bind, without
+`down -v` or any project namespace migration.
 
-```text
-OPENSANDBOX_EXTERNAL_EGRESS_CALLBACK_BASE_URL=https://REQUIRED_FIXED_EGRESS_HOSTNAME:18443
-OPENSANDBOX_EXTERNAL_EGRESS_OPENAI_BASE_URL=https://REQUIRED_FIXED_EGRESS_HOSTNAME:18443/openai/v1
-OPENSANDBOX_EXTERNAL_EGRESS_ANTHROPIC_BASE_URL=https://REQUIRED_FIXED_EGRESS_HOSTNAME:18443/anthropic
-AI_PLATFORM_S72_BRIDGE_PORT=18443
-AI_PLATFORM_S72_BRIDGE_SERVER_NAME=REQUIRED_FIXED_EGRESS_HOSTNAME
-AI_PLATFORM_S72_BRIDGE_ALLOWED_SOURCE_IP=REQUIRED_S72_SOURCE_IP
-AI_PLATFORM_S72_BRIDGE_TLS_CERT_FILE=<absolute-host-path-to-bridge-fullchain.pem>
-AI_PLATFORM_S72_BRIDGE_TLS_KEY_FILE=<absolute-host-path-to-bridge-privkey.pem>
-```
-
-Provision a dedicated internal-CA-signed broker leaf whose DNS SAN is exactly
-`REQUIRED_FIXED_EGRESS_HOSTNAME`. Map and pin that hostname to the separately
-approved broker IP in the s72 egress policy; the s72 broker connects to the IP directly and uses the
-hostname only for SNI/hostname verification. Mount the full chain and private
-key read-only through the two Compose paths above. Do not place certificate or
-key bytes in the image, `.env`, Compose environment, logs, or Git. Provision
-only the non-secret issuing CA certificate to s72 at its app-scoped path; do not
-install it in either host's system trust store.
-
-The base Compose and `docker-compose.sandbox.yml` Docker rollback path do not
-publish `8443`, request bridge variables, or mount bridge certificates. The
-frontend image derives its 8080-only default config from the same authoritative
-template. Only `docker-compose.opensandbox.yml`, after every bridge prerequisite
-below is present, selects the full template and adds the bridge configuration.
-
-The frontend keeps its existing `8080` public listener unchanged. The additional
-container `8443`/host `18443` TLS listener has access logging disabled. Its
-default TLS server rejects the handshake for missing or wrong SNI; only the exact
-configured SNI reaches the named server, which separately requires the matching
-HTTP Host and configured s72 source IP. It exposes only:
-
-- exact `POST /api/ai/runtime/callbacks/executor` to the existing API upstream;
-- `/openai/...` to host model port `3002`, stripping only `/openai/`;
-- `/anthropic/...` to host model port `3002`, stripping only `/anthropic/`;
-- `GET /healthz`.
-
-Every other path is `404`; disallowed methods/sources fail closed. There is no
-static frontend, redirect, arbitrary upstream, or credential log on this
-listener. `host.docker.internal:host-gateway` is only frontend-to-host model
-reachability; it does not grant the sandbox network access. The OpenSandbox
-sandbox remains `network_mode=none` and reaches the host broker only through the
-scoped regular-file relay.
-
-Before switching the provider, validate on the Docker-capable host and from the
-approved s72 source without printing authorization values:
+Run the transition only from the exact CI-qualified target checkout. `LEGACY_REPO_ROOT`
+must likewise be a newly materialized, root-owned exact-commit checkout used only
+as rollback authority; it need not be the old deploy-user checkout recorded in
+the running containers. The transition validates initial container labels
+against the fixed historical s75 release root, commit, and Compose relative
+paths without reading or executing that old tree. After the transition restores
+the project from the authenticated rollback checkout, a retry accepts only a
+consistent label set naming that same trusted Compose selection. Preserve the
+currently verified Docker
+release values before cutover; they are rollback arguments, not values to
+rediscover after a failure. The command exits before mutation when schema,
+quiescence, image, project, volume, host, or Compose preflight fails. A failure
+after the old contour stops performs one automatic rollback and exits nonzero.
 
 ```bash
-sudo -n docker compose --env-file "$ROOT/deploy/ai-platform/.env" \
-  -f "$ROOT/releases/$TARGET/deploy/ai-platform/docker-compose.yml" \
-  -f "$ROOT/releases/$TARGET/deploy/ai-platform/docker-compose.opensandbox.yml" config >/dev/null
-sudo -n docker exec ai-platform-frontend nginx -t
-curl --fail --silent --show-error \
-  --resolve REQUIRED_FIXED_EGRESS_HOSTNAME:18443:REQUIRED_FIXED_EGRESS_IP \
-  --cacert /etc/opensandbox-gateway/tls/upstream-ca.pem \
-  https://REQUIRED_FIXED_EGRESS_HOSTNAME:18443/healthz
+cd "$TARGET_REPO_ROOT"
+umask 077
+sudo -n python3 -B -m tools.s75_opensandbox_transition migrate \
+  --target-repo-root "$TARGET_REPO_ROOT" \
+  --target-commit "$TARGET_COMMIT" \
+  --legacy-repo-root "$LEGACY_REPO_ROOT" \
+  --legacy-commit "$LEGACY_COMMIT" \
+  --env-file "$MANAGED_ENV_FILE" \
+  --backend-image "$TARGET_BACKEND_IMAGE" \
+  --frontend-image "$TARGET_FRONTEND_IMAGE" \
+  --docker-cmd docker >"$TRANSITION_RESULT"
 ```
 
-Also prove from s72 that an unlisted path is `404`, missing/wrong SNI fails the
-TLS handshake even with the expected HTTP Host, Host mismatch fails after the
-right SNI, wrong-CA checks fail, each model prefix reaches the expected `/v1/...` path with authorization
-preserved but absent from logs, the exact callback succeeds, and requests from
-any other source IP are denied. These are current runtime gates; local source
-tests do not satisfy them. If any gate fails, keep the Docker provider selected.
+Do not finalize from the migration command alone. Require all eight application
+services plus `opensandbox-egress-proxy` healthy, API readiness and schema checks,
+zero restart-count growth, exact target image/Compose parity, unchanged volume
+IDs and mounts, and a real application-owned Run that proves
+create -> execute -> collect -> delete through OpenSandbox with
+`HostConfig.Runtime=runsc`. From that sandbox, the lifecycle listener and an
+unrelated host port must both be unreachable while the egress proxy remains
+reachable. That Run must also prove model traffic through the existing
+model-control-plane proxy and callback delivery through the existing
+Run/attempt callback authority. Keep admission fenced and roll back on any failed
+or missing check. After those checks pass, admit the target:
 
-Use the same release authority with the OpenSandbox overlay only under an
-explicit provider-transition release charter after those gates pass. The normal
-exact-main command above remains base plus Docker sandbox, with no bridge
-certificate or variable dependency. The authority retains the
-`ai-platform-phaseb` Compose project, resolves the immutable executor image
-itself, and remains the only permitted mutation path.
+```bash
+cd "$TARGET_REPO_ROOT"
+sudo -n python3 -B -m tools.s75_opensandbox_transition finalize \
+  --target-repo-root "$TARGET_REPO_ROOT" \
+  --target-commit "$TARGET_COMMIT" \
+  --env-file "$MANAGED_ENV_FILE" \
+  --docker-cmd docker
+```
 
-The release authority permits one exact provider-overlay ownership transition:
-the live selection `[docker-compose.yml, docker-compose.sandbox.yml]` may move to
-`[docker-compose.yml, docker-compose.opensandbox.yml]`, and the exact reverse is
-permitted for Docker rollback. It reconstructs the live selection only from the
-three containers' Compose labels and the existing historical checkout, requires
-the same project, role/container identity, release root, and complete ordered
-selection for API, worker, and frontend, and revalidates that ownership before
-Compose mutation. This is not manual adoption. A base-only, reordered, duplicate,
-missing, extra, or arbitrary overlay selection, a caller-selected substitute,
-another project/root/role, or any symlink, junction, or path escape fails closed.
-After `compose up`, terminal parity still requires every managed role to report
-the exact target checkout and target two-file selection.
+Before database migration or while schema compatibility still passes, an operator
+may explicitly restore the captured Docker release. The rollback command repeats
+quiescence, authenticates both legacy images and the executor image by immutable
+Docker image ID, checks reverse schema compatibility, stops the target contour,
+and restores admission only after legacy parity succeeds:
 
-Before allowing untrusted execution, verify that the API is healthy with the
-same runtime commit, that each lease bridge contains only that API witness and
-its sandbox, and that the proof key material is present but never printed.
+```bash
+cd "$TARGET_REPO_ROOT"
+sudo -n python3 -B -m tools.s75_opensandbox_transition rollback \
+  --target-repo-root "$TARGET_REPO_ROOT" \
+  --target-commit "$TARGET_COMMIT" \
+  --legacy-repo-root "$LEGACY_REPO_ROOT" \
+  --legacy-commit "$LEGACY_COMMIT" \
+  --env-file "$MANAGED_ENV_FILE" \
+  --legacy-backend-image "$LEGACY_BACKEND_IMAGE" \
+  --legacy-frontend-image "$LEGACY_FRONTEND_IMAGE" \
+  --legacy-executor-image "$LEGACY_EXECUTOR_IMAGE" \
+  --docker-cmd docker
+```
+
+Never run `migrate`, `finalize`, or `rollback` concurrently. Never use `down -v`,
+start a second Compose project, copy the managed environment file, or retry a
+nonzero transition before classifying its bounded result and current runtime.
 
 ## Readiness Evidence
 
@@ -481,7 +466,7 @@ timeout --signal=INT --kill-after=30s 27000s \
   --canonical-build-timeout-seconds 1800 \
   --docker-cmd "sudo -n docker" \
   --compose-file deploy/ai-platform/docker-compose.yml \
-  --compose-file deploy/ai-platform/docker-compose.sandbox.yml
+  --compose-file deploy/ai-platform/docker-compose.opensandbox-internal-test.yml
 ```
 
 The flag is default-off. It is accepted only after the authority has completed

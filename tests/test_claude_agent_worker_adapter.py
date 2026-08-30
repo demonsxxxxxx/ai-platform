@@ -4101,7 +4101,7 @@ def test_worker_constructs_context_retrieval_authority_from_existing_scope(monke
             "schema_version": "ai-platform.executor-context-pack.v1",
             "context_manifest": {
                 "schema_version": "ai-platform.context-manifest.v1",
-                "available_retrieval_tools": ["read_context_file"],
+                "available_retrieval_tools": ["stage_context_file_to_workspace"],
             },
         }
     )

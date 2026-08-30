@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 from collections.abc import Callable
 from typing import Any
 
@@ -159,7 +160,23 @@ async def proxy_model_request(
     x_ai_platform_run_id: str = Header(default=""),
     x_ai_platform_attempt_id: str = Header(default=""),
     x_ai_platform_internal_token: str = Header(default=""),
+    x_ai_platform_model_authorization: str = Header(default=""),
+    x_ai_platform_model_api_key: str = Header(default=""),
 ) -> Response:
+    bearer_capability = ""
+    scheme, separator, candidate = x_ai_platform_model_authorization.partition(" ")
+    if separator and scheme.lower() == "bearer":
+        bearer_capability = candidate.strip()
+    api_key_capability = x_ai_platform_model_api_key.strip()
+    model_proxy_capability = bearer_capability or api_key_capability
+    if (
+        bearer_capability
+        and api_key_capability
+        and not hmac.compare_digest(
+            bearer_capability.encode("utf-8"), api_key_capability.encode("utf-8")
+        )
+    ):
+        model_proxy_capability = ""
     body_buffer = bytearray()
     async for chunk in request.stream():
         if len(body_buffer) + len(chunk) > 1024 * 1024:
@@ -176,6 +193,7 @@ async def proxy_model_request(
             run_id=x_ai_platform_run_id,
             attempt_id=x_ai_platform_attempt_id,
             internal_token=x_ai_platform_internal_token,
+            model_proxy_capability=model_proxy_capability,
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc

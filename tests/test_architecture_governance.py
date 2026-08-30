@@ -324,6 +324,28 @@ def _activate_context_memory_bridge(repo: Path) -> None:
     )
 
 
+def _activate_memory_redaction_bridge(repo: Path) -> None:
+    bridge = _migration_bridge(
+        source_path="app/memory_redaction.py",
+        target_module="app.kernel.memory_redaction",
+    )
+    _write(
+        repo,
+        "app/kernel/memory_redaction.py",
+        _fixture_bridge_definitions(bridge["symbols"]) + "\n",
+    )
+    _write(
+        repo,
+        bridge["source_path"],
+        f"import {bridge['target_module']} as {bridge['module_alias']}\n"
+        + "\n".join(
+            f"{name} = {bridge['module_alias']}.{name}"
+            for name in bridge["symbols"]
+        )
+        + "\n",
+    )
+
+
 def _activate_conversation_bridges(repo: Path) -> None:
     bridges = [
         _migration_bridge(
@@ -1169,7 +1191,9 @@ def test_kernel_allowlist_does_not_authorize_private_descendants(
 ) -> None:
     repo, authority = governance_repo
     policy = _fixture_policy()
-    policy["public_kernel_modules"] = ["identity"]
+    policy["public_kernel_modules"] = sorted(
+        [*policy["public_kernel_modules"], "identity"]
+    )
     _write(repo, "architecture-policy.json", json.dumps(policy, indent=2))
     policy_head = _commit(repo, "authority with kernel public module")
     _write(
@@ -1189,7 +1213,9 @@ def test_kernel_from_import_resolves_private_descendant_modules(
 ) -> None:
     repo, _authority = governance_repo
     policy = _fixture_policy()
-    policy["public_kernel_modules"] = ["identity"]
+    policy["public_kernel_modules"] = sorted(
+        [*policy["public_kernel_modules"], "identity"]
+    )
     _write(repo, "architecture-policy.json", json.dumps(policy, indent=2))
     _write(repo, "app/kernel/identity/__init__.py", "class Principal:\n    pass\n")
     _write(repo, "app/kernel/identity/private.py", "SECRET = True\n")
@@ -1211,7 +1237,9 @@ def test_kernel_from_import_allows_symbols_from_a_public_module(
 ) -> None:
     repo, _authority = governance_repo
     policy = _fixture_policy()
-    policy["public_kernel_modules"] = ["identity"]
+    policy["public_kernel_modules"] = sorted(
+        [*policy["public_kernel_modules"], "identity"]
+    )
     _write(repo, "architecture-policy.json", json.dumps(policy, indent=2))
     _write(repo, "app/kernel/identity.py", "class Principal:\n    pass\n")
     authority = _commit(repo, "authority with public kernel module")
@@ -1293,6 +1321,102 @@ def test_exact_context_memory_migration_bridge_moves_symbols_as_identity_aliases
     assert evaluation.findings == ()
 
 
+def test_exact_memory_redaction_kernel_bridge_uses_existing_contract(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _activate_memory_redaction_bridge(repo)
+    head = _commit(repo, "activate memory redaction Kernel bridge")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.findings == ()
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "annotation_only",
+        "conditional_only_binding",
+        "conditional_duplicate_binding",
+        "duplicate_binding",
+        "computed_dynamic_import",
+        "builtins_mapping_dynamic_import",
+        "imported_assignment",
+        "transitive_imported_assignment",
+    ],
+)
+def test_migration_bridge_target_requires_runtime_local_ownership(
+    governance_repo: tuple[Path, str], drift: str
+) -> None:
+    repo, authority = governance_repo
+    bridge = _migration_bridge(
+        source_path="app/memory_redaction.py",
+        target_module="app.kernel.memory_redaction",
+    )
+    _activate_memory_redaction_bridge(repo)
+    target_path = repo / "app/kernel/memory_redaction.py"
+    source = target_path.read_text(encoding="utf-8")
+    symbol = bridge["symbols"][0]
+    if drift == "annotation_only":
+        source = source.replace(f"{symbol} = 1", f"{symbol}: object")
+    elif drift == "conditional_only_binding":
+        source = source.replace(f"{symbol} = 1", f"if False:\n    {symbol} = 1")
+    elif drift == "conditional_duplicate_binding":
+        source += f"if True:\n    {symbol} = 2\n"
+    elif drift == "duplicate_binding":
+        source += f"{symbol} = 2\n"
+    elif drift == "computed_dynamic_import":
+        source += "module_name = 'app.' + 'memory_redaction'\nLOADED = __import__(module_name)\n"
+    elif drift == "builtins_mapping_dynamic_import":
+        source += (
+            "module_name = 'app.' + 'memory_redaction'\n"
+            'LOADED = __builtins__["__import__"](module_name)\n'
+        )
+    elif drift == "transitive_imported_assignment":
+        source = "from re import IGNORECASE as imported_value\n_value = imported_value\n" + (
+            source.replace(f"{symbol} = 1", f"{symbol} = _value")
+        )
+    else:
+        source = "from re import IGNORECASE as value\n" + source.replace(
+            f"{symbol} = 1", f"{symbol} = value"
+        )
+    target_path.write_text(source, encoding="utf-8")
+    head = _commit(repo, f"reject bridge target {drift}")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "migration_bridge_target_contract" in _codes(evaluation)
+
+
+@pytest.mark.parametrize("alias_form", ["annotated", "chained"])
+def test_migration_bridge_rejects_non_plain_identity_aliases(
+    governance_repo: tuple[Path, str], alias_form: str
+) -> None:
+    repo, authority = governance_repo
+    bridge = _migration_bridge(
+        source_path="app/memory_redaction.py",
+        target_module="app.kernel.memory_redaction",
+    )
+    _activate_memory_redaction_bridge(repo)
+    source_path = repo / bridge["source_path"]
+    source = source_path.read_text(encoding="utf-8")
+    symbol = bridge["symbols"][0]
+    exact = f"{symbol} = {bridge['module_alias']}.{symbol}"
+    replacement = (
+        f"{symbol}: object = {bridge['module_alias']}.{symbol}"
+        if alias_form == "annotated"
+        else f"{symbol} = extra_binding = {bridge['module_alias']}.{symbol}"
+    )
+    source_path.write_text(source.replace(exact, replacement), encoding="utf-8")
+    head = _commit(repo, f"reject bridge {alias_form} alias")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert "migration_bridge_symbol_contract" in _codes(evaluation)
+
+
 def test_exact_conversation_migration_bridges_move_symbols_as_identity_aliases(
     governance_repo: tuple[Path, str],
 ) -> None:
@@ -1369,12 +1493,232 @@ def test_multiple_declared_bridges_do_not_allow_new_source_logic(
     assert finding.exemptible is False
 
 
+def test_bridge_activation_rejects_undeclared_baseline_node_deletion(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _activate_all_migration_bridges(repo)
+    source_path = repo / "app/repositories.py"
+    source = source_path.read_text(encoding="utf-8")
+    unrelated_node = 'DEFAULT_RUN_EXECUTOR_TYPES = {"claude-agent-worker"}\n'
+    assert source.count(unrelated_node) == 1
+    source_path.write_text(source.replace(unrelated_node, ""), encoding="utf-8")
+    head = _commit(repo, "reject undeclared baseline deletion during bridge activation")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    finding = next(
+        item
+        for item in evaluation.findings
+        if item.code == "migration_bridge_source_logic"
+        and item.path == "app/repositories.py"
+    )
+    assert finding.exemptible is False
+    assert finding.details["undeclared_removed_nodes"] == 1
+
+
+@pytest.mark.parametrize("hidden_binding", ["starred", "named_expression"])
+def test_bridge_activation_rejects_hidden_undeclared_baseline_bindings(
+    governance_repo: tuple[Path, str],
+    hidden_binding: str,
+) -> None:
+    repo, authority = governance_repo
+    bridges = [
+        bridge
+        for bridge in _fixture_policy()["migration_bridges"]
+        if bridge["source_path"] == "app/repositories.py"
+    ]
+    first_symbol = bridges[0]["symbols"][0]
+    second_symbol = bridges[1]["symbols"][0]
+    mixed_node = (
+        f"({first_symbol}, *{second_symbol}) = values"
+        if hidden_binding == "starred"
+        else f"{first_symbol} = (UNDECLARED := value)"
+    )
+    source_path = repo / "app/repositories.py"
+    source_path.write_text(
+        source_path.read_text(encoding="utf-8") + f"\n{mixed_node}\n",
+        encoding="utf-8",
+    )
+    base = _commit(repo, f"accept {hidden_binding} baseline binding")
+    _activate_all_migration_bridges(repo)
+    head = _commit(repo, f"reject hidden {hidden_binding} deletion")
+
+    evaluation = _evaluate(repo, authority, base, head)
+
+    finding = next(
+        item
+        for item in evaluation.findings
+        if item.code == "migration_bridge_source_logic"
+        and item.path == "app/repositories.py"
+    )
+    assert finding.exemptible is False
+    assert finding.details["undeclared_removed_nodes"] == 1
+
+
+@pytest.mark.parametrize("declaration_kind", ["class", "function"])
+@pytest.mark.parametrize(
+    "module_state_form",
+    [
+        "global_statement",
+        "globals_subscript",
+        "builtins_globals_subscript",
+        "current_module_setattr",
+        "builtins_current_module_setattr",
+    ],
+)
+def test_bridge_activation_rejects_declaration_with_dynamic_module_state(
+    governance_repo: tuple[Path, str],
+    declaration_kind: str,
+    module_state_form: str,
+) -> None:
+    repo, authority = governance_repo
+    target_module = (
+        "app.platform.postgres.errors"
+        if declaration_kind == "class"
+        else "app.agent_apps.infrastructure.postgres"
+    )
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module=target_module,
+    )
+    symbol = bridge["symbols"][0]
+    module_state_body = {
+        "global_statement": "global UNDECLARED\n    UNDECLARED = value",
+        "globals_subscript": 'globals()["UNDECLARED"] = value',
+        "builtins_globals_subscript": (
+            'builtins.globals()["UNDECLARED"] = value'
+        ),
+        "current_module_setattr": (
+            'setattr(sys.modules[__name__], "UNDECLARED", value)'
+        ),
+        "builtins_current_module_setattr": (
+            'builtins.setattr(sys.modules[__name__], "UNDECLARED", value)'
+        ),
+    }[module_state_form]
+    if declaration_kind == "class":
+        plain_declaration = f"class {symbol}:\n    pass"
+        module_state_declaration = f"class {symbol}:\n    {module_state_body}"
+    else:
+        plain_declaration = (
+            f"async def {symbol}():\n"
+            f"    marker = {symbol!r}\n"
+            "    return marker"
+        )
+        module_state_declaration = (
+            f"async def {symbol}():\n"
+            f"    {module_state_body}\n"
+            "    return UNDECLARED"
+        )
+    source_path = repo / bridge["source_path"]
+    source = source_path.read_text(encoding="utf-8")
+    assert source.count(plain_declaration) == 1
+    source_path.write_text(
+        source.replace(plain_declaration, module_state_declaration),
+        encoding="utf-8",
+    )
+    base = _commit(repo, f"accept {declaration_kind} with {module_state_form}")
+    _activate_all_migration_bridges(repo)
+    head = _commit(repo, f"reject {declaration_kind} module-state move")
+
+    evaluation = _evaluate(repo, authority, base, head)
+
+    finding = next(
+        item
+        for item in evaluation.findings
+        if item.code == "migration_bridge_source_logic"
+        and item.path == bridge["source_path"]
+    )
+    assert finding.exemptible is False
+    assert finding.details["undeclared_removed_nodes"] == 1
+
+
+def test_bridge_activation_allows_unrelated_globals_method(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.agent_apps.infrastructure.postgres",
+    )
+    symbol = bridge["symbols"][0]
+    plain_declaration = (
+        f"async def {symbol}():\n"
+        f"    marker = {symbol!r}\n"
+        "    return marker"
+    )
+    method_declaration = (
+        f"async def {symbol}():\n"
+        "    return registry.globals()"
+    )
+    source_path = repo / bridge["source_path"]
+    source = source_path.read_text(encoding="utf-8")
+    assert source.count(plain_declaration) == 1
+    source_path.write_text(
+        source.replace(plain_declaration, method_declaration),
+        encoding="utf-8",
+    )
+    base = _commit(repo, "accept unrelated globals method")
+    _activate_all_migration_bridges(repo)
+    head = _commit(repo, "activate bridge with unrelated globals method")
+
+    evaluation = _evaluate(repo, authority, base, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.findings == ()
+
+
+def test_bridge_activation_rejects_deleting_non_declaration_node(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    bridge = next(
+        bridge
+        for bridge in _fixture_policy()["migration_bridges"]
+        if bridge["source_path"] == "app/repositories.py"
+    )
+    deletion = f"del {bridge['symbols'][0]}\n"
+    source_path = repo / "app/repositories.py"
+    source_path.write_text(
+        source_path.read_text(encoding="utf-8") + f"\n{deletion}",
+        encoding="utf-8",
+    )
+    base = _commit(repo, "accept baseline deletion node")
+    _activate_all_migration_bridges(repo)
+    head = _commit(repo, "reject removal of non-declaration node")
+
+    evaluation = _evaluate(repo, authority, base, head)
+
+    finding = next(
+        item
+        for item in evaluation.findings
+        if item.code == "migration_bridge_source_logic"
+        and item.path == "app/repositories.py"
+    )
+    assert finding.exemptible is False
+    assert finding.details["undeclared_removed_nodes"] == 1
+
+
 def test_exact_legacy_api_cutover_rewrites_only_declared_symbols(
     governance_repo: tuple[Path, str],
 ) -> None:
     repo, authority = governance_repo
     _activate_legacy_api_cutover(repo)
     head = _commit(repo, "cut over legacy policy to public Runs API")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert evaluation.status == "pass"
+    assert evaluation.findings == ()
+
+
+def test_exact_legacy_api_cutover_composes_with_simultaneous_bridge_activation(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _activate_all_migration_bridges(repo)
+    _activate_legacy_api_cutover(repo)
+    head = _commit(repo, "activate persistence bridges and cut over public API")
 
     evaluation = _evaluate(repo, authority, authority, head)
 
@@ -1821,6 +2165,380 @@ def test_conversation_migration_bridge_authority_is_exact() -> None:
     ]
 
 
+def test_agent_catalog_persistence_bridge_authority_is_exact_and_pending() -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.agent_apps.infrastructure.catalog_postgres",
+    )
+
+    assert bridge == {
+        "source_path": "app/repositories.py",
+        "target_module": "app.agent_apps.infrastructure.catalog_postgres",
+        "module_alias": "agent_catalog_persistence",
+        "symbols": [
+            "get_agent",
+            "get_tenant_profile_validation_agent",
+            "list_lambchat_agents",
+        ],
+        "owner": "agent_apps",
+        "reason": (
+            "The frozen global repository may expose these existing tenant-scoped "
+            "Agent catalog read symbols only as exact identity aliases while their "
+            "PostgreSQL implementation moves to the Agent Apps catalog adapter."
+        ),
+        "removal_condition": (
+            "After the Agent catalog persistence move, migrate supported internal "
+            "callers to the Agent Apps boundary, inventory external imports, and "
+            "remove this bridge in an authority-only change before deleting the "
+            "repositories aliases."
+        ),
+    }
+
+    target_path = REPO_ROOT / "app/agent_apps/infrastructure/catalog_postgres.py"
+    assert not target_path.exists()
+    source_tree = ast.parse(
+        (REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8")
+    )
+    source_definitions = [
+        node.name
+        for node in source_tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name in bridge["symbols"]
+    ]
+    assert sorted(source_definitions) == bridge["symbols"]
+    source_binding_counts = architecture_governance._top_level_local_binding_counts(
+        source_tree
+    )
+    assert {
+        symbol: source_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]
+    } == {symbol: 1 for symbol in bridge["symbols"]}
+    assert [
+        (imported.name, imported.asname)
+        for node in source_tree.body
+        if isinstance(node, ast.Import)
+        for imported in node.names
+        if imported.name == bridge["target_module"]
+    ] == []
+
+
+def test_live_identity_principal_persistence_bridge_is_exact_and_active() -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.identity.infrastructure.postgres",
+    )
+
+    assert bridge == {
+        "source_path": "app/repositories.py",
+        "target_module": "app.identity.infrastructure.postgres",
+        "module_alias": "identity_persistence",
+        "symbols": [
+            "ensure_submission_principal",
+            "ensure_user",
+            "get_user",
+            "tenant_exists",
+        ],
+        "owner": "identity",
+        "reason": (
+            "The frozen global repository may expose these existing tenant and "
+            "principal persistence symbols only as exact identity aliases while "
+            "their implementation moves to the Identity PostgreSQL adapter."
+        ),
+        "removal_condition": (
+            "After the Identity principal persistence move, migrate supported "
+            "internal callers to the Identity API, inventory external imports, "
+            "and remove this bridge in an authority-only change before deleting "
+            "the repositories aliases."
+        ),
+    }
+
+    target_path = REPO_ROOT / "app/identity/infrastructure/postgres.py"
+    source_tree = ast.parse((REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8"))
+
+    assert target_path.exists()
+    target_tree = ast.parse(target_path.read_text(encoding="utf-8"))
+    source_local_definitions = {
+        node.name
+        for node in source_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    target_local_definitions = [
+        node.name
+        for node in target_tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name in bridge["symbols"]
+    ]
+
+    assert set(bridge["symbols"]).isdisjoint(source_local_definitions)
+    assert sorted(target_local_definitions) == bridge["symbols"]
+    assert [
+        (imported.name, imported.asname)
+        for node in source_tree.body
+        if isinstance(node, ast.Import)
+        for imported in node.names
+        if imported.name == bridge["target_module"]
+    ] == [(bridge["target_module"], bridge["module_alias"])]
+
+    source_binding_counts = architecture_governance._top_level_local_binding_counts(source_tree)
+    assert {symbol: source_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]} == {
+        symbol: 1 for symbol in bridge["symbols"]
+    }
+    source_aliases = [
+        (target.id, node.value.value.id, node.value.attr)
+        for node in source_tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance((target := node.targets[0]), ast.Name)
+        and target.id in bridge["symbols"]
+        and isinstance(node.value, ast.Attribute)
+        and isinstance(node.value.value, ast.Name)
+    ]
+    assert sorted(source_aliases) == [
+        (symbol, bridge["module_alias"], symbol) for symbol in bridge["symbols"]
+    ]
+    target_binding_counts = architecture_governance._top_level_local_binding_counts(target_tree)
+    assert {symbol: target_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]} == {
+        symbol: 1 for symbol in bridge["symbols"]
+    }
+
+    from app import repositories
+    from app.identity.infrastructure import postgres as identity_persistence
+
+    for symbol in bridge["symbols"]:
+        assert getattr(repositories, symbol) is getattr(identity_persistence, symbol)
+
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "import app.identity.infrastructure.postgres; "
+                "assert 'app.repositories' not in sys.modules"
+            ),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert probe.returncode == 0, probe.stderr
+
+
+def test_live_context_snapshot_persistence_bridge_is_exact_and_active() -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.context.infrastructure.snapshot_postgres",
+    )
+
+    assert bridge == {
+        "source_path": "app/repositories.py",
+        "target_module": "app.context.infrastructure.snapshot_postgres",
+        "module_alias": "context_snapshot_persistence",
+        "symbols": [
+            "CONTEXT_SNAPSHOT_MEMBER_BATCH_LIMIT",
+            "_normalize_context_snapshot_member_ids",
+            "create_context_snapshot",
+            "get_bound_executor_context_snapshot",
+            "get_context_snapshot_for_worker",
+            "get_latest_authorized_executor_context_snapshot",
+            "list_context_share_snapshots_for_target_session",
+            "list_context_snapshots",
+            "update_run_context_snapshot_ref",
+        ],
+        "owner": "context",
+        "reason": (
+            "The frozen global repository may expose these existing immutable "
+            "Context snapshot persistence symbols only as exact identity aliases "
+            "while their implementation moves to the Context snapshot adapter."
+        ),
+        "removal_condition": (
+            "After the Context snapshot persistence move, migrate supported internal "
+            "callers to the Context API, inventory external imports, and remove this "
+            "bridge in an authority-only change before deleting the repositories "
+            "aliases."
+        ),
+    }
+
+    target_path = REPO_ROOT / "app/context/infrastructure/snapshot_postgres.py"
+    source_tree = ast.parse((REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8"))
+
+    assert target_path.exists()
+    target_tree = ast.parse(target_path.read_text(encoding="utf-8"))
+    source_local_definitions = {
+        node.name
+        for node in source_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    target_local_definitions = [
+        node.name
+        for node in target_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in bridge["symbols"]
+    ]
+
+    assert set(bridge["symbols"][1:]).isdisjoint(source_local_definitions)
+    assert sorted(target_local_definitions) == bridge["symbols"][1:]
+    assert [
+        (imported.name, imported.asname)
+        for node in source_tree.body
+        if isinstance(node, ast.Import)
+        for imported in node.names
+        if imported.name == bridge["target_module"]
+    ] == [(bridge["target_module"], bridge["module_alias"])]
+
+    source_binding_counts = architecture_governance._top_level_local_binding_counts(source_tree)
+    assert {symbol: source_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]} == {
+        symbol: 1 for symbol in bridge["symbols"]
+    }
+    source_aliases = [
+        (target.id, node.value.value.id, node.value.attr)
+        for node in source_tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance((target := node.targets[0]), ast.Name)
+        and target.id in bridge["symbols"]
+        and isinstance(node.value, ast.Attribute)
+        and isinstance(node.value.value, ast.Name)
+    ]
+    assert sorted(source_aliases) == [
+        (symbol, bridge["module_alias"], symbol) for symbol in bridge["symbols"]
+    ]
+    target_binding_counts = architecture_governance._top_level_local_binding_counts(target_tree)
+    assert {symbol: target_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]} == {
+        symbol: 1 for symbol in bridge["symbols"]
+    }
+
+    batch_limit_assignments = [
+        node
+        for node in target_tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == "CONTEXT_SNAPSHOT_MEMBER_BATCH_LIMIT"
+    ]
+    assert len(batch_limit_assignments) == 1
+    assert ast.literal_eval(batch_limit_assignments[0].value) == 128
+
+    from app import repositories
+    from app.context.infrastructure import snapshot_postgres
+
+    for symbol in bridge["symbols"]:
+        assert getattr(repositories, symbol) is getattr(snapshot_postgres, symbol)
+
+    program = """
+import sys
+
+import app.context.infrastructure.snapshot_postgres
+
+assert "app.context.retrieval" not in sys.modules
+assert "app.repositories" not in sys.modules
+"""
+    subprocess.run(
+        [sys.executable, "-c", program],
+        cwd=REPO_ROOT,
+        check=True,
+    )
+
+
+def test_live_context_source_persistence_bridge_is_exact_and_active() -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.context.infrastructure.sources_postgres",
+    )
+
+    assert bridge == {
+        "source_path": "app/repositories.py",
+        "target_module": "app.context.infrastructure.sources_postgres",
+        "module_alias": "context_sources_persistence",
+        "symbols": [
+            "count_session_context_messages",
+            "get_scoped_context_artifact",
+            "get_scoped_context_file",
+            "list_authorized_context_file_rows",
+            "list_scoped_context_messages",
+            "list_session_context_artifacts",
+            "list_session_context_files",
+            "list_session_context_messages",
+            "session_has_legacy_run_history",
+        ],
+        "owner": "context",
+        "reason": (
+            "The frozen global repository may expose these existing immutable-"
+            "snapshot and prior-session Context source-read symbols only as exact "
+            "identity aliases while their PostgreSQL implementation moves to the "
+            "Context source adapter."
+        ),
+        "removal_condition": (
+            "After the Context source-read persistence move, migrate supported "
+            "internal callers to the Context API, inventory external imports, and "
+            "remove this bridge in an authority-only change before deleting the "
+            "repositories aliases."
+        ),
+    }
+
+    target_path = REPO_ROOT / "app/context/infrastructure/sources_postgres.py"
+    source = (REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8")
+    source_tree = ast.parse(source)
+
+    assert target_path.exists()
+    target_tree = ast.parse(target_path.read_text(encoding="utf-8"))
+    source_async_functions = {
+        node.name for node in source_tree.body if isinstance(node, ast.AsyncFunctionDef)
+    }
+    target_async_functions = [
+        node.name for node in target_tree.body if isinstance(node, ast.AsyncFunctionDef)
+    ]
+
+    assert set(bridge["symbols"]).isdisjoint(source_async_functions)
+    assert sorted(target_async_functions) == bridge["symbols"]
+    target_imports = [
+        (imported.name, imported.asname)
+        for node in source_tree.body
+        if isinstance(node, ast.Import)
+        for imported in node.names
+        if imported.name == bridge["target_module"]
+    ]
+    assert target_imports == [(bridge["target_module"], bridge["module_alias"])]
+
+    source_binding_counts = architecture_governance._top_level_local_binding_counts(source_tree)
+    assert {symbol: source_binding_counts[symbol] for symbol in bridge["symbols"]} == {
+        symbol: 1 for symbol in bridge["symbols"]
+    }
+    source_aliases = [
+        (target.id, node.value.value.id, node.value.attr)
+        for node in source_tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance((target := node.targets[0]), ast.Name)
+        and target.id in bridge["symbols"]
+        and isinstance(node.value, ast.Attribute)
+        and isinstance(node.value.value, ast.Name)
+    ]
+    assert sorted(source_aliases) == [
+        (symbol, bridge["module_alias"], symbol) for symbol in bridge["symbols"]
+    ]
+    for symbol in bridge["symbols"]:
+        assert target_async_functions.count(symbol) == 1
+
+    from app import repositories
+    from app.context.infrastructure import sources_postgres
+
+    for symbol in bridge["symbols"]:
+        assert getattr(repositories, symbol) is getattr(sources_postgres, symbol)
+
+    program = """
+import sys
+
+import app.context.infrastructure.sources_postgres
+
+assert "app.context.retrieval" not in sys.modules
+assert "app.repositories" not in sys.modules
+"""
+    subprocess.run(
+        [sys.executable, "-c", program],
+        cwd=REPO_ROOT,
+        check=True,
+    )
+
+
 def test_context_memory_persistence_bridge_authority_is_exact() -> None:
     bridge = _migration_bridge(
         source_path="app/repositories.py",
@@ -1867,7 +2585,38 @@ def test_context_memory_persistence_bridge_authority_is_exact() -> None:
     }
 
 
-def test_live_context_memory_persistence_bridge_is_inactive() -> None:
+def test_context_postgres_import_does_not_initialize_legacy_repository_cycle() -> None:
+    program = """
+import sys
+
+import app.context.infrastructure.postgres
+
+assert "app.context.retrieval" not in sys.modules
+assert "app.repositories" not in sys.modules
+
+import app.context as context
+
+try:
+    context.not_a_public_export
+except AttributeError:
+    pass
+else:
+    raise AssertionError("unknown Context exports must fail closed")
+assert "app.context.retrieval" not in sys.modules
+
+from app.context import retrieval
+
+for name in context.__all__:
+    assert getattr(context, name) is getattr(retrieval, name)
+"""
+    subprocess.run(
+        [sys.executable, "-c", program],
+        cwd=REPO_ROOT,
+        check=True,
+    )
+
+
+def test_live_context_memory_persistence_bridge_is_exact_and_active() -> None:
     bridge = _migration_bridge(
         source_path="app/repositories.py",
         target_module="app.context.infrastructure.postgres",
@@ -1875,13 +2624,85 @@ def test_live_context_memory_persistence_bridge_is_inactive() -> None:
     target_path = REPO_ROOT / "app/context/infrastructure/postgres.py"
     source = (REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8")
 
-    assert not target_path.exists()
-    assert (
-        f"import {bridge['target_module']} as {bridge['module_alias']}"
-        not in source
-    )
+    assert target_path.exists()
+    assert f"import {bridge['target_module']} as {bridge['module_alias']}" in source
     for symbol in bridge["symbols"]:
-        assert f"{symbol} = {bridge['module_alias']}.{symbol}" not in source
+        assert f"{symbol} = {bridge['module_alias']}.{symbol}" in source
+
+    from app import repositories
+    from app.context.infrastructure import postgres as context_memory_persistence
+
+    for symbol in bridge["symbols"]:
+        assert getattr(repositories, symbol) is getattr(
+            context_memory_persistence, symbol
+        )
+
+
+def test_live_memory_redaction_kernel_bridge_is_exact_and_active() -> None:
+    bridge = _migration_bridge(
+        source_path="app/memory_redaction.py",
+        target_module="app.kernel.memory_redaction",
+    )
+    source = (REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8")
+    target_path = REPO_ROOT / "app/kernel/memory_redaction.py"
+
+    assert bridge == {
+        "source_path": "app/memory_redaction.py",
+        "target_module": "app.kernel.memory_redaction",
+        "module_alias": "memory_redaction_kernel",
+        "symbols": [
+            "MEMORY_REDACTION_MODES",
+            "MEMORY_REDACTION_MODE_STANDARD",
+            "MEMORY_REDACTION_MODE_STRICT",
+            "is_sensitive_redaction_key",
+            "normalize_memory_redaction_mode",
+            "redact_memory_metadata",
+            "redact_memory_metadata_value",
+            "redact_memory_text",
+            "sanitizer_unstable_assignment_suffix_length",
+            "sanitizer_unstable_suffix_length",
+        ],
+        "owner": "kernel",
+        "reason": (
+            "The shared memory-redaction policy may move from its approved legacy "
+            "root into one framework-neutral Kernel module while the legacy import "
+            "surface remains exact identity aliases."
+        ),
+        "removal_condition": (
+            "After all supported callers import the Kernel owner directly, remove "
+            "this bridge before deleting the legacy facade."
+        ),
+    }
+    assert target_path.exists()
+    assert source == (
+        f"import {bridge['target_module']} as {bridge['module_alias']}\n\n"
+        + "\n".join(
+            f"{symbol} = {bridge['module_alias']}.{symbol}"
+            for symbol in bridge["symbols"]
+        )
+        + "\n"
+    )
+
+    from app import memory_redaction
+    from app.kernel import memory_redaction as kernel_memory_redaction
+
+    for symbol in bridge["symbols"]:
+        assert getattr(memory_redaction, symbol) is getattr(
+            kernel_memory_redaction, symbol
+        )
+
+
+def test_public_kernel_migration_bridge_requires_kernel_allowlist(
+    tmp_path: Path,
+) -> None:
+    policy = _fixture_policy()
+    policy["public_kernel_modules"] = []
+    repo, authority = _create_repo(tmp_path, policy_text=json.dumps(policy))
+
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, authority, authority, authority)
+
+    assert caught.value.code == "invalid_policy"
 
 
 def test_persistence_limits_platform_bridge_authority_is_exact() -> None:
@@ -2164,9 +2985,13 @@ def test_authority_rejects_reused_bridge_alias_within_one_source(
         if entry["source_path"] == "app/repositories.py"
     ]
     assert {bridge["target_module"] for bridge in bridges} == {
+        "app.agent_apps.infrastructure.catalog_postgres",
         "app.agent_apps.infrastructure.postgres",
         "app.context.infrastructure.postgres",
+        "app.context.infrastructure.snapshot_postgres",
+        "app.context.infrastructure.sources_postgres",
         "app.conversations.infrastructure.postgres",
+        "app.identity.infrastructure.postgres",
         "app.platform.postgres.errors",
         "app.runs.infrastructure.postgres",
         "app.skills.infrastructure.postgres",
@@ -2190,9 +3015,13 @@ def test_authority_rejects_reused_bridge_symbol_within_one_source(
         if entry["source_path"] == "app/repositories.py"
     ]
     assert {bridge["target_module"] for bridge in bridges} == {
+        "app.agent_apps.infrastructure.catalog_postgres",
         "app.agent_apps.infrastructure.postgres",
         "app.context.infrastructure.postgres",
+        "app.context.infrastructure.snapshot_postgres",
+        "app.context.infrastructure.sources_postgres",
         "app.conversations.infrastructure.postgres",
+        "app.identity.infrastructure.postgres",
         "app.platform.postgres.errors",
         "app.runs.infrastructure.postgres",
         "app.skills.infrastructure.postgres",
