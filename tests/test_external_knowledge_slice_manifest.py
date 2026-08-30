@@ -62,12 +62,16 @@ def test_repository_manifests_match_exact_traceability_ownership():
         "KPRVRET-19",
         "KPUB-32",
         "KREADY-46",
+        "KSNAP-35",
         "KSOURCE-22",
         "KSRCUI-25",
         "KSYNC-21",
         "KTRACE-62",
     }
     assert by_slice["KTRACE-62"].atomic_case_ids == ("KAC-FR-KOPS-035",)
+    assert by_slice["KSNAP-35"].atomic_case_ids == tuple(
+        f"KAC-FR-KADM-{index:03d}" for index in range(18, 26)
+    )
 
 
 def test_traceability_derives_the_ktrace_atomic_case_set():
