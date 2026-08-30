@@ -352,6 +352,25 @@
     },
     {
       "source_path": "app/repositories.py",
+      "target_module": "app.context.infrastructure.snapshot_postgres",
+      "module_alias": "context_snapshot_persistence",
+      "symbols": [
+        "CONTEXT_SNAPSHOT_MEMBER_BATCH_LIMIT",
+        "_normalize_context_snapshot_member_ids",
+        "create_context_snapshot",
+        "get_bound_executor_context_snapshot",
+        "get_context_snapshot_for_worker",
+        "get_latest_authorized_executor_context_snapshot",
+        "list_context_share_snapshots_for_target_session",
+        "list_context_snapshots",
+        "update_run_context_snapshot_ref"
+      ],
+      "owner": "context",
+      "reason": "The frozen global repository may expose these existing immutable Context snapshot persistence symbols only as exact identity aliases while their implementation moves to the Context snapshot adapter.",
+      "removal_condition": "After the Context snapshot persistence move, migrate supported internal callers to the Context API, inventory external imports, and remove this bridge in an authority-only change before deleting the repositories aliases."
+    },
+    {
+      "source_path": "app/repositories.py",
       "target_module": "app.context.infrastructure.sources_postgres",
       "module_alias": "context_sources_persistence",
       "symbols": [
