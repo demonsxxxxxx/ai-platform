@@ -1211,3 +1211,26 @@ def test_existing_shell_entry_forwards_to_the_canonical_profile() -> None:
     assert "scripts/deploy-latest.sh" in entry
     assert "--profile internal-test" in entry
     assert '"$@"' in entry
+
+
+def test_shell_target_imports_when_executed_as_an_isolated_file() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            (
+                "import runpy, sys; "
+                "runpy.run_path(sys.argv[1], run_name='sandbox_quickstart_import_smoke')"
+            ),
+            str(ROOT / "tools/sandbox_quickstart.py"),
+        ],
+        cwd=ROOT,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
