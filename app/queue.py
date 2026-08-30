@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 import re
 import secrets
 import time
@@ -662,6 +663,8 @@ local retry_metadata_json = ARGV[5]
 local remove_processing = ARGV[6]
 local expected_attempt_id = ARGV[7]
 local expected_owner_token = ARGV[8]
+local checked_at = tonumber(ARGV[9])
+local visibility_timeout = tonumber(ARGV[10])
 local lease_metadata_json = redis.call("hget", processing_meta_key, message_id)
 if not lease_metadata_json then
   lease_metadata_json = redis.call("hget", retry_meta_key, message_id)
@@ -672,6 +675,32 @@ if not lease_ok or type(lease_metadata) ~= "table"
   or tostring(lease_metadata["attempt_id"] or "") ~= expected_attempt_id
   or tostring(lease_metadata["owner_token"] or "") ~= expected_owner_token then
   return cjson.encode({status = "stale_owner"})
+end
+if checked_at == nil or checked_at ~= checked_at
+  or checked_at == math.huge or checked_at == -math.huge
+  or visibility_timeout == nil or visibility_timeout ~= visibility_timeout
+  or visibility_timeout == math.huge or visibility_timeout < 0 then
+  return cjson.encode({status = "inconclusive"})
+end
+local last_activity = nil
+for _, activity_field in ipairs({"heartbeat_at", "leased_at"}) do
+  if lease_metadata[activity_field] ~= nil then
+    local activity = tonumber(lease_metadata[activity_field])
+    if activity == nil or activity ~= activity
+      or activity == math.huge or activity == -math.huge
+      or activity > checked_at then
+      return cjson.encode({status = "inconclusive"})
+    end
+    if last_activity == nil or activity > last_activity then
+      last_activity = activity
+    end
+  end
+end
+if last_activity == nil then
+  return cjson.encode({status = "inconclusive"})
+end
+if checked_at - last_activity <= visibility_timeout then
+  return cjson.encode({status = "fresh_lease"})
 end
 local sequence = redis.call("incr", queued_sequence_key)
 local ok, metadata = pcall(cjson.decode, metadata_json)
@@ -730,6 +759,8 @@ local dead_letter_json = ARGV[3]
 local remove_processing_meta = ARGV[4]
 local expected_attempt_id = ARGV[5]
 local expected_owner_token = ARGV[6]
+local checked_at = tonumber(ARGV[7])
+local visibility_timeout = tonumber(ARGV[8])
 local lease_metadata_json = redis.call("hget", processing_meta_key, message_id)
 if not lease_metadata_json then
   lease_metadata_json = redis.call("hget", retry_meta_key, message_id)
@@ -740,6 +771,32 @@ if not lease_ok or type(lease_metadata) ~= "table"
   or tostring(lease_metadata["attempt_id"] or "") ~= expected_attempt_id
   or tostring(lease_metadata["owner_token"] or "") ~= expected_owner_token then
   return cjson.encode({status = "stale_owner"})
+end
+if checked_at == nil or checked_at ~= checked_at
+  or checked_at == math.huge or checked_at == -math.huge
+  or visibility_timeout == nil or visibility_timeout ~= visibility_timeout
+  or visibility_timeout == math.huge or visibility_timeout < 0 then
+  return cjson.encode({status = "inconclusive"})
+end
+local last_activity = nil
+for _, activity_field in ipairs({"heartbeat_at", "leased_at"}) do
+  if lease_metadata[activity_field] ~= nil then
+    local activity = tonumber(lease_metadata[activity_field])
+    if activity == nil or activity ~= activity
+      or activity == math.huge or activity == -math.huge
+      or activity > checked_at then
+      return cjson.encode({status = "inconclusive"})
+    end
+    if last_activity == nil or activity > last_activity then
+      last_activity = activity
+    end
+  end
+end
+if last_activity == nil then
+  return cjson.encode({status = "inconclusive"})
+end
+if checked_at - last_activity <= visibility_timeout then
+  return cjson.encode({status = "fresh_lease"})
 end
 
 redis.call("lrem", processing_key, 1, raw)
@@ -763,6 +820,11 @@ local ok, metadata = pcall(cjson.decode, raw_metadata)
 if not ok or type(metadata) ~= "table" then
   return cjson.encode({status = "inconclusive"})
 end
+local heartbeat_at = tonumber(ARGV[5])
+if heartbeat_at == nil or heartbeat_at ~= heartbeat_at
+  or heartbeat_at == math.huge or heartbeat_at == -math.huge then
+  return cjson.encode({status = "inconclusive"})
+end
 if tostring(metadata["message_id"] or "") ~= ARGV[1]
   or tostring(metadata["attempt_id"] or "") ~= ARGV[2]
   or tostring(metadata["owner_token"] or "") ~= ARGV[3]
@@ -773,9 +835,10 @@ local fence_key = ARGV[6] .. ":" .. tostring(metadata["tenant_id"] or "") .. ":"
 if redis.call("exists", fence_key) == 1 then
   return cjson.encode({status = "reconciliation_fenced"})
 end
-metadata["heartbeat_at"] = tonumber(ARGV[5])
+metadata["heartbeat_at"] = heartbeat_at
 redis.call("hset", KEYS[1], ARGV[1], cjson.encode(metadata))
-redis.call("hset", KEYS[2], ARGV[4], ARGV[5])
+redis.call("hset", KEYS[2], ARGV[1], cjson.encode(metadata))
+redis.call("hset", KEYS[3], ARGV[4], ARGV[5])
 return cjson.encode({status = "heartbeat"})
 """
 
@@ -1022,6 +1085,22 @@ def _decode_run_index_message_ids(raw_index: Any) -> list[str]:
 
 def _now() -> float:
     return time.time()
+
+
+def _lease_last_activity(metadata: dict[str, Any]) -> float | None:
+    activity_values: list[float] = []
+    for activity_field in ("heartbeat_at", "leased_at"):
+        raw_activity = metadata.get(activity_field)
+        if raw_activity is None:
+            continue
+        try:
+            activity = float(raw_activity)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(activity):
+            return None
+        activity_values.append(activity)
+    return max(activity_values) if activity_values else None
 
 
 def _dead_letter_json(
@@ -1791,6 +1870,8 @@ async def _requeue_run_with_fence(
     retry_metadata: dict[str, Any],
     expected_attempt_id: str,
     expected_owner_token: str,
+    checked_at: float,
+    visibility_timeout_seconds: float,
     remove_processing: bool = False,
 ) -> bool:
     """Atomically requeue retry ownership only when the exact run is unfenced."""
@@ -1825,6 +1906,8 @@ async def _requeue_run_with_fence(
             "1" if remove_processing else "0",
             expected_attempt_id,
             expected_owner_token,
+            checked_at,
+            visibility_timeout_seconds,
         )
     )
     return str(result.get("status") or "") == "requeued"
@@ -1843,6 +1926,8 @@ async def _dead_letter_expired_lease_with_fence(
     remove_processing_meta: bool,
     expected_attempt_id: str,
     expected_owner_token: str,
+    checked_at: float,
+    visibility_timeout_seconds: float,
 ) -> bool:
     """Atomically dead-letter an expired lease unless its exact run is fenced."""
 
@@ -1873,6 +1958,8 @@ async def _dead_letter_expired_lease_with_fence(
             "1" if remove_processing_meta else "0",
             expected_attempt_id,
             expected_owner_token,
+            checked_at,
+            visibility_timeout_seconds,
         )
     )
     dead_lettered = str(result.get("status") or "") == "dead_lettered"
@@ -2209,23 +2296,27 @@ async def verify_lease_ownership(message: QueueMessage, *, worker_id: str) -> Le
 
 async def heartbeat_run(message_id: str, *, worker_id: str) -> bool:
     keys = get_queue_keys()
+    lease = _parse_lease_handle(message_id)
+    if lease is None:
+        return False
+    heartbeat_at = float(_now())
+    if not math.isfinite(heartbeat_at):
+        return False
     redis = await get_redis()
     try:
-        lease = _parse_lease_handle(message_id)
-        if lease is None:
-            return False
         queue_message_id, attempt_id, owner_token = lease
         result = _decode_redis_script_result(
             await redis.eval(
             HEARTBEAT_WITH_FENCE_SCRIPT,
-            2,
+            3,
             keys.processing_meta,
+            keys.retry_meta,
             keys.worker_heartbeat,
             queue_message_id,
             attempt_id,
             owner_token,
             worker_id,
-            _now(),
+            heartbeat_at,
             keys.reconciliation_fence_prefix,
             )
         )
@@ -2240,10 +2331,15 @@ async def reclaim_expired_leases(
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     now: float | None = None,
 ) -> dict[str, int]:
+    checked_at = float(_now() if now is None else now)
+    resolved_visibility_timeout = float(visibility_timeout_seconds)
+    if not math.isfinite(checked_at):
+        raise ValueError("queue_reclaim_checked_at_invalid")
+    if not math.isfinite(resolved_visibility_timeout) or resolved_visibility_timeout < 0:
+        raise ValueError("queue_reclaim_visibility_timeout_invalid")
     redis = await get_redis()
     reclaimed = 0
     dead_lettered = 0
-    checked_at = _now() if now is None else now
     keys = get_queue_keys()
     try:
         processing = await redis.lrange(keys.processing, 0, -1)
@@ -2256,11 +2352,17 @@ async def reclaim_expired_leases(
                 attempts = 0
                 if retry_meta:
                     try:
-                        retry_payload = json.loads(retry_meta)
+                        decoded_retry_payload = json.loads(retry_meta)
+                        retry_payload = decoded_retry_payload if isinstance(decoded_retry_payload, dict) else {}
                         attempts = int(retry_payload.get("attempts") or 0)
                     except (TypeError, ValueError, json.JSONDecodeError):
                         retry_payload = {}
                         attempts = 0
+                retry_last_activity = _lease_last_activity(retry_payload)
+                if retry_last_activity is None:
+                    continue
+                if checked_at - retry_last_activity <= resolved_visibility_timeout:
+                    continue
                 attempt_id = str(retry_payload.get("attempt_id") or "")
                 owner_token = str(retry_payload.get("owner_token") or "")
                 if not attempt_id or not owner_token or attempts < 1:
@@ -2278,6 +2380,8 @@ async def reclaim_expired_leases(
                         remove_processing_meta=False,
                         expected_attempt_id=attempt_id,
                         expected_owner_token=owner_token,
+                        checked_at=checked_at,
+                        visibility_timeout_seconds=resolved_visibility_timeout,
                     ):
                         dead_lettered += 1
                 else:
@@ -2292,17 +2396,22 @@ async def reclaim_expired_leases(
                         },
                         expected_attempt_id=attempt_id,
                         expected_owner_token=owner_token,
+                        checked_at=checked_at,
+                        visibility_timeout_seconds=resolved_visibility_timeout,
                         remove_processing=True,
                     )
                     if requeued:
                         reclaimed += 1
                 continue
             try:
-                meta = json.loads(raw_meta)
+                decoded_meta = json.loads(raw_meta)
+                meta = decoded_meta if isinstance(decoded_meta, dict) else {}
             except json.JSONDecodeError:
                 meta = {}
-            heartbeat_at = float(meta.get("heartbeat_at") or meta.get("leased_at") or 0)
-            if checked_at - heartbeat_at <= visibility_timeout_seconds:
+            last_activity = _lease_last_activity(meta)
+            if last_activity is None:
+                continue
+            if checked_at - last_activity <= resolved_visibility_timeout:
                 continue
             attempts = int(meta.get("attempts") or 0)
             attempt_id = str(meta.get("attempt_id") or "")
@@ -2322,6 +2431,8 @@ async def reclaim_expired_leases(
                     remove_processing_meta=True,
                     expected_attempt_id=attempt_id,
                     expected_owner_token=owner_token,
+                    checked_at=checked_at,
+                    visibility_timeout_seconds=resolved_visibility_timeout,
                 ):
                     dead_lettered += 1
             else:
@@ -2336,6 +2447,8 @@ async def reclaim_expired_leases(
                     },
                     expected_attempt_id=attempt_id,
                     expected_owner_token=owner_token,
+                    checked_at=checked_at,
+                    visibility_timeout_seconds=resolved_visibility_timeout,
                     remove_processing=True,
                 )
                 if requeued:
