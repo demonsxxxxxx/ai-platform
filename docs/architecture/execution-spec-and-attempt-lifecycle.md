@@ -160,9 +160,11 @@ identity, worker owner, and current `owner_generation`. A Redis heartbeat whose
 PostgreSQL write or commit fails stops worker execution and is not treated as
 durable success: the worker does not acknowledge or fail the queue message, and
 the Redis-only extension remains bounded by one visibility-window grace deadline
-from worker processing start. If no durable attempt exists by that deadline, the
-worker stops renewing and cancels local execution. Redis and PostgreSQL share the
-exact heartbeat value returned by the Redis authority.
+from worker processing start. That deadline covers the sleep, Redis renewal,
+PostgreSQL write, and transaction commit rather than only the interval between
+heartbeat cycles. If no durable attempt exists by that deadline, the worker stops
+renewing and cancels local execution. Redis and PostgreSQL share the exact
+heartbeat value returned by the Redis authority.
 Lease acquisition, heartbeat refresh, and the final reclaim decision use Redis
 server time. A heartbeat normalizes future-skewed Redis lease and worker activity
 timestamps. Reclaim independently normalizes an abandoned future-dated lease in

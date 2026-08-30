@@ -321,6 +321,80 @@ async def test_queue_heartbeat_stops_after_one_precreation_visibility_window(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stalled_phase", ["redis", "postgres_commit"])
+async def test_queue_heartbeat_precreation_deadline_bounds_external_awaits(
+    monkeypatch,
+    stalled_phase,
+):
+    cancelled = asyncio.Event()
+    postgres_calls = 0
+    message = QueueMessage(
+        raw="raw-run",
+        payload={"tenant_id": "tenant-a", "run_id": "run-a"},
+        message_id="lease-handle-a",
+        queue_message_id="b" * 64,
+        attempt_id="qat-a",
+        owner_token="qown-a",
+        leased_at=90.0,
+        delivery_attempt=1,
+    )
+
+    async def stall_forever():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    async def heartbeat_run(*_args, **_kwargs):
+        if stalled_phase == "redis":
+            await stall_forever()
+        return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
+
+    class Transaction:
+        async def __aenter__(self):
+            return "conn-a"
+
+        async def __aexit__(self, _exc_type, _exc, _tb):
+            if stalled_phase == "postgres_commit":
+                await stall_forever()
+            return False
+
+    async def heartbeat_attempt(*_args, **kwargs):
+        nonlocal postgres_calls
+        postgres_calls += 1
+        return {
+            "id": "rat-a",
+            "status": "running",
+            "last_heartbeat_at": kwargs["last_heartbeat_at"],
+            "lease_expires_at": kwargs["lease_expires_at"],
+        }
+
+    monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
+    monkeypatch.setattr(worker_main, "transaction", Transaction)
+    monkeypatch.setattr(
+        worker_main,
+        "heartbeat_worker_run_attempt",
+        heartbeat_attempt,
+    )
+    ownership_lost = asyncio.Event()
+
+    await asyncio.wait_for(
+        worker_main._heartbeat_until_done(
+            message,
+            "worker-a",
+            0,
+            0.01,
+            ownership_lost,
+        ),
+        timeout=0.5,
+    )
+
+    assert ownership_lost.is_set()
+    assert cancelled.is_set()
+    assert postgres_calls == (stalled_phase == "postgres_commit")
+
+
+@pytest.mark.asyncio
 async def test_queue_heartbeat_fails_closed_when_postgres_cannot_commit(monkeypatch):
     message = QueueMessage(
         raw="raw-run",
