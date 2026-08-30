@@ -542,9 +542,19 @@ change. The target MUST own every declared symbol locally exactly once; imported
 re-exported, annotation-only, or import-backed aliases do not establish ownership,
 and declared public Kernel targets MUST reject computed dynamic-import capability.
 The bridge MUST reject prefixes, wildcards, dynamic imports, rebinding, new
-executable source logic, renames, and exceptions. A bridge grants import
-compatibility only; it does not make the legacy module a persistence owner or a
-public cross-domain API.
+executable source logic, renames, and exceptions. On activation, it may remove
+only a direct top-level function, class, or assignment declaration whose
+complete module-runtime binding set is non-empty and wholly declared by one
+bridge being activated; declarations containing `global` statements, bare or
+exact `builtins`-qualified `globals()` calls, or bare or exact
+`builtins`-qualified `setattr(sys.modules[__name__], ...)` current-module writes
+are ineligible because moving them would change module-state ownership;
+unrelated object methods such as `registry.globals()` remain ordinary
+declaration logic; every other baseline top-level AST node must remain
+equivalent. If a bridge and a legacy API cutover activate in the same change,
+both canonical transitions MUST compose without widening either authority. A
+bridge grants import compatibility only; it does not make the legacy module a
+persistence owner or a public cross-domain API.
 Each authority entry MUST also state its observable removal condition. Bridge
 retirement is two bounded changes: first remove the authority entry after its
 condition is proven while keeping the aliases stable; then remove the aliases

@@ -301,6 +301,19 @@
     },
     {
       "source_path": "app/repositories.py",
+      "target_module": "app.agent_apps.infrastructure.catalog_postgres",
+      "module_alias": "agent_catalog_persistence",
+      "symbols": [
+        "get_agent",
+        "get_tenant_profile_validation_agent",
+        "list_lambchat_agents"
+      ],
+      "owner": "agent_apps",
+      "reason": "The frozen global repository may expose these existing tenant-scoped Agent catalog read symbols only as exact identity aliases while their PostgreSQL implementation moves to the Agent Apps catalog adapter.",
+      "removal_condition": "After the Agent catalog persistence move, migrate supported internal callers to the Agent Apps boundary, inventory external imports, and remove this bridge in an authority-only change before deleting the repositories aliases."
+    },
+    {
+      "source_path": "app/repositories.py",
       "target_module": "app.agent_apps.infrastructure.postgres",
       "module_alias": "agent_profile_persistence",
       "symbols": [
@@ -352,6 +365,25 @@
     },
     {
       "source_path": "app/repositories.py",
+      "target_module": "app.context.infrastructure.snapshot_postgres",
+      "module_alias": "context_snapshot_persistence",
+      "symbols": [
+        "CONTEXT_SNAPSHOT_MEMBER_BATCH_LIMIT",
+        "_normalize_context_snapshot_member_ids",
+        "create_context_snapshot",
+        "get_bound_executor_context_snapshot",
+        "get_context_snapshot_for_worker",
+        "get_latest_authorized_executor_context_snapshot",
+        "list_context_share_snapshots_for_target_session",
+        "list_context_snapshots",
+        "update_run_context_snapshot_ref"
+      ],
+      "owner": "context",
+      "reason": "The frozen global repository may expose these existing immutable Context snapshot persistence symbols only as exact identity aliases while their implementation moves to the Context snapshot adapter.",
+      "removal_condition": "After the Context snapshot persistence move, migrate supported internal callers to the Context API, inventory external imports, and remove this bridge in an authority-only change before deleting the repositories aliases."
+    },
+    {
+      "source_path": "app/repositories.py",
       "target_module": "app.context.infrastructure.sources_postgres",
       "module_alias": "context_sources_persistence",
       "symbols": [
@@ -390,6 +422,20 @@
       "owner": "conversations",
       "reason": "The frozen global repository may expose these existing session and message persistence symbols only as exact identity aliases while their PostgreSQL implementation moves to the Conversations adapter.",
       "removal_condition": "After the Conversation persistence move, migrate supported internal callers to the Conversations API, inventory external imports, and remove this bridge in an authority-only change before deleting the repositories aliases."
+    },
+    {
+      "source_path": "app/repositories.py",
+      "target_module": "app.identity.infrastructure.postgres",
+      "module_alias": "identity_persistence",
+      "symbols": [
+        "ensure_submission_principal",
+        "ensure_user",
+        "get_user",
+        "tenant_exists"
+      ],
+      "owner": "identity",
+      "reason": "The frozen global repository may expose these existing tenant and principal persistence symbols only as exact identity aliases while their implementation moves to the Identity PostgreSQL adapter.",
+      "removal_condition": "After the Identity principal persistence move, migrate supported internal callers to the Identity API, inventory external imports, and remove this bridge in an authority-only change before deleting the repositories aliases."
     },
     {
       "source_path": "app/repositories.py",
