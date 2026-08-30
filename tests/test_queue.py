@@ -57,13 +57,24 @@ def indexed_message_ids(fake, field: str) -> list[str]:
 
 
 class FakeRedis:
-    def __init__(self, raw=None, lengths=None, processing=None, queued=None, meta=None, retry=None, workers=None):
+    def __init__(
+        self,
+        raw=None,
+        lengths=None,
+        processing=None,
+        queued=None,
+        meta=None,
+        retry=None,
+        workers=None,
+        server_time=100.0,
+    ):
         self.lengths = lengths or {}
         self.processing = processing or []
         self.queued = list(queued) if queued is not None else ([raw] if raw is not None else [])
         self.meta = meta or {}
         self.retry = retry or {}
         self.workers = workers or {}
+        self.server_time = float(server_time)
         self.metadata_by_message_id = {}
         self.run_index = {}
         self.order_scores = {}
@@ -339,7 +350,6 @@ class FakeRedis:
                 absolute_index,
                 message_id,
                 worker_id,
-                now,
                 max_processing_runs,
                 tenant_processing_limit,
                 user_processing_limit,
@@ -349,6 +359,7 @@ class FakeRedis:
                 attempt_id,
                 owner_token,
             ) = keys_and_args[numkeys:]
+            now = self.server_time
             scan_limit = int(scan_limit)
             absolute_index = int(absolute_index)
             max_processing_runs = int(max_processing_runs)
@@ -623,9 +634,17 @@ class FakeRedis:
                 processing_meta_key,
                 fence_key,
             ) = keys_and_args[:numkeys]
-            raw, message_id, run_index_field, metadata_json, retry_metadata_json, remove_processing, expected_attempt_id, expected_owner_token = (
-                keys_and_args[numkeys:]
-            )
+            (
+                raw,
+                message_id,
+                run_index_field,
+                metadata_json,
+                retry_metadata_json,
+                remove_processing,
+                expected_attempt_id,
+                expected_owner_token,
+                visibility_timeout_seconds,
+            ) = keys_and_args[numkeys:]
             if fence_key in self.fences:
                 return json.dumps({"status": "reconciliation_fenced"})
             lease_json = self.meta.get(message_id) or self.retry.get(message_id)
@@ -636,6 +655,9 @@ class FakeRedis:
                 or lease.get("owner_token") != expected_owner_token
             ):
                 return json.dumps({"status": "stale_owner"})
+            lease_activity_at = float(lease.get("heartbeat_at") or lease.get("leased_at"))
+            if self.server_time - lease_activity_at <= float(visibility_timeout_seconds):
+                return json.dumps({"status": "lease_active"})
             if str(remove_processing) == "1":
                 await self.lrem(processing_key, 1, raw)
             self.queued.append(raw)
@@ -653,7 +675,15 @@ class FakeRedis:
             return json.dumps({"status": "requeued"})
         if "dead-letter-expired-lease-with-fence" in script:
             processing_key, processing_meta_key, retry_meta_key, dead_letter_key, fence_key = keys_and_args[:numkeys]
-            raw, message_id, dead_letter_json, remove_processing_meta, expected_attempt_id, expected_owner_token = keys_and_args[numkeys:]
+            (
+                raw,
+                message_id,
+                dead_letter_json,
+                remove_processing_meta,
+                expected_attempt_id,
+                expected_owner_token,
+                visibility_timeout_seconds,
+            ) = keys_and_args[numkeys:]
             if fence_key in self.fences:
                 return json.dumps({"status": "reconciliation_fenced"})
             lease_json = self.meta.get(message_id) or self.retry.get(message_id)
@@ -664,6 +694,9 @@ class FakeRedis:
                 or lease.get("owner_token") != expected_owner_token
             ):
                 return json.dumps({"status": "stale_owner"})
+            lease_activity_at = float(lease.get("heartbeat_at") or lease.get("leased_at"))
+            if self.server_time - lease_activity_at <= float(visibility_timeout_seconds):
+                return json.dumps({"status": "lease_active"})
             await self.lrem(processing_key, 1, raw)
             if str(remove_processing_meta) == "1":
                 await self.hdel(processing_meta_key, message_id)
@@ -672,7 +705,7 @@ class FakeRedis:
             return json.dumps({"status": "dead_lettered"})
         if "heartbeat-run-with-fence" in script:
             processing_meta_key, worker_heartbeat_key = keys_and_args[:numkeys]
-            message_id, attempt_id, owner_token, worker_id, now, fence_prefix = keys_and_args[numkeys:]
+            message_id, attempt_id, owner_token, worker_id, fence_prefix = keys_and_args[numkeys:]
             raw_metadata = self.meta.get(message_id)
             if not raw_metadata:
                 return json.dumps({"status": "missing"})
@@ -687,18 +720,12 @@ class FakeRedis:
             fence_key = f"{fence_prefix}:{metadata.get('tenant_id', '')}:{metadata.get('run_id', '')}"
             if fence_key in self.fences:
                 return json.dumps({"status": "reconciliation_fenced"})
-            heartbeat_at = max(
-                float(now),
-                float(metadata.get("heartbeat_at") or 0),
-                float(metadata.get("leased_at") or 0),
-            )
+            heartbeat_at = self.server_time
+            if float(metadata.get("leased_at") or 0) > heartbeat_at:
+                metadata["leased_at"] = heartbeat_at
             metadata["heartbeat_at"] = heartbeat_at
             self.meta[message_id] = json.dumps(metadata, ensure_ascii=False)
-            worker_heartbeat_at = max(
-                heartbeat_at,
-                float(self.workers.get(worker_id) or 0),
-            )
-            self.workers[worker_id] = str(worker_heartbeat_at)
+            self.workers[worker_id] = str(heartbeat_at)
             return json.dumps({"status": "heartbeat", "heartbeat_at": heartbeat_at})
         if "verify-run-lease-ownership" in script:
             _processing_meta_key, fence_key = keys_and_args[:numkeys]
@@ -849,6 +876,7 @@ async def test_atomic_fence_blocks_enqueue_lease_and_retry_until_token_release(m
         retry_metadata={"tenant_id": "tenant-a", "run_id": "run-fenced", "worker_id": "worker-old"},
         expected_attempt_id=attempt_id,
         expected_owner_token=owner_token,
+        visibility_timeout_seconds=10,
         remove_processing=True,
     )
     assert requeued is False
@@ -908,6 +936,9 @@ def test_reconciliation_lua_scripts_keep_their_production_key_and_argv_contracts
     assert "ARGV[2]" in queue.RENEW_RECONCILIATION_FENCE_SCRIPT
     assert queue.DEAD_LETTER_EXPIRED_LEASE_WITH_FENCE_SCRIPT.index('redis.call("exists", fence_key)') < queue.DEAD_LETTER_EXPIRED_LEASE_WITH_FENCE_SCRIPT.index('redis.call("lrem", processing_key')
     assert queue.DEAD_LETTER_EXPIRED_LEASE_WITH_FENCE_SCRIPT.index('redis.call("exists", fence_key)') < queue.DEAD_LETTER_EXPIRED_LEASE_WITH_FENCE_SCRIPT.index('redis.call("rpush", dead_letter_key')
+    assert queue.REQUEUE_WITH_FENCE_SCRIPT.index('redis.call("TIME")') < queue.REQUEUE_WITH_FENCE_SCRIPT.index('redis.call("incr", queued_sequence_key)')
+    assert queue.REQUEUE_WITH_FENCE_SCRIPT.index('redis.call("TIME")') < queue.REQUEUE_WITH_FENCE_SCRIPT.index('redis.call("lrem", processing_key')
+    assert queue.DEAD_LETTER_EXPIRED_LEASE_WITH_FENCE_SCRIPT.index('redis.call("TIME")') < queue.DEAD_LETTER_EXPIRED_LEASE_WITH_FENCE_SCRIPT.index('redis.call("lrem", processing_key')
 
 
 @pytest.mark.asyncio
@@ -1255,7 +1286,7 @@ async def test_lease_run_moves_valid_payload_to_processing(monkeypatch):
         return fake
 
     monkeypatch.setattr("app.queue.get_redis", get_redis)
-    monkeypatch.setattr("app.queue._now", lambda: 100.0)
+    monkeypatch.setattr("app.queue._now", lambda: 999_999_999_999.0)
 
     message = await queue.lease_run(timeout_seconds=3, worker_id="worker-a")
 
@@ -2664,7 +2695,7 @@ async def test_heartbeat_updates_processing_meta_and_worker(monkeypatch):
         return fake
 
     monkeypatch.setattr("app.queue.get_redis", get_redis)
-    monkeypatch.setattr("app.queue._now", lambda: 100.0)
+    monkeypatch.setattr("app.queue._now", lambda: 999_999_999_999.0)
 
     heartbeat = await queue.heartbeat_run(handle, worker_id="worker-a")
 
@@ -2680,7 +2711,7 @@ async def test_heartbeat_updates_processing_meta_and_worker(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_never_regresses_lease_or_worker_timestamps(monkeypatch):
+async def test_heartbeat_repairs_future_lease_and_worker_timestamps(monkeypatch):
     raw = payload_json()
     message_id, _, _, handle, metadata = lease_identity(raw, worker_id="worker-a")
     metadata["leased_at"] = 150.0
@@ -2688,18 +2719,21 @@ async def test_heartbeat_never_regresses_lease_or_worker_timestamps(monkeypatch)
     fake = FakeRedis(
         meta={message_id: json.dumps(metadata)},
         workers={"worker-a": "250.0"},
+        server_time=100.0,
     )
     monkeypatch.setattr("app.queue.get_redis", lambda: _async_value(fake))
-    monkeypatch.setattr("app.queue._now", lambda: 199.0)
+    monkeypatch.setattr("app.queue._now", lambda: 999_999_999_999.0)
 
     heartbeat = await queue.heartbeat_run(handle, worker_id="worker-a")
 
     assert heartbeat == queue.QueueHeartbeatOutcome(
         status="heartbeat",
-        heartbeat_at=200.0,
+        heartbeat_at=100.0,
     )
-    assert json.loads(fake.meta[message_id])["heartbeat_at"] == 200.0
-    assert fake.workers["worker-a"] == "250.0"
+    repaired_meta = json.loads(fake.meta[message_id])
+    assert repaired_meta["leased_at"] == 100.0
+    assert repaired_meta["heartbeat_at"] == 100.0
+    assert fake.workers["worker-a"] == "100.0"
 
 
 @pytest.mark.asyncio
@@ -2709,6 +2743,7 @@ async def test_reclaim_expired_lease_requeues_before_max_attempts(monkeypatch):
     fake = FakeRedis(
         processing=[raw],
         meta={message_id: json.dumps(metadata)},
+        server_time=20.0,
     )
 
     async def get_redis():
@@ -2736,13 +2771,14 @@ async def test_reclaimed_message_preserves_attempts_until_dead_letter(monkeypatc
         processing=[raw],
         meta={message_id: json.dumps(metadata)},
         retry={},
+        server_time=20.0,
     )
 
     async def get_redis():
         return fake
 
     monkeypatch.setattr("app.queue.get_redis", get_redis)
-    monkeypatch.setattr("app.queue._now", lambda: 25.0)
+    monkeypatch.setattr("app.queue._now", lambda: 999_999_999_999.0)
 
     first_reclaim = await queue.reclaim_expired_leases(
         visibility_timeout_seconds=10,
@@ -2753,6 +2789,7 @@ async def test_reclaimed_message_preserves_attempts_until_dead_letter(monkeypatc
     assert first_reclaim == {"reclaimed": 1, "dead_lettered": 0}
     assert json.loads(fake.retry[message_id])["attempts"] == 1
 
+    fake.server_time = 25.0
     message = await queue.lease_run(timeout_seconds=1, worker_id="worker-b")
 
     assert message is not None
@@ -2760,6 +2797,7 @@ async def test_reclaimed_message_preserves_attempts_until_dead_letter(monkeypatc
     assert message.payload[queue.QUEUE_ATTEMPT_ID_FIELD] == message.attempt_id
     assert message.attempt_id != first_attempt_id
 
+    fake.server_time = 40.0
     second_reclaim = await queue.reclaim_expired_leases(
         visibility_timeout_seconds=10,
         max_attempts=2,
@@ -2782,6 +2820,7 @@ async def test_reclaim_missing_processing_meta_counts_retry_until_dead_letter(mo
     fake = FakeRedis(
         processing=[raw],
         retry={message_id: json.dumps(metadata)},
+        server_time=20.0,
     )
 
     async def get_redis():
@@ -2806,6 +2845,7 @@ async def test_reclaim_expired_lease_dead_letters_after_max_attempts(monkeypatch
     fake = FakeRedis(
         processing=[raw],
         meta={message_id: json.dumps(metadata)},
+        server_time=20.0,
     )
 
     async def get_redis():
@@ -2818,6 +2858,36 @@ async def test_reclaim_expired_lease_dead_letters_after_max_attempts(monkeypatch
     assert result == {"reclaimed": 0, "dead_lettered": 1}
     assert fake.pushed[0][0] == queue.DEAD_LETTER_KEY
     assert json.loads(fake.pushed[0][1])["error_code"] == "lease_expired_max_attempts"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("attempts", "max_attempts"), [(1, 3), (3, 3)])
+async def test_reclaim_mutation_defers_lease_refreshed_on_redis_clock(
+    monkeypatch,
+    attempts,
+    max_attempts,
+):
+    raw = payload_json()
+    message_id, _, _, _, metadata = lease_identity(raw, attempts=attempts)
+    fake = FakeRedis(
+        processing=[raw],
+        meta={message_id: json.dumps(metadata)},
+        server_time=5.0,
+    )
+    monkeypatch.setattr("app.queue.get_redis", lambda: _async_value(fake))
+
+    result = await queue.reclaim_expired_leases(
+        visibility_timeout_seconds=10,
+        max_attempts=max_attempts,
+        now=20.0,
+    )
+
+    assert result == {"reclaimed": 0, "dead_lettered": 0}
+    assert fake.processing == [raw]
+    assert fake.meta[message_id]
+    assert fake.queued == []
+    assert fake.pushed == []
+    assert fake.removed == []
 
 
 @pytest.mark.asyncio

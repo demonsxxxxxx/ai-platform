@@ -160,8 +160,15 @@ identity, worker owner, and current `owner_generation`. A Redis heartbeat whose
 PostgreSQL write or commit fails stops worker execution and is not treated as
 durable success: the worker does not acknowledge or fail the queue message, and
 the Redis-only extension remains bounded by the visibility window. Redis and
-PostgreSQL timestamps are monotonic, so an out-of-order heartbeat cannot move
-either authority backward. Stale-run recovery moves the exact open attempt into
+PostgreSQL share the exact heartbeat value returned by the Redis authority.
+Lease acquisition, heartbeat refresh, and the final reclaim decision use Redis
+server time. A heartbeat normalizes future-skewed Redis lease and worker activity
+timestamps, while PostgreSQL continues to reject durable timestamp regression.
+The reclaim mutation atomically rechecks lease identity, reconciliation fence,
+and visibility expiry against that same Redis clock before changing queue state;
+the caller clock is only a scan hint. Deployment preflight must identify any
+future-dated durable PostgreSQL rows because the database invariant intentionally
+does not move them backward. Stale-run recovery moves the exact open attempt into
 reconciler-owned `expired` or `cancel_requested` before terminal drain, and
 permission, executor, and multi-agent maintenance writers mirror the exact
 terminal attempt in the same transaction. Callback and Redis reclaim paths still
