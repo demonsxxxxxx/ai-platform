@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 OBJECT_DELETE_LEGACY_ENV_SUPPORTED_UNTIL = "2026-10-31"
+DIRECT_OPENSANDBOX_NETWORK_NAME = "ai-platform-opensandbox-egress-internal-v1"
 
 
 class Settings(BaseSettings):
@@ -75,7 +76,9 @@ class Settings(BaseSettings):
     opensandbox_egress_proxy_url: str = Field(default="http://host.docker.internal:18043")
     sandbox_runtime_subject: str = Field(default="")
     opensandbox_executor_image_digest: str = Field(default="")
-    opensandbox_expected_network_mode: Literal["none", "bridge"] = Field(default="bridge")
+    opensandbox_expected_network_mode: Literal[
+        "none", "bridge", "ai-platform-opensandbox-egress-internal-v1"
+    ] = Field(default="bridge")
     sandbox_max_active_ephemeral_containers: int = Field(default=2)
     sandbox_max_active_persistent_containers: int = Field(default=1)
     max_active_runs_per_user: int = Field(default=3)
@@ -333,7 +336,7 @@ class Settings(BaseSettings):
         if self.deployment_environment == "production" and self.sandbox_container_provider == "opensandbox":
             if self.sandbox_security_profile != "governed":
                 raise ValueError("production_opensandbox_profile_invalid")
-            if self.opensandbox_expected_network_mode != "bridge":
+            if self.opensandbox_expected_network_mode != DIRECT_OPENSANDBOX_NETWORK_NAME:
                 raise ValueError("production_opensandbox_network_mode_invalid")
             if not self.opensandbox_use_server_proxy:
                 raise ValueError("production_opensandbox_server_proxy_required")

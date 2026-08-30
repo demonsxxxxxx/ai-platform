@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import shlex
+import shutil
+import socket
+import subprocess
+import threading
+import time
 
+import pytest
 import yaml
 
 
@@ -15,6 +23,12 @@ COMPOSE_FILE = DEPLOY_DIR / "docker-compose.yml"
 SANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.sandbox.yml"
 OPENSANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.opensandbox.yml"
 OPENSANDBOX_EGRESS_TEMPLATE = DEPLOY_DIR / "opensandbox-egress-nginx.conf.template"
+OPENSANDBOX_NETWORK_GUARD_SERVICE = Path(
+    "deploy/opensandbox/ai-platform-opensandbox-network-guard.service"
+)
+OPENSANDBOX_PRODUCTION_SERVICE = Path(
+    "deploy/opensandbox/opensandbox-production.service"
+)
 ENV_EXAMPLE_FILE = DEPLOY_DIR / ".env.example"
 REPOSITORY_DEPLOY_ENV = "${PROJECT_DIR}/deploy/ai-platform/.env"
 
@@ -479,9 +493,12 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
         assert environment["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
         assert environment["SANDBOX_SECURITY_PROFILE"] == "governed"
         assert environment["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
-        assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == "bridge"
-        assert environment["OPENSANDBOX_EGRESS_PROXY_URL"].startswith("${")
-        assert ":?set " in environment["OPENSANDBOX_EGRESS_PROXY_URL"]
+        assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == (
+            "ai-platform-opensandbox-egress-internal-v1"
+        )
+        assert environment["OPENSANDBOX_EGRESS_PROXY_URL"] == (
+            "http://egress.opensandbox.internal:8080"
+        )
         for required in (
             "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
             "OPENSANDBOX_BASE_URL",
@@ -493,10 +510,28 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
             assert ":?set " in environment[required]
 
     proxy = overlay["services"]["opensandbox-egress-proxy"]
-    assert proxy["ports"] == [
-        "${OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS:?set OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS}:${OPENSANDBOX_EGRESS_PROXY_PORT:-18043}:8080"
-    ]
+    assert "ports" not in proxy
+    assert proxy["networks"] == {
+        "default": None,
+        "opensandbox_egress_internal_v1": {
+            "aliases": ["egress.opensandbox.internal"],
+            "ipv4_address": "172.31.75.2",
+        },
+    }
     assert proxy["labels"]["ai-platform.release-role"] == "opensandbox-egress-proxy"
+    assert overlay["networks"] == {
+        "opensandbox_egress_internal_v1": {
+            "name": "ai-platform-opensandbox-egress-internal-v1",
+            "driver": "bridge",
+            "internal": True,
+            "driver_opts": {
+                "com.docker.network.bridge.name": "br-osb-egress",
+                "com.docker.network.bridge.enable_ip_masquerade": "false",
+                "com.docker.network.bridge.enable_icc": "false",
+            },
+            "ipam": {"config": [{"subnet": "172.31.75.0/24"}]},
+        }
+    }
     assert set(overlay["services"]) == {
         "api",
         "worker",
@@ -516,9 +551,283 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
         ]
     for service_name in ("postgres", "redis", "minio"):
         assert overlay["services"][service_name]["ports"] == []
+    assert "OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS" not in env_example
+    assert "OPENSANDBOX_EGRESS_PROXY_URL=http://egress.opensandbox.internal:8080" in env_example
     assert "SANDBOX_SECURITY_PROFILE=governed" in env_example
     assert "trusted_internal" not in env_example
     assert "OPENSANDBOX_TRUSTED_INTERNAL_" not in env_example
+
+    guard = OPENSANDBOX_NETWORK_GUARD_SERVICE.read_text(encoding="utf-8")
+    assert "Before=docker.service opensandbox.service" in guard
+    assert "RequiredBy=docker.service opensandbox.service" in guard
+    assert "-I INPUT 1 -i br-osb-egress -j AI_PLATFORM_OPENSANDBOX" in guard
+    assert (
+        "-A AI_PLATFORM_OPENSANDBOX -m conntrack --ctstate "
+        "RELATED,ESTABLISHED -j ACCEPT"
+    ) in guard
+    assert "-A AI_PLATFORM_OPENSANDBOX -j DROP" in guard
+    assert (
+        "-I DOCKER-USER 1 -i br-osb-egress -o br-osb-egress "
+        "-j AI_PLATFORM_OSB_FORWARD"
+    ) in guard
+    assert "-d 172.31.75.2/32" in guard
+    assert "--dport 8080" in guard
+    assert "-A AI_PLATFORM_OSB_FORWARD -j DROP" in guard
+
+    server_unit = OPENSANDBOX_PRODUCTION_SERVICE.read_text(encoding="utf-8")
+    assert "tomllib" in server_unit
+    assert "/etc/ai-platform/opensandbox/server.toml" in server_unit
+    assert "host == expected" in server_unit
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or os.environ.get("GITHUB_ACTIONS") != "true",
+    reason="requires the Docker-capable GitHub Linux runner",
+)
+def test_opensandbox_network_guard_enforces_proxy_only_connectivity():
+    def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            command,
+            check=check,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    for executable in ("docker", "sudo", "ip"):
+        assert shutil.which(executable), f"required executable is unavailable: {executable}"
+    assert Path("/usr/sbin/iptables").is_file()
+    run(["sudo", "-n", "true"])
+    run(["docker", "info"])
+
+    network = "ai-platform-opensandbox-egress-internal-v1"
+    bridge = "br-osb-egress"
+    chains = ("AI_PLATFORM_OPENSANDBOX", "AI_PLATFORM_OSB_FORWARD")
+    assert run(["docker", "network", "inspect", network], check=False).returncode != 0
+    assert run(["ip", "link", "show", "dev", bridge], check=False).returncode != 0
+    for chain in chains:
+        assert (
+            run(
+                ["sudo", "-n", "/usr/sbin/iptables", "-S", chain],
+                check=False,
+            ).returncode
+            != 0
+        )
+
+    suffix = str(os.getpid())
+    proxy = f"ai-platform-osb-guard-proxy-{suffix}"
+    peer = f"ai-platform-osb-guard-peer-{suffix}"
+    client = f"ai-platform-osb-guard-client-{suffix}"
+    containers = (proxy, peer, client)
+    network_created = False
+    guard_owned = False
+    listener: socket.socket | None = None
+    listener_thread: threading.Thread | None = None
+    stop_listener = threading.Event()
+
+    try:
+        run(
+            [
+                "docker",
+                "network",
+                "create",
+                "--driver",
+                "bridge",
+                "--internal",
+                "--subnet",
+                "172.31.75.0/24",
+                "--opt",
+                "com.docker.network.bridge.name=br-osb-egress",
+                "--opt",
+                "com.docker.network.bridge.enable_ip_masquerade=false",
+                "--opt",
+                "com.docker.network.bridge.enable_icc=false",
+                network,
+            ]
+        )
+        network_created = True
+        run(["docker", "pull", "redis:7.4-alpine"])
+        for name, address, port in (
+            (proxy, "172.31.75.2", "8080"),
+            (peer, "172.31.75.3", "9090"),
+        ):
+            run(
+                [
+                    "docker",
+                    "run",
+                    "--detach",
+                    "--name",
+                    name,
+                    "--network",
+                    network,
+                    "--ip",
+                    address,
+                    "redis:7.4-alpine",
+                    "sh",
+                    "-c",
+                    f"while true; do nc -l -p {port} >/dev/null 2>&1; done",
+                ]
+            )
+        run(
+            [
+                "docker",
+                "run",
+                "--detach",
+                "--name",
+                client,
+                "--network",
+                network,
+                "--ip",
+                "172.31.75.4",
+                "redis:7.4-alpine",
+                "sh",
+                "-c",
+                "while true; do sleep 3600; done",
+            ]
+        )
+
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("172.31.75.1", 18080))
+        listener.listen()
+        listener.settimeout(0.2)
+
+        def accept_host_connections() -> None:
+            assert listener is not None
+            while not stop_listener.is_set():
+                try:
+                    connection, _ = listener.accept()
+                except TimeoutError:
+                    continue
+                except OSError:
+                    if stop_listener.is_set():
+                        return
+                    raise
+                connection.close()
+
+        listener_thread = threading.Thread(target=accept_host_connections, daemon=True)
+        listener_thread.start()
+
+        deadline = time.monotonic() + 15
+        for address, port in (("172.31.75.2", 8080), ("172.31.75.3", 9090)):
+            while True:
+                try:
+                    with socket.create_connection((address, port), timeout=1):
+                        break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.1)
+
+        unit_lines = OPENSANDBOX_NETWORK_GUARD_SERVICE.read_text(
+            encoding="utf-8"
+        ).splitlines()
+        environment = {
+            key: value
+            for line in unit_lines
+            if line.startswith("Environment=")
+            for key, value in (shlex.split(line.removeprefix("Environment="))[0].split("=", 1),)
+        }
+        guard_commands = [
+            shlex.split(line.removeprefix("ExecStart="))
+            for line in unit_lines
+            if line.startswith("ExecStart=")
+        ]
+        assert guard_commands
+        guard_owned = True
+        for command in guard_commands:
+            ignore_failure = command[0].startswith("-")
+            if ignore_failure:
+                command[0] = command[0][1:]
+            expanded = [
+                next(
+                    (
+                        token.replace(f"${{{key}}}", value)
+                        for key, value in environment.items()
+                        if f"${{{key}}}" in token
+                    ),
+                    token,
+                )
+                for token in command
+            ]
+            assert expanded[0] == "/usr/sbin/iptables"
+            run(["sudo", "-n", *expanded], check=not ignore_failure)
+
+        assert (
+            run(
+                [
+                    "docker",
+                    "exec",
+                    client,
+                    "nc",
+                    "-z",
+                    "-w",
+                    "2",
+                    "172.31.75.2",
+                    "8080",
+                ],
+                check=False,
+            ).returncode
+            == 0
+        )
+        assert (
+            run(
+                [
+                    "docker",
+                    "exec",
+                    client,
+                    "nc",
+                    "-z",
+                    "-w",
+                    "2",
+                    "172.31.75.3",
+                    "9090",
+                ],
+                check=False,
+            ).returncode
+            != 0
+        )
+        assert (
+            run(
+                [
+                    "docker",
+                    "exec",
+                    client,
+                    "nc",
+                    "-z",
+                    "-w",
+                    "2",
+                    "172.31.75.1",
+                    "18080",
+                ],
+                check=False,
+            ).returncode
+            != 0
+        )
+        with socket.create_connection(("172.31.75.3", 9090), timeout=2):
+            pass
+    finally:
+        stop_listener.set()
+        if listener is not None:
+            listener.close()
+        if listener_thread is not None:
+            listener_thread.join(timeout=2)
+        if guard_owned:
+            for command in (
+                ["-D", "INPUT", "-i", bridge, "-j", chains[0]],
+                ["-D", "DOCKER-USER", "-i", bridge, "-o", bridge, "-j", chains[1]],
+                ["-F", chains[0]],
+                ["-X", chains[0]],
+                ["-F", chains[1]],
+                ["-X", chains[1]],
+            ):
+                run(
+                    ["sudo", "-n", "/usr/sbin/iptables", *command],
+                    check=False,
+                )
+        run(["docker", "rm", "--force", *containers], check=False)
+        if network_created:
+            run(["docker", "network", "rm", network], check=False)
 
 
 def test_opensandbox_egress_proxy_preserves_existing_model_and_callback_authorities():
@@ -581,7 +890,9 @@ def test_env_example_documents_sandbox_egress_policy_defaults():
     assert direct_text.count("SANDBOX_CONTAINER_PROVIDER: opensandbox") == 2
     assert direct_text.count("SANDBOX_SECURITY_PROFILE: governed") == 2
     assert direct_text.count('OPENSANDBOX_USE_SERVER_PROXY: "true"') == 2
-    assert direct_text.count("OPENSANDBOX_EXPECTED_NETWORK_MODE: bridge") == 2
+    assert direct_text.count(
+        "OPENSANDBOX_EXPECTED_NETWORK_MODE: ai-platform-opensandbox-egress-internal-v1"
+    ) == 2
     assert direct_text.count("      OPENSANDBOX_EGRESS_PROXY_URL:") == 2
 
 

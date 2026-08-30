@@ -1019,8 +1019,8 @@ class OpenSandboxSettings:
     opensandbox_allowed_egress_hosts = ""
     sandbox_runtime_subject = "runtime-subject-a"
     opensandbox_base_url = "http://172.19.0.1:8080"
-    opensandbox_egress_proxy_url = "https://172.18.0.1:18443"
-    opensandbox_expected_network_mode = "bridge"
+    opensandbox_egress_proxy_url = "http://egress.opensandbox.internal:8080"
+    opensandbox_expected_network_mode = "ai-platform-opensandbox-egress-internal-v1"
     opensandbox_executor_image_digest = "sha256:" + "a" * 64
 
 
@@ -1058,18 +1058,18 @@ async def test_opensandbox_provider_rejects_direct_mode_without_server_proxy(
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_production_network_policy_requires_literal_separate_addresses(monkeypatch):
+async def test_opensandbox_production_requires_the_isolated_network(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
 
-    class HostnameLifecycleSettings(OpenSandboxSettings):
-        opensandbox_base_url = "http://opensandbox.internal:8080"
+    class BridgeSettings(OpenSandboxSettings):
+        opensandbox_expected_network_mode = "bridge"
 
-    monkeypatch.setattr(container_provider, "get_settings", lambda: HostnameLifecycleSettings())
+    monkeypatch.setattr(container_provider, "get_settings", lambda: BridgeSettings())
 
     with pytest.raises(
         container_provider.OpenSandboxCapabilityAdmissionError,
-        match="egress proxy configuration is invalid",
+        match="isolated network is required",
     ):
         await opensandbox_provider().create_or_reuse(request(), workspace())
 
@@ -3892,10 +3892,7 @@ async def test_opensandbox_provider_maps_lease_and_platform_controls(monkeypatch
     assert created["env"]["AI_PLATFORM_RUN_ID"] == "run-a"
     assert created["resource"] == {"cpu": "2", "memory": "512Mi", "pids": "64"}
     assert created["volumes"] == []
-    assert created["network_policy"].kwargs["defaultAction"] == "deny"
-    assert [(rule.action, rule.target) for rule in created["network_policy"].kwargs["egress"]] == [
-        ("allow", "172.18.0.1")
-    ]
+    assert created["network_policy"] is None
 
     sandbox = FakeOpenSandbox.instances["osb-run-a"]
     assert sandbox.files.written == []

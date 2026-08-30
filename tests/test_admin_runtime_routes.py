@@ -77,8 +77,10 @@ def signed_runtime_lease(
         callback_subject="http://api.sandbox.internal:8020",
         denial_subject="network-a:default-deny" if provider == "docker" else "deny-a",
         network_id="network-a" if provider == "docker" else "profile-a",
-        network_name="ai-platform-sandbox-egress-internal-v1" if provider == "docker" else "opensandbox-a",
-        network_internal=provider == "docker",
+        network_name="ai-platform-sandbox-egress-internal-v1"
+        if provider == "docker"
+        else "ai-platform-opensandbox-egress-internal-v1",
+        network_internal=True,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
         user_id=user_id,

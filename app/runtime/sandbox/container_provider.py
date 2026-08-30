@@ -116,6 +116,7 @@ from app.runtime.sandbox.providers.opensandbox import metadata as opensandbox_me
 from app.runtime.sandbox.opensandbox_policy import (
     DIRECT_OPENSANDBOX_CALLBACK_SUBJECT,
     DIRECT_OPENSANDBOX_DENIAL_SUBJECT,
+    DIRECT_OPENSANDBOX_NETWORK_NAME,
     DIRECT_OPENSANDBOX_POLICY_SUBJECT,
     DIRECT_OPENSANDBOX_PROFILE_ID,
     SANDBOX_SECURITY_PROFILE_GOVERNED,
@@ -1170,8 +1171,11 @@ def _opensandbox_governed_denial_subject(deny_audit_subject: str, deny_counter_s
 def _require_direct_opensandbox_settings(settings: Any) -> None:
     if not bool(getattr(settings, "opensandbox_use_server_proxy", False)):
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox server proxy is required")
-    if str(getattr(settings, "opensandbox_expected_network_mode", "") or "") != "bridge":
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox network mode must be bridge")
+    if (
+        str(getattr(settings, "opensandbox_expected_network_mode", "") or "")
+        != DIRECT_OPENSANDBOX_NETWORK_NAME
+    ):
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox isolated network is required")
     if getattr(settings, "sandbox_egress_policy_enabled", False) is not True:
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox egress policy is required")
     for name in ("opensandbox_base_url", "opensandbox_api_key", "opensandbox_egress_proxy_url"):
@@ -1232,7 +1236,7 @@ def _opensandbox_governed_egress_binding(
             configuration["deny_counter_subject"],
         ),
         "network_id": configuration["profile_id"],
-        "network_name": configuration["endpoint"],
+        "network_name": configuration["network_mode"],
         "tenant_id": request.tenant_id,
         "workspace_id": request.workspace_id,
         "user_id": request.user_id,
@@ -1262,7 +1266,7 @@ def _direct_opensandbox_egress_proof(
     return build_governed_egress_proof(
         signing_key=getattr(settings, "sandbox_egress_proof_signing_key", ""),
         provider="opensandbox",
-        network_internal=False,
+        network_internal=True,
         key_id=_governed_egress_proof_key_id(settings),
         issued_at=issued_at,
         expires_at=issued_at + timedelta(seconds=GOVERNED_EGRESS_PROOF_MAX_TTL_SECONDS),
@@ -1428,52 +1432,15 @@ def _ensure_opensandbox_configuration_still_valid(settings: Any) -> None:
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox runtime subject is unavailable")
 
 
-def _callback_policy_host(settings: Any) -> str:
-    callback_host = str(getattr(settings, "sandbox_callback_host_gateway", "") or "").strip()
-    if callback_host:
-        return callback_host
-    try:
-        return _trusted_callback_target(settings).host
-    except CallbackTargetValidationError:
-        return ""
+def _opensandbox_network_policy(
+    settings: Any,
+    network_policy_class: Any,
+    network_rule_class: Any,
+) -> None:
+    """The governed OpenSandbox contour enforces egress at its Docker network boundary."""
 
-
-def _split_csv(value: object) -> list[str]:
-    return [item.strip() for item in str(value or "").split(",") if item.strip()]
-
-
-def _opensandbox_network_policy(settings: Any, network_policy_class: Any, network_rule_class: Any) -> Any | None:
-    if getattr(settings, "sandbox_egress_policy_enabled", False) is not True:
-        return None
-    if str(getattr(settings, "sandbox_container_provider", "") or "").strip().lower() == "opensandbox":
-        try:
-            parsed_proxy = urlsplit(str(getattr(settings, "opensandbox_egress_proxy_url", "") or "").strip())
-            proxy_host = parsed_proxy.hostname or ""
-            parsed_proxy.port
-            lifecycle_host = urlsplit(str(getattr(settings, "opensandbox_base_url", "") or "").strip()).hostname or ""
-            same_destination = proxy_host == lifecycle_host
-            if not _is_internal_test_opensandbox(settings):
-                same_destination = ipaddress.ip_address(proxy_host) == ipaddress.ip_address(lifecycle_host)
-        except ValueError as exc:
-            raise OpenSandboxCapabilityAdmissionError("OpenSandbox egress proxy configuration is invalid") from exc
-        if (
-            parsed_proxy.scheme not in {"http", "https"}
-            or not proxy_host
-            or not lifecycle_host
-            or same_destination
-            or parsed_proxy.username
-            or parsed_proxy.password
-        ):
-            raise OpenSandboxCapabilityAdmissionError("OpenSandbox egress proxy configuration is invalid")
-        allowed_hosts = [proxy_host]
-    else:
-        allowed_hosts = []
-        callback_host = _callback_policy_host(settings)
-        if callback_host:
-            allowed_hosts.append(callback_host)
-        allowed_hosts.extend(_split_csv(getattr(settings, "opensandbox_allowed_egress_hosts", "")))
-    rules = [network_rule_class(action="allow", target=host) for host in dict.fromkeys(allowed_hosts)]
-    return network_policy_class(defaultAction="deny", egress=rules)
+    del settings, network_policy_class, network_rule_class
+    return None
 
 
 def _opensandbox_volumes(

@@ -48,7 +48,6 @@ SERVER_STATE_ROOT = Path("/var/lib/ai-platform-opensandbox")
 PLATFORM_WORKSPACE_ROOT = MANAGED_ROOT / "runtime-workspaces"
 PLATFORM_WORKSPACE_UID = 10001
 PLATFORM_WORKSPACE_GID = 10001
-LIFECYCLE_NETWORK = "ai-platform-opensandbox-lifecycle"
 SERVER_CONTAINER = "ai-platform-opensandbox-server"
 DOCKER = ("docker", "--context", "default")
 SYSTEMD = ("systemctl",)
@@ -72,14 +71,12 @@ SERVER_ENV_KEYS = frozenset(
         "OPENSANDBOX_SERVER_GID",
         "OPENSANDBOX_DOCKER_SOCKET_GID",
         "OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS",
-        "OPENSANDBOX_EGRESS_LISTEN_ADDRESS",
     }
 )
 APPLICATION_HOST_KEYS = frozenset(
     {
         "OPENSANDBOX_BASE_URL",
         "OPENSANDBOX_API_KEY",
-        "OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS",
     }
 )
 EXPECTED_PROJECT_MEMBERSHIP = {
@@ -112,7 +109,6 @@ class OpenSandboxHostConfig:
     server_gid: int
     docker_socket_gid: int
     lifecycle_address: str
-    egress_address: str
     api_key_sha256: str
     config_sha256: str
 
@@ -349,12 +345,6 @@ def load_opensandbox_host_config(
         environment["OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS"],
         "OpenSandbox lifecycle address",
     )
-    egress = _private_ipv4(
-        environment["OPENSANDBOX_EGRESS_LISTEN_ADDRESS"],
-        "OpenSandbox egress address",
-    )
-    if lifecycle == egress:
-        raise BootstrapError("OpenSandbox lifecycle and egress addresses must differ")
 
     raw_config = _read_secure_text(
         config_file,
@@ -455,7 +445,7 @@ def load_opensandbox_host_config(
     }
     drop_capabilities = docker.get("drop_capabilities")
     valid = (
-        server.get("host") == "0.0.0.0"
+        server.get("host") == str(lifecycle)
         and server.get("port") == 8080
         and isinstance(api_key, str)
         and API_KEY_RE.fullmatch(api_key) is not None
@@ -467,7 +457,8 @@ def load_opensandbox_host_config(
         and storage.get("volume_default_size") == "1Gi"
         and store.get("type") == "sqlite"
         and store.get("path") == str(SERVER_STATE_ROOT / "opensandbox.db")
-        and docker.get("network_mode") == "bridge"
+        and docker.get("network_mode")
+        == authority.DIRECT_OPENSANDBOX_NETWORK_NAME
         and docker.get("host_ip") == str(lifecycle)
         and docker.get("no_new_privileges") is True
         and isinstance(docker.get("pids_limit"), int)
@@ -508,7 +499,6 @@ def load_opensandbox_host_config(
         server_gid=server_gid,
         docker_socket_gid=socket_gid,
         lifecycle_address=str(lifecycle),
-        egress_address=str(egress),
         api_key_sha256=hashlib.sha256(api_key.encode("utf-8")).hexdigest(),
         config_sha256=hashlib.sha256(canonical_config.encode("utf-8")).hexdigest(),
     )
@@ -574,7 +564,6 @@ def _require_application_host_contract(
         valid_lifecycle = False
     if (
         not valid_lifecycle
-        or values["OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS"] != config.egress_address
         or hashlib.sha256(values["OPENSANDBOX_API_KEY"].encode("utf-8")).hexdigest()
         != config.api_key_sha256
     ):
@@ -658,60 +647,6 @@ def _require_docker_prerequisites(runner: Runner) -> None:
     )
     if not isinstance(runtimes, dict) or "runsc" not in runtimes:
         raise BootstrapError("Docker runsc runtime is unavailable")
-
-
-def _ensure_lifecycle_network(runner: Runner) -> None:
-    result = runner.run(
-        [*DOCKER, "network", "inspect", LIFECYCLE_NETWORK],
-        output=True,
-        check=False,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        runner.run(
-            [
-                *DOCKER,
-                "network",
-                "create",
-                "--driver",
-                "bridge",
-                "--label",
-                "ai-platform.release-owner=production-bootstrap",
-                LIFECYCLE_NETWORK,
-            ],
-            timeout=30,
-        )
-        result = runner.run(
-            [*DOCKER, "network", "inspect", LIFECYCLE_NETWORK],
-            output=True,
-            timeout=30,
-        )
-    payload = _docker_json(result, "OpenSandbox lifecycle network")
-    network = payload[0] if isinstance(payload, list) and len(payload) == 1 else None
-    labels = network.get("Labels") if isinstance(network, dict) else None
-    endpoints = network.get("Containers") if isinstance(network, dict) else None
-    endpoint_names = (
-        {
-            value.get("Name")
-            for value in endpoints.values()
-            if isinstance(value, dict) and isinstance(value.get("Name"), str)
-        }
-        if isinstance(endpoints, dict)
-        else set()
-    )
-    if (
-        not isinstance(network, dict)
-        or network.get("Name") != LIFECYCLE_NETWORK
-        or network.get("Driver") != "bridge"
-        or network.get("Scope") != "local"
-        or network.get("Internal") is not False
-        or not isinstance(labels, dict)
-        or labels.get("ai-platform.release-owner") != "production-bootstrap"
-        or not isinstance(endpoints, dict)
-        or len(endpoint_names) != len(endpoints)
-        or not endpoint_names <= {SERVER_CONTAINER}
-    ):
-        raise BootstrapError("OpenSandbox lifecycle network is invalid")
 
 
 def _render_unit(template_path: Path, commit: str, config_sha256: str) -> str:
@@ -975,19 +910,8 @@ def _validate_server_container(
     container_config = container.get("Config")
     host_config = container.get("HostConfig")
     state = container.get("State")
-    network_settings = container.get("NetworkSettings")
-    networks = (
-        network_settings.get("Networks") if isinstance(network_settings, dict) else None
-    )
-    ports = (
-        network_settings.get("Ports") if isinstance(network_settings, dict) else None
-    )
     labels = (
         container_config.get("Labels") if isinstance(container_config, dict) else None
-    )
-    bindings = ports.get("8080/tcp") if isinstance(ports, dict) else None
-    host_bindings = (
-        host_config.get("PortBindings") if isinstance(host_config, dict) else None
     )
     mounts = container.get("Mounts")
     mount_records = (
@@ -1029,13 +953,6 @@ def _validate_server_container(
         and {"rw", "noexec", "nosuid", "nodev"} <= tmp_options
         and bool({"size=64m", "size=67108864"} & tmp_options)
     )
-    valid_binding = (
-        isinstance(bindings, list)
-        and len(bindings) == 1
-        and isinstance(bindings[0], dict)
-        and bindings[0].get("HostIp") == config.lifecycle_address
-        and bindings[0].get("HostPort") == "8080"
-    )
     if (
         not isinstance(image_id, str)
         or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None
@@ -1060,21 +977,14 @@ def _validate_server_container(
         or host_config.get("CapDrop") != ["ALL"]
         or host_config.get("SecurityOpt") != ["no-new-privileges"]
         or host_config.get("PidsLimit") != 512
-        or host_config.get("NetworkMode") != LIFECYCLE_NETWORK
+        or not authority._valid_opensandbox_server_network_topology(container)
         or str(config.docker_socket_gid) not in (host_config.get("GroupAdd") or [])
         or host_config.get("Binds") not in (None, [])
-        or not isinstance(host_bindings, dict)
-        or set(host_bindings) != {"8080/tcp"}
-        or host_bindings.get("8080/tcp") != bindings
+        or host_config.get("PortBindings") not in (None, {})
         or not valid_mounts
         or not valid_tmpfs
         or not isinstance(state, dict)
         or state.get("Running") is not True
-        or not isinstance(networks, dict)
-        or set(networks) != {LIFECYCLE_NETWORK}
-        or not isinstance(ports, dict)
-        or set(ports) != {"8080/tcp"}
-        or not valid_binding
     ):
         raise BootstrapError("OpenSandbox server runtime identity mismatch")
 
@@ -1147,10 +1057,13 @@ class HostBootstrap:
     ) -> OpenSandboxHostConfig:
         config = load_opensandbox_host_config(self.env_file, self.config_file)
         _require_host_address_available(config.lifecycle_address, "lifecycle")
-        _require_host_address_available(config.egress_address, "egress")
         if application_env_file is not None:
             _require_application_host_contract(application_env_file, config)
         _require_docker_prerequisites(self.runner)
+        try:
+            transition._require_network_guard(self.checkout)
+        except transition.TransitionError as exc:
+            raise BootstrapError("OpenSandbox host-input guard is invalid") from exc
         rendered = _render_unit(
             self.checkout / UNIT_TEMPLATE,
             commit,
@@ -1178,7 +1091,6 @@ class HostBootstrap:
             mode=0o700,
         )
         _ensure_platform_workspace()
-        _ensure_lifecycle_network(self.runner)
         for image in (config.server_image, config.execd_image, config.egress_image):
             self.runner.run([*DOCKER, "pull", image], timeout=900)
             self.runner.run([*DOCKER, "image", "inspect", image], timeout=30)

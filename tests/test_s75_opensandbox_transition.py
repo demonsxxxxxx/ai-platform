@@ -382,7 +382,11 @@ def _stub_migration(
     monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
     monkeypatch.setattr(transition, "_require_workspace_root_env", lambda path: None)
     monkeypatch.setattr(transition, "_legacy_runtime", lambda *args: runtime)
-    monkeypatch.setattr(transition, "_require_host_prerequisites", lambda: events.append("host"))
+    monkeypatch.setattr(
+        transition,
+        "_require_host_prerequisites",
+        lambda repo_root, docker: events.append("host"),
+    )
 
     def quiescent(docker):
         nonlocal quiescence_calls
@@ -803,18 +807,211 @@ def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, 
     assert events == ["down-partial-legacy", "restore-target-fenced", "target-runtime-fenced"]
 
 
-def test_host_prerequisite_defers_health_to_target_container_parity(monkeypatch):
+def test_host_prerequisite_requires_server_and_network_guard(monkeypatch, tmp_path):
     commands = []
+    checks = []
 
     def run(command, **kwargs):
         commands.append(command)
         return _completed(command)
 
     monkeypatch.setattr(transition, "_run", run)
+    monkeypatch.setattr(
+        transition,
+        "_require_opensandbox_server_profile",
+        lambda: checks.append("server-profile"),
+    )
+    monkeypatch.setattr(
+        transition,
+        "_require_opensandbox_server_container",
+        lambda docker: checks.append(("server-container", docker)),
+    )
+    monkeypatch.setattr(
+        transition,
+        "_require_network_guard",
+        lambda repo_root: checks.append(("guard", repo_root)),
+    )
 
-    transition._require_host_prerequisites()
+    transition._require_host_prerequisites(tmp_path, ["docker"])
 
-    assert commands == [["systemctl", "is-active", "--quiet", "opensandbox.service"]]
+    assert commands == [
+        ["systemctl", "is-active", "--quiet", "opensandbox.service"],
+        [
+            "systemctl",
+            "is-active",
+            "--quiet",
+            transition.OPENSANDBOX_NETWORK_GUARD_SERVICE,
+        ],
+    ]
+    assert checks == [
+        "server-profile",
+        ("server-container", ["docker"]),
+        ("guard", tmp_path),
+    ]
+
+
+def test_host_prerequisite_rejects_drifted_server_container_topology(monkeypatch):
+    container = {
+        "HostConfig": {"NetworkMode": "host", "PortBindings": {}},
+        "NetworkSettings": {
+            "Networks": {"host": {}},
+            "Ports": {"8080/tcp": None},
+        },
+    }
+    monkeypatch.setattr(transition, "_docker_json", lambda *args: [container])
+    transition._require_opensandbox_server_container(["docker"])
+
+    container["HostConfig"]["NetworkMode"] = "bridge"
+    with pytest.raises(transition.TransitionError, match="container topology"):
+        transition._require_opensandbox_server_container(["docker"])
+    container["HostConfig"]["NetworkMode"] = "host"
+    container["NetworkSettings"]["Ports"]["8080/tcp"] = [
+        {"HostIp": "0.0.0.0", "HostPort": "8080"}
+    ]
+    with pytest.raises(transition.TransitionError, match="container topology"):
+        transition._require_opensandbox_server_container(["docker"])
+
+
+def test_opensandbox_server_profile_requires_root_owned_runsc_on_the_isolated_network(
+    monkeypatch,
+    tmp_path,
+):
+    config = tmp_path / "server.toml"
+    config.write_text(
+        "[server]\nhost = \"10.56.1.75\"\nport = 8080\n"
+        "[runtime]\ntype = \"docker\"\n"
+        "[docker]\nnetwork_mode = \"ai-platform-opensandbox-egress-internal-v1\"\n"
+        "host_ip = \"10.56.1.75\"\n"
+        "no_new_privileges = true\n"
+        "[secure_runtime]\ntype = \"gvisor\"\ndocker_runtime = \"runsc\"\n",
+        encoding="utf-8",
+    )
+    real_lstat = Path.lstat
+    mode = [0o640]
+
+    def root_owned_lstat(path):
+        if path == config:
+            return SimpleNamespace(st_mode=stat.S_IFREG | mode[0], st_uid=0)
+        return real_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", root_owned_lstat)
+    transition._require_opensandbox_server_profile(config)
+
+    mode[0] = 0o660
+    with pytest.raises(transition.TransitionError, match="configuration is invalid"):
+        transition._require_opensandbox_server_profile(config)
+    mode[0] = 0o640
+
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "ai-platform-opensandbox-egress-internal-v1", "bridge"
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(transition.TransitionError, match="isolation profile"):
+        transition._require_opensandbox_server_profile(config)
+
+
+def test_network_guard_requires_the_exact_root_owned_unit_and_first_input_jump(
+    monkeypatch,
+    tmp_path,
+):
+    repo_root = tmp_path / "repo"
+    source = repo_root / transition.OPENSANDBOX_NETWORK_GUARD_SOURCE
+    source.parent.mkdir(parents=True)
+    source.write_text("unit-authority\n", encoding="utf-8")
+    installed = tmp_path / "installed.service"
+    installed.write_bytes(source.read_bytes())
+    real_lstat = Path.lstat
+
+    def root_owned_lstat(path):
+        if path == installed:
+            return SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_uid=0)
+        return real_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", root_owned_lstat)
+    valid = (
+        "-A INPUT -i br-osb-egress -j AI_PLATFORM_OPENSANDBOX\n"
+        "-A AI_PLATFORM_OPENSANDBOX -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\n"
+        "-A AI_PLATFORM_OPENSANDBOX -j DROP\n"
+        "-A DOCKER-USER -i br-osb-egress -o br-osb-egress -j AI_PLATFORM_OSB_FORWARD\n"
+        "-A AI_PLATFORM_OSB_FORWARD -d 172.31.75.2/32 -p tcp -m tcp --dport 8080 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT\n"
+        "-A AI_PLATFORM_OSB_FORWARD -s 172.31.75.2/32 -p tcp -m tcp --sport 8080 -m conntrack --ctstate ESTABLISHED -j ACCEPT\n"
+        "-A AI_PLATFORM_OSB_FORWARD -j DROP\n"
+    )
+    monkeypatch.setattr(
+        transition,
+        "_run",
+        lambda command: _completed(command, stdout=valid),
+    )
+    transition._require_network_guard(repo_root, installed)
+
+    installed.write_text("different\n", encoding="utf-8")
+    with pytest.raises(transition.TransitionError, match="guard unit"):
+        transition._require_network_guard(repo_root, installed)
+    installed.write_bytes(source.read_bytes())
+
+    monkeypatch.setattr(
+        transition,
+        "_run",
+        lambda command: _completed(
+            command,
+            stdout="-A INPUT -j ACCEPT\n" + valid,
+        ),
+    )
+    with pytest.raises(transition.TransitionError, match="network guard"):
+        transition._require_network_guard(repo_root, installed)
+
+    monkeypatch.setattr(
+        transition,
+        "_run",
+        lambda command: _completed(
+            command,
+            stdout=valid.replace(
+                "-A DOCKER-USER -i br-osb-egress -o br-osb-egress "
+                "-j AI_PLATFORM_OSB_FORWARD\n",
+                "",
+            ),
+        ),
+    )
+    with pytest.raises(transition.TransitionError, match="network guard"):
+        transition._require_network_guard(repo_root, installed)
+
+
+def test_target_network_requires_only_the_egress_proxy(monkeypatch):
+    network = {
+        "Name": release_authority.DIRECT_OPENSANDBOX_NETWORK_NAME,
+        "Driver": "bridge",
+        "Internal": True,
+        "EnableIPv4": True,
+        "EnableIPv6": False,
+        "Options": {
+            "com.docker.network.bridge.name": release_authority.DIRECT_OPENSANDBOX_BRIDGE_NAME,
+            "com.docker.network.bridge.enable_ip_masquerade": "false",
+            "com.docker.network.bridge.enable_icc": "false",
+        },
+        "IPAM": {"Config": [{"Subnet": release_authority.DIRECT_OPENSANDBOX_SUBNET}]},
+        "Labels": {
+            "com.docker.compose.project": release_authority.COMPOSE_PROJECT,
+            "com.docker.compose.network": release_authority.DIRECT_OPENSANDBOX_NETWORK_KEY,
+        },
+        "Containers": {
+            "proxy": {
+                "Name": transition.TARGET_BROKER_CONTAINER,
+                "IPv4Address": release_authority.DIRECT_OPENSANDBOX_PROXY_IPV4 + "/24",
+            },
+        },
+    }
+    monkeypatch.setattr(transition, "_docker_json", lambda *args: [network])
+    transition._require_target_network(["docker"])
+
+    network["Containers"]["api"] = {"Name": "ai-platform-api"}
+    with pytest.raises(transition.TransitionError, match="network isolation"):
+        transition._require_target_network(["docker"])
+    network["Containers"].pop("api")
+    network["Options"]["com.docker.network.bridge.gateway_mode_ipv4"] = "isolated"
+    with pytest.raises(transition.TransitionError, match="network isolation"):
+        transition._require_target_network(["docker"])
 
 
 def test_target_parity_waits_for_platform_and_broker_startup(monkeypatch, tmp_path):
@@ -853,13 +1050,19 @@ def test_target_parity_waits_for_platform_and_broker_startup(monkeypatch, tmp_pa
 
     monkeypatch.setattr(transition, "_inspect_container", inspect)
     monkeypatch.setattr(release_authority, "converge_final_parity", converge)
+    monkeypatch.setattr(
+        transition,
+        "_require_host_prerequisites",
+        lambda repo_root, docker: checks.append("host"),
+    )
+    monkeypatch.setattr(transition, "_require_target_network", lambda docker: checks.append("network"))
     monkeypatch.setattr(transition, "_require_target_executor", lambda docker: checks.append("executor"))
     monkeypatch.setattr(transition, "_require_target_lifecycle_reachable", lambda docker: checks.append("lifecycle"))
 
     transition._require_target_parity(["docker"], tmp_path, COMMIT, docker_cmd="docker")
 
     assert attempts == [False, False, True]
-    assert checks == ["executor", "lifecycle"]
+    assert checks == ["host", "network", "executor", "lifecycle"]
 
 
 def test_target_broker_inspection_uses_parity_attempt_budget(monkeypatch):

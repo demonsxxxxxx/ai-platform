@@ -314,18 +314,32 @@ closure as separate follow-up work.
 
 The production release uses the base Compose file plus
 `docker-compose.opensandbox.yml`. API and Worker use the official
-OpenSandbox SDK directly with `OPENSANDBOX_USE_SERVER_PROXY=true`. The
-OpenSandbox Server remains an independently managed trusted host service that
-configures spawned sandbox containers to use `runsc`; its lifecycle port is
-published only on a dedicated private host address distinct from the egress
-bridge address. The server process binds its isolated service container
-internally, while Docker owns that exact host publication. Target
-parity probes `/health` from both API and Worker before migration can report
-success. Native bridge network policy permits only the distinct stateless
-egress-proxy address.
-The proxy strips sandbox credentials, forwards the callback-derived per-attempt
+OpenSandbox SDK directly with `OPENSANDBOX_USE_SERVER_PROXY=true`, but do not
+send an OpenSandbox `networkPolicy`: OpenSandbox rejects that policy when the
+secure runtime is gVisor. The independently managed trusted OpenSandbox Server
+container uses host networking so it can proxy to Executor IPs, while its
+root-owned TOML binds the HTTP listener and `docker.host_ip` to the exact private
+lifecycle address. Spawned sandboxes retain `runsc` and use Docker network
+`ai-platform-opensandbox-egress-internal-v1`. That internal bridge has IP
+masquerading and inter-container connectivity disabled, uses subnet
+`172.31.75.0/24`, and has the fixed host interface `br-osb-egress`; only the
+dual-homed `opensandbox-egress-proxy` service joins it at `172.31.75.2`, under
+alias `egress.opensandbox.internal`, and the proxy publishes no host port.
+
+The repository-owned `ai-platform-opensandbox-network-guard.service` installs
+the first host INPUT jump for `br-osb-egress`. Its exact chain accepts only
+`ESTABLISHED,RELATED` return traffic for host-initiated Server-to-executor
+connections and drops sandbox-initiated host traffic. Its first `DOCKER-USER`
+jump also permits only sandbox-to-proxy TCP `8080` traffic and its established
+replies before dropping every other same-bridge flow. This preserves Server
+proxying without exposing lifecycle, management, or other host listeners to a
+sandbox. Target parity authenticates the live Server TOML, Server host-network
+identity and listener binding, guard rule order, Docker network options and
+labels, and the egress proxy as the network's sole steady-state member. The
+proxy strips sandbox credentials, forwards the callback-derived per-attempt
 model capability, injects the internal proxy token, and forwards callbacks to
-the existing API callback-token validators. Direct-OpenSandbox releases bind the
+the existing API callback-token validators. Direct-OpenSandbox releases bind
+the
 Executor to the Packaging-qualified Backend `repository@sha256` reference and
 bind its digest field to the matching `sha256` value; target parity resolves that
 reference and requires the resulting image ID to equal the API and Worker image.
@@ -360,9 +374,9 @@ Use `deploy/opensandbox/server-production.env.example` and
 Replace every required placeholder before sealing the files. The application env must
 set `SANDBOX_WORKSPACE_ROOT=/data/ai-platform-prod/runtime-workspaces`, the
 production direct-OpenSandbox keys required by the selected overlay, and the
-same lifecycle API key, lifecycle endpoint, and egress bind address provisioned
-for the host service. Keep those three values plain and unquoted in the
-application env so the bootstrap can compare them without sourcing the file.
+same lifecycle API key and lifecycle endpoint provisioned for the host service.
+Keep those two values plain and unquoted in the application env so the bootstrap
+can compare them without sourcing the file.
 The application `OPENSANDBOX_EXECUTOR_IMAGE` is separately bound to the
 release-authority backend workload image; it is not the OpenSandbox host TOML's
 `runtime.execd_image`. Do not print, copy, source, or pass secret values on the
@@ -372,10 +386,13 @@ The server, execd, and egress sidecar references must all be immutable digests.
 Before sealing `server.env`, independently verify the exact server digest against
 an approved OpenSandbox `server/v0.1.13` or newer release; the upstream server
 image does not expose a trustworthy source-version OCI label. The reviewed TOML
-sets `docker.host_ip` to the lifecycle address, uses `dns+nft` because the only
-allowed egress target is an IP address, disables IPv6 egress, and sets
-`allowed_host_paths = []`, `sandbox_binds = []`, and `sandbox_env = {}`. This
-application transfers files through the SDK and never sends a host bind mount.
+sets `[server].host` and `docker.host_ip` to the lifecycle address, binds
+sandboxes to `ai-platform-opensandbox-egress-internal-v1`, retains `dns+nft`
+only as the pinned upstream sidecar configuration, disables IPv6 egress, and
+sets `allowed_host_paths = []`, `sandbox_binds = []`, and `sandbox_env = {}`.
+Application requests omit the incompatible OpenSandbox SDK `networkPolicy`.
+This application transfers files through the SDK and never sends a host bind
+mount.
 
 For a cold rebuild, run:
 
@@ -386,13 +403,13 @@ sudo -n ./scripts/deploy-latest.sh --profile production --latest \
 ```
 
 The controller requires root, secure canonical config metadata, Docker Compose,
-`runsc`, a distinct private lifecycle address, a distinct private egress
-address, digest-bound OpenSandbox server, execd, and egress images, and a matching
-Docker socket group. Both private addresses must already be assigned to the
-production host. It creates or validates the canonical server-state and
-platform-workspace directories and lifecycle network, installs the exact
-checkout's reviewed `opensandbox.service`, pulls its immutable images, and proves service/container
-identity plus `/health`. It then reuses the exact-main Actions and packaging
+`runsc`, one private lifecycle address, the exact active host INPUT guard from
+the target checkout, digest-bound OpenSandbox server, execd, and egress images,
+and a matching Docker socket group. The lifecycle address must already be
+assigned to the production host. It creates or validates the canonical
+server-state and platform-workspace directories, installs the exact checkout's
+reviewed `opensandbox.service`, pulls its immutable images, and proves
+service/container identity plus `/health`. It then reuses the exact-main Actions
 admission, materializes `/data/ai-platform-prod/releases/<commit>`, validates the
 production Compose semantics, and converges project `ai-platform-internal` with
 the base file plus `docker-compose.opensandbox.yml`.
@@ -401,10 +418,11 @@ Treat the OpenSandbox server as part of the trusted host control plane. The
 read-only filesystem bind for `/var/run/docker.sock` does not attenuate Docker
 API permissions: the server still has effective Docker daemon authority. The
 root-owned repository-managed unit, exact unit-to-container source label,
-container HostConfig/mount checks, and lifecycle-network ownership checks are
-the admission boundary; they do not replace application-owned runsc and
-sandbox-lifecycle acceptance. The trusted OpenSandbox server container itself
-uses the host control-plane runtime. `runsc` is selected by its governed TOML
+container host-network identity, exact private listener binding, and host INPUT
+guard are the admission boundary; they do not replace application-owned runsc
+and sandbox-lifecycle acceptance. The trusted OpenSandbox server container uses
+host networking so it can proxy to Executor container IPs, but the root-owned
+TOML binds it only to the private lifecycle address. `runsc` is selected by its
 for spawned executor/sandbox containers and must be observed on those real
 sandbox containers during acceptance. The unit's isolated guard removes the
 fixed-name server container only after verifying its immutable image reference,
@@ -472,8 +490,26 @@ consistent label set naming that same trusted Compose selection. Preserve the
 currently verified Docker release values before cutover; they are rollback
 arguments, not values to
 rediscover after a failure. The command exits before mutation when schema,
-quiescence, image, project, volume, host, or Compose preflight fails. A failure
-after the old contour stops performs one automatic rollback and exits nonzero.
+quiescence, image, project, volume, host, guard, isolated-network, or Compose
+preflight fails. A failure after the old contour stops performs one automatic
+rollback and exits nonzero.
+
+Before migration, require zero active sandboxes. Install the exact guard unit from
+the qualified checkout at
+`/etc/systemd/system/ai-platform-opensandbox-network-guard.service` only when
+the destination is absent or byte-identical; the installed file must remain
+root-owned, regular, and not group- or world-writable. A different existing unit
+is a stop condition, not overwrite authority. Enable and start that guard before
+converging the repository-managed production OpenSandbox host service. The
+sealed `/etc/ai-platform/opensandbox/server.env` and `server.toml` must satisfy
+the production bootstrap contract above: one private lifecycle address, exact
+Server listener binding, host-network Server container, fixed internal sandbox
+network, and no application SDK `networkPolicy`. Existing foreign or native
+OpenSandbox units require an explicitly approved host-maintenance replacement;
+the bootstrap never adopts or overwrites them silently. Confirm the exact guard,
+bootstrap-managed OpenSandbox unit, and `/health` before invoking the transition.
+The target migration preflight independently repeats the configuration, guard,
+and live-network checks.
 
 ```bash
 cd "$TARGET_REPO_ROOT"
@@ -494,10 +530,12 @@ services plus `opensandbox-egress-proxy` healthy, API readiness and schema check
 zero restart-count growth, exact target image/Compose parity, unchanged volume
 IDs and mounts, and a real application-owned Run that proves
 create -> execute -> collect -> delete through OpenSandbox with
-`HostConfig.Runtime=runsc`. From that sandbox, the lifecycle listener and an
-unrelated host port must both be unreachable while the egress proxy remains
-reachable. That Run must also prove model traffic through the existing
-model-control-plane proxy and callback delivery through the existing
+`HostConfig.Runtime=runsc`, no SDK `networkPolicy`, and exact membership in the
+isolated network. From that sandbox, the egress proxy must remain reachable,
+while the lifecycle listener, API, PostgreSQL, Redis, MinIO, another active
+sandbox, another host port, an unrelated private address, and a public-internet
+address must all be unreachable. That Run must also prove model traffic through
+the existing model-control-plane proxy and callback delivery through the existing
 Run/attempt callback authority. Keep admission fenced and roll back on any failed
 or missing check. After those checks pass, admit the target:
 
@@ -530,7 +568,10 @@ sudo -n python3 -B -m tools.s75_opensandbox_transition rollback \
   --docker-cmd docker
 ```
 
-Never run `migrate`, `finalize`, or `rollback` concurrently. Never use `down -v`,
+The rollback leaves the root-owned guard unit and isolated OpenSandbox Server
+profile in place; neither exposes a host listener to sandboxes, and retaining
+them keeps the next qualified migration fail-closed. Never run `migrate`,
+`finalize`, or `rollback` concurrently. Never use `down -v`,
 start a second Compose project, copy the managed environment file, or retry a
 nonzero transition before classifying its bounded result and current runtime.
 

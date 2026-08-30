@@ -30,6 +30,7 @@ rollback to an already verified direct-OpenSandbox production runtime.
 - `tests/test_deploy_latest_entry.py`
 - `tests/test_production_bootstrap.py`
 - `deploy/opensandbox/opensandbox-production.service`
+- `deploy/opensandbox/ai-platform-opensandbox-network-guard.service`
 - `deploy/opensandbox/server-production.env.example`
 - `deploy/opensandbox/server-production.toml.example`
 - `.github/workflows/ai-platform-backend.yml`
@@ -66,18 +67,27 @@ Python 3.11 or newer, Docker with Compose v2, systemd, and a registered `runsc`
 runtime are base-host prerequisites; absence fails before application Compose
 mutation.
 
-The OpenSandbox environment must bind distinct private lifecycle and egress
-addresses, use a digest-bound server image, identify a dedicated non-root
-UID/GID, and match the Docker socket group. The server digest must be verified
-out of band against an approved `server/v0.1.13` or newer release; upstream OCI
-labels do not prove that source version. The TOML must use Docker bridge mode,
-set `docker.host_ip` to the lifecycle address, select gVisor `runsc`, pin both
+The OpenSandbox environment must bind one private lifecycle address, use a
+digest-bound server image, identify a dedicated non-root UID/GID, and match the
+Docker socket group. The server digest must be verified out of band against an
+approved `server/v0.1.13` or newer release; upstream OCI labels do not prove that
+source version. The trusted Server container uses host networking but binds its
+HTTP listener only to that lifecycle address. The TOML must set
+`docker.network_mode` to `ai-platform-opensandbox-egress-internal-v1`, set
+`docker.host_ip` to the same lifecycle address, select gVisor `runsc`, pin both
 execd and the egress sidecar by digest, use `dns+nft`, disable IPv6 egress, deny
 all host bind mounts, and contain no global sandbox binds or environment
 injection. The lifecycle API key is restricted to 32-256 plain URL-safe ASCII
-characters so both TOML and Compose parse the same secret. The controller
-creates only the named lifecycle network plus canonical server-state and
-platform-workspace directories, installs the exact checkout's reviewed unit as
+characters so both TOML and Compose parse the same secret.
+
+Before the controller runs, the target checkout's exact root-owned
+`ai-platform-opensandbox-network-guard.service` must be installed, enabled, and
+active. Its first INPUT jump on `br-osb-egress` accepts only established return
+traffic and drops sandbox-initiated host traffic; stopping the service does not
+remove that fail-closed rule. The production OpenSandbox unit requires the
+guard. The controller authenticates its bytes and live rules before host service
+mutation, creates only the canonical server-state and platform-workspace
+directories, installs the exact checkout's reviewed unit as
 `opensandbox.service`, pulls all three immutable host images, and validates the
 running service without exposing configuration values.
 
@@ -89,10 +99,10 @@ host-maintenance contract; they cannot silently enter the one-command applicatio
 rollback path.
 
 Before host mutation, the controller also proves the application env uses the
-same plain, unquoted lifecycle URL, lifecycle API key, and egress bind address
-as the host files. Both private addresses must be assigned to the production
-host. The application executor remains the admitted backend workload image; it
-is separate from the host TOML's digest-bound OpenSandbox `runtime.execd_image`.
+same plain, unquoted lifecycle URL and lifecycle API key as the host files. The
+private lifecycle address must be assigned to the production host. The
+application executor remains the admitted backend workload image; it is
+separate from the host TOML's digest-bound OpenSandbox `runtime.execd_image`.
 This prevents a syntactically valid Compose deployment from starting against a
 different OpenSandbox trust boundary without conflating the two image roles.
 
@@ -167,11 +177,11 @@ acceptance requires a revised contract.
 ## Falsifiable acceptance and evidence ceiling
 
 Focused tests must prove configuration validation, placeholder rejection,
-private-address separation, runsc admission, idempotent lifecycle-network and
-unit convergence, token isolation, cold-runtime membership gating,
-exact-production Compose selection, existing-runtime quiescence, deployment
-ordering, and one-attempt rollback. Shell syntax, Python compilation, formatting,
-and the focused CI shard must pass.
+private lifecycle binding, runsc admission, host-network Server identity, exact
+host-input guard admission, unit convergence, token isolation, cold-runtime
+membership gating, exact-production Compose selection, existing-runtime
+quiescence, deployment ordering, and one-attempt rollback. Shell syntax, Python
+compilation, formatting, and the focused CI shard must pass.
 
 Local source tests and mocked command sequencing prove only the controller
 contract. A real production run must separately record the exact source and image
