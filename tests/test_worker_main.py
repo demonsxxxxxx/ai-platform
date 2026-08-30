@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import app.worker_main as worker_main
-from app.queue import LeaseMutationOutcome, QueueMessage
+from app.queue import LeaseMutationOutcome, QueueHeartbeatOutcome, QueueMessage
 from app.runs.api import RunTerminalizationProgress
 from app.worker import WorkerOutcome
 from app.worker_main import run_once as _run_once
@@ -124,6 +124,180 @@ async def test_worker_runtime_heartbeat_refreshes_until_cancelled(monkeypatch):
     assert calls == ["worker-process", "worker-process"]
 
 
+@pytest.mark.asyncio
+async def test_queue_heartbeat_persists_the_exact_redis_timestamp(monkeypatch):
+    calls = []
+    outcomes = iter(
+        [
+            QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0),
+            QueueHeartbeatOutcome("stale_owner"),
+        ]
+    )
+    message = QueueMessage(
+        raw="raw-run",
+        payload={"tenant_id": "tenant-a", "run_id": "run-a"},
+        message_id="lease-handle-a",
+        queue_message_id="b" * 64,
+        attempt_id="qat-a",
+        owner_token="qown-a",
+        leased_at=90.0,
+        delivery_attempt=1,
+    )
+
+    async def heartbeat_run(message_id, *, worker_id):
+        calls.append(("redis", message_id, worker_id))
+        return next(outcomes)
+
+    class Transaction:
+        async def __aenter__(self):
+            calls.append(("tx.enter",))
+            return "conn-a"
+
+        async def __aexit__(self, exc_type, _exc, _tb):
+            calls.append(("tx.exit", exc_type))
+            return False
+
+    async def heartbeat_attempt(conn, **kwargs):
+        calls.append(("postgres", conn, kwargs))
+        return {"id": "rat-a", "status": "running"}
+
+    monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
+    monkeypatch.setattr(worker_main, "transaction", Transaction)
+    monkeypatch.setattr(
+        worker_main,
+        "heartbeat_worker_run_attempt",
+        heartbeat_attempt,
+    )
+    ownership_lost = asyncio.Event()
+
+    await worker_main._heartbeat_until_done(
+        message,
+        "worker-a",
+        0,
+        30,
+        ownership_lost,
+    )
+
+    assert ownership_lost.is_set()
+    persisted = next(call for call in calls if call[0] == "postgres")[2]
+    assert persisted["tenant_id"] == "tenant-a"
+    assert persisted["run_id"] == "run-a"
+    assert persisted["queue_attempt_id"] == "qat-a"
+    assert persisted["queue_message_id"] == "b" * 64
+    assert persisted["worker_id"] == "worker-a"
+    assert persisted["last_heartbeat_at"].timestamp() == 100.0
+    assert (
+        persisted["lease_expires_at"] - persisted["last_heartbeat_at"]
+    ).total_seconds() == 30
+    assert calls[-1] == ("redis", "lease-handle-a", "worker-a")
+
+
+@pytest.mark.asyncio
+async def test_queue_heartbeat_tolerates_attempt_precreation_gap(monkeypatch):
+    redis_calls = 0
+    postgres_calls = 0
+    outcomes = iter(
+        [
+            QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0),
+            QueueHeartbeatOutcome("stale_owner"),
+        ]
+    )
+    message = QueueMessage(
+        raw="raw-run",
+        payload={"tenant_id": "tenant-a", "run_id": "run-a"},
+        message_id="lease-handle-a",
+        queue_message_id="b" * 64,
+        attempt_id="qat-a",
+        owner_token="qown-a",
+        leased_at=90.0,
+        delivery_attempt=1,
+    )
+
+    async def heartbeat_run(*_args, **_kwargs):
+        nonlocal redis_calls
+        redis_calls += 1
+        return next(outcomes)
+
+    class Transaction:
+        async def __aenter__(self):
+            return "conn-a"
+
+        async def __aexit__(self, _exc_type, _exc, _tb):
+            return False
+
+    async def heartbeat_attempt(*_args, **_kwargs):
+        nonlocal postgres_calls
+        postgres_calls += 1
+        return None
+
+    monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
+    monkeypatch.setattr(worker_main, "transaction", Transaction)
+    monkeypatch.setattr(
+        worker_main,
+        "heartbeat_worker_run_attempt",
+        heartbeat_attempt,
+    )
+    ownership_lost = asyncio.Event()
+
+    await worker_main._heartbeat_until_done(
+        message,
+        "worker-a",
+        0,
+        30,
+        ownership_lost,
+    )
+
+    assert redis_calls == 2
+    assert postgres_calls == 1
+    assert ownership_lost.is_set()
+
+
+@pytest.mark.asyncio
+async def test_queue_heartbeat_fails_closed_when_postgres_cannot_commit(monkeypatch):
+    message = QueueMessage(
+        raw="raw-run",
+        payload={"tenant_id": "tenant-a", "run_id": "run-a"},
+        message_id="lease-handle-a",
+        queue_message_id="b" * 64,
+        attempt_id="qat-a",
+        owner_token="qown-a",
+        leased_at=90.0,
+        delivery_attempt=1,
+    )
+
+    async def heartbeat_run(*_args, **_kwargs):
+        return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
+
+    class Transaction:
+        async def __aenter__(self):
+            return "conn-a"
+
+        async def __aexit__(self, _exc_type, _exc, _tb):
+            raise OSError("postgres commit unavailable")
+
+    async def heartbeat_attempt(*_args, **_kwargs):
+        return {"id": "rat-a", "status": "running"}
+
+    monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
+    monkeypatch.setattr(worker_main, "transaction", Transaction)
+    monkeypatch.setattr(
+        worker_main,
+        "heartbeat_worker_run_attempt",
+        heartbeat_attempt,
+    )
+    ownership_lost = asyncio.Event()
+
+    await worker_main._heartbeat_until_done(
+        message,
+        "worker-a",
+        0,
+        30,
+        ownership_lost,
+    )
+
+    assert ownership_lost.is_set()
+
+
 @pytest.fixture(autouse=True)
 def default_sandbox_cleanup(monkeypatch):
     async def cleanup_expired_sandbox_leases():
@@ -152,6 +326,9 @@ def default_sandbox_cleanup(monkeypatch):
         return LeaseMutationOutcome("current")
 
     async def assert_worker_run_attempt_current(*_args, **_kwargs):
+        return None
+
+    async def heartbeat_worker_run_attempt(*_args, **_kwargs):
         return None
 
     async def request_run_attempt_cancel(*_args, **_kwargs):
@@ -215,6 +392,10 @@ def default_sandbox_cleanup(monkeypatch):
     monkeypatch.setattr(
         "app.worker_main.assert_worker_run_attempt_current",
         assert_worker_run_attempt_current,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.heartbeat_worker_run_attempt",
+        heartbeat_worker_run_attempt,
     )
     monkeypatch.setattr(
         "app.worker_main.request_run_attempt_cancel",
@@ -1186,6 +1367,7 @@ async def test_run_once_acknowledges_accepted_and_completed_messages(monkeypatch
 
     async def heartbeat_run(message_id, worker_id):
         calls.append(("heartbeat", message_id, worker_id))
+        return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
 
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
@@ -1308,7 +1490,7 @@ async def test_run_once_ownership_loss_cancels_processing_without_ack_or_fail(mo
     async def heartbeat_run(message_id, worker_id):
         await processing_started.wait()
         calls.append(("ownership_lost", message_id, worker_id))
-        return False
+        return QueueHeartbeatOutcome("stale_owner")
 
     async def ack_run(*_args, **_kwargs):
         calls.append(("ack",))
@@ -1482,6 +1664,7 @@ async def test_run_once_keeps_queue_maintenance_running_during_long_processing(m
 
     async def heartbeat_run(message_id, worker_id):
         calls.append(("heartbeat", message_id, worker_id))
+        return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
 
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
@@ -1524,6 +1707,7 @@ async def test_run_once_dead_letters_unhandled_outcome(monkeypatch):
 
     async def heartbeat_run(message_id, worker_id):
         calls.append(("heartbeat", message_id, worker_id))
+        return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
 
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
@@ -1564,6 +1748,7 @@ async def test_run_once_acknowledges_cancelled_message(monkeypatch):
 
     async def heartbeat_run(message_id, worker_id):
         calls.append(("heartbeat", message_id, worker_id))
+        return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
 
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
@@ -1657,6 +1842,7 @@ async def test_run_once_dead_letters_process_exception(monkeypatch):
 
     async def heartbeat_run(message_id, worker_id):
         calls.append(("heartbeat", message_id, worker_id))
+        return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
 
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)

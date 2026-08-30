@@ -768,6 +768,20 @@ begin
      ) then
     raise exception 'run_attempt_queue_identity_immutable' using errcode = '23514';
   end if;
+  if old.last_heartbeat_at is not null
+     and (
+       new.last_heartbeat_at is null
+       or new.last_heartbeat_at < old.last_heartbeat_at
+     ) then
+    raise exception 'run_attempt_heartbeat_regression' using errcode = '23514';
+  end if;
+  if old.lease_expires_at is not null
+     and (
+       new.lease_expires_at is null
+       or new.lease_expires_at < old.lease_expires_at
+     ) then
+    raise exception 'run_attempt_lease_expiry_regression' using errcode = '23514';
+  end if;
   if new.status is not distinct from old.status then
     if new.owner_generation is not distinct from old.owner_generation
        and new.owner_kind is not distinct from old.owner_kind

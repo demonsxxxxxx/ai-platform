@@ -358,6 +358,78 @@ async def test_start_worker_run_attempt_rejects_an_incomplete_queue_lease_before
 
 
 @pytest.mark.asyncio
+async def test_heartbeat_worker_run_attempt_uses_the_full_owner_and_queue_fence():
+    last_heartbeat_at = datetime(2026, 8, 30, 8, 0, tzinfo=timezone.utc)
+    lease_expires_at = last_heartbeat_at + timedelta(minutes=15)
+    conn = _Connection(
+        {
+            "id": "rat-a",
+            "status": "running",
+            "owner_generation": 4,
+            "last_heartbeat_at": last_heartbeat_at,
+            "lease_expires_at": lease_expires_at,
+        }
+    )
+
+    row = await run_attempt_repository.heartbeat_worker_run_attempt(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="rat-a",
+        queue_attempt_id="qat-a",
+        queue_message_id="b" * 64,
+        worker_id="worker-a",
+        expected_owner_generation=4,
+        last_heartbeat_at=last_heartbeat_at,
+        lease_expires_at=lease_expires_at,
+    )
+
+    assert row["status"] == "running"
+    sql, params = conn.calls[0]
+    normalized_sql = " ".join(sql.split())
+    assert "last_heartbeat_at = greatest" in normalized_sql
+    assert "lease_expires_at = greatest" in normalized_sql
+    assert "and queue_attempt_id = %s" in normalized_sql
+    assert "and queue_message_id = %s" in normalized_sql
+    assert "and status = 'running'" in normalized_sql
+    assert "and owner_generation = %s" in normalized_sql
+    assert sql.count("%s") == len(params)
+    assert params[-8:] == (
+        "tenant-a",
+        "run-a",
+        "rat-a",
+        "qat-a",
+        "b" * 64,
+        "queue_worker",
+        "worker-a",
+        4,
+    )
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_worker_run_attempt_rejects_a_stale_generation():
+    last_heartbeat_at = datetime(2026, 8, 30, 8, 0, tzinfo=timezone.utc)
+    conn = _Connection(None)
+
+    with pytest.raises(
+        RepositoryConflictError,
+        match="run_attempt_worker_heartbeat_conflict",
+    ):
+        await run_attempt_repository.heartbeat_worker_run_attempt(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="rat-a",
+            queue_attempt_id="qat-a",
+            queue_message_id="b" * 64,
+            worker_id="worker-a",
+            expected_owner_generation=3,
+            last_heartbeat_at=last_heartbeat_at,
+            lease_expires_at=last_heartbeat_at + timedelta(minutes=15),
+        )
+
+
+@pytest.mark.asyncio
 async def test_worker_attempt_fence_rejects_a_different_worker_owner(monkeypatch):
     async def get_attempt(*_args, **_kwargs):
         return {

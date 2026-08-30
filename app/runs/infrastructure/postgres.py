@@ -595,6 +595,79 @@ async def assert_worker_run_attempt_current(
     return row
 
 
+async def heartbeat_worker_run_attempt(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    queue_attempt_id: str,
+    queue_message_id: str,
+    worker_id: str,
+    expected_owner_generation: int,
+    lease_expires_at: datetime,
+    last_heartbeat_at: datetime,
+) -> dict[str, Any]:
+    """Advance queue lease timing without weakening the current attempt fence."""
+
+    owner_kind, owner_id = _validated_attempt_owner(
+        owner_kind="queue_worker",
+        owner_id=worker_id,
+    )
+    queue_lease = _validated_worker_queue_lease(
+        queue_message_id=queue_message_id,
+        lease_expires_at=lease_expires_at,
+        last_heartbeat_at=last_heartbeat_at,
+    )
+    assert queue_lease is not None
+    if not attempt_id.strip() or not queue_attempt_id.strip():
+        raise ValueError("run_attempt_worker_heartbeat_identity_invalid")
+    if expected_owner_generation < 1:
+        raise ValueError("run_attempt_owner_generation_invalid")
+    cursor = await conn.execute(
+        """
+        update run_attempts
+        set last_heartbeat_at = greatest(
+              coalesce(last_heartbeat_at, %s),
+              %s
+            ),
+            lease_expires_at = greatest(
+              coalesce(lease_expires_at, %s),
+              %s
+            ),
+            updated_at = now()
+        where tenant_id = %s
+          and run_id = %s
+          and id = %s
+          and queue_attempt_id = %s
+          and queue_message_id = %s
+          and status = 'running'
+          and owner_kind = %s
+          and owner_id = %s
+          and owner_generation = %s
+        returning *
+        """,
+        (
+            queue_lease[2],
+            queue_lease[2],
+            queue_lease[1],
+            queue_lease[1],
+            tenant_id,
+            run_id,
+            attempt_id,
+            queue_attempt_id,
+            queue_lease[0],
+            owner_kind,
+            owner_id,
+            expected_owner_generation,
+        ),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise RepositoryConflictError("run_attempt_worker_heartbeat_conflict")
+    return dict(row)
+
+
 async def request_run_attempt_cancel(
     conn: AsyncConnection,
     *,

@@ -687,10 +687,19 @@ class FakeRedis:
             fence_key = f"{fence_prefix}:{metadata.get('tenant_id', '')}:{metadata.get('run_id', '')}"
             if fence_key in self.fences:
                 return json.dumps({"status": "reconciliation_fenced"})
-            metadata["heartbeat_at"] = float(now)
+            heartbeat_at = max(
+                float(now),
+                float(metadata.get("heartbeat_at") or 0),
+                float(metadata.get("leased_at") or 0),
+            )
+            metadata["heartbeat_at"] = heartbeat_at
             self.meta[message_id] = json.dumps(metadata, ensure_ascii=False)
-            self.workers[worker_id] = str(now)
-            return json.dumps({"status": "heartbeat"})
+            worker_heartbeat_at = max(
+                heartbeat_at,
+                float(self.workers.get(worker_id) or 0),
+            )
+            self.workers[worker_id] = str(worker_heartbeat_at)
+            return json.dumps({"status": "heartbeat", "heartbeat_at": heartbeat_at})
         if "verify-run-lease-ownership" in script:
             _processing_meta_key, fence_key = keys_and_args[:numkeys]
             message_id, attempt_id, owner_token, raw, worker_id, fence_prefix = keys_and_args[numkeys:]
@@ -1907,7 +1916,9 @@ async def test_stale_lease_owner_cannot_heartbeat_ack_or_fail(monkeypatch):
     monkeypatch.setattr("app.queue.get_redis", lambda: _async_value(fake))
     stale_handle = queue._lease_handle(message_id, f"qat_{'1' * 64}", f"qown_{'1' * 64}")
 
-    assert await queue.heartbeat_run(stale_handle, worker_id="worker-a") is False
+    assert (
+        await queue.heartbeat_run(stale_handle, worker_id="worker-a")
+    ).status == "stale_owner"
     assert (await queue.ack_run(raw, message_id=stale_handle)).status == "stale_owner"
     assert (
         await queue.fail_leased_run(raw, error_code="stale", error_message="stale", message_id=stale_handle)
@@ -1929,7 +1940,9 @@ async def test_active_reconciliation_fence_rejects_heartbeat_ack_and_fail(monkey
     fake.fences[fence_key] = "reconciler-owner"
     monkeypatch.setattr("app.queue.get_redis", lambda: _async_value(fake))
 
-    assert await queue.heartbeat_run(handle, worker_id="worker-a") is False
+    assert (
+        await queue.heartbeat_run(handle, worker_id="worker-a")
+    ).status == "reconciliation_fenced"
     assert (await queue.ack_run(raw, message_id=handle)).status == "reconciliation_fenced"
     assert (
         await queue.fail_leased_run(raw, error_code="stale", error_message="stale", message_id=handle)
@@ -2653,12 +2666,40 @@ async def test_heartbeat_updates_processing_meta_and_worker(monkeypatch):
     monkeypatch.setattr("app.queue.get_redis", get_redis)
     monkeypatch.setattr("app.queue._now", lambda: 100.0)
 
-    assert await queue.heartbeat_run(handle, worker_id="worker-a") is True
+    heartbeat = await queue.heartbeat_run(handle, worker_id="worker-a")
+
+    assert heartbeat == queue.QueueHeartbeatOutcome(
+        status="heartbeat",
+        heartbeat_at=100.0,
+    )
 
     updated_meta = json.loads(fake.meta[message_id])
     assert updated_meta["heartbeat_at"] == 100.0
     assert updated_meta["worker_id"] == "worker-a"
     assert fake.workers["worker-a"] == "100.0"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_never_regresses_lease_or_worker_timestamps(monkeypatch):
+    raw = payload_json()
+    message_id, _, _, handle, metadata = lease_identity(raw, worker_id="worker-a")
+    metadata["leased_at"] = 150.0
+    metadata["heartbeat_at"] = 200.0
+    fake = FakeRedis(
+        meta={message_id: json.dumps(metadata)},
+        workers={"worker-a": "250.0"},
+    )
+    monkeypatch.setattr("app.queue.get_redis", lambda: _async_value(fake))
+    monkeypatch.setattr("app.queue._now", lambda: 199.0)
+
+    heartbeat = await queue.heartbeat_run(handle, worker_id="worker-a")
+
+    assert heartbeat == queue.QueueHeartbeatOutcome(
+        status="heartbeat",
+        heartbeat_at=200.0,
+    )
+    assert json.loads(fake.meta[message_id])["heartbeat_at"] == 200.0
+    assert fake.workers["worker-a"] == "250.0"
 
 
 @pytest.mark.asyncio

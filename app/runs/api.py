@@ -94,6 +94,9 @@ from app.runs.application.attempt_lifecycle import (
     get_run_attempt_for_queue_attempt as get_run_attempt_for_queue_attempt,
 )
 from app.runs.application.attempt_lifecycle import (
+    heartbeat_worker_run_attempt as heartbeat_worker_run_attempt,
+)
+from app.runs.application.attempt_lifecycle import (
     get_latest_run_attempt as get_latest_run_attempt,
 )
 from app.runs.application.attempt_lifecycle import (

@@ -19,6 +19,10 @@ REMOTE_CONCURRENT_DUE_INDEX_CHECKSUM = (
 REMOTE_MODEL_CONTROL_PLANE_CHECKSUM = (
     "76ecf5642f302cbc6e132b077c75e9693c3fddb81203beca244baaafd7c686c5"
 )
+# Exact 2026.08.30.1 ledger checksum before heartbeat monotonicity was added.
+REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM = (
+    "14941c07a273f8924fb289876ac887879f8a8d5cc2a5a8d95bb9252e1ea40d90"
+)
 
 
 class FakeCursor:
@@ -328,6 +332,10 @@ async def test_schema_status_uses_exact_model_index_relation_keys_and_predicates
             schema_migrations.MODEL_CONTROL_PLANE_SCHEMA_VERSION,
             REMOTE_MODEL_CONTROL_PLANE_CHECKSUM,
         ),
+        (
+            schema_migrations.RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION,
+            REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM,
+        ),
     ),
 )
 async def test_prior_schema_ledgers_advance_to_current_schema(
@@ -396,10 +404,10 @@ async def test_successor_activation_schema_advances_to_concurrent_due_index_sche
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.30.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.30.2"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION
+        == schema_migrations.RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SCHEMA_VERSION
     )
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
@@ -991,7 +999,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "14941c07a273f8924fb289876ac887879f8a8d5cc2a5a8d95bb9252e1ea40d90"
+        "63f6fe428c51631d844a375149b1c76527338d4889c6f0cbe30893fe8c3a774b"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

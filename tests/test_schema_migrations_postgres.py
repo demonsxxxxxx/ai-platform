@@ -26,6 +26,9 @@ REMOTE_DUE_INDEX_SQL = """create index if not exists idx_run_events_v4_due_scope
 
 
 """
+REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM = (
+    "14941c07a273f8924fb289876ac887879f8a8d5cc2a5a8d95bb9252e1ea40d90"
+)
 MODEL_CONTROL_PLANE_SCHEMA_FRAGMENTS = (
     """create table if not exists model_gateway_revisions (
   revision bigint primary key,
@@ -81,6 +84,21 @@ alter table runs add column if not exists model_gateway_revision bigint;
   end if;
 """,
 )
+CURRENT_RUN_ATTEMPT_HEARTBEAT_GUARD_SQL = """  if old.last_heartbeat_at is not null
+     and (
+       new.last_heartbeat_at is null
+       or new.last_heartbeat_at < old.last_heartbeat_at
+     ) then
+    raise exception 'run_attempt_heartbeat_regression' using errcode = '23514';
+  end if;
+  if old.lease_expires_at is not null
+     and (
+       new.lease_expires_at is null
+       or new.lease_expires_at < old.lease_expires_at
+     ) then
+    raise exception 'run_attempt_lease_expiry_regression' using errcode = '23514';
+  end if;
+"""
 CURRENT_RUN_ATTEMPT_OWNER_GUARD_SQL = """    if new.owner_generation is not distinct from old.owner_generation
        and new.owner_kind is not distinct from old.owner_kind
        and new.owner_id is not distinct from old.owner_id then
@@ -124,6 +142,8 @@ where state = 'admission_pending'
 
 def _remote_successor_activation_schema_sql() -> str:
     current_sql = Path("app/schema.sql").read_text(encoding="utf-8")
+    assert current_sql.count(CURRENT_RUN_ATTEMPT_HEARTBEAT_GUARD_SQL) == 1
+    current_sql = current_sql.replace(CURRENT_RUN_ATTEMPT_HEARTBEAT_GUARD_SQL, "")
     for fragment in MODEL_CONTROL_PLANE_SCHEMA_FRAGMENTS:
         assert current_sql.count(fragment) == 1
         current_sql = current_sql.replace(fragment, "")
@@ -153,8 +173,23 @@ def _remote_successor_activation_schema_sql() -> str:
     return remote_sql
 
 
+def _remote_run_attempt_reconciler_takeover_schema_sql() -> str:
+    current_sql = Path("app/schema.sql").read_text(encoding="utf-8")
+    assert current_sql.count(CURRENT_RUN_ATTEMPT_HEARTBEAT_GUARD_SQL) == 1
+    remote_sql = current_sql.replace(CURRENT_RUN_ATTEMPT_HEARTBEAT_GUARD_SQL, "")
+    assert (
+        schema_migrations.schema_checksum(remote_sql)
+        == REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM
+    )
+    return remote_sql
+
+
 def test_remote_successor_activation_schema_checksum_remains_pinned() -> None:
     assert _remote_successor_activation_schema_sql()
+
+
+def test_remote_run_attempt_reconciler_takeover_checksum_remains_pinned() -> None:
+    assert _remote_run_attempt_reconciler_takeover_schema_sql()
 
 
 def _postgres_dsn() -> str:
@@ -275,6 +310,78 @@ async def test_real_postgres_concurrent_migrations_use_one_global_lock_and_ledge
             )
     finally:
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_upgrade_installs_run_attempt_heartbeat_monotonicity_guard():
+    dsn = _postgres_dsn()
+    schema_name = f"schema_attempt_heartbeat_upgrade_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(
+        dsn,
+        autocommit=True,
+        row_factory=dict_row,
+    )
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await admin.execute(
+            sql.SQL("set search_path to {}").format(sql.Identifier(schema_name))
+        )
+        await admin.execute(_remote_run_attempt_reconciler_takeover_schema_sql())
+        await admin.execute(
+            """
+            insert into schema_migrations(version, checksum_sha256)
+            values (%s, %s)
+            """,
+            (
+                schema_migrations.RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION,
+                REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM,
+            ),
+        )
+
+        factory = _transaction_factory(dsn, schema_name)
+        result = await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=_index_connection_factory(dsn, schema_name),
+        )
+
+        assert result["status"] == "applied"
+        ledger_rows = await (
+            await admin.execute(
+                "select version, checksum_sha256 from schema_migrations order by version"
+            )
+        ).fetchall()
+        assert ledger_rows == [
+            {
+                "version": schema_migrations.RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION,
+                "checksum_sha256": REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM,
+            },
+            {
+                "version": schema_migrations.TARGET_SCHEMA_VERSION,
+                "checksum_sha256": schema_migrations.schema_checksum(),
+            },
+        ]
+        trigger_definition = await (
+            await admin.execute(
+                """
+                select pg_get_functiondef(
+                  to_regprocedure(%s)
+                ) as definition
+                """,
+                (f"{schema_name}.ai_platform_guard_run_attempt_transition()",),
+            )
+        ).fetchone()
+        assert trigger_definition is not None
+        assert "run_attempt_heartbeat_regression" in trigger_definition["definition"]
+        assert "run_attempt_lease_expiry_regression" in trigger_definition["definition"]
+        async with factory() as conn:
+            assert (await schema_migrations.schema_status(conn))["ready"] is True
+    finally:
+        await admin.execute(
+            sql.SQL("drop schema if exists {} cascade").format(
+                sql.Identifier(schema_name)
+            )
+        )
         await admin.close()
 
 
