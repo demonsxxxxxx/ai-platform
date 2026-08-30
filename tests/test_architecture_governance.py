@@ -2165,6 +2165,61 @@ def test_conversation_migration_bridge_authority_is_exact() -> None:
     ]
 
 
+def test_agent_catalog_persistence_bridge_authority_is_exact_and_pending() -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.agent_apps.infrastructure.catalog_postgres",
+    )
+
+    assert bridge == {
+        "source_path": "app/repositories.py",
+        "target_module": "app.agent_apps.infrastructure.catalog_postgres",
+        "module_alias": "agent_catalog_persistence",
+        "symbols": [
+            "get_agent",
+            "get_tenant_profile_validation_agent",
+            "list_lambchat_agents",
+        ],
+        "owner": "agent_apps",
+        "reason": (
+            "The frozen global repository may expose these existing tenant-scoped "
+            "Agent catalog read symbols only as exact identity aliases while their "
+            "PostgreSQL implementation moves to the Agent Apps catalog adapter."
+        ),
+        "removal_condition": (
+            "After the Agent catalog persistence move, migrate supported internal "
+            "callers to the Agent Apps boundary, inventory external imports, and "
+            "remove this bridge in an authority-only change before deleting the "
+            "repositories aliases."
+        ),
+    }
+
+    target_path = REPO_ROOT / "app/agent_apps/infrastructure/catalog_postgres.py"
+    assert not target_path.exists()
+    source_tree = ast.parse(
+        (REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8")
+    )
+    source_definitions = [
+        node.name
+        for node in source_tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name in bridge["symbols"]
+    ]
+    assert sorted(source_definitions) == bridge["symbols"]
+    source_binding_counts = architecture_governance._top_level_local_binding_counts(
+        source_tree
+    )
+    assert {
+        symbol: source_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]
+    } == {symbol: 1 for symbol in bridge["symbols"]}
+    assert [
+        (imported.name, imported.asname)
+        for node in source_tree.body
+        if isinstance(node, ast.Import)
+        for imported in node.names
+        if imported.name == bridge["target_module"]
+    ] == []
+
+
 def test_live_identity_principal_persistence_bridge_is_exact_and_active() -> None:
     bridge = _migration_bridge(
         source_path="app/repositories.py",
@@ -2930,6 +2985,7 @@ def test_authority_rejects_reused_bridge_alias_within_one_source(
         if entry["source_path"] == "app/repositories.py"
     ]
     assert {bridge["target_module"] for bridge in bridges} == {
+        "app.agent_apps.infrastructure.catalog_postgres",
         "app.agent_apps.infrastructure.postgres",
         "app.context.infrastructure.postgres",
         "app.context.infrastructure.snapshot_postgres",
@@ -2959,6 +3015,7 @@ def test_authority_rejects_reused_bridge_symbol_within_one_source(
         if entry["source_path"] == "app/repositories.py"
     ]
     assert {bridge["target_module"] for bridge in bridges} == {
+        "app.agent_apps.infrastructure.catalog_postgres",
         "app.agent_apps.infrastructure.postgres",
         "app.context.infrastructure.postgres",
         "app.context.infrastructure.snapshot_postgres",

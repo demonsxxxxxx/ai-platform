@@ -301,6 +301,19 @@
     },
     {
       "source_path": "app/repositories.py",
+      "target_module": "app.agent_apps.infrastructure.catalog_postgres",
+      "module_alias": "agent_catalog_persistence",
+      "symbols": [
+        "get_agent",
+        "get_tenant_profile_validation_agent",
+        "list_lambchat_agents"
+      ],
+      "owner": "agent_apps",
+      "reason": "The frozen global repository may expose these existing tenant-scoped Agent catalog read symbols only as exact identity aliases while their PostgreSQL implementation moves to the Agent Apps catalog adapter.",
+      "removal_condition": "After the Agent catalog persistence move, migrate supported internal callers to the Agent Apps boundary, inventory external imports, and remove this bridge in an authority-only change before deleting the repositories aliases."
+    },
+    {
+      "source_path": "app/repositories.py",
       "target_module": "app.agent_apps.infrastructure.postgres",
       "module_alias": "agent_profile_persistence",
       "symbols": [
