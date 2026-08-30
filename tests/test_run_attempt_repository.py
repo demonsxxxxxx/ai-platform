@@ -387,14 +387,19 @@ async def test_heartbeat_worker_run_attempt_uses_the_full_owner_and_queue_fence(
     assert row["status"] == "running"
     sql, params = conn.calls[0]
     normalized_sql = " ".join(sql.split())
-    assert "last_heartbeat_at = greatest" in normalized_sql
-    assert "lease_expires_at = greatest" in normalized_sql
+    assert "set last_heartbeat_at = %s" in normalized_sql
+    assert "lease_expires_at = %s" in normalized_sql
+    assert "last_heartbeat_at <= %s" in normalized_sql
+    assert "lease_expires_at <= %s" in normalized_sql
+    assert "greatest" not in normalized_sql
     assert "and queue_attempt_id = %s" in normalized_sql
     assert "and queue_message_id = %s" in normalized_sql
     assert "and status = 'running'" in normalized_sql
     assert "and owner_generation = %s" in normalized_sql
     assert sql.count("%s") == len(params)
-    assert params[-8:] == (
+    assert params == (
+        last_heartbeat_at,
+        lease_expires_at,
         "tenant-a",
         "run-a",
         "rat-a",
@@ -403,6 +408,8 @@ async def test_heartbeat_worker_run_attempt_uses_the_full_owner_and_queue_fence(
         "queue_worker",
         "worker-a",
         4,
+        last_heartbeat_at,
+        lease_expires_at,
     )
 
 

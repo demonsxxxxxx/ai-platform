@@ -436,7 +436,8 @@ class FakeRedis:
                 "heartbeat_at": float(now),
                 "worker_id": worker_id,
                 "attempt_id": attempt_id,
-                "owner_token": owner_token,
+                "lease_protocol_version": 2,
+                "owner_token_v2": owner_token,
                 "run_id": run_id,
                 "tenant_id": tenant_id,
                 "user_id": user_id,
@@ -652,10 +653,37 @@ class FakeRedis:
             if (
                 lease.get("message_id") != message_id
                 or lease.get("attempt_id") != expected_attempt_id
-                or lease.get("owner_token") != expected_owner_token
+                or queue._lease_metadata_owner_token(lease) != expected_owner_token
             ):
                 return json.dumps({"status": "stale_owner"})
             lease_activity_at = float(lease.get("heartbeat_at") or lease.get("leased_at"))
+            if lease_activity_at > self.server_time:
+                for metadata_store in (self.meta, self.retry):
+                    raw_metadata = metadata_store.get(message_id)
+                    if not raw_metadata:
+                        continue
+                    metadata = json.loads(raw_metadata)
+                    if (
+                        metadata.get("message_id") != message_id
+                        or metadata.get("attempt_id") != expected_attempt_id
+                        or queue._lease_metadata_owner_token(metadata)
+                        != expected_owner_token
+                    ):
+                        continue
+                    if float(metadata.get("heartbeat_at") or 0) > self.server_time:
+                        metadata["heartbeat_at"] = self.server_time
+                    if float(metadata.get("leased_at") or 0) > self.server_time:
+                        metadata["leased_at"] = self.server_time
+                    metadata_store[message_id] = json.dumps(
+                        metadata,
+                        ensure_ascii=False,
+                    )
+                return json.dumps(
+                    {
+                        "status": "lease_clock_normalized",
+                        "heartbeat_at": self.server_time,
+                    }
+                )
             if self.server_time - lease_activity_at <= float(visibility_timeout_seconds):
                 return json.dumps({"status": "lease_active"})
             if str(remove_processing) == "1":
@@ -691,10 +719,37 @@ class FakeRedis:
             if (
                 lease.get("message_id") != message_id
                 or lease.get("attempt_id") != expected_attempt_id
-                or lease.get("owner_token") != expected_owner_token
+                or queue._lease_metadata_owner_token(lease) != expected_owner_token
             ):
                 return json.dumps({"status": "stale_owner"})
             lease_activity_at = float(lease.get("heartbeat_at") or lease.get("leased_at"))
+            if lease_activity_at > self.server_time:
+                for metadata_store in (self.meta, self.retry):
+                    raw_metadata = metadata_store.get(message_id)
+                    if not raw_metadata:
+                        continue
+                    metadata = json.loads(raw_metadata)
+                    if (
+                        metadata.get("message_id") != message_id
+                        or metadata.get("attempt_id") != expected_attempt_id
+                        or queue._lease_metadata_owner_token(metadata)
+                        != expected_owner_token
+                    ):
+                        continue
+                    if float(metadata.get("heartbeat_at") or 0) > self.server_time:
+                        metadata["heartbeat_at"] = self.server_time
+                    if float(metadata.get("leased_at") or 0) > self.server_time:
+                        metadata["leased_at"] = self.server_time
+                    metadata_store[message_id] = json.dumps(
+                        metadata,
+                        ensure_ascii=False,
+                    )
+                return json.dumps(
+                    {
+                        "status": "lease_clock_normalized",
+                        "heartbeat_at": self.server_time,
+                    }
+                )
             if self.server_time - lease_activity_at <= float(visibility_timeout_seconds):
                 return json.dumps({"status": "lease_active"})
             await self.lrem(processing_key, 1, raw)
@@ -713,7 +768,7 @@ class FakeRedis:
             if (
                 metadata.get("message_id") != message_id
                 or metadata.get("attempt_id") != attempt_id
-                or metadata.get("owner_token") != owner_token
+                or queue._lease_metadata_owner_token(metadata) != owner_token
                 or metadata.get("worker_id") != worker_id
             ):
                 return json.dumps({"status": "stale_owner"})
@@ -735,7 +790,7 @@ class FakeRedis:
                 lease.get("raw") != raw
                 or lease.get("message_id") != message_id
                 or lease.get("attempt_id") != attempt_id
-                or lease.get("owner_token") != owner_token
+                or queue._lease_metadata_owner_token(lease) != owner_token
                 or lease.get("worker_id") != worker_id
             ):
                 return json.dumps({"status": "stale_owner"})
@@ -753,7 +808,7 @@ class FakeRedis:
                 lease.get("raw") != raw
                 or lease.get("message_id") != message_id
                 or lease.get("attempt_id") != attempt_id
-                or lease.get("owner_token") != owner_token
+                or queue._lease_metadata_owner_token(lease) != owner_token
             ):
                 return json.dumps({"status": "stale_owner"})
             expected_fence = f"{fence_prefix}:{lease.get('tenant_id', '')}:{lease.get('run_id', '')}"
@@ -773,7 +828,7 @@ class FakeRedis:
                 lease.get("raw") != raw
                 or lease.get("message_id") != message_id
                 or lease.get("attempt_id") != attempt_id
-                or lease.get("owner_token") != owner_token
+                or queue._lease_metadata_owner_token(lease) != owner_token
             ):
                 return json.dumps({"status": "stale_owner"})
             expected_fence = f"{fence_prefix}:{lease.get('tenant_id', '')}:{lease.get('run_id', '')}"
@@ -1303,8 +1358,43 @@ async def test_lease_run_moves_valid_payload_to_processing(monkeypatch):
     assert message.owner_token.startswith("qown_")
     assert message.leased_at == 100.0
     assert message.delivery_attempt == 1
-    assert json.loads(fake.meta[message.queue_message_id])["worker_id"] == "worker-a"
+    lease_metadata = json.loads(fake.meta[message.queue_message_id])
+    assert lease_metadata["worker_id"] == "worker-a"
+    assert lease_metadata["lease_protocol_version"] == 2
+    assert lease_metadata["owner_token_v2"] == message.owner_token
+    assert "owner_token" not in lease_metadata
     assert fake.closed is True
+
+
+@pytest.mark.asyncio
+async def test_protocol_v2_lease_supports_heartbeat_verification_and_ack(
+    monkeypatch,
+):
+    fake = FakeRedis(raw=payload_json())
+    monkeypatch.setattr("app.queue.get_redis", lambda: _async_value(fake))
+
+    message = await queue.lease_run(timeout_seconds=1, worker_id="worker-a")
+
+    assert message is not None
+    heartbeat = await queue.heartbeat_run(
+        message.message_id,
+        worker_id="worker-a",
+    )
+    ownership = await queue.verify_lease_ownership(
+        message,
+        worker_id="worker-a",
+    )
+    acknowledged = await queue.ack_run(
+        message.raw,
+        message_id=message.message_id,
+    )
+
+    assert heartbeat.succeeded is True
+    assert ownership == queue.LeaseMutationOutcome("current")
+    assert acknowledged == queue.LeaseMutationOutcome("acked")
+    assert fake.processing == []
+    assert message.queue_message_id not in fake.meta
+    assert message.queue_message_id not in fake.retry
 
 
 @pytest.mark.asyncio
@@ -2888,6 +2978,54 @@ async def test_reclaim_mutation_defers_lease_refreshed_on_redis_clock(
     assert fake.queued == []
     assert fake.pushed == []
     assert fake.removed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("attempts", "max_attempts"), [(1, 3), (3, 3)])
+async def test_reclaim_normalizes_abandoned_future_lease_before_later_mutation(
+    monkeypatch,
+    attempts,
+    max_attempts,
+):
+    raw = payload_json()
+    message_id, _, _, _, metadata = lease_identity(raw, attempts=attempts)
+    metadata["leased_at"] = 1_000.0
+    metadata["heartbeat_at"] = 1_000.0
+    encoded = json.dumps(metadata)
+    fake = FakeRedis(
+        processing=[raw],
+        meta={message_id: encoded},
+        retry={message_id: encoded},
+        server_time=100.0,
+    )
+    monkeypatch.setattr("app.queue.get_redis", lambda: _async_value(fake))
+
+    normalized = await queue.reclaim_expired_leases(
+        visibility_timeout_seconds=10,
+        max_attempts=max_attempts,
+        now=2_000.0,
+    )
+
+    assert normalized == {"reclaimed": 0, "dead_lettered": 0}
+    assert fake.processing == [raw]
+    for metadata_store in (fake.meta, fake.retry):
+        repaired = json.loads(metadata_store[message_id])
+        assert repaired["leased_at"] == 100.0
+        assert repaired["heartbeat_at"] == 100.0
+
+    fake.server_time = 111.0
+    expired = await queue.reclaim_expired_leases(
+        visibility_timeout_seconds=10,
+        max_attempts=max_attempts,
+        now=111.0,
+    )
+
+    if attempts < max_attempts:
+        assert expired == {"reclaimed": 1, "dead_lettered": 0}
+        assert fake.queued == [raw]
+    else:
+        assert expired == {"reclaimed": 0, "dead_lettered": 1}
+        assert fake.pushed[-1][0] == queue.DEAD_LETTER_KEY
 
 
 @pytest.mark.asyncio

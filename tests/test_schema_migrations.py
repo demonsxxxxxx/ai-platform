@@ -23,6 +23,10 @@ REMOTE_MODEL_CONTROL_PLANE_CHECKSUM = (
 REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM = (
     "14941c07a273f8924fb289876ac887879f8a8d5cc2a5a8d95bb9252e1ea40d90"
 )
+# Exact 2026.08.30.2 ledger checksum before clock-safety preflight was added.
+REMOTE_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_CHECKSUM = (
+    "63f6fe428c51631d844a375149b1c76527338d4889c6f0cbe30893fe8c3a774b"
+)
 
 
 class FakeCursor:
@@ -42,6 +46,8 @@ class SharedMigrationState:
         self.indexes = set()
         self.schema_execute_count = 0
         self.index_execute_count = 0
+        self.run_attempt_heartbeat_contract_supported = False
+        self.future_open_attempt_heartbeat = False
 
 
 class FakeMigrationConnection:
@@ -66,6 +72,19 @@ class FakeMigrationConnection:
         if normalized.startswith("select checksum_sha256 from schema_migrations"):
             checksum = self.state.ledger.get(params[0])
             return FakeCursor(None if checksum is None else {"checksum_sha256": checksum})
+        if "to_regclass('run_attempts') is not null" in normalized:
+            return FakeCursor(
+                {
+                    "supported": self.state.run_attempt_heartbeat_contract_supported,
+                }
+            )
+        if "from run_attempts" in normalized and "as blocked" in normalized:
+            assert params == (
+                schema_migrations.RUN_ATTEMPT_FUTURE_HEARTBEAT_TOLERANCE_SECONDS,
+            )
+            return FakeCursor(
+                {"blocked": self.state.future_open_attempt_heartbeat}
+            )
         if normalized.startswith("insert into schema_migrations"):
             self.state.ledger[params[0]] = params[1]
             return FakeCursor(None)
@@ -249,6 +268,25 @@ async def test_concurrent_migrations_serialize_and_apply_schema_once():
 
 
 @pytest.mark.asyncio
+async def test_schema_upgrade_blocks_future_open_attempt_heartbeat_before_schema_write():
+    state = SharedMigrationState()
+    state.run_attempt_heartbeat_contract_supported = True
+    state.future_open_attempt_heartbeat = True
+
+    with pytest.raises(
+        schema_migrations.SchemaMigrationError,
+        match="run_attempt_future_heartbeat_requires_remediation",
+    ):
+        await schema_migrations.apply_migrations(
+            transaction_factory=transaction_factory(state),
+            index_connection_factory=index_connection_factory(state),
+        )
+
+    assert state.schema_execute_count == 0
+    assert schema_migrations.TARGET_SCHEMA_VERSION not in state.ledger
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("missing_relation", ["model_gateway_revisions", "model_catalog_entries"])
 async def test_schema_status_is_not_ready_when_model_control_plane_relation_is_missing(
     missing_relation: str,
@@ -336,6 +374,10 @@ async def test_schema_status_uses_exact_model_index_relation_keys_and_predicates
             schema_migrations.RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION,
             REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM,
         ),
+        (
+            schema_migrations.RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SCHEMA_VERSION,
+            REMOTE_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_CHECKSUM,
+        ),
     ),
 )
 async def test_prior_schema_ledgers_advance_to_current_schema(
@@ -404,10 +446,10 @@ async def test_successor_activation_schema_advances_to_concurrent_due_index_sche
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.30.2"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.30.3"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SCHEMA_VERSION
+        == schema_migrations.RUN_ATTEMPT_HEARTBEAT_CLOCK_SAFETY_SCHEMA_VERSION
     )
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",

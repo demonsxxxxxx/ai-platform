@@ -330,7 +330,8 @@ local meta = {
   heartbeat_at = now,
   worker_id = worker_id,
   attempt_id = attempt_id,
-  owner_token = owner_token,
+  lease_protocol_version = 2,
+  owner_token_v2 = owner_token,
   run_id = run_id,
   tenant_id = tenant_id,
   user_id = user_id,
@@ -642,7 +643,7 @@ return cjson.encode({status = "renewed"})
 
 
 REQUEUE_WITH_FENCE_SCRIPT = """
--- ai-platform:requeue-run-with-fence:v2
+-- ai-platform:requeue-run-with-fence:v3
 local queued_key = KEYS[1]
 local processing_key = KEYS[2]
 local queued_meta_key = KEYS[3]
@@ -666,6 +667,14 @@ local remove_processing = ARGV[6]
 local expected_attempt_id = ARGV[7]
 local expected_owner_token = ARGV[8]
 local visibility_timeout_seconds = tonumber(ARGV[9])
+
+local function lease_owner_token(metadata)
+  if tonumber(metadata["lease_protocol_version"]) == 2 then
+    return tostring(metadata["owner_token_v2"] or "")
+  end
+  return tostring(metadata["owner_token"] or "")
+end
+
 local lease_metadata_json = redis.call("hget", processing_meta_key, message_id)
 if not lease_metadata_json then
   lease_metadata_json = redis.call("hget", retry_meta_key, message_id)
@@ -674,7 +683,7 @@ local lease_ok, lease_metadata = pcall(cjson.decode, lease_metadata_json or "")
 if not lease_ok or type(lease_metadata) ~= "table"
   or tostring(lease_metadata["message_id"] or "") ~= message_id
   or tostring(lease_metadata["attempt_id"] or "") ~= expected_attempt_id
-  or tostring(lease_metadata["owner_token"] or "") ~= expected_owner_token then
+  or lease_owner_token(lease_metadata) ~= expected_owner_token then
   return cjson.encode({status = "stale_owner"})
 end
 if visibility_timeout_seconds == nil or visibility_timeout_seconds < 1 then
@@ -687,6 +696,38 @@ if lease_activity_at == nil or lease_activity_at ~= lease_activity_at
 end
 local redis_time = redis.call("TIME")
 local now = tonumber(redis_time[1]) + (tonumber(redis_time[2]) / 1000000)
+local function normalize_matching_future_metadata(hash_key)
+  local raw_metadata = redis.call("hget", hash_key, message_id)
+  if not raw_metadata then
+    return
+  end
+  local ok_metadata, metadata = pcall(cjson.decode, raw_metadata)
+  if not ok_metadata or type(metadata) ~= "table"
+    or tostring(metadata["message_id"] or "") ~= message_id
+    or tostring(metadata["attempt_id"] or "") ~= expected_attempt_id
+    or lease_owner_token(metadata) ~= expected_owner_token then
+    return
+  end
+  local changed = false
+  local heartbeat_at = tonumber(metadata["heartbeat_at"])
+  if heartbeat_at ~= nil and heartbeat_at > now then
+    metadata["heartbeat_at"] = now
+    changed = true
+  end
+  local leased_at = tonumber(metadata["leased_at"])
+  if leased_at ~= nil and leased_at > now then
+    metadata["leased_at"] = now
+    changed = true
+  end
+  if changed then
+    redis.call("hset", hash_key, message_id, cjson.encode(metadata))
+  end
+end
+normalize_matching_future_metadata(processing_meta_key)
+normalize_matching_future_metadata(retry_meta_key)
+if lease_activity_at > now then
+  return cjson.encode({status = "lease_clock_normalized", heartbeat_at = now})
+end
 if now - lease_activity_at <= visibility_timeout_seconds then
   return cjson.encode({status = "lease_active"})
 end
@@ -730,7 +771,7 @@ return cjson.encode({status = "requeued"})
 
 
 DEAD_LETTER_EXPIRED_LEASE_WITH_FENCE_SCRIPT = """
--- ai-platform:dead-letter-expired-lease-with-fence:v2
+-- ai-platform:dead-letter-expired-lease-with-fence:v3
 local processing_key = KEYS[1]
 local processing_meta_key = KEYS[2]
 local retry_meta_key = KEYS[3]
@@ -748,6 +789,14 @@ local remove_processing_meta = ARGV[4]
 local expected_attempt_id = ARGV[5]
 local expected_owner_token = ARGV[6]
 local visibility_timeout_seconds = tonumber(ARGV[7])
+
+local function lease_owner_token(metadata)
+  if tonumber(metadata["lease_protocol_version"]) == 2 then
+    return tostring(metadata["owner_token_v2"] or "")
+  end
+  return tostring(metadata["owner_token"] or "")
+end
+
 local lease_metadata_json = redis.call("hget", processing_meta_key, message_id)
 if not lease_metadata_json then
   lease_metadata_json = redis.call("hget", retry_meta_key, message_id)
@@ -756,7 +805,7 @@ local lease_ok, lease_metadata = pcall(cjson.decode, lease_metadata_json or "")
 if not lease_ok or type(lease_metadata) ~= "table"
   or tostring(lease_metadata["message_id"] or "") ~= message_id
   or tostring(lease_metadata["attempt_id"] or "") ~= expected_attempt_id
-  or tostring(lease_metadata["owner_token"] or "") ~= expected_owner_token then
+  or lease_owner_token(lease_metadata) ~= expected_owner_token then
   return cjson.encode({status = "stale_owner"})
 end
 if visibility_timeout_seconds == nil or visibility_timeout_seconds < 1 then
@@ -769,6 +818,38 @@ if lease_activity_at == nil or lease_activity_at ~= lease_activity_at
 end
 local redis_time = redis.call("TIME")
 local now = tonumber(redis_time[1]) + (tonumber(redis_time[2]) / 1000000)
+local function normalize_matching_future_metadata(hash_key)
+  local raw_metadata = redis.call("hget", hash_key, message_id)
+  if not raw_metadata then
+    return
+  end
+  local ok_metadata, metadata = pcall(cjson.decode, raw_metadata)
+  if not ok_metadata or type(metadata) ~= "table"
+    or tostring(metadata["message_id"] or "") ~= message_id
+    or tostring(metadata["attempt_id"] or "") ~= expected_attempt_id
+    or lease_owner_token(metadata) ~= expected_owner_token then
+    return
+  end
+  local changed = false
+  local heartbeat_at = tonumber(metadata["heartbeat_at"])
+  if heartbeat_at ~= nil and heartbeat_at > now then
+    metadata["heartbeat_at"] = now
+    changed = true
+  end
+  local leased_at = tonumber(metadata["leased_at"])
+  if leased_at ~= nil and leased_at > now then
+    metadata["leased_at"] = now
+    changed = true
+  end
+  if changed then
+    redis.call("hset", hash_key, message_id, cjson.encode(metadata))
+  end
+end
+normalize_matching_future_metadata(processing_meta_key)
+normalize_matching_future_metadata(retry_meta_key)
+if lease_activity_at > now then
+  return cjson.encode({status = "lease_clock_normalized", heartbeat_at = now})
+end
 if now - lease_activity_at <= visibility_timeout_seconds then
   return cjson.encode({status = "lease_active"})
 end
@@ -785,7 +866,7 @@ return cjson.encode({status = "dead_lettered"})
 
 
 HEARTBEAT_WITH_FENCE_SCRIPT = """
--- ai-platform:heartbeat-run-with-fence:v3
+-- ai-platform:heartbeat-run-with-fence:v4
 local raw_metadata = redis.call("hget", KEYS[1], ARGV[1])
 if not raw_metadata then
   return cjson.encode({status = "missing"})
@@ -794,9 +875,13 @@ local ok, metadata = pcall(cjson.decode, raw_metadata)
 if not ok or type(metadata) ~= "table" then
   return cjson.encode({status = "inconclusive"})
 end
+local owner_token = metadata["owner_token"]
+if tonumber(metadata["lease_protocol_version"]) == 2 then
+  owner_token = metadata["owner_token_v2"]
+end
 if tostring(metadata["message_id"] or "") ~= ARGV[1]
   or tostring(metadata["attempt_id"] or "") ~= ARGV[2]
-  or tostring(metadata["owner_token"] or "") ~= ARGV[3]
+  or tostring(owner_token or "") ~= ARGV[3]
   or tostring(metadata["worker_id"] or "") ~= ARGV[4] then
   return cjson.encode({status = "stale_owner"})
 end
@@ -818,13 +903,17 @@ return cjson.encode({status = "heartbeat", heartbeat_at = heartbeat_at})
 
 
 ACK_LEASE_SCRIPT = """
--- ai-platform:ack-run-lease:v1
+-- ai-platform:ack-run-lease:v2
 local metadata_json = redis.call("hget", KEYS[2], ARGV[2])
 local ok, metadata = pcall(cjson.decode, metadata_json or "")
+local owner_token = type(metadata) == "table" and metadata["owner_token"] or nil
+if type(metadata) == "table" and tonumber(metadata["lease_protocol_version"]) == 2 then
+  owner_token = metadata["owner_token_v2"]
+end
 if not ok or type(metadata) ~= "table"
   or tostring(metadata["message_id"] or "") ~= ARGV[2]
   or tostring(metadata["attempt_id"] or "") ~= ARGV[3]
-  or tostring(metadata["owner_token"] or "") ~= ARGV[4]
+  or tostring(owner_token or "") ~= ARGV[4]
   or tostring(metadata["raw"] or "") ~= ARGV[1] then
   return cjson.encode({status = "stale_owner"})
 end
@@ -843,13 +932,17 @@ return cjson.encode({status = "acked"})
 
 
 FAIL_LEASE_SCRIPT = """
--- ai-platform:fail-run-lease:v1
+-- ai-platform:fail-run-lease:v2
 local metadata_json = redis.call("hget", KEYS[2], ARGV[2])
 local ok, metadata = pcall(cjson.decode, metadata_json or "")
+local owner_token = type(metadata) == "table" and metadata["owner_token"] or nil
+if type(metadata) == "table" and tonumber(metadata["lease_protocol_version"]) == 2 then
+  owner_token = metadata["owner_token_v2"]
+end
 if not ok or type(metadata) ~= "table"
   or tostring(metadata["message_id"] or "") ~= ARGV[2]
   or tostring(metadata["attempt_id"] or "") ~= ARGV[3]
-  or tostring(metadata["owner_token"] or "") ~= ARGV[4]
+  or tostring(owner_token or "") ~= ARGV[4]
   or tostring(metadata["raw"] or "") ~= ARGV[1] then
   return cjson.encode({status = "stale_owner"})
 end
@@ -885,13 +978,17 @@ return removed
 
 
 VERIFY_LEASE_OWNERSHIP_SCRIPT = """
--- ai-platform:verify-run-lease-ownership:v1
+-- ai-platform:verify-run-lease-ownership:v2
 local metadata_json = redis.call("hget", KEYS[1], ARGV[1])
 local ok, metadata = pcall(cjson.decode, metadata_json or "")
+local owner_token = type(metadata) == "table" and metadata["owner_token"] or nil
+if type(metadata) == "table" and tonumber(metadata["lease_protocol_version"]) == 2 then
+  owner_token = metadata["owner_token_v2"]
+end
 if not ok or type(metadata) ~= "table"
   or tostring(metadata["message_id"] or "") ~= ARGV[1]
   or tostring(metadata["attempt_id"] or "") ~= ARGV[2]
-  or tostring(metadata["owner_token"] or "") ~= ARGV[3]
+  or tostring(owner_token or "") ~= ARGV[3]
   or tostring(metadata["raw"] or "") ~= ARGV[4]
   or tostring(metadata["worker_id"] or "") ~= ARGV[5] then
   return cjson.encode({status = "stale_owner"})
@@ -981,6 +1078,19 @@ def _parse_lease_handle(value: str) -> tuple[str, str, str] | None:
     ):
         return None
     return parts[1], parts[2], parts[3]
+
+
+def _lease_metadata_owner_token(metadata: dict[str, Any]) -> str:
+    """Resolve the owner token for legacy or protocol-v2 lease metadata."""
+
+    protocol_version = metadata.get("lease_protocol_version")
+    if (
+        isinstance(protocol_version, int)
+        and not isinstance(protocol_version, bool)
+        and protocol_version == 2
+    ):
+        return str(metadata.get("owner_token_v2") or "")
+    return str(metadata.get("owner_token") or "")
 
 
 def _leased_payload(payload: dict[str, Any], *, attempt_id: str) -> dict[str, Any]:
@@ -2342,7 +2452,7 @@ async def reclaim_expired_leases(
                         retry_payload = {}
                         attempts = 0
                 attempt_id = str(retry_payload.get("attempt_id") or "")
-                owner_token = str(retry_payload.get("owner_token") or "")
+                owner_token = _lease_metadata_owner_token(retry_payload)
                 if not attempt_id or not owner_token or attempts < 1:
                     continue
                 if attempts >= max_attempts:
@@ -2389,7 +2499,7 @@ async def reclaim_expired_leases(
                 continue
             attempts = int(meta.get("attempts") or 0)
             attempt_id = str(meta.get("attempt_id") or "")
-            owner_token = str(meta.get("owner_token") or "")
+            owner_token = _lease_metadata_owner_token(meta)
             if not attempt_id or not owner_token or attempts < 1:
                 continue
             if attempts >= max_attempts:
