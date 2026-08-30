@@ -105,11 +105,13 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
 
 @pytest.mark.asyncio
 async def test_profile_department_authority_accepts_only_current_selectable_directory_ids(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
     from app.department_directory import (
         DepartmentDirectoryError,
         normalize_department_directory,
         validate_profile_department_authorities,
     )
+    from app.models import AgentProfileDraftRequest, SelectedSkillRequest
 
     directory = normalize_department_directory(
         [
@@ -123,11 +125,29 @@ async def test_profile_department_authority_accepts_only_current_selectable_dire
         return directory
 
     monkeypatch.setattr("app.department_directory.fetch_department_directory", fetch_directory)
+    authority = AgentProfileAuthority(
+        department_authority_validator=validate_profile_department_authorities,
+    )
+    definition = AgentProfileDraftRequest(
+        name="Support assistant",
+        instructions="private instruction",
+        visibility="restricted",
+        allowed_department_ids=["药品注册"],
+        selected_skill=SelectedSkillRequest(
+            skill_id="general-chat",
+            expected_version="version-a",
+        ),
+        expected_draft_revision=0,
+    )
 
-    await validate_profile_department_authorities(["药品注册"])
+    await authority._validate_profile_department_authorities(definition)
     for invalid_department_id in ("Research", "目录外部门"):
         with pytest.raises(HTTPException) as exc_info:
-            await validate_profile_department_authorities([invalid_department_id])
+            await authority._validate_profile_department_authorities(
+                definition.model_copy(
+                    update={"allowed_department_ids": [invalid_department_id]},
+                )
+            )
         assert (exc_info.value.status_code, exc_info.value.detail) == (
             422,
             "agent_profile_department_authority_invalid",
@@ -138,7 +158,7 @@ async def test_profile_department_authority_accepts_only_current_selectable_dire
 
     monkeypatch.setattr("app.department_directory.fetch_department_directory", unavailable_directory)
     with pytest.raises(HTTPException) as exc_info:
-        await validate_profile_department_authorities(["药品注册"])
+        await authority._validate_profile_department_authorities(definition)
     assert (exc_info.value.status_code, exc_info.value.detail) == (
         503,
         "agent_profile_department_directory_unavailable",

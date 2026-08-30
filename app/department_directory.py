@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 import unicodedata
 
 import httpx
-from fastapi import HTTPException
 
 from app.models import DepartmentDirectoryNodeResponse, DepartmentDirectoryResponse
 from app.validation import assert_safe_department_authority_id
@@ -162,21 +161,16 @@ async def fetch_department_directory() -> DepartmentDirectoryResponse:
         raise DepartmentDirectoryError("department_directory_upstream_unavailable") from exc
 
 
-async def validate_profile_department_authorities(values: list[str]) -> None:
-    """Require exact current directory membership for an Agent Profile ACL."""
+async def validate_profile_department_authorities(values: list[str]) -> str | None:
+    """Return the bounded Agent Profile ACL membership result."""
 
     if not values:
-        return
+        return None
     try:
         directory = await fetch_department_directory()
         validate_distribution_department_authorities(values, directory)
     except DepartmentDirectoryError as exc:
         if str(exc) == "capability_distribution_department_authority_invalid":
-            raise HTTPException(
-                status_code=422,
-                detail="agent_profile_department_authority_invalid",
-            ) from exc
-        raise HTTPException(
-            status_code=503,
-            detail="agent_profile_department_directory_unavailable",
-        ) from exc
+            return "invalid"
+        return "unavailable"
+    return None

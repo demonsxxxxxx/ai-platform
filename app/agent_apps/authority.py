@@ -31,6 +31,7 @@ from app.models import (
 _AVATAR_REFS = {"builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"}
 _CATEGORIES = {"general", "support", "writing", "research", "operations"}
 _VISIBILITIES = {"tenant", "restricted"}
+_AGENT_PROFILE_DEPARTMENT_AUTHORITY_INVALID = "agent_profile_department_authority_invalid"
 _AGENT_PROFILE_DEPARTMENT_DIRECTORY_UNAVAILABLE = "agent_profile_department_directory_unavailable"
 _ROLLING_LEGACY_SUPPORTED_INPUT_TYPES = ["text", "file"]
 _PROFILE_MODEL_COMPATIBILITY_SENTINEL = "platform-selected"
@@ -763,7 +764,7 @@ class AgentProfileAuthority:
     def __init__(
         self,
         *,
-        department_authority_validator: Callable[[list[str]], Awaitable[None]] | None = None,
+        department_authority_validator: Callable[[list[str]], Awaitable[str | None]] | None = None,
     ) -> None:
         self._department_authority_validator = department_authority_validator
 
@@ -778,7 +779,17 @@ class AgentProfileAuthority:
                 status_code=503,
                 detail=_AGENT_PROFILE_DEPARTMENT_DIRECTORY_UNAVAILABLE,
             )
-        await self._department_authority_validator(definition.allowed_department_ids)
+        result = await self._department_authority_validator(definition.allowed_department_ids)
+        if result == "invalid":
+            raise HTTPException(
+                status_code=422,
+                detail=_AGENT_PROFILE_DEPARTMENT_AUTHORITY_INVALID,
+            )
+        if result is not None:
+            raise HTTPException(
+                status_code=503,
+                detail=_AGENT_PROFILE_DEPARTMENT_DIRECTORY_UNAVAILABLE,
+            )
 
     def _require_admin(self, principal: AuthPrincipal) -> None:
         if not is_ai_admin(principal):
