@@ -81,6 +81,29 @@ alter table runs add column if not exists model_gateway_revision bigint;
   end if;
 """,
 )
+CURRENT_RUN_ATTEMPT_OWNER_GUARD_SQL = """    if new.owner_generation is not distinct from old.owner_generation
+       and new.owner_kind is not distinct from old.owner_kind
+       and new.owner_id is not distinct from old.owner_id then
+      return new;
+    end if;
+    if old.status = 'cancel_requested'
+       and new.owner_kind = 'reconciler'
+       and new.owner_generation = old.owner_generation + 1
+       and (
+         new.owner_kind is distinct from old.owner_kind
+         or new.owner_id is distinct from old.owner_id
+       ) then
+      return new;
+    end if;
+    raise exception 'run_attempt_owner_transition_invalid' using errcode = '23514';
+"""
+REMOTE_RUN_ATTEMPT_OWNER_GUARD_SQL = """    if new.owner_generation is distinct from old.owner_generation
+       or new.owner_kind is distinct from old.owner_kind
+       or new.owner_id is distinct from old.owner_id then
+      raise exception 'run_attempt_owner_transition_invalid' using errcode = '23514';
+    end if;
+    return new;
+"""
 CONFIRMATION_HISTORY_REPAIR_SQL = """update sse_stream_authorities
 set admission_confirmed_at = coalesce(
   admission_confirmed_at,
@@ -104,6 +127,11 @@ def _remote_successor_activation_schema_sql() -> str:
     for fragment in MODEL_CONTROL_PLANE_SCHEMA_FRAGMENTS:
         assert current_sql.count(fragment) == 1
         current_sql = current_sql.replace(fragment, "")
+    assert current_sql.count(CURRENT_RUN_ATTEMPT_OWNER_GUARD_SQL) == 1
+    current_sql = current_sql.replace(
+        CURRENT_RUN_ATTEMPT_OWNER_GUARD_SQL,
+        REMOTE_RUN_ATTEMPT_OWNER_GUARD_SQL,
+    )
     trace_column_sql = (
         "alter table run_events add column if not exists trace_id text not null default '';"
     )
@@ -123,6 +151,10 @@ def _remote_successor_activation_schema_sql() -> str:
     ).hexdigest()
     assert remote_checksum == REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM
     return remote_sql
+
+
+def test_remote_successor_activation_schema_checksum_remains_pinned() -> None:
+    assert _remote_successor_activation_schema_sql()
 
 
 def _postgres_dsn() -> str:
