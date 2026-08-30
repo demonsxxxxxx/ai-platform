@@ -2165,7 +2165,7 @@ def test_conversation_migration_bridge_authority_is_exact() -> None:
     ]
 
 
-def test_agent_catalog_persistence_bridge_authority_is_exact_and_pending() -> None:
+def test_live_agent_catalog_persistence_bridge_is_exact_and_active() -> None:
     bridge = _migration_bridge(
         source_path="app/repositories.py",
         target_module="app.agent_apps.infrastructure.catalog_postgres",
@@ -2195,29 +2195,93 @@ def test_agent_catalog_persistence_bridge_authority_is_exact_and_pending() -> No
     }
 
     target_path = REPO_ROOT / "app/agent_apps/infrastructure/catalog_postgres.py"
-    assert not target_path.exists()
     source_tree = ast.parse(
         (REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8")
     )
-    source_definitions = [
+
+    assert target_path.exists()
+    target_tree = ast.parse(target_path.read_text(encoding="utf-8"))
+    source_local_definitions = {
         node.name
         for node in source_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    target_local_definitions = [
+        node.name
+        for node in target_tree.body
         if isinstance(node, ast.AsyncFunctionDef) and node.name in bridge["symbols"]
     ]
-    assert sorted(source_definitions) == bridge["symbols"]
-    source_binding_counts = architecture_governance._top_level_local_binding_counts(
-        source_tree
-    )
-    assert {
-        symbol: source_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]
-    } == {symbol: 1 for symbol in bridge["symbols"]}
+
+    assert set(bridge["symbols"]).isdisjoint(source_local_definitions)
+    assert sorted(target_local_definitions) == bridge["symbols"]
+    assert [
+        (node.module, [(imported.name, imported.asname) for imported in node.names])
+        for node in target_tree.body
+        if isinstance(node, ast.ImportFrom)
+    ] == [
+        ("__future__", [("annotations", None)]),
+        ("typing", [("Any", None)]),
+        ("psycopg", [("AsyncConnection", None)]),
+    ]
+    assert not any(isinstance(node, ast.Import) for node in target_tree.body)
     assert [
         (imported.name, imported.asname)
         for node in source_tree.body
         if isinstance(node, ast.Import)
         for imported in node.names
         if imported.name == bridge["target_module"]
-    ] == []
+    ] == [(bridge["target_module"], bridge["module_alias"])]
+
+    source_binding_counts = architecture_governance._top_level_local_binding_counts(
+        source_tree
+    )
+    assert {
+        symbol: source_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]
+    } == {symbol: 1 for symbol in bridge["symbols"]}
+    source_aliases = [
+        (target.id, node.value.value.id, node.value.attr)
+        for node in source_tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance((target := node.targets[0]), ast.Name)
+        and target.id in bridge["symbols"]
+        and isinstance(node.value, ast.Attribute)
+        and isinstance(node.value.value, ast.Name)
+    ]
+    assert sorted(source_aliases) == [
+        (symbol, bridge["module_alias"], symbol) for symbol in bridge["symbols"]
+    ]
+    target_binding_counts = architecture_governance._top_level_local_binding_counts(
+        target_tree
+    )
+    assert {
+        symbol: target_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]
+    } == {symbol: 1 for symbol in bridge["symbols"]}
+
+    from app import repositories
+    from app.agent_apps.infrastructure import (
+        catalog_postgres as agent_catalog_persistence,
+    )
+
+    for symbol in bridge["symbols"]:
+        assert getattr(repositories, symbol) is getattr(agent_catalog_persistence, symbol)
+
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "import app.agent_apps.infrastructure.catalog_postgres; "
+                "assert 'app.repositories' not in sys.modules"
+            ),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert probe.returncode == 0, probe.stderr
 
 
 def test_live_identity_principal_persistence_bridge_is_exact_and_active() -> None:
