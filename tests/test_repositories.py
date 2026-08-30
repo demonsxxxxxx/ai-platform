@@ -95,7 +95,7 @@ class _CancellationEventWriter:
 
 class _RunAttemptCursor:
     async def fetchone(self):
-        return {"id": "attempt-a"}
+        return None
 
 
 class _CancellationTestConnection:
@@ -104,7 +104,7 @@ class _CancellationTestConnection:
 
     async def execute(self, sql, params):
         normalized = " ".join(sql.split())
-        if normalized.startswith("select id from run_attempts"):
+        if normalized.startswith("select * from run_attempts"):
             return _RunAttemptCursor()
         return await self._conn.execute(sql, params)
 
@@ -8507,8 +8507,6 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
 
         async def execute(self, sql, _params):
             normalized = " ".join(sql.split())
-            if normalized.startswith("select id from run_attempts"):
-                return SingleRowCursor({"id": "attempt-a"})
             if normalized.startswith("with eligible_run as"):
                 self.attempt += 1
                 return SingleRowCursor(
@@ -9076,8 +9074,6 @@ async def test_cancel_request_response_reports_actual_conflicting_terminal_statu
     class Connection:
         async def execute(self, sql, _params):
             normalized = " ".join(sql.split())
-            if normalized.startswith("select id from run_attempts"):
-                return SingleRowCursor({"id": "attempt-a"})
             assert normalized.startswith("with eligible_run as")
             row = {
                 "id": "run-a",
