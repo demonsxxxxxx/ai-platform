@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol
 
 from app.runs.domain.execution_spec import ExecutionSpec
@@ -57,6 +58,9 @@ class RunAttemptPersistence(Protocol):
         queue_attempt_id: str,
         worker_id: str,
         execution_spec: ExecutionSpec,
+        queue_message_id: str | None = None,
+        lease_expires_at: datetime | None = None,
+        last_heartbeat_at: datetime | None = None,
     ) -> dict[str, Any]: ...
 
     async def assert_worker_run_attempt_current(

@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -305,6 +306,8 @@ async def test_start_worker_run_attempt_advances_one_exact_owner_and_spec(monkey
     monkeypatch.setattr(run_attempt_repository, "transition_run_attempt", transition)
     conn = _Connection({"next_ordinal": 1})
 
+    last_heartbeat_at = datetime(2026, 8, 30, 7, 0, tzinfo=timezone.utc)
+    lease_expires_at = last_heartbeat_at + timedelta(minutes=15)
     row = await run_attempt_repository.start_worker_run_attempt(
         conn,
         tenant_id="tenant-a",
@@ -312,6 +315,9 @@ async def test_start_worker_run_attempt_advances_one_exact_owner_and_spec(monkey
         queue_attempt_id="qat-a",
         worker_id="worker-a",
         execution_spec=_execution_spec(),
+        queue_message_id="b" * 64,
+        last_heartbeat_at=last_heartbeat_at,
+        lease_expires_at=lease_expires_at,
     )
 
     assert row["status"] == "running"
@@ -324,6 +330,31 @@ async def test_start_worker_run_attempt_advances_one_exact_owner_and_spec(monkey
         "claimed",
         "running",
     ]
+    assert transitions[0]["queue_message_id"] == "b" * 64
+    assert transitions[0]["last_heartbeat_at"] == last_heartbeat_at
+    assert transitions[0]["lease_expires_at"] == lease_expires_at
+    assert all(
+        "queue_message_id" not in item
+        for item in transitions[1:]
+    )
+
+
+@pytest.mark.asyncio
+async def test_start_worker_run_attempt_rejects_an_incomplete_queue_lease_before_sql():
+    conn = _Connection(None)
+
+    with pytest.raises(ValueError, match="run_attempt_queue_lease_incomplete"):
+        await run_attempt_repository.start_worker_run_attempt(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            queue_attempt_id="qat-a",
+            worker_id="worker-a",
+            execution_spec=_execution_spec(),
+            queue_message_id="b" * 64,
+        )
+
+    assert conn.calls == []
 
 
 @pytest.mark.asyncio

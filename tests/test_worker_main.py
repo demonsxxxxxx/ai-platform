@@ -1201,6 +1201,88 @@ async def test_run_once_acknowledges_accepted_and_completed_messages(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_run_once_binds_the_exact_initial_queue_lease_to_worker_processing(monkeypatch):
+    calls = []
+
+    class Settings:
+        max_active_worker_runs = 3
+        queue_tenant_processing_limit = 0
+        queue_user_processing_limit = 0
+        queue_lease_scan_limit = 50
+        queue_lease_visibility_timeout_seconds = 30
+
+    async def lease_run(**_kwargs):
+        return QueueMessage(
+            raw="raw-run",
+            payload={"run_id": "run-a"},
+            message_id="lease-handle-a",
+            queue_message_id="b" * 64,
+            attempt_id="qat-test-attempt",
+            owner_token="qown-test-owner",
+            leased_at=100.0,
+            delivery_attempt=1,
+        )
+
+    async def process_run_payload(
+        payload,
+        registry=None,
+        worker_id=None,
+        *,
+        queue_lease,
+        v4_capabilities=None,
+    ):
+        assert registry is None
+        assert worker_id == "worker-a"
+        assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert queue_lease.queue_message_id == "b" * 64
+        assert queue_lease.last_heartbeat_at.timestamp() == 100.0
+        assert (
+            queue_lease.lease_expires_at - queue_lease.last_heartbeat_at
+        ).total_seconds() == 30
+        calls.append(("process", payload["run_id"]))
+        return WorkerOutcome(status="succeeded", run_id="run-a")
+
+    async def ack_run(raw, message_id=None):
+        calls.append(("ack", raw, message_id))
+        return LeaseMutationOutcome("acked")
+
+    monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
+    monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
+    monkeypatch.setattr("app.worker_main.queue.ack_run", ack_run)
+
+    outcome = await run_once(
+        timeout_seconds=1,
+        worker_id="worker-a",
+        heartbeat_interval_seconds=60,
+        run_initial_maintenance=False,
+        run_background_maintenance=False,
+    )
+
+    assert outcome == WorkerOutcome(status="succeeded", run_id="run-a")
+    assert calls == [("process", "run-a"), ("ack", "raw-run", "lease-handle-a")]
+
+
+def test_durable_queue_lease_rejects_a_non_positive_visibility_window():
+    message = QueueMessage(
+        raw="raw-run",
+        payload={"run_id": "run-a"},
+        message_id="lease-handle-a",
+        queue_message_id="b" * 64,
+        attempt_id="qat-test-attempt",
+        owner_token="qown-test-owner",
+        leased_at=100.0,
+        delivery_attempt=1,
+    )
+
+    with pytest.raises(ValueError, match="queue_lease_visibility_timeout_invalid"):
+        worker_main._durable_queue_lease(
+            message,
+            visibility_timeout_seconds=0,
+        )
+
+
+@pytest.mark.asyncio
 async def test_run_once_ownership_loss_cancels_processing_without_ack_or_fail(monkeypatch):
     calls = []
     processing_started = asyncio.Event()

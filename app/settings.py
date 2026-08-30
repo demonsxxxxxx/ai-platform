@@ -84,7 +84,7 @@ class Settings(BaseSettings):
     queue_user_processing_limit: int = Field(default=0)
     queue_lease_scan_limit: int = Field(default=50)
     queue_insight_scan_limit: int = Field(default=500)
-    queue_lease_visibility_timeout_seconds: int = Field(default=900)
+    queue_lease_visibility_timeout_seconds: int = Field(default=900, ge=1)
     queue_metadata_fallback_scan_limit: int = Field(default=500)
     queue_dead_letter_max_entries: int = Field(default=1000, ge=1, le=100000)
     worker_heartbeat_ttl_seconds: float = Field(default=60.0)
