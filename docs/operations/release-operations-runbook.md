@@ -201,7 +201,7 @@ read only for signed `released` or `expired` history; active acquisition and
 dispatch require the current key and a fresh proof. Keep the raw values in the
 host environment file only.
 
-### s72 direct OpenSandbox functional acceptance
+### Internal-test direct OpenSandbox functional acceptance
 
 `docker-compose.opensandbox.yml` is the single direct-OpenSandbox overlay. It
 pins API and worker to `SANDBOX_CONTAINER_PROVIDER=opensandbox`,
@@ -219,10 +219,21 @@ commands, logs, or evidence.
 Unknown profiles, production selection, non-OpenSandbox providers, or a
 one-sided network-mode change fail during process startup.
 
-For the s72 direct OpenSandbox release, the controller first verifies that fresh
-`origin/main` has successful backend, frontend, and packaging runs. It then
-atomically prepares `/data/ai-platform-internal-test/incoming/latest-main.json`
-as a non-secret owner-managed file with exactly these fields:
+For the internal-test direct OpenSandbox release, the latest-main quickstart resolves the
+current fixed-repository `main` SHA and waits up to 30 minutes for successful
+backend, frontend, and packaging `push` runs for that exact SHA. It also requires
+the `backend required`, `frontend required`, and `release image ready manifest`
+jobs to have completed successfully. The private repository requires
+`GH_TOKEN`/`GITHUB_TOKEN` with repository Contents and Actions read access, or an
+authenticated local `gh` CLI session. The Docker host must already be logged in
+to `ghcr.io`.
+
+The quickstart downloads only the packaging ready artifact whose name is derived
+from the exact SHA, workflow run ID, and run attempt. It applies bounded archive
+extraction and runs the target checkout's semantic release-manifest verifier over
+the manifest, SBOM, provenance, signature, and scan evidence. Only then does it
+atomically prepare `/data/ai-platform-internal-test/incoming/latest-main.json` as
+a non-secret owner-managed file with exactly these fields:
 
 ```json
 {
@@ -234,27 +245,39 @@ as a non-secret owner-managed file with exactly these fields:
 }
 ```
 
-After preparing the matching exact-main checkout at
-`/data/ai-platform-internal-test/releases/<source_commit>`, run from that
-checkout with no release arguments:
+For an existing deployment, the controller reuses the stable managed `.env` path
+from the current subject. It materializes the matching exact-main checkout at
+`/data/ai-platform-internal-test/releases/<source_commit>` and completes the
+deployment with one command from any trusted checkout containing this wrapper:
 
 ```bash
-./scripts/quickstart-s72.sh
+./scripts/deploy-latest.sh --profile internal-test --latest
 ```
 
-The quickstart rechecks fresh `origin/main`, requires immutable role-specific
-image refs, validates the existing runtime-scoped managed `.env` as an
-owner-matching `0600` regular file without reading or printing its values, and
-runs Compose semantic preflight before either pull or up. It uses only the base
-file plus `docker-compose.opensandbox-internal-test.yml`, never builds on s72,
-and never runs `down`, `down -v`, or volume deletion. If startup or smoke fails,
-it performs one `--no-build --pull never` up of the saved previous subject;
+On the first deployment, supply the managed path once with
+`--env-file /data/ai-platform-internal-test/config/<managed-subject>/.env`, or set
+`AI_PLATFORM_QUICKSTART_ENV_FILE` for that invocation. A controller that has
+already prepared the exact checkout and subject may still use the compatible
+`./scripts/deploy-latest.sh --profile internal-test` retry path.
+
+One owner-managed advisory lock covers Actions discovery, exact checkout
+materialization, artifact verification, subject replacement, image pull,
+Compose mutation, health checks, and rollback. The quickstart removes GitHub API
+credentials from the child deployment environment, rechecks fresh
+`origin/main`, requires immutable role-specific image refs, validates the
+existing runtime-scoped managed `.env` as an owner-matching `0600` regular file
+without reading or printing its values, and runs Compose semantic preflight
+before either pull or up. It uses only the base file plus
+`docker-compose.opensandbox-internal-test.yml` and never builds on the managed
+host. It never runs `down`, `down -v`, or volume deletion. If startup or smoke
+fails, it performs one `--no-build --pull never` up of the saved previous subject;
 Postgres, Redis, MinIO, and workspace volumes remain untouched.
 
 The backend artifact also contains the OpenSandbox executor application. The
 quickstart binds `OPENSANDBOX_EXECUTOR_IMAGE` and its digest to that exact
-immutable backend subject, pulls it on the s72 Docker host before startup, and
-requires a successful local image inspection. This is a host-side cache warmup,
+immutable backend subject, pulls it on the internal-test Docker host before
+startup, and requires a successful local image inspection. This is a host-side
+cache warmup,
 not an OpenSandbox fork or server modification. A multi-node OpenSandbox runtime
 must perform the same digest-bound pull on every node that may create a sandbox.
 
@@ -264,15 +287,16 @@ retry, and resume reject full or mixed manifest payloads. This is a hard
 cutover: unfinished legacy Skill runs without private materializations cannot be
 resumed after deployment and must be submitted again.
 
-`ci_success` is the controller's admission result; the quickstart does not
-replace the controller's exact-run CI and packaging verification. Keep the
-selected managed env path stable across successive releases. The small image
-rollback only proves that the previous images became healthy again; it does not
-reverse database migrations, which must remain backward-compatible or use a
-separate operator recovery.
+`ci_success` is written only after exact-run Actions and packaging evidence
+verification. Keep the selected managed env path stable across successive
+releases. A failure before subject replacement preserves the previous subject
+byte-for-byte. A deployment failure after admission keeps the approved target
+subject for an explicit retry. The small image rollback only proves that the
+previous images became healthy again; it does not reverse database migrations,
+which must remain backward-compatible or use a separate operator recovery.
 
-Before running, s72 must be able to reach both GitHub and GHCR through the
-operator-approved proxy. The quickstart only inherits standard proxy
+Before running, the internal-test host must be able to reach both GitHub and
+GHCR through the operator-approved proxy. The quickstart only inherits standard proxy
 environment behavior; it does not configure Git, Docker daemon, or host proxy
 settings.
 
@@ -283,7 +307,7 @@ The `bridge` network is an accepted internal-test risk, not production
 isolation evidence. Acceptance still requires one application-owned run to
 prove SDK create and metadata readback, executor health and runtime identity,
 command execution, file stage/read/collect, stop, and orphan-free cleanup. On
-the s72 host, inspect that exact sandbox container and record
+the internal-test host, inspect that exact sandbox container and record
 `HostConfig.Runtime=runsc`; configuration files and source tests are not runtime
 proof. Keep the governed profile as the production default and track network
 closure as separate follow-up work.
@@ -291,10 +315,11 @@ closure as separate follow-up work.
 The production release uses the base Compose file plus
 `docker-compose.opensandbox.yml`. API and Worker use the official
 OpenSandbox SDK directly with `OPENSANDBOX_USE_SERVER_PROXY=true`. The
-OpenSandbox Server remains an independently managed root service using runsc;
-its lifecycle port is published only on a dedicated private host address distinct
-from the egress bridge address. The server process binds its isolated service
-container internally, while Docker owns that exact host publication. Target
+OpenSandbox Server remains an independently managed trusted host service that
+configures spawned sandbox containers to use `runsc`; its lifecycle port is
+published only on a dedicated private host address distinct from the egress
+bridge address. The server process binds its isolated service container
+internally, while Docker owns that exact host publication. Target
 parity probes `/health` from both API and Worker before migration can report
 success. Native bridge network policy permits only the distinct stateless
 egress-proxy address.
@@ -305,26 +330,147 @@ Executor to the Packaging-qualified Backend `repository@sha256` reference and
 bind its digest field to the matching `sha256` value; target parity resolves that
 reference and requires the resulting image ID to equal the API and Worker image.
 
-The s75 deployment keeps Compose project `ai-platform-internal` and the four
-existing named data/workspace volumes. It also preserves the authenticated
+### Production rebuild and direct-runtime update
+
+The production bootstrap command is the normal recovery entry when the managed
+production host has no AI Platform Compose containers, and the normal
+image-update entry after it is already running the verified direct-OpenSandbox
+contour. The legacy Docker-sandbox-to-OpenSandbox transition is documented
+separately below.
+
+The base host must already provide Python 3.11 or newer, Docker with Compose v2,
+systemd, and a registered Docker `runsc` runtime. Root must have private GHCR
+pull access and either `GH_TOKEN`/`GITHUB_TOKEN` with repository Contents and
+Actions read access or an authenticated `gh` CLI session. Before the command,
+restore these files through the approved secret-management path:
+
+```text
+/data/ai-platform-prod/config/production/.env        root:root 0600
+/etc/ai-platform/opensandbox/server.env              root:root 0600
+/etc/ai-platform/opensandbox/server.toml             root:<server-gid> 0640
+```
+
+`<server-gid>` must exactly equal `OPENSANDBOX_SERVER_GID`. The server runs as
+that dedicated non-root identity, so this bounded group-read permission is what
+allows it to read the mounted TOML; the application env and systemd environment
+file remain root-only.
+
+Use `deploy/opensandbox/server-production.env.example` and
+`deploy/opensandbox/server-production.toml.example` only as initial schemas.
+Replace every required placeholder before sealing the files. The application env must
+set `SANDBOX_WORKSPACE_ROOT=/data/ai-platform-prod/runtime-workspaces`, the
+production direct-OpenSandbox keys required by the selected overlay, and the
+same lifecycle API key, lifecycle endpoint, and egress bind address provisioned
+for the host service. Keep those three values plain and unquoted in the
+application env so the bootstrap can compare them without sourcing the file.
+The application `OPENSANDBOX_EXECUTOR_IMAGE` is separately bound to the
+release-authority backend workload image; it is not the OpenSandbox host TOML's
+`runtime.execd_image`. Do not print, copy, source, or pass secret values on the
+command line.
+
+The server, execd, and egress sidecar references must all be immutable digests.
+Before sealing `server.env`, independently verify the exact server digest against
+an approved OpenSandbox `server/v0.1.13` or newer release; the upstream server
+image does not expose a trustworthy source-version OCI label. The reviewed TOML
+sets `docker.host_ip` to the lifecycle address, uses `dns+nft` because the only
+allowed egress target is an IP address, disables IPv6 egress, and sets
+`allowed_host_paths = []`, `sandbox_binds = []`, and `sandbox_env = {}`. This
+application transfers files through the SDK and never sends a host bind mount.
+
+For a cold rebuild, run:
+
+```bash
+cd "$SOURCE"
+sudo -n ./scripts/deploy-latest.sh --profile production --latest \
+  --env-file /data/ai-platform-prod/config/production/.env
+```
+
+The controller requires root, secure canonical config metadata, Docker Compose,
+`runsc`, a distinct private lifecycle address, a distinct private egress
+address, digest-bound OpenSandbox server, execd, and egress images, and a matching
+Docker socket group. Both private addresses must already be assigned to the
+production host. It creates or validates the canonical server-state and
+platform-workspace directories and lifecycle network, installs the exact
+checkout's reviewed `opensandbox.service`, pulls its immutable images, and proves service/container
+identity plus `/health`. It then reuses the exact-main Actions and packaging
+admission, materializes `/data/ai-platform-prod/releases/<commit>`, validates the
+production Compose semantics, and converges project `ai-platform-internal` with
+the base file plus `docker-compose.opensandbox.yml`.
+
+Treat the OpenSandbox server as part of the trusted host control plane. The
+read-only filesystem bind for `/var/run/docker.sock` does not attenuate Docker
+API permissions: the server still has effective Docker daemon authority. The
+root-owned repository-managed unit, exact unit-to-container source label,
+container HostConfig/mount checks, and lifecycle-network ownership checks are
+the admission boundary; they do not replace application-owned runsc and
+sandbox-lifecycle acceptance. The trusted OpenSandbox server container itself
+uses the host control-plane runtime. `runsc` is selected by its governed TOML
+for spawned executor/sandbox containers and must be observed on those real
+sandbox containers during acceptance. The unit's isolated guard removes the
+fixed-name server container only after verifying its immutable image reference,
+source commit, and repository ownership labels; a foreign same-name container
+blocks start or stop.
+
+After the first successful deployment, the same command reuses the approved env
+path:
+
+```bash
+sudo -n ./scripts/deploy-latest.sh --profile production --latest
+```
+
+An existing direct production update first proves exact current parity,
+quiescence, no managed sandbox containers, and schema equality needed by the
+image rollback path. It also requires an already installed bootstrap-managed
+OpenSandbox unit whose recorded host-configuration fingerprint exactly matches
+the current parsed `server.env` and TOML. Routine application updates never adopt
+a foreign service or change the Server image, API key, execd/egress images,
+identity, addresses, or policy. Treat those as a separately reviewed host
+maintenance operation. Target startup or parity failure performs one
+restore from the exact previous checkout and verified local images only after
+admission is stopped again and quiescence is re-proved. If the reviewed host unit
+changed, its previous version is restored and revalidated before the previous
+application images start. If that rollback fence is unavailable, the controller
+leaves admission stopped and does not start the previous images. A cold start has
+no application runtime to restore; failure preserves all named volumes and
+removes the newly created Compose containers and networks after fencing
+admission. A cleanup failure stops for bounded operator inspection. Never use
+this command to adopt a partial, foreign, or legacy Compose contour. Use the
+explicit transition below for a live legacy production installation.
+
+A nonzero run may be retried from the already admitted subject, without another
+Actions download, only after its failure has been classified:
+
+```bash
+sudo -n ./scripts/deploy-latest.sh --profile production
+```
+
+Successful completion proves host-service health, application deployment smoke,
+and exact production parity. It still reports application-owned OpenSandbox
+acceptance as pending. Complete the create -> execute -> stage/read/collect ->
+delete and `HostConfig.Runtime=runsc` checks below before production acceptance.
+
+The production deployment keeps Compose project `ai-platform-internal` and the
+four existing named data/workspace volumes. It also preserves the authenticated
 `/data/ai-platform-prod/runtime-workspaces` platform bind for `workspace-init`,
 API, and Worker; OpenSandbox sandboxes never receive that host path and continue
 to use bounded SDK file transfer. A bounded transition stops admission,
 proves zero nonterminal Runs/RunAttempts/leases and zero sandbox containers,
-changes the overlay in place, and revalidates exact volume and bind mount identities.
-Rollback uses the same project and volumes, plus the same platform bind, without
+changes the overlay in place, and revalidates exact volume and bind mount
+identities. Rollback uses the same project and volumes, plus the same platform
+bind, without
 `down -v` or any project namespace migration.
 
-Run the transition only from the exact CI-qualified target checkout. `LEGACY_REPO_ROOT`
-must likewise be a newly materialized, root-owned exact-commit checkout used only
-as rollback authority; it need not be the old deploy-user checkout recorded in
+Run the transition only from the exact CI-qualified target checkout.
+`LEGACY_REPO_ROOT` must likewise be a newly materialized, root-owned exact-commit
+checkout used only as rollback authority; it need not be the old deploy-user
+checkout recorded in
 the running containers. The transition validates initial container labels
-against the fixed historical s75 release root, commit, and Compose relative
-paths without reading or executing that old tree. After the transition restores
+against the fixed historical production release root, commit, and Compose
+relative paths without reading or executing that old tree. After the transition restores
 the project from the authenticated rollback checkout, a retry accepts only a
 consistent label set naming that same trusted Compose selection. Preserve the
-currently verified Docker
-release values before cutover; they are rollback arguments, not values to
+currently verified Docker release values before cutover; they are rollback
+arguments, not values to
 rediscover after a failure. The command exits before mutation when schema,
 quiescence, image, project, volume, host, or Compose preflight fails. A failure
 after the old contour stops performs one automatic rollback and exits nonzero.
