@@ -1,7 +1,7 @@
 import argparse
 import asyncio
 import contextlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import os
@@ -20,7 +20,7 @@ from app.bootstrap.worker_maintenance import (
     run_maintenance_phases,
     worker_maintenance_interval_seconds as _worker_maintenance_interval_seconds,
 )
-from app.execution.api import stage_stale_run_reconciliation
+from app.execution.api import WorkerQueueLease, stage_stale_run_reconciliation
 from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_SKILL,
     sanitize_public_payload,
@@ -206,6 +206,24 @@ async def _heartbeat_until_done(
         raise
     except Exception:
         ownership_lost.set()
+
+
+def _durable_queue_lease(
+    message: queue.QueueMessage,
+    *,
+    visibility_timeout_seconds: int,
+) -> WorkerQueueLease | None:
+    if message.leased_at is None:
+        return None
+    if visibility_timeout_seconds <= 0:
+        raise ValueError("queue_lease_visibility_timeout_invalid")
+    last_heartbeat_at = datetime.fromtimestamp(message.leased_at, tz=timezone.utc)
+    return WorkerQueueLease(
+        queue_message_id=message.queue_message_id,
+        last_heartbeat_at=last_heartbeat_at,
+        lease_expires_at=last_heartbeat_at
+        + timedelta(seconds=visibility_timeout_seconds),
+    )
 
 
 async def cleanup_expired_sandbox_leases() -> None:
@@ -797,6 +815,12 @@ async def run_once(
     )
     if message is None:
         return WorkerOutcome(status="idle", run_id=None)
+    durable_queue_lease = _durable_queue_lease(
+        message,
+        visibility_timeout_seconds=int(
+            getattr(settings, "queue_lease_visibility_timeout_seconds", 900)
+        ),
+    )
 
     ownership_lost = asyncio.Event()
     heartbeat_task = asyncio.create_task(
@@ -821,12 +845,14 @@ async def run_once(
 
     async def process_leased_message() -> WorkerOutcome:
         try:
-            return await process_run_payload(
-                message.payload,
-                registry=registry,
-                worker_id=resolved_worker_id,
-                v4_capabilities=v4_capabilities,
-            )
+            process_kwargs = {
+                "registry": registry,
+                "worker_id": resolved_worker_id,
+                "v4_capabilities": v4_capabilities,
+            }
+            if durable_queue_lease is not None:
+                process_kwargs["queue_lease"] = durable_queue_lease
+            return await process_run_payload(message.payload, **process_kwargs)
         except Exception as exc:
             logger.exception(
                 "Worker payload processing escaped its terminal path",

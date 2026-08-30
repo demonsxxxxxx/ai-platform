@@ -442,6 +442,7 @@ class FakeRedis:
                 {
                     "status": "leased",
                     "attempts": attempts,
+                    "leased_at": float(now),
                     "attempt_id": attempt_id,
                     "owner_token": owner_token,
                     "tenant_processing": tenant_processing,
@@ -1043,7 +1044,6 @@ async def test_enqueue_run_writes_indexed_queue_metadata(monkeypatch):
         return fake
 
     monkeypatch.setattr("app.queue.get_redis", get_redis)
-
     position = await queue.enqueue_run(payload)
 
     assert position == 1
@@ -1246,6 +1246,7 @@ async def test_lease_run_moves_valid_payload_to_processing(monkeypatch):
         return fake
 
     monkeypatch.setattr("app.queue.get_redis", get_redis)
+    monkeypatch.setattr("app.queue._now", lambda: 100.0)
 
     message = await queue.lease_run(timeout_seconds=3, worker_id="worker-a")
 
@@ -1260,6 +1261,8 @@ async def test_lease_run_moves_valid_payload_to_processing(monkeypatch):
     assert message.payload[queue.QUEUE_ATTEMPT_ID_FIELD] == message.attempt_id
     assert message.attempt_id.startswith("qat_")
     assert message.owner_token.startswith("qown_")
+    assert message.leased_at == 100.0
+    assert message.delivery_attempt == 1
     assert json.loads(fake.meta[message.queue_message_id])["worker_id"] == "worker-a"
     assert fake.closed is True
 

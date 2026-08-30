@@ -342,6 +342,7 @@ redis.call("hset", worker_heartbeat_key, worker_id, tostring(now))
 return cjson.encode({
   status = "leased",
   attempts = attempts,
+  leased_at = now,
   attempt_id = attempt_id,
   owner_token = owner_token,
   tenant_processing = tenant_processing,
@@ -893,6 +894,8 @@ class QueueMessage:
     queue_message_id: str
     attempt_id: str
     owner_token: str
+    leased_at: float | None = None
+    delivery_attempt: int | None = None
 
 
 @dataclass(frozen=True)
@@ -2051,6 +2054,13 @@ async def _lease_run_with_quota(
             attempts = result.get("attempts")
             if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 1:
                 continue
+            leased_at = result.get("leased_at")
+            if (
+                isinstance(leased_at, bool)
+                or not isinstance(leased_at, (int, float))
+                or leased_at <= 0
+            ):
+                continue
             if result.get("attempt_id") != attempt_id or result.get("owner_token") != owner_token:
                 continue
             payload = _leased_payload(payload_model.model_dump(), attempt_id=attempt_id)
@@ -2061,6 +2071,8 @@ async def _lease_run_with_quota(
                 queue_message_id=message_id,
                 attempt_id=attempt_id,
                 owner_token=owner_token,
+                leased_at=float(leased_at),
+                delivery_attempt=attempts,
             )
         scanned += end_index - scan_start + 1
     return None

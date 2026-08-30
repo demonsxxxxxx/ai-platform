@@ -1,5 +1,3 @@
-import hashlib
-import json
 import re
 from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -45,6 +43,7 @@ from app.execution.api import (
     WorkerAttemptLifecycle,
     WorkerAttemptLifecyclePorts,
     WorkerExecutorReconciliation,
+    WorkerQueueLease,
     WorkerRunCancelled,
     bind_worker_attempt_lifecycle,
     fail_run_and_reconcile_worker_child as _fail_run_and_reconcile_worker_child,
@@ -350,29 +349,6 @@ async def _fail_run_and_reconcile_with_write(
         result_json=result_json,
         is_multi_agent_child=is_multi_agent_child,
     )
-
-
-def _mcp_tool_request_payload(payload: QueueRunPayload) -> dict[str, str]:
-    serialized = json.dumps(payload.input, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return {"input_sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest()}
-
-
-def _mcp_tool_call_id(
-    payload: QueueRunPayload,
-    request_payload: dict[str, str],
-    *,
-    tool_id: str | None = None,
-) -> str:
-    raw = "|".join(
-        [
-            payload.tenant_id,
-            payload.user_id,
-            payload.run_id,
-            tool_id or payload.skill_id or "",
-            request_payload.get("input_sha256", ""),
-        ]
-    )
-    return f"mcp_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]}"
 
 
 def _strip_local_output_paths(message: str) -> str:
@@ -2043,6 +2019,7 @@ async def process_run_payload(
     *,
     worker_id: str | None = None,
     reconciliation: WorkerExecutorReconciliation | None = None,
+    queue_lease: WorkerQueueLease | None = None,
     transaction_factory: Any | None = None,
     v4_capabilities: WorkerV4Capabilities,
 ) -> WorkerOutcome:
@@ -2072,6 +2049,7 @@ async def process_run_payload(
         worker_id=worker_id,
         reconciliation=reconciliation,
         ports=_worker_attempt_lifecycle_ports(),
+        queue_lease=queue_lease,
     )
     attempt_id = attempt_lifecycle.attempt_id
     trace_id = standard_trace_id(payload.run_id)
