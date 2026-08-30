@@ -47,14 +47,19 @@ def test_repository_manifests_match_exact_traceability_ownership():
         "KDBACL-12",
         "KDBAGT-13",
         "KDBCON-09",
+        "KDBATT-15",
+        "KDBEVD-16",
+        "KDBRUN-14",
         "KDBSRC-11",
         "KDBSYNC-10",
         "KDOC-00",
         "KDOM-03",
         "KMARKET-33",
+        "KNORM-07",
         "KPROF-28",
         "KPROFDM-06",
         "KPRVCAT-18",
+        "KPRVRET-19",
         "KPUB-32",
         "KREADY-46",
         "KSOURCE-22",
@@ -148,20 +153,23 @@ def test_git_changed_paths_includes_deleted_files(monkeypatch: pytest.MonkeyPatc
 
     def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         observed.extend(command)
-        return subprocess.CompletedProcess(command, 0, stdout="app/knowledge/deleted.py\n")
+        return subprocess.CompletedProcess(
+            command, 0, stdout="app/knowledge/deleted.py\n"
+        )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    assert git_changed_paths(ROOT, "a" * 40, "b" * 40) == (
-        "app/knowledge/deleted.py",
-    )
+    assert git_changed_paths(ROOT, "a" * 40, "b" * 40) == ("app/knowledge/deleted.py",)
     assert "--diff-filter=ACMRD" in observed
 
 
 def test_changed_path_gate_requires_a_changed_manifest():
     with pytest.raises(ManifestContractError) as error:
         validate_changed_path_coverage(
-            ("app/knowledge/models.py",), (), manifest_dir=DEFAULT_MANIFEST_DIR, root=ROOT
+            ("app/knowledge/models.py",),
+            (),
+            manifest_dir=DEFAULT_MANIFEST_DIR,
+            root=ROOT,
         )
 
     assert error.value.code == "changed_manifest_required"

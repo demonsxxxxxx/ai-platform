@@ -26,6 +26,7 @@ from .provider import (
     ProviderRetrievalResult,
 )
 from .normalization import normalize_provider_chunk, normalize_provider_result
+from .runtime import KnowledgeEvidence, RunKnowledgeSnapshot, RunKnowledgeSourceSnapshot
 
 __all__ = [
     "KnowledgeAcl",
@@ -47,6 +48,9 @@ __all__ = [
     "ProviderRetrievalResult",
     "normalize_provider_chunk",
     "normalize_provider_result",
+    "KnowledgeEvidence",
+    "RunKnowledgeSnapshot",
+    "RunKnowledgeSourceSnapshot",
     "canonical_connection_name",
     "canonical_origin",
 ]

@@ -1,0 +1,14 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KDBRUN-14",
+  "issue_number": 1311,
+  "summary": "Immutable Run Knowledge Snapshot and generation-fenced runtime repository",
+  "atomic_case_ids": [],
+  "changed_paths": [
+    "app/knowledge/domain/runtime.py",
+    "app/knowledge/infrastructure/runtime_postgres.py",
+    "docs/product/external-knowledge/manifests/KDBRUN-14.json",
+    "tests/test_knowledge_runtime.py"
+  ],
+  "evidence_layers": ["source", "unit", "postgresql"]
+}
