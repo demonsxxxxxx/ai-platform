@@ -636,22 +636,40 @@ def _down(
     )
 
 
-def _require_legacy_convergence(docker: Sequence[str], runtime: LegacyRuntime) -> None:
+def _legacy_convergence_report(
+    docker: Sequence[str], runtime: LegacyRuntime
+) -> dict[str, bool]:
     if _legacy_runtime(docker, runtime.repo_root, runtime.commit) != runtime:
         raise TransitionError("legacy rollback identity mismatch")
+    verified = True
     for service, name in CONTAINERS.items():
         state = _inspect_container(docker, name).get("State")
         if not isinstance(state, dict):
             raise TransitionError(f"legacy rollback state mismatch: {service}")
+        status = state.get("Status")
+        running = state.get("Running")
+        exit_code = state.get("ExitCode")
         if service in {"migrate", "workspace-init"}:
-            valid = state.get("Status") == "exited" and state.get("ExitCode") == 0
-        else:
-            health = state.get("Health")
-            valid = state.get("Running") is True and (
-                health is None or isinstance(health, dict) and health.get("Status") == "healthy"
-            )
-        if not valid:
+            if (status, running, exit_code) in {
+                ("created", False, 0),
+                ("running", True, 0),
+            }:
+                verified = False
+            elif status != "exited" or running is not False or exit_code != 0:
+                raise TransitionError(f"legacy rollback state mismatch: {service}")
+            continue
+        if status != "running" or running is not True:
             raise TransitionError(f"legacy rollback state mismatch: {service}")
+        health = state.get("Health")
+        if health is None:
+            continue
+        if not isinstance(health, dict):
+            raise TransitionError(f"legacy rollback state mismatch: {service}")
+        if health.get("Status") == "starting":
+            verified = False
+        elif health.get("Status") != "healthy":
+            raise TransitionError(f"legacy rollback state mismatch: {service}")
+    return {"verified": verified}
 
 
 def _rollback(
@@ -685,7 +703,10 @@ def _rollback(
         cwd=runtime.compose_files[0].parent,
         timeout=600,
     )
-    _require_legacy_convergence(docker, runtime)
+    authority.converge_final_parity(
+        lambda _: _legacy_convergence_report(docker, runtime),
+        authority_error_type=TransitionError,
+    )
 
 
 def _migrate_locked(
