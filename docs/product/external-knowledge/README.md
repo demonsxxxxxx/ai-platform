@@ -24,10 +24,18 @@ citation projection, and user experience.
 | Source, integration, browser, runtime and external acceptance | [`acceptance-matrix.md`](acceptance-matrix.md) |
 | Requirement-to-test-to-change traceability | [`traceability-matrix.md`](traceability-matrix.md) |
 | Independently acceptable implementation change contracts | [`implementation-slices.md`](implementation-slices.md) |
+| Machine-readable atomic-case and changed-path ownership | [`manifests/`](manifests/) |
 | Current RAGFlow-specific surface inventory and migration disposition | [`baseline-disposition.md`](baseline-disposition.md) |
 
 If a summary in one document differs from the detailed owner above, the
 detailed owner is normative for that concern.
+
+Every candidate implementation slice publishes one versioned manifest in
+`manifests/` as part of its reviewed change.
+The required repository validator derives that slice's exclusive atomic cases
+from `traceability-matrix.md` and binds the manifest to the exact changed paths
+before merge. Manual workflow dispatch validates repository authority; pull
+request and push subjects additionally validate exact changed-path coverage.
 
 ## Repository authority dependencies
 

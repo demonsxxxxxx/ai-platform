@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/demonsxxxxxx/ai-platform/schemas/external-knowledge-slice-manifest.v1.schema.json",
+  "$comment": "The JSON Schema owns document shape. The repository validator derives exclusive atomic-case ownership from the normative traceability matrix and verifies changed-path coverage against exact Git subjects.",
+  "title": "AI Platform External Knowledge slice manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "slice_id",
+    "issue_number",
+    "summary",
+    "atomic_case_ids",
+    "changed_paths",
+    "evidence_layers"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "ai-platform.external-knowledge-slice-manifest.v1"
+    },
+    "slice_id": {
+      "type": "string",
+      "pattern": "^K[A-Z]+-[0-9]{2}$"
+    },
+    "issue_number": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "atomic_case_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^KAC-FR-[A-Z]+-[0-9]{3}$"
+      }
+    },
+    "changed_paths": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300,
+        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+$"
+      }
+    },
+    "evidence_layers": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "source",
+          "unit",
+          "integration",
+          "postgresql",
+          "frontend-build",
+          "browser",
+          "packaged-image",
+          "runtime",
+          "external"
+        ]
+      }
+    }
+  }
+}

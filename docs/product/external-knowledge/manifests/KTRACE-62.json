@@ -1,0 +1,22 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KTRACE-62",
+  "issue_number": 1311,
+  "summary": "Required atomic-case manifest validation for External Knowledge delivery slices",
+  "atomic_case_ids": [
+    "KAC-FR-KOPS-035"
+  ],
+  "changed_paths": [
+    ".github/workflows/ai-platform-backend.yml",
+    "docs/product/external-knowledge/README.md",
+    "docs/product/external-knowledge/manifests/KTRACE-62.json",
+    "schemas/external-knowledge-slice-manifest.v1.schema.json",
+    "tests/test_backend_ci_workflow.py",
+    "tests/test_external_knowledge_slice_manifest.py",
+    "tools/validate_external_knowledge_slice_manifest.py"
+  ],
+  "evidence_layers": [
+    "source",
+    "unit"
+  ]
+}
