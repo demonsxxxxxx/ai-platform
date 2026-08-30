@@ -35,42 +35,11 @@ from app.validation import (
     assert_safe_id,
     assert_safe_principal_user_id,
     assert_upstream_model_id,
+    normalize_agent_profile_user_ids,
+    normalize_capability_department_ids,
+    normalize_capability_roles,
+    require_universal_agent_input_types,
 )
-
-
-def _normalize_capability_department_ids(values: list[str], field_name: str) -> list[str]:
-    normalized: list[str] = []
-    for value in values:
-        candidate = assert_safe_id(value.strip(), field_name)
-        if candidate not in normalized:
-            normalized.append(candidate)
-    return normalized
-
-
-def _normalize_capability_roles(values: list[str], field_name: str) -> list[str]:
-    normalized: list[str] = []
-    for value in values:
-        candidate = assert_safe_id(value.strip().casefold(), field_name)
-        if candidate not in normalized:
-            normalized.append(candidate)
-    return normalized
-
-
-def _normalize_agent_profile_user_ids(values: list[str], field_name: str) -> list[str]:
-    """Normalize explicit profile-user grants without weakening principal identity rules."""
-
-    normalized: list[str] = []
-    for value in values:
-        candidate = assert_safe_principal_user_id(value.strip(), field_name)
-        if candidate not in normalized:
-            normalized.append(candidate)
-    return normalized
-
-
-def _require_universal_agent_input_types(values: list[str]) -> list[str]:
-    if values != ["text", "file"]:
-        raise ValueError("supported_input_types must be the universal text/file capability")
-    return values
 
 
 class CapabilityDistributionResponse(BaseModel):
@@ -108,12 +77,12 @@ class CapabilityDistributionUpdateRequest(BaseModel):
     @field_validator("department_ids")
     @classmethod
     def normalize_department_ids(cls, value: list[str], info):
-        return _normalize_capability_department_ids(value, info.field_name)
+        return normalize_capability_department_ids(value, info.field_name)
 
     @field_validator("allowed_roles")
     @classmethod
     def normalize_allowed_roles(cls, value: list[str], info):
-        return _normalize_capability_roles(value, info.field_name)
+        return normalize_capability_roles(value, info.field_name)
 
 
 class CapabilityDistributionAuthorityUpdateRequest(BaseModel):
@@ -131,7 +100,7 @@ class CapabilityDistributionAuthorityUpdateRequest(BaseModel):
     @field_validator("allowed_roles")
     @classmethod
     def normalize_allowed_roles(cls, value: list[str], info):
-        return _normalize_capability_roles(value, info.field_name)
+        return normalize_capability_roles(value, info.field_name)
 
 
 class CapabilityDistributionToggleRequest(BaseModel):
@@ -333,17 +302,17 @@ class AgentProfileDraftRequest(BaseModel):
     @field_validator("allowed_department_ids")
     @classmethod
     def normalize_allowed_department_ids(cls, value: list[str], info):
-        return _normalize_capability_department_ids(value, info.field_name)
+        return normalize_capability_department_ids(value, info.field_name)
 
     @field_validator("allowed_roles")
     @classmethod
     def normalize_allowed_roles(cls, value: list[str], info):
-        return _normalize_capability_roles(value, info.field_name)
+        return normalize_capability_roles(value, info.field_name)
 
     @field_validator("allowed_user_ids")
     @classmethod
     def normalize_allowed_user_ids(cls, value: list[str], info):
-        return _normalize_agent_profile_user_ids(value, info.field_name)
+        return normalize_agent_profile_user_ids(value, info.field_name)
 
 
 class AgentProfilePublishRequest(BaseModel):
@@ -456,7 +425,7 @@ class AgentProfilePublicProjection(BaseModel):
     published_at: Any | None = None
 
     _validate_supported_input_types = field_validator("supported_input_types")(
-        _require_universal_agent_input_types
+        require_universal_agent_input_types
     )
 
 
@@ -505,7 +474,7 @@ class AgentProfileAdminProjection(BaseModel):
     published_at: Any | None = None
 
     _validate_supported_input_types = field_validator("supported_input_types")(
-        _require_universal_agent_input_types
+        require_universal_agent_input_types
     )
 
 
@@ -588,7 +557,7 @@ class AgentConversationIdentity(BaseModel):
     published_at: Any | None = None
 
     _validate_supported_input_types = field_validator("supported_input_types")(
-        _require_universal_agent_input_types
+        require_universal_agent_input_types
     )
 
 

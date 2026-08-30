@@ -146,3 +146,10 @@ async def authorize_agent_profile_knowledge_sources(
             }
         )
     return tuple(bindings)
+
+
+class PostgresAgentProfileKnowledgeAuthorizationRepository:
+    """PostgreSQL adapter for immutable Agent Knowledge binding resolution."""
+
+    async def authorize(self, conn: Any, **kwargs: Any) -> tuple[dict[str, Any], ...]:
+        return await authorize_agent_profile_knowledge_sources(conn, **kwargs)

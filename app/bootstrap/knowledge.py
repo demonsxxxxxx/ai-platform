@@ -5,8 +5,16 @@ from fastapi import APIRouter
 from app.auth import is_ai_admin, require_principal
 from app.db import transaction
 from app.department_directory import fetch_department_directory
-from app.knowledge.application import KnowledgeControlPlane, configure_knowledge_control_plane
-from app.knowledge.infrastructure import PostgresKnowledgeRepository
+from app.knowledge.application import (
+    AgentProfileKnowledgeAuthorizationService,
+    KnowledgeControlPlane,
+    configure_agent_profile_knowledge_authorization,
+    configure_knowledge_control_plane,
+)
+from app.knowledge.infrastructure import (
+    PostgresAgentProfileKnowledgeAuthorizationRepository,
+    PostgresKnowledgeRepository,
+)
 from app.knowledge.infrastructure.providers import RagFlowCatalogProvider
 from app.knowledge.transport import build_knowledge_admin_router
 from app.platform.credentials import PlatformCredentialVault
@@ -15,6 +23,11 @@ from app.settings import get_settings
 
 
 def configure_knowledge_services() -> None:
+    configure_agent_profile_knowledge_authorization(
+        AgentProfileKnowledgeAuthorizationService(
+            PostgresAgentProfileKnowledgeAuthorizationRepository()
+        )
+    )
     configure_knowledge_control_plane(
         KnowledgeControlPlane(
             transaction_factory=transaction,

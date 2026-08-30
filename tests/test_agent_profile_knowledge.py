@@ -4,7 +4,13 @@ from typing import Any
 
 import pytest
 
+from app.knowledge.api import (
+    AgentProfileKnowledgeAuthorizationService,
+    authorize_agent_profile_knowledge_sources as authorize_via_public_boundary,
+    configure_agent_profile_knowledge_authorization,
+)
 from app.knowledge.infrastructure.agent_profiles import (
+    PostgresAgentProfileKnowledgeAuthorizationRepository,
     authorize_agent_profile_knowledge_sources,
 )
 from app.models import AgentProfileDraftRequest
@@ -65,6 +71,40 @@ def test_agent_profile_request_rejects_duplicate_and_ninth_knowledge_source() ->
             knowledge_source_ids=[f"ks_{index}" for index in range(9)],
             retrieval_profile_id="krp_default",
         )
+
+
+@pytest.mark.asyncio
+async def test_agent_profile_authority_uses_the_configured_knowledge_public_boundary() -> None:
+    calls: list[tuple[Any, dict[str, Any]]] = []
+
+    class Repository:
+        async def authorize(self, conn: Any, **kwargs: Any) -> tuple[dict[str, Any], ...]:
+            calls.append((conn, kwargs))
+            return ({"source_id": "ks_finance"},)
+
+    configured = AgentProfileKnowledgeAuthorizationService(Repository())
+    configure_agent_profile_knowledge_authorization(configured)
+    try:
+        connection = object()
+        result = await authorize_via_public_boundary(
+            connection,
+            tenant_id="default",
+            source_ids=["ks_finance"],
+        )
+    finally:
+        configure_agent_profile_knowledge_authorization(
+            AgentProfileKnowledgeAuthorizationService(
+                PostgresAgentProfileKnowledgeAuthorizationRepository()
+            )
+        )
+
+    assert result == ({"source_id": "ks_finance"},)
+    assert calls == [
+        (
+            connection,
+            {"tenant_id": "default", "source_ids": ["ks_finance"]},
+        )
+    ]
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,7 @@ from app.agent_apps.api import safe_agent_avatar_seed
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
+from app.knowledge.api import authorize_agent_profile_knowledge_sources
 from app.models import (
     AgentConversationIdentity,
     AgentProfileAdminProjection,
@@ -962,19 +963,23 @@ class AgentProfileAuthority:
                 is_admin=is_ai_admin(principal),
                 permissions=principal.permissions,
             )
-            knowledge_bindings = await repositories.authorize_agent_profile_knowledge_sources(
-                conn,
-                tenant_id=principal.tenant_id,
-                source_ids=list(definition.knowledge_source_ids),
-                retrieval_profile_id=definition.retrieval_profile_id,
-                principal_user_id=principal.user_id,
-                principal_department_id=principal.department_id,
-                principal_roles=principal.roles,
-                is_admin=is_ai_admin(principal),
-                agent_visibility=definition.visibility,
-                agent_department_ids=list(definition.allowed_department_ids),
-                agent_roles=list(definition.allowed_roles),
-                agent_user_ids=list(definition.allowed_user_ids),
+            knowledge_bindings = (
+                await authorize_agent_profile_knowledge_sources(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    source_ids=list(definition.knowledge_source_ids),
+                    retrieval_profile_id=definition.retrieval_profile_id,
+                    principal_user_id=principal.user_id,
+                    principal_department_id=principal.department_id,
+                    principal_roles=principal.roles,
+                    is_admin=is_ai_admin(principal),
+                    agent_visibility=definition.visibility,
+                    agent_department_ids=list(definition.allowed_department_ids),
+                    agent_roles=list(definition.allowed_roles),
+                    agent_user_ids=list(definition.allowed_user_ids),
+                )
+                if definition.knowledge_source_ids
+                else ()
             )
             definition._knowledge_bindings = [dict(binding) for binding in knowledge_bindings]
         except repositories.RepositoryConflictError as exc:

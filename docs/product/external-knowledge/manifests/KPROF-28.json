@@ -9,15 +9,19 @@
   ],
   "changed_paths": [
     "app/agent_apps/authority.py",
+    "app/knowledge/api.py",
+    "app/knowledge/application/agent_profile_authorization.py",
     "app/models.py",
-    "app/repositories.py",
+    "app/validation.py",
+    "app/worker_main.py",
     "docs/product/external-knowledge/manifests/KPROF-28.json",
     "frontend/web/src/services/api/__tests__/agentProfile.test.ts",
     "frontend/web/src/types/agentProfile.ts",
     "frontend/web/src/types/index.ts",
     "tests/test_agent_profile_lifecycle.py",
     "tests/test_agent_profiles.py",
-    "tests/test_repositories.py"
+    "tests/test_repositories.py",
+    "tests/test_worker_main.py"
   ],
   "evidence_layers": ["source", "unit"]
 }

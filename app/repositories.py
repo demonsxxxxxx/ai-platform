@@ -59,7 +59,6 @@ import app.agent_apps.infrastructure.postgres as agent_profile_persistence
 import app.context.infrastructure.postgres as memory_persistence
 import app.context.infrastructure.sources_postgres as context_sources_persistence
 import app.conversations.infrastructure.postgres as conversation_persistence
-import app.knowledge.infrastructure.agent_profiles as knowledge_agent_profile_persistence
 import app.platform.postgres.errors as postgres_errors
 import app.runs.api as runs_api
 import app.runs.infrastructure.postgres as run_persistence
@@ -141,9 +140,6 @@ list_latest_agent_profile_revisions = (
 record_agent_profile_draft = agent_profile_persistence.record_agent_profile_draft
 record_agent_profile_publication = agent_profile_persistence.record_agent_profile_publication
 record_agent_profile_withdrawal = agent_profile_persistence.record_agent_profile_withdrawal
-authorize_agent_profile_knowledge_sources = (
-    knowledge_agent_profile_persistence.authorize_agent_profile_knowledge_sources
-)
 append_message = conversation_persistence.append_message
 create_session = conversation_persistence.create_session
 ensure_workspace_belongs_to_tenant = (
