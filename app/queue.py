@@ -912,7 +912,7 @@ end
 local redis_time = redis.call("TIME")
 local heartbeat_at = tonumber(redis_time[1]) + (tonumber(redis_time[2]) / 1000000)
 local function timestamp_is_future(value)
-  if value == nil then
+  if not value then
     return false
   end
   local timestamp = tonumber(value)
