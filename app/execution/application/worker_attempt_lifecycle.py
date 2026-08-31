@@ -4,12 +4,32 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from datetime import datetime
+import re
 from typing import Any, Protocol
 
 from app.runs.api import RunTerminalizationProgress, run_attempt_id_for_queue_attempt
 
 
 AsyncPort = Callable[..., Awaitable[Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerQueueLease:
+    """Exact Redis lease timing bound to one ordinary durable attempt."""
+
+    queue_message_id: str
+    last_heartbeat_at: datetime
+    lease_expires_at: datetime
+
+    def __post_init__(self) -> None:
+        if not re.fullmatch(r"[0-9a-f]{64}", self.queue_message_id):
+            raise ValueError("run_attempt_queue_message_id_invalid")
+        for value in (self.last_heartbeat_at, self.lease_expires_at):
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError("run_attempt_queue_lease_timezone_required")
+        if self.lease_expires_at <= self.last_heartbeat_at:
+            raise ValueError("run_attempt_queue_lease_window_invalid")
 
 
 class WorkerQueuePayload(Protocol):
@@ -56,6 +76,7 @@ class WorkerAttemptLifecycle:
     queue_attempt_id: str
     worker_owner_id: str
     ports: WorkerAttemptLifecyclePorts
+    queue_lease: WorkerQueueLease | None = None
     reconciliation_lease_id: str | None = None
     reconciliation_claim_token: str | None = None
 
@@ -69,6 +90,7 @@ class WorkerAttemptLifecycle:
         worker_id: str | None,
         is_reconciliation: bool,
         ports: WorkerAttemptLifecyclePorts,
+        queue_lease: WorkerQueueLease | None = None,
         reconciliation_lease_id: str | None = None,
         reconciliation_claim_token: str | None = None,
     ) -> WorkerAttemptLifecycle:
@@ -78,6 +100,8 @@ class WorkerAttemptLifecycle:
             raise ValueError("executor_reconciliation_claim_incomplete")
         if is_reconciliation != (reconciliation_lease_id is not None):
             raise ValueError("executor_reconciliation_claim_binding_invalid")
+        if is_reconciliation and queue_lease is not None:
+            raise ValueError("executor_reconciliation_queue_lease_invalid")
         worker_owner_id = (
             str(worker_id or "worker-in-process").strip() or "worker-in-process"
         )
@@ -97,6 +121,7 @@ class WorkerAttemptLifecycle:
             queue_attempt_id=leased_attempt_id,
             worker_owner_id=worker_owner_id,
             ports=ports,
+            queue_lease=queue_lease,
             reconciliation_lease_id=reconciliation_lease_id,
             reconciliation_claim_token=reconciliation_claim_token,
         )
@@ -139,10 +164,23 @@ class WorkerAttemptLifecycle:
             worker_owner_id=worker_owner_id,
         )
 
-    async def bind_execution_spec(self, conn: Any, execution_spec: Any) -> None:
+    async def bind_execution_spec(
+        self,
+        conn: Any,
+        execution_spec: Any,
+    ) -> dict[str, Any] | None:
         """Create an ordinary attempt or verify a restored reconciliation attempt."""
 
         if not self.is_reconciliation:
+            lease_kwargs = (
+                {
+                    "queue_message_id": self.queue_lease.queue_message_id,
+                    "last_heartbeat_at": self.queue_lease.last_heartbeat_at,
+                    "lease_expires_at": self.queue_lease.lease_expires_at,
+                }
+                if self.queue_lease is not None
+                else {}
+            )
             attempt = await self.ports.start_attempt(
                 conn,
                 tenant_id=self.tenant_id,
@@ -150,12 +188,13 @@ class WorkerAttemptLifecycle:
                 queue_attempt_id=self.queue_attempt_id,
                 worker_id=self.worker_owner_id,
                 execution_spec=execution_spec,
+                **lease_kwargs,
             )
             if str(attempt.get("id") or "") != self.attempt_id:
                 raise self.ports.conflict_error(
                     "run_attempt_identity_derivation_mismatch"
                 )
-            return
+            return attempt
         attempt = await self.ports.get_attempt_for_queue_attempt(
             conn,
             tenant_id=self.tenant_id,
@@ -169,6 +208,7 @@ class WorkerAttemptLifecycle:
             != execution_spec.spec_sha256
         ):
             raise self.ports.conflict_error("run_attempt_reconciliation_conflict")
+        return attempt
 
     async def _require_reconciliation_claim(self, conn: Any) -> None:
         if not self.is_reconciliation:
@@ -349,6 +389,7 @@ def bind_worker_attempt_lifecycle(
     worker_id: str | None,
     reconciliation: WorkerExecutorReconciliation | None,
     ports: WorkerAttemptLifecyclePorts,
+    queue_lease: WorkerQueueLease | None = None,
 ) -> WorkerAttemptLifecycle:
     return WorkerAttemptLifecycle.from_leased_attempt(
         tenant_id=payload.tenant_id,
@@ -357,6 +398,7 @@ def bind_worker_attempt_lifecycle(
         worker_id=worker_id,
         is_reconciliation=reconciliation is not None,
         ports=ports,
+        queue_lease=queue_lease,
         reconciliation_lease_id=(
             str(reconciliation.lease_row["id"]) if reconciliation is not None else None
         ),

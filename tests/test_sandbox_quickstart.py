@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
+import os
+import signal
+import subprocess
+import sys
+import textwrap
+import time
 import urllib.request
 from http.client import BadStatusLine
 from pathlib import Path
@@ -15,6 +22,35 @@ COMMIT = "1" * 40
 OLD_COMMIT = "2" * 40
 BACKEND = quickstart.BACKEND_REPOSITORY + "@sha256:" + "3" * 64
 FRONTEND = quickstart.FRONTEND_REPOSITORY + "@sha256:" + "4" * 64
+
+
+def _container(
+    repo: Path,
+    service: str,
+    *,
+    commit: str = "",
+    image: str = BACKEND,
+    health: str = "healthy",
+    status: str = "running",
+) -> quickstart.RuntimeContainer:
+    app_service = service in {"api", "worker", "frontend"}
+    return quickstart.RuntimeContainer(
+        container_id="a" * 64,
+        commit=commit,
+        image=image,
+        restart_count=0,
+        status=status,
+        health=health,
+        project=quickstart.PROJECT,
+        service=service,
+        config_files=",".join(str(repo / path) for path in quickstart.COMPOSE_FILES),
+        release_owner="repo-local-compose" if app_service else "",
+        release_role=service if app_service else "",
+        source_dirty="false" if app_service else "",
+        working_dir=str(repo / quickstart.COMPOSE_FILES[0].parent),
+        one_off="False",
+        config_hash=f"config-{service}",
+    )
 
 
 def _subject_file(path: Path, **changes: object) -> Path:
@@ -194,15 +230,22 @@ def test_docker_environment_keeps_proxy_but_rejects_daemon_override(
 def test_runner_keeps_default_trimmed_output_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    captured: dict[str, object] = {}
+
+    def run(*_args: object, **kwargs: object) -> quickstart.subprocess.CompletedProcess[str]:
+        captured.update(kwargs)
+        return quickstart.subprocess.CompletedProcess(
+            ["command"], 0, stdout="  value \r\n"
+        )
+
     monkeypatch.setattr(
         quickstart.subprocess,
         "run",
-        lambda *_args, **_kwargs: quickstart.subprocess.CompletedProcess(
-            ["command"], 0, stdout="  value \r\n"
-        ),
+        run,
     )
 
     assert quickstart.Runner().run(["command"], output=True) == "value"
+    assert captured["start_new_session"] is (os.name == "posix")
 
 
 @pytest.mark.parametrize("line_ending", ["\n", "\r\n"])
@@ -215,6 +258,7 @@ def test_inspect_preserves_empty_source_commit_field(
     )
     stdout = "\t".join(
         (
+            "a" * 64,
             "",
             "postgres:16",
             "0",
@@ -223,6 +267,12 @@ def test_inspect_preserves_empty_source_commit_field(
             quickstart.PROJECT,
             "postgres",
             expected_config,
+            "",
+            "",
+            "",
+            str(root / "releases" / COMMIT / quickstart.COMPOSE_FILES[0].parent),
+            "False",
+            "config-postgres",
         )
     ) + line_ending
     calls: list[list[str]] = []
@@ -235,16 +285,25 @@ def test_inspect_preserves_empty_source_commit_field(
     release = quickstart.Quickstart(tmp_path, root)
     release.docker = ["docker"]
 
-    assert release._inspect("postgres") == [
-        "",
-        "postgres:16",
-        "0",
-        "running",
-        "healthy",
-        quickstart.PROJECT,
-        "postgres",
-        expected_config,
-    ]
+    assert release._inspect("postgres") == quickstart.RuntimeContainer(
+        container_id="a" * 64,
+        commit="",
+        image="postgres:16",
+        restart_count=0,
+        status="running",
+        health="healthy",
+        project=quickstart.PROJECT,
+        service="postgres",
+        config_files=expected_config,
+        release_owner="",
+        release_role="",
+        source_dirty="",
+        working_dir=str(
+            root / "releases" / COMMIT / quickstart.COMPOSE_FILES[0].parent
+        ),
+        one_off="False",
+        config_hash="config-postgres",
+    )
     assert len(calls) == 1
     assert calls[0][:4] == [
         "docker",
@@ -254,6 +313,7 @@ def test_inspect_preserves_empty_source_commit_field(
     ]
     assert calls[0][-2] == "--format"
     assert calls[0][-1] == "\t".join((
+        "{{.Id}}",
         '{{index .Config.Labels "ai-platform.source-commit"}}',
         "{{.Config.Image}}",
         "{{.RestartCount}}",
@@ -262,6 +322,12 @@ def test_inspect_preserves_empty_source_commit_field(
         '{{index .Config.Labels "com.docker.compose.project"}}',
         '{{index .Config.Labels "com.docker.compose.service"}}',
         '{{index .Config.Labels "com.docker.compose.project.config_files"}}',
+        '{{index .Config.Labels "ai-platform.release-owner"}}',
+        '{{index .Config.Labels "ai-platform.release-role"}}',
+        '{{index .Config.Labels "ai-platform.source-dirty"}}',
+        '{{index .Config.Labels "com.docker.compose.project.working_dir"}}',
+        '{{index .Config.Labels "com.docker.compose.oneoff"}}',
+        '{{index .Config.Labels "com.docker.compose.config-hash"}}',
     ))
 
 
@@ -282,13 +348,14 @@ def test_current_runtime_requires_exact_internal_test_topology(
         release.runner, "run", lambda *_args, **_kwargs: "\n".join(services)
     )
 
-    def inspect(service: str) -> list[str]:
+    runtime_repo = root / "releases" / COMMIT
+
+    def inspect(service: str) -> quickstart.RuntimeContainer:
         image = FRONTEND if service == "frontend" else BACKEND
         commit = COMMIT if service in {"api", "worker", "frontend"} else ""
-        return [
-            commit, image, "0", "running", "healthy",
-            quickstart.PROJECT, service, expected_config,
-        ]
+        container = _container(runtime_repo, service, commit=commit, image=image)
+        assert container.config_files == expected_config
+        return container
 
     monkeypatch.setattr(release, "_inspect", inspect)
     if extra_service:
@@ -311,12 +378,12 @@ def test_runtime_rejects_wrong_compose_file_selection(
     monkeypatch.setattr(
         release,
         "_inspect",
-        lambda service: [
-            COMMIT if service in {"api", "worker", "frontend"} else "",
-            FRONTEND if service == "frontend" else BACKEND,
-            "0", "running", "healthy", quickstart.PROJECT, service,
-            "/data/ai-platform-internal-test/releases/other/docker-compose.yml",
-        ],
+        lambda service: _container(
+            Path("/data/ai-platform-internal-test/releases/other"),
+            service,
+            commit=COMMIT if service in {"api", "worker", "frontend"} else "",
+            image=FRONTEND if service == "frontend" else BACKEND,
+        ),
     )
 
     with pytest.raises(quickstart.QuickstartError, match="runtime subject is invalid"):
@@ -335,6 +402,11 @@ def _release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, events: list[str])
     monkeypatch.setattr(release, "_validate_env", lambda _: tmp_path / ".env")
     monkeypatch.setattr(release, "_compose", lambda _env, _subject, *args: events.append("compose:" + " ".join(args)))
     monkeypatch.setattr(release, "_wait_health", lambda _: events.append("health"))
+    monkeypatch.setattr(
+        release,
+        "_wait_worker_runtime",
+        lambda *_args, **_kwargs: events.append("worker-heartbeat"),
+    )
     monkeypatch.setattr(
         release.runner,
         "run",
@@ -361,7 +433,7 @@ def test_quickstart_orders_config_before_pull_and_up(
     assert events == [
         "source", "compose:config --quiet", "pull", "pull", f"inspect:{BACKEND}", "source",
         "rollback-preflight",
-        "compose:up -d --no-build --pull never", "health",
+        "compose:up -d --no-build --pull never", "health", "worker-heartbeat",
     ]
 
 
@@ -453,16 +525,13 @@ def test_health_probes_configured_opensandbox_from_api_and_worker(
     monkeypatch.setattr(
         release,
         "_inspect",
-        lambda service: [
-            COMMIT if service in {"api", "worker", "frontend"} else "",
-            FRONTEND if service == "frontend" else BACKEND,
-            "0",
-            "running",
-            "none" if service == "worker" else "healthy",
-            quickstart.PROJECT,
+        lambda service: _container(
+            tmp_path,
             service,
-            "config",
-        ],
+            commit=COMMIT if service in {"api", "worker", "frontend"} else "",
+            image=FRONTEND if service == "frontend" else BACKEND,
+            health="none" if service == "worker" else "healthy",
+        ),
     )
 
     def run(command, **_kwargs):
@@ -483,6 +552,50 @@ def test_health_probes_configured_opensandbox_from_api_and_worker(
     assert all("OPENSANDBOX_PROTOCOL" in command[-1] for command in probe_commands)
     assert all("OPENSANDBOX_DOMAIN" in command[-1] for command in probe_commands)
     assert all("ProxyHandler({})" in command[-1] for command in probe_commands)
+
+
+def test_health_rejects_incomplete_worker_compose_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = quickstart.Quickstart(tmp_path)
+    subject = quickstart.Subject(COMMIT, BACKEND, FRONTEND)
+    bad_worker = replace(
+        _container(
+            tmp_path,
+            "worker",
+            commit=COMMIT,
+            image=BACKEND,
+            health="none",
+        ),
+        config_hash="",
+    )
+    monkeypatch.setattr(
+        release,
+        "_http_json",
+        lambda path: (
+            {"status": "ok"}
+            if path.endswith("/health")
+            else {"status": "ready", "runtime_commit": COMMIT}
+        ),
+    )
+    monkeypatch.setattr(
+        release,
+        "_inspect",
+        lambda service: (
+            bad_worker
+            if service == "worker"
+            else _container(
+                tmp_path,
+                service,
+                commit=COMMIT if service in {"api", "frontend"} else "",
+                image=FRONTEND if service == "frontend" else BACKEND,
+            )
+        ),
+    )
+
+    with pytest.raises(quickstart.QuickstartError, match="container identity failed"):
+        release._health(subject)
 
 
 def test_health_probe_uses_supported_protocol_domain_fallback(
@@ -566,6 +679,466 @@ def test_keyboard_interrupt_after_up_runs_small_rollback(
     assert events.count("rollback") == 1
 
 
+def test_protocol_v2_lease_probe_reads_processing_and_retry_metadata(
+    tmp_path: Path,
+) -> None:
+    commands: list[list[str]] = []
+
+    class ProbeRunner(quickstart.Runner):
+        def run(self, command: object, **_: object) -> str:
+            commands.append(list(command))
+            return json.dumps(
+                {"status": "ok", "processing": 1, "retry": 2, "total": 2}
+            )
+
+    release = quickstart.Quickstart(tmp_path, runner=ProbeRunner())
+    release.docker = ["docker", "--context", "default"]
+
+    assert release._protocol_v2_lease_count() == 2
+    assert commands == [
+        [
+            "docker",
+            "--context",
+            "default",
+            "exec",
+            "ai-platform-redis",
+            "redis-cli",
+            "--raw",
+            "EVAL",
+            quickstart.ROLLBACK_PROTOCOL_V2_LEASE_PROBE,
+            "2",
+            quickstart.ROLLBACK_PROCESSING_META_KEY,
+            quickstart.ROLLBACK_RETRY_META_KEY,
+            str(quickstart.ROLLBACK_LEASE_SCAN_LIMIT),
+        ]
+    ]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        '{"status":"unproven","reason":"invalid_metadata"}',
+        '{"status":"ok","processing":1,"retry":0,"total":2}',
+        "not-json",
+    ],
+)
+def test_protocol_v2_lease_probe_fails_closed(
+    tmp_path: Path,
+    response: str,
+) -> None:
+    class ProbeRunner(quickstart.Runner):
+        def run(self, _command: object, **_: object) -> str:
+            return response
+
+    release = quickstart.Quickstart(tmp_path, runner=ProbeRunner())
+    release.docker = ["docker"]
+
+    with pytest.raises(quickstart.QuickstartError, match="lease state could not be proven"):
+        release._protocol_v2_lease_count()
+
+
+def test_worker_runtime_sample_proves_exact_runtime_and_live_heartbeat(
+    tmp_path: Path,
+) -> None:
+    container = _container(
+        tmp_path,
+        "worker",
+        commit=COMMIT,
+        image=BACKEND,
+        health="none",
+    )
+    commands: list[list[str]] = []
+
+    class RecoveryRunner(quickstart.Runner):
+        def run(self, command: object, **_: object) -> str:
+            command = list(command)
+            commands.append(command)
+            if "inspect" in command:
+                return "\t".join(
+                    (
+                        container.container_id,
+                        container.commit,
+                        container.image,
+                        str(container.restart_count),
+                        container.status,
+                        container.health,
+                        container.project,
+                        container.service,
+                        container.config_files,
+                        container.release_owner,
+                        container.release_role,
+                        container.source_dirty,
+                        container.working_dir,
+                        container.one_off,
+                        container.config_hash,
+                    )
+                )
+            return json.dumps(
+                {
+                    "status": "ok",
+                    "worker_id": "worker-a",
+                    "pid": 17,
+                    "observed_at": 101.0,
+                }
+            )
+
+    release = quickstart.Quickstart(tmp_path, runner=RecoveryRunner())
+    release.docker = ["docker"]
+
+    sample = release._worker_runtime_sample(
+        quickstart.Subject(COMMIT, BACKEND, FRONTEND),
+        not_before=100.0,
+    )
+
+    assert sample == quickstart.WorkerRuntimeSample(
+        container_id=container.container_id,
+        restart_count=0,
+        config_hash="config-worker",
+        worker_id="worker-a",
+        pid=17,
+        observed_at=101.0,
+    )
+    assert commands[1][2:6] == [container.container_id, "python", "-I", "-c"]
+    assert commands[1][-2:] == [COMMIT, "100.0"]
+
+
+def test_worker_runtime_wait_requires_stable_identity_and_advancing_heartbeat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = quickstart.Quickstart(tmp_path, health_timeout=10)
+    samples = iter(
+        (
+            quickstart.WorkerRuntimeSample(
+                "a" * 64, 0, "config-worker", "worker-a", 17, 101.0
+            ),
+            quickstart.WorkerRuntimeSample(
+                "a" * 64, 0, "config-worker", "worker-a", 17, 101.0
+            ),
+            quickstart.WorkerRuntimeSample(
+                "a" * 64, 0, "config-worker", "worker-a", 17, 106.0
+            ),
+        )
+    )
+    calls = 0
+
+    def sample(*_args: object, **_kwargs: object) -> quickstart.WorkerRuntimeSample:
+        nonlocal calls
+        calls += 1
+        return next(samples)
+
+    monkeypatch.setattr(release, "_worker_runtime_sample", sample)
+    monkeypatch.setattr(quickstart.time, "sleep", lambda _seconds: None)
+
+    release._wait_worker_runtime(
+        quickstart.Subject(COMMIT, BACKEND, FRONTEND),
+        not_before=100.0,
+    )
+
+    assert calls == 3
+
+
+def test_worker_runtime_wait_fails_closed_without_heartbeat_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = quickstart.Quickstart(tmp_path, health_timeout=0)
+    sample = quickstart.WorkerRuntimeSample(
+        "a" * 64, 0, "config-worker", "worker-a", 17, 101.0
+    )
+    monkeypatch.setattr(
+        release,
+        "_worker_runtime_sample",
+        lambda *_args, **_kwargs: sample,
+    )
+
+    with pytest.raises(quickstart.QuickstartError, match="did not converge"):
+        release._wait_worker_runtime(
+            quickstart.Subject(COMMIT, BACKEND, FRONTEND),
+            not_before=100.0,
+        )
+
+
+def test_rollback_with_v2_lease_keeps_api_stopped_and_target_worker_verified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, str]] = []
+    target = quickstart.Subject(COMMIT, BACKEND, FRONTEND)
+    previous = quickstart.Subject(OLD_COMMIT, BACKEND, FRONTEND)
+    release = quickstart.Quickstart(tmp_path, tmp_path / "managed")
+    monkeypatch.setattr(
+        release,
+        "_compose",
+        lambda _env, used_subject, *args: events.append(
+            (used_subject.commit, " ".join(args))
+        ),
+    )
+    monkeypatch.setattr(release, "_protocol_v2_lease_count", lambda: 1)
+    verified: list[tuple[str, float]] = []
+    monkeypatch.setattr(
+        release,
+        "_wait_worker_runtime",
+        lambda used_subject, *, not_before: verified.append(
+            (used_subject.commit, not_before)
+        ),
+    )
+
+    with pytest.raises(quickstart.RollbackBlockedError, match="active protocol-v2 leases"):
+        release._rollback(target, previous, tmp_path / ".env")
+
+    assert events == [
+        (COMMIT, "stop api worker"),
+        (COMMIT, "up -d --no-build --pull never worker"),
+    ]
+    assert len(verified) == 1
+    assert verified[0][0] == COMMIT
+    assert release.repo == tmp_path.resolve()
+
+
+def test_rollback_switches_images_only_after_proving_no_v2_leases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "managed"
+    previous_repo = root / "releases" / OLD_COMMIT
+    target = quickstart.Subject(COMMIT, BACKEND, FRONTEND)
+    previous = quickstart.Subject(OLD_COMMIT, BACKEND, FRONTEND)
+    release = quickstart.Quickstart(tmp_path, root)
+    events: list[tuple[str, str, Path]] = []
+    monkeypatch.setattr(release, "_verify_checkout", lambda *_: None)
+    monkeypatch.setattr(release, "_protocol_v2_lease_count", lambda: 0)
+    monkeypatch.setattr(
+        release,
+        "_compose",
+        lambda _env, used_subject, *args: events.append(
+            (used_subject.commit, " ".join(args), release.repo)
+        ),
+    )
+    monkeypatch.setattr(
+        release,
+        "_wait_health",
+        lambda used_subject: events.append((used_subject.commit, "health", release.repo)),
+    )
+    monkeypatch.setattr(
+        release,
+        "_wait_worker_runtime",
+        lambda used_subject, **_kwargs: events.append(
+            (used_subject.commit, "worker-heartbeat", release.repo)
+        ),
+    )
+
+    release._rollback(target, previous, tmp_path / ".env")
+
+    assert events == [
+        (COMMIT, "stop api worker", tmp_path.resolve()),
+        (OLD_COMMIT, "config --quiet", previous_repo),
+        (OLD_COMMIT, "up -d --no-build --pull never", previous_repo),
+        (OLD_COMMIT, "health", previous_repo),
+        (OLD_COMMIT, "worker-heartbeat", previous_repo),
+    ]
+    assert release.repo == tmp_path.resolve()
+
+
+def test_interrupt_after_target_stop_restores_and_verifies_target_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, str]] = []
+    target = quickstart.Subject(COMMIT, BACKEND, FRONTEND)
+    previous = quickstart.Subject(OLD_COMMIT, BACKEND, FRONTEND)
+    release = quickstart.Quickstart(tmp_path, tmp_path / "managed")
+    monkeypatch.setattr(
+        release,
+        "_compose",
+        lambda _env, used_subject, *args: events.append(
+            (used_subject.commit, " ".join(args))
+        ),
+    )
+    monkeypatch.setattr(
+        release,
+        "_protocol_v2_lease_count",
+        lambda: (_ for _ in ()).throw(KeyboardInterrupt),
+    )
+    monkeypatch.setattr(release, "_wait_worker_runtime", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(quickstart.RollbackInterruptedError, match="worker was verified"):
+        release._rollback(target, previous, tmp_path / ".env")
+
+    assert events == [
+        (COMMIT, "stop api worker"),
+        (COMMIT, "stop api worker"),
+        (COMMIT, "up -d --no-build --pull never worker"),
+    ]
+
+
+def test_interrupt_during_previous_up_restores_and_verifies_target_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "managed"
+    previous_repo = root / "releases" / OLD_COMMIT
+    target = quickstart.Subject(COMMIT, BACKEND, FRONTEND)
+    previous = quickstart.Subject(OLD_COMMIT, BACKEND, FRONTEND)
+    release = quickstart.Quickstart(tmp_path, root)
+    events: list[tuple[str, str, Path]] = []
+    interrupted = False
+
+    def compose(_env: Path, used_subject: quickstart.Subject, *args: str) -> None:
+        nonlocal interrupted
+        events.append((used_subject.commit, " ".join(args), release.repo))
+        if used_subject == previous and args and args[0] == "up" and not interrupted:
+            interrupted = True
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(release, "_verify_checkout", lambda *_: None)
+    monkeypatch.setattr(release, "_protocol_v2_lease_count", lambda: 0)
+    monkeypatch.setattr(release, "_compose", compose)
+    monkeypatch.setattr(release, "_wait_worker_runtime", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(quickstart.RollbackInterruptedError, match="worker was verified"):
+        release._rollback(target, previous, tmp_path / ".env")
+
+    assert events == [
+        (COMMIT, "stop api worker", tmp_path.resolve()),
+        (OLD_COMMIT, "config --quiet", previous_repo),
+        (OLD_COMMIT, "up -d --no-build --pull never", previous_repo),
+        (COMMIT, "stop api worker", tmp_path.resolve()),
+        (COMMIT, "up -d --no-build --pull never worker", tmp_path.resolve()),
+    ]
+    assert release.repo == tmp_path.resolve()
+
+
+def test_signal_during_rollback_is_deferred_until_previous_runtime_is_healthy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "managed"
+    previous_repo = root / "releases" / OLD_COMMIT
+    target = quickstart.Subject(COMMIT, BACKEND, FRONTEND)
+    previous = quickstart.Subject(OLD_COMMIT, BACKEND, FRONTEND)
+    release = quickstart.Quickstart(tmp_path, root)
+    events: list[str] = []
+    handlers: dict[int, object] = {
+        signal.SIGINT: object(),
+        signal.SIGTERM: object(),
+    }
+
+    def install(signum: int, handler: object) -> object:
+        old = handlers[signum]
+        handlers[signum] = handler
+        return old
+
+    def probe() -> int:
+        handler = handlers[signal.SIGTERM]
+        assert callable(handler)
+        handler(signal.SIGTERM, None)
+        events.append("signal-latched")
+        return 0
+
+    monkeypatch.setattr(quickstart.signal, "signal", install)
+    monkeypatch.setattr(release, "_verify_checkout", lambda *_: None)
+    monkeypatch.setattr(release, "_protocol_v2_lease_count", probe)
+    monkeypatch.setattr(
+        release,
+        "_compose",
+        lambda _env, used_subject, *args: events.append(
+            f"{used_subject.commit}:{' '.join(args)}:{release.repo}"
+        ),
+    )
+    monkeypatch.setattr(
+        release,
+        "_wait_health",
+        lambda used_subject: events.append(
+            f"{used_subject.commit}:health:{release.repo}"
+        ),
+    )
+    monkeypatch.setattr(
+        release,
+        "_wait_worker_runtime",
+        lambda used_subject, **_kwargs: events.append(
+            f"{used_subject.commit}:worker-heartbeat:{release.repo}"
+        ),
+    )
+
+    with pytest.raises(quickstart.RollbackInterruptedError, match="runtime was verified"):
+        with release.termination:
+            release.termination.protect_runtime_transition()
+            release._rollback(target, previous, tmp_path / ".env")
+
+    assert events[-1] == f"{OLD_COMMIT}:worker-heartbeat:{previous_repo}"
+    assert not callable(handlers[signal.SIGTERM])
+    assert release.repo == tmp_path.resolve()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups are required")
+def test_two_process_group_signals_are_deferred_through_previous_runtime_recovery(
+    tmp_path: Path,
+) -> None:
+    harness = textwrap.dedent(
+        f"""
+        import sys
+        import time
+        from pathlib import Path
+
+        sys.path.insert(0, {str(ROOT)!r})
+        from tools import sandbox_quickstart as quickstart
+
+        target = quickstart.Subject({COMMIT!r}, {BACKEND!r}, {FRONTEND!r})
+        previous = quickstart.Subject({OLD_COMMIT!r}, {BACKEND!r}, {FRONTEND!r})
+        release = quickstart.Quickstart(Path({str(tmp_path)!r}), Path({str(tmp_path / 'managed')!r}))
+        release._verify_checkout = lambda *_args: None
+        release._protocol_v2_lease_count = lambda: 0
+
+        def compose(_env, subject, *arguments):
+            if subject == previous and arguments and arguments[0] == "up":
+                print("previous-up", flush=True)
+                release.runner.run(
+                    [sys.executable, "-c", "import time; time.sleep(0.5)"],
+                    timeout=5,
+                )
+
+        release._compose = compose
+        release._wait_health = lambda _subject: print("previous-health", flush=True)
+        release._wait_worker_runtime = (
+            lambda _subject, **_kwargs: print("previous-worker", flush=True)
+        )
+        release._restore_target_recovery_worker = (
+            lambda *_args: print("target-worker", flush=True)
+        )
+
+        try:
+            with release.termination:
+                release.termination.protect_runtime_transition()
+                release._rollback(target, previous, Path({str(tmp_path / '.env')!r}))
+        except quickstart.RollbackInterruptedError:
+            print(f"safe-interrupted:{{release.termination.pending_count}}", flush=True)
+        """
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", harness],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    assert process.stdout is not None
+    first_line = process.stdout.readline().strip()
+    assert first_line == "previous-up"
+    process_group = os.getpgid(process.pid)
+    os.killpg(process_group, signal.SIGTERM)
+    time.sleep(0.05)
+    os.killpg(process_group, signal.SIGINT)
+    stdout, stderr = process.communicate(timeout=10)
+    output = "\n".join((first_line, stdout))
+
+    assert process.returncode == 0, stderr
+    assert "previous-health" in output
+    assert "previous-worker" in output
+    assert "target-worker" not in output
+    assert "safe-interrupted:2" in output
+
+
 @pytest.mark.parametrize(
     "status", [" M deploy/ai-platform/docker-compose.yml", "?? tools/json.py"]
 )
@@ -629,6 +1202,8 @@ def test_runbook_exposes_internal_test_latest_and_retry_commands() -> None:
     assert f"{command} --latest" in runbook
     assert "incoming/latest-main.json" in runbook
     assert "never runs `down`, `down -v`, or volume deletion" in runbook
+    assert "across two advancing fresh runtime heartbeats" in runbook
+    assert "saved previous binary's exact" in runbook
 
 
 def test_existing_shell_entry_forwards_to_the_canonical_profile() -> None:
@@ -636,3 +1211,26 @@ def test_existing_shell_entry_forwards_to_the_canonical_profile() -> None:
     assert "scripts/deploy-latest.sh" in entry
     assert "--profile internal-test" in entry
     assert '"$@"' in entry
+
+
+def test_shell_target_imports_when_executed_as_an_isolated_file() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            (
+                "import runpy, sys; "
+                "runpy.run_path(sys.argv[1], run_name='sandbox_quickstart_import_smoke')"
+            ),
+            str(ROOT / "tools/sandbox_quickstart.py"),
+        ],
+        cwd=ROOT,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr

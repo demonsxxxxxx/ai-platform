@@ -229,6 +229,12 @@ def test_schema_declares_attempt_identity_state_and_fences():
     assert "create or replace function ai_platform_guard_run_attempt_transition()" in schema
     assert "create trigger trg_run_attempt_transition_guard" in schema
     assert "before insert or update on run_attempts" in schema
+    assert (
+        "create or replace function ai_platform_guard_run_attempt_heartbeat_monotonicity()"
+        in schema
+    )
+    assert "create trigger trg_run_attempt_heartbeat_monotonicity_guard" in schema
+    assert "before update on run_attempts" in schema
     assert "run_attempt_initial_state_invalid" in schema
     assert "run_attempt_parent_state_invalid" in schema
     assert "run_attempt_parent_transition_conflict" in schema
@@ -236,6 +242,8 @@ def test_schema_declares_attempt_identity_state_and_fences():
     assert "skill_id is not distinct from nullif(" in schema
     assert "set status = projected_run_status" in schema
     assert "run_attempt_owner_generation_invalid" in schema
+    assert "run_attempt_heartbeat_regression" in schema
+    assert "run_attempt_lease_expiry_regression" in schema
     assert "old.status = 'cancel_requested'" in schema
     assert "new.owner_kind = 'reconciler'" in schema
     assert "run_attempt_expiry_reconciler_required" in schema

@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import uuid
 
@@ -186,6 +187,8 @@ async def test_s0a_schema_workspace_scope_and_runtime_handle_apply_idempotently(
             execution_spec=execution_spec,
         )
         assert created_attempt["status"] == "created"
+        last_heartbeat_at = datetime(2026, 8, 30, 7, 0, tzinfo=timezone.utc)
+        lease_expires_at = last_heartbeat_at + timedelta(minutes=15)
         queued_attempt = await transition_run_attempt(
             conn,
             tenant_id="tenant-a",
@@ -196,9 +199,14 @@ async def test_s0a_schema_workspace_scope_and_runtime_handle_apply_idempotently(
             expected_owner_kind="queue_worker",
             expected_owner_id="worker-a",
             expected_owner_generation=1,
-            queue_message_id="queue-message-a",
+            queue_message_id="b" * 64,
+            last_heartbeat_at=last_heartbeat_at,
+            lease_expires_at=lease_expires_at,
         )
         assert queued_attempt["owner_generation"] == 2
+        assert queued_attempt["queue_message_id"] == "b" * 64
+        assert queued_attempt["last_heartbeat_at"] == last_heartbeat_at
+        assert queued_attempt["lease_expires_at"] == lease_expires_at
         claimed_attempt = await transition_run_attempt(
             conn,
             tenant_id="tenant-a",

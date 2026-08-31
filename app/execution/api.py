@@ -23,6 +23,7 @@ from app.execution.application.worker_attempt_lifecycle import (
     WorkerAttemptLifecycle,
     WorkerAttemptLifecyclePorts,
     WorkerExecutorReconciliation,
+    WorkerQueueLease,
     bind_worker_attempt_lifecycle,
     fail_run_and_reconcile_worker_child,
     finalize_worker_child_parent,
@@ -89,4 +90,5 @@ __all__ = [
     "WorkerAttemptLifecycle",
     "WorkerAttemptLifecyclePorts",
     "WorkerExecutorReconciliation",
+    "WorkerQueueLease",
 ]

@@ -1,13 +1,15 @@
 import argparse
 import asyncio
+from collections.abc import Callable
 import contextlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import os
 from pathlib import Path
 import socket
 import time
+from typing import Any
 import uuid
 
 from app import queue
@@ -20,7 +22,7 @@ from app.bootstrap.worker_maintenance import (
     run_maintenance_phases,
     worker_maintenance_interval_seconds as _worker_maintenance_interval_seconds,
 )
-from app.execution.api import stage_stale_run_reconciliation
+from app.execution.api import WorkerQueueLease, stage_stale_run_reconciliation
 from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_SKILL,
     sanitize_public_payload,
@@ -40,6 +42,7 @@ from app.routes.sandbox_runtime_cleanup import (
 from app.runs.api import (
     assert_worker_run_attempt_current,
     get_latest_run_attempt,
+    heartbeat_worker_run_attempt,
     prepare_stale_run_attempt_reconciliation,
     request_run_attempt_cancel,
     run_attempt_id_for_queue_attempt,
@@ -190,22 +193,109 @@ async def _worker_runtime_heartbeat_until_done(worker_id: str, interval_seconds:
         await asyncio.sleep(interval_seconds)
 
 
+def _require_durable_heartbeat_convergence(
+    persisted: dict[str, Any],
+    *,
+    last_heartbeat_at: datetime,
+    lease_expires_at: datetime,
+) -> None:
+    """Fail closed unless PostgreSQL stored the Redis-authoritative window."""
+
+    if (
+        persisted.get("last_heartbeat_at") != last_heartbeat_at
+        or persisted.get("lease_expires_at") != lease_expires_at
+    ):
+        raise RuntimeError("run_attempt_worker_heartbeat_not_converged")
+
+
 async def _heartbeat_until_done(
-    message_id: str,
+    message: queue.QueueMessage,
     worker_id: str,
     interval_seconds: float,
+    visibility_timeout_seconds: int,
     ownership_lost: asyncio.Event,
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> None:
+    attempt_creation_deadline = monotonic() + visibility_timeout_seconds
+    durable_attempt_seen = False
+
+    async def heartbeat_once() -> bool | None:
+        await asyncio.sleep(interval_seconds)
+        heartbeat = await queue.heartbeat_run(
+            message.message_id,
+            worker_id=worker_id,
+        )
+        if not heartbeat.succeeded or heartbeat.heartbeat_at is None:
+            return None
+        last_heartbeat_at = datetime.fromtimestamp(
+            heartbeat.heartbeat_at,
+            tz=timezone.utc,
+        )
+        lease_expires_at = last_heartbeat_at + timedelta(
+            seconds=visibility_timeout_seconds
+        )
+        async with transaction() as conn:
+            persisted = await heartbeat_worker_run_attempt(
+                conn,
+                tenant_id=str(message.payload.get("tenant_id") or ""),
+                run_id=str(message.payload.get("run_id") or ""),
+                queue_attempt_id=message.attempt_id,
+                queue_message_id=message.queue_message_id,
+                worker_id=worker_id,
+                last_heartbeat_at=last_heartbeat_at,
+                lease_expires_at=lease_expires_at,
+            )
+        if persisted is not None:
+            _require_durable_heartbeat_convergence(
+                persisted,
+                last_heartbeat_at=last_heartbeat_at,
+                lease_expires_at=lease_expires_at,
+            )
+            return True
+        return False
+
     try:
         while True:
-            await asyncio.sleep(interval_seconds)
-            if not await queue.heartbeat_run(message_id, worker_id=worker_id):
+            remaining = visibility_timeout_seconds
+            if not durable_attempt_seen:
+                remaining = attempt_creation_deadline - monotonic()
+            if remaining <= 0:
                 ownership_lost.set()
                 return
+
+            try:
+                async with asyncio.timeout(remaining):
+                    heartbeat_result = await heartbeat_once()
+            except TimeoutError:
+                ownership_lost.set()
+                return
+            if heartbeat_result is None:
+                ownership_lost.set()
+                return
+            durable_attempt_seen = durable_attempt_seen or heartbeat_result
     except asyncio.CancelledError:
         raise
     except Exception:
         ownership_lost.set()
+
+
+def _durable_queue_lease(
+    message: queue.QueueMessage,
+    *,
+    visibility_timeout_seconds: int,
+) -> WorkerQueueLease | None:
+    if message.leased_at is None:
+        return None
+    if visibility_timeout_seconds <= 0:
+        raise ValueError("queue_lease_visibility_timeout_invalid")
+    last_heartbeat_at = datetime.fromtimestamp(message.leased_at, tz=timezone.utc)
+    return WorkerQueueLease(
+        queue_message_id=message.queue_message_id,
+        last_heartbeat_at=last_heartbeat_at,
+        lease_expires_at=last_heartbeat_at
+        + timedelta(seconds=visibility_timeout_seconds),
+    )
 
 
 async def cleanup_expired_sandbox_leases() -> None:
@@ -797,13 +887,20 @@ async def run_once(
     )
     if message is None:
         return WorkerOutcome(status="idle", run_id=None)
+    durable_queue_lease = _durable_queue_lease(
+        message,
+        visibility_timeout_seconds=int(
+            getattr(settings, "queue_lease_visibility_timeout_seconds", 900)
+        ),
+    )
 
     ownership_lost = asyncio.Event()
     heartbeat_task = asyncio.create_task(
         _heartbeat_until_done(
-            message.message_id,
+            message,
             resolved_worker_id,
             heartbeat_interval_seconds,
+            int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900)),
             ownership_lost,
         )
     )
@@ -821,12 +918,14 @@ async def run_once(
 
     async def process_leased_message() -> WorkerOutcome:
         try:
-            return await process_run_payload(
-                message.payload,
-                registry=registry,
-                worker_id=resolved_worker_id,
-                v4_capabilities=v4_capabilities,
-            )
+            process_kwargs = {
+                "registry": registry,
+                "worker_id": resolved_worker_id,
+                "v4_capabilities": v4_capabilities,
+            }
+            if durable_queue_lease is not None:
+                process_kwargs["queue_lease"] = durable_queue_lease
+            return await process_run_payload(message.payload, **process_kwargs)
         except Exception as exc:
             logger.exception(
                 "Worker payload processing escaped its terminal path",
@@ -1050,6 +1149,7 @@ async def run_worker_pool(
 
 
 async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
+    await require_schema_current()
     worker_runtime = build_worker_v4_runtime(transaction)
     try:
         return await run_once(

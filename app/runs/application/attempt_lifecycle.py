@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol
 
 from app.runs.domain.execution_spec import ExecutionSpec
@@ -57,6 +58,9 @@ class RunAttemptPersistence(Protocol):
         queue_attempt_id: str,
         worker_id: str,
         execution_spec: ExecutionSpec,
+        queue_message_id: str | None = None,
+        lease_expires_at: datetime | None = None,
+        last_heartbeat_at: datetime | None = None,
     ) -> dict[str, Any]: ...
 
     async def assert_worker_run_attempt_current(
@@ -68,6 +72,21 @@ class RunAttemptPersistence(Protocol):
         queue_attempt_id: str,
         worker_id: str,
     ) -> dict[str, Any] | None: ...
+
+    async def heartbeat_worker_run_attempt(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_id: str,
+        attempt_id: str,
+        queue_attempt_id: str,
+        queue_message_id: str,
+        worker_id: str,
+        expected_owner_generation: int,
+        lease_expires_at: datetime,
+        last_heartbeat_at: datetime,
+    ) -> dict[str, Any]: ...
 
     async def request_run_attempt_cancel(
         self,
@@ -142,6 +161,42 @@ class RunAttemptLifecycleService:
         **kwargs: Any,
     ) -> dict[str, Any] | None:
         return await self.persistence.assert_worker_run_attempt_current(conn, **kwargs)
+
+    async def heartbeat_worker(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_id: str,
+        queue_attempt_id: str,
+        queue_message_id: str,
+        worker_id: str,
+        lease_expires_at: datetime,
+        last_heartbeat_at: datetime,
+    ) -> dict[str, Any] | None:
+        """Persist one Redis-proven heartbeat through the current attempt fence."""
+
+        attempt = await self.persistence.assert_worker_run_attempt_current(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            queue_attempt_id=queue_attempt_id,
+            worker_id=worker_id,
+        )
+        if attempt is None:
+            return None
+        return await self.persistence.heartbeat_worker_run_attempt(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=str(attempt["id"]),
+            queue_attempt_id=queue_attempt_id,
+            queue_message_id=queue_message_id,
+            worker_id=worker_id,
+            expected_owner_generation=int(attempt["owner_generation"]),
+            lease_expires_at=lease_expires_at,
+            last_heartbeat_at=last_heartbeat_at,
+        )
 
     async def request_cancel(
         self,
@@ -252,6 +307,13 @@ async def assert_worker_run_attempt_current(
     **kwargs: Any,
 ) -> dict[str, Any] | None:
     return await _configured_service().assert_worker_current(conn, **kwargs)
+
+
+async def heartbeat_worker_run_attempt(
+    conn: Any,
+    **kwargs: Any,
+) -> dict[str, Any] | None:
+    return await _configured_service().heartbeat_worker(conn, **kwargs)
 
 
 async def request_run_attempt_cancel(

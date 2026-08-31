@@ -844,6 +844,33 @@ create trigger trg_run_attempt_transition_guard
 before insert or update on run_attempts
 for each row execute function ai_platform_guard_run_attempt_transition();
 
+create or replace function ai_platform_guard_run_attempt_heartbeat_monotonicity()
+returns trigger
+language plpgsql
+as $$
+begin
+  if old.last_heartbeat_at is not null
+     and (
+       new.last_heartbeat_at is null
+       or new.last_heartbeat_at < old.last_heartbeat_at
+     ) then
+    raise exception 'run_attempt_heartbeat_regression' using errcode = '23514';
+  end if;
+  if old.lease_expires_at is not null
+     and (
+       new.lease_expires_at is null
+       or new.lease_expires_at < old.lease_expires_at
+     ) then
+    raise exception 'run_attempt_lease_expiry_regression' using errcode = '23514';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists trg_run_attempt_heartbeat_monotonicity_guard on run_attempts;
+create trigger trg_run_attempt_heartbeat_monotonicity_guard
+before update on run_attempts
+for each row execute function ai_platform_guard_run_attempt_heartbeat_monotonicity();
+
 alter table runs add column if not exists trace_id text not null default '';
 alter table runs add column if not exists execution_kind text not null default 'skill';
 do $$
