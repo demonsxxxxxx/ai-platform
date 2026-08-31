@@ -9,6 +9,11 @@ from app.platform.public_payload import (
     sanitize_public_payload,
     sanitize_public_text,
 )
+from app.runs.api import (
+    RUN_THINKING_EFFORT_INPUT_KEY,
+    ThinkingEffort as ThinkingEffort,
+    normalize_thinking_effort,
+)
 from app.validation import assert_safe_id
 
 
@@ -27,17 +32,6 @@ HARNESS_CHAT_EXECUTOR_TYPE = "claude-agent-worker"
 HARNESS_CHAT_AGENT_ID = "general-agent"
 # Read/replay compatibility only. New requests must never select this as a Skill.
 LEGACY_SYNTHETIC_CHAT_SKILL_ID = "general-chat"
-RUN_THINKING_EFFORT_INPUT_KEY = "_thinking_effort"
-ThinkingEffort = Literal["off", "low", "medium", "high"]
-THINKING_EFFORT_LEVELS = frozenset({"off", "low", "medium", "high"})
-
-
-def normalize_thinking_effort(value: object) -> str:
-    if value is None:
-        return "off"
-    if not isinstance(value, str) or value not in THINKING_EFFORT_LEVELS:
-        raise ValueError("thinking_effort_invalid")
-    return value
 
 
 def validate_thinking_agent_options(value: object) -> object:
