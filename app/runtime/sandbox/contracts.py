@@ -5,6 +5,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.control_plane_contracts import normalize_thinking_effort
 from app.runtime.kernel_contracts import AgentEvent
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
 from app.validation import (
@@ -168,6 +169,7 @@ class SandboxRuntimeRequest(BaseModel):
     sandbox_mode: SandboxMode
     browser_enabled: bool = False
     model: str
+    thinking_effort: str = "off"
     model_gateway: Literal["new-api"] = "new-api"
     permissions: list[str] = Field(default_factory=list)
     resource_limits: dict[str, Any] = Field(default_factory=dict)
@@ -201,6 +203,11 @@ class SandboxRuntimeRequest(BaseModel):
     @classmethod
     def validate_optional_trace_id(cls, value: str):
         return assert_safe_id(value, "trace_id") if value else value
+
+    @field_validator("thinking_effort")
+    @classmethod
+    def validate_thinking_effort(cls, value: str):
+        return normalize_thinking_effort(value)
 
     @field_validator("sdk_session_id")
     @classmethod
@@ -357,6 +364,13 @@ class ExecutorTaskRequest(BaseModel):
     @classmethod
     def validate_user_id(cls, value: str):
         return assert_safe_principal_user_id(value)
+
+    @field_validator("config")
+    @classmethod
+    def validate_config(cls, value: dict[str, Any]):
+        if "thinking_effort" in value:
+            normalize_thinking_effort(value["thinking_effort"])
+        return value
 
     @field_validator("sdk_session_id")
     @classmethod

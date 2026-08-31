@@ -139,6 +139,7 @@ def test_dedicated_agent_run_restores_session_and_delegates_without_client_selec
             "submission_id": "11111111-1111-4111-8111-111111111111",
             "file_ids": ["file-a"],
             "user_timezone": "Asia/Shanghai",
+            "thinking_effort": "high",
         },
     )
 
@@ -154,6 +155,7 @@ def test_dedicated_agent_run_restores_session_and_delegates_without_client_selec
     assert chat_request["selected_agent_profile"] is None
     assert chat_request["selected_skill"] is None
     assert chat_request["selected_mcp_tool_ids"] is None
+    assert chat_request["agent_options"] == {"enable_thinking": "high"}
     assert "model_id" not in chat_request
 
 
@@ -164,6 +166,7 @@ def test_dedicated_agent_run_restores_session_and_delegates_without_client_selec
         ("", {"x-skill-id": "private-skill"}, {}, 400),
         ("", {}, {"selected_mcp_tool_ids": ["private-tool"]}, 422),
         ("", {}, {"agent_id": "agt_other"}, 422),
+        ("", {}, {"thinking_effort": "max"}, 422),
     ],
 )
 def test_dedicated_agent_run_rejects_every_override_before_storage_or_dispatch(

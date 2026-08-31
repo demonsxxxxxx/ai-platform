@@ -774,6 +774,7 @@ class SandboxRuntime:
 
             task_config = {
                 "model": request.model,
+                "thinking_effort": request.thinking_effort,
                 "browser_enabled": request.browser_enabled,
                 "resource_limits": request.resource_limits,
                 "skill_ids": request.skill_ids,

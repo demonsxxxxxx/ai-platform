@@ -66,6 +66,7 @@ SERVER_OWNED_CONTROL_KEYS = {
     "requiredcapabilityevidence",
     "requiredtooldeclaration",
     "requiredtoolcompletionevidence",
+    "thinkingeffort",
     "agentprofile",
 }
 RAW_SKILL_ID_ALIASES = {

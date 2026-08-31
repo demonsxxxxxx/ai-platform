@@ -3,10 +3,12 @@ import test from "node:test";
 import {
   EXECUTION_PROGRESS_MIN_INTERVAL_MS,
   PublicStreamPresentation,
+  projectPublicThinkingActivity,
   upsertPublicThinkingActivity,
   type PublicStreamPresentationClock,
   type PublicStreamPresentationOwner,
 } from "../publicStreamPresentation.ts";
+import { CHAT_PUBLIC_PROJECTION_VERSION } from "../types.ts";
 
 class FakePresentationClock implements PublicStreamPresentationClock {
   private nowValue = 0;
@@ -252,16 +254,42 @@ test("model reasoning deltas accumulate under one thinking identity and complete
   ]);
 });
 
+test("model reasoning matching a legacy label remains model content", () => {
+  const activity = projectPublicThinkingActivity(
+    {
+      projection_version: CHAT_PUBLIC_PROJECTION_VERSION,
+      event_type: "public_activity",
+      event_id: "thinking-delta-1",
+      stage: "thinking_delta",
+      status: "thinking_delta",
+      message: "Analyzing the request",
+      payload: {
+        thinking_id: "thinking-public-1",
+        delta: "Analyzing the request",
+      },
+    },
+    true,
+  );
+
+  assert.deepEqual(activity, {
+    type: "thinking",
+    content: "Analyzing the request",
+    thinking_id: "thinking-public-1",
+    public_reasoning: true,
+    isStreaming: true,
+  });
+});
+
 test("legacy public Thinking completion still closes the preceding activity", () => {
   const started = {
     type: "thinking" as const,
-    content: "Analyzing the request",
+    content: "正在分析请求",
     thinking_id: "thinking-started",
     isStreaming: true,
   };
   const completed = {
     type: "thinking" as const,
-    content: "Analysis step completed",
+    content: "分析完成",
     thinking_id: "thinking-completed",
     isStreaming: false,
   };

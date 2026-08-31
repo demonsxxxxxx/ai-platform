@@ -8,6 +8,7 @@ import type {
   MessageAttachment,
   SelectedAgentProfileRequest,
   SelectedSkillRequest,
+  AgentThinkingEffort,
 } from "../../types";
 import {
   projectAgentConversationSession,
@@ -339,11 +340,13 @@ export function buildAgentAppRunBody({
   attachments,
   submissionId,
   userTimezone,
+  thinkingEffort = "off",
 }: {
   message: string;
   attachments?: MessageAttachment[];
   submissionId: string;
   userTimezone?: string;
+  thinkingEffort?: AgentThinkingEffort;
 }): Record<string, unknown> {
   const fileIds = [
     ...new Set(
@@ -356,6 +359,7 @@ export function buildAgentAppRunBody({
     message,
     submission_id: submissionId,
     file_ids: fileIds,
+    thinking_effort: thinkingEffort,
     ...(userTimezone ? { user_timezone: userTimezone } : {}),
   };
 }
@@ -597,6 +601,7 @@ export const sessionApi = {
     agentId?: string,
     selectedMcpToolIds?: string[],
     selectedAgentProfile?: SelectedAgentProfileRequest | null,
+    thinkingEffort?: AgentThinkingEffort,
   ): Promise<ChatStreamResponse> {
     if (sessionId && selectedAgentProfile) {
       if (!submissionId) throw new Error("agent_app_submission_id_required");
@@ -610,6 +615,7 @@ export const sessionApi = {
               attachments,
               submissionId,
               userTimezone: getBrowserTimezone(),
+              thinkingEffort,
             }),
           ),
         },

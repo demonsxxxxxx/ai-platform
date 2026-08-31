@@ -104,8 +104,9 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
 
     events = []
+    workspace_root = _short_sandbox_workspace_root(tmp_path)
     runtime = SandboxRuntime(
-        workspace_root=tmp_path,
+        workspace_root=workspace_root,
         provider=FakeContainerProvider(executor_url="http://executor.test"),
         execute_task=execute,
         callback_token_resolver=lambda token_id: "secret-token",
@@ -117,12 +118,13 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
         request(
             materialized_file_names=["z.docx", "a.docx"],
             system_prompt="Private profile instruction",
+            thinking_effort="high",
         ),
         event_sink=events.append,
     )
 
     run_root = (
-        tmp_path
+        workspace_root
         / "tenants"
         / "tenant-a"
         / "workspaces"
@@ -155,6 +157,7 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
     assert sent[0][1].permission_mode == "default"
     assert sent[0][1].config == {
         "model": "deepseek-v4-flash",
+        "thinking_effort": "high",
         "browser_enabled": True,
         "resource_limits": {"max_seconds": 120, "max_tool_calls": 20},
         "skill_ids": ["general-chat"],

@@ -342,6 +342,14 @@ def sdk_result(message: str = "done", **overrides):
     return type("SdkResult", (), values)()
 
 
+def test_executor_rejects_invalid_thinking_effort():
+    raw = task_payload()
+    raw["config"]["thinking_effort"] = "extreme"
+
+    with pytest.raises(ValueError, match="thinking_effort_invalid"):
+        ExecutorTaskRequest.model_validate(raw)
+
+
 @pytest.mark.asyncio
 async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
     monkeypatch,
@@ -362,7 +370,9 @@ async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
         "run_claude_agent_sdk",
         fake_run_claude_agent_sdk,
     )
-    request = ExecutorTaskRequest.model_validate(task_payload())
+    raw = task_payload()
+    raw["config"]["thinking_effort"] = "high"
+    request = ExecutorTaskRequest.model_validate(raw)
     events = []
 
     async def emit_event(event):
@@ -374,6 +384,7 @@ async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
     assert result["status"] == "completed"
     assert captured["skill_id"] is None
     assert captured["skills"] == []
+    assert captured["thinking_effort"] == "high"
     assert not any(
         isinstance(event, executor_app._PlatformExecutionPhaseFact)
         and event.phase == "skill_staging"
@@ -3161,8 +3172,6 @@ async def test_default_executor_runner_seals_when_agent_event_emit_is_rejected(t
             claude_agent_sdk_skills="",
             claude_agent_sdk_max_turns=4,
             claude_agent_sdk_timeout_seconds=10,
-            claude_agent_sdk_max_thinking_tokens=128,
-            claude_agent_sdk_effort="high",
             claude_agent_permission_mode="dontAsk",
             claude_agent_allowed_tools="Read",
             claude_agent_disallowed_tools="",

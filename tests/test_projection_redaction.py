@@ -60,6 +60,7 @@ def test_redact_raw_skill_references_sanitizes_nested_agent_ids():
 def test_sanitize_user_control_input_removes_server_owned_multi_agent_dispatch_metadata():
     payload = {
         "message": "run",
+        "_thinking_effort": "max",
         "_required_capability_declaration": {"canonical_identity": "Bash"},
         "required_capability_evidence": {"canonical_identity": "Bash"},
         "resume": {"copied_from_run_id": "run-forged"},
@@ -80,6 +81,7 @@ def test_sanitize_user_control_input_removes_server_owned_multi_agent_dispatch_m
     sanitized = sanitize_user_control_input(payload)
 
     assert sanitized["message"] == "run"
+    assert "_thinking_effort" not in sanitized
     assert "_required_capability_declaration" not in sanitized
     assert "required_capability_evidence" not in sanitized
     assert "resume" not in sanitized

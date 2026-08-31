@@ -9,7 +9,6 @@ const THINKING_LEVEL_OPTION_DEFS = [
   { value: "low", label_key: "agentOptions.enableThinking.options.low" },
   { value: "medium", label_key: "agentOptions.enableThinking.options.medium" },
   { value: "high", label_key: "agentOptions.enableThinking.options.high" },
-  { value: "max", label_key: "agentOptions.enableThinking.options.max" },
 ] as const;
 
 function normalizeThinkingOptionValue(value: boolean | string | number) {
@@ -18,7 +17,8 @@ function normalizeThinkingOptionValue(value: boolean | string | number) {
   if (typeof value !== "string") return value;
 
   const normalized = value.trim().toLowerCase();
-  if (["off", "low", "medium", "high", "max"].includes(normalized)) {
+  if (normalized === "max") return "high";
+  if (["off", "low", "medium", "high"].includes(normalized)) {
     return normalized;
   }
   if (["enabled", "enable", "on", "true"].includes(normalized)) {

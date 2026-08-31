@@ -198,8 +198,6 @@ class Settings(BaseSettings):
     claude_agent_sdk_enabled: bool = Field(default=False)
     claude_agent_sdk_timeout_seconds: float = Field(default=0.0)
     claude_agent_sdk_max_turns: int = Field(default=128)
-    claude_agent_sdk_effort: str = Field(default="xhigh")
-    claude_agent_sdk_max_thinking_tokens: int = Field(default=16384)
     claude_agent_allowed_tools: str = Field(default="Read,Glob,LS")
     claude_agent_disallowed_tools: str = Field(default="Write,Edit,NotebookEdit")
     claude_agent_permission_mode: str = Field(default="dontAsk")
