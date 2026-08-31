@@ -88,6 +88,27 @@ therefore reuse the exact immutable backend subject. Publication is explicitly
 runner-local Docker image IDs are not published image digests and cannot enter
 release-image evidence.
 
+### Change Contract: trusted-main BuildKit cache
+
+- Owner: Docker Packaging Authority.
+- Bounded paths: this document,
+  `.github/workflows/ai-platform-packaging-publish.yml`, and
+  `tests/test_packaging_publish_workflow.py`.
+- Reached invariants: only the existing protected `main` publisher may write the
+  role-scoped GitHub Actions cache; cache export failure cannot block publication;
+  cache identities never enter image tags, digests, attestations, scans, or the
+  ready manifest.
+- Acceptance and regression proof: the owning workflow test requires distinct
+  backend/frontend `mode=max` cache scopes with non-blocking export while all
+  existing source identity, scan, signature, and ready-manifest checks remain.
+- Evidence ceiling: static local checks prove workflow structure only; an exact
+  `main` packaging run is required to observe cache import/export or timing.
+- Rollback: remove the two cache inputs and their owning assertions; already
+  published immutable subjects and evidence remain unchanged.
+- Stop conditions: any PR/fork cache write, new permission, cache-derived release
+  evidence, or change to image contents, tags, scans, signatures, or publication
+  admission requires a revised contract before implementation.
+
 Each subject is pushed under only its full 40-hex source commit tag. Downstream
 steps immediately switch to `subject@sha256:<registry-manifest-digest>` and
 generate SPDX JSON, an OCI SBOM attestation, SLSA provenance, a keyless Sigstore
