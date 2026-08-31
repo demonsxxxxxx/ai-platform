@@ -1899,13 +1899,6 @@ async def _fail_worker_capability_authorization(
     )
 
 
-def _runtime_sandbox_workspace_payload() -> dict[str, str]:
-    return {
-        "workspace": "/workspace",
-        "inputs": "/workspace/inputs",
-    }
-
-
 def _result_prefers_cancelled_after_failure(result: ExecutorResult) -> bool:
     sandbox_provider = str(result.executor_payload.get("sandbox_provider") or "").strip()
     runtime_terminal_status = str(result.executor_payload.get("runtime_terminal_status") or "").strip().lower()
@@ -1918,12 +1911,14 @@ async def _create_worker_runtime_sandbox_lease(
     payload: QueueRunPayload,
     run_identity: dict[str, str],
     trace_id: str,
+    attempt_id: str,
     worker_id: str | None,
 ) -> _WorkerRuntimeSandboxLease:
     lease_payload = {
         "source": "sdk_only_lifecycle_placeholder",
         "evidence_class": "sdk_only_lifecycle_placeholder",
         "executor_type": payload.executor_type,
+        "attempt_id": attempt_id,
     }
     if worker_id:
         lease_payload["worker_id"] = worker_id
@@ -1934,13 +1929,14 @@ async def _create_worker_runtime_sandbox_lease(
         user_id=run_identity["user_id"],
         session_id=run_identity["session_id"],
         run_id=run_identity["run_id"],
+        attempt_id=attempt_id,
         trace_id=trace_id,
         sandbox_mode="ephemeral",
         provider="fake",
         browser_enabled=False,
         ttl_seconds=get_settings().sandbox_lease_ttl_seconds,
         resource_limits_json={},
-        user_visible_payload_json=_runtime_sandbox_workspace_payload(),
+        user_visible_payload_json={"workspace": "/workspace", "inputs": "/workspace/inputs"},
         lease_payload_json=lease_payload,
     )
     return _WorkerRuntimeSandboxLease(
@@ -2488,6 +2484,7 @@ async def process_run_payload(
                     payload=payload,
                     run_identity=run_identity,
                     trace_id=trace_id,
+                    attempt_id=attempt_id,
                     worker_id=worker_id,
                 )
     finally:
