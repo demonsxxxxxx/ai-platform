@@ -334,8 +334,7 @@ async def _fail_run_and_reconcile_with_write(
     error_message: str,
     result_json: dict[str, Any] | None = None,
     is_multi_agent_child: bool | None = None,
-    v4_capabilities: WorkerV4Capabilities,
-    attempt_lifecycle: WorkerAttemptLifecycle | None = None,
+    v4_capabilities: WorkerV4Capabilities, attempt_lifecycle: WorkerAttemptLifecycle | None = None,
 ) -> tuple[bool, Any | None]:
     return await _fail_run_and_reconcile_worker_child(
         conn,
@@ -1738,6 +1737,7 @@ async def _fail_worker_pre_dispatch_error(
     event_stage: str,
     event_payload: dict[str, Any],
     v4_capabilities: WorkerV4Capabilities,
+    attempt_lifecycle: WorkerAttemptLifecycle | None = None,
     is_multi_agent_child: bool | None = None,
 ) -> _WorkerTerminalAfterTransaction:
     terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
@@ -1748,7 +1748,7 @@ async def _fail_worker_pre_dispatch_error(
         error_code=error_code,
         error_message=error_message,
         is_multi_agent_child=is_multi_agent_child,
-        v4_capabilities=v4_capabilities,
+        v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
     )
     if not terminal_written:
         return _WorkerTerminalAfterTransaction(
@@ -1784,7 +1784,7 @@ async def _fail_locked_run_snapshot(
     locked_run: object,
     run_identity: dict[str, str],
     trace_id: str,
-    v4_capabilities: WorkerV4Capabilities,
+    v4_capabilities: WorkerV4Capabilities, attempt_lifecycle: WorkerAttemptLifecycle | None = None,
 ) -> _WorkerTerminalAfterTransaction:
     error_code = "capability_not_authorized"
     error_message = "Capability is not authorized for this run"
@@ -1802,7 +1802,7 @@ async def _fail_locked_run_snapshot(
         error_code=error_code,
         error_message=error_message,
         is_multi_agent_child=_locked_run_is_multi_agent_child(locked_run),
-        v4_capabilities=v4_capabilities,
+        v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
     )
     if not terminal_written:
         return _WorkerTerminalAfterTransaction(
@@ -1838,7 +1838,7 @@ async def _fail_worker_capability_authorization(
     authorization: _WorkerCapabilityAuthorization,
     run_identity: dict[str, str],
     trace_id: str,
-    v4_capabilities: WorkerV4Capabilities,
+    v4_capabilities: WorkerV4Capabilities, attempt_lifecycle: WorkerAttemptLifecycle | None = None,
     policy: str = "capability_distribution",
 ) -> _WorkerTerminalAfterTransaction:
     denial = authorization.denial
@@ -1854,7 +1854,7 @@ async def _fail_worker_capability_authorization(
         run_id=run_identity["run_id"],
         error_code=error_code,
         error_message=error_message,
-        v4_capabilities=v4_capabilities,
+        v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
     )
     if not terminal_written:
         return _WorkerTerminalAfterTransaction(
@@ -2202,7 +2202,7 @@ async def process_run_payload(
                     conn,
                     payload=payload,
                     run_identity=run_identity,
-                    v4_capabilities=v4_capabilities,
+                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                     error_code="queue_payload_identity_mismatch",
                     error_message="Queue payload identity does not match run record",
                     event_stage="worker",
@@ -2231,7 +2231,7 @@ async def process_run_payload(
                     locked_run=locked,
                     run_identity=run_identity,
                     trace_id=trace_id,
-                    v4_capabilities=v4_capabilities,
+                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                 )
                 return terminal_after_transaction.outcome
             if not _locked_agent_profile_identity_valid(
@@ -2244,7 +2244,7 @@ async def process_run_payload(
                     locked_run=locked,
                     run_identity=run_identity,
                     trace_id=trace_id,
-                    v4_capabilities=v4_capabilities,
+                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                 )
                 return terminal_after_transaction.outcome
             if locked_payload.agent_profile and current_principal is not None:
@@ -2282,7 +2282,7 @@ async def process_run_payload(
                         ),
                         run_identity=run_identity,
                         trace_id=trace_id,
-                        v4_capabilities=v4_capabilities,
+                        v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                         policy="agent_profile_authority",
                     )
                     return terminal_after_transaction.outcome
@@ -2301,7 +2301,7 @@ async def process_run_payload(
                     locked_run=locked,
                     run_identity=run_identity,
                     trace_id=trace_id,
-                    v4_capabilities=v4_capabilities,
+                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                 )
                 return terminal_after_transaction.outcome
             payload = payload.model_copy(
@@ -2333,7 +2333,7 @@ async def process_run_payload(
                     authorization=capability_authorization,
                     run_identity=run_identity,
                     trace_id=trace_id,
-                    v4_capabilities=v4_capabilities,
+                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                 )
                 return terminal_after_transaction.outcome
             payload = capability_authorization.payload
@@ -2382,7 +2382,7 @@ async def process_run_payload(
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
                     error_code="unknown_executor_type",
-                    error_message=str(exc),
+                    error_message=str(exc), attempt_lifecycle=attempt_lifecycle,
                 )
                 if not terminal_written:
                     terminal_after_transaction = _WorkerTerminalAfterTransaction(
@@ -2417,7 +2417,7 @@ async def process_run_payload(
                     conn,
                     payload=payload,
                     run_identity=run_identity,
-                    v4_capabilities=v4_capabilities,
+                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                     error_code="context_snapshot_unavailable",
                     error_message="Run context snapshot is unavailable",
                     event_stage="context",
@@ -2448,7 +2448,7 @@ async def process_run_payload(
                     conn,
                     payload=payload,
                     run_identity=run_identity,
-                    v4_capabilities=v4_capabilities,
+                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                     error_code="execution_spec_invalid",
                     error_message="Execution specification is invalid",
                     event_stage="worker",

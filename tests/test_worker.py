@@ -3900,6 +3900,79 @@ async def test_worker_starts_and_terminalizes_durable_attempt_around_dispatch(mo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "helper_name",
+    (
+        "_fail_worker_pre_dispatch_error",
+        "_fail_locked_run_snapshot",
+        "_fail_worker_capability_authorization",
+    ),
+)
+async def test_worker_early_failure_helpers_preserve_attempt_lifecycle(
+    monkeypatch,
+    helper_name,
+):
+    captured = {}
+    raw = base_payload()
+    payload = worker_module.parse_leased_queue_envelope(raw).payload
+    run_identity = worker_module._payload_identity(payload)
+    attempt_lifecycle = object()
+
+    async def fail_run_and_reconcile_with_write(_conn, **kwargs):
+        captured.update(kwargs)
+        return False, None
+
+    monkeypatch.setattr(
+        worker_module,
+        "_fail_run_and_reconcile_with_write",
+        fail_run_and_reconcile_with_write,
+    )
+
+    common = {
+        "payload": payload,
+        "run_identity": run_identity,
+        "v4_capabilities": _FAKE_WORKER_V4_CAPABILITIES,
+        "attempt_lifecycle": attempt_lifecycle,
+    }
+    if helper_name == "_fail_worker_pre_dispatch_error":
+        outcome = await worker_module._fail_worker_pre_dispatch_error(
+            object(),
+            **common,
+            error_code="early_failure",
+            error_message="early failure",
+            event_stage="worker",
+            event_payload={"visible_to_user": False},
+        )
+    elif helper_name == "_fail_locked_run_snapshot":
+        outcome = await worker_module._fail_locked_run_snapshot(
+            object(),
+            **common,
+            locked_run=locked_run_from_payload(raw),
+            trace_id="trace-run-a",
+        )
+    else:
+        denial = worker_module._worker_capability_record(
+            "skill",
+            "general-chat",
+            worker_module._denied_capability_decision("test_denial"),
+        )
+        outcome = await worker_module._fail_worker_capability_authorization(
+            object(),
+            **common,
+            authorization=worker_module._WorkerCapabilityAuthorization(
+                payload,
+                SimpleNamespace(),
+                (),
+                denial,
+            ),
+            trace_id="trace-run-a",
+        )
+
+    assert outcome.outcome.status == "skipped"
+    assert captured["attempt_lifecycle"] is attempt_lifecycle
+
+
+@pytest.mark.asyncio
 async def test_worker_cancel_closes_the_same_durable_attempt_without_owner_transfer(
     monkeypatch,
 ):
@@ -5212,6 +5285,13 @@ async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkey
         calls.append(("fail", run_id, error_code, error_message, result_json))
         return RunTerminalizationProgress(True, "failed", True, True)
 
+    async def assert_worker_run_attempt_current(_conn, **_kwargs):
+        return {"id": "rat-run-child", "status": "running"}
+
+    async def terminalize_run_attempt(_conn, **kwargs):
+        calls.append(("attempt_terminal", kwargs))
+        return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
+
     async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
@@ -5220,6 +5300,14 @@ async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkey
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(
+        "app.worker.run_attempts.assert_worker_run_attempt_current",
+        assert_worker_run_attempt_current,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.terminalize_run_attempt",
+        terminalize_run_attempt,
+    )
     monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
 
     outcome = await process_run_payload(
@@ -5234,6 +5322,15 @@ async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkey
     reconcile_call = calls[reconcile_index][1]
     assert reconcile_call["run_id"] == "run-child"
     assert reconcile_call["progress"].status == "failed"
+    attempt_terminal = next(item[1] for item in calls if item[0] == "attempt_terminal")
+    assert attempt_terminal == {
+        "tenant_id": "tenant-a",
+        "run_id": "run-child",
+        "attempt_id": "rat-run-child",
+        "status": "failed",
+        "terminal_reason": "run_failed",
+        "error_code": "unknown_executor_type",
+    }
 
 
 @pytest.mark.asyncio

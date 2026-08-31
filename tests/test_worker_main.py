@@ -1707,6 +1707,10 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
         calls.append(("cancel", kwargs["tenant_id"], kwargs["run_id"]))
         return RunTerminalizationProgress(True, "cancelled", True, True)
 
+    async def assert_worker_run_attempt_current(_conn, **kwargs):
+        calls.append(("attempt_fence", kwargs["queue_attempt_id"], kwargs["worker_id"]))
+        return {"id": "rat-run-a", "status": "running"}
+
     async def reconcile(**kwargs):
         calls.append(("reconcile", kwargs["tenant_id"], kwargs["run_id"], kwargs["progress"].status))
 
@@ -1724,6 +1728,10 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
     monkeypatch.setattr("app.worker_main.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker_main.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker_main.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr(
+        "app.worker_main.assert_worker_run_attempt_current",
+        assert_worker_run_attempt_current,
+    )
     monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
     monkeypatch.setattr("app.worker_main.queue.ack_run", ack_run)
     monkeypatch.setattr("app.worker_main.queue.fail_leased_run", fail_leased_run)
@@ -1912,6 +1920,9 @@ async def test_run_once_acknowledges_terminalized_process_exception_when_child_r
     async def fail_run(*_args, **_kwargs):
         return RunTerminalizationProgress(True, "failed", True, True)
 
+    async def assert_worker_run_attempt_current(*_args, **_kwargs):
+        return {"id": "rat-run-a", "status": "running"}
+
     async def reconcile(**_kwargs):
         raise RuntimeError("parent reconciliation retry")
 
@@ -1928,6 +1939,10 @@ async def test_run_once_acknowledges_terminalized_process_exception_when_child_r
     monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
     monkeypatch.setattr("app.worker_main.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker_main.repositories.fail_run", fail_run)
+    monkeypatch.setattr(
+        "app.worker_main.assert_worker_run_attempt_current",
+        assert_worker_run_attempt_current,
+    )
     monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
     monkeypatch.setattr("app.worker_main.queue.ack_run", ack_run)
     monkeypatch.setattr("app.worker_main.queue.fail_leased_run", fail_leased_run)
@@ -1992,6 +2007,76 @@ async def test_escaped_terminalization_rejects_stale_owner_or_fence_before_trans
 
 
 @pytest.mark.asyncio
+async def test_escaped_terminalization_rejects_missing_durable_attempt(monkeypatch):
+    calls = []
+    payload = SimpleNamespace(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        agent_id="agent-a",
+        execution_kind="skill",
+        skill_id="skill-a",
+    )
+    message = QueueMessage("raw", {"run_id": "run-a"}, "lease", "message", "attempt", "owner")
+
+    class Transaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    async def verify(*_args, **_kwargs):
+        return LeaseMutationOutcome("current")
+
+    async def get_run(*_args, **_kwargs):
+        return {
+            "id": "run-a",
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "agent_id": "agent-a",
+            "execution_kind": "skill",
+            "skill_id": "skill-a",
+            "status": "running",
+        }
+
+    async def missing_attempt(*_args, **_kwargs):
+        calls.append("attempt_fence")
+        return None
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("missing attempt authority must stop escaped terminalization")
+
+    monkeypatch.setattr(
+        worker_main,
+        "parse_leased_queue_envelope",
+        lambda _value: SimpleNamespace(payload=payload, attempt_id="attempt-a"),
+    )
+    monkeypatch.setattr(worker_main, "transaction", Transaction)
+    monkeypatch.setattr(worker_main.queue, "verify_lease_ownership", verify)
+    monkeypatch.setattr(worker_main.repositories, "get_run", get_run)
+    monkeypatch.setattr(worker_main, "assert_worker_run_attempt_current", missing_attempt)
+    monkeypatch.setattr(worker_main, "fail_run_with_v4", forbidden)
+    monkeypatch.setattr(worker_main, "cancel_run_with_v4", forbidden)
+    monkeypatch.setattr(worker_main, "terminalize_run_attempt", forbidden)
+    monkeypatch.setattr(worker_main, "drain_run_tool_permission_terminalization", forbidden)
+
+    outcome = await worker_main._terminalize_escaped_process_exception(
+        message,
+        "worker-a",
+        RuntimeError("boom"),
+        v4_capabilities=_TEST_V4_CAPABILITIES,
+    )
+
+    assert outcome.status == "ownership_lost"
+    assert calls == ["attempt_fence"]
+
+
+@pytest.mark.asyncio
 async def test_escaped_terminalization_keeps_redis_lease_checks_outside_transaction(monkeypatch):
     calls = []
     transaction_open = False
@@ -2043,6 +2128,9 @@ async def test_escaped_terminalization_keeps_redis_lease_checks_outside_transact
         calls.append(("terminal_write", transaction_open))
         return RunTerminalizationProgress(True, "failed", True, False)
 
+    async def assert_worker_run_attempt_current(*_args, **_kwargs):
+        return {"id": "rat-run-a", "status": "running"}
+
     monkeypatch.setattr(
         worker_main,
         "parse_leased_queue_envelope",
@@ -2052,6 +2140,11 @@ async def test_escaped_terminalization_keeps_redis_lease_checks_outside_transact
     monkeypatch.setattr(worker_main.queue, "verify_lease_ownership", verify)
     monkeypatch.setattr(worker_main.repositories, "get_run", get_run)
     monkeypatch.setattr(worker_main.repositories, "fail_run", fail_run)
+    monkeypatch.setattr(
+        worker_main,
+        "assert_worker_run_attempt_current",
+        assert_worker_run_attempt_current,
+    )
 
     outcome = await worker_main._terminalize_escaped_process_exception(
         message,

@@ -684,17 +684,19 @@ async def _terminalize_escaped_process_exception(
             queue_attempt_id=queue_attempt_id,
             worker_id=worker_id,
         )
+        if attempt_authority is None:
+            return _queue_ownership_lost_outcome(run_id)
+        validated_attempt_id = str(attempt_authority["id"])
         cancel_requested = bool(locked_run.get("cancel_requested_at")) or str(
             locked_run.get("permission_terminalization_target") or ""
         ) in {"cancel_requested", "cancelled"}
         if cancel_requested:
-            if attempt_authority is not None:
-                attempt_authority = await request_run_attempt_cancel(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    run_id=run_id,
-                    attempt_id=str(attempt_authority["id"]),
-                )
+            await request_run_attempt_cancel(
+                conn,
+                tenant_id=payload.tenant_id,
+                run_id=run_id,
+                attempt_id=validated_attempt_id,
+            )
             progress = await cancel_run_with_v4(
                 conn,
                 capabilities=v4_capabilities,
@@ -712,12 +714,12 @@ async def _terminalize_escaped_process_exception(
                 error_message=error_message,
                 result_json={"message": "Worker processing failed unexpectedly."},
             )
-        if progress is not None and progress.is_terminal() and attempt_authority is not None:
+        if progress is not None and progress.is_terminal():
             await terminalize_run_attempt(
                 conn,
                 tenant_id=payload.tenant_id,
                 run_id=run_id,
-                attempt_id=str(attempt_authority["id"]),
+                attempt_id=validated_attempt_id,
                 status=str(progress.status),
                 terminal_reason=f"run_{progress.status}",
                 error_code=error_code if progress.status == "failed" else None,
@@ -730,7 +732,7 @@ async def _terminalize_escaped_process_exception(
             capabilities=v4_capabilities,
             transaction_factory=transaction,
             max_batches=4,
-            attempt_id=attempt_id,
+            attempt_id=validated_attempt_id,
             attempt_error_code=error_code,
         )
     if progress is not None and progress.did_transition and progress.needs_reconcile:
