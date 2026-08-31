@@ -2,6 +2,7 @@ from typing import Any
 
 import pytest
 
+import app.runs.infrastructure.postgres as run_attempt_repository
 from app.platform.postgres.errors import RepositoryConflictError
 from app.runs.domain.attempt_lifecycle import RunAttemptTransitionError
 from app.runs.domain.execution_spec import (
@@ -265,3 +266,380 @@ async def test_transition_run_attempt_rejects_illegal_edge_before_sql():
         )
 
     assert conn.calls == []
+
+
+@pytest.mark.asyncio
+async def test_start_worker_run_attempt_advances_one_exact_owner_and_spec(monkeypatch):
+    transitions = []
+    created = []
+
+    async def get_existing(*_args, **_kwargs):
+        return None
+
+    async def create(*_args, **kwargs):
+        created.append(kwargs)
+        return {
+            "id": kwargs["attempt_id"],
+            "status": "created",
+            "owner_kind": kwargs["owner_kind"],
+            "owner_id": kwargs["owner_id"],
+            "owner_generation": 1,
+        }
+
+    async def transition(*_args, **kwargs):
+        transitions.append(kwargs)
+        return {
+            "id": kwargs["attempt_id"],
+            "status": kwargs["requested_status"],
+            "owner_kind": kwargs["expected_owner_kind"],
+            "owner_id": kwargs["expected_owner_id"],
+            "owner_generation": kwargs["expected_owner_generation"] + 1,
+        }
+
+    monkeypatch.setattr(
+        run_attempt_repository,
+        "get_run_attempt_for_queue_attempt",
+        get_existing,
+    )
+    monkeypatch.setattr(run_attempt_repository, "create_run_attempt", create)
+    monkeypatch.setattr(run_attempt_repository, "transition_run_attempt", transition)
+    conn = _Connection({"next_ordinal": 1})
+
+    row = await run_attempt_repository.start_worker_run_attempt(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        queue_attempt_id="qat-a",
+        worker_id="worker-a",
+        execution_spec=_execution_spec(),
+    )
+
+    assert row["status"] == "running"
+    assert row["owner_generation"] == 4
+    assert created[0]["queue_attempt_id"] == "qat-a"
+    assert created[0]["owner_id"] == "worker-a"
+    assert created[0]["attempt_id"].startswith("rat_")
+    assert [item["requested_status"] for item in transitions] == [
+        "queued",
+        "claimed",
+        "running",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_worker_attempt_fence_rejects_a_different_worker_owner(monkeypatch):
+    async def get_attempt(*_args, **_kwargs):
+        return {
+            "id": "rat-a",
+            "status": "running",
+            "queue_attempt_id": "qat-a",
+            "owner_kind": "queue_worker",
+            "owner_id": "worker-other",
+            "owner_generation": 4,
+        }
+
+    monkeypatch.setattr(
+        run_attempt_repository,
+        "get_run_attempt_for_queue_attempt",
+        get_attempt,
+    )
+
+    with pytest.raises(
+        RepositoryConflictError,
+        match="run_attempt_worker_authority_stale",
+    ):
+        await run_attempt_repository.assert_worker_run_attempt_current(
+            object(),
+            tenant_id="tenant-a",
+            run_id="run-a",
+            queue_attempt_id="qat-a",
+            worker_id="worker-a",
+        )
+
+
+@pytest.mark.asyncio
+async def test_cancel_request_preserves_execution_owner_and_advances_generation(monkeypatch):
+    transitions = []
+
+    async def get_attempt(*_args, **_kwargs):
+        return {
+            "id": "rat-a",
+            "status": "running",
+            "queue_attempt_id": "qat-a",
+            "owner_kind": "queue_worker",
+            "owner_id": "worker-a",
+            "owner_generation": 4,
+        }
+
+    async def transition(*_args, **kwargs):
+        transitions.append(kwargs)
+        return {
+            "id": kwargs["attempt_id"],
+            "status": kwargs["requested_status"],
+            "owner_kind": kwargs["expected_owner_kind"],
+            "owner_id": kwargs["expected_owner_id"],
+            "owner_generation": kwargs["expected_owner_generation"] + 1,
+        }
+
+    monkeypatch.setattr(run_attempt_repository, "get_run_attempt", get_attempt)
+    monkeypatch.setattr(run_attempt_repository, "transition_run_attempt", transition)
+
+    row = await run_attempt_repository.request_run_attempt_cancel(
+        object(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="rat-a",
+    )
+
+    assert row == {
+        "id": "rat-a",
+        "status": "cancel_requested",
+        "owner_kind": "queue_worker",
+        "owner_id": "worker-a",
+        "owner_generation": 5,
+    }
+    assert transitions[0]["expected_owner_generation"] == 4
+    assert transitions[0]["next_owner_kind"] is None
+    assert transitions[0]["next_owner_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_request_reconciler_takes_over_existing_request(monkeypatch):
+    async def get_attempt(*_args, **_kwargs):
+        return {
+            "id": "rat-a",
+            "status": "cancel_requested",
+            "queue_attempt_id": "qat-a",
+            "owner_kind": "queue_worker",
+            "owner_id": "worker-a",
+            "owner_generation": 5,
+        }
+
+    monkeypatch.setattr(run_attempt_repository, "get_run_attempt", get_attempt)
+    conn = _Connection(
+        {
+            "id": "rat-a",
+            "status": "cancel_requested",
+            "owner_kind": "reconciler",
+            "owner_id": "stale-run-maintenance",
+            "owner_generation": 6,
+        }
+    )
+
+    row = await run_attempt_repository.request_run_attempt_cancel(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="rat-a",
+        next_owner_kind="reconciler",
+        next_owner_id="stale-run-maintenance",
+    )
+
+    assert row["owner_kind"] == "reconciler"
+    assert row["owner_generation"] == 6
+    sql, params = conn.calls[0]
+    normalized_sql = " ".join(sql.split())
+    assert "set owner_kind = %s" in normalized_sql
+    assert "owner_generation = owner_generation + 1" in normalized_sql
+    assert "status = 'cancel_requested'" in normalized_sql
+    assert params == (
+        "reconciler",
+        "stale-run-maintenance",
+        "tenant-a",
+        "run-a",
+        "rat-a",
+        "queue_worker",
+        "worker-a",
+        5,
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_attempt_requires_durable_cancel_request(monkeypatch):
+    async def get_attempt(*_args, **_kwargs):
+        return {
+            "id": "rat-a",
+            "status": "running",
+            "queue_attempt_id": "qat-a",
+            "owner_kind": "queue_worker",
+            "owner_id": "worker-a",
+            "owner_generation": 4,
+        }
+
+    monkeypatch.setattr(run_attempt_repository, "get_run_attempt", get_attempt)
+
+    with pytest.raises(
+        RepositoryConflictError,
+        match="run_attempt_cancel_request_missing",
+    ):
+        await run_attempt_repository.terminalize_run_attempt(
+            object(),
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="rat-a",
+            status="cancelled",
+            terminal_reason="run_cancelled",
+        )
+
+
+@pytest.mark.asyncio
+async def test_owner_cancel_does_not_transfer_attempt_execution_owner(monkeypatch):
+    cancel_calls = []
+
+    class Connection:
+        async def execute(self, _sql, _params):
+            return _Cursor(
+                {
+                    "id": "run-a",
+                    "status": "running",
+                    "trace_id": "trace-a",
+                    "cancel_requested_newly": True,
+                }
+            )
+
+    async def get_latest(*_args, **_kwargs):
+        return {"id": "rat-a", "status": "running"}
+
+    async def request_cancel(*_args, **kwargs):
+        cancel_calls.append(kwargs)
+        return {"id": kwargs["attempt_id"], "status": "cancel_requested"}
+
+    async def stage(*_args, **_kwargs):
+        return None
+
+    async def append_event(*_args, **_kwargs):
+        return "event-a"
+
+    async def append_audit(*_args, **_kwargs):
+        return "audit-a"
+
+    async def list_leases(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(run_attempt_repository, "get_latest_run_attempt", get_latest)
+    monkeypatch.setattr(
+        run_attempt_repository,
+        "request_run_attempt_cancel",
+        request_cancel,
+    )
+    monkeypatch.setattr(
+        run_attempt_repository,
+        "_stage_run_tool_permission_terminalization",
+        stage,
+    )
+    persistence = run_attempt_repository.PostgresRunCancellationPersistence(
+        append_event=append_event,
+        append_audit_log=append_audit,
+        list_active_sandbox_leases=list_leases,
+    )
+
+    authority = await persistence.begin_owner_request(
+        Connection(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        owner_user_id="owner-a",
+    )
+
+    assert authority is not None and authority.attempt_id == "rat-a"
+    assert cancel_calls == [
+        {
+            "tenant_id": "tenant-a",
+            "run_id": "run-a",
+            "attempt_id": "rat-a",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stale_failure_transfers_attempt_to_reconciler_and_expires_owner(
+    monkeypatch,
+):
+    transitions = []
+
+    async def get_latest(*_args, **_kwargs):
+        return {
+            "id": "rat-a",
+            "status": "running",
+            "owner_kind": "queue_worker",
+            "owner_id": "worker-a",
+            "owner_generation": 4,
+        }
+
+    async def transition(*_args, **kwargs):
+        transitions.append(kwargs)
+        return {
+            "id": kwargs["attempt_id"],
+            "status": kwargs["requested_status"],
+            "owner_kind": kwargs["next_owner_kind"],
+            "owner_id": kwargs["next_owner_id"],
+            "owner_generation": kwargs["expected_owner_generation"] + 1,
+        }
+
+    monkeypatch.setattr(run_attempt_repository, "get_latest_run_attempt", get_latest)
+    monkeypatch.setattr(run_attempt_repository, "transition_run_attempt", transition)
+
+    attempt = await run_attempt_repository.prepare_stale_run_attempt_reconciliation(
+        object(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        terminal_status="failed",
+        reconciler_id="stale-run-maintenance",
+    )
+
+    assert attempt == {
+        "id": "rat-a",
+        "status": "expired",
+        "owner_kind": "reconciler",
+        "owner_id": "stale-run-maintenance",
+        "owner_generation": 5,
+    }
+    assert transitions[0]["expected_status"] == "running"
+    assert transitions[0]["requested_status"] == "expired"
+    assert transitions[0]["next_owner_kind"] == "reconciler"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attempt_status", ["running", "cancel_requested"])
+async def test_stale_cancel_transfers_active_attempt_before_terminal_drain(
+    monkeypatch,
+    attempt_status,
+):
+    cancel_calls = []
+
+    async def get_latest(*_args, **_kwargs):
+        return {
+            "id": "rat-a",
+            "status": attempt_status,
+            "owner_kind": "queue_worker",
+            "owner_id": "worker-a",
+            "owner_generation": 4,
+        }
+
+    async def request_cancel(*_args, **kwargs):
+        cancel_calls.append(kwargs)
+        return {
+            "id": kwargs["attempt_id"],
+            "status": "cancel_requested",
+            "owner_kind": kwargs["next_owner_kind"],
+            "owner_id": kwargs["next_owner_id"],
+            "owner_generation": 5,
+        }
+
+    monkeypatch.setattr(run_attempt_repository, "get_latest_run_attempt", get_latest)
+    monkeypatch.setattr(
+        run_attempt_repository,
+        "request_run_attempt_cancel",
+        request_cancel,
+    )
+
+    attempt = await run_attempt_repository.prepare_stale_run_attempt_reconciliation(
+        object(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        terminal_status="cancelled",
+        reconciler_id="stale-run-maintenance",
+    )
+
+    assert attempt["status"] == "cancel_requested"
+    assert attempt["owner_kind"] == "reconciler"
+    assert cancel_calls[0]["next_owner_id"] == "stale-run-maintenance"

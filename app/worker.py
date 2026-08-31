@@ -42,12 +42,19 @@ from app.control_plane_contracts import (
 )
 from app.db import transaction
 from app.execution.api import (
+    WorkerAttemptLifecycle,
+    WorkerAttemptLifecyclePorts,
+    WorkerExecutorReconciliation,
     WorkerRunCancelled,
+    bind_worker_attempt_lifecycle,
+    fail_run_and_reconcile_worker_child as _fail_run_and_reconcile_worker_child,
+    finalize_worker_child_parent as _finalize_worker_child_parent,
     locked_run_payload_candidate as _locked_run_payload_candidate,
-    restored_sandbox_run_payload as _restored_run_payload,
+    restored_executor_reconciliation_queue_payload as _restored_executor_reconciliation_queue_payload,
     submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
     time,
     with_locked_run_model_snapshot as _with_locked_run_model_snapshot,
+    worker_child_terminal_progress as _reconcile_multi_agent_child_terminal_state,
 )
 from app.execution_boundary import (
     decide_worker_execution_boundary as _worker_execution_boundary_decision,
@@ -68,10 +75,10 @@ from app.principal_authority import (
 )
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
 from app.runs.api import (
-    RunTerminalizationProgress,
     compile_execution_spec_for_dispatch,
     load_run_model_snapshot as _load_run_model_snapshot,
 )
+from app.runs import api as run_attempts
 from app.required_tool_contract import (
     RequiredCapabilityDecision,
     builtin_capability_subjects,
@@ -129,6 +136,26 @@ _submit_run_until_cancelled = _partial(
 )
 
 
+def _worker_attempt_lifecycle_ports() -> WorkerAttemptLifecyclePorts:
+    return WorkerAttemptLifecyclePorts(
+        lock_run=repositories.get_run,
+        complete_run=complete_run_with_v4,
+        fail_run=fail_run_with_v4,
+        cancel_run=cancel_run_with_v4,
+        drain_terminalization=drain_run_tool_permission_terminalization,
+        is_reconciliation_claim_current=(
+            sandbox_lease_repository.is_sandbox_executor_reconciliation_claim_current
+        ),
+        get_attempt=run_attempts.get_run_attempt,
+        get_attempt_for_queue_attempt=run_attempts.get_run_attempt_for_queue_attempt,
+        start_attempt=run_attempts.start_worker_run_attempt,
+        assert_current_attempt=run_attempts.assert_worker_run_attempt_current,
+        request_attempt_cancel=run_attempts.request_run_attempt_cancel,
+        terminalize_attempt=run_attempts.terminalize_run_attempt,
+        conflict_error=repositories.RepositoryConflictError,
+    )
+
+
 @dataclass(frozen=True)
 class WorkerOutcome:
     status: str
@@ -150,13 +177,6 @@ class _WorkerTerminalAfterTransaction:
     outcome: WorkerOutcome
     payload: QueueRunPayload
     reconciled_parent: Any | None
-
-
-@dataclass(frozen=True)
-class _WorkerExecutorReconciliation:
-    result: ExecutorResult
-    lease_row: dict[str, Any]
-    claim_token: str
 
 
 @dataclass(frozen=True)
@@ -293,43 +313,14 @@ def parse_leased_queue_envelope(raw: dict[str, Any]) -> LeasedQueueEnvelope:
     return LeasedQueueEnvelope(payload=parse_queue_payload(parseable_raw), attempt_id=attempt_id)
 
 
-async def _reconcile_multi_agent_child_terminal_state(
-    conn,
-    *,
-    payload: QueueRunPayload,
-    child_status: str,
-    result_json: dict[str, Any] | None = None,
-    error_code: str | None = None,
-    error_message: str | None = None,
-    is_multi_agent_child: bool | None = None,
-) -> RunTerminalizationProgress | None:
-    """Carry one committed child transition to the shared post-commit lifecycle seam."""
-    del conn, result_json, error_code, error_message
-    child_dispatch = isinstance(payload.input.get("multi_agent_dispatch"), dict)
-    if child_status not in {"succeeded", "failed", "cancelled"} or not (
-        child_dispatch if is_multi_agent_child is None else is_multi_agent_child
-    ):
-        return None
-    return RunTerminalizationProgress(
-        completed=True,
-        status=child_status,
-        did_transition=True,
-        needs_reconcile=True,
-    )
-
-
 async def _finalize_multi_agent_parent_after_child_commit(
     transaction_factory, payload: QueueRunPayload, reconciled: Any | None,
 ) -> Any | None:
-    """Use the shared post-commit owner for worker child reconciliation and parent rollup."""
-
-    if not isinstance(reconciled, RunTerminalizationProgress):
-        return None
-    return await reconcile_terminalized_permission_run(
-        tenant_id=payload.tenant_id,
-        run_id=payload.run_id,
-        progress=reconciled,
-        transaction_factory=transaction_factory,
+    return await _finalize_worker_child_parent(
+        transaction_factory,
+        payload,
+        reconciled,
+        reconcile_terminalized_run=reconcile_terminalized_permission_run,
     )
 
 
@@ -343,30 +334,22 @@ async def _fail_run_and_reconcile_with_write(
     error_message: str,
     result_json: dict[str, Any] | None = None,
     is_multi_agent_child: bool | None = None,
-    v4_capabilities: WorkerV4Capabilities,
+    v4_capabilities: WorkerV4Capabilities, attempt_lifecycle: WorkerAttemptLifecycle | None = None,
 ) -> tuple[bool, Any | None]:
-    terminal_written = await fail_run_with_v4(
+    return await _fail_run_and_reconcile_worker_child(
         conn,
-        capabilities=v4_capabilities,
+        payload=payload,
         tenant_id=tenant_id,
         run_id=run_id,
         error_code=error_code,
         error_message=error_message,
+        capabilities=v4_capabilities,
+        fail_run=fail_run_with_v4,
+        reconcile_child=_reconcile_multi_agent_child_terminal_state,
+        attempt_lifecycle=attempt_lifecycle,
         result_json=result_json,
+        is_multi_agent_child=is_multi_agent_child,
     )
-    if not terminal_written:
-        return False, None
-    if tenant_id == payload.tenant_id and run_id == payload.run_id:
-        return True, await _reconcile_multi_agent_child_terminal_state(
-            conn,
-            payload=payload,
-            child_status="failed",
-            result_json=result_json,
-            error_code=error_code,
-            error_message=error_message,
-            is_multi_agent_child=is_multi_agent_child,
-        )
-    return True, None
 
 
 def _mcp_tool_request_payload(payload: QueueRunPayload) -> dict[str, str]:
@@ -1754,6 +1737,7 @@ async def _fail_worker_pre_dispatch_error(
     event_stage: str,
     event_payload: dict[str, Any],
     v4_capabilities: WorkerV4Capabilities,
+    attempt_lifecycle: WorkerAttemptLifecycle | None = None,
     is_multi_agent_child: bool | None = None,
 ) -> _WorkerTerminalAfterTransaction:
     terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
@@ -1764,7 +1748,7 @@ async def _fail_worker_pre_dispatch_error(
         error_code=error_code,
         error_message=error_message,
         is_multi_agent_child=is_multi_agent_child,
-        v4_capabilities=v4_capabilities,
+        v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
     )
     if not terminal_written:
         return _WorkerTerminalAfterTransaction(
@@ -1800,7 +1784,7 @@ async def _fail_locked_run_snapshot(
     locked_run: object,
     run_identity: dict[str, str],
     trace_id: str,
-    v4_capabilities: WorkerV4Capabilities,
+    v4_capabilities: WorkerV4Capabilities, attempt_lifecycle: WorkerAttemptLifecycle | None = None,
 ) -> _WorkerTerminalAfterTransaction:
     error_code = "capability_not_authorized"
     error_message = "Capability is not authorized for this run"
@@ -1818,7 +1802,7 @@ async def _fail_locked_run_snapshot(
         error_code=error_code,
         error_message=error_message,
         is_multi_agent_child=_locked_run_is_multi_agent_child(locked_run),
-        v4_capabilities=v4_capabilities,
+        v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
     )
     if not terminal_written:
         return _WorkerTerminalAfterTransaction(
@@ -1854,7 +1838,7 @@ async def _fail_worker_capability_authorization(
     authorization: _WorkerCapabilityAuthorization,
     run_identity: dict[str, str],
     trace_id: str,
-    v4_capabilities: WorkerV4Capabilities,
+    v4_capabilities: WorkerV4Capabilities, attempt_lifecycle: WorkerAttemptLifecycle | None = None,
     policy: str = "capability_distribution",
 ) -> _WorkerTerminalAfterTransaction:
     denial = authorization.denial
@@ -1870,7 +1854,7 @@ async def _fail_worker_capability_authorization(
         run_id=run_identity["run_id"],
         error_code=error_code,
         error_message=error_message,
-        v4_capabilities=v4_capabilities,
+        v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
     )
     if not terminal_written:
         return _WorkerTerminalAfterTransaction(
@@ -2058,7 +2042,7 @@ async def process_run_payload(
     registry: AdapterRegistry | None = None,
     *,
     worker_id: str | None = None,
-    reconciliation: _WorkerExecutorReconciliation | None = None,
+    reconciliation: WorkerExecutorReconciliation | None = None,
     transaction_factory: Any | None = None,
     v4_capabilities: WorkerV4Capabilities,
 ) -> WorkerOutcome:
@@ -2082,7 +2066,14 @@ async def process_run_payload(
     payload = envelope.payload
     if v4_capabilities is None:
         raise RuntimeError("worker_v4_capabilities_unavailable")
-    attempt_id = envelope.attempt_id
+    attempt_lifecycle = bind_worker_attempt_lifecycle(
+        payload,
+        leased_attempt_id=envelope.attempt_id,
+        worker_id=worker_id,
+        reconciliation=reconciliation,
+        ports=_worker_attempt_lifecycle_ports(),
+    )
+    attempt_id = attempt_lifecycle.attempt_id
     trace_id = standard_trace_id(payload.run_id)
 
     adapter_registry = registry if registry is not None else AdapterRegistry()
@@ -2110,7 +2101,7 @@ async def process_run_payload(
                     run_id=payload.run_id,
                 )
                 if reconciliation is not None
-                else await repositories.mark_run_running(
+                else await run_attempts.lock_queued_run_for_attempt(
                     conn,
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
@@ -2131,6 +2122,9 @@ async def process_run_payload(
                         "stale_reconciliation_attempt",
                         "Executor reconciliation attempt is stale",
                     )
+                attempt_lifecycle = (
+                    await attempt_lifecycle.restore_reconciliation_authority(conn)
+                )
             if locked is not None:
                 await v4_capabilities.pending_admissions.prepare_pending_authority_in_transaction(
                     conn,
@@ -2208,7 +2202,7 @@ async def process_run_payload(
                     conn,
                     payload=payload,
                     run_identity=run_identity,
-                    v4_capabilities=v4_capabilities,
+                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                     error_code="queue_payload_identity_mismatch",
                     error_message="Queue payload identity does not match run record",
                     event_stage="worker",
@@ -2237,7 +2231,7 @@ async def process_run_payload(
                     locked_run=locked,
                     run_identity=run_identity,
                     trace_id=trace_id,
-                    v4_capabilities=v4_capabilities,
+                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                 )
                 return terminal_after_transaction.outcome
             if not _locked_agent_profile_identity_valid(
@@ -2250,7 +2244,7 @@ async def process_run_payload(
                     locked_run=locked,
                     run_identity=run_identity,
                     trace_id=trace_id,
-                    v4_capabilities=v4_capabilities,
+                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                 )
                 return terminal_after_transaction.outcome
             if locked_payload.agent_profile and current_principal is not None:
@@ -2288,7 +2282,7 @@ async def process_run_payload(
                         ),
                         run_identity=run_identity,
                         trace_id=trace_id,
-                        v4_capabilities=v4_capabilities,
+                        v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                         policy="agent_profile_authority",
                     )
                     return terminal_after_transaction.outcome
@@ -2307,7 +2301,7 @@ async def process_run_payload(
                     locked_run=locked,
                     run_identity=run_identity,
                     trace_id=trace_id,
-                    v4_capabilities=v4_capabilities,
+                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                 )
                 return terminal_after_transaction.outcome
             payload = payload.model_copy(
@@ -2339,19 +2333,10 @@ async def process_run_payload(
                     authorization=capability_authorization,
                     run_identity=run_identity,
                     trace_id=trace_id,
-                    v4_capabilities=v4_capabilities,
+                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                 )
                 return terminal_after_transaction.outcome
             payload = capability_authorization.payload
-            await append_user_event(
-                conn,
-                tenant_id=run_identity["tenant_id"],
-                run_id=run_identity["run_id"],
-                event_type="worker_started",
-                stage="worker",
-                message="Run started",
-                payload=_worker_runtime_evidence(worker_id=worker_id, executor_type=payload.executor_type),
-            )
             if await repositories.is_cancel_requested(conn, tenant_id=run_identity["tenant_id"], run_id=run_identity["run_id"]):
                 cancel_result = {"message": "任务已取消"}
                 terminal_written = await cancel_run_with_v4(
@@ -2397,7 +2382,7 @@ async def process_run_payload(
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
                     error_code="unknown_executor_type",
-                    error_message=str(exc),
+                    error_message=str(exc), attempt_lifecycle=attempt_lifecycle,
                 )
                 if not terminal_written:
                     terminal_after_transaction = _WorkerTerminalAfterTransaction(
@@ -2432,7 +2417,7 @@ async def process_run_payload(
                     conn,
                     payload=payload,
                     run_identity=run_identity,
-                    v4_capabilities=v4_capabilities,
+                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                     error_code="context_snapshot_unavailable",
                     error_message="Run context snapshot is unavailable",
                     event_stage="context",
@@ -2463,7 +2448,7 @@ async def process_run_payload(
                     conn,
                     payload=payload,
                     run_identity=run_identity,
-                    v4_capabilities=v4_capabilities,
+                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                     error_code="execution_spec_invalid",
                     error_message="Execution specification is invalid",
                     event_stage="worker",
@@ -2475,6 +2460,19 @@ async def process_run_payload(
                     is_multi_agent_child=_locked_run_is_multi_agent_child(locked),
                 )
                 return terminal_after_transaction.outcome
+            await attempt_lifecycle.bind_execution_spec(conn, execution_spec)
+            await append_user_event(
+                conn,
+                tenant_id=run_identity["tenant_id"],
+                run_id=run_identity["run_id"],
+                event_type="worker_started",
+                stage="worker",
+                message="Run started",
+                payload=_worker_runtime_evidence(
+                    worker_id=worker_id,
+                    executor_type=payload.executor_type,
+                ),
+            )
             if reconciliation is None and not _ordinary_run_uses_runtime_sandbox(
                 payload,
                 context_snapshot=context_ref["context_snapshot"],
@@ -2631,31 +2629,45 @@ async def process_run_payload(
             )
     except WorkerRunCancelled:
         reconciled_parent = None
+        cancelled_outcome = WorkerOutcome(
+            "skipped",
+            payload.run_id,
+            "stale_terminal_state",
+            "Run already reached a terminal state",
+        )
         async with transaction_factory() as conn:
             cancel_result = {"message": "任务已取消"}
-            terminal_written = await cancel_run_with_v4(
+            terminal_written = await attempt_lifecycle.cancel(
                 conn,
                 capabilities=v4_capabilities,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
                 result_json=cancel_result,
             )
-            if not terminal_written:
-                return WorkerOutcome(
-                    "skipped",
-                    payload.run_id,
-                    "stale_terminal_state",
-                    "Run already reached a terminal state",
+            if terminal_written:
+                reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
+                    conn,
+                    payload=payload,
+                    child_status="cancelled",
+                    result_json=cancel_result,
                 )
-            reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
-                conn,
-                payload=payload,
-                child_status="cancelled",
-                result_json=cancel_result,
+                await release_runtime_sandbox_lease(conn, reason="run_cancelled")
+                cancelled_outcome = WorkerOutcome("cancelled", payload.run_id)
+        if cancelled_outcome.status == "skipped":
+            progress = await attempt_lifecycle.drain(
+                capabilities=v4_capabilities,
+                transaction_factory=transaction_factory,
             )
-            await release_runtime_sandbox_lease(conn, reason="run_cancelled")
+            if progress is not None and progress.is_terminal("cancelled"):
+                async with transaction_factory() as conn:
+                    reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
+                        conn,
+                        payload=payload,
+                        child_status="cancelled",
+                        result_json=cancel_result,
+                    )
+                    await release_runtime_sandbox_lease(conn, reason="run_cancelled")
+                cancelled_outcome = WorkerOutcome("cancelled", payload.run_id)
         await finalize_parent_and_publish(transaction_factory, v4_capabilities, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
-        return WorkerOutcome("cancelled", payload.run_id)
+        return cancelled_outcome
     except Exception as exc:  # noqa: BLE001 - worker boundary terminalizes all failures.
         reconciled_parent = None
         failure_code, failure_message = _executor_exception_failure(exc)
@@ -2671,11 +2683,9 @@ async def process_run_payload(
             )
             if await repositories.is_cancel_requested(conn, tenant_id=payload.tenant_id, run_id=payload.run_id):
                 cancel_result = {"message": "任务已取消"}
-                terminal_written = await cancel_run_with_v4(
+                terminal_written = await attempt_lifecycle.cancel(
                     conn,
                     capabilities=v4_capabilities,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
                     result_json=cancel_result,
                 )
                 if not terminal_written:
@@ -2703,6 +2713,7 @@ async def process_run_payload(
                     run_id=payload.run_id,
                     error_code=failure_code,
                     error_message=failure_message,
+                    attempt_lifecycle=attempt_lifecycle,
                 )
                 if not terminal_written:
                     outcome_after_exception = WorkerOutcome(
@@ -2726,6 +2737,27 @@ async def process_run_payload(
                         },
                     )
                     await release_runtime_sandbox_lease(conn, reason="run_failed")
+        if outcome_after_exception.status == "skipped":
+            progress = await attempt_lifecycle.drain(
+                capabilities=v4_capabilities,
+                transaction_factory=transaction_factory,
+                error_code=failure_code,
+            )
+            if progress is not None and progress.is_terminal():
+                final_status = str(progress.status)
+                async with transaction_factory() as conn:
+                    await release_runtime_sandbox_lease(
+                        conn,
+                        reason=(
+                            "run_cancelled" if final_status == "cancelled" else "run_failed"
+                        ),
+                    )
+                outcome_after_exception = WorkerOutcome(
+                    final_status,
+                    payload.run_id,
+                    failure_code if final_status == "failed" else None,
+                    failure_message if final_status == "failed" else None,
+                )
         await finalize_parent_and_publish(transaction_factory, v4_capabilities, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
         return outcome_after_exception
 
@@ -3040,11 +3072,9 @@ async def process_run_payload(
                         message="取消请求已记录，但任务已完成",
                         payload={"severity": "warning"},
                     )
-                terminal_written = await complete_run_with_v4(
+                terminal_written = await attempt_lifecycle.complete(
                     conn,
                     capabilities=v4_capabilities,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
                     result_json=result_payload,
                 )
                 if not terminal_written:
@@ -3096,11 +3126,9 @@ async def process_run_payload(
                 )
                 if cancel_requested and _result_prefers_cancelled_after_failure(result):
                     cancel_result = {"message": "任务已取消"}
-                    terminal_written = await cancel_run_with_v4(
+                    terminal_written = await attempt_lifecycle.cancel(
                         conn,
                         capabilities=v4_capabilities,
-                        tenant_id=payload.tenant_id,
-                        run_id=payload.run_id,
                         result_json=cancel_result,
                     )
                     if not terminal_written:
@@ -3129,6 +3157,7 @@ async def process_run_payload(
                         error_code=reported_error_code,
                         error_message=reported_error_message,
                         result_json=result_payload,
+                        attempt_lifecycle=attempt_lifecycle,
                     )
                     if not terminal_written:
                         terminal_outcome = WorkerOutcome(
@@ -3158,11 +3187,9 @@ async def process_run_payload(
             )
             if blocked_reason == "cancel_requested":
                 cancel_result = {"message": "任务已取消"}
-                terminal_written = await cancel_run_with_v4(
+                terminal_written = await attempt_lifecycle.cancel(
                     conn,
                     capabilities=v4_capabilities,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
                     result_json=cancel_result,
                 )
                 if terminal_written:
@@ -3197,6 +3224,7 @@ async def process_run_payload(
                     error_code="tool_permission_pending",
                     error_message="A pending tool-permission request blocked successful completion.",
                     result_json=blocked_result_payload,
+                    attempt_lifecycle=attempt_lifecycle,
                 )
                 if not terminal_written:
                     terminal_outcome = WorkerOutcome(
@@ -3232,11 +3260,10 @@ async def process_run_payload(
     finally:
         await cleanup_runtime_sandbox_lease_after_interruption()
     if terminal_outcome.status == "skipped":
-        terminalization_progress = await drain_run_tool_permission_terminalization(
-            tenant_id=payload.tenant_id,
-            run_id=payload.run_id,
+        terminalization_progress = await attempt_lifecycle.drain(
             capabilities=v4_capabilities,
             transaction_factory=transaction_factory,
+            error_code=terminal_outcome.error_code,
         )
         if (
             terminalization_progress is not None
@@ -3272,48 +3299,20 @@ async def reconcile_executor_terminal_result(
     transaction_factory: Any | None = None,
     v4_capabilities: WorkerV4Capabilities,
 ) -> WorkerOutcome:
-    context = lease_row.get("executor_reconciliation_context_json")
-    if not isinstance(context, dict):
-        raise ValueError("executor_reconciliation_context_missing")
-    if not isinstance(context.get("adapter_context"), dict):
-        raise ValueError("executor_reconciliation_adapter_context_missing")
-    run_payload_value = context.get("run_payload")
-    if not isinstance(run_payload_value, dict):
-        raise ValueError("executor_reconciliation_run_payload_missing")
-    run_payload = _restored_run_payload(run_payload_value, RunPayload, result.result)
-    adapter_name = str(context.get("adapter_name") or "").strip()
-    if not adapter_name:
-        raise ValueError("executor_reconciliation_adapter_name_missing")
-    queue_payload = QueueRunPayload(
-        tenant_id=run_payload.tenant_id,
-        workspace_id=run_payload.workspace_id,
-        user_id=run_payload.user_id,
-        session_id=run_payload.session_id,
-        run_id=run_payload.run_id,
-        agent_id=run_payload.agent_id,
-        execution_kind=run_payload.execution_kind,
-        skill_id=run_payload.skill_id,
-        file_ids=run_payload.file_ids,
-        input={},
-        executor_type=adapter_name,
-        skill_version=run_payload.skill_version or None,
-        release_decision=run_payload.release_decision,
-        skill_manifests=run_payload.skill_manifests,
-        context_snapshot_id=run_payload.context_snapshot_id or None,
-        context_snapshot=run_payload.context_snapshot,
-        model_id=run_payload.model_id or None,
-        model_value=run_payload.model_value or None,
-        agent_profile=run_payload.agent_profile or None,
-        schema_version=run_payload.schema_version,
+    queue_payload, attempt_id = _restored_executor_reconciliation_queue_payload(
+        lease_row.get("executor_reconciliation_context_json"),
+        result=result.result,
+        run_payload_factory=RunPayload,
+        queue_payload_factory=QueueRunPayload,
     )
     return await process_run_payload(
         {
             **queue_payload.model_dump(mode="json"),
-            "_queue_attempt_id": run_payload.attempt_id,
+            "_queue_attempt_id": attempt_id,
         },
         registry,
         worker_id=worker_id,
-        reconciliation=_WorkerExecutorReconciliation(result, lease_row, claim_token),
+        reconciliation=WorkerExecutorReconciliation(result, lease_row, claim_token),
         transaction_factory=transaction_factory,
         v4_capabilities=v4_capabilities,
     )

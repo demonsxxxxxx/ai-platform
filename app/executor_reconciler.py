@@ -34,8 +34,10 @@ from app.runtime.sandbox.providers.opensandbox.startup import (
     is_authoritative_not_found_error,
 )
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
+from app.runs.api import request_run_attempt_cancel, terminalize_run_attempt
 from app.settings import get_settings
 from app.tool_permission_lifecycle import (
+    cancel_run_with_v4,
     drain_run_tool_permission_terminalization,
     fail_run_with_v4,
     reconcile_terminalized_permission_run,
@@ -298,6 +300,7 @@ async def _terminalize_reconciliation_failure(
     run_id = str(lease_row["run_id"])
     progress = None
     run_was_terminal = False
+    attempt_id = str(lease_row.get("attempt_id") or "") or None
     async with transaction() as conn:
         claimed = await sandbox_lease_repository.has_sandbox_executor_reconciliation_claim(
             conn,
@@ -317,23 +320,64 @@ async def _terminalize_reconciliation_failure(
         if str(run.get("status") or "") in _TERMINAL_RUN_STATUSES:
             run_was_terminal = True
         else:
-            progress = await fail_run_with_v4(
-                conn,
-                capabilities=v4_capabilities,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                error_code="terminal_reconciliation_failed",
-                error_message="Executor terminal reconciliation could not be completed.",
-                result_json={
-                    "message": "Executor terminal reconciliation could not be completed.",
-                },
-            )
+            cancel_requested = bool(run.get("cancel_requested_at")) or str(
+                run.get("permission_terminalization_target") or ""
+            ) in {"cancel_requested", "cancelled"}
+            if attempt_id is not None and cancel_requested:
+                await request_run_attempt_cancel(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                )
+            if cancel_requested:
+                progress = await cancel_run_with_v4(
+                    conn,
+                    capabilities=v4_capabilities,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    result_json={"message": "任务已取消"},
+                )
+            else:
+                progress = await fail_run_with_v4(
+                    conn,
+                    capabilities=v4_capabilities,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    error_code="terminal_reconciliation_failed",
+                    error_message="Executor terminal reconciliation could not be completed.",
+                    result_json={
+                        "message": "Executor terminal reconciliation could not be completed.",
+                    },
+                )
+            if progress.is_terminal() and attempt_id is not None:
+                await terminalize_run_attempt(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                    status=str(progress.status),
+                    terminal_reason=(
+                        "run_cancelled"
+                        if progress.status == "cancelled"
+                        else "executor_terminal_reconciliation_failed"
+                    ),
+                    error_code=(
+                        "terminal_reconciliation_failed"
+                        if progress.status == "failed"
+                        else None
+                    ),
+                )
     if progress is not None and not progress.is_terminal():
         progress = await drain_run_tool_permission_terminalization(
             tenant_id=tenant_id,
             run_id=run_id,
             capabilities=v4_capabilities,
             transaction_factory=transaction,
+            attempt_id=attempt_id,
+            attempt_error_code=(
+                None if cancel_requested else "terminal_reconciliation_failed"
+            ),
         )
     if progress is not None and progress.did_transition and progress.needs_reconcile:
         try:

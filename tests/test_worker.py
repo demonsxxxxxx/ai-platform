@@ -11,6 +11,7 @@ import pytest
 
 import app.bootstrap.model_services as model_services
 import app.execution.application.model_control_plane as model_control_plane_module
+import app.execution.application.worker_attempt_lifecycle as worker_attempt_lifecycle_module
 import app.runs.application.model_snapshot as run_model_snapshot_module
 import app.worker as worker_module
 from app import repositories as repository_module
@@ -900,6 +901,76 @@ def default_cancel_not_requested(monkeypatch):
         return locked_run
 
     monkeypatch.setattr("app.worker.repositories.get_run", get_run, raising=False)
+
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return await worker_module.repositories.mark_run_running(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+        )
+
+    async def start_worker_run_attempt(conn, **kwargs):
+        return {
+            "id": worker_attempt_lifecycle_module.run_attempt_id_for_queue_attempt(
+                tenant_id=kwargs["tenant_id"],
+                run_id=kwargs["run_id"],
+                queue_attempt_id=kwargs["queue_attempt_id"],
+            ),
+            "status": "running",
+            "owner_kind": "queue_worker",
+            "owner_id": kwargs["worker_id"],
+            "owner_generation": 4,
+            "queue_attempt_id": kwargs["queue_attempt_id"],
+            "execution_spec_sha256": kwargs["execution_spec"].spec_sha256,
+        }
+
+    async def get_run_attempt_for_queue_attempt(conn, **kwargs):
+        return None
+
+    async def get_run_attempt(conn, **kwargs):
+        return None
+
+    async def assert_worker_run_attempt_current(conn, **kwargs):
+        return None
+
+    async def request_run_attempt_cancel(conn, **kwargs):
+        return None
+
+    async def terminalize_run_attempt(conn, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.worker.run_attempts.lock_queued_run_for_attempt",
+        lock_queued_run_for_attempt,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.start_worker_run_attempt",
+        start_worker_run_attempt,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.get_run_attempt_for_queue_attempt",
+        get_run_attempt_for_queue_attempt,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.get_run_attempt",
+        get_run_attempt,
+    )
+    monkeypatch.setattr(
+        "app.execution.application.worker_attempt_lifecycle.run_attempt_id_for_queue_attempt",
+        lambda **kwargs: kwargs["queue_attempt_id"],
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.assert_worker_run_attempt_current",
+        assert_worker_run_attempt_current,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.request_run_attempt_cancel",
+        request_run_attempt_cancel,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.terminalize_run_attempt",
+        terminalize_run_attempt,
+    )
 
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         return False
@@ -1947,11 +2018,44 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
     async def has_reconciliation_claim(_conn, **kwargs):
         return kwargs == {"lease_id": "lease-a", "claim_token": "claim-a"}
 
+    durable_attempt = {
+        "id": "rat-attempt-a",
+        "status": "running",
+        "queue_attempt_id": "qat-attempt-a",
+        "owner_kind": "queue_worker",
+        "owner_id": "worker-original",
+        "owner_generation": 4,
+    }
+
+    async def get_run_attempt(_conn, **kwargs):
+        assert kwargs["attempt_id"] == "rat-attempt-a"
+        return dict(durable_attempt)
+
+    async def assert_current_attempt(_conn, **kwargs):
+        calls.append(("attempt_fence", kwargs["worker_id"], kwargs["queue_attempt_id"]))
+        return dict(durable_attempt)
+
+    async def terminalize_attempt(_conn, **kwargs):
+        calls.append(("attempt_terminal", kwargs["attempt_id"], kwargs["status"]))
+        return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
+
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker.repositories.append_message", append_message)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(
+        "app.worker.run_attempts.get_run_attempt",
+        get_run_attempt,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.assert_worker_run_attempt_current",
+        assert_current_attempt,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.terminalize_run_attempt",
+        terminalize_attempt,
+    )
     monkeypatch.setattr(
         "app.worker.sandbox_lease_repository.is_sandbox_executor_reconciliation_claim_current",
         has_reconciliation_claim,
@@ -1964,7 +2068,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         user_id=queue_payload.user_id,
         session_id=queue_payload.session_id,
         run_id=queue_payload.run_id,
-        attempt_id="attempt-a",
+        attempt_id="rat-attempt-a",
         agent_id=queue_payload.agent_id,
         execution_kind=queue_payload.execution_kind,
         skill_id=queue_payload.skill_id,
@@ -1978,7 +2082,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
     )
     lease_row = {
         "id": "lease-a",
-        "attempt_id": "attempt-a",
+        "attempt_id": "rat-attempt-a",
         "executor_reconciliation_context_json": {
             "adapter_name": "claude-agent-worker",
             "adapter_context": {},
@@ -1999,7 +2103,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         lease_row=lease_row,
         result=result,
         registry=AdapterRegistry({"claude-agent-worker": SuccessfulExecutorStub()}),
-        worker_id="worker-a",
+        worker_id="reconciler-a",
         claim_token="claim-a",
         v4_capabilities=_FAKE_WORKER_V4_CAPABILITIES,
     )
@@ -2007,6 +2111,8 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
     assert outcome == WorkerOutcome("succeeded", "run-a")
     assert messages == ["done"]
     assert ("complete", "run-a") in calls
+    assert ("attempt_fence", "worker-original", "qat-attempt-a") in calls
+    assert ("attempt_terminal", "rat-attempt-a", "succeeded") in calls
     assert ("event", "assistant_message_created") in calls
     assert ("event", "run_succeeded") in calls
 
@@ -3681,6 +3787,308 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
 
 
 @pytest.mark.asyncio
+async def test_worker_starts_and_terminalizes_durable_attempt_around_dispatch(monkeypatch):
+    calls = []
+
+    class CapturingSuccessfulExecutor(SuccessfulExecutorStub):
+        async def submit_run(self, payload, event_sink=None):
+            calls.append(("adapter_attempt", payload.attempt_id))
+            return await super().submit_run(payload, event_sink=event_sink)
+
+    locked_run = locked_run_from_payload(
+        base_payload(
+            workspace_id="workspace-locked",
+            file_ids=[],
+            skill_id="general-chat",
+            agent_id="general-agent",
+        )
+    )
+
+    async def legacy_mark_run_running(*_args, **_kwargs):
+        raise AssertionError("durable attempt claim must replace the legacy running writer")
+
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        calls.append(("lock", tenant_id, run_id))
+        return locked_run
+
+    async def start_worker_run_attempt(conn, **kwargs):
+        calls.append(("start", kwargs))
+        return {
+            "id": "rat-run-a",
+            "status": "running",
+            "owner_kind": "queue_worker",
+            "owner_id": kwargs["worker_id"],
+            "owner_generation": 4,
+            "queue_attempt_id": kwargs["queue_attempt_id"],
+            "execution_spec_sha256": kwargs["execution_spec"].spec_sha256,
+        }
+
+    async def assert_worker_run_attempt_current(conn, **kwargs):
+        calls.append(("fence", kwargs))
+        return {
+            "id": "rat-run-a",
+            "status": "running",
+            "owner_kind": "queue_worker",
+            "owner_id": kwargs["worker_id"],
+            "owner_generation": 4,
+            "queue_attempt_id": kwargs["queue_attempt_id"],
+        }
+
+    async def terminalize_run_attempt(conn, **kwargs):
+        calls.append(("terminal", kwargs))
+        return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
+
+    async def append_event(conn, **kwargs):
+        return "evt-run-attempt"
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr(
+        "app.worker.repositories.mark_run_running",
+        legacy_mark_run_running,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.lock_queued_run_for_attempt",
+        lock_queued_run_for_attempt,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.start_worker_run_attempt",
+        start_worker_run_attempt,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.assert_worker_run_attempt_current",
+        assert_worker_run_attempt_current,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.terminalize_run_attempt",
+        terminalize_run_attempt,
+    )
+    monkeypatch.setattr(
+        "app.execution.application.worker_attempt_lifecycle.run_attempt_id_for_queue_attempt",
+        lambda **_kwargs: "rat-run-a",
+    )
+
+    outcome = await process_run_payload(
+        base_payload(
+            workspace_id="workspace-locked",
+            file_ids=[],
+            skill_id="general-chat",
+            agent_id="general-agent",
+        ),
+        AdapterRegistry({"fake": CapturingSuccessfulExecutor()}),
+        worker_id="worker-a",
+    )
+
+    assert outcome.status == "succeeded"
+    start_call = next(item[1] for item in calls if item[0] == "start")
+    assert start_call["queue_attempt_id"] == "qat-test-attempt"
+    assert start_call["worker_id"] == "worker-a"
+    assert start_call["execution_spec"].to_mapping()["run_id"] == "run-a"
+    assert ("adapter_attempt", "rat-run-a") in calls
+    terminal_call = next(item[1] for item in calls if item[0] == "terminal")
+    assert terminal_call == {
+        "tenant_id": "tenant-a",
+        "run_id": "run-a",
+        "attempt_id": "rat-run-a",
+        "status": "succeeded",
+        "terminal_reason": "run_succeeded",
+    }
+    assert next(index for index, item in enumerate(calls) if item[0] == "start") < next(
+        index for index, item in enumerate(calls) if item[0] == "terminal"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "helper_name",
+    (
+        "_fail_worker_pre_dispatch_error",
+        "_fail_locked_run_snapshot",
+        "_fail_worker_capability_authorization",
+    ),
+)
+async def test_worker_early_failure_helpers_preserve_attempt_lifecycle(
+    monkeypatch,
+    helper_name,
+):
+    captured = {}
+    raw = base_payload()
+    payload = worker_module.parse_leased_queue_envelope(raw).payload
+    run_identity = worker_module._payload_identity(payload)
+    attempt_lifecycle = object()
+
+    async def fail_run_and_reconcile_with_write(_conn, **kwargs):
+        captured.update(kwargs)
+        return False, None
+
+    monkeypatch.setattr(
+        worker_module,
+        "_fail_run_and_reconcile_with_write",
+        fail_run_and_reconcile_with_write,
+    )
+
+    common = {
+        "payload": payload,
+        "run_identity": run_identity,
+        "v4_capabilities": _FAKE_WORKER_V4_CAPABILITIES,
+        "attempt_lifecycle": attempt_lifecycle,
+    }
+    if helper_name == "_fail_worker_pre_dispatch_error":
+        outcome = await worker_module._fail_worker_pre_dispatch_error(
+            object(),
+            **common,
+            error_code="early_failure",
+            error_message="early failure",
+            event_stage="worker",
+            event_payload={"visible_to_user": False},
+        )
+    elif helper_name == "_fail_locked_run_snapshot":
+        outcome = await worker_module._fail_locked_run_snapshot(
+            object(),
+            **common,
+            locked_run=locked_run_from_payload(raw),
+            trace_id="trace-run-a",
+        )
+    else:
+        denial = worker_module._worker_capability_record(
+            "skill",
+            "general-chat",
+            worker_module._denied_capability_decision("test_denial"),
+        )
+        outcome = await worker_module._fail_worker_capability_authorization(
+            object(),
+            **common,
+            authorization=worker_module._WorkerCapabilityAuthorization(
+                payload,
+                SimpleNamespace(),
+                (),
+                denial,
+            ),
+            trace_id="trace-run-a",
+        )
+
+    assert outcome.outcome.status == "skipped"
+    assert captured["attempt_lifecycle"] is attempt_lifecycle
+
+
+@pytest.mark.asyncio
+async def test_worker_cancel_closes_the_same_durable_attempt_without_owner_transfer(
+    monkeypatch,
+):
+    calls = []
+
+    async def get_run(*_args, **_kwargs):
+        calls.append(("lock_run",))
+        return {"id": "run-a", "status": "running"}
+
+    async def assert_current(*_args, **kwargs):
+        calls.append(("fence", kwargs))
+        return {
+            "id": "rat-run-a",
+            "status": "cancel_requested",
+            "queue_attempt_id": "qat-test-attempt",
+            "owner_kind": "queue_worker",
+            "owner_id": "worker-a",
+            "owner_generation": 5,
+        }
+
+    async def request_cancel(*_args, **kwargs):
+        calls.append(("request_cancel", kwargs))
+        return {
+            "id": kwargs["attempt_id"],
+            "status": "cancel_requested",
+            "owner_kind": "queue_worker",
+            "owner_id": "worker-a",
+            "owner_generation": 5,
+        }
+
+    async def cancel_run(*_args, **_kwargs):
+        calls.append(("cancel_run",))
+        return RunTerminalizationProgress(True, "cancelled", True, True)
+
+    async def terminalize(*_args, **kwargs):
+        calls.append(("terminal", kwargs))
+        return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
+
+    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
+    monkeypatch.setattr(
+        "app.worker.run_attempts.assert_worker_run_attempt_current",
+        assert_current,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.request_run_attempt_cancel",
+        request_cancel,
+    )
+    monkeypatch.setattr("app.worker.cancel_run_with_v4", cancel_run)
+    monkeypatch.setattr(
+        "app.worker.run_attempts.terminalize_run_attempt",
+        terminalize,
+    )
+    monkeypatch.setattr(
+        "app.execution.application.worker_attempt_lifecycle.run_attempt_id_for_queue_attempt",
+        lambda **_kwargs: "rat-run-a",
+    )
+
+    attempt_lifecycle = worker_attempt_lifecycle_module.WorkerAttemptLifecycle.from_leased_attempt(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        leased_attempt_id="qat-test-attempt",
+        worker_id="worker-a",
+        is_reconciliation=False,
+        ports=worker_module._worker_attempt_lifecycle_ports(),
+    )
+    progress = await attempt_lifecycle.cancel(
+        object(),
+        capabilities=_FAKE_WORKER_V4_CAPABILITIES,
+        result_json={"message": "cancelled"},
+    )
+
+    assert progress.is_terminal("cancelled")
+    assert [item[0] for item in calls] == [
+        "lock_run",
+        "fence",
+        "request_cancel",
+        "cancel_run",
+        "terminal",
+    ]
+    assert calls[1][1]["queue_attempt_id"] == "qat-test-attempt"
+    assert calls[-1][1]["attempt_id"] == "rat-run-a"
+
+
+@pytest.mark.asyncio
+async def test_worker_cancel_observes_an_already_cancelled_run_without_refencing_attempt(
+    monkeypatch,
+):
+    async def get_run(*_args, **_kwargs):
+        return {"id": "run-a", "status": "cancelled"}
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("terminal Run must not re-fence its immutable attempt")
+
+    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
+    monkeypatch.setattr(
+        "app.worker.run_attempts.assert_worker_run_attempt_current",
+        forbidden,
+    )
+
+    attempt_lifecycle = worker_attempt_lifecycle_module.WorkerAttemptLifecycle.from_leased_attempt(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        leased_attempt_id="qat-test-attempt",
+        worker_id="worker-a",
+        is_reconciliation=False,
+        ports=worker_module._worker_attempt_lifecycle_ports(),
+    )
+    progress = await attempt_lifecycle.cancel(
+        object(),
+        capabilities=_FAKE_WORKER_V4_CAPABILITIES,
+    )
+
+    assert progress.is_terminal("cancelled")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("execution_tier", "agent_id", "skill_id"),
     [
@@ -4877,6 +5285,13 @@ async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkey
         calls.append(("fail", run_id, error_code, error_message, result_json))
         return RunTerminalizationProgress(True, "failed", True, True)
 
+    async def assert_worker_run_attempt_current(_conn, **_kwargs):
+        return {"id": "rat-run-child", "status": "running"}
+
+    async def terminalize_run_attempt(_conn, **kwargs):
+        calls.append(("attempt_terminal", kwargs))
+        return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
+
     async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
@@ -4885,6 +5300,14 @@ async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkey
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(
+        "app.worker.run_attempts.assert_worker_run_attempt_current",
+        assert_worker_run_attempt_current,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.terminalize_run_attempt",
+        terminalize_run_attempt,
+    )
     monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
 
     outcome = await process_run_payload(
@@ -4899,6 +5322,15 @@ async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkey
     reconcile_call = calls[reconcile_index][1]
     assert reconcile_call["run_id"] == "run-child"
     assert reconcile_call["progress"].status == "failed"
+    attempt_terminal = next(item[1] for item in calls if item[0] == "attempt_terminal")
+    assert attempt_terminal == {
+        "tenant_id": "tenant-a",
+        "run_id": "run-child",
+        "attempt_id": "rat-run-child",
+        "status": "failed",
+        "terminal_reason": "run_failed",
+        "error_code": "unknown_executor_type",
+    }
 
 
 @pytest.mark.asyncio
@@ -7729,7 +8161,7 @@ async def test_worker_does_not_report_soft_cancel_intent_as_cancelled(monkeypatc
     assert outcome.status == "skipped"
     assert outcome.error_code == "stale_terminal_state"
     assert any(call[0] == "cancel" for call in calls)
-    assert [call[1] for call in calls if call[0] == "event"] == ["worker_started"]
+    assert [call[1] for call in calls if call[0] == "event"] == []
 
 
 @pytest.mark.asyncio

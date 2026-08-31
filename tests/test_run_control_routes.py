@@ -49,7 +49,7 @@ class _NoOpCancellationEventWriter:
 
 class _RunAttemptCursor:
     async def fetchone(self):
-        return {"id": "attempt-a"}
+        return None
 
 
 class _CancellationTestConnection:
@@ -58,7 +58,7 @@ class _CancellationTestConnection:
 
     async def execute(self, sql, params):
         normalized = " ".join(sql.split())
-        if normalized.startswith("select id from run_attempts"):
+        if normalized.startswith("select * from run_attempts"):
             return _RunAttemptCursor()
         return await self._conn.execute(sql, params)
 

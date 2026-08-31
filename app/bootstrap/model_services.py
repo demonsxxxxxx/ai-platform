@@ -27,6 +27,11 @@ from app.runs.application.model_snapshot import (
     RunModelSnapshotService,
     configure_run_model_snapshots,
 )
+from app.runs.application.attempt_lifecycle import (
+    RunAttemptLifecycleService,
+    configure_run_attempt_lifecycle,
+)
+from app.runs.infrastructure import postgres as run_attempt_persistence
 from app.runs.infrastructure.postgres import PostgresRunModelSnapshotRepository
 from app.settings import get_settings
 
@@ -59,6 +64,9 @@ def _model_attempt_capability_matches(
 
 
 def configure_model_services() -> None:
+    configure_run_attempt_lifecycle(
+        RunAttemptLifecycleService(persistence=run_attempt_persistence)
+    )
     configure_model_control_plane(
         ModelControlPlaneService(
             transaction_factory=transaction,

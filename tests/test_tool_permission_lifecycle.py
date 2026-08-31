@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -67,8 +68,17 @@ async def test_drain_propagates_typed_partial_then_final_and_stops(monkeypatch):
     async def progress(_conn, **_kwargs):
         return results.pop(0)
 
+    class TerminalEventPersistence:
+        async def append_terminal_row(self, _conn, **_kwargs):
+            return None
+
     monkeypatch.setattr(repositories, "progress_run_tool_permission_terminalization", progress)
-    result = await drain_run_tool_permission_terminalization(tenant_id="tenant-a", run_id="run-a", transaction_factory=tx)
+    result = await drain_run_tool_permission_terminalization(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        transaction_factory=tx,
+        capabilities=SimpleNamespace(event_persistence=TerminalEventPersistence()),
+    )
     assert result.completed is True and result.did_transition is True and result.needs_reconcile is True
     assert results == []
 
@@ -108,8 +118,16 @@ async def test_post_commit_reconcile_loads_durable_child_and_rolls_up_once(monke
         calls.append(("reconcile", kwargs["child_run_id"], kwargs["child_status"], kwargs["result_json"]))
         return {"parent_run_id": "parent-a", "status": "cancelled"}
 
+    async def terminalize_latest(_conn, **kwargs):
+        calls.append(("attempt_terminal", kwargs["run_id"], kwargs["status"]))
+        return {"id": "rat-parent", "status": kwargs["status"]}
+
     monkeypatch.setattr(repositories, "get_run", get_run)
     monkeypatch.setattr(repositories, "reconcile_multi_agent_child_run_terminal_state", reconcile)
+    monkeypatch.setattr(
+        "app.tool_permission_lifecycle.terminalize_latest_run_attempt",
+        terminalize_latest,
+    )
     final = RunTerminalizationProgress(True, "cancelled", True, True)
 
     result = await reconcile_terminalized_permission_run(
@@ -127,4 +145,6 @@ async def test_post_commit_reconcile_loads_durable_child_and_rolls_up_once(monke
     assert calls == [
         ("get", "tenant-a", "child-a", True),
         ("reconcile", "child-a", "cancelled", {"message": "任务已取消"}),
+        ("get", "tenant-a", "parent-a", True),
+        ("attempt_terminal", "parent-a", "cancelled"),
     ]
