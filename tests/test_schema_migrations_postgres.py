@@ -81,6 +81,174 @@ alter table runs add column if not exists model_gateway_revision bigint;
   end if;
 """,
 )
+MCP_DYNAMIC_TOOL_DISCOVERY_SCHEMA_REPLACEMENTS = (
+    (
+        """  credential_fingerprint text not null default '',
+  updated_by text,
+""",
+        """  credential_fingerprint text not null default '',
+  catalog_generation bigint not null default 0,
+  catalog_sync_attempt bigint not null default 0,
+  catalog_sync_lease_expires_at timestamptz,
+  catalog_revision bigint not null default 0,
+  catalog_status text not null default 'legacy',
+  catalog_unavailable_reason text not null default '',
+  catalog_discovered_count integer not null default 0,
+  catalog_selectable_count integer not null default 0,
+  catalog_last_synced_at timestamptz,
+  updated_by text,
+""",
+    ),
+    (
+        """  check (credential_state in ('not_configured', 'configured', 'platform_managed'))
+);
+
+create index if not exists idx_mcp_servers_tenant_status
+""",
+        """  check (credential_state in ('not_configured', 'configured', 'platform_managed')),
+  check (catalog_generation >= 0),
+  check (catalog_sync_attempt >= 0),
+  check (catalog_revision >= 0),
+  check (catalog_status in ('legacy', 'refresh_required', 'syncing', 'available', 'no_tools', 'unavailable', 'disabled', 'deleted')),
+  check (catalog_discovered_count >= 0),
+  check (catalog_selectable_count >= 0)
+);
+
+create index if not exists idx_mcp_servers_tenant_status
+""",
+    ),
+    (
+        """do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'mcp_servers_endpoint_not_persisted'
+  ) then
+    alter table mcp_servers
+      add constraint mcp_servers_endpoint_not_persisted
+      check (endpoint_redacted = '') not valid;
+  end if;
+end $$;
+
+alter table mcp_servers
+  validate constraint mcp_servers_endpoint_not_persisted;
+
+""",
+        """alter table mcp_servers
+  add column if not exists catalog_generation bigint not null default 0,
+  add column if not exists catalog_sync_attempt bigint not null default 0,
+  add column if not exists catalog_sync_lease_expires_at timestamptz,
+  add column if not exists catalog_revision bigint not null default 0,
+  add column if not exists catalog_status text not null default 'legacy',
+  add column if not exists catalog_unavailable_reason text not null default '',
+  add column if not exists catalog_discovered_count integer not null default 0,
+  add column if not exists catalog_selectable_count integer not null default 0,
+  add column if not exists catalog_last_synced_at timestamptz;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'mcp_servers_catalog_status_valid'
+      and conrelid = 'mcp_servers'::regclass
+  ) then
+    alter table mcp_servers
+      add constraint mcp_servers_catalog_status_valid
+      check (catalog_status in ('legacy', 'refresh_required', 'syncing', 'available', 'no_tools', 'unavailable', 'disabled', 'deleted')) not valid;
+  end if;
+end
+$$;
+
+alter table mcp_servers
+  validate constraint mcp_servers_catalog_status_valid;
+
+""",
+    ),
+    (
+        """  metadata_json jsonb not null default '{}'::jsonb,
+  credential_envelope text not null default '',
+  updated_by text,
+""",
+        """  metadata_json jsonb not null default '{}'::jsonb,
+  updated_by text,
+""",
+    ),
+    (
+        """alter table mcp_server_credentials
+  add column if not exists credential_envelope text not null default '';
+
+""",
+        "",
+    ),
+    (
+        """do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'mcp_tools_endpoint_not_persisted'
+  ) then
+    alter table mcp_tools
+      add constraint mcp_tools_endpoint_not_persisted
+      check (endpoint = '') not valid;
+  end if;
+end $$;
+
+alter table mcp_tools
+  validate constraint mcp_tools_endpoint_not_persisted;
+
+""",
+        "",
+    ),
+    (
+        """create index if not exists idx_tool_policies_tool on tool_policies(tool_id, tenant_id);
+
+create table if not exists agents (
+""",
+        """create index if not exists idx_tool_policies_tool on tool_policies(tool_id, tenant_id);
+
+create table if not exists mcp_tool_catalog_entries (
+  tool_id text primary key references mcp_tools(id),
+  tenant_id text not null references tenants(id),
+  server_name text not null,
+  remote_tool_name text not null,
+  catalog_generation bigint not null,
+  schema_hash text not null,
+  status text not null default 'disabled',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (tenant_id, server_name, remote_tool_name),
+  foreign key (tenant_id, server_name) references mcp_servers(tenant_id, name),
+  check (catalog_generation >= 0),
+  check (status in ('active', 'disabled', 'stale', 'deleted'))
+);
+
+create index if not exists idx_mcp_tool_catalog_entries_server
+  on mcp_tool_catalog_entries(tenant_id, server_name, status, remote_tool_name);
+
+create table if not exists agents (
+""",
+    ),
+    (
+        """  description = excluded.description,
+  transport_type = excluded.transport_type,
+  auth_mode = excluded.auth_mode,
+  allowed_tools = excluded.allowed_tools,
+  status = excluded.status,
+  write_capable = excluded.write_capable,
+  risk_level = excluded.risk_level,
+  visible_to_user = excluded.visible_to_user
+where mcp_tools.endpoint = '';
+""",
+        """  description = excluded.description,
+  transport_type = excluded.transport_type,
+  endpoint = excluded.endpoint,
+  auth_mode = excluded.auth_mode,
+  allowed_tools = excluded.allowed_tools,
+  status = excluded.status,
+  write_capable = excluded.write_capable,
+  risk_level = excluded.risk_level,
+  visible_to_user = excluded.visible_to_user;
+""",
+    ),
+)
 CONFIRMATION_HISTORY_REPAIR_SQL = """update sse_stream_authorities
 set admission_confirmed_at = coalesce(
   admission_confirmed_at,
@@ -101,6 +269,11 @@ where state = 'admission_pending'
 
 def _remote_successor_activation_schema_sql() -> str:
     current_sql = Path("app/schema.sql").read_text(encoding="utf-8")
+    for current_fragment, predecessor_fragment in (
+        MCP_DYNAMIC_TOOL_DISCOVERY_SCHEMA_REPLACEMENTS
+    ):
+        assert current_sql.count(current_fragment) == 1
+        current_sql = current_sql.replace(current_fragment, predecessor_fragment)
     for fragment in MODEL_CONTROL_PLANE_SCHEMA_FRAGMENTS:
         assert current_sql.count(fragment) == 1
         current_sql = current_sql.replace(fragment, "")
@@ -123,6 +296,10 @@ def _remote_successor_activation_schema_sql() -> str:
     ).hexdigest()
     assert remote_checksum == REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM
     return remote_sql
+
+
+def test_remote_successor_activation_schema_rebuild_preserves_pinned_checksum():
+    assert _remote_successor_activation_schema_sql()
 
 
 def _postgres_dsn() -> str:
