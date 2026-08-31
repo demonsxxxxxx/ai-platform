@@ -335,8 +335,15 @@ class Settings(BaseSettings):
             and self.opensandbox_expected_network_mode == "bridge"
         ):
             raise ValueError("internal_test_opensandbox_profile_invalid")
-        if self.opensandbox_internal_test_forward_model_credentials:
-            raise ValueError("opensandbox_model_credential_forwarding_disabled")
+        if self.opensandbox_internal_test_forward_model_credentials and not (
+            self.deployment_environment == "test"
+            and self.sandbox_container_provider == "opensandbox"
+            and self.sandbox_security_profile == "internal-test"
+            and self.opensandbox_expected_network_mode == "bridge"
+            and self.openai_api_key.strip()
+            and self.anthropic_auth_token.strip()
+        ):
+            raise ValueError("internal_test_model_credential_forwarding_invalid")
         if self.deployment_environment == "production" and self.sandbox_container_provider == "opensandbox":
             if self.sandbox_security_profile != "governed":
                 raise ValueError("production_opensandbox_profile_invalid")

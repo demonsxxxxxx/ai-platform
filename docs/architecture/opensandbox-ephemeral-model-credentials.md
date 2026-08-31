@@ -4,11 +4,12 @@ Status: accepted source contract. Runtime publication is a separate release gate
 
 ## Decision
 
-OpenSandbox executors never receive long-lived OpenAI or Anthropic credentials.
-The controller omits provider secrets from the OpenSandbox create request and
-installs only non-secret SDK bootstrap sentinels. API and Worker use the
-official OpenSandbox SDK directly; the OpenSandbox Server owns lifecycle and
-runsc execution.
+Production and governed OpenSandbox executors never receive long-lived OpenAI or
+Anthropic credentials. The explicit `test`/`internal-test`/`bridge` profile may
+forward both credentials only to its short-lived executor environment; this is
+a bounded compatibility exception for the direct internal-test topology, not a
+production credential path. API and Worker use the official OpenSandbox SDK
+directly; the OpenSandbox Server owns lifecycle and runsc execution.
 
 Model clients use the stateless Nginx egress entry. Its model paths include the
 validated `run_id` and `attempt_id`:
@@ -33,9 +34,13 @@ owned by the API; Nginx does not replace it or accept lifecycle operations.
 Administrators store compatible-endpoint roots and credentials in the Model
 control plane. The API encrypts immutable connection revisions with
 `MODEL_CONNECTION_ENCRYPTION_KEY`, validates the endpoint policy, and activates
-a revision only after model synchronization succeeds. Plaintext credentials
-never appear in an OpenSandbox request, Run, lease, queue payload, event,
-receipt, callback, response, or lifecycle payload.
+a revision only after model synchronization succeeds. Outside the explicit
+internal-test exception, plaintext credentials never appear in an OpenSandbox
+request, Run, lease, queue payload, event, receipt, callback, response, or
+lifecycle payload. The exception permits the two provider credentials only in
+the OpenSandbox executor environment; metadata, labels, Run/lease/queue data,
+events, receipts, callbacks, responses, and lifecycle payloads remain
+credential-free.
 
 Run admission pins the active connection revision and exact upstream model ID.
 The internal proxy serves only queued or running Runs whose requested model
