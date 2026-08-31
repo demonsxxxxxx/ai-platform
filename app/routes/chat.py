@@ -38,7 +38,7 @@ from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_HARNESS_CHAT,
     RUN_EXECUTION_KIND_SKILL,
     RUN_PAYLOAD_SCHEMA_VERSION_V2,
-    RUN_THINKING_EFFORT_INPUT_KEY,
+    attach_run_thinking_effort,
     sanitize_public_text,
     standard_trace_id,
 )
@@ -1008,10 +1008,6 @@ async def _persist_chat_queue_success(
             queue_message_id=queue_admission.message_id,
         )
 
-def _strip_server_owned_control_metadata(input_payload: object, *, redact_public: bool = False) -> dict[str, Any]:
-    return repositories.normalize_run_input_for_enqueue(input_payload, redact_public=redact_public)
-
-
 def _file_ids_from_request(request: ChatStreamRequest) -> list[str]:
     if request.file_ids:
         return request.file_ids
@@ -1474,11 +1470,13 @@ async def chat_stream(
             raise _chat_submission_http_error(status_code=400, code=code)
         raise HTTPException(status_code=400, detail=code)
     try:
-        run_input = _strip_server_owned_control_metadata(
-            {**request.input, "message": request.message},
-            redact_public=not is_ai_admin(principal),
+        run_input = attach_run_thinking_effort(
+            repositories.normalize_run_input_for_enqueue(
+                {**request.input, "message": request.message},
+                redact_public=not is_ai_admin(principal),
+            ),
+            request.agent_options,
         )
-        run_input[RUN_THINKING_EFFORT_INPUT_KEY] = request.thinking_effort()
         run_input = attach_required_tool_declaration(run_input)
     except repositories.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="chat_stream")

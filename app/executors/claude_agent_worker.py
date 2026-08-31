@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 from xml.etree import ElementTree
 
-from app import repositories
+from app import control_plane_contracts as run_controls, repositories
 from app.capabilities import required_artifact_types_for_skill
 from app.context_builder import executor_context_pack_from_snapshot
 from app.context.api import (
@@ -23,9 +23,7 @@ from app.control_plane_contracts import (
     LEGACY_SYNTHETIC_CHAT_SKILL_ID,
     RUN_EXECUTION_KIND_HARNESS_CHAT,
     RUN_EXECUTION_KIND_SKILL,
-    RUN_THINKING_EFFORT_INPUT_KEY,
     artifact_lineage_contract,
-    normalize_thinking_effort,
     standard_trace_id,
 )
 from app.db import transaction
@@ -1421,10 +1419,7 @@ class ClaudeAgentWorkerAdapter:
             ),
             sandbox_mode=_payload_sandbox_mode(payload),
             browser_enabled=bool(payload.input.get("browser_enabled")),
-            model=payload.model_value or payload.model_id or getattr(settings, "claude_agent_model", ""),
-            thinking_effort=normalize_thinking_effort(
-                payload.input.get(RUN_THINKING_EFFORT_INPUT_KEY)
-            ),
+            **run_controls.executor_model_controls(payload, getattr(settings, "claude_agent_model", ""), "model"),
             resource_limits=_payload_resource_limits(payload),
             queue_wait_ms=_payload_queue_wait_ms(payload),
             trace_id=payload.trace_id or standard_trace_id(payload.run_id),
@@ -2214,7 +2209,7 @@ class ClaudeAgentWorkerAdapter:
                 "cwd": workspace,
                 "skill_id": payload.skill_id,
                 "session_id": sdk_session_id_for_run(payload.run_id),
-                "model_id": payload.model_value or payload.model_id or None,
+                **run_controls.executor_model_controls(payload),
                 "skills": (
                     []
                     if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
@@ -2227,9 +2222,6 @@ class ClaudeAgentWorkerAdapter:
                     else None
                 ),
                 "public_skill_metadata": public_skill_metadata,
-                "thinking_effort": normalize_thinking_effort(
-                    payload.input.get(RUN_THINKING_EFFORT_INPUT_KEY)
-                ),
                 "tool_policy_subjects": _runtime_tool_policy_subjects(
                     payload,
                     _context_manifest_from_pack(context_pack),

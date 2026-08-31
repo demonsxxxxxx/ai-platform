@@ -18,8 +18,9 @@ from app.control_plane_contracts import (
     RUN_PAYLOAD_SCHEMA_VERSION,
     RUN_PAYLOAD_SCHEMA_VERSION_V2,
     SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS,
-    normalize_thinking_effort,
+    validate_thinking_agent_options,
 )
+from app.agent_apps.transport import AgentAppRunRequest as AgentAppRunRequest
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
 from app.agent_apps.api import discard_legacy_agent_profile_model_id
 from app.agent_apps.api import (
@@ -371,31 +372,6 @@ class AgentProfileTrialRunRequest(BaseModel):
     @classmethod
     def validate_workspace_id(cls, value: str):
         return assert_safe_id(value, "workspace_id")
-
-    @field_validator("file_ids")
-    @classmethod
-    def validate_file_ids(cls, value: list[str]):
-        normalized = [assert_safe_id(item, "file_ids") for item in value]
-        if len(normalized) != len(set(normalized)):
-            raise ValueError("file_ids contains duplicates")
-        return normalized
-
-
-class AgentAppRunRequest(BaseModel):
-    """Strict dedicated submission surface without client-owned capability selectors."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    message: str = Field(min_length=1, max_length=100_000)
-    submission_id: UUID
-    file_ids: list[str] = Field(default_factory=list, max_length=32)
-    user_timezone: str | None = Field(default=None, max_length=128)
-    thinking_effort: str = "off"
-
-    @field_validator("thinking_effort")
-    @classmethod
-    def validate_thinking_effort(cls, value: str):
-        return normalize_thinking_effort(value)
 
     @field_validator("file_ids")
     @classmethod
@@ -1312,6 +1288,9 @@ class ChatStreamRequest(BaseModel):
     def capture_profile_capability_selector_surface(cls, value: Any, handler):
         """Retain ignored aliases needed to fail closed for profile-bound Chat."""
 
+        validate_thinking_agent_options(
+            value.get("agent_options") if isinstance(value, dict) else None
+        )
         paths = (
             cls._collect_profile_capability_selector_paths(
                 value,
@@ -1357,18 +1336,6 @@ class ChatStreamRequest(BaseModel):
                     )
                 )
         return tuple(sorted(paths))
-
-    @field_validator("agent_options")
-    @classmethod
-    def validate_agent_options(cls, value: dict[str, bool | str | int | float] | None):
-        if value is not None and "enable_thinking" in value:
-            normalize_thinking_effort(value["enable_thinking"])
-        return value
-
-    def thinking_effort(self) -> str:
-        return normalize_thinking_effort(
-            (self.agent_options or {}).get("enable_thinking")
-        )
 
     @field_validator("workspace_id")
     @classmethod

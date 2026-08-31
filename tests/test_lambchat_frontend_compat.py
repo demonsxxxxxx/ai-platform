@@ -417,7 +417,7 @@ def test_chat_stream_request_accepts_supported_thinking_effort(effort):
         {"message": "hello", "agent_options": {"enable_thinking": effort}}
     )
 
-    assert request.thinking_effort() == effort
+    assert request.agent_options == {"enable_thinking": effort}
 
 
 @pytest.mark.parametrize("effort", ["max", "extreme"])

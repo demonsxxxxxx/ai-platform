@@ -28,6 +28,7 @@ HARNESS_CHAT_AGENT_ID = "general-agent"
 # Read/replay compatibility only. New requests must never select this as a Skill.
 LEGACY_SYNTHETIC_CHAT_SKILL_ID = "general-chat"
 RUN_THINKING_EFFORT_INPUT_KEY = "_thinking_effort"
+ThinkingEffort = Literal["off", "low", "medium", "high"]
 THINKING_EFFORT_LEVELS = frozenset({"off", "low", "medium", "high"})
 
 
@@ -37,6 +38,36 @@ def normalize_thinking_effort(value: object) -> str:
     if not isinstance(value, str) or value not in THINKING_EFFORT_LEVELS:
         raise ValueError("thinking_effort_invalid")
     return value
+
+
+def validate_thinking_agent_options(value: object) -> object:
+    if isinstance(value, dict) and "enable_thinking" in value:
+        normalize_thinking_effort(value["enable_thinking"])
+    return value
+
+
+def attach_run_thinking_effort(
+    run_input: dict[str, Any],
+    agent_options: object,
+) -> dict[str, Any]:
+    options = agent_options if isinstance(agent_options, dict) else {}
+    effort = normalize_thinking_effort(options.get("enable_thinking"))
+    if effort != "off":
+        run_input[RUN_THINKING_EFFORT_INPUT_KEY] = effort
+    return run_input
+
+
+def executor_model_controls(
+    payload: Any,
+    default_model: str | None = None,
+    model_key: Literal["model", "model_id"] = "model_id",
+) -> dict[str, str | None]:
+    return {
+        model_key: payload.model_value or payload.model_id or default_model,
+        "thinking_effort": normalize_thinking_effort(
+            payload.input.get(RUN_THINKING_EFFORT_INPUT_KEY)
+        ),
+    }
 
 
 def is_legacy_synthetic_chat_identity(
