@@ -923,8 +923,15 @@ async def resolve_authorized_skill_catalog(
     if any(skill_id not in discoverable_candidates for skill_id in required_skill_ids):
         raise AuthorizedSkillCatalogError("authorized_skill_catalog_required_skill_unavailable")
 
+    model_candidates = discoverable_candidates
+    if skill_set is not None:
+        model_candidates = {
+            skill_id: discoverable_candidates[skill_id]
+            for skill_id in required_skill_ids
+        }
+
     selected, omitted_count = _bounded_candidates(
-        discoverable_candidates,
+        model_candidates,
         selected_skill_id=binding.selected_skill_id,
         required_skill_ids=required_skill_ids,
     )
