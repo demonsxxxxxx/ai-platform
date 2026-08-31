@@ -470,15 +470,16 @@ local tenant_id = ARGV[1]
 local run_id = ARGV[2]
 local run_index_field = ARGV[3]
 local owner_token = ARGV[4]
-local now = tonumber(ARGV[5])
-local worker_ttl = tonumber(ARGV[6])
-local scan_limit = tonumber(ARGV[7])
-local fence_ttl_ms = tonumber(ARGV[8])
+local worker_ttl = tonumber(ARGV[5])
+local scan_limit = tonumber(ARGV[6])
+local fence_ttl_ms = tonumber(ARGV[7])
+local redis_time = redis.call("TIME")
+local now = tonumber(redis_time[1]) + (tonumber(redis_time[2]) / 1000000)
 
 if redis.call("exists", fence_key) == 1 then
   return cjson.encode({status = "fenced"})
 end
-if now == nil or worker_ttl == nil or scan_limit == nil or scan_limit < 1 or fence_ttl_ms == nil or fence_ttl_ms < 1 then
+if worker_ttl == nil or scan_limit == nil or scan_limit < 1 or fence_ttl_ms == nil or fence_ttl_ms < 1 then
   return cjson.encode({status = "inconclusive"})
 end
 
@@ -866,7 +867,7 @@ return cjson.encode({status = "dead_lettered"})
 
 
 HEARTBEAT_WITH_FENCE_SCRIPT = """
--- ai-platform:heartbeat-run-with-fence:v4
+-- ai-platform:heartbeat-run-with-fence:v5
 local raw_metadata = redis.call("hget", KEYS[1], ARGV[1])
 if not raw_metadata then
   return cjson.encode({status = "missing"})
@@ -885,19 +886,75 @@ if tostring(metadata["message_id"] or "") ~= ARGV[1]
   or tostring(metadata["worker_id"] or "") ~= ARGV[4] then
   return cjson.encode({status = "stale_owner"})
 end
+local raw_retry_metadata = redis.call("hget", KEYS[2], ARGV[1])
+local retry_metadata = nil
+if raw_retry_metadata then
+  local retry_ok, decoded_retry_metadata = pcall(cjson.decode, raw_retry_metadata)
+  if not retry_ok or type(decoded_retry_metadata) ~= "table" then
+    return cjson.encode({status = "inconclusive"})
+  end
+  retry_metadata = decoded_retry_metadata
+  local retry_owner_token = retry_metadata["owner_token"]
+  if tonumber(retry_metadata["lease_protocol_version"]) == 2 then
+    retry_owner_token = retry_metadata["owner_token_v2"]
+  end
+  if tostring(retry_metadata["message_id"] or "") ~= ARGV[1]
+    or tostring(retry_metadata["attempt_id"] or "") ~= ARGV[2]
+    or tostring(retry_owner_token or "") ~= ARGV[3]
+    or tostring(retry_metadata["worker_id"] or "") ~= ARGV[4] then
+    return cjson.encode({status = "stale_owner"})
+  end
+end
 local fence_key = ARGV[5] .. ":" .. tostring(metadata["tenant_id"] or "") .. ":" .. tostring(metadata["run_id"] or "")
 if redis.call("exists", fence_key) == 1 then
   return cjson.encode({status = "reconciliation_fenced"})
 end
 local redis_time = redis.call("TIME")
 local heartbeat_at = tonumber(redis_time[1]) + (tonumber(redis_time[2]) / 1000000)
-local leased_at = tonumber(metadata["leased_at"])
-if leased_at ~= nil and leased_at > heartbeat_at then
+local function timestamp_is_future(value)
+  if value == nil then
+    return false
+  end
+  local timestamp = tonumber(value)
+  if timestamp == nil or timestamp ~= timestamp or timestamp == math.huge or timestamp == -math.huge then
+    return nil
+  end
+  return timestamp > heartbeat_at
+end
+local clock_regressed = false
+for _, activity_field in ipairs({"leased_at", "heartbeat_at"}) do
+  local is_future = timestamp_is_future(metadata[activity_field])
+  if is_future == nil then
+    return cjson.encode({status = "inconclusive"})
+  end
+  clock_regressed = clock_regressed or is_future
+  if retry_metadata then
+    is_future = timestamp_is_future(retry_metadata[activity_field])
+    if is_future == nil then
+      return cjson.encode({status = "inconclusive"})
+    end
+    clock_regressed = clock_regressed or is_future
+  end
+end
+local worker_is_future = timestamp_is_future(redis.call("hget", KEYS[3], ARGV[4]))
+if worker_is_future == nil then
+  return cjson.encode({status = "inconclusive"})
+end
+clock_regressed = clock_regressed or worker_is_future
+if clock_regressed then
   metadata["leased_at"] = heartbeat_at
+  metadata["heartbeat_at"] = heartbeat_at
+  local normalized_metadata = cjson.encode(metadata)
+  redis.call("hset", KEYS[1], ARGV[1], normalized_metadata)
+  redis.call("hset", KEYS[2], ARGV[1], normalized_metadata)
+  redis.call("hset", KEYS[3], ARGV[4], tostring(heartbeat_at))
+  return cjson.encode({status = "clock_regressed"})
 end
 metadata["heartbeat_at"] = heartbeat_at
-redis.call("hset", KEYS[1], ARGV[1], cjson.encode(metadata))
-redis.call("hset", KEYS[2], ARGV[4], tostring(heartbeat_at))
+local encoded_metadata = cjson.encode(metadata)
+redis.call("hset", KEYS[1], ARGV[1], encoded_metadata)
+redis.call("hset", KEYS[2], ARGV[1], encoded_metadata)
+redis.call("hset", KEYS[3], ARGV[4], tostring(heartbeat_at))
 return cjson.encode({status = "heartbeat", heartbeat_at = heartbeat_at})
 """
 
@@ -1386,7 +1443,6 @@ async def acquire_run_reconciliation_fence(
                 run_id,
                 queued_run_index_field(tenant_id=tenant_id, run_id=run_id),
                 resolved_token,
-                _now(),
                 float(settings.worker_heartbeat_ttl_seconds),
                 bounded_limit,
                 bounded_ttl * 1000,
@@ -2395,8 +2451,9 @@ async def heartbeat_run(
         result = _decode_redis_script_result(
             await redis.eval(
                 HEARTBEAT_WITH_FENCE_SCRIPT,
-                2,
+                3,
                 keys.processing_meta,
+                keys.retry_meta,
                 keys.worker_heartbeat,
                 queue_message_id,
                 attempt_id,

@@ -348,6 +348,7 @@ async def test_real_redis_reclaim_rechecks_current_lease_activity(
             rel=0,
             abs=0.001,
         )
+        assert json.loads(await redis.hget(keys.retry_meta, message_id)) == current_metadata
     finally:
         await redis.delete(*redis_keys)
         await redis.aclose()
@@ -749,11 +750,17 @@ async def test_real_worker_heartbeat_fails_closed_then_converges_after_postgres_
             float(await redis.hget(keys.worker_heartbeat, worker_id))
             == pytest.approx(accepted_epoch, rel=0, abs=0.001)
         )
+        assert json.loads(await redis.hget(keys.retry_meta, queue_message_id)) == redis_metadata
         future_epoch = heartbeat_after + 3_600
         redis_metadata["leased_at"] = future_epoch
         redis_metadata["heartbeat_at"] = future_epoch
         await redis.hset(
             keys.processing_meta,
+            queue_message_id,
+            json.dumps(redis_metadata, sort_keys=True),
+        )
+        await redis.hset(
+            keys.retry_meta,
             queue_message_id,
             json.dumps(redis_metadata, sort_keys=True),
         )
@@ -768,29 +775,37 @@ async def test_real_worker_heartbeat_fails_closed_then_converges_after_postgres_
             worker_id=worker_id,
         )
         repair_after = await _redis_epoch(redis)
-        assert late_heartbeat.status == "heartbeat"
-        assert late_heartbeat.heartbeat_at is not None
+        assert late_heartbeat == queue.QueueHeartbeatOutcome(status="clock_regressed")
+        normalized_metadata = json.loads(
+            await redis.hget(keys.processing_meta, queue_message_id)
+        )
+        normalized_retry_metadata = json.loads(
+            await redis.hget(keys.retry_meta, queue_message_id)
+        )
+        assert normalized_retry_metadata == normalized_metadata
+        for activity_field in ("leased_at", "heartbeat_at"):
+            assert repair_before - 0.001 <= normalized_metadata[activity_field] <= repair_after + 0.001
         assert (
             repair_before - 0.001
-            <= late_heartbeat.heartbeat_at
+            <= float(await redis.hget(keys.worker_heartbeat, worker_id))
             <= repair_after + 0.001
         )
+
+        recovered_heartbeat = await queue.heartbeat_run(
+            message.message_id,
+            worker_id=worker_id,
+        )
+        assert recovered_heartbeat.status == "heartbeat"
+        assert recovered_heartbeat.heartbeat_at is not None
         repaired_metadata = json.loads(
             await redis.hget(keys.processing_meta, queue_message_id)
         )
-        assert (
-            repaired_metadata["heartbeat_at"]
-            == pytest.approx(late_heartbeat.heartbeat_at, rel=0, abs=0.001)
-        )
-        assert (
-            float(await redis.hget(keys.worker_heartbeat, worker_id))
-            == pytest.approx(late_heartbeat.heartbeat_at, rel=0, abs=0.001)
-        )
-        assert repaired_metadata["leased_at"] == pytest.approx(
-            late_heartbeat.heartbeat_at,
+        assert repaired_metadata["heartbeat_at"] == pytest.approx(
+            recovered_heartbeat.heartbeat_at,
             rel=0,
             abs=0.001,
         )
+        assert json.loads(await redis.hget(keys.retry_meta, queue_message_id)) == repaired_metadata
         async with transaction_factory() as conn:
             stored = await (
                 await conn.execute(
@@ -809,7 +824,7 @@ async def test_real_worker_heartbeat_fails_closed_then_converges_after_postgres_
         }
 
         durable_heartbeat_at = datetime.fromtimestamp(
-            late_heartbeat.heartbeat_at,
+            recovered_heartbeat.heartbeat_at,
             tz=timezone.utc,
         )
         async with transaction_factory() as conn:

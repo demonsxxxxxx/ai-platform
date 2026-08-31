@@ -1,6 +1,7 @@
 import pytest
 from pydantic import ValidationError
 import json
+import math
 
 from app import queue
 from app.models import QueueRunPayload
@@ -529,10 +530,10 @@ class FakeRedis:
                 queued_run_index_key,
                 fence_key,
             ) = keys_and_args[:numkeys]
-            tenant_id, run_id, run_index_field, owner_token, now, worker_ttl, scan_limit, ttl_ms = (
+            tenant_id, run_id, run_index_field, owner_token, worker_ttl, scan_limit, ttl_ms = (
                 keys_and_args[numkeys:]
             )
-            now = float(now)
+            now = self.server_time
             worker_ttl = float(worker_ttl)
             scan_limit = int(scan_limit)
             if fence_key in self.fences:
@@ -759,12 +760,15 @@ class FakeRedis:
             await self.hdel(retry_meta_key, message_id)
             return json.dumps({"status": "dead_lettered"})
         if "heartbeat-run-with-fence" in script:
-            processing_meta_key, worker_heartbeat_key = keys_and_args[:numkeys]
+            processing_meta_key, retry_meta_key, worker_heartbeat_key = keys_and_args[:numkeys]
             message_id, attempt_id, owner_token, worker_id, fence_prefix = keys_and_args[numkeys:]
             raw_metadata = self.meta.get(message_id)
             if not raw_metadata:
                 return json.dumps({"status": "missing"})
-            metadata = json.loads(raw_metadata)
+            try:
+                metadata = json.loads(raw_metadata)
+            except json.JSONDecodeError:
+                return json.dumps({"status": "inconclusive"})
             if (
                 metadata.get("message_id") != message_id
                 or metadata.get("attempt_id") != attempt_id
@@ -772,14 +776,51 @@ class FakeRedis:
                 or metadata.get("worker_id") != worker_id
             ):
                 return json.dumps({"status": "stale_owner"})
+            raw_retry_metadata = self.retry.get(message_id)
+            retry_metadata = None
+            if raw_retry_metadata:
+                try:
+                    retry_metadata = json.loads(raw_retry_metadata)
+                except json.JSONDecodeError:
+                    return json.dumps({"status": "inconclusive"})
+                if (
+                    retry_metadata.get("message_id") != message_id
+                    or retry_metadata.get("attempt_id") != attempt_id
+                    or queue._lease_metadata_owner_token(retry_metadata) != owner_token
+                    or retry_metadata.get("worker_id") != worker_id
+                ):
+                    return json.dumps({"status": "stale_owner"})
             fence_key = f"{fence_prefix}:{metadata.get('tenant_id', '')}:{metadata.get('run_id', '')}"
             if fence_key in self.fences:
                 return json.dumps({"status": "reconciliation_fenced"})
             heartbeat_at = self.server_time
-            if float(metadata.get("leased_at") or 0) > heartbeat_at:
+            candidates = [metadata.get("leased_at"), metadata.get("heartbeat_at")]
+            if retry_metadata is not None:
+                candidates.extend([retry_metadata.get("leased_at"), retry_metadata.get("heartbeat_at")])
+            candidates.append(self.workers.get(worker_id))
+            clock_regressed = False
+            for candidate in candidates:
+                if candidate is None:
+                    continue
+                try:
+                    timestamp = float(candidate)
+                except (TypeError, ValueError):
+                    return json.dumps({"status": "inconclusive"})
+                if not math.isfinite(timestamp):
+                    return json.dumps({"status": "inconclusive"})
+                clock_regressed = clock_regressed or timestamp > heartbeat_at
+            if clock_regressed:
                 metadata["leased_at"] = heartbeat_at
+                metadata["heartbeat_at"] = heartbeat_at
+                encoded_metadata = json.dumps(metadata, ensure_ascii=False)
+                self.meta[message_id] = encoded_metadata
+                self.retry[message_id] = encoded_metadata
+                self.workers[worker_id] = str(heartbeat_at)
+                return json.dumps({"status": "clock_regressed"})
             metadata["heartbeat_at"] = heartbeat_at
-            self.meta[message_id] = json.dumps(metadata, ensure_ascii=False)
+            encoded_metadata = json.dumps(metadata, ensure_ascii=False)
+            self.meta[message_id] = encoded_metadata
+            self.retry[message_id] = encoded_metadata
             self.workers[worker_id] = str(heartbeat_at)
             return json.dumps({"status": "heartbeat", "heartbeat_at": heartbeat_at})
         if "verify-run-lease-ownership" in script:
@@ -949,7 +990,10 @@ async def test_reconciliation_fence_renewal_requires_opaque_owner_token_and_repl
     fake = FakeRedis()
     monkeypatch.setattr("app.queue.get_redis", lambda: _async_value(fake))
     monkeypatch.setattr("app.queue.get_settings", _fence_settings)
-    monkeypatch.setattr("app.queue._now", lambda: 120.0)
+    monkeypatch.setattr(
+        "app.queue._now",
+        lambda: (_ for _ in ()).throw(AssertionError("application clock is not authoritative")),
+    )
 
     fence = await queue.acquire_run_reconciliation_fence(
         tenant_id="tenant-a",
@@ -966,6 +1010,7 @@ async def test_reconciliation_fence_renewal_requires_opaque_owner_token_and_repl
     assert acquire_key_count == 8
     assert acquire_call[7] == fence.fence_key
     assert acquire_call[8:12] == ("tenant-a", "run-renew", "tenant-a:run-renew", "token-a")
+    assert acquire_call[12:] == (60.0, 10, 30_000)
     assert await queue.renew_run_reconciliation_fence(fence, ttl_seconds=90) is True
     assert fake.fence_ttls[fence.fence_key] == 90_000
     renew_script, renew_key_count, renew_call = fake.eval_calls[-1]
@@ -986,7 +1031,8 @@ def test_reconciliation_lua_scripts_keep_their_production_key_and_argv_contracts
     assert "redis.call(\"get\", fence_key) ~= owner_token" in queue.RENEW_RECONCILIATION_FENCE_SCRIPT
     assert "redis.call(\"set\", fence_key, owner_token, \"XX\", \"PX\", fence_ttl_ms)" in queue.RENEW_RECONCILIATION_FENCE_SCRIPT
     assert "KEYS[8]" in queue.ACQUIRE_RECONCILIATION_FENCE_SCRIPT
-    assert "ARGV[8]" in queue.ACQUIRE_RECONCILIATION_FENCE_SCRIPT
+    assert "ARGV[7]" in queue.ACQUIRE_RECONCILIATION_FENCE_SCRIPT
+    assert 'redis.call("TIME")' in queue.ACQUIRE_RECONCILIATION_FENCE_SCRIPT
     assert "KEYS[1]" in queue.RENEW_RECONCILIATION_FENCE_SCRIPT
     assert "ARGV[2]" in queue.RENEW_RECONCILIATION_FENCE_SCRIPT
     assert queue.DEAD_LETTER_EXPIRED_LEASE_WITH_FENCE_SCRIPT.index('redis.call("exists", fence_key)') < queue.DEAD_LETTER_EXPIRED_LEASE_WITH_FENCE_SCRIPT.index('redis.call("lrem", processing_key')
@@ -1015,6 +1061,7 @@ async def test_reconciliation_claim_ignores_stale_reused_worker_metadata_without
             )
         },
         workers={"reused-worker": "120.0"},
+        server_time=120.0,
     )
     monkeypatch.setattr("app.queue.get_redis", lambda: _async_value(fake))
     monkeypatch.setattr("app.queue.get_settings", _fence_settings)
@@ -1052,6 +1099,7 @@ async def test_reconciliation_claim_fails_closed_for_fresh_uncorrelated_metadata
             )
         },
         workers={"worker-a": "120.0"},
+        server_time=120.0,
     )
     monkeypatch.setattr("app.queue.get_redis", lambda: _async_value(fake))
     monkeypatch.setattr("app.queue.get_settings", _fence_settings)
@@ -2776,7 +2824,7 @@ async def test_get_queue_insight_reports_worker_available_for_empty_queue(monkey
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_updates_processing_meta_and_worker(monkeypatch):
+async def test_heartbeat_updates_processing_retry_meta_and_worker(monkeypatch):
     raw = payload_json()
     message_id, _, _, handle, metadata = lease_identity(raw, worker_id="worker-a")
     fake = FakeRedis(meta={message_id: json.dumps(metadata)})
@@ -2797,17 +2845,19 @@ async def test_heartbeat_updates_processing_meta_and_worker(monkeypatch):
     updated_meta = json.loads(fake.meta[message_id])
     assert updated_meta["heartbeat_at"] == 100.0
     assert updated_meta["worker_id"] == "worker-a"
+    assert json.loads(fake.retry[message_id]) == updated_meta
     assert fake.workers["worker-a"] == "100.0"
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_repairs_future_lease_and_worker_timestamps(monkeypatch):
+async def test_heartbeat_fails_closed_on_future_lease_and_worker_timestamps(monkeypatch):
     raw = payload_json()
     message_id, _, _, handle, metadata = lease_identity(raw, worker_id="worker-a")
     metadata["leased_at"] = 150.0
     metadata["heartbeat_at"] = 200.0
     fake = FakeRedis(
         meta={message_id: json.dumps(metadata)},
+        retry={message_id: json.dumps(metadata)},
         workers={"worker-a": "250.0"},
         server_time=100.0,
     )
@@ -2816,14 +2866,30 @@ async def test_heartbeat_repairs_future_lease_and_worker_timestamps(monkeypatch)
 
     heartbeat = await queue.heartbeat_run(handle, worker_id="worker-a")
 
-    assert heartbeat == queue.QueueHeartbeatOutcome(
-        status="heartbeat",
-        heartbeat_at=100.0,
-    )
-    repaired_meta = json.loads(fake.meta[message_id])
-    assert repaired_meta["leased_at"] == 100.0
-    assert repaired_meta["heartbeat_at"] == 100.0
+    assert heartbeat == queue.QueueHeartbeatOutcome(status="clock_regressed")
+    normalized = {**metadata, "leased_at": 100.0, "heartbeat_at": 100.0}
+    assert json.loads(fake.meta[message_id]) == normalized
+    assert json.loads(fake.retry[message_id]) == normalized
     assert fake.workers["worker-a"] == "100.0"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_rejects_conflicting_retry_owner_without_overwriting_fallback(monkeypatch):
+    raw = payload_json()
+    message_id, _, _, handle, metadata = lease_identity(raw, worker_id="worker-a")
+    conflicting_retry = {**metadata, "owner_token": f"qown_{'9' * 64}"}
+    fake = FakeRedis(
+        meta={message_id: json.dumps(metadata)},
+        retry={message_id: json.dumps(conflicting_retry)},
+    )
+    monkeypatch.setattr("app.queue.get_redis", lambda: _async_value(fake))
+
+    heartbeat = await queue.heartbeat_run(handle, worker_id="worker-a")
+
+    assert heartbeat == queue.QueueHeartbeatOutcome(status="stale_owner")
+    assert json.loads(fake.meta[message_id]) == metadata
+    assert json.loads(fake.retry[message_id]) == conflicting_retry
+    assert fake.workers == {}
 
 
 @pytest.mark.asyncio
