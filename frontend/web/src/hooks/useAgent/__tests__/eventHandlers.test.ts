@@ -1406,8 +1406,15 @@ test("v4 accepts correlated activity before message owner is declared", () => {
   ctx.currentRunIdRef.current = "run-owner";
   ctx.v4MessageOwnerRef = { current: null };
   ctx.v4MessageCandidateRef = { current: null };
+  const applyMessageUpdate = ctx.setMessages;
+  const deferredMessageUpdates: Array<() => void> = [];
+  ctx.setMessages = (updater) => {
+    deferredMessageUpdates.push(() => applyMessageUpdate(updater));
+  };
   const frame = (
     eventType:
+      | "artifact.created"
+      | "artifact.ready"
       | "thinking.started"
       | "thinking.completed"
       | "message.started"
@@ -1430,7 +1437,18 @@ test("v4 accepts correlated activity before message owner is declared", () => {
       trace_ref: null,
       causation_event_id: null,
       emitted_at: "2026-01-01T00:00:00Z",
-      payload: eventType === "message.delta" ? { delta: "accepted" } : {},
+      payload:
+        eventType === "message.delta"
+          ? { delta: "accepted" }
+          : eventType.startsWith("artifact.")
+            ? {
+                artifact_id: "artifact-1",
+                filename: "result.txt",
+                media_type: "text/plain",
+                size_bytes: 8,
+                status: eventType === "artifact.created" ? "created" : "ready",
+              }
+            : {},
     },
   });
   const accept = (candidate: ReturnType<typeof frame>) =>
@@ -1449,7 +1467,9 @@ test("v4 accepts correlated activity before message owner is declared", () => {
       currentGeneration: 7,
     });
 
-  assert.equal(accept(frame("thinking.started", "message-1", 1)), true);
+  assert.equal(accept(frame("artifact.created", "artifact-ref", 1)), true);
+  assert.equal(ctx.v4MessageCandidateRef.current, null);
+  assert.equal(accept(frame("thinking.started", "message-1", 2)), true);
   assert.deepEqual(ctx.v4MessageCandidateRef.current, {
     sessionId: "session-1",
     runId: "run-owner",
@@ -1457,12 +1477,89 @@ test("v4 accepts correlated activity before message owner is declared", () => {
     streamIncarnation: 2,
     protocolMessageId: "message-1",
   });
-  assert.equal(accept(frame("thinking.completed", "message-1", 2)), true);
-  assert.equal(accept(frame("thinking.completed", "message-2", 3)), false);
-  assert.equal(accept(frame("message.started", "message-1", 3)), true);
+  assert.equal(accept(frame("thinking.completed", "message-1", 3)), true);
+  assert.equal(accept(frame("thinking.completed", "message-2", 4)), false);
+  assert.equal(accept(frame("message.started", "message-1", 4)), true);
   assert.equal(ctx.v4MessageCandidateRef.current, null);
-  assert.equal(accept(frame("message.delta", "message-1", 4)), true);
+  assert.equal(accept(frame("message.delta", "message-1", 5)), true);
+  assert.equal(accept(frame("artifact.ready", "other-artifact-ref", 6)), true);
+  assert.equal(ctx.v4MessageOwnerRef.current?.protocolMessageId, "message-1");
+  assert.equal(ctx.messages()[0]?.content, "");
+  assert.equal(deferredMessageUpdates.length, 6);
+  for (const apply of deferredMessageUpdates) apply();
   assert.equal(ctx.messages()[0]?.content, "accepted");
+});
+
+test("v4 history-covered message.started restores ownership before live delta", () => {
+  const ctx = createContext([
+    {
+      id: "assistant-history",
+      runId: "run-history",
+      role: "assistant",
+      content: "hydrated",
+      timestamp: new Date("2026-01-01T00:00:01Z"),
+      parts: [{ type: "text", content: "hydrated" }],
+      isStreaming: true,
+    },
+  ], new Date("2026-01-01T00:00:01Z"));
+  ctx.currentRunIdRef.current = "run-history";
+  ctx.v4MessageOwnerRef = { current: null };
+  ctx.v4MessageCandidateRef = { current: null };
+  const commits: boolean[] = [];
+  const accept = (
+    eventType: "message.started" | "message.delta",
+    sequence: number,
+    emittedAt: string,
+  ) =>
+    handlePublicRunStreamFrameV4({
+      frame: {
+        eventHeader: eventType,
+        transportCursor: `run-history:2:${sequence}-0`,
+        generation: 7,
+        value: {
+          schema: "ai-platform.public-run-stream-event.v4",
+          event_id: `history-event-${sequence}`,
+          run_id: "run-history",
+          message_id: "protocol-message-1",
+          seq: sequence,
+          event_type: eventType,
+          stream_incarnation: 2,
+          replayable: true,
+          trace_ref: null,
+          causation_event_id: null,
+          emitted_at: emittedAt,
+          payload: eventType === "message.delta" ? { delta: " live" } : {},
+        },
+      },
+      adapterBinding: {
+        runId: "run-history",
+        streamIncarnation: 2,
+        generation: 7,
+      },
+      messageId: "assistant-history",
+      ctx,
+      binding: {
+        sessionId: "session-1",
+        runId: "run-history",
+        streamVersion: 0,
+        streamIncarnation: 2,
+        generation: 7,
+      },
+      currentGeneration: 7,
+      onCommitted: (semanticApplied) => commits.push(semanticApplied),
+    });
+
+  assert.equal(
+    accept("message.started", 1, "2026-01-01T00:00:00Z"),
+    false,
+  );
+  assert.equal(commits[0], false);
+  assert.equal(
+    ctx.v4MessageOwnerRef.current?.protocolMessageId,
+    "protocol-message-1",
+  );
+  assert.equal(accept("message.delta", 2, "2026-01-01T00:00:02Z"), true);
+  assert.equal(ctx.messages()[0]?.content, "hydrated live");
 });
 
 test("v4 message ownership survives reconnect and rejects a second protocol identity", () => {
@@ -1479,6 +1576,11 @@ test("v4 message ownership survives reconnect and rejects a second protocol iden
   ], null);
   ctx.currentRunIdRef.current = "run-owner";
   ctx.v4MessageOwnerRef = { current: null };
+  const applyMessageUpdate = ctx.setMessages;
+  const deferredMessageUpdates: Array<() => void> = [];
+  ctx.setMessages = (updater) => {
+    deferredMessageUpdates.push(() => applyMessageUpdate(updater));
+  };
   const frame = (
     eventType: "message.started" | "message.delta",
     messageId: string,
@@ -1541,10 +1643,19 @@ test("v4 message ownership survives reconnect and rejects a second protocol iden
     protocolMessageId: "message-1",
     reducerMessageId: "run-owner",
   });
+  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, null);
   assert.equal(accept(frame("message.delta", "message-1", 2, 8), 8), true);
+  assert.equal(ctx.messages()[0]?.content, "");
+  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, null);
+  assert.equal(deferredMessageUpdates.length, 2);
+  for (const apply of deferredMessageUpdates) apply();
   assert.equal(ctx.messages().length, 1);
   assert.equal(ctx.messages()[0]?.id, "run-owner");
   assert.equal(ctx.messages()[0]?.content, "accepted");
+  assert.equal(
+    ctx.acceptedStreamCursorRef!.current.eventId,
+    "run-owner:2:2-0",
+  );
   assert.equal(
     rebindV4MessageOwner(
       ctx.v4MessageOwnerRef,

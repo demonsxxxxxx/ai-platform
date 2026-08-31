@@ -1509,8 +1509,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         // A new session owns an independent transport-reconnect budget. Clear
         // the previous session's budget before asynchronous history work.
         retryCountRef.current = 0;
-        resetAcceptedStreamState(acceptedRunEventSequenceRef, acceptedStreamCursorRef);
       }
+      resetAcceptedStreamState(acceptedRunEventSequenceRef, acceptedStreamCursorRef);
       const isCurrentHistoryLoadRequest = () =>
         isMountedRef.current &&
         mountedGenerationRef.current === mountedGeneration &&

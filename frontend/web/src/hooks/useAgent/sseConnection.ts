@@ -142,7 +142,6 @@ export function isNonRetryableSSEAuthenticationError(
   );
 }
 
-export const MAX_SSE_STARTUP_RETRIES = 3;
 export const SSE_STARTUP_RETRY_BUDGET_MS = 10_000;
 const SSE_STARTUP_RETRY_BASE_DELAY_MS = 250;
 const SSE_RETRYABLE_STARTUP_CODES = new Set([
@@ -593,8 +592,8 @@ export async function connectToSSE(
         elapsedMs: now() - startupRetryStartedAt,
         outcome: "exhausted",
       });
-      streamAbortController.abort();
       reject(new SSEStartupRetryExhaustedError());
+      streamAbortController.abort();
     }, SSE_STARTUP_RETRY_BUDGET_MS);
   });
 
@@ -883,10 +882,7 @@ export async function connectToSSE(
           }
           if (err instanceof RetryableSSEStartupError) {
             const elapsedMs = now() - startupRetryStartedAt;
-            if (
-              startupRetryCount >= MAX_SSE_STARTUP_RETRIES ||
-              elapsedMs >= SSE_STARTUP_RETRY_BUDGET_MS
-            ) {
+            if (elapsedMs >= SSE_STARTUP_RETRY_BUDGET_MS) {
               console.warn("[SSE] Startup retry exhausted", {
                 code: err.code,
                 attempts: startupRetryCount,

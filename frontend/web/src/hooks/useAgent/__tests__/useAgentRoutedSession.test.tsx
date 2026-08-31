@@ -4781,6 +4781,97 @@ test("useAgent reconnects only the backend-selected active run after reload", as
   }
 });
 
+test("session route lifecycle resets replay state before a same-session history reload", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = dom.window.fetch;
+  const requestCursors: Array<string | null> = [];
+  let streamCalls = 0;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-history-replay",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({
+    current_run_id: "run-history-replay",
+    events: [
+      {
+        id: "history-replay:user",
+        event_type: "user:message",
+        run_id: "run-history-replay",
+        timestamp: "2026-08-21T00:00:00Z",
+        data: { content: "continue" },
+      },
+      {
+        id: "history-replay:delta",
+        event_type: "message:chunk",
+        run_id: "run-history-replay",
+        timestamp: "2026-08-21T00:00:00.001Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          projection_kind: "assistant_delta",
+          event_id: "history-replay:delta",
+          sequence: 1,
+          run_id: "run-history-replay",
+          content: "history",
+        },
+      },
+    ],
+  });
+  sessionApi.getStatus = (async () => ({
+    session_id: "session-history-replay",
+    run_id: "run-history-replay",
+    status: "running",
+  })) as typeof sessionApi.getStatus;
+  dom.window.fetch = async (_input, init) => {
+    streamCalls += 1;
+    requestCursors.push(new Headers(init?.headers).get("Last-Event-ID"));
+    return controlledPublicRunLifecycle("run-history-replay", "cancelled", [
+      { eventType: "message.started", payload: {} },
+      { eventType: "message.delta", payload: { delta: " live" } },
+    ]).response;
+  };
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-history-replay");
+    });
+    await settle(harness.act);
+    assert.equal(streamCalls, 1);
+    assert.equal(
+      harness.hook.messages.find((message) => message.role === "assistant")?.content,
+      "history live",
+    );
+
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-history-replay");
+    });
+    await settle(harness.act);
+
+    assert.equal(streamCalls, 2);
+    assert.equal(requestCursors[1], null);
+    assert.equal(
+      harness.hook.messages.find((message) => message.role === "assistant")?.content,
+      "history live",
+    );
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
 test("useAgent reloads a cancel-requested Skill run as pending without a submit POST or stream reconnect", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
