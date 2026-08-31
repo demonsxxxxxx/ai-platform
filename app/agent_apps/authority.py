@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -32,6 +33,8 @@ from app.models import (
 _AVATAR_REFS = {"builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"}
 _CATEGORIES = {"general", "support", "writing", "research", "operations"}
 _VISIBILITIES = {"tenant", "restricted"}
+_AGENT_PROFILE_DEPARTMENT_AUTHORITY_INVALID = "agent_profile_department_authority_invalid"
+_AGENT_PROFILE_DEPARTMENT_DIRECTORY_UNAVAILABLE = "agent_profile_department_directory_unavailable"
 _ROLLING_LEGACY_SUPPORTED_INPUT_TYPES = ["text", "file"]
 _PROFILE_MODEL_COMPATIBILITY_SENTINEL = "platform-selected"
 _ROLLING_LEGACY_SUPPORTED_FILE_TYPES = [
@@ -760,6 +763,36 @@ def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
 class AgentProfileAuthority:
     """Own lifecycle, public discovery, admission, and safe conversation recovery."""
 
+    def __init__(
+        self,
+        *,
+        department_authority_validator: Callable[[list[str]], Awaitable[str | None]] | None = None,
+    ) -> None:
+        self._department_authority_validator = department_authority_validator
+
+    async def _validate_profile_department_authorities(
+        self,
+        definition: AgentProfileDraftRequest,
+    ) -> None:
+        if not definition.allowed_department_ids:
+            return
+        if self._department_authority_validator is None:
+            raise HTTPException(
+                status_code=503,
+                detail=_AGENT_PROFILE_DEPARTMENT_DIRECTORY_UNAVAILABLE,
+            )
+        result = await self._department_authority_validator(definition.allowed_department_ids)
+        if result == "invalid":
+            raise HTTPException(
+                status_code=422,
+                detail=_AGENT_PROFILE_DEPARTMENT_AUTHORITY_INVALID,
+            )
+        if result is not None:
+            raise HTTPException(
+                status_code=503,
+                detail=_AGENT_PROFILE_DEPARTMENT_DIRECTORY_UNAVAILABLE,
+            )
+
     def _require_admin(self, principal: AuthPrincipal) -> None:
         if not is_ai_admin(principal):
             raise HTTPException(status_code=403, detail="not_ai_admin")
@@ -881,6 +914,7 @@ class AgentProfileAuthority:
             definition = _merge_omitted_profile_fields(definition, prior_row=prior_row)
         if not definition.avatar_seed:
             definition = definition.model_copy(update={"avatar_seed": resolved_agent_id})
+        await self._validate_profile_department_authorities(definition)
         await repositories.ensure_agent_profile_identity(
             conn,
             tenant_id=principal.tenant_id,
@@ -974,6 +1008,7 @@ class AgentProfileAuthority:
         source_content_hash = str(draft_row.get("content_hash") or "")
         self._require_revision_integrity(draft_row)
         definition = _draft_from_row(draft_row)
+        await self._validate_profile_department_authorities(definition)
         await self._validate_definition(conn, principal=principal, agent_id=agent_id, definition=definition)
         definition._legacy_model_id = _PROFILE_MODEL_COMPATIBILITY_SENTINEL
         row = await repositories.create_agent_profile_revision(
@@ -1189,6 +1224,7 @@ class AgentProfileAuthority:
             if prior_row is None:
                 raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
             definition = _merge_omitted_profile_fields(definition, prior_row=prior_row)
+        await self._validate_profile_department_authorities(definition)
         if validation_agent_id is None:
             validation_agent_id = await repositories.get_tenant_profile_validation_agent(
                 conn,

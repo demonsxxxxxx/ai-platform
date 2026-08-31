@@ -17,6 +17,7 @@ import pytest
 import yaml
 
 import tools.release_authority as release_authority
+from tools.release_image_manifest import SUBJECTS as PACKAGED_IMAGE_SUBJECTS
 
 from tools.release_authority import (
     ReleaseAuthorityError,
@@ -123,17 +124,23 @@ def test_opensandbox_compose_overlay_uses_direct_sdk_and_egress_proxy():
         assert environment["SANDBOX_SECURITY_PROFILE"] == "governed"
         assert environment["SANDBOX_EGRESS_POLICY_ENABLED"] == "true"
         assert environment["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
-        assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == "bridge"
-        assert "OPENSANDBOX_EGRESS_PROXY_URL" in environment
+        assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == (
+            release_authority.DIRECT_OPENSANDBOX_NETWORK_NAME
+        )
+        assert environment["OPENSANDBOX_EGRESS_PROXY_URL"] == (
+            release_authority.DIRECT_OPENSANDBOX_PROXY_URL
+        )
     workspace_root = "${SANDBOX_WORKSPACE_ROOT:?set SANDBOX_WORKSPACE_ROOT}"
     assert services["workspace-init"]["volumes"] == [f"{workspace_root}:/runtime-workspaces"]
     for service_name in ("api", "worker"):
         assert f"{workspace_root}:{workspace_root}" in services[service_name]["volumes"]
     proxy = services["opensandbox-egress-proxy"]
     assert proxy["labels"]["ai-platform.release-role"] == "opensandbox-egress-proxy"
-    assert proxy["ports"] == [
-        "${OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS:?set OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS}:${OPENSANDBOX_EGRESS_PROXY_PORT:-18043}:8080"
-    ]
+    assert "ports" not in proxy
+    assert set(proxy["networks"]) == {
+        "default",
+        release_authority.DIRECT_OPENSANDBOX_NETWORK_KEY,
+    }
 
 
 def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract():
@@ -211,7 +218,7 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     assert "--compose-file deploy/ai-platform/docker-compose.sandbox.yml" not in text
     assert "The production release uses the base Compose file plus" in text
     assert "`docker-compose.opensandbox.yml`" in text
-    assert "The s75 deployment keeps Compose project `ai-platform-internal`" in text
+    assert "The production deployment keeps Compose project `ai-platform-internal`" in text
     assert "never invokes a project migration or volume aliases" in contract_text
     assert "same project and volumes" in text
     assert "`/data/ai-platform-prod/runtime-workspaces` platform bind" in text
@@ -219,8 +226,11 @@ def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract
     for command in ("migrate", "finalize", "rollback"):
         assert f"-m tools.s75_opensandbox_transition {command}" in text
     assert "HostConfig.Runtime=runsc" in text
-    assert "the lifecycle listener and an" in text
-    assert "unrelated host port must both be unreachable" in text
+    assert "/etc/systemd/system/ai-platform-opensandbox-network-guard.service" in text
+    assert "root-owned, regular, and not group- or world-writable" in text
+    assert "/etc/ai-platform/opensandbox/server.toml" in text
+    assert "the lifecycle listener, API, PostgreSQL, Redis, MinIO" in text
+    assert "another host port" in text
     assert "real application-owned Run" in text
     assert "Never use `down -v`" in text
     assert "--env-file <release-root>/deploy/ai-platform/.env" not in text
@@ -584,8 +594,45 @@ def _colocation_environment(auth_base: str, user_info_base: str) -> dict[str, st
         "OPENSANDBOX_BASE_URL": "http://172.19.0.1:8080",
         "OPENSANDBOX_API_KEY": "operator-provided-key",
         "OPENSANDBOX_USE_SERVER_PROXY": "true",
-        "OPENSANDBOX_EXPECTED_NETWORK_MODE": "bridge",
-        "OPENSANDBOX_EGRESS_PROXY_URL": "http://172.18.0.1:18043",
+        "OPENSANDBOX_EXPECTED_NETWORK_MODE": release_authority.DIRECT_OPENSANDBOX_NETWORK_NAME,
+        "OPENSANDBOX_EGRESS_PROXY_URL": release_authority.DIRECT_OPENSANDBOX_PROXY_URL,
+    }
+
+
+def _direct_opensandbox_rendered_config(auth_base: str, user_info_base: str) -> dict[str, object]:
+    return {
+        "services": {
+            "postgres": {},
+            "redis": {},
+            "minio": {},
+            "api": {"environment": _colocation_environment(auth_base, user_info_base)},
+            "worker": {"environment": _colocation_environment(auth_base, user_info_base)},
+            "opensandbox-egress-proxy": {
+                "labels": {"ai-platform.release-role": "opensandbox-egress-proxy"},
+                "networks": {
+                    "default": None,
+                    release_authority.DIRECT_OPENSANDBOX_NETWORK_KEY: {
+                        "aliases": [release_authority.DIRECT_OPENSANDBOX_PROXY_ALIAS],
+                        "ipv4_address": release_authority.DIRECT_OPENSANDBOX_PROXY_IPV4,
+                    },
+                },
+            },
+        },
+        "networks": {
+            release_authority.DIRECT_OPENSANDBOX_NETWORK_KEY: {
+                "name": release_authority.DIRECT_OPENSANDBOX_NETWORK_NAME,
+                "driver": "bridge",
+                "internal": True,
+                "driver_opts": {
+                    "com.docker.network.bridge.name": release_authority.DIRECT_OPENSANDBOX_BRIDGE_NAME,
+                    "com.docker.network.bridge.enable_ip_masquerade": "false",
+                    "com.docker.network.bridge.enable_icc": "false",
+                },
+                "ipam": {
+                    "config": [{"subnet": release_authority.DIRECT_OPENSANDBOX_SUBNET}]
+                },
+            }
+        },
     }
 
 
@@ -617,8 +664,8 @@ def _write_required_provider_compose_files(repo_root: Path) -> tuple[Path, Path]
         "      OPENSANDBOX_BASE_URL: ${OPENSANDBOX_BASE_URL:?set OPENSANDBOX_BASE_URL}\n"
         "      OPENSANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:?set OPENSANDBOX_API_KEY}\n"
         "      OPENSANDBOX_USE_SERVER_PROXY: \"true\"\n"
-        "      OPENSANDBOX_EXPECTED_NETWORK_MODE: bridge\n"
-        "      OPENSANDBOX_EGRESS_PROXY_URL: ${OPENSANDBOX_EGRESS_PROXY_URL:?set OPENSANDBOX_EGRESS_PROXY_URL}\n"
+        "      OPENSANDBOX_EXPECTED_NETWORK_MODE: ai-platform-opensandbox-egress-internal-v1\n"
+        "      OPENSANDBOX_EGRESS_PROXY_URL: http://egress.opensandbox.internal:8080\n"
         "  worker:\n    environment:\n"
         "      SANDBOX_CONTAINER_PROVIDER: opensandbox\n"
         "      SANDBOX_SECURITY_PROFILE: governed\n"
@@ -626,12 +673,28 @@ def _write_required_provider_compose_files(repo_root: Path) -> tuple[Path, Path]
         "      OPENSANDBOX_BASE_URL: ${OPENSANDBOX_BASE_URL:?set OPENSANDBOX_BASE_URL}\n"
         "      OPENSANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:?set OPENSANDBOX_API_KEY}\n"
         "      OPENSANDBOX_USE_SERVER_PROXY: \"true\"\n"
-        "      OPENSANDBOX_EXPECTED_NETWORK_MODE: bridge\n"
-        "      OPENSANDBOX_EGRESS_PROXY_URL: ${OPENSANDBOX_EGRESS_PROXY_URL:?set OPENSANDBOX_EGRESS_PROXY_URL}\n"
+        "      OPENSANDBOX_EXPECTED_NETWORK_MODE: ai-platform-opensandbox-egress-internal-v1\n"
+        "      OPENSANDBOX_EGRESS_PROXY_URL: http://egress.opensandbox.internal:8080\n"
         "  opensandbox-egress-proxy:\n"
         "    labels:\n"
         "      ai-platform.release-role: opensandbox-egress-proxy\n"
-        "    ports: [\"${OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS:?set OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS}:18043:8080\"]\n",
+        "    networks:\n"
+        "      default: null\n"
+        "      opensandbox_egress_internal_v1:\n"
+        "        aliases: [egress.opensandbox.internal]\n"
+        "        ipv4_address: 172.31.75.2\n"
+        "networks:\n"
+        "  opensandbox_egress_internal_v1:\n"
+        "    name: ai-platform-opensandbox-egress-internal-v1\n"
+        "    driver: bridge\n"
+        "    internal: true\n"
+        "    driver_opts:\n"
+        "      com.docker.network.bridge.name: br-osb-egress\n"
+        "      com.docker.network.bridge.enable_ip_masquerade: \"false\"\n"
+        "      com.docker.network.bridge.enable_icc: \"false\"\n"
+        "    ipam:\n"
+        "      config:\n"
+        "        - subnet: 172.31.75.0/24\n",
         encoding="utf-8",
     )
     return main, direct
@@ -652,8 +715,6 @@ def test_env_example_inventory_covers_exact_base_and_opensandbox_required_keys()
         "MODEL_PROXY_INTERNAL_TOKEN",
         "OPENSANDBOX_API_KEY",
         "OPENSANDBOX_BASE_URL",
-        "OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS",
-        "OPENSANDBOX_EGRESS_PROXY_URL",
         "OPENSANDBOX_EXECUTOR_IMAGE",
         "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
         "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
@@ -749,19 +810,9 @@ def test_compose_semantic_preflight_accepts_complete_s72_config_with_operator_au
     )
     commands: list[list[str]] = []
     rendered = json.dumps(
-        {
-            "services": {
-                "postgres": {},
-                "redis": {},
-                "minio": {},
-                "api": {"environment": _colocation_environment("http://10.56.0.25:7263", "http://10.56.0.25:5166")},
-                "worker": {"environment": _colocation_environment("http://10.56.0.25:7263", "http://10.56.0.25:5166")},
-                "opensandbox-egress-proxy": {
-                    "labels": {"ai-platform.release-role": "opensandbox-egress-proxy"},
-                    "ports": [{"host_ip": "172.18.0.1", "published": "18043", "target": 8080}],
-                },
-            }
-        }
+        _direct_opensandbox_rendered_config(
+            "http://10.56.0.25:7263", "http://10.56.0.25:5166"
+        )
     )
     monkeypatch.setattr(release_authority, "_run", lambda command, **kwargs: commands.append(list(command)) or subprocess.CompletedProcess(command, 0, stdout=rendered, stderr=""))
     release_authority._semantic_compose_config_preflight(["sudo", "-n", "--", "docker"], selection, env_file, commit=commit)
@@ -809,8 +860,11 @@ def test_missing_compose_keys_fail_before_all_non_preflight_docker_and_redact_ra
         ("api", "OPENSANDBOX_BASE_URL", "http://0.0.0.0:8080"),
         ("api", "OPENSANDBOX_BASE_URL", "http://127.0.0.1:8080"),
         ("api", "OPENSANDBOX_BASE_URL", "http://8.8.8.8:8080"),
-        ("api", "OPENSANDBOX_BASE_URL", "http://172.18.0.1:8080"),
-        ("opensandbox-egress-proxy", "host_ip", "0.0.0.0"),
+        (
+            "opensandbox-egress-proxy",
+            "ports",
+            [{"host_ip": "0.0.0.0", "published": "18043", "target": 8080}],
+        ),
         ("redis", "ports", [{"host_ip": "0.0.0.0", "published": "63799", "target": 6379}]),
     ],
     ids=(
@@ -820,8 +874,7 @@ def test_missing_compose_keys_fail_before_all_non_preflight_docker_and_redact_ra
         "wildcard-lifecycle-address",
         "loopback-lifecycle-address",
         "public-lifecycle-address",
-        "lifecycle-shares-egress-address",
-        "proxy-exposed-all-interfaces",
+        "proxy-publishes-host-port",
         "data-service-published",
     ),
 )
@@ -834,28 +887,21 @@ def test_direct_opensandbox_semantic_preflight_rejects_unsafe_runtime(
     selection = release_authority.resolve_compose_files(
         tmp_path, [COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH]
     )
-    services = {
-        "postgres": {},
-        "redis": {},
-        "minio": {},
-        "api": {"environment": _colocation_environment("https://auth.internal.example", "https://identity.internal.example")},
-        "worker": {"environment": _colocation_environment("https://auth.internal.example", "https://identity.internal.example")},
-        "opensandbox-egress-proxy": {
-            "labels": {"ai-platform.release-role": "opensandbox-egress-proxy"},
-            "ports": [{"host_ip": "172.18.0.1", "published": "18043", "target": 8080}],
-        },
-    }
+    config = _direct_opensandbox_rendered_config(
+        "https://auth.internal.example", "https://identity.internal.example"
+    )
+    services = config["services"]
     if service in {"postgres", "redis", "minio"}:
         services[service][field] = value
     elif service == "opensandbox-egress-proxy":
-        services[service]["ports"][0][field] = value
+        services[service][field] = value
     else:
         services[service]["environment"][field] = value
     monkeypatch.setattr(
         release_authority,
         "_run",
         lambda command, **kwargs: subprocess.CompletedProcess(
-            command, 0, stdout=json.dumps({"services": services}), stderr=""
+            command, 0, stdout=json.dumps(config), stderr=""
         ),
     )
 
@@ -863,6 +909,60 @@ def test_direct_opensandbox_semantic_preflight_rejects_unsafe_runtime(
         release_authority._semantic_compose_config_preflight(
             ["docker"], selection, env_file, commit="d" * 40
         )
+
+    assert exc_info.value.safe_compose_config_evidence == {
+        "compose_config_error_category": "invalid-direct-opensandbox-config"
+    }
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "network-not-internal",
+        "masquerade-enabled",
+        "icc-enabled",
+        "wrong-bridge-name",
+        "wrong-network-name",
+        "wrong-subnet",
+        "wrong-proxy-ip",
+        "extra-driver-option",
+        "missing-proxy-alias",
+        "api-joined-isolated-network",
+    ),
+)
+def test_direct_opensandbox_semantic_preflight_rejects_network_isolation_drift(case):
+    config = _direct_opensandbox_rendered_config(
+        "https://auth.internal.example", "https://identity.internal.example"
+    )
+    network = config["networks"][release_authority.DIRECT_OPENSANDBOX_NETWORK_KEY]
+    proxy_network = config["services"]["opensandbox-egress-proxy"]["networks"][
+        release_authority.DIRECT_OPENSANDBOX_NETWORK_KEY
+    ]
+    if case == "network-not-internal":
+        network["internal"] = False
+    elif case == "masquerade-enabled":
+        network["driver_opts"]["com.docker.network.bridge.enable_ip_masquerade"] = "true"
+    elif case == "icc-enabled":
+        network["driver_opts"]["com.docker.network.bridge.enable_icc"] = "true"
+    elif case == "wrong-bridge-name":
+        network["driver_opts"]["com.docker.network.bridge.name"] = "br-wrong"
+    elif case == "wrong-network-name":
+        network["name"] = "wrong"
+    elif case == "wrong-subnet":
+        network["ipam"]["config"][0]["subnet"] = "172.31.76.0/24"
+    elif case == "wrong-proxy-ip":
+        proxy_network["ipv4_address"] = "172.31.75.3"
+    elif case == "extra-driver-option":
+        network["driver_opts"]["com.docker.network.bridge.gateway_mode_ipv4"] = "isolated"
+    elif case == "missing-proxy-alias":
+        proxy_network["aliases"] = []
+    else:
+        config["services"]["api"]["networks"] = {
+            release_authority.DIRECT_OPENSANDBOX_NETWORK_KEY: None
+        }
+
+    with pytest.raises(ReleaseAuthorityError) as exc_info:
+        release_authority._validate_direct_opensandbox_config(json.dumps(config))
 
     assert exc_info.value.safe_compose_config_evidence == {
         "compose_config_error_category": "invalid-direct-opensandbox-config"
@@ -2799,6 +2899,21 @@ def test_governed_sandbox_executor_handoff_requires_a_local_immutable_image_id(i
         release_authority._immutable_sandbox_executor_reference({"id": image_id})
 
 
+def test_direct_opensandbox_executor_handoff_requires_one_packaged_backend_digest():
+    subject = release_authority.PACKAGED_BACKEND_IMAGE_SUBJECT
+    assert subject == PACKAGED_IMAGE_SUBJECTS["backend"]
+    reference = f"{subject}@sha256:" + "1" * 64
+    assert release_authority._packaged_sandbox_executor_reference({"repo_digests": [reference]}) == reference
+
+    for repo_digests in (
+        [],
+        ["sha256:" + "1" * 64],
+        [reference, f"{subject}@sha256:" + "2" * 64],
+    ):
+        with pytest.raises(ReleaseAuthorityError, match="not unique"):
+            release_authority._packaged_sandbox_executor_reference({"repo_digests": repo_digests})
+
+
 def test_deploy_rejects_executor_preflight_without_compose_mutation(monkeypatch, tmp_path):
     commit = "6" * 40
     _write_compose_files(tmp_path)
@@ -3033,10 +3148,13 @@ def test_deploy_uses_211_sudo_env_compose_command(monkeypatch, tmp_path):
     commit = "5" * 40
     _write_provider_compose_files(tmp_path)
     repository = AUTHORITATIVE_REPOSITORY
+    packaged_digest = "sha256:" + "1" * 64
+    packaged_executor = f"{release_authority.PACKAGED_BACKEND_IMAGE_SUBJECT}@{packaged_digest}"
     commands: list[list[str]] = []
     image_records = {
         f"ai-platform:{commit}": {
             "id": SANDBOX_IMAGE_ID,
+            "repo_digests": [packaged_executor],
             "labels": {
                 "ai-platform.source-commit": commit,
                 "org.opencontainers.image.revision": commit,
@@ -3087,9 +3205,9 @@ def test_deploy_uses_211_sudo_env_compose_command(monkeypatch, tmp_path):
     assert compose[:3] == ["sudo", "-n", "env"]
     assert f"AI_PLATFORM_IMAGE=ai-platform:{commit}" in compose
     assert f"AI_PLATFORM_FRONTEND_IMAGE=ai-platform-frontend:{commit}" in compose
-    assert f"SANDBOX_EXECUTOR_IMAGE={SANDBOX_IMAGE_ID}" in compose
-    assert f"OPENSANDBOX_EXECUTOR_IMAGE={SANDBOX_IMAGE_ID}" in compose
-    assert f"OPENSANDBOX_EXECUTOR_IMAGE_DIGEST={SANDBOX_IMAGE_ID}" in compose
+    assert f"SANDBOX_EXECUTOR_IMAGE={packaged_executor}" in compose
+    assert f"OPENSANDBOX_EXECUTOR_IMAGE={packaged_executor}" in compose
+    assert f"OPENSANDBOX_EXECUTOR_IMAGE_DIGEST={packaged_digest}" in compose
     assert release_authority.COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER not in compose
     assert compose[compose.index("compose") :] == [
         "compose",
@@ -3497,26 +3615,10 @@ def test_deploy_rejects_provider_ownership_change_during_preflight_revalidation(
                 stderr="",
             )
         if command[-3:] == ["config", "--format", "json"]:
-            rendered = {
-                "services": (
-                    {role: {} for role in ("postgres", "redis", "minio")}
-                    | {
-                        role: {
-                            "environment": _colocation_environment(
-                                "https://auth.internal.example",
-                                "https://identity.internal.example",
-                            )
-                        }
-                        for role in ("api", "worker")
-                    }
-                    | {
-                        "opensandbox-egress-proxy": {
-                            "labels": {"ai-platform.release-role": "opensandbox-egress-proxy"},
-                            "ports": [{"host_ip": "172.18.0.1", "published": "18043", "target": 8080}],
-                        }
-                    }
-                )
-            }
+            rendered = _direct_opensandbox_rendered_config(
+                "https://auth.internal.example",
+                "https://identity.internal.example",
+            )
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps(rendered), stderr="")
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 

@@ -171,6 +171,7 @@ test("materializes create and update requests with the exact optimistic revision
       expected_version: "2026.07.28",
     }],
     selectedMcpToolIds: ["mcp:knowledge:search"],
+    allowedDepartmentIds: ["药品注册"],
   };
   assert.deepEqual(buildAgentProfileDraftRequest(created), {
     name: "新智能体",
@@ -197,7 +198,7 @@ test("materializes create and update requests with the exact optimistic revision
     avatar_asset_id: null,
     category: "general",
     visibility: "tenant",
-    allowed_department_ids: [],
+    allowed_department_ids: ["药品注册"],
     allowed_roles: [],
     allowed_user_ids: [],
     expected_draft_revision: 0,

@@ -29,8 +29,8 @@ services:
       OPENSANDBOX_USE_SERVER_PROXY: "true"
       OPENSANDBOX_EXECUTOR_IMAGE: ${OPENSANDBOX_EXECUTOR_IMAGE:?set OPENSANDBOX_EXECUTOR_IMAGE}
       OPENSANDBOX_EXECUTOR_IMAGE_DIGEST: ${OPENSANDBOX_EXECUTOR_IMAGE_DIGEST:?set OPENSANDBOX_EXECUTOR_IMAGE_DIGEST}
-      OPENSANDBOX_EXPECTED_NETWORK_MODE: bridge
-      OPENSANDBOX_EGRESS_PROXY_URL: ${OPENSANDBOX_EGRESS_PROXY_URL:?set OPENSANDBOX_EGRESS_PROXY_URL}
+      OPENSANDBOX_EXPECTED_NETWORK_MODE: ai-platform-opensandbox-egress-internal-v1
+      OPENSANDBOX_EGRESS_PROXY_URL: http://egress.opensandbox.internal:8080
     networks:
       - default
     volumes:
@@ -54,8 +54,8 @@ services:
       OPENSANDBOX_USE_SERVER_PROXY: "true"
       OPENSANDBOX_EXECUTOR_IMAGE: ${OPENSANDBOX_EXECUTOR_IMAGE:?set OPENSANDBOX_EXECUTOR_IMAGE}
       OPENSANDBOX_EXECUTOR_IMAGE_DIGEST: ${OPENSANDBOX_EXECUTOR_IMAGE_DIGEST:?set OPENSANDBOX_EXECUTOR_IMAGE_DIGEST}
-      OPENSANDBOX_EXPECTED_NETWORK_MODE: bridge
-      OPENSANDBOX_EGRESS_PROXY_URL: ${OPENSANDBOX_EGRESS_PROXY_URL:?set OPENSANDBOX_EGRESS_PROXY_URL}
+      OPENSANDBOX_EXPECTED_NETWORK_MODE: ai-platform-opensandbox-egress-internal-v1
+      OPENSANDBOX_EGRESS_PROXY_URL: http://egress.opensandbox.internal:8080
     networks:
       - default
     volumes:
@@ -81,10 +81,12 @@ services:
       NGINX_ENVSUBST_TEMPLATE_DIR: /etc/nginx/templates-opensandbox
       AI_PLATFORM_API_UPSTREAM: http://api:8020
       MODEL_PROXY_INTERNAL_TOKEN: ${MODEL_PROXY_INTERNAL_TOKEN:?set MODEL_PROXY_INTERNAL_TOKEN}
-    ports:
-      - "${OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS:?set OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS}:${OPENSANDBOX_EGRESS_PROXY_PORT:-18043}:8080"
     networks:
-      - default
+      default:
+      opensandbox_egress_internal_v1:
+        aliases:
+          - egress.opensandbox.internal
+        ipv4_address: 172.31.75.2
     volumes:
       - ./opensandbox-egress-nginx.conf.template:/etc/nginx/templates-opensandbox/default.conf.template:ro
     tmpfs:
@@ -99,3 +101,16 @@ services:
     depends_on:
       api:
         condition: service_started
+
+networks:
+  opensandbox_egress_internal_v1:
+    name: ai-platform-opensandbox-egress-internal-v1
+    driver: bridge
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.name: br-osb-egress
+      com.docker.network.bridge.enable_ip_masquerade: "false"
+      com.docker.network.bridge.enable_icc: "false"
+    ipam:
+      config:
+        - subnet: 172.31.75.0/24

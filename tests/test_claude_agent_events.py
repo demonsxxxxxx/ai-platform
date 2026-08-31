@@ -801,6 +801,8 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         for candidate in candidates
     ]
     assert candidate_types == [
+        "message.started",
+        "message.delta",
         CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
         "policy.checking",
         "policy.allowed",
@@ -808,7 +810,6 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         "tool.completed",
         "subagent.started",
         "subagent.completed",
-        "message.started",
         "message.delta",
         "message.completed",
         "model.completed",
@@ -819,7 +820,8 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         if isinstance(candidate, ClaudeAgentEventCandidate)
         and candidate.event_type == "message.delta"
     ]
-    assert deltas == ["safe answer"]
+    assert deltas == ["safe ", "answer"]
+    assert "".join(deltas) == result.message
     summaries = [
         candidate.summary
         for candidate in candidates

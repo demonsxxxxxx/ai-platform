@@ -17,6 +17,105 @@ Copy-Item deploy/ai-platform/.env.example deploy/ai-platform/.env
 docker compose -f deploy/ai-platform/docker-compose.yml --env-file deploy/ai-platform/.env up -d --build
 ```
 
+## Deployment quick start
+
+Both managed environments use the same repository-owned entry point. The
+required profile selects the environment-specific safety controller, while
+physical host assignment remains in the deployment inventory.
+
+### Internal test
+
+After the one-time host configuration is in place, deploy the newest fully
+approved `main` release with one command:
+
+```bash
+./scripts/deploy-latest.sh --profile internal-test --latest
+```
+
+The command waits up to 30 minutes for the same exact `main` SHA to pass the
+backend, frontend, and packaging workflows, including each workflow's final
+required job. It then downloads the digest-bound release evidence, verifies it
+with the target commit's manifest verifier, pulls the exact backend and frontend
+GHCR digests, starts the existing Compose project, and runs API, container, and
+OpenSandbox health checks. Startup or health failure makes one image rollback
+attempt while preserving the existing data volumes.
+
+The private repository requires either `GH_TOKEN`/`GITHUB_TOKEN` with repository
+Contents and Actions read access, or an authenticated `gh` CLI session. The
+Docker host must already be logged in to `ghcr.io`. Existing deployments reuse
+the managed `.env` path from `incoming/latest-main.json`; the first deployment
+supplies it once:
+
+```bash
+./scripts/deploy-latest.sh --profile internal-test --latest \
+  --env-file /data/ai-platform-internal-test/config/stable/.env
+```
+
+The env file must be an owner-matching `0600` regular file under the managed
+`config` directory. The quickstart reads only its path and metadata. See
+`docs/operations/release-operations-runbook.md` for host preparation, failure
+semantics, and runtime acceptance boundaries.
+
+### Production rebuild or update
+
+The production profile uses the governed OpenSandbox overlay. On a rebuilt host
+with Python 3.11+, Docker Compose v2, systemd, and Docker `runsc`, first restore
+these files from the approved secret store:
+
+- `/data/ai-platform-prod/config/production/.env` — `root:root 0600`
+- `/etc/ai-platform/opensandbox/server.env` — `root:root 0600`
+- `/etc/ai-platform/opensandbox/server.toml` —
+  `root:<OPENSANDBOX_SERVER_GID> 0640`
+
+The initial OpenSandbox file shapes are documented in
+`deploy/opensandbox/server-production.env.example` and
+`deploy/opensandbox/server-production.toml.example`; real values never belong
+in Git.
+
+The application env must use the same lifecycle URL and API key as those host
+files. Its OpenSandbox executor is the release-authority backend workload image,
+not the host service's `runtime.execd_image`. Pin the OpenSandbox server, execd,
+and egress sidecar by digest; the server digest must have been verified against
+an approved `server/v0.1.13` or newer release. The production TOML binds the
+trusted Server container to the private lifecycle address, selects the fixed
+internal sandbox network, denies host bind mounts, and retains `dns+nft` only as
+the pinned upstream egress-sidecar configuration; application requests omit the
+incompatible SDK `networkPolicy`.
+
+Docker with Compose v2, systemd, the Docker `runsc` runtime, and the exact
+active `ai-platform-opensandbox-network-guard.service` from the target checkout
+must already be installed. The root Docker account must be logged in to GHCR,
+and GitHub Contents/Actions read credentials must be available to the command.
+
+Then rebuild the OpenSandbox host service and production application from the
+newest fully approved exact-main images:
+
+```bash
+sudo -n ./scripts/deploy-latest.sh --profile production --latest \
+  --env-file /data/ai-platform-prod/config/production/.env
+```
+
+Later production updates reuse the approved environment path:
+
+```bash
+sudo -n ./scripts/deploy-latest.sh --profile production --latest
+```
+
+Routine application updates require the admitted OpenSandbox host configuration
+to remain unchanged. A Server/API-key/execd/egress or host-network change is a
+separate planned host maintenance operation, not an implicit image-update side
+effect.
+
+The command refuses partial or legacy production contours, requires quiescence
+before updating an existing direct-OpenSandbox runtime, and restores the
+previous verified images if target startup or parity fails. A successful command
+proves deployment smoke and exact runtime parity; the real application-owned
+OpenSandbox create/execute/file/cleanup acceptance remains a separate production
+gate. The OpenSandbox server is a trusted host control-plane component with
+effective Docker daemon authority through its socket; see
+`docs/operations/production-bootstrap.md` and the release runbook for that
+boundary and the host prerequisites.
+
 ## Health check
 
 ```powershell

@@ -157,6 +157,31 @@ def test_internal_test_opensandbox_profile_requires_explicit_test_bridge_selecti
     assert settings.opensandbox_internal_test_forward_model_credentials is False
 
 
+def test_production_opensandbox_requires_the_isolated_network():
+    values = {
+        "deployment_environment": "production",
+        "trusted_principal_secret": "gateway-secret",
+        "existing_auth_base_url": "https://auth.internal.example",
+        "existing_user_info_base_url": "https://directory.internal.example",
+        "sandbox_container_provider": "opensandbox",
+        "sandbox_security_profile": "governed",
+        "opensandbox_expected_network_mode": "ai-platform-opensandbox-egress-internal-v1",
+        "opensandbox_use_server_proxy": True,
+        "sandbox_egress_policy_enabled": True,
+        "opensandbox_api_key": "opensandbox-secret",
+        "opensandbox_base_url": "http://10.56.1.75:8080",
+        "opensandbox_egress_proxy_url": "http://egress.opensandbox.internal:8080",
+    }
+
+    assert Settings(_env_file=None, **values).opensandbox_expected_network_mode == (
+        "ai-platform-opensandbox-egress-internal-v1"
+    )
+
+    values["opensandbox_expected_network_mode"] = "bridge"
+    with pytest.raises(ValidationError, match="production_opensandbox_network_mode_invalid"):
+        Settings(_env_file=None, **values)
+
+
 def test_model_credential_forwarding_is_forbidden_for_opensandbox():
     with pytest.raises(ValidationError, match="opensandbox_model_credential_forwarding_disabled"):
         Settings(

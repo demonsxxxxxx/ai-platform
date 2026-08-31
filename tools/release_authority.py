@@ -96,6 +96,17 @@ DEFAULT_MANAGED_ENV_RELATIVE_PATH = Path("deploy/ai-platform/.env")
 MANAGED_RELEASE_DIRECTORY_NAME = "releases"
 DIRECT_OPENSANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.opensandbox.yml"
 SANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.sandbox.yml"
+PACKAGED_BACKEND_IMAGE_SUBJECT = "ghcr.io/demonsxxxxxx/ai-platform-backend"
+DIRECT_OPENSANDBOX_NETWORK_KEY = "opensandbox_egress_internal_v1"
+DIRECT_OPENSANDBOX_NETWORK_NAME = "ai-platform-opensandbox-egress-internal-v1"
+DIRECT_OPENSANDBOX_BRIDGE_NAME = "br-osb-egress"
+DIRECT_OPENSANDBOX_SUBNET = "172.31.75.0/24"
+DIRECT_OPENSANDBOX_PROXY_IPV4 = "172.31.75.2"
+DIRECT_OPENSANDBOX_PROXY_PORT = 8080
+DIRECT_OPENSANDBOX_PROXY_ALIAS = "egress.opensandbox.internal"
+DIRECT_OPENSANDBOX_PROXY_URL = (
+    f"http://{DIRECT_OPENSANDBOX_PROXY_ALIAS}:{DIRECT_OPENSANDBOX_PROXY_PORT}"
+)
 DIRECT_OPENSANDBOX_SELECTION = (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(), DIRECT_OPENSANDBOX_COMPOSE_RELATIVE_PATH)
 DIRECT_OPENSANDBOX_SELECTIONS = frozenset({DIRECT_OPENSANDBOX_SELECTION})
 GOVERNED_COMPOSE_SELECTIONS = frozenset(
@@ -142,6 +153,25 @@ BUILD_DIAGNOSTIC_SCAN_OVERLAP_BYTES = 4096
 
 class ReleaseAuthorityError(RuntimeError):
     """Raised when a release-authority invariant is not satisfied."""
+
+
+def _valid_opensandbox_server_network_topology(container: object) -> bool:
+    if not isinstance(container, dict):
+        return False
+    host_config = container.get("HostConfig")
+    network_settings = container.get("NetworkSettings")
+    if not isinstance(host_config, dict) or not isinstance(network_settings, dict):
+        return False
+    networks = network_settings.get("Networks")
+    ports = network_settings.get("Ports")
+    return (
+        host_config.get("NetworkMode") == "host"
+        and host_config.get("PortBindings") in (None, {})
+        and isinstance(networks, dict)
+        and set(networks) == {"host"}
+        and isinstance(ports, dict)
+        and all(binding is None for binding in ports.values())
+    )
 
 
 @dataclass(frozen=True)
@@ -1917,7 +1947,9 @@ def _compose_config_preflight_error(category: str, missing_keys: Sequence[str] =
 
 def _validate_direct_opensandbox_config(rendered: str | bytes) -> None:
     try:
-        services = json.loads(rendered)["services"]
+        config = json.loads(rendered)
+        services = config["services"]
+        networks = config["networks"]
         api_environment = services["api"]["environment"]
         worker_environment = services["worker"]["environment"]
         invalid_sandbox = any(
@@ -1925,48 +1957,89 @@ def _validate_direct_opensandbox_config(rendered: str | bytes) -> None:
             or environment.get("SANDBOX_SECURITY_PROFILE") != "governed"
             or environment.get("SANDBOX_EGRESS_POLICY_ENABLED") != "true"
             or environment.get("OPENSANDBOX_USE_SERVER_PROXY") != "true"
-            or environment.get("OPENSANDBOX_EXPECTED_NETWORK_MODE") != "bridge"
-            or not str(environment.get("OPENSANDBOX_EGRESS_PROXY_URL") or "").strip()
+            or environment.get("OPENSANDBOX_EXPECTED_NETWORK_MODE")
+            != DIRECT_OPENSANDBOX_NETWORK_NAME
+            or environment.get("OPENSANDBOX_EGRESS_PROXY_URL")
+            != DIRECT_OPENSANDBOX_PROXY_URL
             for environment in (api_environment, worker_environment)
         )
-        invalid_data_ports = any(services[name].get("ports") for name in ("postgres", "redis", "minio"))
-        proxy = services.get("opensandbox-egress-proxy", {})
-        proxy_ports = proxy.get("ports") or []
-        published = proxy_ports[0] if len(proxy_ports) == 1 else {}
-        published_host = str(published.get("host_ip") or "") if isinstance(published, dict) else ""
-        separated_endpoints = True
+        invalid_data_ports = any(
+            services[name].get("ports") for name in ("postgres", "redis", "minio")
+        )
+        lifecycle_endpoints_valid = (
+            api_environment.get("OPENSANDBOX_BASE_URL")
+            == worker_environment.get("OPENSANDBOX_BASE_URL")
+        )
         for environment in (api_environment, worker_environment):
-            lifecycle_host = urlsplit(str(environment.get("OPENSANDBOX_BASE_URL") or "")).hostname
-            proxy_host = urlsplit(str(environment.get("OPENSANDBOX_EGRESS_PROXY_URL") or "")).hostname
-            lifecycle_address = ipaddress.ip_address(lifecycle_host or "")
-            proxy_address = ipaddress.ip_address(proxy_host or "")
-            lifecycle_is_private = (
-                isinstance(lifecycle_address, ipaddress.IPv4Address)
-                and lifecycle_address.is_private
-                and not lifecycle_address.is_loopback
-                and not lifecycle_address.is_link_local
-                and not lifecycle_address.is_multicast
-                and not lifecycle_address.is_reserved
-                and not lifecycle_address.is_unspecified
-            )
+            lifecycle = urlsplit(str(environment.get("OPENSANDBOX_BASE_URL") or ""))
+            lifecycle_address = ipaddress.ip_address(lifecycle.hostname or "")
             if (
-                not lifecycle_is_private
-                or lifecycle_address == proxy_address
-                or proxy_host != published_host
+                lifecycle.scheme not in {"http", "https"}
+                or lifecycle.port is None
+                or not isinstance(lifecycle_address, ipaddress.IPv4Address)
+                or not lifecycle_address.is_private
+                or lifecycle_address.is_loopback
+                or lifecycle_address.is_link_local
+                or lifecycle_address.is_multicast
+                or lifecycle_address.is_reserved
+                or lifecycle_address.is_unspecified
             ):
-                separated_endpoints = False
+                lifecycle_endpoints_valid = False
                 break
+        network = networks.get(DIRECT_OPENSANDBOX_NETWORK_KEY, {})
+        driver_options = network.get("driver_opts") or {}
+        expected_driver_options = {
+            "com.docker.network.bridge.name": DIRECT_OPENSANDBOX_BRIDGE_NAME,
+            "com.docker.network.bridge.enable_ip_masquerade": "false",
+            "com.docker.network.bridge.enable_icc": "false",
+        }
+        ipam = network.get("ipam")
+        ipam_config = ipam.get("config") if isinstance(ipam, dict) else None
+        invalid_network = (
+            network.get("name") != DIRECT_OPENSANDBOX_NETWORK_NAME
+            or network.get("driver") != "bridge"
+            or network.get("internal") is not True
+            or driver_options != expected_driver_options
+            or ipam_config != [{"subnet": DIRECT_OPENSANDBOX_SUBNET}]
+        )
+        proxy = services.get("opensandbox-egress-proxy", {})
+        proxy_networks = proxy.get("networks") or {}
+        isolated_attachment = (
+            proxy_networks.get(DIRECT_OPENSANDBOX_NETWORK_KEY)
+            if isinstance(proxy_networks, dict)
+            else None
+        )
+        aliases = (
+            isolated_attachment.get("aliases")
+            if isinstance(isolated_attachment, dict)
+            else None
+        )
         invalid_proxy = (
-            proxy.get("labels", {}).get("ai-platform.release-role") != "opensandbox-egress-proxy"
-            or not isinstance(published, dict)
-            or published.get("target") != 8080
-            or not published_host
-            or published_host in {"0.0.0.0", "::"}
-            or not separated_endpoints
+            proxy.get("labels", {}).get("ai-platform.release-role")
+            != "opensandbox-egress-proxy"
+            or bool(proxy.get("ports"))
+            or not isinstance(proxy_networks, dict)
+            or set(proxy_networks) != {"default", DIRECT_OPENSANDBOX_NETWORK_KEY}
+            or not isinstance(aliases, list)
+            or DIRECT_OPENSANDBOX_PROXY_ALIAS not in aliases
+            or isolated_attachment.get("ipv4_address")
+            != DIRECT_OPENSANDBOX_PROXY_IPV4
+        )
+        invalid_membership = any(
+            DIRECT_OPENSANDBOX_NETWORK_KEY in (service.get("networks") or {})
+            for name, service in services.items()
+            if name != "opensandbox-egress-proxy"
         )
     except (AttributeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         raise _compose_config_preflight_error("invalid-direct-opensandbox-config") from None
-    if invalid_sandbox or invalid_data_ports or invalid_proxy:
+    if (
+        invalid_sandbox
+        or invalid_data_ports
+        or not lifecycle_endpoints_valid
+        or invalid_network
+        or invalid_proxy
+        or invalid_membership
+    ):
         raise _compose_config_preflight_error("invalid-direct-opensandbox-config")
 
 
@@ -2010,7 +2083,12 @@ def _docker_json(docker: list[str], *args: str) -> Any:
 
 def _image_record(docker: list[str], image: str) -> dict[str, Any]:
     payload = _docker_json(docker, "image", "inspect", image)[0]
-    return {"reference": image, "id": payload.get("Id"), "labels": payload.get("Config", {}).get("Labels") or {}}
+    return {
+        "reference": image,
+        "id": payload.get("Id"),
+        "labels": payload.get("Config", {}).get("Labels") or {},
+        "repo_digests": payload.get("RepoDigests") or [],
+    }
 
 
 def _validate_release_image(image: dict[str, Any], *, commit: str, repository: str, role: str) -> None:
@@ -2219,6 +2297,22 @@ def _immutable_sandbox_executor_reference(image: dict[str, Any]) -> str:
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
         raise ReleaseAuthorityError("sandbox executor image ID is not immutable")
     return image_id
+
+
+def _packaged_sandbox_executor_reference(image: dict[str, Any]) -> str:
+    """Return the unique published backend digest reference retained by Docker."""
+    subject = PACKAGED_BACKEND_IMAGE_SUBJECT
+    repo_digests = image.get("repo_digests")
+    values = repo_digests if isinstance(repo_digests, list) else []
+    candidates = {
+        reference
+        for value in values
+        if isinstance(value, str)
+        if re.fullmatch(rf"{re.escape(subject)}@sha256:[0-9a-f]{{64}}", reference := value.strip())
+    }
+    if len(candidates) != 1:
+        raise ReleaseAuthorityError("sandbox executor packaged image reference is not unique")
+    return candidates.pop()
 
 
 def _inspect_optional_container(docker: list[str], name: str) -> dict[str, Any] | None:
@@ -2593,7 +2687,11 @@ def collect_live_parity(
     )
     api_executor_image = _container_sandbox_executor_image(api_inspect)
     worker_executor_image = _container_sandbox_executor_image(worker_inspect)
-    sandbox_executor_image = _immutable_sandbox_executor_reference(images["backend"])
+    sandbox_executor_image = (
+        _packaged_sandbox_executor_reference(images["backend"])
+        if selection.relative_paths in DIRECT_OPENSANDBOX_SELECTIONS
+        else _immutable_sandbox_executor_reference(images["backend"])
+    )
     runtime = {
         "api_commit": str(api_health.get("runtime_commit") or ""),
         "api_health_status": api_health.get("status"),
@@ -2879,7 +2977,12 @@ def deploy_clean_commit(
                 [*docker, "container", "rm", "-f", ownership.manual_frontend_id]
             ),
         )
-    sandbox_executor_image = _immutable_sandbox_executor_reference(images["backend"])
+    is_direct_opensandbox = selection.relative_paths in DIRECT_OPENSANDBOX_SELECTIONS
+    sandbox_executor_image = (
+        _packaged_sandbox_executor_reference(images["backend"])
+        if is_direct_opensandbox
+        else _immutable_sandbox_executor_reference(images["backend"])
+    )
     compose_environment = [
         f"AI_PLATFORM_IMAGE={refs['backend']}",
         f"AI_PLATFORM_FRONTEND_IMAGE={refs['frontend']}",
@@ -2888,11 +2991,11 @@ def deploy_clean_commit(
         f"AI_PLATFORM_BUILD_COMMIT={normalized}",
         "AI_PLATFORM_BUILD_DIRTY=false",
     ]
-    if selection.relative_paths in DIRECT_OPENSANDBOX_SELECTIONS:
+    if is_direct_opensandbox:
         compose_environment.extend(
             (
                 f"OPENSANDBOX_EXECUTOR_IMAGE={sandbox_executor_image}",
-                f"OPENSANDBOX_EXECUTOR_IMAGE_DIGEST={sandbox_executor_image}",
+                f"OPENSANDBOX_EXECUTOR_IMAGE_DIGEST={sandbox_executor_image.rsplit('@', 1)[1]}",
             )
         )
     compose_command = _compose_command_with_environment(docker, compose_environment)

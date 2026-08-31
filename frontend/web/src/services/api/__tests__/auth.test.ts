@@ -18,6 +18,7 @@ function installAuthApiBrowserStubs(
     user_name: "dev001",
     display_name: "Developer",
     tenant_id: "default",
+    department_id: "研发一部",
     roles: ["developer"],
     permissions: ["agent:use"],
     is_admin: true,
@@ -102,13 +103,14 @@ test("buildOAuthLoginUrl keeps same-origin deployments relative and preserves op
   );
 });
 
-test("current-user projection preserves the authenticated tenant subject", async () => {
+test("current-user projection preserves the authenticated tenant and department subject", async () => {
   const stubs = installAuthApiBrowserStubs();
   try {
     const user = await authApi.getCurrentUser();
 
     assert.equal(user.id, "dev001");
     assert.equal(user.tenant_id, "default");
+    assert.equal(user.department_id, "研发一部");
   } finally {
     stubs.restore();
   }

@@ -1956,7 +1956,14 @@ async def chat_session_stream(
                     )
             except (SseAuthorityConflictError, ValueError):
                 return False
-            return True
+            return lease.allows_frame(now=datetime.now(timezone.utc))
+
+        async def authorize_frame() -> bool:
+            nonlocal exit_reason
+            if await refresh_lease():
+                return True
+            exit_reason = "transport_failure"
+            return False
 
         def project_entry(entry: V4StreamEntry) -> tuple[str | None, bool]:
             nonlocal restored_terminal_event_id
@@ -2005,17 +2012,19 @@ async def chat_session_stream(
                     reason = "stream_continuity_unproven"
                     requested_event_id = setup_gap_requested_event_id
                     requested_incarnation = authority.stream_incarnation
-                yield await gap_frame(
+                frame = await gap_frame(
                     reason=reason,
                     requested_event_id=requested_event_id,
                     requested_stream_incarnation=requested_incarnation,
                 )
+                if not await authorize_frame():
+                    return
+                yield frame
                 return
             if resume_already_ended:
                 exit_reason = "terminal_completed"
                 return
-            if not await refresh_lease():
-                exit_reason = "transport_failure"
+            if not await authorize_frame():
                 return
             while after != replay_tail:
                 previous_after = after
@@ -2032,21 +2041,23 @@ async def chat_session_stream(
                     if str(exc) != "stream_replay_continuity_unproven":
                         raise
                     exit_reason = "stream_contract_failure"
-                    yield await gap_frame(
+                    frame = await gap_frame(
                         reason="stream_continuity_unproven",
                         requested_event_id=after,
                         requested_stream_incarnation=authority.stream_incarnation,
                     )
+                    if not await authorize_frame():
+                        return
+                    yield frame
                     return
                 if not entries:
                     raise StreamContractError("stream_replay_history_unavailable")
                 for entry in entries:
-                    if not await refresh_lease():
-                        exit_reason = "transport_failure"
-                        return
                     after = entry.cursor.redis_id
                     frame, ended = project_entry(entry)
                     if frame is not None:
+                        if not await authorize_frame():
+                            return
                         yield frame
                     if ended:
                         exit_reason = "terminal_completed"
@@ -2054,12 +2065,13 @@ async def chat_session_stream(
                 if after == previous_after:
                     raise StreamContractError("stream_replay_history_unavailable")
             while True:
-                if not await refresh_lease():
-                    exit_reason = "transport_failure"
+                if not await authorize_frame():
                     return
                 try:
                     publication = await subscription.next(timeout_seconds=5.0)
                 except TimeoutError:
+                    if not await authorize_frame():
+                        return
                     yield ": heartbeat\n\n"
                     continue
                 except LiveSubscriptionClosed:
@@ -2080,6 +2092,8 @@ async def chat_session_stream(
                 after = entry.cursor.redis_id
                 frame, ended = project_entry(entry)
                 if frame is not None:
+                    if not await authorize_frame():
+                        return
                     yield frame
                 if ended:
                     exit_reason = "terminal_completed"

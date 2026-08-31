@@ -224,6 +224,7 @@ test("successful create materializes server identity and enables publish", async
       expected_version: "2026.07.28",
     }],
     selectedMcpToolIds: ["mcp:knowledge:search"],
+    allowedDepartmentIds: ["药品注册"],
   }));
 
   await controller.saveActiveProfile(catalog());
@@ -231,6 +232,7 @@ test("successful create materializes server identity and enables publish", async
   assert.equal(saveCalls.length, 1);
   assert.equal(saveCalls[0].agentId, undefined);
   assert.equal(saveCalls[0].draft.expected_draft_revision, 0);
+  assert.deepEqual(saveCalls[0].draft.allowed_department_ids, ["药品注册"]);
   assert.equal(controller.state.activeEditor?.agentId, "agt_document_review");
   assert.equal(controller.state.activeEditor?.revision, 1);
   assert.equal(controller.state.localEditor, null);

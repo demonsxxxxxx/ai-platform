@@ -51,7 +51,9 @@ import {
   extractMessageOutline,
 } from "./messageOutline";
 import { MessageOutlinePanel } from "./MessageOutlinePanel";
+import { ChatConnectionStatus } from "./ChatConnectionStatus";
 import {
+  getVisibleConnectionStatus,
   isSessionRunning,
   shouldShowStreamingFooterSkeleton,
 } from "./sessionState";
@@ -292,6 +294,13 @@ export function ChatView({
     messageCount: messages.length,
     hasVisibleStreamingMessage,
   });
+  const visibleConnectionStatus = getVisibleConnectionStatus({
+    connectionStatus,
+    sessionId,
+    currentRunId,
+  });
+  const activeConnectionOwner =
+    sessionId && currentRunId ? `${sessionId}:${currentRunId}` : null;
 
   const getGreetingKey = () => {
     const h = new Date().getHours();
@@ -873,6 +882,17 @@ export function ChatView({
             />
           </svg>
         </button>
+      )}
+
+      {visibleConnectionStatus && activeConnectionOwner && (
+        <ChatConnectionStatus
+          status={visibleConnectionStatus}
+          owner={activeConnectionOwner}
+          label={t(`chat.connectionStatus.${visibleConnectionStatus}`)}
+          reconnectLabel={t("chat.connectionStatus.reconnect")}
+          reconnectingLabel={t("chat.connectionStatus.reconnectingAction")}
+          onReconnect={onReconnect}
+        />
       )}
 
       {canRetryPendingSubmission && (

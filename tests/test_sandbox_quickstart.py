@@ -620,15 +620,19 @@ def test_rollback_preflight_checks_checkout_images_and_config(
     assert release.repo == tmp_path.resolve()
 
 
-def test_runbook_exposes_the_zero_argument_quickstart() -> None:
+def test_runbook_exposes_internal_test_latest_and_retry_commands() -> None:
     runbook = (ROOT / "docs/operations/release-operations-runbook.md").read_text(
         encoding="utf-8"
     )
-    assert "./scripts/quickstart-s72.sh" in runbook
+    command = "./scripts/deploy-latest.sh --profile internal-test"
+    assert command in runbook
+    assert f"{command} --latest" in runbook
     assert "incoming/latest-main.json" in runbook
     assert "never runs `down`, `down -v`, or volume deletion" in runbook
 
 
-def test_shell_entry_uses_python_isolated_mode() -> None:
+def test_existing_shell_entry_forwards_to_the_canonical_profile() -> None:
     entry = (ROOT / "scripts/quickstart-s72.sh").read_text(encoding="utf-8")
-    assert "python3 -I" in entry
+    assert "scripts/deploy-latest.sh" in entry
+    assert "--profile internal-test" in entry
+    assert '"$@"' in entry

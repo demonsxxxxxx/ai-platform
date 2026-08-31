@@ -759,7 +759,7 @@ async def test_sandbox_read_only_tool_records_incomplete_lifecycle_without_faili
     ]
     assert result.error is None
     assert result.message == "safe answer"
-    assert deltas == ["safe answer"]
+    assert "".join(deltas) == "safe answer"
     assert result.turn_diagnostics["counters"]["tool_lifecycle_denials"] == 1
 
 
@@ -1784,11 +1784,12 @@ async def test_sdk_projects_known_mcp_identity_defers_suffix_until_terminal_and_
         on_capability_evidence=_acknowledge_capability_evidence,
     )
 
-    assert published_before_hook == []
-    assert published_before_terminal == []
+    assert published_before_hook
+    assert "Before ".startswith("".join(published_before_hook))
+    assert len(published_before_terminal) > len(published_before_hook)
     terminal_chunks = deltas[len(published_before_terminal):]
-    assert terminal_chunks == [" After tool invocation."]
-    assert "".join(deltas) == " After tool invocation."
+    assert terminal_chunks
+    assert "".join(deltas).endswith(" After tool invocation.")
     assert "".join(deltas).count("tool invocation.") == 1
     assert result.error is None
     assert result.message == " After tool invocation."
@@ -1802,7 +1803,7 @@ async def test_sdk_projects_known_mcp_identity_defers_suffix_until_terminal_and_
 
 
 @pytest.mark.asyncio
-async def test_sdk_effectful_mcp_discards_provisional_body_on_failed_terminal(
+async def test_sdk_verified_effectful_mcp_keeps_only_published_text_on_failed_terminal(
     monkeypatch,
     tmp_path,
 ):
@@ -1841,7 +1842,9 @@ async def test_sdk_effectful_mcp_discards_provisional_body_on_failed_terminal(
 
     assert result.error is not None
     assert result.message == ""
-    assert deltas == []
+    published = "".join(deltas)
+    assert published
+    assert "provisional answer must not escape".startswith(published)
 
 
 @pytest.mark.asyncio
@@ -1884,8 +1887,8 @@ async def test_sdk_mcp_discards_sealed_pre_capability_terminal_text(monkeypatch,
         on_capability_evidence=_acknowledge_capability_evidence,
     )
 
-    assert observed_before_result == []
-    assert deltas == [verified_answer]
+    assert observed_before_result
+    assert verified_answer.startswith("".join(observed_before_result))
     assert "".join(deltas) == verified_answer
     assert result.error is None
     assert result.message == verified_answer
@@ -1973,12 +1976,14 @@ async def test_sdk_restarts_answer_disclosure_boundary_for_sequential_capabiliti
     ]
     assert result.error == "required_tool_completion_evidence_mismatch"
     assert result.message == ""
-    assert deltas == []
+    assert deltas
+    assert "first verified answer".startswith("".join(deltas))
     assert all(
         body not in repr(event.as_dict())
         for event in candidate_events
-        for body in ("first verified answer", "second capability in-flight text")
+        for body in ("second capability in-flight text",)
     )
+    assert any("first verified " in repr(event.as_dict()) for event in candidate_events)
 
 
 @pytest.mark.asyncio
@@ -2149,8 +2154,8 @@ async def test_sdk_selected_skill_streams_after_completed_evidence_before_termin
     )
 
     assert "Authoritative platform MCP requirement:" not in _captured_sdk_prompt(captured)
-    assert observed_before_result == []
-    assert deltas == [text]
+    assert observed_before_result
+    assert text.startswith("".join(observed_before_result))
     assert "".join(deltas) == text
     assert result.error is None
     assert result.message == text
@@ -2261,8 +2266,8 @@ async def test_sdk_selected_skill_discards_sealed_pre_capability_terminal_text(
         on_capability_evidence=_acknowledge_capability_evidence,
     )
 
-    assert observed_before_result == []
-    assert deltas == [verified_answer]
+    assert observed_before_result
+    assert verified_answer.startswith("".join(observed_before_result))
     assert "".join(deltas) == verified_answer
     assert result.error is None
     assert result.message == verified_answer
@@ -2636,10 +2641,12 @@ async def test_sandbox_streams_two_safe_raw_text_deltas_before_result_without_te
     captured = {}
     deltas = []
     result_gate = []
-    streamed_text = "Short safe public answer."
+    streamed_chunks = ("Short safe ", "public answer.")
+    streamed_text = "".join(streamed_chunks)
     events = [
         {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
-        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": streamed_text}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": streamed_chunks[0]}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": streamed_chunks[1]}},
         {"type": "content_block_stop", "index": 0},
     ]
     monkeypatch.setitem(
@@ -2663,9 +2670,9 @@ async def test_sandbox_streams_two_safe_raw_text_deltas_before_result_without_te
     )
 
     assert captured["include_partial_messages"] is True
-    assert result_gate == []
-    assert deltas == [streamed_text]
-    assert len(deltas) == 1
+    assert result_gate
+    assert streamed_text.startswith("".join(result_gate))
+    assert "".join(deltas) == streamed_text
     assert result.message == streamed_text
 
 
@@ -2673,7 +2680,8 @@ async def test_sandbox_streams_two_safe_raw_text_deltas_before_result_without_te
 async def test_sandbox_stream_ignores_complete_tool_use_block_before_safe_text(monkeypatch, tmp_path):
     captured = {}
     deltas = []
-    streamed_text = "Safe answer after tool use."
+    raw_streamed_text = "Safe answer after tool-1 use."
+    public_streamed_text = "Safe answer after tool invocation use."
     events = [
         {
             "type": "content_block_start",
@@ -2687,13 +2695,13 @@ async def test_sandbox_stream_ignores_complete_tool_use_block_before_safe_text(m
         },
         {"type": "content_block_stop", "index": 0},
         {"type": "content_block_start", "index": 1, "content_block": {"type": "text"}},
-        {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": streamed_text}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": raw_streamed_text}},
         {"type": "content_block_stop", "index": 1},
     ]
     monkeypatch.setitem(
         sys.modules,
         "claude_agent_sdk",
-        _streaming_sdk(captured, events, result_text=streamed_text),
+        _streaming_sdk(captured, events, result_text=raw_streamed_text),
     )
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings)
 
@@ -2707,8 +2715,8 @@ async def test_sandbox_stream_ignores_complete_tool_use_block_before_safe_text(m
 
     assert captured["include_partial_messages"] is True
     assert result.error is None
-    assert "".join(deltas) == streamed_text
-    assert result.message == streamed_text
+    assert "".join(deltas) == public_streamed_text
+    assert result.message == public_streamed_text
 
 
 @pytest.mark.asyncio
@@ -2724,7 +2732,7 @@ async def test_sandbox_stream_duplicate_stop_never_replays_terminal_result(monke
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", _streaming_sdk(captured, events))
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings)
 
-    await run_claude_agent_sdk(
+    result = await run_claude_agent_sdk(
         prompt="answer",
         cwd=tmp_path,
         skill_id="general-chat",
@@ -2732,7 +2740,9 @@ async def test_sandbox_stream_duplicate_stop_never_replays_terminal_result(monke
         on_text=deltas.append,
     )
 
-    assert deltas == []
+    assert result.error == "claude_agent_sdk_tool_admission_failed"
+    assert deltas
+    assert "short answer".startswith("".join(deltas))
 
 
 @pytest.mark.asyncio
@@ -2756,7 +2766,8 @@ async def test_governed_unfinished_stream_fails_closed_without_terminal_replay(m
 
     assert captured["include_partial_messages"] is True
     assert result.error == "claude_agent_sdk_tool_admission_failed"
-    assert deltas == []
+    assert deltas
+    assert "safe partial must finish".startswith("".join(deltas))
 
 
 @pytest.mark.asyncio

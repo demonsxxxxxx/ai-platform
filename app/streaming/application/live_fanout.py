@@ -18,6 +18,7 @@ class LiveFanoutSource(Protocol):
         self,
         *,
         on_publication: Callable[[LivePublication], Awaitable[None]],
+        on_channel_failure: Callable[[str, str], Awaitable[None]],
         on_failure: Callable[[str], Awaitable[None]],
     ) -> None: ...
 
@@ -146,6 +147,7 @@ class RunStreamHub:
             if not self._started:
                 await self._source.start(
                     on_publication=self._deliver,
+                    on_channel_failure=self._source_channel_failed,
                     on_failure=self._source_failed,
                 )
                 self._started = True
@@ -206,8 +208,19 @@ class RunStreamHub:
         reason: str,
     ) -> None:
         async with self._lock:
-            failed = tuple(self._subscriptions.pop(channel, ()))
-            self._channel_ready.pop(channel, None)
+            if self._channel_ready.get(channel) is ready:
+                failed = tuple(self._subscriptions.pop(channel, ()))
+                self._channel_ready.pop(channel, None)
+            else:
+                failed = ()
+        await self._finish_channel_failure(failed, ready, reason)
+
+    async def _finish_channel_failure(
+        self,
+        failed: tuple[LiveSubscription, ...],
+        ready: asyncio.Future[None],
+        reason: str,
+    ) -> None:
         for subscription in failed:
             subscription.close_from_hub(reason)
         if not ready.done():
@@ -216,6 +229,14 @@ class RunStreamHub:
             await asyncio.shield(ready)
         except LiveSubscriptionClosed:
             pass
+
+    async def _source_channel_failed(self, channel: str, reason: str) -> None:
+        async with self._lock:
+            ready = self._channel_ready.pop(channel, None)
+            failed = tuple(self._subscriptions.pop(channel, ()))
+        if ready is None:
+            return
+        await self._finish_channel_failure(failed, ready, reason)
 
     async def _detach(self, subscription: LiveSubscription) -> None:
         unsubscribe = False

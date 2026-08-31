@@ -207,7 +207,11 @@ jobs:
             redis_url: ""
             test_files: >-
               tests/test_governance_readiness.py
+              tests/test_deploy_latest_entry.py
+              tests/test_latest_main_quickstart.py
+              tests/test_production_bootstrap.py
               tests/test_release_authority.py
+              tests/test_sandbox_quickstart.py
               tests/test_s75_opensandbox_transition.py
     env:
       BACKEND_TEST_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
