@@ -249,8 +249,12 @@ def test_runner_keeps_default_trimmed_output_contract(
 
 
 @pytest.mark.parametrize("line_ending", ["\n", "\r\n"])
-def test_inspect_preserves_empty_source_commit_field(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, line_ending: str
+@pytest.mark.parametrize("health", ["healthy", "none"])
+def test_inspect_preserves_empty_source_commit_and_optional_health(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    line_ending: str,
+    health: str,
 ) -> None:
     root = tmp_path / "managed"
     expected_config = ",".join(
@@ -263,7 +267,7 @@ def test_inspect_preserves_empty_source_commit_field(
             "postgres:16",
             "0",
             "running",
-            "healthy",
+            health,
             quickstart.PROJECT,
             "postgres",
             expected_config,
@@ -291,7 +295,7 @@ def test_inspect_preserves_empty_source_commit_field(
         image="postgres:16",
         restart_count=0,
         status="running",
-        health="healthy",
+        health=health,
         project=quickstart.PROJECT,
         service="postgres",
         config_files=expected_config,
@@ -318,7 +322,7 @@ def test_inspect_preserves_empty_source_commit_field(
         "{{.Config.Image}}",
         "{{.RestartCount}}",
         "{{.State.Status}}",
-        "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
+        '{{if index .State "Health"}}{{(index .State "Health").Status}}{{else}}none{{end}}',
         '{{index .Config.Labels "com.docker.compose.project"}}',
         '{{index .Config.Labels "com.docker.compose.service"}}',
         '{{index .Config.Labels "com.docker.compose.project.config_files"}}',

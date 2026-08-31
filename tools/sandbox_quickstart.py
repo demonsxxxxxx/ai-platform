@@ -436,7 +436,7 @@ class Quickstart:
             "{{.Config.Image}}",
             "{{.RestartCount}}",
             "{{.State.Status}}",
-            "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
+            '{{if index .State "Health"}}{{(index .State "Health").Status}}{{else}}none{{end}}',
             '{{index .Config.Labels "com.docker.compose.project"}}',
             '{{index .Config.Labels "com.docker.compose.service"}}',
             '{{index .Config.Labels "com.docker.compose.project.config_files"}}',
