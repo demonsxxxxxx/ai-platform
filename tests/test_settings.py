@@ -182,18 +182,19 @@ def test_production_opensandbox_requires_the_isolated_network():
         Settings(_env_file=None, **values)
 
 
-def test_model_credential_forwarding_is_forbidden_for_opensandbox():
-    with pytest.raises(ValidationError, match="opensandbox_model_credential_forwarding_disabled"):
-        Settings(
-            _env_file=None,
-            deployment_environment="test",
-            sandbox_container_provider="opensandbox",
-            sandbox_security_profile="internal-test",
-            opensandbox_expected_network_mode="bridge",
-            opensandbox_internal_test_forward_model_credentials=True,
-            openai_api_key="test-openai-key",
-            anthropic_auth_token="test-anthropic-token",
-        )
+def test_internal_test_model_credential_forwarding_is_allowed_for_exact_profile():
+    settings = Settings(
+        _env_file=None,
+        deployment_environment="test",
+        sandbox_container_provider="opensandbox",
+        sandbox_security_profile="internal-test",
+        opensandbox_expected_network_mode="bridge",
+        opensandbox_internal_test_forward_model_credentials=True,
+        openai_api_key="test-openai-key",
+        anthropic_auth_token="test-anthropic-token",
+    )
+
+    assert settings.opensandbox_internal_test_forward_model_credentials is True
 
 
 @pytest.mark.parametrize(
@@ -203,6 +204,8 @@ def test_model_credential_forwarding_is_forbidden_for_opensandbox():
         {"sandbox_container_provider": "docker"},
         {"sandbox_security_profile": "governed"},
         {"opensandbox_expected_network_mode": "none"},
+        {"openai_api_key": ""},
+        {"anthropic_auth_token": ""},
     ],
 )
 def test_internal_test_model_credential_forwarding_rejects_other_profiles(overrides):

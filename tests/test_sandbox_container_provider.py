@@ -1756,7 +1756,7 @@ def test_opensandbox_rejects_local_executor_image_id_outside_exact_internal_test
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_rejects_forwarding_model_credentials(monkeypatch):
+async def test_opensandbox_internal_test_forwards_only_provider_credentials(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
 
@@ -1766,10 +1766,17 @@ async def test_opensandbox_rejects_forwarding_model_credentials(monkeypatch):
 
     settings = CredentialForwardingSettings()
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
-    with pytest.raises(ValueError, match="model credential forwarding is not supported"):
-        await opensandbox_provider().create_or_reuse(request(), workspace())
+    lease = await opensandbox_provider().create_or_reuse(request(), workspace())
 
-    assert FakeOpenSandbox.created == []
+    created = FakeOpenSandbox.created[0]
+    assert created["env"]["OPENAI_API_KEY"] == settings.openai_api_key
+    assert created["env"]["ANTHROPIC_AUTH_TOKEN"] == settings.anthropic_auth_token
+    assert "ANTHROPIC_API_KEY" not in created["env"]
+    assert "MODEL_CATALOG_JSON" not in created["env"]
+    assert settings.openai_api_key not in str(created["metadata"])
+    assert settings.anthropic_auth_token not in str(created["metadata"])
+
+    await opensandbox_provider().stop(lease, reason="internal_test_acceptance")
 
 
 @pytest.mark.asyncio
