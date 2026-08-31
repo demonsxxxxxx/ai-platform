@@ -411,6 +411,23 @@ def test_chat_stream_request_accepts_lambchat_body_shape():
     assert request.enabled_skills == ["general-chat"]
 
 
+@pytest.mark.parametrize("effort", ["off", "low", "medium", "high"])
+def test_chat_stream_request_accepts_supported_thinking_effort(effort):
+    request = ChatStreamRequest.model_validate(
+        {"message": "hello", "agent_options": {"enable_thinking": effort}}
+    )
+
+    assert request.thinking_effort() == effort
+
+
+@pytest.mark.parametrize("effort", ["max", "extreme"])
+def test_chat_stream_request_rejects_unsupported_thinking_effort(effort):
+    with pytest.raises(ValueError, match="thinking_effort_invalid"):
+        ChatStreamRequest.model_validate(
+            {"message": "hello", "agent_options": {"enable_thinking": effort}}
+        )
+
+
 def test_lambchat_sessions_project_public_agent_ids(monkeypatch):
     async def fake_list_authorized_sessions(conn, *, tenant_id, user_id):
         assert (tenant_id, user_id) == ("default", "user-a")

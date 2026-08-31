@@ -29,6 +29,10 @@ _TRANSLATION_TARGET_ALIASES = {
 _MAX_CURRENT_PROMPT_BYTES = 16384
 _MAX_FILE_LIST_PROMPT_BYTES = 4096
 _MAX_CONTEXT_SUMMARY_PROMPT_BYTES = 2048
+_PUBLIC_LANGUAGE_INSTRUCTION = (
+    "Use the language of the user's current request for the final answer and all public "
+    "summarized-thinking text; use Simplified Chinese for Chinese requests."
+)
 
 
 def translation_target_language(user_message: str) -> str:
@@ -223,6 +227,7 @@ def build_skill_prompt(
         "Use only backend-managed skills staged in this workspace and do not access "
         "arbitrary shell, SQL, or host filesystem paths.\n"
         f"{conversation_history_prompt_section(_conversation_context_for_prompt(context_pack, conversation_context))}\n"
+        f"{_PUBLIC_LANGUAGE_INSTRUCTION}\n"
         f"User request: {bounded_user_message}\n"
         f"Workspace input files (under inputs/):\n{files_text}\n\n"
         "If a staged Skill matches the task, use that Skill's instructions. "
@@ -260,6 +265,7 @@ def build_harness_chat_prompt(
         "Do not access arbitrary shell, SQL, unregistered external services, or host "
         "filesystem paths.\n"
         f"{conversation_history_prompt_section(_conversation_context_for_prompt(context_pack, conversation_context))}\n"
+        f"{_PUBLIC_LANGUAGE_INSTRUCTION}\n"
         f"User request: {bounded_user_message}\n"
         f"Authorized attachment names (read content only through platform context tools):\n"
         f"{files_text}\n\n"

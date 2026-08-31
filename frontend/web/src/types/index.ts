@@ -71,7 +71,7 @@ export type {
   TagsResponse,
 } from "./skill";
 
-export type { AgentOption } from "./agentOptions";
+export type { AgentOption, AgentThinkingEffort } from "./agentOptions";
 export type {
   AgentProfileAdminProjection,
   AgentProfileDraftRequest,

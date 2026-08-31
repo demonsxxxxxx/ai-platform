@@ -1954,7 +1954,7 @@ async def test_profile_authority_accepts_the_exact_canonical_frontend_transport_
     request_payload = {
         "message": "continue with the published Agent",
         "agent_options": {
-            "enable_thinking": "off",
+            "enable_thinking": "high",
             "model": "user-model-b",
             "model_id": "user-model-b",
         },
@@ -2137,7 +2137,6 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
         ({"disabled_mcp_tools": ["other-tool"]}, None),
         ({"selected_mcp_tool_ids": ["other-tool"]}, None),
         ({"agent_options": {"temperature": 0.2}}, None),
-        ({"agent_options": {"enable_thinking": "high"}}, None),
         (
             {
                 "selected_skill": {
@@ -2174,7 +2173,6 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
         "disabled-mcp-selector",
         "selected-mcp-selector",
         "unsupported-agent-option",
-        "nondefault-thinking-option",
         "selected-skill-selector",
         "confirmed-capability",
         "nested-step-skill-alias",
@@ -2349,6 +2347,7 @@ async def test_dedicated_agent_run_forwards_http_request_to_chat_composition(mon
         request=AgentAppRunRequest(
             message="hello",
             submission_id=UUID("12345678-1234-5678-1234-567812345678"),
+            thinking_effort="high",
         ),
         http_request=http_request,
         principal=principal,
@@ -2359,3 +2358,4 @@ async def test_dedicated_agent_run_forwards_http_request_to_chat_composition(mon
     assert observed["agent_id"] == "agent-a"
     assert observed["principal"] is principal
     assert observed["request"].session_id == "session-a"
+    assert observed["request"].agent_options == {"enable_thinking": "high"}

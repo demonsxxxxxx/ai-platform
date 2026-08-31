@@ -1,3 +1,5 @@
+export type AgentThinkingEffort = "off" | "low" | "medium" | "high";
+
 export interface AgentOption {
   type: "boolean" | "string" | "number";
   default: boolean | string | number;

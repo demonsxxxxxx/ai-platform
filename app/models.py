@@ -18,6 +18,7 @@ from app.control_plane_contracts import (
     RUN_PAYLOAD_SCHEMA_VERSION,
     RUN_PAYLOAD_SCHEMA_VERSION_V2,
     SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS,
+    normalize_thinking_effort,
 )
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
 from app.agent_apps.api import discard_legacy_agent_profile_model_id
@@ -389,6 +390,12 @@ class AgentAppRunRequest(BaseModel):
     submission_id: UUID
     file_ids: list[str] = Field(default_factory=list, max_length=32)
     user_timezone: str | None = Field(default=None, max_length=128)
+    thinking_effort: str = "off"
+
+    @field_validator("thinking_effort")
+    @classmethod
+    def validate_thinking_effort(cls, value: str):
+        return normalize_thinking_effort(value)
 
     @field_validator("file_ids")
     @classmethod
@@ -1350,6 +1357,18 @@ class ChatStreamRequest(BaseModel):
                     )
                 )
         return tuple(sorted(paths))
+
+    @field_validator("agent_options")
+    @classmethod
+    def validate_agent_options(cls, value: dict[str, bool | str | int | float] | None):
+        if value is not None and "enable_thinking" in value:
+            normalize_thinking_effort(value["enable_thinking"])
+        return value
+
+    def thinking_effort(self) -> str:
+        return normalize_thinking_effort(
+            (self.agent_options or {}).get("enable_thinking")
+        )
 
     @field_validator("workspace_id")
     @classmethod

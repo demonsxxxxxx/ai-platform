@@ -463,7 +463,7 @@ test("a recovered Agent Conversation owns every exact selector and fails closed"
         (
           await harness.hook.sendMessage(
             "bound first",
-            { model_id: "client-model" },
+            { model_id: "client-model", enable_thinking: "high" },
             undefined,
             {
               skill_id: "client-skill",
@@ -479,6 +479,8 @@ test("a recovered Agent Conversation owns every exact selector and fails closed"
     await settle(harness.act);
 
     assert.equal(submissions.length, 2);
+    assert.equal(submissions[0]?.[11], "high");
+    assert.equal(submissions[1]?.[11], "off");
     for (const submission of submissions) {
       assert.equal(submission[1], "session-agent");
       assert.equal(submission[2], undefined, "model/Prompt options must be omitted");

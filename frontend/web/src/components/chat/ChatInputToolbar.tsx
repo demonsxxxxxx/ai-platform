@@ -2,7 +2,8 @@ import { useRef, useCallback, useEffect, useState } from "react";
 import { ArrowUp, Square, Lock } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { FeatureMenu, type FeaturePanel } from "../selectors/FeatureMenu";
-import type { FileCategory, UploadLimitsBytes } from "../../types";
+import { AgentOptionButton } from "./AgentOptionButton";
+import type { AgentOption, FileCategory, UploadLimitsBytes } from "../../types";
 
 export interface ChatInputToolbarProps {
   activePanel: FeaturePanel;
@@ -15,6 +16,9 @@ export interface ChatInputToolbarProps {
   totalToolsCount: number;
   enabledSkillsCount: number;
   totalSkillsCount: number;
+  agentOptions?: Record<string, AgentOption>;
+  agentOptionValues?: Record<string, boolean | string | number>;
+  onToggleAgentOption?: (key: string, value: boolean | string | number) => void;
   uploadCategories: FileCategory[];
   uploadLimitsBytes: UploadLimitsBytes | null;
   uploadFiles: (files: FileList | File[], category?: FileCategory) => void;
@@ -41,6 +45,9 @@ export function ChatInputToolbar({
   totalToolsCount,
   enabledSkillsCount,
   totalSkillsCount,
+  agentOptions,
+  agentOptionValues,
+  onToggleAgentOption,
   uploadCategories,
   uploadLimitsBytes,
   uploadFiles,
@@ -102,6 +109,17 @@ export function ChatInputToolbar({
           uploadLimitsBytes={uploadLimitsBytes}
           onFileCategorySelect={handleFileCategorySelect}
         />
+        {agentOptions?.enable_thinking?.options?.length && onToggleAgentOption ? (
+          <AgentOptionButton
+            optionKey="enable_thinking"
+            option={agentOptions.enable_thinking}
+            value={
+              agentOptionValues?.enable_thinking ??
+              agentOptions.enable_thinking.default
+            }
+            onChange={(value) => onToggleAgentOption("enable_thinking", value)}
+          />
+        ) : null}
       </div>
 
       <div className="self-end flex space-x-1.5 flex-shrink-0">

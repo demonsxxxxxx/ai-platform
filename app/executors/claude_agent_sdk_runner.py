@@ -20,6 +20,7 @@ from app.context.retrieval import (
 )
 from app.control_plane_contracts import (
     LEGACY_SYNTHETIC_CHAT_SKILL_ID,
+    normalize_thinking_effort,
     sanitize_public_payload,
     sanitize_public_text,
 )
@@ -892,8 +893,10 @@ async def run_claude_agent_sdk(
     tool_policy_subjects: list[dict[str, Any]] | None = None,
     execution_policy: str = "worker_local_legacy",
     public_skill_metadata: dict[str, dict[str, str]] | None = None,
+    thinking_effort: str = "off",
     require_selected_skill_invocation: bool = True,
 ) -> ClaudeAgentSdkRunResult:
+    thinking_effort = normalize_thinking_effort(thinking_effort)
     settings = get_settings()
     max_turns = max(1, int(getattr(settings, "claude_agent_sdk_max_turns", 128)))
     diagnostic_counters = {
@@ -1807,6 +1810,12 @@ async def run_claude_agent_sdk(
     sdk_system_prompt: dict[str, str] = {"type": "preset", "preset": "claude_code"}
     if system_prompt:
         sdk_system_prompt["append"] = system_prompt
+    thinking_options: dict[str, Any] = {}
+    if thinking_effort != "off":
+        thinking_options = {
+            "thinking": {"type": "adaptive", "display": "summarized"},
+            "effort": thinking_effort,
+        }
     options = ClaudeAgentOptions(
         cwd=str(cwd),
         model=model_id or settings.claude_agent_model or settings.anthropic_model or None,
@@ -1820,16 +1829,11 @@ async def run_claude_agent_sdk(
         skills=configured_skills,
         session_id=session_id,
         max_turns=max_turns,
-        thinking={
-            "type": "enabled",
-            "budget_tokens": max(1, int(getattr(settings, "claude_agent_sdk_max_thinking_tokens", 16384))),
-            "display": "summarized",
-        },
-        effort=str(getattr(settings, "claude_agent_sdk_effort", "xhigh") or "xhigh"),
         can_use_tool=can_use_tool,
         hooks=hooks,
         include_partial_messages=sandbox_partial_streaming,
         setting_sources=["project"],
+        **thinking_options,
     )
 
     structured_result_text = ""
@@ -1960,7 +1964,11 @@ async def run_claude_agent_sdk(
                 for block_index, block in enumerate(message.content):
                     if type(block).__name__ == "ToolUseBlock":
                         register_dynamic_tool_call_id(getattr(block, "id", None))
-                    if agent_event_adapter is not None and isinstance(block, ThinkingBlock):
+                    if (
+                        thinking_effort != "off"
+                        and agent_event_adapter is not None
+                        and isinstance(block, ThinkingBlock)
+                    ):
                         await publish_agent_candidates(
                             agent_event_adapter.accept_thinking_summary(
                                 block.thinking,

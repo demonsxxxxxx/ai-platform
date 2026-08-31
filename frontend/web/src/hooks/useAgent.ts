@@ -21,6 +21,7 @@ import type {
   MessageAttachment,
   SelectedAgentProfileRequest,
   SelectedSkillRequest,
+  AgentThinkingEffort,
 } from "../types";
 import {
   DEFAULT_CHAT_AGENT_ID,
@@ -2050,6 +2051,13 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         : selectedAgentProfile ?? null;
       const isBoundAgentConversation =
         requestSessionId !== null && selectedAgentProfileForRequest !== null;
+      const requestedThinkingEffort = agentOptions?.enable_thinking;
+      const boundThinkingEffort: AgentThinkingEffort =
+        requestedThinkingEffort === "low" ||
+        requestedThinkingEffort === "medium" ||
+        requestedThinkingEffort === "high"
+          ? requestedThinkingEffort
+          : "off";
       // A new user submission replaces the parent run before it can mutate
       // optimistic transcript state or issue its POST. This fences a pending
       // retry/resume owner from starting while the next chat admission is open.
@@ -2195,6 +2203,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           requestAgentId,
           selectedMcpToolIds,
           selectedAgentProfileForRequest,
+          isBoundAgentConversation ? boundThinkingEffort : undefined,
         );
 
         if (!isCurrentRequestSession()) {

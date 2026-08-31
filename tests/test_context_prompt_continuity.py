@@ -21,7 +21,7 @@ from app.executors.claude_agent_sdk_runner import ScopedContextRetrievalIdentity
 def test_skill_prompt_lists_material_retrieval_without_using_message_refs_as_history():
     prompt = build_skill_prompt(
         skill_id="general-chat",
-        user_message="continue",
+        user_message="请继续处理",
         file_names=["input.docx"],
         context_pack={
             "schema_version": "ai-platform.executor-context-pack.v1",
@@ -55,11 +55,15 @@ def test_skill_prompt_lists_material_retrieval_without_using_message_refs_as_his
     assert "tenants/private" not in prompt
     assert "private_payload" not in prompt
     assert "Authorized file ref IDs (use these exact IDs in retrieval tools): file-a" in prompt
+    assert (
+        "Use the language of the user's current request for the final answer and all public "
+        "summarized-thinking text; use Simplified Chinese for Chinese requests."
+    ) in prompt
 
 
 def test_harness_chat_prompt_keeps_bounded_context_manifest_without_private_payload():
     prompt = claude_prompts.build_harness_chat_prompt(
-        user_message="continue",
+        user_message="请继续处理",
         file_names=["input.docx"],
         context_pack={
             "schema_version": "ai-platform.executor-context-pack.v1",
@@ -94,6 +98,10 @@ def test_harness_chat_prompt_keeps_bounded_context_manifest_without_private_payl
     assert "storage_key" not in prompt
     assert "tenants/private" not in prompt
     assert "private_payload" not in prompt
+    assert (
+        "Use the language of the user's current request for the final answer and all public "
+        "summarized-thinking text; use Simplified Chinese for Chinese requests."
+    ) in prompt
 
 
 def test_skill_prompt_injects_complete_ordered_conversation_once():

@@ -47,8 +47,6 @@ def _settings():
         claude_agent_sdk_max_turns=12,
         claude_agent_sdk_timeout_seconds=5,
         claude_agent_sdk_skills="",
-        claude_agent_sdk_max_thinking_tokens=128,
-        claude_agent_sdk_effort="high",
         claude_agent_permission_mode="dontAsk",
         claude_agent_allowed_tools="Read,Glob,LS",
         claude_agent_disallowed_tools="",
@@ -112,9 +110,14 @@ def _captured_sdk_prompt(captured):
     return captured["sdk_user_messages"][0]["message"]["content"]
 
 
-def _fake_sdk(captured, *, hook_invocations):
+def _fake_sdk(captured, *, hook_invocations, thinking_text=None):
+    class ThinkingBlock:
+        def __init__(self, thinking):
+            self.thinking = thinking
+
     class AssistantMessage:
-        pass
+        def __init__(self, content):
+            self.content = content
 
     class TextBlock:
         pass
@@ -161,6 +164,8 @@ def _fake_sdk(captured, *, hook_invocations):
                 matcher = next(item for item in matchers if item.matcher == matcher_name)
             hook_result = await matcher.hooks[0](hook_input, tool_call_id, {})
             captured.setdefault("hook_results", []).append((hook_name, hook_result))
+        if thinking_text is not None:
+            yield AssistantMessage([ThinkingBlock(thinking_text)])
         yield ResultMessage()
 
     return types.SimpleNamespace(
@@ -170,6 +175,7 @@ def _fake_sdk(captured, *, hook_invocations):
         ResultMessage=ResultMessage,
         StreamEvent=StreamEvent,
         TextBlock=TextBlock,
+        ThinkingBlock=ThinkingBlock,
         query=query,
     )
 
@@ -279,6 +285,81 @@ def _stream_steps(text, *, index=0):
 
 async def _acknowledge_capability_evidence(_evidence):
     return True
+
+
+@pytest.mark.parametrize(
+    ("thinking_effort", "expected_thinking", "expected_effort"),
+    [
+        ("off", None, None),
+        *[
+            (level, {"type": "adaptive", "display": "summarized"}, level)
+            for level in ("low", "medium", "high")
+        ],
+    ],
+)
+@pytest.mark.asyncio
+async def test_sdk_thinking_options_follow_the_run_preference(
+    monkeypatch,
+    tmp_path,
+    thinking_effort,
+    expected_thinking,
+    expected_effort,
+):
+    captured = {}
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(captured, hook_invocations=[]),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        thinking_effort=thinking_effort,
+    )
+
+    assert result.error is None
+    assert captured.get("thinking") == expected_thinking
+    assert captured.get("effort") == expected_effort
+
+
+@pytest.mark.asyncio
+async def test_sdk_off_does_not_publish_an_unexpected_thinking_block(
+    monkeypatch,
+    tmp_path,
+):
+    captured, published = {}, []
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(
+            captured,
+            hook_invocations=[],
+            thinking_text="Unexpected public summary",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        thinking_effort="off",
+        run_id="run-thinking-off",
+        attempt_id="attempt-1",
+        on_agent_event=lambda batch: published.extend(batch) or True,
+    )
+
+    assert result.error is None
+    assert "Unexpected public summary" not in repr(published)
 
 
 @pytest.mark.asyncio

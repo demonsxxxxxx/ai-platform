@@ -38,6 +38,7 @@ from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_HARNESS_CHAT,
     RUN_EXECUTION_KIND_SKILL,
     RUN_PAYLOAD_SCHEMA_VERSION_V2,
+    RUN_THINKING_EFFORT_INPUT_KEY,
     sanitize_public_text,
     standard_trace_id,
 )
@@ -1477,6 +1478,7 @@ async def chat_stream(
             {**request.input, "message": request.message},
             redact_public=not is_ai_admin(principal),
         )
+        run_input[RUN_THINKING_EFFORT_INPUT_KEY] = request.thinking_effort()
         run_input = attach_required_tool_declaration(run_input)
     except repositories.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="chat_stream")

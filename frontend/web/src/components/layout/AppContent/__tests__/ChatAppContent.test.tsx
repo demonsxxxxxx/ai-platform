@@ -399,7 +399,7 @@ test("a recommendation double-click creates and submits one real first user turn
   ]);
 });
 
-test("an accepted first submission releases its flight while reusing the bound conversation", async () => {
+test("first submissions preserve Thinking after binding while reusing the conversation", async () => {
   const creationCoordinator = { current: null as Promise<string> | null };
   const submissionCoordinator = {
     current: null as {
@@ -410,6 +410,7 @@ test("an accepted first submission releases its flight while reusing the bound c
   let createCalls = 0;
   let bindCalls = 0;
   const submittedSessionIds: string[] = [];
+  const submittedThinkingLevels: unknown[] = [];
   const ensureConversation = () =>
     ensureAgentConversationForFirstSend({
       coordinator: creationCoordinator,
@@ -430,8 +431,12 @@ test("an accepted first submission releases its flight while reusing the bound c
         return true;
       },
     });
-  const submitMessage = async (sessionId: string) => {
+  const submitMessage = async (
+    sessionId: string,
+    agentOptions?: Record<string, boolean | string | number>,
+  ) => {
     submittedSessionIds.push(sessionId);
+    submittedThinkingLevels.push(agentOptions?.enable_thinking);
     return { status: "accepted" as const };
   };
 
@@ -440,6 +445,7 @@ test("an accepted first submission releases its flight while reusing the bound c
       coordinator: submissionCoordinator,
       submissionKey: JSON.stringify({ content: "第一问", fileIds: [] }),
       ensureConversation,
+      agentOptions: { enable_thinking: "high" },
       submitMessage,
     }),
     { status: "accepted" },
@@ -449,6 +455,7 @@ test("an accepted first submission releases its flight while reusing the bound c
       coordinator: submissionCoordinator,
       submissionKey: JSON.stringify({ content: "第二问", fileIds: [] }),
       ensureConversation,
+      agentOptions: { enable_thinking: "off" },
       submitMessage,
     }),
     { status: "accepted" },
@@ -457,6 +464,7 @@ test("an accepted first submission releases its flight while reusing the bound c
   assert.equal(createCalls, 1);
   assert.equal(bindCalls, 1);
   assert.deepEqual(submittedSessionIds, ["session-agent", "session-agent"]);
+  assert.deepEqual(submittedThinkingLevels, ["high", "off"]);
 });
 
 test("a failed first submission retries on the same bound Agent conversation", async () => {
@@ -724,7 +732,7 @@ test("Agent workspace sidebar consumes the server-paginated session source", () 
   assert.match(source, /composerPlaceholder=\{[\s\S]*agentWorkspace\.name/);
 });
 
-test("Agent workspaces preserve the shared catalog model selector and user choice", () => {
+test("Agent workspaces preserve the shared model and Thinking selectors", () => {
   const source = readFileSync(
     new URL("../ChatAppContent.tsx", import.meta.url),
     "utf8",
@@ -732,12 +740,27 @@ test("Agent workspaces preserve the shared catalog model selector and user choic
 
   assert.match(source, /const filteredModels = availableModels \?\? null;/);
   assert.match(source, /availableModels=\{filteredModels \?\? \[\]\}/);
+  assert.match(
+    source,
+    /agentOptions=\{[\s\S]*?agentConversationControlsLocked \? lockedAgentOptions/,
+  );
+  assert.match(
+    source,
+    /agentOptionValues=\{[\s\S]*?agentConversationControlsLocked[\s\S]*?lockedAgentOptionValues/,
+  );
+  assert.match(
+    source,
+    /agentConversationControlsLocked[\s\S]*?agentOptions:\s*\{\s*\.\.\.lockedAgentOptionValues/,
+  );
+  assert.match(
+    source,
+    /const lockedAgentOptionValues:[\s\S]{0,80}=\s*agentOptionValues\.enable_thinking !== undefined[\s\S]{0,100}\? \{ enable_thinking:/,
+  );
   assert.doesNotMatch(
     source,
     /availableModels=\{[\s\S]{0,80}agentConversationControlsLocked[\s\S]{0,80}\}/,
   );
 });
-
 
 test("legacy generic Agent sessions redirect to the canonical dedicated route", () => {
   const source = readFileSync(

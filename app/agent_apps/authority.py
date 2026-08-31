@@ -1769,8 +1769,6 @@ class AgentProfileAuthority:
                     raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
                 if set(request.agent_options) - _PROFILE_TRANSPORT_AGENT_OPTION_KEYS:
                     raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
-                if request.agent_options.get("enable_thinking", "off") != "off":
-                    raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
             return
 
         allowed_query_agent_ids = {admission.agent_id}
@@ -1786,8 +1784,6 @@ class AgentProfileAuthority:
             if not isinstance(request.agent_options, dict):
                 raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
             if set(request.agent_options) - _PROFILE_TRANSPORT_AGENT_OPTION_KEYS:
-                raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
-            if request.agent_options.get("enable_thinking", "off") != "off":
                 raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
         if "disabled_skills" in submitted_fields and request.disabled_skills:
             raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")

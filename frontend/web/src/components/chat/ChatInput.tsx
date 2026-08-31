@@ -857,6 +857,9 @@ export const ChatInput = memo(function ChatInput({
                 totalToolsCount={totalToolsCount}
                 enabledSkillsCount={enabledSkillsCount}
                 totalSkillsCount={totalSkillsCount}
+                agentOptions={agentOptions}
+                agentOptionValues={agentOptionValues}
+                onToggleAgentOption={onToggleAgentOption}
                 uploadCategories={uploadCategories}
                 uploadLimitsBytes={uploadLimitsBytes}
                 uploadFiles={uploadFiles}
@@ -889,9 +892,6 @@ export const ChatInput = memo(function ChatInput({
         availableModels={availableModels}
         currentModelId={currentModelId}
         onSelectModel={handleSelectModelChip}
-        agentOptions={agentOptions}
-        agentOptionValues={agentOptionValues}
-        onToggleAgentOption={onToggleAgentOption}
       />
 
       <ChatInputHelpMenu />

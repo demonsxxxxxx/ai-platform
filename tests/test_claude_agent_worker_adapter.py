@@ -142,8 +142,6 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         claude_agent_sdk_skills="",
         claude_agent_sdk_timeout_seconds=5,
         claude_agent_sdk_max_turns=12,
-        claude_agent_sdk_max_thinking_tokens=1024,
-        claude_agent_sdk_effort="high",
         claude_agent_permission_mode="dontAsk",
     )
     monkeypatch.setitem(
@@ -2205,7 +2203,11 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
             agent_id="general-agent",
             skill_id="general-chat",
             file_ids=[],
-            input={"message": "run a shell command in sandbox", "sandbox_mode": "ephemeral"},
+            input={
+                "message": "run a shell command in sandbox",
+                "sandbox_mode": "ephemeral",
+                "_thinking_effort": "high",
+            },
             context_snapshot={
                 "schema_version": "ai-platform.context-snapshot.v1",
                 "context_snapshot_id": "ctx-heavy",
@@ -2244,6 +2246,7 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
     assert runtime_calls[0].skill_ids == ["general-chat"]
     assert runtime_calls[0].callback_token_id == "cbt:run_1:qat-test-attempt"
     assert runtime_calls[0].sandbox_mode == "ephemeral"
+    assert runtime_calls[0].thinking_effort == "high"
     assert result.executor_payload["sandbox_provider"] == "docker"
 
 
@@ -4869,8 +4872,6 @@ async def test_sdk_runner_requires_exact_selected_skill_despite_user_override(mo
             "claude_agent_sdk_skills": "",
             "claude_agent_sdk_timeout_seconds": 5,
             "claude_agent_sdk_max_turns": 12,
-            "claude_agent_sdk_effort": "xhigh",
-            "claude_agent_sdk_max_thinking_tokens": 16384,
         },
     )()
     fake_sdk = types.SimpleNamespace(
@@ -4894,12 +4895,8 @@ async def test_sdk_runner_requires_exact_selected_skill_despite_user_override(mo
     assert result.message == ""
     assert result.error == "claude_agent_sdk_selected_skill_not_invoked"
     assert captured["max_turns"] == 12
-    assert captured["effort"] == "xhigh"
-    assert captured["thinking"] == {
-        "type": "enabled",
-        "budget_tokens": 16384,
-        "display": "summarized",
-    }
+    assert "effort" not in captured
+    assert "thinking" not in captured
     assert captured["session_id"] == "existing-sdk-session"
     assert captured["prompt_is_stream"] is True
     expected_prompt = (
@@ -5277,8 +5274,6 @@ async def test_sdk_runner_selected_skill_requires_tool_and_success_hook(monkeypa
         claude_agent_sdk_skills="",
         claude_agent_sdk_timeout_seconds=5,
         claude_agent_sdk_max_turns=12,
-        claude_agent_sdk_max_thinking_tokens=1024,
-        claude_agent_sdk_effort="high",
         claude_agent_permission_mode="dontAsk",
     )
     monkeypatch.setitem(
