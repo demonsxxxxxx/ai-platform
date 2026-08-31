@@ -1210,9 +1210,16 @@ async def run_claude_agent_sdk(
         sanitizer=sanitize_public_text,
         max_sealed_chars=_MAX_REQUIRED_ANSWER_TEXT_CHARS,
     )
-    # Do not publish answer prefixes before the structured terminal result has
-    # validated the whole-answer bound; an overflow cannot retract prior SSE.
-    answer_stream_gate.defer_until_finish()
+
+    def register_dynamic_tool_call_id(value: object) -> None:
+        call_id = canonical_tool_call_id(value)
+        if call_id is not None:
+            answer_stream_gate.register_private_replacements(
+                {call_id: "tool invocation"}
+            )
+
+    if required_capability_declarations or required_builtin_declarations:
+        answer_stream_gate.seal(capability_boundary=True)
     sdk_prompt = (
         _with_selected_skill_invocation_requirement(prompt, selected_sdk_skill)
         if require_selected_skill_invocation
@@ -1298,10 +1305,14 @@ async def run_claude_agent_sdk(
                 {
                     canonical_identity: "external tool",
                     tool_call_id: "tool invocation",
-                }
+                },
+                capability_boundary=True,
             )
         elif key in capability_plan.available:
-            answer_stream_gate.seal({tool_call_id: "tool invocation"})
+            answer_stream_gate.seal(
+                {tool_call_id: "tool invocation"},
+                capability_boundary=True,
+            )
         try:
             evidence = RequiredCapabilityEvidence.sdk_hook_payload(
                 declaration=RequiredCapabilityDeclaration.from_authorized_subject(
@@ -1380,7 +1391,10 @@ async def run_claude_agent_sdk(
         if is_sandbox_bash:
             actual_sandbox_bash_invocation_observed = True
         if lifecycle_required and call_id:
-            answer_stream_gate.seal({call_id: "tool invocation"})
+            answer_stream_gate.seal(
+                {call_id: "tool invocation"},
+                capability_boundary=True,
+            )
         if not name or not call_id or lifecycle not in {"started", "completed", "failed"}:
             if lifecycle_required:
                 return reject_governed_lifecycle()
@@ -1920,8 +1934,20 @@ async def run_claude_agent_sdk(
             ):
                 await publish_agent_candidates(agent_event_adapter.accept_task_message(message))
                 continue
-            if stream_projector is not None and isinstance(message, StreamEvent):
-                for text in stream_projector.accept(message.event):
+            if isinstance(message, StreamEvent):
+                raw_stream_event = message.event
+                if (
+                    isinstance(raw_stream_event, dict)
+                    and raw_stream_event.get("type") == "content_block_start"
+                    and isinstance(raw_stream_event.get("content_block"), dict)
+                    and raw_stream_event["content_block"].get("type") == "tool_use"
+                ):
+                    register_dynamic_tool_call_id(
+                        raw_stream_event["content_block"].get("id")
+                    )
+                if stream_projector is None:
+                    continue
+                for text in stream_projector.accept(raw_stream_event):
                     for public_text in answer_stream_gate.accept(text):
                         await publish_terminal_text(public_text)
                 continue
@@ -1932,6 +1958,8 @@ async def run_claude_agent_sdk(
                 )
                 assistant_text_blocks = []
                 for block_index, block in enumerate(message.content):
+                    if type(block).__name__ == "ToolUseBlock":
+                        register_dynamic_tool_call_id(getattr(block, "id", None))
                     if agent_event_adapter is not None and isinstance(block, ThinkingBlock):
                         await publish_agent_candidates(
                             agent_event_adapter.accept_thinking_summary(
@@ -2090,10 +2118,11 @@ async def run_claude_agent_sdk(
                 )
                 if not await publish_agent_candidates(tuple(terminal_candidates)):
                     terminal_error = "agent_event_callback_not_acknowledged"
-            if terminal_error is None and on_text is not None and finished_answer.final_text:
-                callback_result = on_text(finished_answer.final_text)
-                if isawaitable(callback_result):
-                    await callback_result
+            if terminal_error is None and on_text is not None:
+                for public_text in finished_answer.chunks:
+                    callback_result = on_text(public_text)
+                    if isawaitable(callback_result):
+                        await callback_result
         if terminal_error is not None:
             seal_agent_candidates(terminal_error)
         public_structured_result_text = (
