@@ -6,10 +6,12 @@ from app import repositories
 from app.agent_apps import AgentProfileAuthority
 from app.agent_apps.api import normalize_market_tag
 from app.agent_profiles import (
+    get_public_profile,
     list_admin_profiles,
     list_public_profiles,
     publish_draft,
     save_draft,
+    set_favorite,
 )
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
@@ -164,7 +166,7 @@ async def get_agent_profile(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
     async with transaction() as conn:
-        return await _authority.get_public(conn, principal=principal, agent_id=safe_agent_id)
+        return await get_public_profile(conn, principal=principal, agent_id=safe_agent_id)
 
 
 @router.put("/agent-profiles/{agent_id}/favorite")
@@ -179,7 +181,7 @@ async def favorite_agent_profile(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
     async with transaction() as conn:
-        return await _authority.set_favorite(
+        return await set_favorite(
             conn,
             principal=principal,
             agent_id=safe_agent_id,
@@ -199,7 +201,7 @@ async def unfavorite_agent_profile(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
     async with transaction() as conn:
-        return await _authority.set_favorite(
+        return await set_favorite(
             conn,
             principal=principal,
             agent_id=safe_agent_id,

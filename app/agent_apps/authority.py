@@ -12,11 +12,7 @@ from uuid import UUID
 from fastapi import HTTPException
 
 from app import repositories
-from app.agent_apps.api import (
-    list_agent_profile_favorite_ids,
-    safe_agent_avatar_seed,
-    set_agent_profile_favorite,
-)
+from app.agent_apps.api import safe_agent_avatar_seed
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
@@ -800,8 +796,36 @@ class AgentProfileAuthority:
         self,
         *,
         department_authority_validator: Callable[[list[str]], Awaitable[str | None]] | None = None,
+        favorite_ids_loader: Callable[..., Awaitable[set[str]]] | None = None,
+        favorite_setter: Callable[..., Awaitable[None]] | None = None,
     ) -> None:
         self._department_authority_validator = department_authority_validator
+        self._favorite_ids_loader = favorite_ids_loader
+        self._favorite_setter = favorite_setter
+
+    async def _list_favorite_ids(self, conn, *, tenant_id: str, user_id: str) -> set[str]:
+        if self._favorite_ids_loader is None:
+            return set()
+        return await self._favorite_ids_loader(conn, tenant_id=tenant_id, user_id=user_id)
+
+    async def _set_favorite(
+        self,
+        conn,
+        *,
+        tenant_id: str,
+        user_id: str,
+        agent_id: str,
+        favorite: bool,
+    ) -> None:
+        if self._favorite_setter is None:
+            raise HTTPException(status_code=503, detail="agent_profile_favorites_unavailable")
+        await self._favorite_setter(
+            conn,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            favorite=favorite,
+        )
 
     async def _validate_profile_department_authorities(
         self,
@@ -1307,7 +1331,7 @@ class AgentProfileAuthority:
             query=query,
             category=category,
         )
-        favorite_ids = await list_agent_profile_favorite_ids(
+        favorite_ids = await self._list_favorite_ids(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1340,7 +1364,7 @@ class AgentProfileAuthority:
             await self._authorize_public_row(conn, principal=principal, row=row)
         except HTTPException as exc:
             raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
-        favorite_ids = await list_agent_profile_favorite_ids(
+        favorite_ids = await self._list_favorite_ids(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1369,7 +1393,7 @@ class AgentProfileAuthority:
             await self._authorize_public_row(conn, principal=principal, row=row)
         except HTTPException as exc:
             raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
-        await set_agent_profile_favorite(
+        await self._set_favorite(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,

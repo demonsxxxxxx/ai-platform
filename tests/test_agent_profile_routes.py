@@ -80,7 +80,7 @@ def test_agent_apps_public_profile_detail_uses_safe_authority_projection(monkeyp
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.agent_profiles._authority.get_public", public_profile)
+    monkeypatch.setattr("app.routes.agent_profiles.get_public_profile", public_profile)
     client = TestClient(create_app())
 
     response = client.get(
@@ -134,7 +134,7 @@ def test_agent_profile_favorite_uses_authenticated_principal_and_safe_projection
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.agent_profiles._authority.set_favorite", set_favorite)
+    monkeypatch.setattr("app.routes.agent_profiles.set_favorite", set_favorite)
     client = TestClient(create_app())
 
     response = client.put(
