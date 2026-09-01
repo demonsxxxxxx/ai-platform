@@ -58,6 +58,14 @@ def session_response(row: dict[str, Any]) -> ChatSessionResponse:
                     "builtin:assistant",
                     "builtin:document",
                     "builtin:research",
+                    "builtin:cartoon",
+                    "builtin:emoji",
+                    "builtin:pixel",
+                    "builtin:portrait",
+                    "builtin:abstract",
+                    "builtin:planet",
+                    "builtin:clay",
+                    "builtin:icon",
                 }
                 else "builtin:agent"
             ),

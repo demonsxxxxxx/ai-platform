@@ -42,6 +42,14 @@ from app.main import create_app
 from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
 
+def test_agent_profile_draft_accepts_extended_builtin_avatar_style():
+    definition = AgentProfileDraftRequest.model_validate(
+        {**profile_draft_payload("Private instruction"), "avatar_ref": "builtin:planet"}
+    )
+
+    assert definition.avatar_ref == "builtin:planet"
+
+
 def test_agent_profile_draft_rejects_retired_supported_file_types():
     with pytest.raises(ValueError):
         AgentProfileDraftRequest.model_validate(
@@ -92,6 +100,13 @@ def test_agent_profile_projections_require_universal_text_and_file_input(model, 
     assert model.model_validate(payload).supported_input_types == ["text", "file"]
     with pytest.raises(ValueError, match="universal text/file"):
         model.model_validate({**payload, "supported_input_types": ["text"]})
+
+
+def test_agent_profile_authority_keeps_extended_builtin_avatar_style():
+    from app.agent_apps.authority import _safe_avatar_ref
+
+    assert _safe_avatar_ref("builtin:pixel") == "builtin:pixel"
+    assert _safe_avatar_ref("not-a-style") == "builtin:agent"
 
 
 def test_agent_profile_avatar_seed_uses_unicode_code_points_and_rejects_c0_controls():
