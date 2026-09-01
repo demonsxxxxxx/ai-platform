@@ -222,13 +222,6 @@ def build_skill_prompt(
         file_lines.append(line)
         used_file_bytes += line_bytes
     files_text = "\n".join(file_lines) if file_lines else "- no files"
-    document_tools_text = (
-        "Process Office documents locally with installed Sandbox libraries; use "
-        "`anydoc.to_markdown(path, ocr='reject')` for legacy Office and PowerPoint "
-        "files. Never enable hosted OCR or transmit attachments to external services.\n"
-        if file_lines
-        else ""
-    )
     return (
         "You are running inside the ai-platform controlled worker. "
         "Use only backend-managed skills staged in this workspace and do not access "
@@ -237,7 +230,6 @@ def build_skill_prompt(
         f"{_PUBLIC_LANGUAGE_INSTRUCTION}\n"
         f"User request: {bounded_user_message}\n"
         f"Workspace input files (under inputs/):\n{files_text}\n\n"
-        f"{document_tools_text}"
         "If a staged Skill matches the task, use that Skill's instructions. "
         "Use inputs/ for attachments and save user-deliverable files under "
         "outputs/delivery/. Return a concise execution summary."

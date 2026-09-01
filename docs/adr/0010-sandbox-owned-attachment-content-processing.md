@@ -126,11 +126,10 @@ network restrictions.
 
 `firecrawl-anydoc` also exposes an explicit `ocr="hosted"` option that can send a
 whole OCR-required document to Firecrawl Parse. The platform does not configure
-Firecrawl credentials or endpoints, and the executor prompt requires `ocr="reject"`.
-The enforcement boundary is not that prompt: governed Sandboxes remain on the fixed
-internal network with no external egress, and its sole proxy rejects every route except
-the existing model and callback contracts. Hosted OCR and external attachment
-transmission therefore remain prohibited.
+Firecrawl credentials or endpoints and does not invoke hosted OCR. Governed Sandboxes
+remain on the fixed internal network with no external egress, and their sole proxy
+rejects every route except the existing model and callback contracts. Hosted OCR and
+external attachment transmission therefore remain prohibited.
 
 Owner: selected Agent/Skill.
 
@@ -295,7 +294,7 @@ behavior.
   PPT, and PPTX fixtures in the candidate image with `ocr="reject"` and container
   networking disabled.
 - The SDK input stream contains no `platform_typed_attachment_data` message or
-  attachment business content and instructs document work to remain local.
+  attachment business content.
 - Unsafe declared XLSX archives, oversize input, identity mismatch, scope mismatch,
   and workspace path escape continue to fail before any workspace write.
 - Production code has no call path from run dispatch or runtime staging to a

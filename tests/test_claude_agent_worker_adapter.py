@@ -4199,18 +4199,6 @@ def test_build_skill_prompt_uses_backend_managed_skills_without_forced_selector(
     assert "staged Skill" in prompt
 
 
-def test_build_skill_prompt_keeps_office_processing_local_to_the_sandbox():
-    prompt = build_skill_prompt(
-        skill_id="general-chat",
-        user_message="review the slides",
-        file_names=["legacy.ppt"],
-    )
-
-    assert "`anydoc.to_markdown(path, ocr='reject')`" in prompt
-    assert "Never enable hosted OCR or transmit attachments to external services" in prompt
-    assert "legacy.ppt" in prompt
-
-
 def test_build_skill_prompt_includes_bounded_executor_context_pack():
     prompt = build_skill_prompt(
         skill_id="general-chat",
