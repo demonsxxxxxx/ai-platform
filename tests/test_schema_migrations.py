@@ -460,6 +460,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "run_attempts",
         "run_skill_materializations",
         "run_events",
+        "agent_profile_favorites",
         "sse_stream_authorities",
         "sse_stream_rebuild_items",
         "messages",

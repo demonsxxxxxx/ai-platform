@@ -666,6 +666,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       market_tag: "客户服务",
     },
     {
+      ...enterpriseProfileFields,
       agent_id: "agt_finance",
       expected_revision: 2,
       name: "财务助手",

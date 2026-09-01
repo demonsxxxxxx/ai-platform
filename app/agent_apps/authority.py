@@ -18,6 +18,7 @@ from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
 from app.models import (
     AgentConversationIdentity,
+    AgentProfileAdminProjection,
     AgentProfileDraftRequest,
     ChatSessionResponse,
     ChatStreamRequest,
@@ -25,7 +26,6 @@ from app.models import (
     SelectedSkillRequest,
 )
 
-AgentProfileAdminProjection = dict[str, Any]
 AgentProfilePublicProjection = dict[str, Any]
 
 
