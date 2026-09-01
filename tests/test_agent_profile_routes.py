@@ -5,11 +5,8 @@ import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
 
-from app.agent_apps.api import agent_profile_contracts
 from app.main import create_app
 from app.models import ChatStreamResponse
-
-AgentProfilePublicProjection = agent_profile_contracts().AgentProfilePublicProjection
 
 
 def auth_settings():
@@ -113,16 +110,16 @@ def test_agent_profile_favorite_uses_authenticated_principal_and_safe_projection
 
     async def set_favorite(_conn, *, principal, agent_id, favorite):
         observed["request"] = (principal.tenant_id, principal.user_id, agent_id, favorite)
-        return AgentProfilePublicProjection(
-            agent_id=agent_id,
-            expected_revision=7,
-            name="Support assistant",
-            description="Approved support help.",
-            avatar_ref="builtin:assistant",
-            category="support",
-            market_tag="客户服务",
-            is_favorite=True,
-        )
+        return {
+            "agent_id": agent_id,
+            "expected_revision": 7,
+            "name": "Support assistant",
+            "description": "Approved support help.",
+            "avatar_ref": "builtin:assistant",
+            "category": "support",
+            "market_tag": "客户服务",
+            "is_favorite": True,
+        }
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)

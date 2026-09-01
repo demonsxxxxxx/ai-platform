@@ -12,8 +12,11 @@ from uuid import UUID
 from fastapi import HTTPException
 
 from app import repositories
-from app.agent_apps.api import safe_agent_avatar_seed
-from app.agent_apps.infrastructure import postgres as agent_profile_persistence
+from app.agent_apps.api import (
+    list_agent_profile_favorite_ids,
+    safe_agent_avatar_seed,
+    set_agent_profile_favorite,
+)
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
@@ -1304,7 +1307,7 @@ class AgentProfileAuthority:
             query=query,
             category=category,
         )
-        favorite_ids = await agent_profile_persistence.list_agent_profile_favorite_ids(
+        favorite_ids = await list_agent_profile_favorite_ids(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1337,7 +1340,7 @@ class AgentProfileAuthority:
             await self._authorize_public_row(conn, principal=principal, row=row)
         except HTTPException as exc:
             raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
-        favorite_ids = await agent_profile_persistence.list_agent_profile_favorite_ids(
+        favorite_ids = await list_agent_profile_favorite_ids(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1366,7 +1369,7 @@ class AgentProfileAuthority:
             await self._authorize_public_row(conn, principal=principal, row=row)
         except HTTPException as exc:
             raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
-        await agent_profile_persistence.set_agent_profile_favorite(
+        await set_agent_profile_favorite(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,

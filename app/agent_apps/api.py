@@ -1,5 +1,4 @@
-from types import SimpleNamespace
-
+from app.agent_apps.infrastructure import postgres as agent_profile_persistence
 from app.agent_apps.application.skill_set_pinning import pin_agent_skill_set
 from app.agent_apps.domain.profile_definition import (
     discard_legacy_agent_profile_model_id,
@@ -11,64 +10,30 @@ from app.agent_apps.domain.profile_definition import (
 from app.skills.api import is_internal_dependency_skill
 
 
-def agent_profile_contracts():
-    from pydantic import Field, field_validator
+def normalize_market_tag(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("market_tag_invalid")
+    normalized = value.strip()
+    if not normalized:
+        return ""
+    return normalize_agent_profile_display_items([normalized], "market_tag", item_limit=80)[0]
 
-    from app.models import (
-        AgentProfileAdminListResponse as LegacyAgentProfileAdminListResponse,
-        AgentProfileAdminProjection as LegacyAgentProfileAdminProjection,
-        AgentProfileCatalogResponse as LegacyAgentProfileCatalogResponse,
-        AgentProfileDraftRequest as LegacyAgentProfileDraftRequest,
-        AgentProfileDraftTestRequest as LegacyAgentProfileDraftTestRequest,
-        AgentProfileHistoryResponse as LegacyAgentProfileHistoryResponse,
-        AgentProfileMutationResponse as LegacyAgentProfileMutationResponse,
-        AgentProfilePublicProjection as LegacyAgentProfilePublicProjection,
+
+async def list_agent_profile_favorite_ids(conn, *, tenant_id: str, user_id: str) -> set[str]:
+    return await agent_profile_persistence.list_agent_profile_favorite_ids(
+        conn, tenant_id=tenant_id, user_id=user_id
     )
 
-    class AgentProfileDraftRequest(LegacyAgentProfileDraftRequest):
-        market_tag: str = Field(default="", max_length=80)
 
-        @field_validator("market_tag")
-        @classmethod
-        def normalize_market_tag(cls, value: str) -> str:
-            normalized = value.strip()
-            if not normalized:
-                return ""
-            return normalize_agent_profile_display_items(
-                [normalized], "market_tag", item_limit=80
-            )[0]
-
-    class AgentProfileDraftTestRequest(LegacyAgentProfileDraftTestRequest):
-        definition: AgentProfileDraftRequest
-
-    class AgentProfilePublicProjection(LegacyAgentProfilePublicProjection):
-        market_tag: str = ""
-        is_favorite: bool = False
-
-    class AgentProfileAdminProjection(LegacyAgentProfileAdminProjection):
-        market_tag: str = ""
-
-    class AgentProfileCatalogResponse(LegacyAgentProfileCatalogResponse):
-        agent_profiles: list[AgentProfilePublicProjection] = Field(default_factory=list)
-
-    class AgentProfileAdminListResponse(LegacyAgentProfileAdminListResponse):
-        agent_profiles: list[AgentProfileAdminProjection] = Field(default_factory=list)
-
-    class AgentProfileMutationResponse(LegacyAgentProfileMutationResponse):
-        agent_profile: AgentProfileAdminProjection
-
-    class AgentProfileHistoryResponse(LegacyAgentProfileHistoryResponse):
-        agent_profiles: list[AgentProfileAdminProjection] = Field(default_factory=list)
-
-    return SimpleNamespace(
-        AgentProfileAdminListResponse=AgentProfileAdminListResponse,
-        AgentProfileAdminProjection=AgentProfileAdminProjection,
-        AgentProfileCatalogResponse=AgentProfileCatalogResponse,
-        AgentProfileDraftRequest=AgentProfileDraftRequest,
-        AgentProfileDraftTestRequest=AgentProfileDraftTestRequest,
-        AgentProfileHistoryResponse=AgentProfileHistoryResponse,
-        AgentProfileMutationResponse=AgentProfileMutationResponse,
-        AgentProfilePublicProjection=AgentProfilePublicProjection,
+async def set_agent_profile_favorite(
+    conn, *, tenant_id: str, user_id: str, agent_id: str, favorite: bool
+) -> None:
+    await agent_profile_persistence.set_agent_profile_favorite(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        favorite=favorite,
     )
 
 
@@ -80,11 +45,13 @@ def normalize_agent_skill_set(skill_set, selected_skill):
     )
 
 __all__ = [
-    "agent_profile_contracts",
     "discard_legacy_agent_profile_model_id",
+    "list_agent_profile_favorite_ids",
     "normalize_agent_avatar_seed",
     "normalize_agent_profile_display_items",
     "normalize_agent_skill_set",
+    "normalize_market_tag",
     "pin_agent_skill_set",
     "safe_agent_avatar_seed",
+    "set_agent_profile_favorite",
 ]

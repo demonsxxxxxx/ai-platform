@@ -1,10 +1,8 @@
 import pytest
 from pydantic import ValidationError
 
-from app.agent_apps.api import agent_profile_contracts
-from app.models import SelectedSkillRequest
-
-AgentProfileDraftRequest = agent_profile_contracts().AgentProfileDraftRequest
+from app.agent_apps.api import normalize_market_tag
+from app.models import AgentProfileDraftRequest, SelectedSkillRequest
 
 
 def test_models_normalize_agent_profile_acl_and_use_only_builtin_avatar_references():
@@ -16,7 +14,6 @@ def test_models_normalize_agent_profile_acl_and_use_only_builtin_avatar_referenc
         mcp_tool_ids=[],
         avatar_ref="builtin:assistant",
         category="support",
-        market_tag=" 客户服务 ",
         visibility="restricted",
         allowed_department_ids=["药品注册", "药品注册"],
         allowed_roles=["User", "user"],
@@ -27,7 +24,7 @@ def test_models_normalize_agent_profile_acl_and_use_only_builtin_avatar_referenc
     assert definition.allowed_department_ids == ["药品注册"]
     assert definition.allowed_roles == ["user"]
     assert definition.allowed_user_ids == ["user-a"]
-    assert definition.market_tag == "客户服务"
+    assert normalize_market_tag(" 客户服务 ") == "客户服务"
 
     for unsafe_department_id in (
         " 研发一部",

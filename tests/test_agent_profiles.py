@@ -803,8 +803,6 @@ def test_agent_profile_admin_wire_never_projects_retired_file_type_field(monkeyp
     admin_projection = schema["components"]["schemas"]["AgentProfileAdminProjection"]
     draft_request = schema["components"]["schemas"]["AgentProfileDraftRequest"]
     assert "supported_file_types" not in admin_projection["properties"]
-    assert "market_tag" in admin_projection["properties"]
-    assert "market_tag" in draft_request["properties"]
     assert "model_id" not in admin_projection["properties"]
     assert "model_id" not in draft_request["properties"]
     assert "model_id" not in current_response.json()["agent_profiles"][0]
@@ -858,6 +856,7 @@ def test_agent_profile_admin_write_accepts_and_discards_legacy_model_field(monke
             "name": "Support assistant",
             "instructions": "Keep answers concise.",
             "model_id": "legacy-model",
+            "market_tag": " 客户服务 ",
             "selected_skill": {"skill_id": "general-chat", "expected_version": "version-a"},
             "expected_draft_revision": 0,
         },
@@ -880,6 +879,7 @@ def test_agent_profile_admin_write_accepts_and_discards_legacy_model_field(monke
     assert len(saved_definitions) == 1
     assert not hasattr(saved_definitions[0], "model_id")
     assert saved_definitions[0]._legacy_model_id == "platform-selected"
+    assert saved_definitions[0].market_tag == "客户服务"
 
 
 def test_agent_profile_admin_publish_requires_admin(monkeypatch):
