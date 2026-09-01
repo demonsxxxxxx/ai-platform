@@ -39,6 +39,7 @@ import {
 import {
   adaptPublicRunStreamEventV4,
   comparePublicRunStreamCursors,
+  isV4MessageCorrelatedEventType,
   projectV4EventToLegacyHandler,
   type V4AdapterBinding,
   type V4PublicEvent,
@@ -466,10 +467,14 @@ export function handlePublicRunStreamEventV4(
       candidate.streamVersion === binding.streamVersion &&
       candidate.streamIncarnation === binding.streamIncarnation,
   );
+  const messageCorrelatedEvent = isV4MessageCorrelatedEventType(
+    event.eventType,
+  );
   const isMessageLifecycleEvent = event.eventType.startsWith("message.");
-  const isPreOwnerActivity = !isMessageLifecycleEvent;
+  const isPreOwnerActivity =
+    messageCorrelatedEvent && !isMessageLifecycleEvent;
   let projectedMessageId = messageId;
-  if (event.messageId) {
+  if (event.messageId && messageCorrelatedEvent) {
     if (ownerMatchesRun) {
       if (owner!.protocolMessageId !== event.messageId) return false;
       projectedMessageId = owner!.reducerMessageId;
@@ -484,50 +489,14 @@ export function handlePublicRunStreamEventV4(
       // attached to one protocol message identity until the owner is declared.
       return false;
     }
-  } else if (ownerMatchesRun) {
+  } else if (ownerMatchesRun && messageCorrelatedEvent) {
     projectedMessageId = owner!.reducerMessageId;
   }
   const projected = projectV4EventToLegacyHandler(event, projectedMessageId);
   if (!projected) return false;
+  let transportAccepted = false;
   const commit = (semanticApplied: boolean) => {
-    if (semanticApplied && ctx.v4MessageCandidateRef && event.messageId) {
-      if (event.eventType === "message.started") {
-        ctx.v4MessageCandidateRef.current = null;
-      } else if (isPreOwnerActivity && !ownerMatchesRun) {
-        const currentCandidate = ctx.v4MessageCandidateRef.current;
-        const candidateIsCurrent = Boolean(
-          currentCandidate &&
-            currentCandidate.sessionId === binding.sessionId &&
-            currentCandidate.runId === binding.runId &&
-            currentCandidate.streamVersion === binding.streamVersion &&
-            currentCandidate.streamIncarnation === binding.streamIncarnation,
-        );
-        if (!candidateIsCurrent) {
-          ctx.v4MessageCandidateRef.current = {
-            sessionId: binding.sessionId,
-            runId: binding.runId,
-            streamVersion: binding.streamVersion,
-            streamIncarnation: binding.streamIncarnation,
-            protocolMessageId: event.messageId,
-          };
-        }
-      }
-    }
-    if (
-      semanticApplied &&
-      event.eventType === "message.started" &&
-      event.messageId &&
-      ctx.v4MessageOwnerRef
-    ) {
-      ctx.v4MessageOwnerRef.current = {
-        sessionId: binding.sessionId,
-        runId: binding.runId,
-        streamVersion: binding.streamVersion,
-        streamIncarnation: binding.streamIncarnation,
-        protocolMessageId: event.messageId,
-        reducerMessageId: messageId,
-      };
-    }
+    transportAccepted = true;
     onCommitted?.(semanticApplied);
   };
   const accepted = handleStreamEvent(
@@ -539,6 +508,38 @@ export function handlePublicRunStreamEventV4(
     binding,
     commit,
   );
+  const identityAccepted = accepted || transportAccepted;
+  if (
+    identityAccepted &&
+    event.messageId &&
+    isPreOwnerActivity &&
+    !ownerMatchesRun &&
+    ctx.v4MessageCandidateRef
+  ) {
+    ctx.v4MessageCandidateRef.current = {
+      sessionId: binding.sessionId,
+      runId: binding.runId,
+      streamVersion: binding.streamVersion,
+      streamIncarnation: binding.streamIncarnation,
+      protocolMessageId: event.messageId,
+    };
+  }
+  if (
+    identityAccepted &&
+    event.eventType === "message.started" &&
+    event.messageId &&
+    ctx.v4MessageOwnerRef
+  ) {
+    ctx.v4MessageOwnerRef.current = {
+      sessionId: binding.sessionId,
+      runId: binding.runId,
+      streamVersion: binding.streamVersion,
+      streamIncarnation: binding.streamIncarnation,
+      protocolMessageId: event.messageId,
+      reducerMessageId: messageId,
+    };
+    if (ctx.v4MessageCandidateRef) ctx.v4MessageCandidateRef.current = null;
+  }
   if (accepted && terminalEventId && ctx.v4TerminalEventIdsRef) {
     ctx.v4TerminalEventIdsRef.current.add(terminalEventId);
   }

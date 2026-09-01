@@ -1162,6 +1162,7 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(mon
     class Progress:
         did_transition = True
         needs_reconcile = True
+        status = "failed"
 
         @staticmethod
         def is_terminal():
@@ -1179,6 +1180,10 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(mon
         calls.append(("fail_run", kwargs))
         return Progress()
 
+    async def terminalize_attempt(_conn, **kwargs):
+        calls.append(("terminalize_attempt", kwargs))
+        return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
+
     async def reconcile_child(**kwargs):
         calls.append(("reconcile_child", kwargs))
 
@@ -1194,11 +1199,17 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(mon
         has_claim,
     )
     monkeypatch.setattr(f"{owner}.repositories.fail_run", fail_run)
+    monkeypatch.setattr(f"{owner}.terminalize_run_attempt", terminalize_attempt)
     monkeypatch.setattr(f"{owner}.reconcile_terminalized_permission_run", reconcile_child)
     monkeypatch.setattr(f"{owner}.publish_pending_run_terminal", publish)
 
     await _terminalize_reconciliation_failure(
-        {"id": "lease-a", "tenant_id": "tenant-a", "run_id": "run-a"},
+        {
+            "id": "lease-a",
+            "tenant_id": "tenant-a",
+            "run_id": "run-a",
+            "attempt_id": "rat-a",
+        },
         claim_token="claim-a",
         logger=logging.getLogger(__name__),
         v4_capabilities=_TEST_V4_CAPABILITIES,
@@ -1213,9 +1224,115 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(mon
         "has_claim",
         "get_run",
         "fail_run",
+        "terminalize_attempt",
         "reconcile_child",
         "publish",
     ]
+    terminal_call = next(
+        item[1]
+        for item in calls
+        if isinstance(item, tuple) and item[0] == "terminalize_attempt"
+    )
+    assert terminal_call == {
+        "tenant_id": "tenant-a",
+        "run_id": "run-a",
+        "attempt_id": "rat-a",
+        "status": "failed",
+        "terminal_reason": "executor_terminal_reconciliation_failed",
+        "error_code": "terminal_reconciliation_failed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_terminal_reconciliation_failure_honors_existing_cancel_request(monkeypatch):
+    calls = []
+
+    class Progress:
+        did_transition = True
+        needs_reconcile = False
+        status = "cancelled"
+
+        @staticmethod
+        def is_terminal():
+            return True
+
+    async def has_claim(_conn, **_kwargs):
+        calls.append("has_claim")
+        return True
+
+    async def get_run(_conn, **_kwargs):
+        calls.append("get_run")
+        return {
+            "id": "run-a",
+            "status": "running",
+            "cancel_requested_at": "2026-08-30T00:00:00Z",
+        }
+
+    async def request_cancel(_conn, **kwargs):
+        calls.append(("request_attempt_cancel", kwargs))
+        return {"id": kwargs["attempt_id"], "status": "cancel_requested"}
+
+    async def cancel_run(_conn, **kwargs):
+        calls.append(("cancel_run", kwargs))
+        return Progress()
+
+    async def fail_run(*_args, **_kwargs):
+        pytest.fail("cancel-requested reconciliation must not fail the Run")
+
+    async def terminalize_attempt(_conn, **kwargs):
+        calls.append(("terminalize_attempt", kwargs))
+        return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
+
+    async def publish(_capabilities, **kwargs):
+        calls.append(("publish", kwargs))
+        return True
+
+    owner = "app.executor_reconciler"
+    monkeypatch.setattr(f"{owner}.transaction", _transaction)
+    monkeypatch.setattr(
+        f"{owner}.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
+        has_claim,
+    )
+    monkeypatch.setattr(f"{owner}.repositories.get_run", get_run)
+    monkeypatch.setattr(f"{owner}.request_run_attempt_cancel", request_cancel)
+    monkeypatch.setattr(f"{owner}.cancel_run_with_v4", cancel_run)
+    monkeypatch.setattr(f"{owner}.fail_run_with_v4", fail_run)
+    monkeypatch.setattr(f"{owner}.terminalize_run_attempt", terminalize_attempt)
+    monkeypatch.setattr(f"{owner}.publish_pending_run_terminal", publish)
+
+    await _terminalize_reconciliation_failure(
+        {
+            "id": "lease-a",
+            "tenant_id": "tenant-a",
+            "run_id": "run-a",
+            "attempt_id": "rat-a",
+        },
+        claim_token="claim-a",
+        logger=logging.getLogger(__name__),
+        v4_capabilities=_TEST_V4_CAPABILITIES,
+    )
+
+    assert [call if isinstance(call, str) else call[0] for call in calls] == [
+        "has_claim",
+        "get_run",
+        "request_attempt_cancel",
+        "cancel_run",
+        "terminalize_attempt",
+        "publish",
+    ]
+    terminal_call = next(
+        item[1]
+        for item in calls
+        if isinstance(item, tuple) and item[0] == "terminalize_attempt"
+    )
+    assert terminal_call == {
+        "tenant_id": "tenant-a",
+        "run_id": "run-a",
+        "attempt_id": "rat-a",
+        "status": "cancelled",
+        "terminal_reason": "run_cancelled",
+        "error_code": None,
+    }
 
 
 @pytest.mark.asyncio

@@ -20,9 +20,14 @@ const PUBLIC_AGENT_PROGRESS_KINDS: Readonly<Record<string, ExecutionTimelineKind
   artifact_recovery: "artifact",
 };
 
-const PUBLIC_THINKING_SUMMARIES = {
+const LEGACY_PUBLIC_THINKING_SUMMARIES = {
   started: "Analyzing the request",
   completed: "Analysis step completed",
+} as const;
+
+const PUBLIC_THINKING_DISPLAY = {
+  started: "正在分析请求",
+  completed: "分析完成",
 } as const;
 
 /** Project only a schema-validated, server-owned Run phase into the existing timeline. */
@@ -130,17 +135,19 @@ export function projectPublicThinkingActivity(
   }
 
   const isLegacyStarted =
-    message === PUBLIC_THINKING_SUMMARIES.started &&
+    message === LEGACY_PUBLIC_THINKING_SUMMARIES.started &&
     ((data.stage === "thinking_started" && data.status === "thinking_started") ||
       (data.stage === "thinking" && data.progress_kind === "active"));
   const isLegacyCompleted =
-    message === PUBLIC_THINKING_SUMMARIES.completed &&
+    message === LEGACY_PUBLIC_THINKING_SUMMARIES.completed &&
     ((data.stage === "thinking_completed" && data.status === "thinking_completed") ||
       (data.stage === "thinking" && data.progress_kind === "completed"));
   if (!isLegacyStarted && !isLegacyCompleted) return null;
   return {
     type: "thinking",
-    content: message,
+    content: isLegacyStarted
+      ? PUBLIC_THINKING_DISPLAY.started
+      : PUBLIC_THINKING_DISPLAY.completed,
     thinking_id: data.event_id,
     public_reasoning: true,
     isStreaming: isLegacyStarted && isStreaming,
@@ -167,13 +174,13 @@ export function upsertPublicThinkingActivity(
       return activity;
     });
   }
-  if (!activity.isStreaming && activity.content === PUBLIC_THINKING_SUMMARIES.completed) {
+  if (!activity.isStreaming && activity.content === PUBLIC_THINKING_DISPLAY.completed) {
     let startedIndex = -1;
     for (let index = parts.length - 1; index >= 0; index -= 1) {
       const part = parts[index];
       if (
         part?.type === "thinking" &&
-        part.content === PUBLIC_THINKING_SUMMARIES.started
+        part.content === PUBLIC_THINKING_DISPLAY.started
       ) {
         startedIndex = index;
         break;

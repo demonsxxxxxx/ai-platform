@@ -402,6 +402,7 @@ create table if not exists agent_profile_revisions (
   avatar_seed text not null default '',
   category text not null
     check (category in ('general', 'support', 'writing', 'research', 'operations')),
+  market_tag text not null default '',
   visibility text not null,
   allowed_department_ids jsonb not null,
   allowed_roles jsonb not null,
@@ -458,6 +459,18 @@ create table if not exists agent_profiles (
 create index if not exists idx_agent_profiles_published
   on agent_profiles(tenant_id, published_revision desc)
   where lifecycle_status = 'published';
+
+create table if not exists agent_profile_favorites (
+  tenant_id text not null references tenants(id),
+  user_id text not null references users(id),
+  agent_id text not null,
+  created_at timestamptz not null default now(),
+  primary key (tenant_id, user_id, agent_id),
+  foreign key (tenant_id, agent_id) references agents(tenant_id, id)
+);
+
+create index if not exists idx_agent_profile_favorites_user
+  on agent_profile_favorites(tenant_id, user_id, created_at desc);
 
 create table if not exists sessions (
   id text primary key,
@@ -739,12 +752,21 @@ begin
     raise exception 'run_attempt_queue_identity_immutable' using errcode = '23514';
   end if;
   if new.status is not distinct from old.status then
-    if new.owner_generation is distinct from old.owner_generation
-       or new.owner_kind is distinct from old.owner_kind
-       or new.owner_id is distinct from old.owner_id then
-      raise exception 'run_attempt_owner_transition_invalid' using errcode = '23514';
+    if new.owner_generation is not distinct from old.owner_generation
+       and new.owner_kind is not distinct from old.owner_kind
+       and new.owner_id is not distinct from old.owner_id then
+      return new;
     end if;
-    return new;
+    if old.status = 'cancel_requested'
+       and new.owner_kind = 'reconciler'
+       and new.owner_generation = old.owner_generation + 1
+       and (
+         new.owner_kind is distinct from old.owner_kind
+         or new.owner_id is distinct from old.owner_id
+       ) then
+      return new;
+    end if;
+    raise exception 'run_attempt_owner_transition_invalid' using errcode = '23514';
   end if;
   if new.owner_generation is distinct from old.owner_generation + 1 then
     raise exception 'run_attempt_owner_generation_invalid' using errcode = '23514';
@@ -804,6 +826,33 @@ drop trigger if exists trg_run_attempt_transition_guard on run_attempts;
 create trigger trg_run_attempt_transition_guard
 before insert or update on run_attempts
 for each row execute function ai_platform_guard_run_attempt_transition();
+
+create or replace function ai_platform_guard_run_attempt_heartbeat_monotonicity()
+returns trigger
+language plpgsql
+as $$
+begin
+  if old.last_heartbeat_at is not null
+     and (
+       new.last_heartbeat_at is null
+       or new.last_heartbeat_at < old.last_heartbeat_at
+     ) then
+    raise exception 'run_attempt_heartbeat_regression' using errcode = '23514';
+  end if;
+  if old.lease_expires_at is not null
+     and (
+       new.lease_expires_at is null
+       or new.lease_expires_at < old.lease_expires_at
+     ) then
+    raise exception 'run_attempt_lease_expiry_regression' using errcode = '23514';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists trg_run_attempt_heartbeat_monotonicity_guard on run_attempts;
+create trigger trg_run_attempt_heartbeat_monotonicity_guard
+before update on run_attempts
+for each row execute function ai_platform_guard_run_attempt_heartbeat_monotonicity();
 
 alter table runs add column if not exists trace_id text not null default '';
 alter table runs add column if not exists execution_kind text not null default 'skill';
@@ -870,6 +919,7 @@ alter table agent_profile_revisions add column if not exists avatar_asset_id tex
 alter table agent_profile_revisions add column if not exists avatar_seed text not null default '';
 alter table agent_profile_revisions add column if not exists skill_set jsonb not null default '[]'::jsonb;
 alter table agent_profile_revisions add column if not exists category text;
+alter table agent_profile_revisions add column if not exists market_tag text not null default '';
 alter table agent_profile_revisions add column if not exists visibility text;
 alter table agent_profile_revisions add column if not exists allowed_department_ids jsonb;
 alter table agent_profile_revisions add column if not exists allowed_roles jsonb;

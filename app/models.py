@@ -1,8 +1,8 @@
-from typing import Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal
 from uuid import RFC_4122, UUID
 
 from pydantic import (
-    AliasChoices,
+    AfterValidator, AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -17,7 +17,7 @@ from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_SKILL,
     RUN_PAYLOAD_SCHEMA_VERSION,
     RUN_PAYLOAD_SCHEMA_VERSION_V2,
-    SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS,
+    SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS, ThinkingEffort, validate_thinking_agent_options,
 )
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
 from app.agent_apps.api import discard_legacy_agent_profile_model_id
@@ -381,14 +381,13 @@ class AgentProfileTrialRunRequest(BaseModel):
 
 
 class AgentAppRunRequest(BaseModel):
-    """Strict dedicated submission surface without client-owned capability selectors."""
-
     model_config = ConfigDict(extra="forbid")
 
     message: str = Field(min_length=1, max_length=100_000)
     submission_id: UUID
     file_ids: list[str] = Field(default_factory=list, max_length=32)
     user_timezone: str | None = Field(default=None, max_length=128)
+    thinking_effort: ThinkingEffort = "off"
 
     @field_validator("file_ids")
     @classmethod
@@ -1246,7 +1245,7 @@ class ChatStreamRequest(BaseModel):
     file_ids: list[str] = Field(default_factory=list, max_length=32)
     input: dict[str, Any] = Field(default_factory=dict)
     title: str = ""
-    agent_options: dict[str, bool | str | int | float] | None = None
+    agent_options: Annotated[dict[str, bool | str | int | float] | None, AfterValidator(validate_thinking_agent_options)] = None
     attachments: list[dict[str, Any]] = Field(default_factory=list, max_length=32)
     disabled_skills: list[str] = Field(default_factory=list)
     enabled_skills: list[str] | None = None

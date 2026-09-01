@@ -61,6 +61,21 @@ async def attach_mcp_server_configs(
     principal: Any,
     run_payload: Any,
 ) -> Any:
+    raw_input = getattr(run_payload, "input", None)
+    raw_subjects = (
+        raw_input.get("_runtime_tool_policy_subjects")
+        if isinstance(raw_input, dict)
+        else None
+    )
+    requires_external_mcp = isinstance(raw_subjects, list) and any(
+        isinstance(subject, dict)
+        and str(subject.get("identity") or "").startswith("mcp__")
+        and str(subject.get("mcp_server") or "")
+        and str(subject.get("mcp_server") or "") != "ai-platform-context"
+        for subject in raw_subjects
+    )
+    if not requires_external_mcp:
+        return run_payload
     return await mcp_runtime_services().attach_server_configs(
         conn,
         principal=principal,

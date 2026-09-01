@@ -11,8 +11,8 @@ import {
   isSSEHeartbeatComment,
   isTerminalSSEEvent,
   MAX_CONSECUTIVE_SSE_RECONNECTS,
-  MAX_SSE_STARTUP_RETRIES,
   MAX_STATUS_QUERY_RETRIES,
+  SSE_STARTUP_RETRY_BUDGET_MS,
   queryAuthoritativeRunStatus,
   reconnectSSE,
   recoverReplayGap,
@@ -521,10 +521,10 @@ test("does not retry a hard startup conflict", async () => {
   assert.equal(attempts, 1);
 });
 
-test("bounds startup-not-ready retries inside one SSE owner", async () => {
+test("bounds startup-not-ready retries by the owner time budget", async () => {
   const { context } = createTokenRefreshContext();
   let attempts = 0;
-  let nowMs = 0;
+  const nowValues = [0, 100, 500, 1_500, 3_500, 7_500, 10_000];
   const scheduledDiagnostics: Array<Record<string, unknown>> = [];
   const exhaustedDiagnostics: Array<Record<string, unknown>> = [];
   const originalInfo = console.info;
@@ -567,7 +567,7 @@ test("bounds startup-not-ready retries inside one SSE owner", async () => {
         context,
         false,
         fetchStream,
-        { now: () => (nowMs += 100) },
+        { now: () => nowValues.shift() ?? SSE_STARTUP_RETRY_BUDGET_MS },
       ),
       /sse_startup_retry_exhausted/,
     );
@@ -576,21 +576,24 @@ test("bounds startup-not-ready retries inside one SSE owner", async () => {
     console.warn = originalWarn;
   }
 
-  assert.equal(attempts, MAX_SSE_STARTUP_RETRIES + 1);
-  assert.equal(scheduledDiagnostics.length, MAX_SSE_STARTUP_RETRIES);
+  assert.equal(attempts, 6);
+  assert.equal(scheduledDiagnostics.length, 5);
+  assert.ok(scheduledDiagnostics.length > 3);
   assert.equal(scheduledDiagnostics[0]?.outcome, "scheduled");
-  assert.equal(typeof scheduledDiagnostics[0]?.elapsedMs, "number");
   assert.equal(exhaustedDiagnostics.length, 1);
   assert.equal(exhaustedDiagnostics[0]?.outcome, "exhausted");
-  assert.equal(typeof exhaustedDiagnostics[0]?.elapsedMs, "number");
+  assert.equal(
+    exhaustedDiagnostics[0]?.elapsedMs,
+    SSE_STARTUP_RETRY_BUDGET_MS,
+  );
 });
 
 test("aborts a startup request that remains pending past the owner deadline", async () => {
   const { context } = createTokenRefreshContext();
   let fireDeadline: (() => void) | undefined;
   let requestAborted = false;
-  const fetchStream: SSEFetchEventSource = async (_input, init) =>
-    await new Promise<void>((resolve) => {
+  const fetchStream: SSEFetchEventSource = (_input, init) =>
+    new Promise<void>((resolve) => {
       init.signal?.addEventListener(
         "abort",
         () => {

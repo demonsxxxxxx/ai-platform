@@ -25,6 +25,7 @@ test("a pristine unsaved editor does not trigger a discard warning", () => {
   const editor = createUnsavedAgentEditor();
   assert.equal(editor.avatarSeed, "");
   assert.equal(hasUnsavedAgentProfileEdits(editor), false);
+  assert.equal(hasUnsavedAgentProfileEdits({ ...editor, marketTag: "客户服务" }), true);
 });
 
 function skill(overrides: Partial<PublicSkillResponse> = {}): PublicSkillResponse {
@@ -171,6 +172,7 @@ test("materializes create and update requests with the exact optimistic revision
       expected_version: "2026.07.28",
     }],
     selectedMcpToolIds: ["mcp:knowledge:search"],
+    marketTag: " 客户服务 ",
     allowedDepartmentIds: ["药品注册"],
   };
   assert.deepEqual(buildAgentProfileDraftRequest(created), {
@@ -197,6 +199,7 @@ test("materializes create and update requests with the exact optimistic revision
     avatar_seed: "新智能体",
     avatar_asset_id: null,
     category: "general",
+    market_tag: "客户服务",
     visibility: "tenant",
     allowed_department_ids: ["药品注册"],
     allowed_roles: [],

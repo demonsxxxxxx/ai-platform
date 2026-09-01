@@ -83,6 +83,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ matrix.subject }}:${{ github.sha }}
+          cache-from: type=gha,scope=packaging-${{ matrix.role }}
+          cache-to: type=gha,mode=max,scope=packaging-${{ matrix.role }},ignore-error=true
           build-args: |
             AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}
             AI_PLATFORM_BUILD_DIRTY=false

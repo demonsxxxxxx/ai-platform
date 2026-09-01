@@ -197,12 +197,17 @@ export async function submitAgentFirstMessageSingleFlight({
   coordinator,
   submissionKey,
   ensureConversation,
+  agentOptions,
   submitMessage,
 }: {
   coordinator: AgentFirstSubmissionCoordinator;
   submissionKey: string;
   ensureConversation: () => Promise<string>;
-  submitMessage: (sessionId: string) => Promise<SubmissionOutcome>;
+  agentOptions?: Record<string, boolean | string | number>;
+  submitMessage: (
+    sessionId: string,
+    agentOptions?: Record<string, boolean | string | number>,
+  ) => Promise<SubmissionOutcome>;
 }): Promise<SubmissionOutcome> {
   const active = coordinator.current;
   if (active && active.submissionKey !== submissionKey) {
@@ -212,7 +217,7 @@ export async function submitAgentFirstMessageSingleFlight({
   if (!active) {
     flight = (async () => {
       const createdSessionId = await ensureConversation();
-      return submitMessage(createdSessionId);
+      return submitMessage(createdSessionId, agentOptions);
     })();
     coordinator.current = { submissionKey, promise: flight };
   }
@@ -773,6 +778,14 @@ export function ChatAppContent({
     [],
   );
 
+  const lockedAgentOptions: typeof currentAgentOptions = currentAgentOptions.enable_thinking
+    ? { enable_thinking: currentAgentOptions.enable_thinking }
+    : {};
+  const lockedAgentOptionValues: typeof agentOptionValues =
+    agentOptionValues.enable_thinking !== undefined
+      ? { enable_thinking: agentOptionValues.enable_thinking }
+      : {};
+
   // Sync ref synchronously during render so getAgentOptions always has
   // the latest model_id — useEffect introduces a one-tick delay that
   // can cause model_id to be missing when using the default model.
@@ -781,6 +794,7 @@ export function ChatAppContent({
         disabledSkills: [],
         selectedMcpToolIds: undefined,
         agentOptions: {
+          ...lockedAgentOptionValues,
           ...(currentModelValue ? { model: currentModelValue } : {}),
           ...(currentModelId ? { model_id: currentModelId } : {}),
         },
@@ -1111,9 +1125,10 @@ export function ChatAppContent({
               bindConversation: async (createdSessionId) =>
                 Boolean(await loadHistory(createdSessionId)),
             }),
-          submitMessage: async (createdSessionId) => {
+          agentOptions: options,
+          submitMessage: async (createdSessionId, firstSendOptions) => {
             setAgentWorkspaceError(null);
-            const submission = sendMessage(content, undefined, attachments, null);
+            const submission = sendMessage(content, firstSendOptions, attachments, null);
             navigate(
               buildAgentMarketWorkspacePath(startProfile, createdSessionId),
               { replace: true },
@@ -1376,9 +1391,13 @@ export function ChatAppContent({
               !agentConversationControlsLocked &&
               composerSkillsAvailability.enableComposerSkills
             }
-            agentOptions={agentConversationControlsLocked ? {} : currentAgentOptions}
+            agentOptions={
+              agentConversationControlsLocked ? lockedAgentOptions : currentAgentOptions
+            }
             agentOptionValues={
-              agentConversationControlsLocked ? {} : agentOptionValues
+              agentConversationControlsLocked
+                ? lockedAgentOptionValues
+                : agentOptionValues
             }
             onToggleAgentOption={handleToggleAgentOption}
             availableModels={filteredModels ?? []}

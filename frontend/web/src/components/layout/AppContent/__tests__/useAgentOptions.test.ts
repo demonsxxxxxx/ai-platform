@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { CHAT_AGENT_OPTION_DEFINITIONS } from "../../../../types/agentOptions.ts";
-import { getAgentOptionSyncMode, normalizeAgentOptions } from "../useAgentOptions";
+import {
+  getAgentOptionSyncMode,
+  normalizeAgentOptions,
+  normalizeAgentOptionValues,
+} from "../useAgentOptions";
 
 test("keeps the real thinking parameter without an agent directory", () => {
   const options = normalizeAgentOptions(CHAT_AGENT_OPTION_DEFINITIONS);
@@ -9,7 +13,11 @@ test("keeps the real thinking parameter without an agent directory", () => {
   assert.equal(options?.enable_thinking.default, "off");
   assert.deepEqual(
     options?.enable_thinking.options?.map((item) => item.value),
-    ["off", "low", "medium", "high", "max"],
+    ["off", "low", "medium", "high"],
+  );
+  assert.deepEqual(
+    normalizeAgentOptionValues({ enable_thinking: "max" }),
+    { enable_thinking: "high" },
   );
 });
 

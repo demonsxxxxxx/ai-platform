@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 import json
 import sys
 from types import SimpleNamespace
@@ -6,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import app.worker_main as worker_main
-from app.queue import LeaseMutationOutcome, QueueMessage
+from app.queue import LeaseMutationOutcome, QueueHeartbeatOutcome, QueueMessage
 from app.runs.api import RunTerminalizationProgress
 from app.worker import WorkerOutcome
 from app.worker_main import run_once as _run_once
@@ -124,6 +125,380 @@ async def test_worker_runtime_heartbeat_refreshes_until_cancelled(monkeypatch):
     assert calls == ["worker-process", "worker-process"]
 
 
+@pytest.mark.asyncio
+async def test_queue_heartbeat_persists_the_exact_redis_timestamp(monkeypatch):
+    calls = []
+    outcomes = iter(
+        [
+            QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0),
+            QueueHeartbeatOutcome("stale_owner"),
+        ]
+    )
+    message = QueueMessage(
+        raw="raw-run",
+        payload={"tenant_id": "tenant-a", "run_id": "run-a"},
+        message_id="lease-handle-a",
+        queue_message_id="b" * 64,
+        attempt_id="qat-a",
+        owner_token="qown-a",
+        leased_at=90.0,
+        delivery_attempt=1,
+    )
+
+    async def heartbeat_run(message_id, *, worker_id):
+        calls.append(("redis", message_id, worker_id))
+        return next(outcomes)
+
+    class Transaction:
+        async def __aenter__(self):
+            calls.append(("tx.enter",))
+            return "conn-a"
+
+        async def __aexit__(self, exc_type, _exc, _tb):
+            calls.append(("tx.exit", exc_type))
+            return False
+
+    async def heartbeat_attempt(conn, **kwargs):
+        calls.append(("postgres", conn, kwargs))
+        return {
+            "id": "rat-a",
+            "status": "running",
+            "last_heartbeat_at": kwargs["last_heartbeat_at"],
+            "lease_expires_at": kwargs["lease_expires_at"],
+        }
+
+    monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
+    monkeypatch.setattr(worker_main, "transaction", Transaction)
+    monkeypatch.setattr(
+        worker_main,
+        "heartbeat_worker_run_attempt",
+        heartbeat_attempt,
+    )
+    ownership_lost = asyncio.Event()
+
+    await worker_main._heartbeat_until_done(
+        message,
+        "worker-a",
+        0,
+        30,
+        ownership_lost,
+    )
+
+    assert ownership_lost.is_set()
+    persisted = next(call for call in calls if call[0] == "postgres")[2]
+    assert persisted["tenant_id"] == "tenant-a"
+    assert persisted["run_id"] == "run-a"
+    assert persisted["queue_attempt_id"] == "qat-a"
+    assert persisted["queue_message_id"] == "b" * 64
+    assert persisted["worker_id"] == "worker-a"
+    assert persisted["last_heartbeat_at"].timestamp() == 100.0
+    assert (
+        persisted["lease_expires_at"] - persisted["last_heartbeat_at"]
+    ).total_seconds() == 30
+    assert calls[-1] == ("redis", "lease-handle-a", "worker-a")
+
+
+@pytest.mark.asyncio
+async def test_queue_heartbeat_tolerates_attempt_precreation_gap(monkeypatch):
+    redis_calls = 0
+    postgres_calls = 0
+    outcomes = iter(
+        [
+            QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0),
+            QueueHeartbeatOutcome("stale_owner"),
+        ]
+    )
+    message = QueueMessage(
+        raw="raw-run",
+        payload={"tenant_id": "tenant-a", "run_id": "run-a"},
+        message_id="lease-handle-a",
+        queue_message_id="b" * 64,
+        attempt_id="qat-a",
+        owner_token="qown-a",
+        leased_at=90.0,
+        delivery_attempt=1,
+    )
+
+    async def heartbeat_run(*_args, **_kwargs):
+        nonlocal redis_calls
+        redis_calls += 1
+        return next(outcomes)
+
+    class Transaction:
+        async def __aenter__(self):
+            return "conn-a"
+
+        async def __aexit__(self, _exc_type, _exc, _tb):
+            return False
+
+    async def heartbeat_attempt(*_args, **_kwargs):
+        nonlocal postgres_calls
+        postgres_calls += 1
+        return None
+
+    monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
+    monkeypatch.setattr(worker_main, "transaction", Transaction)
+    monkeypatch.setattr(
+        worker_main,
+        "heartbeat_worker_run_attempt",
+        heartbeat_attempt,
+    )
+    ownership_lost = asyncio.Event()
+
+    await worker_main._heartbeat_until_done(
+        message,
+        "worker-a",
+        0,
+        30,
+        ownership_lost,
+    )
+
+    assert redis_calls == 2
+    assert postgres_calls == 1
+    assert ownership_lost.is_set()
+
+
+@pytest.mark.asyncio
+async def test_queue_heartbeat_stops_after_one_precreation_visibility_window(
+    monkeypatch,
+):
+    redis_calls = 0
+    postgres_calls = 0
+    monotonic_values = iter((0.0, 1.0, 31.0))
+    message = QueueMessage(
+        raw="raw-run",
+        payload={"tenant_id": "tenant-a", "run_id": "run-a"},
+        message_id="lease-handle-a",
+        queue_message_id="b" * 64,
+        attempt_id="qat-a",
+        owner_token="qown-a",
+        leased_at=90.0,
+        delivery_attempt=1,
+    )
+
+    async def heartbeat_run(*_args, **_kwargs):
+        nonlocal redis_calls
+        redis_calls += 1
+        return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
+
+    class Transaction:
+        async def __aenter__(self):
+            return "conn-a"
+
+        async def __aexit__(self, _exc_type, _exc, _tb):
+            return False
+
+    async def heartbeat_attempt(*_args, **_kwargs):
+        nonlocal postgres_calls
+        postgres_calls += 1
+        return None
+
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
+    monkeypatch.setattr(worker_main, "transaction", Transaction)
+    monkeypatch.setattr(
+        worker_main,
+        "heartbeat_worker_run_attempt",
+        heartbeat_attempt,
+    )
+    monkeypatch.setattr(worker_main.asyncio, "sleep", no_wait)
+    ownership_lost = asyncio.Event()
+
+    await worker_main._heartbeat_until_done(
+        message,
+        "worker-a",
+        10,
+        30,
+        ownership_lost,
+        monotonic=lambda: next(monotonic_values),
+    )
+
+    assert redis_calls == 1
+    assert postgres_calls == 1
+    assert ownership_lost.is_set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stalled_phase", ["redis", "postgres_commit"])
+async def test_queue_heartbeat_precreation_deadline_bounds_external_awaits(
+    monkeypatch,
+    stalled_phase,
+):
+    cancelled = asyncio.Event()
+    postgres_calls = 0
+    message = QueueMessage(
+        raw="raw-run",
+        payload={"tenant_id": "tenant-a", "run_id": "run-a"},
+        message_id="lease-handle-a",
+        queue_message_id="b" * 64,
+        attempt_id="qat-a",
+        owner_token="qown-a",
+        leased_at=90.0,
+        delivery_attempt=1,
+    )
+
+    async def stall_forever():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    async def heartbeat_run(*_args, **_kwargs):
+        if stalled_phase == "redis":
+            await stall_forever()
+        return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
+
+    class Transaction:
+        async def __aenter__(self):
+            return "conn-a"
+
+        async def __aexit__(self, _exc_type, _exc, _tb):
+            if stalled_phase == "postgres_commit":
+                await stall_forever()
+            return False
+
+    async def heartbeat_attempt(*_args, **kwargs):
+        nonlocal postgres_calls
+        postgres_calls += 1
+        return {
+            "id": "rat-a",
+            "status": "running",
+            "last_heartbeat_at": kwargs["last_heartbeat_at"],
+            "lease_expires_at": kwargs["lease_expires_at"],
+        }
+
+    monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
+    monkeypatch.setattr(worker_main, "transaction", Transaction)
+    monkeypatch.setattr(
+        worker_main,
+        "heartbeat_worker_run_attempt",
+        heartbeat_attempt,
+    )
+    ownership_lost = asyncio.Event()
+
+    await asyncio.wait_for(
+        worker_main._heartbeat_until_done(
+            message,
+            "worker-a",
+            0,
+            0.01,
+            ownership_lost,
+        ),
+        timeout=0.5,
+    )
+
+    assert ownership_lost.is_set()
+    assert cancelled.is_set()
+    assert postgres_calls == (stalled_phase == "postgres_commit")
+
+
+@pytest.mark.asyncio
+async def test_queue_heartbeat_fails_closed_when_postgres_cannot_commit(monkeypatch):
+    message = QueueMessage(
+        raw="raw-run",
+        payload={"tenant_id": "tenant-a", "run_id": "run-a"},
+        message_id="lease-handle-a",
+        queue_message_id="b" * 64,
+        attempt_id="qat-a",
+        owner_token="qown-a",
+        leased_at=90.0,
+        delivery_attempt=1,
+    )
+
+    async def heartbeat_run(*_args, **_kwargs):
+        return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
+
+    class Transaction:
+        async def __aenter__(self):
+            return "conn-a"
+
+        async def __aexit__(self, _exc_type, _exc, _tb):
+            raise OSError("postgres commit unavailable")
+
+    async def heartbeat_attempt(*_args, **kwargs):
+        return {
+            "id": "rat-a",
+            "status": "running",
+            "last_heartbeat_at": kwargs["last_heartbeat_at"],
+            "lease_expires_at": kwargs["lease_expires_at"],
+        }
+
+    monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
+    monkeypatch.setattr(worker_main, "transaction", Transaction)
+    monkeypatch.setattr(
+        worker_main,
+        "heartbeat_worker_run_attempt",
+        heartbeat_attempt,
+    )
+    ownership_lost = asyncio.Event()
+
+    await worker_main._heartbeat_until_done(
+        message,
+        "worker-a",
+        0,
+        30,
+        ownership_lost,
+    )
+
+    assert ownership_lost.is_set()
+
+
+@pytest.mark.asyncio
+async def test_queue_heartbeat_fails_closed_when_postgres_preserves_future_state(
+    monkeypatch,
+):
+    message = QueueMessage(
+        raw="raw-run",
+        payload={"tenant_id": "tenant-a", "run_id": "run-a"},
+        message_id="lease-handle-a",
+        queue_message_id="b" * 64,
+        attempt_id="qat-a",
+        owner_token="qown-a",
+        leased_at=90.0,
+        delivery_attempt=1,
+    )
+
+    async def heartbeat_run(*_args, **_kwargs):
+        return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
+
+    class Transaction:
+        async def __aenter__(self):
+            return "conn-a"
+
+        async def __aexit__(self, _exc_type, _exc, _tb):
+            return False
+
+    async def heartbeat_attempt(*_args, **_kwargs):
+        future_heartbeat = datetime.fromtimestamp(200.0, tz=timezone.utc)
+        return {
+            "id": "rat-a",
+            "status": "running",
+            "last_heartbeat_at": future_heartbeat,
+            "lease_expires_at": future_heartbeat + timedelta(seconds=30),
+        }
+
+    monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
+    monkeypatch.setattr(worker_main, "transaction", Transaction)
+    monkeypatch.setattr(
+        worker_main,
+        "heartbeat_worker_run_attempt",
+        heartbeat_attempt,
+    )
+    ownership_lost = asyncio.Event()
+
+    await worker_main._heartbeat_until_done(
+        message,
+        "worker-a",
+        0,
+        30,
+        ownership_lost,
+    )
+
+    assert ownership_lost.is_set()
+
+
 @pytest.fixture(autouse=True)
 def default_sandbox_cleanup(monkeypatch):
     async def cleanup_expired_sandbox_leases():
@@ -150,6 +525,30 @@ def default_sandbox_cleanup(monkeypatch):
     async def verify_lease_ownership(_message, *, worker_id):
         assert worker_id
         return LeaseMutationOutcome("current")
+
+    async def assert_worker_run_attempt_current(*_args, **_kwargs):
+        return None
+
+    async def heartbeat_worker_run_attempt(*_args, **_kwargs):
+        return None
+
+    async def request_run_attempt_cancel(*_args, **_kwargs):
+        return None
+
+    async def terminalize_run_attempt(*_args, **_kwargs):
+        return None
+
+    async def prepare_stale_run_attempt_reconciliation(*_args, **_kwargs):
+        return None
+
+    async def get_latest_run_attempt(*_args, **_kwargs):
+        return None
+
+    async def terminalize_latest_run_attempt(*_args, **_kwargs):
+        return None
+
+    async def get_run(*_args, **_kwargs):
+        return None
 
     monkeypatch.setattr(
         "app.worker_main.cleanup_expired_sandbox_leases",
@@ -191,6 +590,35 @@ def default_sandbox_cleanup(monkeypatch):
         verify_lease_ownership,
         raising=False,
     )
+    monkeypatch.setattr(
+        "app.worker_main.assert_worker_run_attempt_current",
+        assert_worker_run_attempt_current,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.heartbeat_worker_run_attempt",
+        heartbeat_worker_run_attempt,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.request_run_attempt_cancel",
+        request_run_attempt_cancel,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.terminalize_run_attempt",
+        terminalize_run_attempt,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.prepare_stale_run_attempt_reconciliation",
+        prepare_stale_run_attempt_reconciliation,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.get_latest_run_attempt",
+        get_latest_run_attempt,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.terminalize_latest_run_attempt",
+        terminalize_latest_run_attempt,
+    )
+    monkeypatch.setattr("app.worker_main.repositories.get_run", get_run)
     monkeypatch.setattr(
         "app.worker_main.build_worker_v4_runtime",
         lambda _transaction: _TestWorkerV4Runtime(),
@@ -359,8 +787,29 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
             {"tenant_id": "tenant-b", "run_id": "run-b"},
         ]
 
+    async def get_run(_conn, *, tenant_id, run_id, for_update):
+        assert for_update is True
+        if (tenant_id, run_id) == ("tenant-a", "run-a"):
+            return {"permission_terminalization_error_code": "worker_failed"}
+        return None
+
+    async def get_latest_attempt(_conn, *, tenant_id, run_id, for_update):
+        assert for_update is True
+        if (tenant_id, run_id) == ("tenant-a", "run-a"):
+            return {"id": "rat-a"}
+        return None
+
     async def drain(**kwargs):
-        calls.append(("drain", kwargs["tenant_id"], kwargs["run_id"], kwargs["max_batches"]))
+        calls.append(
+            (
+                "drain",
+                kwargs["tenant_id"],
+                kwargs["run_id"],
+                kwargs["max_batches"],
+                kwargs["attempt_id"],
+                kwargs["attempt_error_code"],
+            )
+        )
         return RunTerminalizationProgress(
             completed=kwargs["run_id"] == "run-a",
             status="failed",
@@ -380,6 +829,8 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
         _ORIGINAL_PERMISSION_TERMINALIZATION_MAINTENANCE,
     )
     monkeypatch.setattr("app.worker_main.repositories.list_runs_requiring_tool_permission_terminalization", list_runs)
+    monkeypatch.setattr("app.worker_main.repositories.get_run", get_run)
+    monkeypatch.setattr("app.worker_main.get_latest_run_attempt", get_latest_attempt)
     monkeypatch.setattr("app.worker_main.repositories.list_multi_agent_terminal_children_requiring_reconciliation", recovery_candidates)
     monkeypatch.setattr("app.worker_main.repositories.list_multi_agent_parent_runs_requiring_finalization", parent_recovery_candidates)
     monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
@@ -390,8 +841,8 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
 
     assert calls == [
         ("list", 2),
-        ("drain", "tenant-a", "run-a", 4),
-        ("drain", "tenant-b", "run-b", 4),
+        ("drain", "tenant-a", "run-a", 4, "rat-a", "worker_failed"),
+        ("drain", "tenant-b", "run-b", 4, None, None),
         ("recovery", 2),
         ("parent_recovery", 2),
     ]
@@ -621,8 +1072,26 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
         calls.append(("stage", kwargs["run_id"], kwargs["expected_status"], kwargs["terminal_status"]))
         return {"tenant_id": "tenant-a", "run_id": "run-cancel", "terminal_status": "cancelled"}
 
+    async def prepare_attempt(_conn, **kwargs):
+        calls.append(
+            (
+                "attempt_prepare",
+                kwargs["run_id"],
+                kwargs["terminal_status"],
+                kwargs["reconciler_id"],
+            )
+        )
+        return {"id": "rat-run-cancel", "status": "cancel_requested"}
+
     async def drain(**kwargs):
-        calls.append(("drain", kwargs["tenant_id"], kwargs["run_id"]))
+        calls.append(
+            (
+                "drain",
+                kwargs["tenant_id"],
+                kwargs["run_id"],
+                kwargs["attempt_id"],
+            )
+        )
         return RunTerminalizationProgress(True, "cancelled", True, True)
 
     async def reconcile(**kwargs):
@@ -637,6 +1106,10 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
     monkeypatch.setattr("app.worker_main.queue.acquire_run_reconciliation_fence", acquire_fence)
     monkeypatch.setattr("app.worker_main.queue.release_run_reconciliation_fence", release_fence)
     monkeypatch.setattr("app.worker_main.stage_stale_run_reconciliation", stage)
+    monkeypatch.setattr(
+        "app.worker_main.prepare_stale_run_attempt_reconciliation",
+        prepare_attempt,
+    )
     monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
     monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
 
@@ -649,7 +1122,13 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
     ]
     assert ("fence", "tenant-a", "run-cancel", 500, 300) in calls
     assert ("stage", "run-cancel", "running", "cancelled") in calls
-    assert ("drain", "tenant-a", "run-cancel") in calls
+    assert (
+        "attempt_prepare",
+        "run-cancel",
+        "cancelled",
+        "stale-run-maintenance",
+    ) in calls
+    assert ("drain", "tenant-a", "run-cancel", "rat-run-cancel") in calls
     assert ("reconcile", "tenant-a", "run-cancel") in calls
     assert ("release", "token") in calls
 
@@ -1089,6 +1568,7 @@ async def test_run_once_acknowledges_accepted_and_completed_messages(monkeypatch
 
     async def heartbeat_run(message_id, worker_id):
         calls.append(("heartbeat", message_id, worker_id))
+        return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
 
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
@@ -1101,6 +1581,88 @@ async def test_run_once_acknowledges_accepted_and_completed_messages(monkeypatch
 
     assert outcome.status == outcome_status
     assert calls == [("reclaim",), ("lease", "worker-a"), ("process", "run-a", "worker-a"), ("ack", "raw-run", "msg-a")]
+
+
+@pytest.mark.asyncio
+async def test_run_once_binds_the_exact_initial_queue_lease_to_worker_processing(monkeypatch):
+    calls = []
+
+    class Settings:
+        max_active_worker_runs = 3
+        queue_tenant_processing_limit = 0
+        queue_user_processing_limit = 0
+        queue_lease_scan_limit = 50
+        queue_lease_visibility_timeout_seconds = 30
+
+    async def lease_run(**_kwargs):
+        return QueueMessage(
+            raw="raw-run",
+            payload={"run_id": "run-a"},
+            message_id="lease-handle-a",
+            queue_message_id="b" * 64,
+            attempt_id="qat-test-attempt",
+            owner_token="qown-test-owner",
+            leased_at=100.0,
+            delivery_attempt=1,
+        )
+
+    async def process_run_payload(
+        payload,
+        registry=None,
+        worker_id=None,
+        *,
+        queue_lease,
+        v4_capabilities=None,
+    ):
+        assert registry is None
+        assert worker_id == "worker-a"
+        assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert queue_lease.queue_message_id == "b" * 64
+        assert queue_lease.last_heartbeat_at.timestamp() == 100.0
+        assert (
+            queue_lease.lease_expires_at - queue_lease.last_heartbeat_at
+        ).total_seconds() == 30
+        calls.append(("process", payload["run_id"]))
+        return WorkerOutcome(status="succeeded", run_id="run-a")
+
+    async def ack_run(raw, message_id=None):
+        calls.append(("ack", raw, message_id))
+        return LeaseMutationOutcome("acked")
+
+    monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
+    monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
+    monkeypatch.setattr("app.worker_main.queue.ack_run", ack_run)
+
+    outcome = await run_once(
+        timeout_seconds=1,
+        worker_id="worker-a",
+        heartbeat_interval_seconds=60,
+        run_initial_maintenance=False,
+        run_background_maintenance=False,
+    )
+
+    assert outcome == WorkerOutcome(status="succeeded", run_id="run-a")
+    assert calls == [("process", "run-a"), ("ack", "raw-run", "lease-handle-a")]
+
+
+def test_durable_queue_lease_rejects_a_non_positive_visibility_window():
+    message = QueueMessage(
+        raw="raw-run",
+        payload={"run_id": "run-a"},
+        message_id="lease-handle-a",
+        queue_message_id="b" * 64,
+        attempt_id="qat-test-attempt",
+        owner_token="qown-test-owner",
+        leased_at=100.0,
+        delivery_attempt=1,
+    )
+
+    with pytest.raises(ValueError, match="queue_lease_visibility_timeout_invalid"):
+        worker_main._durable_queue_lease(
+            message,
+            visibility_timeout_seconds=0,
+        )
 
 
 @pytest.mark.asyncio
@@ -1129,7 +1691,7 @@ async def test_run_once_ownership_loss_cancels_processing_without_ack_or_fail(mo
     async def heartbeat_run(message_id, worker_id):
         await processing_started.wait()
         calls.append(("ownership_lost", message_id, worker_id))
-        return False
+        return QueueHeartbeatOutcome("stale_owner")
 
     async def ack_run(*_args, **_kwargs):
         calls.append(("ack",))
@@ -1303,6 +1865,7 @@ async def test_run_once_keeps_queue_maintenance_running_during_long_processing(m
 
     async def heartbeat_run(message_id, worker_id):
         calls.append(("heartbeat", message_id, worker_id))
+        return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
 
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
@@ -1345,6 +1908,7 @@ async def test_run_once_dead_letters_unhandled_outcome(monkeypatch):
 
     async def heartbeat_run(message_id, worker_id):
         calls.append(("heartbeat", message_id, worker_id))
+        return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
 
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
@@ -1385,6 +1949,7 @@ async def test_run_once_acknowledges_cancelled_message(monkeypatch):
 
     async def heartbeat_run(message_id, worker_id):
         calls.append(("heartbeat", message_id, worker_id))
+        return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
 
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
@@ -1478,6 +2043,7 @@ async def test_run_once_dead_letters_process_exception(monkeypatch):
 
     async def heartbeat_run(message_id, worker_id):
         calls.append(("heartbeat", message_id, worker_id))
+        return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
 
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
@@ -1516,6 +2082,7 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
     terminal_call,
 ):
     calls = []
+    pending_attempts = []
     payload = {
         "tenant_id": "tenant-a",
         "workspace_id": "workspace-a",
@@ -1553,11 +2120,30 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
             calls.append(("tx_exit", exc_type))
             return False
 
+    class PendingAdmissions(_EmptyV4PendingAdmissions):
+        async def prepare_pending_authority_in_transaction(
+            self,
+            _transaction,
+            *,
+            tenant_id,
+            run_id,
+            attempt_id,
+        ):
+            pending_attempts.append(attempt_id)
+
+    capabilities = SimpleNamespace(
+        authority=_TEST_V4_CAPABILITIES.authority,
+        pending_admissions=PendingAdmissions(),
+        publication_claims=_TEST_V4_CAPABILITIES.publication_claims,
+        publication_transport=_TEST_V4_CAPABILITIES.publication_transport,
+        event_persistence=_TEST_V4_CAPABILITIES.event_persistence,
+    )
+
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
         return QueueMessage(raw="raw-run", payload=payload, message_id="msg-a", queue_message_id="msg-a", attempt_id="qat-test-attempt", owner_token="qown-test-owner")
 
     async def process_run_payload(payload, registry=None, worker_id=None, *, v4_capabilities=None):
-        assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert v4_capabilities is capabilities
         raise RuntimeError("snapshot persistence failed")
 
     async def get_run(_conn, *, tenant_id, run_id, for_update):
@@ -1590,6 +2176,10 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
         calls.append(("cancel", kwargs["tenant_id"], kwargs["run_id"]))
         return RunTerminalizationProgress(True, "cancelled", True, True)
 
+    async def assert_worker_run_attempt_current(_conn, **kwargs):
+        calls.append(("attempt_fence", kwargs["queue_attempt_id"], kwargs["worker_id"]))
+        return {"id": "rat-run-a", "status": "running"}
+
     async def reconcile(**kwargs):
         calls.append(("reconcile", kwargs["tenant_id"], kwargs["run_id"], kwargs["progress"].status))
 
@@ -1607,6 +2197,10 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
     monkeypatch.setattr("app.worker_main.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker_main.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker_main.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr(
+        "app.worker_main.assert_worker_run_attempt_current",
+        assert_worker_run_attempt_current,
+    )
     monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
     monkeypatch.setattr("app.worker_main.queue.ack_run", ack_run)
     monkeypatch.setattr("app.worker_main.queue.fail_leased_run", fail_leased_run)
@@ -1617,6 +2211,7 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
         heartbeat_interval_seconds=60,
         run_initial_maintenance=False,
         run_background_maintenance=False,
+        v4_capabilities=capabilities,
     )
 
     assert outcome.status == expected_status
@@ -1628,6 +2223,13 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
     else:
         assert any(call[0] == terminal_call for call in calls)
         assert ("reconcile", "tenant-a", "run-a", expected_status) in calls
+        assert pending_attempts == [
+            worker_main.run_attempt_id_for_queue_attempt(
+                tenant_id="tenant-a",
+                run_id="run-a",
+                queue_attempt_id="qat-test-attempt",
+            )
+        ]
     if terminal_call == "fail":
         failure = next(call for call in calls if call[0] == "fail")
         assert failure[3:] == (
@@ -1787,6 +2389,9 @@ async def test_run_once_acknowledges_terminalized_process_exception_when_child_r
     async def fail_run(*_args, **_kwargs):
         return RunTerminalizationProgress(True, "failed", True, True)
 
+    async def assert_worker_run_attempt_current(*_args, **_kwargs):
+        return {"id": "rat-run-a", "status": "running"}
+
     async def reconcile(**_kwargs):
         raise RuntimeError("parent reconciliation retry")
 
@@ -1803,6 +2408,10 @@ async def test_run_once_acknowledges_terminalized_process_exception_when_child_r
     monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
     monkeypatch.setattr("app.worker_main.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker_main.repositories.fail_run", fail_run)
+    monkeypatch.setattr(
+        "app.worker_main.assert_worker_run_attempt_current",
+        assert_worker_run_attempt_current,
+    )
     monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
     monkeypatch.setattr("app.worker_main.queue.ack_run", ack_run)
     monkeypatch.setattr("app.worker_main.queue.fail_leased_run", fail_leased_run)
@@ -1867,6 +2476,76 @@ async def test_escaped_terminalization_rejects_stale_owner_or_fence_before_trans
 
 
 @pytest.mark.asyncio
+async def test_escaped_terminalization_rejects_missing_durable_attempt(monkeypatch):
+    calls = []
+    payload = SimpleNamespace(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        agent_id="agent-a",
+        execution_kind="skill",
+        skill_id="skill-a",
+    )
+    message = QueueMessage("raw", {"run_id": "run-a"}, "lease", "message", "attempt", "owner")
+
+    class Transaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    async def verify(*_args, **_kwargs):
+        return LeaseMutationOutcome("current")
+
+    async def get_run(*_args, **_kwargs):
+        return {
+            "id": "run-a",
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "agent_id": "agent-a",
+            "execution_kind": "skill",
+            "skill_id": "skill-a",
+            "status": "running",
+        }
+
+    async def missing_attempt(*_args, **_kwargs):
+        calls.append("attempt_fence")
+        return None
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("missing attempt authority must stop escaped terminalization")
+
+    monkeypatch.setattr(
+        worker_main,
+        "parse_leased_queue_envelope",
+        lambda _value: SimpleNamespace(payload=payload, attempt_id="attempt-a"),
+    )
+    monkeypatch.setattr(worker_main, "transaction", Transaction)
+    monkeypatch.setattr(worker_main.queue, "verify_lease_ownership", verify)
+    monkeypatch.setattr(worker_main.repositories, "get_run", get_run)
+    monkeypatch.setattr(worker_main, "assert_worker_run_attempt_current", missing_attempt)
+    monkeypatch.setattr(worker_main, "fail_run_with_v4", forbidden)
+    monkeypatch.setattr(worker_main, "cancel_run_with_v4", forbidden)
+    monkeypatch.setattr(worker_main, "terminalize_run_attempt", forbidden)
+    monkeypatch.setattr(worker_main, "drain_run_tool_permission_terminalization", forbidden)
+
+    outcome = await worker_main._terminalize_escaped_process_exception(
+        message,
+        "worker-a",
+        RuntimeError("boom"),
+        v4_capabilities=_TEST_V4_CAPABILITIES,
+    )
+
+    assert outcome.status == "ownership_lost"
+    assert calls == ["attempt_fence"]
+
+
+@pytest.mark.asyncio
 async def test_escaped_terminalization_keeps_redis_lease_checks_outside_transaction(monkeypatch):
     calls = []
     transaction_open = False
@@ -1918,6 +2597,9 @@ async def test_escaped_terminalization_keeps_redis_lease_checks_outside_transact
         calls.append(("terminal_write", transaction_open))
         return RunTerminalizationProgress(True, "failed", True, False)
 
+    async def assert_worker_run_attempt_current(*_args, **_kwargs):
+        return {"id": "rat-run-a", "status": "running"}
+
     monkeypatch.setattr(
         worker_main,
         "parse_leased_queue_envelope",
@@ -1927,6 +2609,11 @@ async def test_escaped_terminalization_keeps_redis_lease_checks_outside_transact
     monkeypatch.setattr(worker_main.queue, "verify_lease_ownership", verify)
     monkeypatch.setattr(worker_main.repositories, "get_run", get_run)
     monkeypatch.setattr(worker_main.repositories, "fail_run", fail_run)
+    monkeypatch.setattr(
+        worker_main,
+        "assert_worker_run_attempt_current",
+        assert_worker_run_attempt_current,
+    )
 
     outcome = await worker_main._terminalize_escaped_process_exception(
         message,
@@ -2222,6 +2909,10 @@ def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
         calls.append(("run_once", timeout_seconds))
         return WorkerOutcome(status="idle", run_id=None)
 
+    async def require_schema_current():
+        calls.append(("require_schema_current",))
+        return {"ready": True}
+
     async def fake_close_pool():
         calls.append(("close_pool",))
 
@@ -2230,6 +2921,7 @@ def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
 
     monkeypatch.setattr(sys, "argv", ["worker", "--once", "--timeout", "7"])
     monkeypatch.setattr("app.worker_main.configure_model_services", configure_model_services)
+    monkeypatch.setattr("app.worker_main.require_schema_current", require_schema_current)
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_pool", fake_close_pool)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_redis_client", fake_close_redis_client)
@@ -2238,6 +2930,7 @@ def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
 
     assert calls == [
         ("configure_model_services",),
+        ("require_schema_current",),
         ("run_once", 7),
         ("close_redis_client",),
         ("close_pool",),

@@ -15,6 +15,7 @@ from app.control_plane_contracts import (
     ToolPolicy,
     artifact_lineage_contract,
     artifact_manifest_contract,
+    attach_run_thinking_effort,
     is_standard_event_type,
     sanitize_public_payload,
     sanitize_public_text,
@@ -38,6 +39,13 @@ def test_control_plane_versions_are_stable():
     assert SKILL_MANIFEST_SCHEMA_VERSION == "ai-platform.skill-manifest.v1"
     assert TOOL_POLICY_SCHEMA_VERSION == "ai-platform.tool-policy.v1"
     assert CONTEXT_SNAPSHOT_SCHEMA_VERSION == "ai-platform.context-snapshot.v1"
+
+
+def test_run_thinking_effort_omits_off_and_attaches_enabled_level():
+    assert attach_run_thinking_effort({"message": "hello"}, None) == {"message": "hello"}
+    assert attach_run_thinking_effort({}, {"enable_thinking": "high"}) == {
+        "_thinking_effort": "high"
+    }
 
 
 def test_trace_ids_and_error_codes_are_normalized():

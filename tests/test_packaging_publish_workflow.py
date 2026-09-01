@@ -106,6 +106,17 @@ def test_required_workflows_delegate_main_image_builds_to_packaging():
         assert build["if"] == "steps.image-scope.outputs.build == 'true'"
 
 
+def test_publish_build_uses_role_scoped_non_authoritative_gha_cache():
+    workflow = _workflow()
+    steps = workflow["jobs"]["publish"]["steps"]
+    build = next(step for step in steps if step.get("name") == "Build and push immutable image")
+
+    assert build["with"]["cache-from"] == "type=gha,scope=packaging-${{ matrix.role }}"
+    assert build["with"]["cache-to"] == (
+        "type=gha,mode=max,scope=packaging-${{ matrix.role }},ignore-error=true"
+    )
+
+
 def test_publish_permissions_are_job_scoped_and_environment_protected():
     workflow = _workflow()
     assert workflow["permissions"] == {"contents": "read"}

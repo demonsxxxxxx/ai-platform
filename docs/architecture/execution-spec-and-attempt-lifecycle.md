@@ -2,10 +2,11 @@
 
 Status: normative source-architecture decision; implementation is incremental
 
-Current stacked foundation: the worker compiles an in-memory specification
-before dispatch, and Runs owns the durable attempt schema plus create/transition
-writers. Existing queue, worker, callback, and Sandbox paths are not yet cut over
-to those writers.
+Current stacked foundation: the worker compiles and persists the immutable
+specification before dispatch, Runs owns the durable attempt schema and
+transitions, and ordinary queue workers bind the initial Redis lease plus every
+successful heartbeat to the exact attempt owner fence. Callback, Redis reclaim,
+and remaining Sandbox paths are not yet fully cut over to that fence.
 
 Owner: `runs` bounded context
 
@@ -144,15 +145,59 @@ the row.
 `expired` remains an open arbitration state: a reconciler must fence the old
 owner and finish that attempt before a later ordinal can be created.
 
-This foundation is not the worker cutover. Existing queue, worker, callback,
-Sandbox, event/audit, and terminalization writers do not yet create or advance
-`run_attempts`; they remain on the legacy Run/Sandbox authorities until the
-dual-write phase below. Real PostgreSQL DDL/readiness proof, event/audit
-publication, Redis reclaim, callback/Sandbox binding, and mixed-version runtime
-acceptance are therefore still required before the attempt migration can be
-called complete.
+The first worker cutover slice derives a Runs-owned `rat_*` identity from the
+opaque Redis `qat_*` lease identity without changing `QueueRunPayload`, compiles
+the immutable specification immediately before dispatch, advances the durable
+attempt through `created -> queued -> claimed -> running`, and uses the durable
+identity for executor, Sandbox, callback, stream, cancellation, and terminal
+projection paths. Pre-dispatch failures that never produce a valid specification
+remain compatible Run-only terminal paths.
 
-Redis reclaim creates a new durable ordinal attempt before a new worker can
+This is not the complete attempt migration. The ordinary worker records the
+initial queue-message identity and lease window during `created -> queued`, then
+persists each Redis-fenced heartbeat with the exact attempt identity, queue
+identity, worker owner, and current `owner_generation`. A Redis heartbeat whose
+PostgreSQL write or commit fails stops worker execution and is not treated as
+durable success: the worker does not acknowledge or fail the queue message, and
+the Redis-only extension remains bounded by one visibility-window grace deadline
+from worker processing start. That deadline covers the sleep, Redis renewal,
+PostgreSQL write, and transaction commit rather than only the interval between
+heartbeat cycles. If no durable attempt exists by that deadline, the worker stops
+renewing and cancels local execution. Redis and PostgreSQL share the exact
+heartbeat value returned by the Redis authority.
+Lease acquisition, heartbeat refresh, and the final reclaim decision use Redis
+server time. A heartbeat normalizes future-skewed Redis lease and worker activity
+timestamps. Reclaim independently normalizes an abandoned future-dated lease in
+both matching metadata hashes, grants one fresh visibility window, and only
+requeues or dead-letters it on a later expired pass. The reclaim mutation
+atomically rechecks lease identity, reconciliation fence, and visibility expiry
+against that same Redis clock before changing queue state; the caller clock is
+only a scan hint.
+
+Protocol-v2 leases store their owner credential in `owner_token_v2` with
+`lease_protocol_version = 2` and omit the legacy `owner_token` projection. A v1
+reclaimer therefore fails its existing owner check before mutation, while the
+current heartbeat, acknowledgement, failure, verification, and reclaim scripts
+accept both legacy and protocol-v2 leases. This provides a bounded forward
+mixed-version cutover on the shared queue namespace. Rollback to a v1-only fleet
+requires all protocol-v2 processing leases to be drained or explicitly recovered
+by a current reclaimer first.
+
+PostgreSQL continues to reject durable timestamp regression. Its heartbeat writer
+stores the exact Redis-authoritative window only when the existing row is not
+ahead, and the worker verifies the returned row before treating persistence as
+successful. Schema activation fails closed when an open attempt heartbeat is more
+than five seconds ahead of the PostgreSQL clock, so operators must remediate that
+state before installing the monotonic guard. Stale-run recovery moves the exact
+open attempt into reconciler-owned `expired` or `cancel_requested` before terminal
+drain, and permission, executor, and multi-agent maintenance writers mirror the
+exact terminal attempt in the same transaction. Callback and Redis reclaim paths
+still lack end-to-end expected `owner_generation` fencing and recoverable
+cross-store effects. The heartbeat path has real PostgreSQL/Redis
+rollback-and-convergence coverage; production Sandbox acceptance and rollback
+evidence remain required before the migration can be called complete.
+
+Redis reclaim must create a new durable ordinal attempt before a new worker can
 execute. It never overwrites the old attempt identity. Retry, resume, and copy
 continue to create a new Run under the current product contract; they do not
 copy an attempt, queue lease, Sandbox handle, callback token, credential lease,
@@ -239,6 +284,9 @@ The attempt slice additionally requires:
 - rejection of non-`created` inserts, non-queued parent Runs, canonical
   JSON/JSONB drift, digest drift, and wrong same-named schema constraints;
 - real Redis lease/reclaim races mapped to durable ordinal attempts;
+- real Redis forward mixed-version proof that a v1 reclaimer cannot mutate a
+  protocol-v2 lease, plus future-clock normalization on retry and dead-letter
+  branches;
 - cancellation before dispatch, during execution, after provider stop failure,
   and cleanup retry;
 - stale queue owner, callback, Sandbox handle, terminalizer, and stream

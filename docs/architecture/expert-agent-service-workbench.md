@@ -137,6 +137,37 @@ the browser.
 | Builder progressive disclosure | `AgentBuilderWorkbench.tsx`, `AgentBuilderEnterpriseFields.tsx`, `agentBuilderAdapter.ts` | Four-field initial surface; presentation and governance grouped as optional |
 | Skill archive UX | `SkillsPanel/*`, `useSkills.ts`, locale files | Truthful archive semantics, optimistic removal/rollback, partial-result handling |
 
+### Change Contract: run-scoped Thinking preference
+
+- **Owner:** Execution model-option policy; Agent Profile admission only verifies
+  that the option cannot alter the admitted capability set.
+- **Bounded paths:** Chat request validation and admission, Run input projection,
+  sandbox task configuration, Claude Agent SDK options, prompt language policy,
+  Agent workspace composition, and structurally identified legacy Thinking
+  presentation.
+- **Reached invariants:** profile Skill/MCP/model authority remains unchanged;
+  the existing platform-governed shared model selector remains available;
+  caller-supplied server control metadata remains stripped; `off` sends no SDK
+  Thinking option and publishes no SDK Thinking block; enabled levels use the SDK
+  0.2.130 adaptive-thinking contract with summarized display; private signatures
+  and provider-internal reasoning remain outside public events.
+- **Acceptance:** `off`, `low`, `medium`, and `high` survive admission and
+  reach the SDK exactly once; `max` and other unsupported values fail before
+  persistence; Agent workspaces expose the selected level through the visible
+  composer toolbar while keeping Skill and MCP controls locked and preserving
+  the established platform-governed model selector; Chinese requests instruct both the final answer and public Thinking summaries to use
+  Simplified Chinese; fixed labels are Chinese without rewriting model-produced
+  summaries.
+- **Regression proof:** focused tests cover profile admission, trust-boundary
+  validation, sandbox transport, all SDK effort levels, Agent workspace option
+  composition, and public display fallbacks. Local evidence cannot prove gateway,
+  model, or deployed behavior.
+- **Rollback:** revert the source change as one unit; no schema or stored-data
+  migration is introduced.
+- **Stop conditions:** stop if the change admits a Skill, MCP, prompt, or model
+  selector not already authorized, exposes raw provider reasoning, introduces
+  model capability probing, or requires an SSE wire-contract change.
+
 ## Acceptance Checklist
 
 ### Source and component checks

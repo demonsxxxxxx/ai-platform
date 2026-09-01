@@ -1,8 +1,11 @@
 import asyncio
 from contextlib import asynccontextmanager
 import hashlib
+import importlib.util
 import os
 from pathlib import Path
+import subprocess
+import sys
 import uuid
 
 import psycopg
@@ -18,274 +21,28 @@ POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
 REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM = (
     "d474b751d6fb6bff75cbbb8f3c482cb42f38ac462c116313baeccfc2c247fef7"
 )
-REMOTE_DUE_INDEX_SQL = """create index if not exists idx_run_events_v4_due_scope
-  on run_events(tenant_id, run_id, sequence)
-  where visible_to_user = true
-    and payload_json ? '__stream_v4'
-    and stream_publication_state = 'pending';
-
-
-"""
-MODEL_CONTROL_PLANE_SCHEMA_FRAGMENTS = (
-    """create table if not exists model_gateway_revisions (
-  revision bigint primary key,
-  base_url text not null,
-  api_key_ciphertext bytea not null,
-  key_fingerprint text not null,
-  active boolean not null default false,
-  created_by text not null,
-  created_at timestamptz not null default now(),
-  constraint chk_model_gateway_revision_positive check (revision > 0),
-  constraint chk_model_gateway_base_url check (length(base_url) between 1 and 2048),
-  constraint chk_model_gateway_key_fingerprint check (key_fingerprint ~ '^[0-9a-f]{16}$')
-);
-create unique index if not exists uq_model_gateway_active
-  on model_gateway_revisions(active) where active = true;
-
-create table if not exists model_catalog_entries (
-  model_id text primary key,
-  upstream_model_id text not null unique,
-  display_name text not null,
-  provider text not null default 'custom',
-  enabled boolean not null default false,
-  upstream_available boolean not null default true,
-  is_default boolean not null default false,
-  display_order integer not null default 0,
-  first_seen_revision bigint not null references model_gateway_revisions(revision),
-  last_seen_revision bigint not null references model_gateway_revisions(revision),
-  first_seen_at timestamptz not null default now(),
-  last_seen_at timestamptz not null default now(),
-  constraint chk_model_catalog_id check (model_id ~ '^[A-Za-z0-9_.:-]{1,128}$'),
-  constraint chk_model_catalog_upstream_id check (
-    length(upstream_model_id) between 1 and 512
-    and upstream_model_id = btrim(upstream_model_id)
-  ),
-  constraint chk_model_catalog_display_name check (length(display_name) between 1 and 160),
-  constraint chk_model_catalog_default_enabled check (not is_default or enabled)
-);
-create unique index if not exists uq_model_catalog_default
-  on model_catalog_entries(is_default) where is_default = true;
-
-""",
-    """  model_id text,
-  model_value text,
-  model_gateway_revision bigint,
-""",
-    """alter table runs add column if not exists model_id text;
-alter table runs add column if not exists model_value text;
-alter table runs add column if not exists model_gateway_revision bigint;
-""",
-    """  if not exists (select 1 from pg_constraint where conrelid = 'runs'::regclass and conname = 'fk_runs_model_gateway_revision') then
-    alter table runs add constraint fk_runs_model_gateway_revision
-      foreign key (model_gateway_revision) references model_gateway_revisions(revision);
-  end if;
-""",
+REMOTE_SUCCESSOR_ACTIVATION_COMMIT = "829acfcd087365c0cf48726cbab35e1c79b5230f"
+REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM = (
+    "14941c07a273f8924fb289876ac887879f8a8d5cc2a5a8d95bb9252e1ea40d90"
 )
-MCP_DYNAMIC_TOOL_DISCOVERY_SCHEMA_REPLACEMENTS = (
-    (
-        """  credential_fingerprint text not null default '',
-  updated_by text,
-""",
-        """  credential_fingerprint text not null default '',
-  catalog_generation bigint not null default 0,
-  catalog_sync_attempt bigint not null default 0,
-  catalog_sync_lease_expires_at timestamptz,
-  catalog_revision bigint not null default 0,
-  catalog_status text not null default 'legacy',
-  catalog_unavailable_reason text not null default '',
-  catalog_discovered_count integer not null default 0,
-  catalog_selectable_count integer not null default 0,
-  catalog_last_synced_at timestamptz,
-  updated_by text,
-""",
-    ),
-    (
-        """  check (credential_state in ('not_configured', 'configured', 'platform_managed'))
-);
-
-create index if not exists idx_mcp_servers_tenant_status
-""",
-        """  check (credential_state in ('not_configured', 'configured', 'platform_managed')),
-  check (catalog_generation >= 0),
-  check (catalog_sync_attempt >= 0),
-  check (catalog_revision >= 0),
-  check (catalog_status in ('legacy', 'refresh_required', 'syncing', 'available', 'no_tools', 'unavailable', 'disabled', 'deleted')),
-  check (catalog_discovered_count >= 0),
-  check (catalog_selectable_count >= 0)
-);
-
-create index if not exists idx_mcp_servers_tenant_status
-""",
-    ),
-    (
-        """do $$
-begin
-  if not exists (
-    select 1 from pg_constraint where conname = 'mcp_servers_endpoint_not_persisted'
-  ) then
-    alter table mcp_servers
-      add constraint mcp_servers_endpoint_not_persisted
-      check (endpoint_redacted = '') not valid;
-  end if;
-end $$;
-
-alter table mcp_servers
-  validate constraint mcp_servers_endpoint_not_persisted;
-
-""",
-        """alter table mcp_servers
-  add column if not exists catalog_generation bigint not null default 0,
-  add column if not exists catalog_sync_attempt bigint not null default 0,
-  add column if not exists catalog_sync_lease_expires_at timestamptz,
-  add column if not exists catalog_revision bigint not null default 0,
-  add column if not exists catalog_status text not null default 'legacy',
-  add column if not exists catalog_unavailable_reason text not null default '',
-  add column if not exists catalog_discovered_count integer not null default 0,
-  add column if not exists catalog_selectable_count integer not null default 0,
-  add column if not exists catalog_last_synced_at timestamptz;
-
-do $$
-begin
-  if not exists (
-    select 1 from pg_constraint
-    where conname = 'mcp_servers_catalog_status_valid'
-      and conrelid = 'mcp_servers'::regclass
-  ) then
-    alter table mcp_servers
-      add constraint mcp_servers_catalog_status_valid
-      check (catalog_status in ('legacy', 'refresh_required', 'syncing', 'available', 'no_tools', 'unavailable', 'disabled', 'deleted')) not valid;
-  end if;
-end
-$$;
-
-alter table mcp_servers
-  validate constraint mcp_servers_catalog_status_valid;
-
-""",
-    ),
-    (
-        """  metadata_json jsonb not null default '{}'::jsonb,
-  credential_envelope text not null default '',
-  updated_by text,
-""",
-        """  metadata_json jsonb not null default '{}'::jsonb,
-  updated_by text,
-""",
-    ),
-    (
-        """alter table mcp_server_credentials
-  add column if not exists credential_envelope text not null default '';
-
-""",
-        "",
-    ),
-    (
-        """do $$
-begin
-  if not exists (
-    select 1 from pg_constraint where conname = 'mcp_tools_endpoint_not_persisted'
-  ) then
-    alter table mcp_tools
-      add constraint mcp_tools_endpoint_not_persisted
-      check (endpoint = '') not valid;
-  end if;
-end $$;
-
-alter table mcp_tools
-  validate constraint mcp_tools_endpoint_not_persisted;
-
-""",
-        "",
-    ),
-    (
-        """create index if not exists idx_tool_policies_tool on tool_policies(tool_id, tenant_id);
-
-create table if not exists agents (
-""",
-        """create index if not exists idx_tool_policies_tool on tool_policies(tool_id, tenant_id);
-
-create table if not exists mcp_tool_catalog_entries (
-  tool_id text primary key references mcp_tools(id),
-  tenant_id text not null references tenants(id),
-  server_name text not null,
-  remote_tool_name text not null,
-  catalog_generation bigint not null,
-  schema_hash text not null,
-  status text not null default 'disabled',
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (tenant_id, server_name, remote_tool_name),
-  foreign key (tenant_id, server_name) references mcp_servers(tenant_id, name),
-  check (catalog_generation >= 0),
-  check (status in ('active', 'disabled', 'stale', 'deleted'))
-);
-
-create index if not exists idx_mcp_tool_catalog_entries_server
-  on mcp_tool_catalog_entries(tenant_id, server_name, status, remote_tool_name);
-
-create table if not exists agents (
-""",
-    ),
-    (
-        """  description = excluded.description,
-  transport_type = excluded.transport_type,
-  auth_mode = excluded.auth_mode,
-  allowed_tools = excluded.allowed_tools,
-  status = excluded.status,
-  write_capable = excluded.write_capable,
-  risk_level = excluded.risk_level,
-  visible_to_user = excluded.visible_to_user
-where mcp_tools.endpoint = '';
-""",
-        """  description = excluded.description,
-  transport_type = excluded.transport_type,
-  endpoint = excluded.endpoint,
-  auth_mode = excluded.auth_mode,
-  allowed_tools = excluded.allowed_tools,
-  status = excluded.status,
-  write_capable = excluded.write_capable,
-  risk_level = excluded.risk_level,
-  visible_to_user = excluded.visible_to_user;
-""",
-    ),
+REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_COMMIT = (
+    "33f3ab0163cd05c412e2a3d25d5859a935a359a6"
 )
-CONFIRMATION_HISTORY_REPAIR_SQL = """update sse_stream_authorities
-set admission_confirmed_at = coalesce(
-  admission_confirmed_at,
-  admission_created_at,
-  updated_at,
-  clock_timestamp()
-)
-where state <> 'admission_pending'
-  and admission_confirmed_at is null;
 
-update sse_stream_authorities
-set admission_confirmed_at = null
-where state = 'admission_pending'
-  and admission_confirmed_at is not null;
 
-"""
+def _schema_source_at_commit(commit: str) -> str:
+    root = Path(__file__).resolve().parents[1]
+    return subprocess.run(
+        ["git", "show", f"{commit}:app/schema.sql"],
+        cwd=root,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout
 
 
 def _remote_successor_activation_schema_sql() -> str:
-    current_sql = Path("app/schema.sql").read_text(encoding="utf-8")
-    for current_fragment, predecessor_fragment in (
-        MCP_DYNAMIC_TOOL_DISCOVERY_SCHEMA_REPLACEMENTS
-    ):
-        assert current_sql.count(current_fragment) == 1
-        current_sql = current_sql.replace(current_fragment, predecessor_fragment)
-    for fragment in MODEL_CONTROL_PLANE_SCHEMA_FRAGMENTS:
-        assert current_sql.count(fragment) == 1
-        current_sql = current_sql.replace(fragment, "")
-    trace_column_sql = (
-        "alter table run_events add column if not exists trace_id text not null default '';"
-    )
-    assert current_sql.count(trace_column_sql) == 1
-    assert current_sql.count(CONFIRMATION_HISTORY_REPAIR_SQL) == 1
-    remote_sql = current_sql.replace(
-        trace_column_sql,
-        REMOTE_DUE_INDEX_SQL + trace_column_sql,
-    ).replace(CONFIRMATION_HISTORY_REPAIR_SQL, "")
+    remote_sql = _schema_source_at_commit(REMOTE_SUCCESSOR_ACTIVATION_COMMIT)
     remote_index_contract = "\n".join(
         f"{migration.name}:{migration.checksum_sha256}"
         for migration in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
@@ -298,8 +55,23 @@ def _remote_successor_activation_schema_sql() -> str:
     return remote_sql
 
 
-def test_remote_successor_activation_schema_rebuild_preserves_pinned_checksum():
+def _remote_run_attempt_reconciler_takeover_schema_sql() -> str:
+    remote_sql = _schema_source_at_commit(
+        REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_COMMIT
+    )
+    assert (
+        schema_migrations.schema_checksum(remote_sql)
+        == REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM
+    )
+    return remote_sql
+
+
+def test_remote_successor_activation_schema_checksum_remains_pinned() -> None:
     assert _remote_successor_activation_schema_sql()
+
+
+def test_remote_run_attempt_reconciler_takeover_checksum_remains_pinned() -> None:
+    assert _remote_run_attempt_reconciler_takeover_schema_sql()
 
 
 def _postgres_dsn() -> str:
@@ -336,6 +108,40 @@ def _index_connection_factory(dsn: str, schema_name: str):
         )
 
     return factory
+
+
+def _load_exact_base_schema_migrations(tmp_path: Path):
+    root = Path(__file__).resolve().parents[1]
+    module_source = subprocess.run(
+        [
+            "git",
+            "show",
+            f"{REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_COMMIT}:app/schema_migrations.py",
+        ],
+        cwd=root,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout
+    schema_source = _schema_source_at_commit(
+        REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_COMMIT
+    )
+    module_path = tmp_path / "exact_base_schema_migrations.py"
+    schema_path = tmp_path / "exact_base_schema.sql"
+    module_path.write_text(module_source, encoding="utf-8")
+    schema_path.write_text(schema_source, encoding="utf-8")
+    module_name = f"exact_base_schema_migrations_{uuid.uuid4().hex}"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
+    module.SCHEMA_PATH = schema_path
+    return module
 
 
 @pytest.mark.asyncio
@@ -420,6 +226,137 @@ async def test_real_postgres_concurrent_migrations_use_one_global_lock_and_ledge
             )
     finally:
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_upgrade_installs_run_attempt_heartbeat_monotonicity_guard():
+    dsn = _postgres_dsn()
+    schema_name = f"schema_attempt_heartbeat_upgrade_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(
+        dsn,
+        autocommit=True,
+        row_factory=dict_row,
+    )
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await admin.execute(
+            sql.SQL("set search_path to {}").format(sql.Identifier(schema_name))
+        )
+        await admin.execute(_remote_run_attempt_reconciler_takeover_schema_sql())
+        await admin.execute(
+            """
+            insert into schema_migrations(version, checksum_sha256)
+            values (%s, %s)
+            """,
+            (
+                schema_migrations.RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION,
+                REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM,
+            ),
+        )
+
+        factory = _transaction_factory(dsn, schema_name)
+        result = await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=_index_connection_factory(dsn, schema_name),
+        )
+
+        assert result["status"] == "applied"
+        ledger_rows = await (
+            await admin.execute(
+                "select version, checksum_sha256 from schema_migrations order by version"
+            )
+        ).fetchall()
+        assert ledger_rows == [
+            {
+                "version": schema_migrations.RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION,
+                "checksum_sha256": REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM,
+            },
+            {
+                "version": schema_migrations.TARGET_SCHEMA_VERSION,
+                "checksum_sha256": schema_migrations.schema_checksum(),
+            },
+        ]
+        trigger_definition = await (
+            await admin.execute(
+                """
+                select pg_get_functiondef(
+                  to_regprocedure(%s)
+                ) as definition
+                """,
+                (
+                    f"{schema_name}.ai_platform_guard_run_attempt_heartbeat_monotonicity()",
+                ),
+            )
+        ).fetchone()
+        assert trigger_definition is not None
+        assert "run_attempt_heartbeat_regression" in trigger_definition["definition"]
+        assert "run_attempt_lease_expiry_regression" in trigger_definition["definition"]
+        async with factory() as conn:
+            assert (await schema_migrations.schema_status(conn))["ready"] is True
+    finally:
+        await admin.execute(
+            sql.SQL("drop schema if exists {} cascade").format(
+                sql.Identifier(schema_name)
+            )
+        )
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_candidate_preserves_exact_base_schema_readiness(
+    tmp_path: Path,
+):
+    dsn = _postgres_dsn()
+    schema_name = f"schema_exact_base_compatibility_{uuid.uuid4().hex}"
+    exact_base = _load_exact_base_schema_migrations(tmp_path)
+    admin = await psycopg.AsyncConnection.connect(
+        dsn,
+        autocommit=True,
+        row_factory=dict_row,
+    )
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        factory = _transaction_factory(dsn, schema_name)
+        index_factory = _index_connection_factory(dsn, schema_name)
+        base_result = await exact_base.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+        assert base_result["version"] == exact_base.TARGET_SCHEMA_VERSION
+        async with factory() as conn:
+            assert (await exact_base.schema_status(conn))["ready"] is True
+
+        candidate_result = await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+        assert candidate_result["version"] == schema_migrations.TARGET_SCHEMA_VERSION
+        async with factory() as conn:
+            assert (await schema_migrations.schema_status(conn))["ready"] is True
+            exact_base_status = await exact_base.schema_status(conn)
+        assert exact_base_status["ready"] is True
+        assert exact_base_status["triggers_current"] is True
+        assert exact_base_status["index_ledger_current"] is True
+        ledger_versions = await (
+            await admin.execute(
+                sql.SQL(
+                    "select distinct target_version from {}.schema_index_migrations"
+                ).format(sql.Identifier(schema_name))
+            )
+        ).fetchall()
+        assert ledger_versions == [
+            {
+                "target_version": schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION,
+            }
+        ]
+    finally:
+        sys.modules.pop(exact_base.__name__, None)
+        await admin.execute(
+            sql.SQL("drop schema if exists {} cascade").format(
+                sql.Identifier(schema_name)
+            )
+        )
         await admin.close()
 
 
@@ -789,6 +726,7 @@ async def test_real_postgres_upgrade_namespaces_every_legacy_file_outbox_state()
         "drop trigger trg_agent_profile_legacy_insert_compatibility on agent_profile_revisions",
         "drop trigger trg_agent_profile_legacy_insert_reconcile on agent_profile_revisions",
         "drop trigger trg_run_attempt_transition_guard on run_attempts",
+        "drop trigger trg_run_attempt_heartbeat_monotonicity_guard on run_attempts",
         """
         drop trigger trg_run_attempt_transition_guard on run_attempts;
         create trigger trg_run_attempt_transition_guard

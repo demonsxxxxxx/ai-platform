@@ -1,13 +1,15 @@
 import argparse
 import asyncio
+from collections.abc import Callable
 import contextlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import os
 from pathlib import Path
 import socket
 import time
+from typing import Any
 import uuid
 
 from app import queue
@@ -21,7 +23,7 @@ from app.bootstrap.worker_maintenance import (
     run_maintenance_phases,
     worker_maintenance_interval_seconds as _worker_maintenance_interval_seconds,
 )
-from app.execution.api import stage_stale_run_reconciliation
+from app.execution.api import WorkerQueueLease, stage_stale_run_reconciliation
 from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_SKILL,
     sanitize_public_payload,
@@ -37,6 +39,16 @@ from app.routes.sandbox_runtime_cleanup import (
     SandboxRuntimeCleanupError,
     cleanup_expired_sandbox_leases as _cleanup_expired_sandbox_lease_records,
     cleanup_expired_sandbox_runtime_leases,
+)
+from app.runs.api import (
+    assert_worker_run_attempt_current,
+    get_latest_run_attempt,
+    heartbeat_worker_run_attempt,
+    prepare_stale_run_attempt_reconciliation,
+    request_run_attempt_cancel,
+    run_attempt_id_for_queue_attempt,
+    terminalize_latest_run_attempt,
+    terminalize_run_attempt,
 )
 from app.schema_migrations import require_schema_current
 from app.settings import get_settings
@@ -182,22 +194,109 @@ async def _worker_runtime_heartbeat_until_done(worker_id: str, interval_seconds:
         await asyncio.sleep(interval_seconds)
 
 
+def _require_durable_heartbeat_convergence(
+    persisted: dict[str, Any],
+    *,
+    last_heartbeat_at: datetime,
+    lease_expires_at: datetime,
+) -> None:
+    """Fail closed unless PostgreSQL stored the Redis-authoritative window."""
+
+    if (
+        persisted.get("last_heartbeat_at") != last_heartbeat_at
+        or persisted.get("lease_expires_at") != lease_expires_at
+    ):
+        raise RuntimeError("run_attempt_worker_heartbeat_not_converged")
+
+
 async def _heartbeat_until_done(
-    message_id: str,
+    message: queue.QueueMessage,
     worker_id: str,
     interval_seconds: float,
+    visibility_timeout_seconds: int,
     ownership_lost: asyncio.Event,
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> None:
+    attempt_creation_deadline = monotonic() + visibility_timeout_seconds
+    durable_attempt_seen = False
+
+    async def heartbeat_once() -> bool | None:
+        await asyncio.sleep(interval_seconds)
+        heartbeat = await queue.heartbeat_run(
+            message.message_id,
+            worker_id=worker_id,
+        )
+        if not heartbeat.succeeded or heartbeat.heartbeat_at is None:
+            return None
+        last_heartbeat_at = datetime.fromtimestamp(
+            heartbeat.heartbeat_at,
+            tz=timezone.utc,
+        )
+        lease_expires_at = last_heartbeat_at + timedelta(
+            seconds=visibility_timeout_seconds
+        )
+        async with transaction() as conn:
+            persisted = await heartbeat_worker_run_attempt(
+                conn,
+                tenant_id=str(message.payload.get("tenant_id") or ""),
+                run_id=str(message.payload.get("run_id") or ""),
+                queue_attempt_id=message.attempt_id,
+                queue_message_id=message.queue_message_id,
+                worker_id=worker_id,
+                last_heartbeat_at=last_heartbeat_at,
+                lease_expires_at=lease_expires_at,
+            )
+        if persisted is not None:
+            _require_durable_heartbeat_convergence(
+                persisted,
+                last_heartbeat_at=last_heartbeat_at,
+                lease_expires_at=lease_expires_at,
+            )
+            return True
+        return False
+
     try:
         while True:
-            await asyncio.sleep(interval_seconds)
-            if not await queue.heartbeat_run(message_id, worker_id=worker_id):
+            remaining = visibility_timeout_seconds
+            if not durable_attempt_seen:
+                remaining = attempt_creation_deadline - monotonic()
+            if remaining <= 0:
                 ownership_lost.set()
                 return
+
+            try:
+                async with asyncio.timeout(remaining):
+                    heartbeat_result = await heartbeat_once()
+            except TimeoutError:
+                ownership_lost.set()
+                return
+            if heartbeat_result is None:
+                ownership_lost.set()
+                return
+            durable_attempt_seen = durable_attempt_seen or heartbeat_result
     except asyncio.CancelledError:
         raise
     except Exception:
         ownership_lost.set()
+
+
+def _durable_queue_lease(
+    message: queue.QueueMessage,
+    *,
+    visibility_timeout_seconds: int,
+) -> WorkerQueueLease | None:
+    if message.leased_at is None:
+        return None
+    if visibility_timeout_seconds <= 0:
+        raise ValueError("queue_lease_visibility_timeout_invalid")
+    last_heartbeat_at = datetime.fromtimestamp(message.leased_at, tz=timezone.utc)
+    return WorkerQueueLease(
+        queue_message_id=message.queue_message_id,
+        last_heartbeat_at=last_heartbeat_at,
+        lease_expires_at=last_heartbeat_at
+        + timedelta(seconds=visibility_timeout_seconds),
+    )
 
 
 async def cleanup_expired_sandbox_leases() -> None:
@@ -278,12 +377,30 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
         run_id = str(candidate.get("run_id") or "")
         if not tenant_id or not run_id:
             continue
+        async with transaction() as conn:
+            run = await repositories.get_run(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                for_update=True,
+            )
+            attempt = await get_latest_run_attempt(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                for_update=True,
+            )
         outcome = await drain_run_tool_permission_terminalization(
             tenant_id=tenant_id,
             run_id=run_id,
             capabilities=v4_capabilities,
             transaction_factory=transaction,
             max_batches=4,
+            attempt_id=str((attempt or {}).get("id") or "") or None,
+            attempt_error_code=(
+                str((run or {}).get("permission_terminalization_error_code") or "")
+                or None
+            ),
         )
         if outcome is not None and outcome.did_transition and outcome.needs_reconcile:
             await reconcile_terminalized_permission_run(
@@ -325,11 +442,31 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
         if not tenant_id or not parent_run_id:
             continue
         async with transaction() as conn:
-            await repositories.finalize_multi_agent_parent_run_if_ready(
+            finalized = await repositories.finalize_multi_agent_parent_run_if_ready(
                 conn,
                 tenant_id=tenant_id,
                 parent_run_id=parent_run_id,
             )
+            if finalized is not None:
+                parent_run = await repositories.get_run(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=parent_run_id,
+                    for_update=True,
+                )
+                parent_status = str(finalized.get("status") or "")
+                await terminalize_latest_run_attempt(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=parent_run_id,
+                    status=parent_status,
+                    terminal_reason=f"multi_agent_parent_{parent_status}",
+                    error_code=(
+                        str((parent_run or {}).get("error_code") or "") or None
+                        if parent_status == "failed"
+                        else None
+                    ),
+                )
     return progress
 
 
@@ -385,6 +522,7 @@ async def reconcile_stale_runs_for_worker(
             if terminal_status == "cancelled"
             else "Run interrupted because no live execution owner remains."
         )
+        attempt_id: str | None = None
         try:
             async with _ReconciliationFenceGuard(fence, ttl_seconds=fence_ttl_seconds) as fence_guard:
                 fenced_transaction = _fenced_transaction_factory(fence_guard)
@@ -405,6 +543,19 @@ async def reconcile_stale_runs_for_worker(
                             append_event=repositories.append_event,
                             append_audit_log=repositories.append_audit_log,
                         )
+                        if staged is not None:
+                            attempt = await prepare_stale_run_attempt_reconciliation(
+                                conn,
+                                tenant_id=tenant_id,
+                                run_id=run_id,
+                                terminal_status=terminal_status,
+                                reconciler_id="stale-run-maintenance",
+                            )
+                            attempt_id = (
+                                str(attempt.get("id") or "")
+                                if attempt is not None
+                                else None
+                            )
                 except ReconciliationFenceLost:
                     results.append(
                         {"tenant_id": tenant_id, "run_id": run_id, "status": "fence_renewal_failed", "did_transition": False}
@@ -427,6 +578,8 @@ async def reconcile_stale_runs_for_worker(
                         capabilities=v4_capabilities,
                         transaction_factory=fenced_transaction,
                         max_batches=4,
+                        attempt_id=attempt_id,
+                        attempt_error_code=error_code,
                     )
                     await fence_guard.ensure_live()
                     if outcome is not None and outcome.did_transition and outcome.needs_reconcile:
@@ -547,7 +700,12 @@ async def _terminalize_escaped_process_exception(
     try:
         envelope = parse_leased_queue_envelope(message.payload)
         payload = envelope.payload
-        attempt_id = envelope.attempt_id
+        queue_attempt_id = envelope.attempt_id
+        attempt_id = run_attempt_id_for_queue_attempt(
+            tenant_id=payload.tenant_id,
+            run_id=payload.run_id,
+            queue_attempt_id=queue_attempt_id,
+        )
     except Exception:
         raw_run_id = message.payload.get("run_id")
         return WorkerOutcome(
@@ -610,10 +768,26 @@ async def _terminalize_escaped_process_exception(
             run_id=run_id,
             attempt_id=attempt_id,
         )
+        attempt_authority = await assert_worker_run_attempt_current(
+            conn,
+            tenant_id=payload.tenant_id,
+            run_id=run_id,
+            queue_attempt_id=queue_attempt_id,
+            worker_id=worker_id,
+        )
+        if attempt_authority is None:
+            return _queue_ownership_lost_outcome(run_id)
+        validated_attempt_id = str(attempt_authority["id"])
         cancel_requested = bool(locked_run.get("cancel_requested_at")) or str(
             locked_run.get("permission_terminalization_target") or ""
         ) in {"cancel_requested", "cancelled"}
         if cancel_requested:
+            await request_run_attempt_cancel(
+                conn,
+                tenant_id=payload.tenant_id,
+                run_id=run_id,
+                attempt_id=validated_attempt_id,
+            )
             progress = await cancel_run_with_v4(
                 conn,
                 capabilities=v4_capabilities,
@@ -631,6 +805,16 @@ async def _terminalize_escaped_process_exception(
                 error_message=error_message,
                 result_json={"message": "Worker processing failed unexpectedly."},
             )
+        if progress is not None and progress.is_terminal():
+            await terminalize_run_attempt(
+                conn,
+                tenant_id=payload.tenant_id,
+                run_id=run_id,
+                attempt_id=validated_attempt_id,
+                status=str(progress.status),
+                terminal_reason=f"run_{progress.status}",
+                error_code=error_code if progress.status == "failed" else None,
+            )
 
     if progress is None or not progress.is_terminal():
         progress = await drain_run_tool_permission_terminalization(
@@ -639,6 +823,8 @@ async def _terminalize_escaped_process_exception(
             capabilities=v4_capabilities,
             transaction_factory=transaction,
             max_batches=4,
+            attempt_id=validated_attempt_id,
+            attempt_error_code=error_code,
         )
     if progress is not None and progress.did_transition and progress.needs_reconcile:
         try:
@@ -703,13 +889,20 @@ async def run_once(
     )
     if message is None:
         return WorkerOutcome(status="idle", run_id=None)
+    durable_queue_lease = _durable_queue_lease(
+        message,
+        visibility_timeout_seconds=int(
+            getattr(settings, "queue_lease_visibility_timeout_seconds", 900)
+        ),
+    )
 
     ownership_lost = asyncio.Event()
     heartbeat_task = asyncio.create_task(
         _heartbeat_until_done(
-            message.message_id,
+            message,
             resolved_worker_id,
             heartbeat_interval_seconds,
+            int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900)),
             ownership_lost,
         )
     )
@@ -727,12 +920,14 @@ async def run_once(
 
     async def process_leased_message() -> WorkerOutcome:
         try:
-            return await process_run_payload(
-                message.payload,
-                registry=registry,
-                worker_id=resolved_worker_id,
-                v4_capabilities=v4_capabilities,
-            )
+            process_kwargs = {
+                "registry": registry,
+                "worker_id": resolved_worker_id,
+                "v4_capabilities": v4_capabilities,
+            }
+            if durable_queue_lease is not None:
+                process_kwargs["queue_lease"] = durable_queue_lease
+            return await process_run_payload(message.payload, **process_kwargs)
         except Exception as exc:
             logger.exception(
                 "Worker payload processing escaped its terminal path",
@@ -959,6 +1154,7 @@ async def run_worker_pool(
 
 async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
     configure_mcp_runtime()
+    await require_schema_current()
     worker_runtime = build_worker_v4_runtime(transaction)
     try:
         return await run_once(

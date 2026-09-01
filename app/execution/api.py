@@ -14,9 +14,20 @@ from app.execution.application.context_file_diagnostics import (
 )
 from app.execution.application.executor_reconciliation import (
     locked_run_payload_candidate,
+    restored_executor_reconciliation_queue_payload,
     restored_sandbox_run_payload,
     sandbox_reconciliation_payload,
     with_locked_run_model_snapshot,
+)
+from app.execution.application.worker_attempt_lifecycle import (
+    WorkerAttemptLifecycle,
+    WorkerAttemptLifecyclePorts,
+    WorkerExecutorReconciliation,
+    WorkerQueueLease,
+    bind_worker_attempt_lifecycle,
+    fail_run_and_reconcile_worker_child,
+    finalize_worker_child_parent,
+    worker_child_terminal_progress,
 )
 from app.execution.application.claude_agent_events import (
     ClaudeAgentEventCandidate,
@@ -60,6 +71,10 @@ __all__ = [
     "context_file_failure_event_fields",
     "context_file_failure_event_payload",
     "context_file_failure_log_extra",
+    "bind_worker_attempt_lifecycle",
+    "fail_run_and_reconcile_worker_child",
+    "finalize_worker_child_parent",
+    "restored_executor_reconciliation_queue_payload",
     "restored_sandbox_run_payload",
     "sandbox_reconciliation_payload",
     "stage_stale_run_reconciliation",
@@ -70,5 +85,10 @@ __all__ = [
     "resolve_chat_model_selection",
     "time",
     "validated_context_file_diagnostic",
+    "worker_child_terminal_progress",
     "with_locked_run_model_snapshot",
+    "WorkerAttemptLifecycle",
+    "WorkerAttemptLifecyclePorts",
+    "WorkerExecutorReconciliation",
+    "WorkerQueueLease",
 ]

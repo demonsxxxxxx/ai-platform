@@ -270,8 +270,27 @@ without reading or printing its values, and runs Compose semantic preflight
 before either pull or up. It uses only the base file plus
 `docker-compose.opensandbox-internal-test.yml` and never builds on the managed
 host. It never runs `down`, `down -v`, or volume deletion. If startup or smoke
-fails, it performs one `--no-build --pull never` up of the saved previous subject;
+fails,
+it first stops target API admission and the target worker, then atomically checks
+both queue processing and retry metadata for protocol-v2 leases. It performs one
+`--no-build --pull never` up of the saved previous subject only when that check
+proves no v2 lease remains. If any processing or retry-only v2 lease remains, or
+the check is inconclusive, the API stays stopped, the exact target worker is
+restarted to recover stored work, and image rollback stops for operator action.
+Recovery is accepted only after the container retains the exact target commit,
+image, Compose identity, container identity, restart count, and process identity
+across two advancing fresh runtime heartbeats. Termination signals received after
+the target runtime transition begins are deferred until the target, its recovery
+worker, or the previous runtime passes its complete health gate.
 Postgres, Redis, MinIO, and workspace volumes remain untouched.
+
+The target and saved previous runtime use the same worker gate: two fresh,
+advancing process heartbeats with stable container, restart, configuration, and
+process identity. API readiness plus a merely running worker container is not a
+successful release or rollback. The quickstart installs one stateful termination
+policy before preflight, isolates child commands in their own process sessions,
+and begins deferring termination before the target `up`; repeated signals are
+honored only after one runtime has passed its complete gate.
 
 The backend artifact also contains the OpenSandbox executor application. The
 quickstart binds `OPENSANDBOX_EXECUTOR_IMAGE` and its digest to that exact
@@ -287,13 +306,28 @@ retry, and resume reject full or mixed manifest payloads. This is a hard
 cutover: unfinished legacy Skill runs without private materializations cannot be
 resumed after deployment and must be submitted again.
 
+The durable queue-heartbeat schema activation also has a clock-safety gate. It
+stops with `run_attempt_future_heartbeat_requires_remediation` when an open
+attempt heartbeat is more than five seconds ahead of the PostgreSQL clock. Treat
+that as a deployment blocker: stop admission, preserve the database and Redis
+lease evidence, and identify the affected rows with a read-only query before an
+operator-approved lifecycle recovery. Do not install the monotonic guard over
+those rows. Forward mixed-version operation is bounded because protocol-v2
+leases are opaque to the v1 reclaimer; image rollback to a v1-only worker is
+allowed only after current workers have drained or recovered every protocol-v2
+processing or retry-only lease. The automatic quickstart enforces the same gate;
+after its recovery worker drains the queue, rerun the release or perform an
+operator-approved recovery before retrying image rollback.
+
 `ci_success` is written only after exact-run Actions and packaging evidence
 verification. Keep the selected managed env path stable across successive
 releases. A failure before subject replacement preserves the previous subject
 byte-for-byte. A deployment failure after admission keeps the approved target
-subject for an explicit retry. The small image rollback only proves that the
-previous images became healthy again; it does not reverse database migrations,
-which must remain backward-compatible or use a separate operator recovery.
+subject for an explicit retry. The small image rollback proves that the previous
+images became healthy again. Every schema
+change admitted to this path must also preserve the saved previous binary's exact
+schema-readiness contract; the real PostgreSQL compatibility test installs that
+exact base before applying the candidate schema.
 
 Before running, the internal-test host must be able to reach both GitHub and
 GHCR through the operator-approved proxy. The quickstart only inherits standard proxy

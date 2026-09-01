@@ -100,6 +100,7 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "avatar_ref": "builtin:assistant",
         "avatar_seed": "agt_support",
         "category": "support",
+        "market_tag": "",
     }
 
 
@@ -911,9 +912,12 @@ async def test_public_detail_uses_the_same_acl_as_catalog(monkeypatch):
     async def list_current(*_args, **_kwargs):
         return [restricted]
 
+    async def list_favorite_ids(*_args, **_kwargs):
+        return set()
+
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_current_published_agent_profile", get_current)
     monkeypatch.setattr("app.agent_apps.authority.repositories.list_current_published_agent_profiles", list_current)
-    authority = AgentProfileAuthority()
+    authority = AgentProfileAuthority(favorite_ids_loader=list_favorite_ids)
 
     async def validate(*_args, **_kwargs):
         return ({"skill_id": "general-chat", "skill_version": "version-a"},)
@@ -937,6 +941,44 @@ async def test_public_detail_uses_the_same_acl_as_catalog(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_favorite_does_not_bypass_public_profile_acl(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+
+    restricted = _profile_row()
+    restricted.update({"visibility": "restricted", "allowed_department_ids": ["药品注册"]})
+    _seal_profile_row(restricted)
+    writes: list[dict[str, object]] = []
+
+    async def ensure_user(*_args, **_kwargs):
+        return None
+
+    async def get_current(*_args, **_kwargs):
+        return restricted
+
+    async def set_favorite(*_args, **kwargs):
+        writes.append(kwargs)
+
+    async def validate(*_args, **_kwargs):
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
+
+    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", ensure_user)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.get_current_published_agent_profile", get_current)
+    authority = AgentProfileAuthority(favorite_setter=set_favorite)
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+
+    with pytest.raises(HTTPException) as caught:
+        await authority.set_favorite(
+            object(),
+            principal=_principal(department_id="药品注冊"),
+            agent_id="agt_support",
+            favorite=True,
+        )
+
+    assert (caught.value.status_code, caught.value.detail) == (404, "agent_profile_not_found")
+    assert writes == []
+
+
+@pytest.mark.asyncio
 async def test_public_catalog_and_admission_reject_a_tampered_publication(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
     from app.models import SelectedAgentProfileRequest
@@ -950,6 +992,9 @@ async def test_public_catalog_and_admission_reject_a_tampered_publication(monkey
     async def list_current(*_args, **_kwargs):
         return [tampered]
 
+    async def list_favorite_ids(*_args, **_kwargs):
+        return set()
+
     async def forbidden_validation(*_args, **_kwargs):
         raise AssertionError("integrity rejection must happen before capability validation")
 
@@ -961,7 +1006,7 @@ async def test_public_catalog_and_admission_reject_a_tampered_publication(monkey
         "app.agent_apps.authority.repositories.list_current_published_agent_profiles",
         list_current,
     )
-    authority = AgentProfileAuthority()
+    authority = AgentProfileAuthority(favorite_ids_loader=list_favorite_ids)
     monkeypatch.setattr(authority, "_validate_definition", forbidden_validation)
 
     assert await authority.list_public(object(), principal=_principal()) == []
@@ -2018,7 +2063,7 @@ async def test_profile_authority_accepts_the_exact_canonical_frontend_transport_
     request_payload = {
         "message": "continue with the published Agent",
         "agent_options": {
-            "enable_thinking": "off",
+            "enable_thinking": "high",
             "model": "user-model-b",
             "model_id": "user-model-b",
         },
@@ -2201,7 +2246,6 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
         ({"disabled_mcp_tools": ["other-tool"]}, None),
         ({"selected_mcp_tool_ids": ["gateway::other-tool"]}, None),
         ({"agent_options": {"temperature": 0.2}}, None),
-        ({"agent_options": {"enable_thinking": "high"}}, None),
         (
             {
                 "selected_skill": {
@@ -2238,7 +2282,6 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
         "disabled-mcp-selector",
         "selected-mcp-selector",
         "unsupported-agent-option",
-        "nondefault-thinking-option",
         "selected-skill-selector",
         "confirmed-capability",
         "nested-step-skill-alias",
@@ -2413,6 +2456,7 @@ async def test_dedicated_agent_run_forwards_http_request_to_chat_composition(mon
         request=AgentAppRunRequest(
             message="hello",
             submission_id=UUID("12345678-1234-5678-1234-567812345678"),
+            thinking_effort="high",
         ),
         http_request=http_request,
         principal=principal,
@@ -2423,3 +2467,4 @@ async def test_dedicated_agent_run_forwards_http_request_to_chat_composition(mon
     assert observed["agent_id"] == "agent-a"
     assert observed["principal"] is principal
     assert observed["request"].session_id == "session-a"
+    assert observed["request"].agent_options == {"enable_thinking": "high"}

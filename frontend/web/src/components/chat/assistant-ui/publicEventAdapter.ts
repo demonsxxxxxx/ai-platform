@@ -44,12 +44,38 @@ export interface V4AdapterBinding {
 }
 
 const APPLICATION_EVENT_TYPES = new Set<string>(PUBLIC_STREAM_EVENT_TYPES);
+const MESSAGE_CORRELATED_EVENT_TYPES = new Set<V4ApplicationEventType>([
+  "message.started",
+  "message.delta",
+  "message.completed",
+  "thinking.started",
+  "thinking.delta",
+  "thinking.completed",
+  "model.completed",
+  "tool.started",
+  "tool.completed",
+  "tool.failed",
+  "tool.denied",
+  "subagent.started",
+  "subagent.progress",
+  "subagent.completed",
+  "subagent.failed",
+  "subagent.cancelled",
+]);
 const CONTROL_EVENT_TYPES = new Set<V4ControlEventType>([
   "stream.open",
   "stream.heartbeat",
   "stream.gap",
   "stream.end",
 ]);
+
+export function isV4MessageCorrelatedEventType(
+  eventType: V4EventType,
+): eventType is V4ApplicationEventType {
+  return MESSAGE_CORRELATED_EVENT_TYPES.has(
+    eventType as V4ApplicationEventType,
+  );
+}
 
 const PAYLOAD_KEYS: Record<string, readonly string[]> = {
   "message.started": [],
@@ -352,7 +378,7 @@ function eventShapeIsValid(value: Record<string, unknown>, eventType: V4EventTyp
   if (isControl) {
     if (value.message_id !== null || value.seq !== null || value.trace_ref !== null || typeof value.replayable !== "boolean") return false;
   } else if (
-    ["message.started", "message.delta", "message.completed", "thinking.started", "thinking.delta", "thinking.completed", "model.completed", "tool.started", "tool.completed", "tool.failed", "tool.denied", "subagent.started", "subagent.progress", "subagent.completed", "subagent.failed", "subagent.cancelled"].includes(eventType) &&
+    isV4MessageCorrelatedEventType(eventType) &&
     (!nonEmptyString(value.message_id) || !SAFE_REF_PATTERN.test(value.message_id))
   ) {
     return false;
