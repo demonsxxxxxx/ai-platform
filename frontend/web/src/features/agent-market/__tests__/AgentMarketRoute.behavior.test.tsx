@@ -664,6 +664,9 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       avatar_ref: "builtin:assistant",
       category: "support",
       market_tag: "客户服务",
+    },
+    {
+      agent_id: "agt_finance",
       expected_revision: 2,
       name: "财务助手",
       description: "核对报销材料。",

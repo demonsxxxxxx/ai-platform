@@ -41,6 +41,7 @@ CRITICAL_RELATIONS = (
     "run_attempts",
     "run_skill_materializations",
     "run_events",
+    "agent_profile_favorites",
     "sse_stream_authorities",
     "sse_stream_rebuild_items",
     "messages",

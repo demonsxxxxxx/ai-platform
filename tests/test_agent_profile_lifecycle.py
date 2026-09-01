@@ -100,6 +100,7 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "avatar_ref": "builtin:assistant",
         "avatar_seed": "agt_support",
         "category": "support",
+        "market_tag": "",
     }
 
 
@@ -852,8 +853,7 @@ async def test_public_detail_uses_the_same_acl_as_catalog(monkeypatch):
 
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_current_published_agent_profile", get_current)
     monkeypatch.setattr("app.agent_apps.authority.repositories.list_current_published_agent_profiles", list_current)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.list_agent_profile_favorite_ids", list_favorite_ids)
-    authority = AgentProfileAuthority()
+    authority = AgentProfileAuthority(favorite_ids_loader=list_favorite_ids)
 
     async def validate(*_args, **_kwargs):
         return ({"skill_id": "general-chat", "skill_version": "version-a"},)
@@ -899,8 +899,7 @@ async def test_favorite_does_not_bypass_public_profile_acl(monkeypatch):
 
     monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", ensure_user)
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_current_published_agent_profile", get_current)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.set_agent_profile_favorite", set_favorite)
-    authority = AgentProfileAuthority()
+    authority = AgentProfileAuthority(favorite_setter=set_favorite)
     monkeypatch.setattr(authority, "_validate_definition", validate)
 
     with pytest.raises(HTTPException) as caught:
@@ -943,8 +942,7 @@ async def test_public_catalog_and_admission_reject_a_tampered_publication(monkey
         "app.agent_apps.authority.repositories.list_current_published_agent_profiles",
         list_current,
     )
-    monkeypatch.setattr("app.agent_apps.authority.repositories.list_agent_profile_favorite_ids", list_favorite_ids)
-    authority = AgentProfileAuthority()
+    authority = AgentProfileAuthority(favorite_ids_loader=list_favorite_ids)
     monkeypatch.setattr(authority, "_validate_definition", forbidden_validation)
 
     assert await authority.list_public(object(), principal=_principal()) == []

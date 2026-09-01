@@ -202,11 +202,11 @@ def profile_acl_allows(row: dict[str, Any], *, principal: AuthPrincipal) -> bool
 def profile_public_projection(
     row: dict[str, Any],
     *,
-    is_favorite: bool = False,
+    is_favorite: bool | None = None,
 ) -> dict[str, Any]:
     """Return the only Agent Profile card/detail fields available to ordinary users."""
 
-    return {
+    projection = {
         "agent_id": str(row["agent_id"]),
         "expected_revision": int(row["revision"]),
         "name": str(row["name"]),
@@ -224,9 +224,11 @@ def profile_public_projection(
         "avatar_seed": _safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         "category": _safe_category(row.get("category")),
         "market_tag": _safe_market_tag(row.get("market_tag")),
-        "is_favorite": is_favorite,
         "published_at": row.get("published_at"),
     }
+    if is_favorite is not None:
+        projection["is_favorite"] = is_favorite
+    return projection
 
 
 def conversation_identity_projection(row: dict[str, Any]) -> AgentConversationIdentity:
@@ -750,7 +752,7 @@ def _merge_omitted_profile_fields(
 
 
 def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
-    return dict(
+    return AgentProfileAdminProjection(
         agent_id=str(row["agent_id"]),
         revision=int(row["revision"]),
         published_revision=(
@@ -778,7 +780,6 @@ def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
         avatar_asset_id=(str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
         avatar_seed=_safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         category=_safe_category(row.get("category")),
-        market_tag=_safe_market_tag(row.get("market_tag")),
         visibility=_safe_visibility(row.get("visibility")),
         allowed_department_ids=_safe_string_list(row.get("allowed_department_ids")),
         allowed_roles=_safe_string_list(row.get("allowed_roles")),
