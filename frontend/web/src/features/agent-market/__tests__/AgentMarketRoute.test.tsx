@@ -24,6 +24,9 @@ test("market keeps one, two, and three cards responsive while resolving durable 
   assert.match(source, /data-agent-market-search/);
   assert.match(source, /data-agent-market-filter/);
   assert.match(source, /data-agent-market-card/);
+  assert.match(source, /MARKET_PAGE_SIZE/);
+  assert.match(source, /paginatedProfiles\.map/);
+  assert.match(source, /<Pagination/);
   assert.match(source, /data-agent-market-detail/);
   assert.match(source, /data-agent-market-start-chat/);
   assert.match(source, /企业已发布/);

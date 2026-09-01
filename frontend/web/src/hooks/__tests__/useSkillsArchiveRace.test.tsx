@@ -168,3 +168,38 @@ test("archive mutations reject stale catalog reads for single and batch results"
     skillApi.batchDelete = originalBatchDelete;
   }
 });
+
+test("full authorized catalog does not reload for local list parameters", async () => {
+  const React = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const { useSkills } = await import("../useSkills.ts");
+  const originalListAllAuthorized = skillApi.listAllAuthorized;
+  let catalogRequests = 0;
+
+  skillApi.listAllAuthorized = async () => {
+    catalogRequests += 1;
+    return catalogResponse(["skill-a"]);
+  };
+
+  const container = dom.document.createElement("div");
+  const root = createRoot(container as never);
+  function Probe({ query }: { query: string }) {
+    useSkills({ allAuthorizedCatalog: true, listParams: { q: query } });
+    return null;
+  }
+
+  try {
+    await React.act(async () => {
+      root.render(React.createElement(Probe, { query: "first" }));
+    });
+    assert.equal(catalogRequests, 1);
+
+    await React.act(async () => {
+      root.render(React.createElement(Probe, { query: "second" }));
+    });
+    assert.equal(catalogRequests, 1);
+  } finally {
+    await React.act(async () => root.unmount());
+    skillApi.listAllAuthorized = originalListAllAuthorized;
+  }
+});

@@ -19,6 +19,7 @@ import type { PublicSkillResponse } from "../../types";
 import { AgentBuilderEnterpriseFields } from "./AgentBuilderEnterpriseFields";
 import { AgentBuilderLifecycle } from "./AgentBuilderLifecycle";
 import { AgentIdentityAvatar } from "../../components/agent/AgentIdentityAvatar";
+import { Pagination } from "../../components/common/Pagination";
 import {
   agentBuilderBlockReason,
   getAgentProfilePublishBlock,
@@ -52,6 +53,8 @@ type PendingEditorAction =
   | { kind: "profile"; agentId: string }
   | { kind: "refresh" };
 
+const AGENT_DIRECTORY_PAGE_SIZE = 20;
+
 function profileStatusLabel(status: "draft" | "published" | "withdrawn") {
   if (status === "published") return "已发布";
   if (status === "withdrawn") return "已下架";
@@ -84,6 +87,7 @@ export function AgentBuilderWorkbench({
   const [dialog, setDialog] = useState<"skills" | "tools" | null>(null);
   const [pendingEditorAction, setPendingEditorAction] = useState<PendingEditorAction | null>(null);
   const [profileQuery, setProfileQuery] = useState("");
+  const [profilePage, setProfilePage] = useState(1);
   const retryCatalog = catalog.retry;
 
   useEffect(() => controller.subscribe(setWorkbench), [controller]);
@@ -166,6 +170,23 @@ export function AgentBuilderWorkbench({
       ),
     );
   }, [profileQuery, workbench.profiles]);
+
+  const profilePageCount = Math.max(
+    1,
+    Math.ceil(visibleProfiles.length / AGENT_DIRECTORY_PAGE_SIZE),
+  );
+  const currentProfilePage = Math.min(profilePage, profilePageCount);
+  const paginatedProfiles = useMemo(
+    () => visibleProfiles.slice(
+      (currentProfilePage - 1) * AGENT_DIRECTORY_PAGE_SIZE,
+      currentProfilePage * AGENT_DIRECTORY_PAGE_SIZE,
+    ),
+    [currentProfilePage, visibleProfiles],
+  );
+
+  useEffect(() => {
+    if (profilePage !== currentProfilePage) setProfilePage(currentProfilePage);
+  }, [currentProfilePage, profilePage]);
 
   const marketTagSuggestions = useMemo(
     () => [...new Set(
@@ -349,7 +370,10 @@ export function AgentBuilderWorkbench({
               <input
                 aria-label="搜索专家"
                 className="h-9 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] pl-9 pr-3 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)]"
-                onChange={(event) => setProfileQuery(event.target.value)}
+                onChange={(event) => {
+                  setProfileQuery(event.target.value);
+                  setProfilePage(1);
+                }}
                 placeholder="名称或编号"
                 type="search"
                 value={profileQuery}
@@ -393,7 +417,7 @@ export function AgentBuilderWorkbench({
               </button>
             ) : null}
 
-            {visibleProfiles.map((profile) => {
+            {paginatedProfiles.map((profile) => {
               const selected = activeEditor?.agentId === profile.agent_id;
               return (
                 <button
@@ -422,6 +446,17 @@ export function AgentBuilderWorkbench({
               );
             })}
           </div>
+
+          {visibleProfiles.length > 0 ? (
+            <div className="border-t border-[var(--theme-border)] px-3 py-2">
+              <Pagination
+                page={currentProfilePage}
+                pageSize={AGENT_DIRECTORY_PAGE_SIZE}
+                total={visibleProfiles.length}
+                onChange={setProfilePage}
+              />
+            </div>
+          ) : null}
 
           {workbench.listPhase === "ready" && workbench.profiles.length === 0 && !workbench.localEditor ? (
             <div className="px-4 py-6 text-sm text-[var(--theme-text-secondary)]">
