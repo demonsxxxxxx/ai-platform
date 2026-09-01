@@ -37,6 +37,21 @@ export const PUBLIC_STREAM_EVENT_TYPES = [
   "stream.end",
 ] as const;
 
+export const PUBLIC_PROJECTION_FAILURE_REASONS = [
+  "answer_too_large",
+  "invalid_configuration",
+  "invalid_input",
+  "private_replacement_invalid",
+  "private_token_already_published",
+  "private_token_boundary_conflict",
+  "private_token_prefix_overflow",
+  "sanitizer_bound_exceeded",
+  "sanitizer_failed",
+  "sanitizer_rejected",
+  "terminal_text_mismatch",
+  "upstream_projection_failed",
+] as const;
+
 export type SafeRefV4 = string;
 
 export type TraceRefV4 = string;
@@ -385,6 +400,7 @@ export type RunFailedEventV4 = PublicApplicationEnvelopeV4 & {
   "code": string;
   "default_message": string;
   "detail": string | null;
+  "projection_failure_reason"?: "answer_too_large" | "invalid_configuration" | "invalid_input" | "private_replacement_invalid" | "private_token_already_published" | "private_token_boundary_conflict" | "private_token_prefix_overflow" | "sanitizer_bound_exceeded" | "sanitizer_failed" | "sanitizer_rejected" | "terminal_text_mismatch" | "upstream_projection_failed";
 };
 };
 

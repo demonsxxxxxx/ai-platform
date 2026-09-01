@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from dataclasses import InitVar, dataclass, field
 from typing import Any, Callable
 
+from app.execution.domain.public_projection import PUBLIC_ANSWER_FAILURE_REASONS
 from app.streaming.events import PUBLIC_APPLICATION_EVENT_TYPES_V4
 
 _APPLICATION_EVENT_TYPES = PUBLIC_APPLICATION_EVENT_TYPES_V4
@@ -354,6 +355,7 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
         "artifact.created": {"evidence_ref"},
         "artifact.ready": {"evidence_ref"},
         "artifact.failed": {"filename", "media_type"},
+        "run.failed": {"projection_failure_reason"},
     }
     expected = required[event_type]
     keys = set(payload)
@@ -438,6 +440,11 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
         allowed = {"allowed"} if event_type == "policy.allowed" else {"capability_not_authorized", "policy_denied"}
         if payload["decision_code"] not in allowed:
             raise ValueError("invalid decision_code")
+    if (
+        "projection_failure_reason" in payload
+        and payload["projection_failure_reason"] not in PUBLIC_ANSWER_FAILURE_REASONS
+    ):
+        raise ValueError("invalid projection_failure_reason")
     if "source" in payload and payload["source"] not in {"user", "system"}:
         raise ValueError("invalid source")
     if "status" in payload:

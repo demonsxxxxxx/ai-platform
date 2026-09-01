@@ -1162,17 +1162,45 @@ def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("status", "error_code", "detail_kind", "detail_code"),
+    (
+        "status",
+        "error_code",
+        "result_json",
+        "detail_kind",
+        "detail_code",
+        "expected_reason",
+    ),
     [
-        ("failed", "claude_agent_sdk_runtime_error", "failed", "model_service_unavailable"),
-        ("canceled", None, "cancelled", "run_cancelled"),
+        (
+            "failed",
+            "claude_agent_sdk_runtime_error",
+            {},
+            "failed",
+            "model_service_unavailable",
+            None,
+        ),
+        (
+            "failed",
+            "claude_agent_sdk_public_projection_failed",
+            {
+                "sdk_turn_diagnostics": {
+                    "projection_failure_reason": "private_token_boundary_conflict"
+                }
+            },
+            "failed",
+            "claude_agent_sdk_public_projection_failed",
+            "private_token_boundary_conflict",
+        ),
+        ("canceled", None, {}, "cancelled", "run_cancelled", None),
     ],
 )
 def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
     status,
     error_code,
+    result_json,
     detail_kind,
     detail_code,
+    expected_reason,
 ):
     from app.auth import AuthPrincipal
     from app.routes.lambchat_compat import _compatibility_events_for_run
@@ -1189,7 +1217,7 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
         "agent_id": "general-agent",
         "skill_id": "general-chat",
         "status": status,
-        "result_json": {},
+        "result_json": result_json,
         "error_code": error_code,
         "error_message": "private token at /home/private/runtime.log",
         "finished_at": "2026-07-22T01:02:03Z",
@@ -1276,6 +1304,11 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
     assert history[2]["data"]["content"] == "已完成公开部分；"
     assert history[3]["data"]["detail_kind"] == detail_kind
     assert history[3]["data"]["detail_code"] == detail_code
+    if expected_reason is not None:
+        assert history[3]["data"]["projection_failure_reason"] == expected_reason
+        assert expected_reason in history[3]["data"]["message"]
+    else:
+        assert "projection_failure_reason" not in history[3]["data"]
     assert history[-1]["data"]["status"] == (
         "cancelled" if status == "canceled" else status
     )

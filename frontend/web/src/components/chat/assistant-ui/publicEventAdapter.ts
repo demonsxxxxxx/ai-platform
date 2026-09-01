@@ -1,4 +1,5 @@
 import {
+  PUBLIC_PROJECTION_FAILURE_REASONS,
   PUBLIC_STREAM_EVENT_TYPES,
   type PublicRunStreamEventV4,
 } from "../../../generated/publicRunStreamV4";
@@ -104,7 +105,7 @@ const PAYLOAD_KEYS: Record<string, readonly string[]> = {
   "run.cancel_requested": ["source"],
   "run.succeeded": ["terminal_event_id", "hydrate_required"],
   "run.cancelled": ["terminal_event_id", "hydrate_required", "reason_code"],
-  "run.failed": ["terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail"],
+  "run.failed": ["terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail", "projection_failure_reason"],
   "stream.open": ["design_id"],
   "stream.heartbeat": ["status"],
   "stream.gap": ["reason", "recovery", "requested_event_id", "requested_stream_incarnation", "current_stream_incarnation", "earliest_available_event_id", "latest_available_event_id"],
@@ -216,6 +217,7 @@ const EVENT_PAYLOAD_ENUMS: Record<string, ReadonlySet<string>> = {
   "tool.failed.failure_category": new Set(["invalid_input", "not_found", "permission_denied", "timeout", "unavailable", "execution_failed"]),
   "subagent.failed.failure_category": new Set(["subagent_failed"]),
   "artifact.failed.failure_category": new Set(["artifact_failed", "unavailable"]),
+  "run.failed.projection_failure_reason": new Set(PUBLIC_PROJECTION_FAILURE_REASONS),
   "thinking.started.public_summary": new Set(["Analyzing the request"]),
   "thinking.completed.public_summary": new Set(["Analysis step completed"]),
 };
@@ -340,6 +342,13 @@ function payloadIsValid(eventType: string, payload: unknown, _runId: string, inc
     if (["requested_stream_incarnation"].includes(key) && value !== null && !safeInteger(value, 1)) return false;
     if (["current_stream_incarnation"].includes(key) && !safeInteger(value, 1)) return false;
     if (key === "filename" && !isSafeFilename(value)) return false;
+  }
+  if (
+    eventType === "run.failed" &&
+    Object.hasOwn(payload, "projection_failure_reason") &&
+    payload.code !== "claude_agent_sdk_public_projection_failed"
+  ) {
+    return false;
   }
   if (eventType === "stream.gap") {
     const requestedIncarnation = payload.requested_stream_incarnation;
@@ -582,7 +591,7 @@ export function projectV4EventToLegacyHandler(event: V4PublicEvent, fallbackMess
     case "run.cancelled":
       return { streamEvent: { event: "final_detail", data: JSON.stringify({ ...base, projection_version: "ai-platform.chat-public-projection.v1", detail_code: "run_cancelled", detail_kind: "cancelled" }) }, messageId: fallbackMessageId };
     case "run.failed":
-      return { streamEvent: { event: "final_detail", data: JSON.stringify({ ...base, projection_version: "ai-platform.chat-public-projection.v1", detail_code: payload.code, detail_kind: "failed" }) }, messageId: fallbackMessageId };
+      return { streamEvent: { event: "final_detail", data: JSON.stringify({ ...base, projection_version: "ai-platform.chat-public-projection.v1", detail_code: payload.code, detail_kind: "failed", projection_failure_reason: payload.projection_failure_reason }) }, messageId: fallbackMessageId };
     case "run.cancel_requested":
       return { streamEvent: activity("cancel_requested", "Cancellation requested", "warning"), messageId: messageTarget };
     default:

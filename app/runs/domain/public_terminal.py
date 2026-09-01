@@ -12,6 +12,7 @@ PUBLIC_TERMINAL_DETAIL_MESSAGES = {
     "run_budget_exhausted": "任务已达到执行轮次上限。请缩小或拆分任务后重试。",
     "model_service_unavailable": "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
     "execution_service_unavailable": "AI 执行服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
+    "claude_agent_sdk_public_projection_failed": "模型执行已结束，但公开答案未通过安全投影。请重试；如问题持续，请联系管理员并提供任务编号。",
     "dependent_service_unavailable": "任务依赖的服务暂时不可用。请稍后重试。",
     "capability_not_authorized": "当前账号不能使用所选能力。请重新选择或联系管理员。",
     "tool_permission_denied": "任务所需工具未获授权。请调整请求或联系管理员。",
@@ -93,6 +94,7 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "claude_agent_sdk_disabled": "execution_service_unavailable",
     "claude_agent_sdk_import_failed": "execution_service_unavailable",
     "claude_agent_sdk_unavailable": "execution_service_unavailable",
+    "claude_agent_sdk_public_projection_failed": "claude_agent_sdk_public_projection_failed",
     "docker_unavailable": "execution_service_unavailable",
     "executor_health_timeout": "execution_service_unavailable",
     "executor_runner_failed": "execution_service_unavailable",
@@ -114,30 +116,84 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
 
 CHAT_PUBLIC_PROJECTION_VERSION = "ai-platform.chat-public-projection.v1"
 
+PUBLIC_PROJECTION_FAILURE_REASONS = frozenset(
+    {
+        "answer_too_large",
+        "invalid_configuration",
+        "invalid_input",
+        "private_replacement_invalid",
+        "private_token_already_published",
+        "private_token_boundary_conflict",
+        "private_token_prefix_overflow",
+        "sanitizer_bound_exceeded",
+        "sanitizer_failed",
+        "sanitizer_rejected",
+        "terminal_text_mismatch",
+        "upstream_projection_failed",
+    }
+)
+
+
+def public_projection_failure_reason_from_result(
+    error_code: str,
+    result: object,
+) -> str | None:
+    if (
+        error_code != "claude_agent_sdk_public_projection_failed"
+        or not isinstance(result, dict)
+    ):
+        return None
+    diagnostics = result.get("sdk_turn_diagnostics")
+    if not isinstance(diagnostics, dict):
+        return None
+    reason = diagnostics.get("projection_failure_reason")
+    return (
+        reason
+        if isinstance(reason, str) and reason in PUBLIC_PROJECTION_FAILURE_REASONS
+        else None
+    )
+
 
 def public_terminal_projection(
     status: object,
     error_code: object = None,
+    result: object = None,
 ) -> dict[str, object] | None:
     """Build the sole ordinary-user projection for failed or cancelled terminals."""
     normalized_status = normalize_run_status(str(status or ""))
+    raw_error_code = str(error_code or "").strip()
     if normalized_status == "cancelled":
         detail_code = "run_cancelled"
         detail_kind = "cancelled"
     elif normalized_status == "failed":
-        raw_error_code = str(error_code or "").strip()
         detail_code = PUBLIC_TERMINAL_ERROR_CODE_ALIASES.get(raw_error_code, "run_failed")
         detail_kind = "failed"
     else:
         return None
     message = PUBLIC_TERMINAL_DETAIL_MESSAGES[detail_code]
+    projected_result: dict[str, object] = {"message": message}
+    event_payload: dict[str, object] = {}
+    projection_failure_reason = public_projection_failure_reason_from_result(
+        raw_error_code,
+        result,
+    )
+    if projection_failure_reason is not None:
+        message = (
+            "模型执行已结束，但公开答案未通过安全投影"
+            f"（{projection_failure_reason}）。请重试；如问题持续，请联系管理员并提供任务编号。"
+        )
+        projected_result = {
+            "message": message,
+            "projection_failure_reason": projection_failure_reason,
+        }
+        event_payload = {"projection_failure_reason": projection_failure_reason}
     return {
         "detail_kind": detail_kind,
         "detail_code": detail_code,
         "message": message,
         "error_code": detail_code if detail_kind == "failed" else None,
-        "result": {"message": message},
-        "event_payload": {},
+        "result": projected_result,
+        "event_payload": event_payload,
     }
 
 

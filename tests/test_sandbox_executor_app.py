@@ -1885,6 +1885,11 @@ def test_executor_execute_fails_closed_after_final_delta_without_structured_term
         ("claude_agent_sdk_selected_skill_not_authorized", True, "claude_agent_sdk_selected_skill_not_authorized"),
         ("claude_agent_sdk_turn_limit_exceeded", True, "claude_agent_sdk_turn_limit_exceeded"),
         ("claude_agent_sdk_timeout", True, "claude_agent_sdk_timeout"),
+        (
+            "claude_agent_sdk_public_projection_failed",
+            True,
+            "claude_agent_sdk_public_projection_failed",
+        ),
         ("claude_agent_sdk_tool_admission_failed", True, "claude_agent_sdk_tool_admission_failed"),
         ("claude_agent_sdk_upstream_error", True, "claude_agent_sdk_upstream_error"),
     ],

@@ -36,6 +36,12 @@ from app.execution.application.claude_agent_events import (
 from app.execution.application.stale_terminalization import (
     stage_stale_run_reconciliation,
 )
+from app.execution.domain.public_projection import (
+    claude_sdk_failure_code,
+    claude_sdk_failure_message,
+    projected_public_answer_failure_reason,
+    public_answer_failure_reason,
+)
 
 from typing import Any
 
@@ -68,6 +74,8 @@ __all__ = [
     "RunModelSelection",
     "SkillInvocationEvidenceBinder",
     "WorkerRunCancelled",
+    "claude_sdk_failure_code",
+    "claude_sdk_failure_message",
     "context_file_failure_event_fields",
     "context_file_failure_event_payload",
     "context_file_failure_log_extra",
@@ -82,6 +90,8 @@ __all__ = [
     "list_public_models",
     "locked_run_payload_candidate",
     "parse_requested_model_selection",
+    "projected_public_answer_failure_reason",
+    "public_answer_failure_reason",
     "resolve_chat_model_selection",
     "time",
     "validated_context_file_diagnostic",
