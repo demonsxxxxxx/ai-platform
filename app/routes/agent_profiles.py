@@ -3,7 +3,12 @@ import unicodedata
 from fastapi import APIRouter, Depends, HTTPException, Query, Request as HttpRequest
 from app import repositories
 from app.agent_apps import AgentProfileAuthority
-from app.agent_profiles import list_admin_profiles, list_public_profiles, publish_draft, save_draft
+from app.agent_profiles import (
+    list_admin_profiles,
+    list_public_profiles,
+    publish_draft,
+    save_draft,
+)
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
 from app.department_directory import validate_profile_department_authorities
@@ -151,6 +156,46 @@ async def get_agent_profile(
         raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
     async with transaction() as conn:
         return await _authority.get_public(conn, principal=principal, agent_id=safe_agent_id)
+
+
+@router.put("/agent-profiles/{agent_id}/favorite", response_model=AgentProfilePublicProjection)
+async def favorite_agent_profile(
+    agent_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> AgentProfilePublicProjection:
+    """Favorite an authorized public profile for the current user."""
+
+    try:
+        safe_agent_id = assert_safe_id(agent_id, "agent_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
+    async with transaction() as conn:
+        return await _authority.set_favorite(
+            conn,
+            principal=principal,
+            agent_id=safe_agent_id,
+            favorite=True,
+        )
+
+
+@router.delete("/agent-profiles/{agent_id}/favorite", response_model=AgentProfilePublicProjection)
+async def unfavorite_agent_profile(
+    agent_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> AgentProfilePublicProjection:
+    """Remove a favorite through the same public-profile authorization path."""
+
+    try:
+        safe_agent_id = assert_safe_id(agent_id, "agent_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
+    async with transaction() as conn:
+        return await _authority.set_favorite(
+            conn,
+            principal=principal,
+            agent_id=safe_agent_id,
+            favorite=False,
+        )
 
 
 @router.post("/agent-conversations", response_model=ChatSessionResponse, response_model_exclude_none=True)

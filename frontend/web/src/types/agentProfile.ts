@@ -38,6 +38,8 @@ export interface AgentProfilePublicProjection extends SelectedAgentProfileReques
   avatar_ref: AgentProfileAvatarRef;
   avatar_seed?: string;
   category: AgentProfileCategory;
+  market_tag?: string;
+  is_favorite?: boolean;
   published_at: string | null;
 }
 
@@ -184,6 +186,10 @@ export function projectAgentProfilePublicProjection(value: unknown): AgentProfil
     avatar_ref: requireOneOf(record.avatar_ref, AGENT_PROFILE_AVATAR_REFS, PROFILE_ERROR),
     avatar_seed: projectAvatarSeed(record, PROFILE_ERROR),
     category: requireOneOf(record.category, AGENT_PROFILE_CATEGORIES, PROFILE_ERROR),
+    market_tag: record.market_tag === undefined
+      ? ""
+      : requireString(record.market_tag, PROFILE_ERROR, true),
+    is_favorite: record.is_favorite === true,
   };
 }
 
@@ -237,6 +243,7 @@ export interface AgentProfileDraftRequest {
   avatar_seed: string;
   avatar_asset_id: string | null;
   category: AgentProfileCategory;
+  market_tag?: string;
   visibility: "tenant" | "restricted";
   allowed_department_ids: string[];
   allowed_roles: string[];

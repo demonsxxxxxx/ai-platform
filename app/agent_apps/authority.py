@@ -59,6 +59,7 @@ _PRESENCE_AWARE_PROFILE_FIELDS = (
     "avatar_asset_id",
     "avatar_seed",
     "category",
+    "market_tag",
     "visibility",
     "allowed_department_ids",
     "allowed_roles",
@@ -117,6 +118,11 @@ def _safe_avatar_seed(value: Any, *, fallback: str) -> str:
 def _safe_category(value: Any) -> str:
     candidate = str(value or "").strip()
     return candidate if candidate in _CATEGORIES else "general"
+
+
+def _safe_market_tag(value: Any) -> str:
+    candidate = str(value or "").strip()
+    return candidate if "\x00" not in candidate else ""
 
 
 def _safe_visibility(value: Any) -> str:
@@ -188,7 +194,11 @@ def profile_acl_allows(row: dict[str, Any], *, principal: AuthPrincipal) -> bool
     return bool(allowed_departments or allowed_roles)
 
 
-def profile_public_projection(row: dict[str, Any]) -> dict[str, Any]:
+def profile_public_projection(
+    row: dict[str, Any],
+    *,
+    is_favorite: bool = False,
+) -> dict[str, Any]:
     """Return the only Agent Profile card/detail fields available to ordinary users."""
 
     return {
@@ -208,6 +218,8 @@ def profile_public_projection(row: dict[str, Any]) -> dict[str, Any]:
         "avatar_ref": _safe_avatar_ref(row.get("avatar_ref")),
         "avatar_seed": _safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         "category": _safe_category(row.get("category")),
+        "market_tag": _safe_market_tag(row.get("market_tag")),
+        "is_favorite": is_favorite,
         "published_at": row.get("published_at"),
     }
 
@@ -235,7 +247,11 @@ def conversation_identity_projection(row: dict[str, Any]) -> AgentConversationId
     )
 
 
-def _revision_hash(definition: AgentProfileDraftRequest) -> str:
+def _revision_hash(
+    definition: AgentProfileDraftRequest,
+    *,
+    include_market_tag: bool = True,
+) -> str:
     """Hash every execution and public-lifecycle field under a canonical serialization."""
 
     material = {
@@ -259,6 +275,7 @@ def _revision_hash(definition: AgentProfileDraftRequest) -> str:
         "avatar_asset_id": definition.avatar_asset_id,
         "avatar_seed": definition.avatar_seed,
         "category": definition.category,
+        **({"market_tag": definition.market_tag} if include_market_tag else {}),
         "visibility": definition.visibility,
         "allowed_department_ids": definition.allowed_department_ids,
         "allowed_roles": definition.allowed_roles,
@@ -628,6 +645,14 @@ def _revision_hash_matches(row: dict[str, Any], content_hash: str) -> bool:
         and content_hash == _revision_hash(definition)
     ):
         return True
+    if (
+        current_shape
+        and not definition.market_tag
+        and content_hash == _revision_hash(definition, include_market_tag=False)
+    ):
+        return True
+    if definition.market_tag:
+        return False
     if current_shape and content_hash == _omitted_file_type_skill_set_revision_hash(
         definition,
         legacy_supported_input_types=legacy_supported_input_types,
@@ -693,6 +718,7 @@ def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
         avatar_asset_id=(str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
         avatar_seed=_safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         category=_safe_category(row.get("category")),
+        market_tag=_safe_market_tag(row.get("market_tag")),
         visibility=_safe_visibility(row.get("visibility")),
         allowed_department_ids=_safe_string_list(row.get("allowed_department_ids")),
         allowed_roles=_safe_string_list(row.get("allowed_roles")),
@@ -748,6 +774,7 @@ def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
         avatar_asset_id=(str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
         avatar_seed=_safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         category=_safe_category(row.get("category")),
+        market_tag=_safe_market_tag(row.get("market_tag")),
         visibility=_safe_visibility(row.get("visibility")),
         allowed_department_ids=_safe_string_list(row.get("allowed_department_ids")),
         allowed_roles=_safe_string_list(row.get("allowed_roles")),
@@ -933,6 +960,7 @@ class AgentProfileAuthority:
             avatar_asset_id=definition.avatar_asset_id,
             avatar_seed=definition.avatar_seed,
             category=definition.category,
+            market_tag=definition.market_tag,
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
             allowed_roles=definition.allowed_roles,
@@ -1022,6 +1050,7 @@ class AgentProfileAuthority:
             avatar_asset_id=definition.avatar_asset_id,
             avatar_seed=definition.avatar_seed or agent_id,
             category=definition.category,
+            market_tag=definition.market_tag,
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
             allowed_roles=definition.allowed_roles,
@@ -1140,6 +1169,7 @@ class AgentProfileAuthority:
             # omit avatar_seed and use an empty value as their schema marker.
             avatar_seed=authoring_row["avatar_seed"],
             category=definition.category,
+            market_tag=definition.market_tag,
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
             allowed_roles=definition.allowed_roles,
@@ -1269,13 +1299,25 @@ class AgentProfileAuthority:
             query=query,
             category=category,
         )
+        favorite_ids = await repositories.list_agent_profile_favorite_ids(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+        )
         visible: list[AgentProfilePublicProjection] = []
         for row in rows:
             try:
                 await self._authorize_public_row(conn, principal=principal, row=row)
             except HTTPException:
                 continue
-            visible.append(AgentProfilePublicProjection.model_validate(profile_public_projection(row)))
+            visible.append(
+                AgentProfilePublicProjection.model_validate(
+                    profile_public_projection(
+                        row,
+                        is_favorite=str(row["agent_id"]) in favorite_ids,
+                    )
+                )
+            )
         return visible
 
     async def get_public(self, conn, *, principal: AuthPrincipal, agent_id: str) -> AgentProfilePublicProjection:
@@ -1292,7 +1334,47 @@ class AgentProfileAuthority:
             await self._authorize_public_row(conn, principal=principal, row=row)
         except HTTPException as exc:
             raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
-        return AgentProfilePublicProjection.model_validate(profile_public_projection(row))
+        favorite_ids = await repositories.list_agent_profile_favorite_ids(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+        )
+        return AgentProfilePublicProjection.model_validate(
+            profile_public_projection(row, is_favorite=agent_id in favorite_ids)
+        )
+
+    async def set_favorite(
+        self,
+        conn,
+        *,
+        principal: AuthPrincipal,
+        agent_id: str,
+        favorite: bool,
+    ) -> AgentProfilePublicProjection:
+        """Persist one favorite only after the normal public-profile authorization path."""
+
+        await self._ensure_principal_user(conn, principal=principal)
+        row = await repositories.get_current_published_agent_profile(
+            conn,
+            tenant_id=principal.tenant_id,
+            agent_id=agent_id,
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="agent_profile_not_found")
+        try:
+            await self._authorize_public_row(conn, principal=principal, row=row)
+        except HTTPException as exc:
+            raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
+        await repositories.set_agent_profile_favorite(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            agent_id=agent_id,
+            favorite=favorite,
+        )
+        return AgentProfilePublicProjection.model_validate(
+            profile_public_projection(row, is_favorite=favorite)
+        )
 
     async def _authorize_public_row(
         self,

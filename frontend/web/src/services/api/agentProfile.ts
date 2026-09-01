@@ -134,6 +134,14 @@ export const agentProfileApi = {
     return projectAgentProfilePublicProjection(response);
   },
 
+  async setFavorite(agentId: string, favorite: boolean): Promise<AgentProfilePublicProjection> {
+    const response = await authFetch<unknown>(
+      `${buildAgentProfileDetailUrl(agentId)}/favorite`,
+      { method: favorite ? "PUT" : "DELETE" },
+    );
+    return projectAgentProfilePublicProjection(response);
+  },
+
   /** List one server-authorized Agent/revision history page. */
   async listConversations(
     selection: SelectedAgentProfileRequest,

@@ -100,10 +100,43 @@ def test_agent_apps_public_profile_detail_uses_safe_authority_projection(monkeyp
         "avatar_ref": "builtin:assistant",
         "avatar_seed": "",
         "category": "support",
+        "market_tag": "",
+        "is_favorite": False,
     }
 
 
-def test_dedicated_agent_run_restores_session_and_delegates_without_client_selectors(monkeypatch):
+def test_agent_profile_favorite_uses_authenticated_principal_and_safe_projection(monkeypatch):
+    observed: dict[str, object] = {}
+
+    async def set_favorite(_conn, *, principal, agent_id, favorite):
+        observed["request"] = (principal.tenant_id, principal.user_id, agent_id, favorite)
+        return AgentProfilePublicProjection(
+            agent_id=agent_id,
+            expected_revision=7,
+            name="Support assistant",
+            description="Approved support help.",
+            avatar_ref="builtin:assistant",
+            category="support",
+            market_tag="客户服务",
+            is_favorite=True,
+        )
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.agent_profiles._authority.set_favorite", set_favorite)
+    client = TestClient(create_app())
+
+    response = client.put(
+        "/api/ai/agent-profiles/agt_support/favorite",
+        headers=auth_headers(),
+        json={"favorite": True},
+    )
+
+    assert response.status_code == 200
+    assert observed["request"] == ("default", "user-a", "agt_support", True)
+    assert response.json()["market_tag"] == "客户服务"
+    assert response.json()["is_favorite"] is True
+
     observed: dict[str, object] = {}
 
     async def get_session(_conn, *, tenant_id, user_id, session_id):

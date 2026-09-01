@@ -432,6 +432,7 @@ create table if not exists agent_profile_revisions (
   avatar_seed text not null default '',
   category text not null
     check (category in ('general', 'support', 'writing', 'research', 'operations')),
+  market_tag text not null default '',
   visibility text not null,
   allowed_department_ids jsonb not null,
   allowed_roles jsonb not null,
@@ -488,6 +489,18 @@ create table if not exists agent_profiles (
 create index if not exists idx_agent_profiles_published
   on agent_profiles(tenant_id, published_revision desc)
   where lifecycle_status = 'published';
+
+create table if not exists agent_profile_favorites (
+  tenant_id text not null references tenants(id),
+  user_id text not null references users(id),
+  agent_id text not null,
+  created_at timestamptz not null default now(),
+  primary key (tenant_id, user_id, agent_id),
+  foreign key (tenant_id, agent_id) references agents(tenant_id, id)
+);
+
+create index if not exists idx_agent_profile_favorites_user
+  on agent_profile_favorites(tenant_id, user_id, created_at desc);
 
 create table if not exists sessions (
   id text primary key,
@@ -936,6 +949,7 @@ alter table agent_profile_revisions add column if not exists avatar_asset_id tex
 alter table agent_profile_revisions add column if not exists avatar_seed text not null default '';
 alter table agent_profile_revisions add column if not exists skill_set jsonb not null default '[]'::jsonb;
 alter table agent_profile_revisions add column if not exists category text;
+alter table agent_profile_revisions add column if not exists market_tag text not null default '';
 alter table agent_profile_revisions add column if not exists visibility text;
 alter table agent_profile_revisions add column if not exists allowed_department_ids jsonb;
 alter table agent_profile_revisions add column if not exists allowed_roles jsonb;

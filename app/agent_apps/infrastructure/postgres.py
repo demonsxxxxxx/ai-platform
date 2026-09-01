@@ -87,6 +87,7 @@ async def create_agent_profile_revision(
     avatar_ref: str = "builtin:agent",
     avatar_seed: str = "",
     category: str = "general",
+    market_tag: str = "",
     visibility: str = "tenant",
     allowed_department_ids: list[str] | None = None,
     allowed_roles: list[str] | None = None,
@@ -128,7 +129,7 @@ async def create_agent_profile_revision(
         insert into agent_profile_revisions(
           tenant_id, agent_id, revision, status, revision_status, name, description, instructions,
           model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
-          avatar_ref, avatar_seed, category, visibility, allowed_department_ids, allowed_roles,
+          avatar_ref, avatar_seed, category, market_tag, visibility, allowed_department_ids, allowed_roles,
           allowed_user_ids, welcome_message, starter_prompts, capability_summary,
           recommended_tasks, supported_input_types, supported_file_types, expected_outputs,
           permissions_and_data_access_notice, avatar_asset_id,
@@ -141,7 +142,7 @@ async def create_agent_profile_revision(
                 %s, %s, %s, case when %s::text is null then null else now() end, %s, %s)
         returning tenant_id, agent_id, revision, revision_status as status, name, description, instructions,
                   model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
-                  avatar_ref, avatar_seed, category, visibility, allowed_department_ids, allowed_roles,
+                  avatar_ref, avatar_seed, category, market_tag, visibility, allowed_department_ids, allowed_roles,
                   allowed_user_ids, welcome_message, starter_prompts, capability_summary,
                   recommended_tasks, supported_input_types,
                   supported_file_types as legacy_supported_file_types, expected_outputs,
@@ -169,6 +170,7 @@ async def create_agent_profile_revision(
             avatar_ref,
             avatar_seed,
             category,
+            market_tag,
             visibility,
             _dumps_json(allowed_department_ids or []),
             _dumps_json(allowed_roles or []),
@@ -226,7 +228,7 @@ async def get_agent_profile_revision(
                agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
                agent_profile_revisions.avatar_ref, agent_profile_revisions.avatar_asset_id,
                agent_profile_revisions.avatar_seed,
-               agent_profile_revisions.category,
+               agent_profile_revisions.category, agent_profile_revisions.market_tag,
                agent_profile_revisions.visibility, agent_profile_revisions.allowed_department_ids,
                agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
                agent_profile_revisions.created_at, agent_profile_revisions.published_at
@@ -275,7 +277,7 @@ async def list_latest_agent_profile_revisions(
                agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
                agent_profile_revisions.avatar_ref, agent_profile_revisions.avatar_asset_id,
                agent_profile_revisions.avatar_seed,
-               agent_profile_revisions.category,
+               agent_profile_revisions.category, agent_profile_revisions.market_tag,
                agent_profile_revisions.visibility, agent_profile_revisions.allowed_department_ids,
                agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
                agent_profile_revisions.created_at, agent_profile_revisions.published_at
@@ -446,7 +448,7 @@ async def get_current_published_agent_profile(
                agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
                agent_profile_revisions.avatar_ref, agent_profile_revisions.avatar_asset_id,
                agent_profile_revisions.avatar_seed,
-               agent_profile_revisions.category,
+               agent_profile_revisions.category, agent_profile_revisions.market_tag,
                agent_profile_revisions.visibility, agent_profile_revisions.allowed_department_ids,
                agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
                agent_profile_revisions.created_at, agent_profile_revisions.published_at
@@ -502,7 +504,7 @@ async def get_bound_published_agent_profile(
                agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
                agent_profile_revisions.avatar_ref, agent_profile_revisions.avatar_asset_id,
                agent_profile_revisions.avatar_seed,
-               agent_profile_revisions.category,
+               agent_profile_revisions.category, agent_profile_revisions.market_tag,
                agent_profile_revisions.visibility, agent_profile_revisions.allowed_department_ids,
                agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
                current_revision.visibility as current_visibility,
@@ -600,7 +602,7 @@ async def list_current_published_agent_profiles(
                agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
                agent_profile_revisions.avatar_ref, agent_profile_revisions.avatar_asset_id,
                agent_profile_revisions.avatar_seed,
-               agent_profile_revisions.category,
+               agent_profile_revisions.category, agent_profile_revisions.market_tag,
                agent_profile_revisions.visibility, agent_profile_revisions.allowed_department_ids,
                agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
                agent_profile_revisions.created_at, agent_profile_revisions.published_at
@@ -657,7 +659,7 @@ async def list_agent_profile_revision_history(
                agent_profile_revisions.mcp_tool_ids, agent_profile_revisions.content_hash,
                agent_profile_revisions.avatar_ref, agent_profile_revisions.avatar_asset_id,
                agent_profile_revisions.avatar_seed, agent_profile_revisions.category,
-               agent_profile_revisions.visibility,
+               agent_profile_revisions.market_tag, agent_profile_revisions.visibility,
                agent_profile_revisions.allowed_department_ids,
                agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
                agent_profile_revisions.created_at, agent_profile_revisions.published_at
@@ -671,3 +673,47 @@ async def list_agent_profile_revision_history(
         (tenant_id, agent_id),
     )
     return [dict(row) for row in await cursor.fetchall()]
+
+
+async def list_agent_profile_favorite_ids(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+) -> set[str]:
+    cursor = await conn.execute(
+        """
+        select agent_id
+        from agent_profile_favorites
+        where tenant_id = %s and user_id = %s
+        """,
+        (tenant_id, user_id),
+    )
+    return {str(row["agent_id"]) for row in await cursor.fetchall()}
+
+
+async def set_agent_profile_favorite(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    agent_id: str,
+    favorite: bool,
+) -> None:
+    if favorite:
+        await conn.execute(
+            """
+            insert into agent_profile_favorites(tenant_id, user_id, agent_id)
+            values (%s, %s, %s)
+            on conflict (tenant_id, user_id, agent_id) do nothing
+            """,
+            (tenant_id, user_id, agent_id),
+        )
+        return
+    await conn.execute(
+        """
+        delete from agent_profile_favorites
+        where tenant_id = %s and user_id = %s and agent_id = %s
+        """,
+        (tenant_id, user_id, agent_id),
+    )
