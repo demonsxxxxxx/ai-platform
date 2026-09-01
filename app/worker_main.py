@@ -14,6 +14,7 @@ import uuid
 
 from app import queue
 from app import repositories
+from app.bootstrap.mcp import configure_mcp_runtime
 from app.bootstrap.model_services import configure_model_services
 from app.bootstrap.streaming import build_worker_v4_runtime
 from app.bootstrap.worker_maintenance import (
@@ -873,6 +874,7 @@ async def run_once(
     run_background_maintenance: bool = True,
     v4_capabilities: WorkerV4Capabilities,
 ) -> WorkerOutcome:
+    configure_mcp_runtime()
     resolved_worker_id = worker_id or default_worker_id()
     settings = get_settings()
     if run_initial_maintenance:
@@ -1011,6 +1013,7 @@ def _raise_if_background_task_stopped(task: asyncio.Task[None]) -> None:
 
 
 async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float = 0.5) -> None:
+    configure_mcp_runtime()
     await require_schema_current()
     worker_runtime = build_worker_v4_runtime(transaction)
     registry = AdapterRegistry()
@@ -1095,6 +1098,7 @@ async def run_worker_pool(
         await run_forever(poll_timeout_seconds=poll_timeout_seconds, idle_sleep_seconds=idle_sleep_seconds)
         return
 
+    configure_mcp_runtime()
     await require_schema_current()
     settings = get_settings()
     process_worker_id = f"{socket.gethostname()}:{os.getpid()}"
@@ -1149,6 +1153,7 @@ async def run_worker_pool(
 
 
 async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
+    configure_mcp_runtime()
     await require_schema_current()
     worker_runtime = build_worker_v4_runtime(transaction)
     try:

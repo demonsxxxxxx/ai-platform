@@ -29,7 +29,7 @@ from app.skills.release_policy import (
     validate_release_decision_payload,
 )
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
-
+from app.mcp.api import assert_mcp_tool_reference
 from app.validation import (
     MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS, assert_safe_department_authority_id,
     assert_safe_id,
@@ -302,7 +302,7 @@ class AgentProfileDraftRequest(BaseModel):
     def validate_mcp_tool_ids(cls, value: list[str]):
         normalized: list[str] = []
         for item in value:
-            tool_id = assert_safe_id(item.strip(), "mcp_tool_ids")
+            tool_id = assert_mcp_tool_reference(item.strip(), "mcp_tool_ids")
             if tool_id in normalized:
                 raise ValueError("mcp_tool_ids contains duplicates")
             normalized.append(tool_id)
@@ -1380,7 +1380,7 @@ class ChatStreamRequest(BaseModel):
             return None
         normalized: list[str] = []
         for item in value:
-            tool_id = assert_safe_id(item.strip(), "selected_mcp_tool_ids")
+            tool_id = assert_mcp_tool_reference(item.strip(), "selected_mcp_tool_ids")
             if tool_id in normalized:
                 raise ValueError("selected_mcp_tool_ids contains duplicates")
             normalized.append(tool_id)

@@ -68,6 +68,7 @@ from app.executors.base import (
 )
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
+from app.mcp import api as mcp_api
 from app.principal_authority import (
     CURRENT_PRINCIPAL_DENIAL_REASON,
     resolve_current_principal,
@@ -1034,7 +1035,7 @@ def _mcp_capability_subject(tool: dict[str, Any], distribution: CapabilityAccess
     server_id = str(tool.get("server_id") or "")
     tool_id = str(tool.get("tool_id") or "")
     allowed_tools = tool.get("allowed_tools")
-    if not repositories.mcp_runtime_metadata_usable(tool):
+    if not mcp_api.mcp_runtime_metadata_usable(tool):
         return None
     tool_identifier = allowed_tools[0]
     subject: dict[str, Any] = {
@@ -1052,12 +1053,7 @@ def _mcp_capability_subject(tool: dict[str, Any], distribution: CapabilityAccess
         "parameters_authorized": True,
         "risk_level": str(tool.get("risk_level") or "low"),
         "write_capable": bool(tool.get("write_capable")),
-        "allowed_parameter_keys": ["query"],
-        "required_parameter_keys": ["query"],
-    }
-    subject["mcp_server_config"] = {
-        "type": "sse" if str(tool.get("transport_type") or "").lower() == "sse" else "http",
-        "url": str(tool.get("endpoint") or ""),
+        "parameter_delegation": "external_mcp",
     }
     subject.update(capability_id=tool_id)
     return subject
@@ -1124,7 +1120,7 @@ async def _reauthorize_mcp_capabilities(
     allowed_entries: list[dict[str, Any]] = []
     tool_policy_audits: list[_WorkerToolPolicyAudit] = []
     for tool_id in requested_tool_ids:
-        tool = await repositories.get_mcp_tool_registry_entry(
+        tool = await mcp_api.get_mcp_tool_registry_entry(
             conn,
             tenant_id=run_identity["tenant_id"],
             tool_id=tool_id,
@@ -2421,19 +2417,22 @@ async def process_run_payload(
                     execution_spec,
                     attempt_id=attempt_id,
                 )
-            except ValueError:
+                run_payload = await mcp_api.attach_mcp_server_configs(conn, principal=capability_authorization.principal, run_payload=run_payload)
+            except ValueError as exc:
+                mcp_error = exc if isinstance(exc, mcp_api.McpRuntimeContextError) else None
+                error_code = mcp_error.code if mcp_error else "execution_spec_invalid"
                 terminal_after_transaction = await _fail_worker_pre_dispatch_error(
                     conn,
                     payload=payload,
                     run_identity=run_identity,
                     v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
-                    error_code="execution_spec_invalid",
-                    error_message="Execution specification is invalid",
-                    event_stage="worker",
+                    error_code=error_code,
+                    error_message="MCP runtime configuration is unavailable" if mcp_error else "Execution specification is invalid",
+                    event_stage="authorization" if mcp_error else "worker",
                     event_payload={
-                        "visible_to_user": False,
+                        "visible_to_user": bool(mcp_error),
                         "severity": "error",
-                        "error_code": "execution_spec_invalid",
+                        "error_code": error_code,
                     },
                     is_multi_agent_child=_locked_run_is_multi_agent_child(locked),
                 )

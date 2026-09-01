@@ -1,4 +1,5 @@
 from hmac import compare_digest
+import logging
 from typing import Any
 
 import httpx
@@ -22,6 +23,7 @@ from app.auth_sessions import (
     principal_snapshot,
 )
 from app.db import transaction
+from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
 from app.models import AuthContextBootstrapRequest, LoginRequest, OAuthCallbackRequest, PrincipalResponse
 from app.principal_authority import (
     PrincipalAuthorityDenied,
@@ -33,6 +35,7 @@ from app.settings import get_settings
 from app.validation import assert_safe_id
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 async def call_existing_login(username: str, password: str) -> dict[str, Any]:
     settings = get_settings()
@@ -243,7 +246,7 @@ async def login(request: LoginRequest, http_request: Request) -> PrincipalRespon
     """Commit company-authenticated identity only through the current context lease."""
 
     operation = await _begin_browser_operation(http_request, "login")
-    principal = await _resolve_login_principal(request)
+    principal, company_jwt = await _resolve_login_principal(request)
     async with transaction() as conn:
         await _persist_login_principal(conn, principal)
         # Keep durable login side effects inside this transaction so a stale
@@ -253,16 +256,20 @@ async def login(request: LoginRequest, http_request: Request) -> PrincipalRespon
         commit_status = await commit_auth_operation(operation, principal_snapshot(principal))
         if commit_status != "committed":
             _raise_commit_failure(commit_status)
+    await _store_mcp_login_jwt(principal, company_jwt)
     return PrincipalResponse.model_validate(principal_to_response(principal))
 
 
-async def _resolve_login_principal(request: LoginRequest) -> AuthPrincipal:
+async def _resolve_login_principal(
+    request: LoginRequest,
+) -> tuple[AuthPrincipal, str | None]:
     try:
         login_payload = await call_existing_login(request.user_name, request.password)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="company_login_failed") from exc
     if _is_failed_login_payload(login_payload):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="company_login_failed")
+    company_jwt = login_payload.get("token")
     work_id = str(login_payload.get("workId") or login_payload.get("workid") or login_payload.get("userName") or "").strip()
     if not work_id:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="login_missing_work_id")
@@ -276,7 +283,26 @@ async def _resolve_login_principal(request: LoginRequest) -> AuthPrincipal:
         )
     except PrincipalAuthorityDenied as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="company_login_failed") from exc
-    return principal
+    return principal, company_jwt.strip() if isinstance(company_jwt, str) else None
+
+
+async def _store_mcp_login_jwt(
+    principal: AuthPrincipal,
+    company_jwt: str | None,
+) -> None:
+    if not company_jwt:
+        return
+    try:
+        await get_mcp_principal_jwt_store().put(principal, company_jwt)
+    except McpRuntimeContextError as exc:
+        logger.warning(
+            "mcp_principal_jwt_store_failed",
+            extra={
+                "tenant_id": principal.tenant_id,
+                "user_id": principal.user_id,
+                "mcp_error_code": exc.code,
+            },
+        )
 
 
 async def _persist_login_principal(conn: Any, principal: AuthPrincipal) -> None:
@@ -312,9 +338,10 @@ async def _persist_login_principal(conn: Any, principal: AuthPrincipal) -> None:
 async def _login_principal(request: LoginRequest) -> AuthPrincipal:
     """Resolve and persist the explicit Bearer compatibility login principal."""
 
-    principal = await _resolve_login_principal(request)
+    principal, company_jwt = await _resolve_login_principal(request)
     async with transaction() as conn:
         await _persist_login_principal(conn, principal)
+    await _store_mcp_login_jwt(principal, company_jwt)
     return principal
 
 

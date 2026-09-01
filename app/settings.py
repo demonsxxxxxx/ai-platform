@@ -181,6 +181,10 @@ class Settings(BaseSettings):
     auth_context_lease_seconds: int = Field(default=90)
     artifact_default_retention_days: int = Field(default=90)
 
+    # MCP-only server-side custody. JWT lifetime remains authoritative from exp.
+    mcp_encryption_keys_json: str = Field(default="", repr=False)
+    mcp_encryption_current_key_id: str = Field(default="current")
+
     llm_gateway_provider: str = Field(default="openai_compatible")
     model_gateway_request_concurrency_limit: int = Field(default=0)
     openai_base_url: str = Field(default="")

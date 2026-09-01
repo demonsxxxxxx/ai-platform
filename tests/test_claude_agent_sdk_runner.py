@@ -9,6 +9,10 @@ from app.executors.claude_agent_sdk_runner import (
     project_sdk_turn_diagnostics,
     run_claude_agent_sdk,
 )
+from app.executors.claude.capability_policy import (
+    _canonical_tool_policy_subjects,
+    _mcp_server_options,
+)
 from app.required_tool_contract import (
     parse_required_tool_declaration,
     with_sandbox_local_tool_capability_subjects,
@@ -119,6 +123,25 @@ def _subject(
         "mcp_server_config": {
             "type": "http",
             "url": endpoint,
+        },
+    }
+
+
+def test_mcp_server_options_preserve_runtime_static_and_jwt_headers():
+    subject = _subject()
+    subject["mcp_server_config"]["headers"] = {
+        "X-Static-Key": "configured",
+        "JWT-Authorization": "Bearer current.jwt",
+    }
+
+    servers = _mcp_server_options(_canonical_tool_policy_subjects([subject]))
+
+    assert servers["tenant-server"] == {
+        "type": "http",
+        "url": "https://private.example/mcp",
+        "headers": {
+            "X-Static-Key": "configured",
+            "JWT-Authorization": "Bearer current.jwt",
         },
     }
 

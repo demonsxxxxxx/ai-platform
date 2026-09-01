@@ -243,7 +243,12 @@ def test_login_returns_ai_role_without_mutating_context_cookie(monkeypatch):
     async def fake_login(username, password):
         assert username == "dev001"
         assert password == "pw"
-        return {"workId": "dev001", "userName": "dev001", "cnName": "Developer"}
+        return {
+            "workId": "dev001",
+            "userName": "dev001",
+            "cnName": "Developer",
+            "token": "company.jwt.signature",
+        }
 
     async def fake_user_info(work_id):
         assert work_id == "dev001"
@@ -267,6 +272,16 @@ def test_login_returns_ai_role_without_mutating_context_cookie(monkeypatch):
         assert kwargs["payload_json"]["is_admin"] is True
         return "aud_1"
 
+    stored_jwt = {}
+
+    class JwtStore:
+        async def put(self, principal, jwt):
+            stored_jwt.update(
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                jwt=jwt,
+            )
+
     settings = auth_settings(ai_session_cookie_secure=True)
     monkeypatch.setattr("app.auth.get_settings", lambda: settings)
     monkeypatch.setattr("app.routes.auth.get_settings", lambda: settings)
@@ -275,6 +290,10 @@ def test_login_returns_ai_role_without_mutating_context_cookie(monkeypatch):
     monkeypatch.setattr("app.routes.auth.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.auth.ensure_user", fake_ensure_user)
     monkeypatch.setattr("app.routes.auth.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr(
+        "app.routes.auth.get_mcp_principal_jwt_store",
+        lambda: JwtStore(),
+    )
 
     client = browser_client()
     response = client.post("/api/ai/auth/login", json={"user_name": "dev001", "password": "pw"})
@@ -284,6 +303,13 @@ def test_login_returns_ai_role_without_mutating_context_cookie(monkeypatch):
     assert response.json()["roles"] == ["admin"]
     assert response.json()["permissions"] == EXPECTED_COMPANY_ADMIN_PERMISSIONS
     assert response.json()["user_id"] == "dev001"
+    assert "token" not in response.json()
+    assert "jwt" not in response.text.lower()
+    assert stored_jwt == {
+        "tenant_id": "default",
+        "user_id": "dev001",
+        "jwt": "company.jwt.signature",
+    }
     assert "set-cookie" not in response.headers
 
 

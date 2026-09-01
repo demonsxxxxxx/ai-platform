@@ -469,6 +469,9 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "object_deletion_outbox",
         "audit_logs",
         "sandbox_leases",
+        "mcp_servers",
+        "mcp_server_credentials",
+        "mcp_tools",
     )
     assert (
         "sessions",
@@ -682,6 +685,18 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert all(item[4].endswith("end ") for item in trigger_contract)
     assert all("\n" in item[4] for item in trigger_contract)
     assert schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS == (
+        (
+            "mcp_servers",
+            "mcp_servers_endpoint_not_persisted",
+            "c",
+            "CHECK (endpoint_redacted = ''::text)",
+        ),
+        (
+            "mcp_tools",
+            "mcp_tools_endpoint_not_persisted",
+            "c",
+            "CHECK (endpoint = ''::text)",
+        ),
         (
             "run_attempts",
             "fk_run_attempts_run",
@@ -1054,7 +1069,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "dd6374f0f281727d0ad7081d57034207f28494c61b90c538b447d1263faea83a"
+        "7deb225fe43a0e36d9cd7c84722b401a578d8d7ce57a6da7e4c945d84c64cbaf"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

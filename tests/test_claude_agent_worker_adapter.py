@@ -174,7 +174,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     )
     external_subject = worker_module._mcp_capability_subject(
         {
-            "tool_id": "corp-search",
+            "tool_id": "corp-search::query",
             "server_id": "corp-search",
             "allowed_tools": ["query"],
             "registry_status": "active",
@@ -183,12 +183,20 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             "risk_level": "high",
             "write_capable": True,
             "transport_type": "http",
-            "endpoint": "https://mcp.example.test/v1",
+            "endpoint": "",
             "auth_mode": "none",
         },
         types.SimpleNamespace(usable=True),
     )
     assert external_subject is not None
+    external_subject["mcp_server_config"] = {
+        "type": "http",
+        "url": "https://mcp.example.test/v1",
+        "headers": {
+            "X-Static-Header": "configured",
+            "JWT-Authorization": "Bearer runtime-jwt",
+        },
+    }
     subjects_by_identity = {subject["identity"]: subject for subject in builtin_subjects}
     subjects = [subjects_by_identity[identity] for identity in ("Bash", "Write", "Skill")] + [external_subject]
 
@@ -218,7 +226,14 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         "mcp__corp-search__query",
     ]
     assert captured["mcp_servers"] == {
-        "corp-search": {"type": "http", "url": "https://mcp.example.test/v1"}
+        "corp-search": {
+            "type": "http",
+            "url": "https://mcp.example.test/v1",
+            "headers": {
+                "X-Static-Header": "configured",
+                "JWT-Authorization": "Bearer runtime-jwt",
+            },
+        }
     }
     assert "on_tool_permission" not in captured
     assert captured["pre_invocation_skill_write"].behavior == "deny"
@@ -234,7 +249,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     assert (await can_use("Skill", {"skill": "unknown-skill"})).behavior == "deny"
     assert (await can_use("mcp__corp-search__query", {"query": "safe"})).behavior == "allow"
     assert (await can_use("mcp__corp-search__query_extra", {"query": "safe"})).behavior == "deny"
-    assert (await can_use("mcp__corp-search__query", {"query": "safe", "scope": "other"})).behavior == "deny"
+    assert (await can_use("mcp__corp-search__query", {"query": "safe", "scope": "other"})).behavior == "allow"
     for endpoint in (
         "https://mcp.example.test/v1?api_key=redacted",
         "https://mcp.example.test/v1?token=redacted",

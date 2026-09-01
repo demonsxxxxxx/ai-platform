@@ -21,6 +21,7 @@ V4_PENDING_ADMISSION_SCHEMA_VERSION = "2026.08.26.2"
 V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION = "2026.08.27.1"
 V4_CONCURRENT_DUE_INDEX_SCHEMA_VERSION = "2026.08.27.2"
 MODEL_CONTROL_PLANE_SCHEMA_VERSION = "2026.08.28.1"
+MCP_DYNAMIC_TOOL_DISCOVERY_SCHEMA_VERSION = "2026.08.29.1"
 RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION = "2026.08.30.1"
 RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SCHEMA_VERSION = "2026.08.30.2"
 RUN_ATTEMPT_HEARTBEAT_CLOCK_SAFETY_SCHEMA_VERSION = "2026.08.30.3"
@@ -50,6 +51,9 @@ CRITICAL_RELATIONS = (
     "object_deletion_outbox",
     "audit_logs",
     "sandbox_leases",
+    "mcp_servers",
+    "mcp_server_credentials",
+    "mcp_tools",
 )
 CRITICAL_COLUMNS = (
     ("sessions", "title_source", "text", True),
@@ -193,6 +197,7 @@ CRITICAL_COLUMNS = (
     ),
     ("sandbox_leases", "executor_reconciliation_error", "text", True),
     ("sandbox_leases", "executor_reconciled_at", "timestamptz", False),
+    ("mcp_server_credentials", "credential_envelope", "text", True),
 )
 CRITICAL_CONSTRAINTS = (
     ("runs", "fk_runs_model_gateway_revision"),
@@ -245,6 +250,8 @@ CRITICAL_CONSTRAINTS = (
     ("object_deletion_outbox", "object_deletion_outbox_file_id_fkey"),
     ("sandbox_leases", "chk_sandbox_leases_executor_status"),
     ("sandbox_leases", "chk_sandbox_leases_executor_reconciliation_status"),
+    ("mcp_servers", "mcp_servers_endpoint_not_persisted"),
+    ("mcp_tools", "mcp_tools_endpoint_not_persisted"),
 )
 CRITICAL_TRIGGERS = (
     (
@@ -337,6 +344,18 @@ MODEL_CRITICAL_CONSTRAINT_DEFINITIONS = (
 )
 
 CRITICAL_CONSTRAINT_DEFINITIONS = (
+    (
+        "mcp_servers",
+        "mcp_servers_endpoint_not_persisted",
+        "c",
+        "CHECK (endpoint_redacted = ''::text)",
+    ),
+    (
+        "mcp_tools",
+        "mcp_tools_endpoint_not_persisted",
+        "c",
+        "CHECK (endpoint = ''::text)",
+    ),
     (
         "run_attempts",
         "fk_run_attempts_run",
@@ -1382,8 +1401,16 @@ async def schema_status(conn: Any) -> dict[str, object]:
           and constraints.convalidated
           and constraints.contype::text = expected.constraint_type
           and regexp_replace(
-            lower(pg_get_constraintdef(constraints.oid, true)), '\\s+', '', 'g'
-          ) = regexp_replace(lower(expected.definition), '\\s+', '', 'g')
+            regexp_replace(
+              lower(pg_get_constraintdef(constraints.oid, true)), '\\s+', '', 'g'
+            ),
+            '^check\\(\\((.*)\\)\\)$',
+            'check(\\1)'
+          ) = regexp_replace(
+            regexp_replace(lower(expected.definition), '\\s+', '', 'g'),
+            '^check\\(\\((.*)\\)\\)$',
+            'check(\\1)'
+          )
         ), false) as current
         from jsonb_to_recordset(%s::jsonb)
           as expected(

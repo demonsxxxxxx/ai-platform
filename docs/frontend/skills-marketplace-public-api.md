@@ -114,6 +114,7 @@ controls; they cannot create an active version or redirect a release policy.
 
 Backed read and server lifecycle routes:
 
+- `GET /api/mcp/chat-tools`
 - `GET /api/mcp/`
 - `GET /api/mcp/{name}`
 - `GET /api/mcp/{name}/tools`
@@ -126,18 +127,33 @@ Backed read and server lifecycle routes:
 - `PUT /api/admin/mcp/{name}`
 - `DELETE /api/admin/mcp/{name}`
 
-The MCP read projection is built from the tenant MCP server registry and falls
-back to platform-registered MCP tools plus tenant tool policies for seeded
-tools. It exposes governed server/tool directory metadata for frontend
-discovery without raw credentials, server headers, runtime paths, or unmanaged
-tool execution controls.
+`GET /api/mcp/chat-tools` discovers each user's current effective tools from
+every distributed MCP Server by calling `tools/list` with that user's
+server-side company JWT. Dynamic Gateway tool definitions and ACLs are not
+persisted or cached in AI Platform; every request performs a fresh discovery,
+while each Gateway owns its internal catalog and ACL caching. A single
+unavailable Server does not hide tools from other Servers. Responses expose
+stable `mcp_server_id::public_tool_name`
+references and bounded display metadata, never JWTs, static headers, Gateway
+internal IDs, or cache keys. The code-owned RAGFlow row remains the only local
+`mcp_tools` compatibility entry while its built-in dependency is retained.
 
 Server lifecycle writes require a platform-admin principal. They persist only
-tenant-scoped registry metadata, redacted endpoint shape, allowed roles,
-department enablement, quotas, credential state, credential metadata such as
-header names or env key names, and a credential fingerprint. Raw URL query
-secrets, header values, commands, and credential values are not returned in API
-responses and are not written to audit payloads.
+tenant-scoped registry metadata, allowed roles, department enablement, quotas,
+credential state, bounded metadata, and a credential fingerprint. Endpoint and
+static headers are stored only in a tenant/Server-bound encrypted envelope;
+static headers cannot use the reserved `JWT-Authorization` name. Raw URL query
+secrets, header names or values, commands, JWTs, and credential values are not
+returned in API responses or written to audit payloads.
+
+Company login stores one encrypted MCP JWT per `tenant_id + user_id` in Redis;
+the JWT's own `exp` is its lifetime and a later login replaces the earlier
+value. The browser never receives or stores this JWT. At MCP execution time the
+Worker reuses the existing Capability Distribution and Tool Policy plan, reads
+the current JWT and encrypted Server target, then registers the Server with the
+Agent SDK using static headers plus `JWT-Authorization`. The SDK calls the MCP
+Server directly. There is no separate MCP Broker capability or host Relay, and
+runtime connection material is removed from reconciliation persistence.
 
 Explicitly fail-closed follow-up routes:
 
