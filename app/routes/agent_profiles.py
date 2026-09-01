@@ -1,22 +1,22 @@
 import unicodedata
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request as HttpRequest
 from app import repositories
 from app.agent_apps import AgentProfileAuthority
-from app.agent_profiles import list_admin_profiles, list_public_profiles, publish_draft, save_draft
+from app.agent_apps.api import normalize_market_tag
+from app.agent_profiles import (
+    list_admin_profiles,
+    publish_draft,
+    save_draft,
+)
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
 from app.department_directory import validate_profile_department_authorities
 from app.models import (
-    AgentProfileAdminListResponse,
     AgentAppRunRequest,
-    AgentProfileCatalogResponse,
     AgentProfileDraftRequest,
-    AgentProfileDraftTestRequest,
-    AgentProfileHistoryResponse,
-    AgentProfileMutationResponse,
     AgentProfilePublishRequest,
-    AgentProfilePublicProjection,
     AgentProfileTrialRunRequest,
     AgentProfileTrialRunResponse,
     AgentProfileUnpublishRequest,
@@ -46,6 +46,13 @@ _DEDICATED_OVERRIDE_HEADERS = frozenset(
 )
 
 
+def configure_agent_profile_favorites(*, favorite_ids_loader, favorite_setter) -> None:
+    _authority.configure_favorite_persistence(
+        favorite_ids_loader=favorite_ids_loader,
+        favorite_setter=favorite_setter,
+    )
+
+
 def _reject_dedicated_capability_overrides(http_request: HttpRequest) -> None:
     """Reject every non-body transport that could claim execution authority."""
 
@@ -62,6 +69,19 @@ def _normalize_catalog_query(query: str | None) -> str | None:
     if not normalized or len(normalized) > 160:
         raise HTTPException(status_code=422, detail="agent_profile_query_invalid")
     return normalized
+
+
+def _parse_draft_payload(payload: dict[str, Any]) -> AgentProfileDraftRequest:
+    definition_payload = dict(payload)
+    market_tag = definition_payload.pop("market_tag", None)
+    try:
+        definition = AgentProfileDraftRequest.model_validate(definition_payload)
+        if market_tag is not None:
+            definition.__dict__["market_tag"] = normalize_market_tag(market_tag)
+            definition.__pydantic_fields_set__.add("market_tag")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return definition
 
 
 async def _submit_dedicated_agent_run(
@@ -116,33 +136,33 @@ async def retired_agent_apps(
     raise HTTPException(status_code=410, detail="agent_apps_retired_use_agent_profiles")
 
 
-@router.get("/agent-profiles", response_model=AgentProfileCatalogResponse)
+@router.get("/agent-profiles")
 async def list_agent_profiles(
     query: str | None = Query(default=None, min_length=1, max_length=160),
     category: str | None = Query(default=None, pattern="^(general|support|writing|research|operations)$"),
     principal: AuthPrincipal = Depends(require_principal),
-) -> AgentProfileCatalogResponse:
+) -> dict[str, list[dict[str, Any]]]:
     """Return only current-principal-safe published Agent Profile market cards."""
 
     normalized_query = _normalize_catalog_query(query)
     async with transaction() as conn:
         if normalized_query is None and category is None:
-            profiles = await list_public_profiles(conn, principal=principal)
+            profiles = await _authority.list_public(conn, principal=principal)
         else:
-            profiles = await list_public_profiles(
+            profiles = await _authority.list_public(
                 conn,
                 principal=principal,
                 query=normalized_query,
                 category=category,
             )
-    return AgentProfileCatalogResponse(agent_profiles=profiles)
+    return {"agent_profiles": profiles}
 
 
-@router.get("/agent-profiles/{agent_id}", response_model=AgentProfilePublicProjection)
+@router.get("/agent-profiles/{agent_id}")
 async def get_agent_profile(
     agent_id: str,
     principal: AuthPrincipal = Depends(require_principal),
-) -> AgentProfilePublicProjection:
+) -> dict[str, Any]:
     """Return public detail through the same ACL/capability path as catalog cards."""
 
     try:
@@ -151,6 +171,46 @@ async def get_agent_profile(
         raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
     async with transaction() as conn:
         return await _authority.get_public(conn, principal=principal, agent_id=safe_agent_id)
+
+
+@router.put("/agent-profiles/{agent_id}/favorite")
+async def favorite_agent_profile(
+    agent_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, Any]:
+    """Favorite an authorized public profile for the current user."""
+
+    try:
+        safe_agent_id = assert_safe_id(agent_id, "agent_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
+    async with transaction() as conn:
+        return await _authority.set_favorite(
+            conn,
+            principal=principal,
+            agent_id=safe_agent_id,
+            favorite=True,
+        )
+
+
+@router.delete("/agent-profiles/{agent_id}/favorite")
+async def unfavorite_agent_profile(
+    agent_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, Any]:
+    """Remove a favorite through the same public-profile authorization path."""
+
+    try:
+        safe_agent_id = assert_safe_id(agent_id, "agent_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
+    async with transaction() as conn:
+        return await _authority.set_favorite(
+            conn,
+            principal=principal,
+            agent_id=safe_agent_id,
+            favorite=False,
+        )
 
 
 @router.post("/agent-conversations", response_model=ChatSessionResponse, response_model_exclude_none=True)
@@ -208,24 +268,24 @@ async def submit_agent_app_run(
     )
 
 
-@router.get("/admin/agent-profiles", response_model=AgentProfileAdminListResponse)
+@router.get("/admin/agent-profiles")
 async def admin_list_agent_profiles(
     principal: AuthPrincipal = Depends(require_principal),
-) -> AgentProfileAdminListResponse:
+) -> dict[str, list[dict[str, Any]]]:
     """Return same-tenant latest profile revisions to AI administrators only."""
 
     if not is_ai_admin(principal):
         raise HTTPException(status_code=403, detail="not_ai_admin")
     async with transaction() as conn:
         profiles = await list_admin_profiles(conn, principal=principal)
-    return AgentProfileAdminListResponse(agent_profiles=profiles)
+    return {"agent_profiles": profiles}
 
 
-@router.get("/admin/agent-profiles/{agent_id}/history", response_model=AgentProfileHistoryResponse)
+@router.get("/admin/agent-profiles/{agent_id}/history")
 async def admin_agent_profile_history(
     agent_id: str,
     principal: AuthPrincipal = Depends(require_principal),
-) -> AgentProfileHistoryResponse:
+) -> dict[str, list[dict[str, Any]]]:
     """Return immutable lifecycle history to same-tenant AI administrators."""
 
     if not is_ai_admin(principal):
@@ -236,14 +296,14 @@ async def admin_agent_profile_history(
         raise HTTPException(status_code=400, detail="agent_id_invalid") from exc
     async with transaction() as conn:
         profiles = await _authority.list_history(conn, principal=principal, agent_id=safe_agent_id)
-    return AgentProfileHistoryResponse(agent_profiles=profiles)
+    return {"agent_profiles": profiles}
 
 
-@router.post("/admin/agent-profiles", response_model=AgentProfileMutationResponse)
+@router.post("/admin/agent-profiles")
 async def create_agent_profile(
-    request: AgentProfileDraftRequest,
+    request: dict[str, Any],
     principal: AuthPrincipal = Depends(require_principal),
-) -> AgentProfileMutationResponse:
+) -> dict[str, Any]:
     """Save the first immutable draft revision with a server-generated Agent identity."""
 
     if not is_ai_admin(principal):
@@ -253,20 +313,20 @@ async def create_agent_profile(
             profile, audit_id = await save_draft(
                 conn,
                 principal=principal,
-                definition=request,
+                definition=_parse_draft_payload(request),
                 agent_id=None,
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
-    return AgentProfileMutationResponse(agent_profile=profile, audit_id=audit_id)
+    return {"agent_profile": profile, "audit_id": audit_id}
 
 
-@router.put("/admin/agent-profiles/{agent_id}", response_model=AgentProfileMutationResponse)
+@router.put("/admin/agent-profiles/{agent_id}")
 async def save_agent_profile_draft(
     agent_id: str,
-    request: AgentProfileDraftRequest,
+    request: dict[str, Any],
     principal: AuthPrincipal = Depends(require_principal),
-) -> AgentProfileMutationResponse:
+) -> dict[str, Any]:
     """Append a later immutable draft revision for the same profile identity."""
 
     if not is_ai_admin(principal):
@@ -280,30 +340,34 @@ async def save_agent_profile_draft(
             profile, audit_id = await save_draft(
                 conn,
                 principal=principal,
-                definition=request,
+                definition=_parse_draft_payload(request),
                 agent_id=safe_agent_id,
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
-    return AgentProfileMutationResponse(agent_profile=profile, audit_id=audit_id)
+    return {"agent_profile": profile, "audit_id": audit_id}
 
 
 @router.post("/admin/agent-profiles/test", response_model=AgentProfileValidationResponse)
 async def validate_agent_profile_draft(
-    request: AgentProfileDraftTestRequest,
+    request: dict[str, Any],
     principal: AuthPrincipal = Depends(require_principal),
 ) -> AgentProfileValidationResponse:
     """Validate a saved or unsaved definition without creating an execution run."""
 
     if not is_ai_admin(principal):
         raise HTTPException(status_code=403, detail="not_ai_admin")
+    definition_payload = request.get("definition")
+    agent_id = request.get("agent_id")
+    if not isinstance(definition_payload, dict) or (agent_id is not None and not isinstance(agent_id, str)):
+        raise HTTPException(status_code=422, detail="agent_profile_draft_invalid")
     try:
         async with transaction() as conn:
             audit_id = await _authority.validate_draft(
                 conn,
                 principal=principal,
-                definition=request.definition,
-                agent_id=request.agent_id,
+                definition=_parse_draft_payload(definition_payload),
+                agent_id=agent_id,
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
@@ -365,12 +429,12 @@ async def run_agent_profile_test(
     )
 
 
-@router.post("/admin/agent-profiles/{agent_id}/publish", response_model=AgentProfileMutationResponse)
+@router.post("/admin/agent-profiles/{agent_id}/publish")
 async def publish_agent_profile(
     agent_id: str,
     request: AgentProfilePublishRequest,
     principal: AuthPrincipal = Depends(require_principal),
-) -> AgentProfileMutationResponse:
+) -> dict[str, Any]:
     """Publish a revalidated immutable copy of the requested draft revision."""
 
     if not is_ai_admin(principal):
@@ -389,15 +453,15 @@ async def publish_agent_profile(
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
-    return AgentProfileMutationResponse(agent_profile=profile, audit_id=audit_id)
+    return {"agent_profile": profile, "audit_id": audit_id}
 
 
-@router.post("/admin/agent-profiles/{agent_id}/unpublish", response_model=AgentProfileMutationResponse)
+@router.post("/admin/agent-profiles/{agent_id}/unpublish")
 async def unpublish_agent_profile(
     agent_id: str,
     request: AgentProfileUnpublishRequest,
     principal: AuthPrincipal = Depends(require_principal),
-) -> AgentProfileMutationResponse:
+) -> dict[str, Any]:
     """Withdraw a current publication and block every new Agent Conversation admission."""
 
     if not is_ai_admin(principal):
@@ -416,4 +480,4 @@ async def unpublish_agent_profile(
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
-    return AgentProfileMutationResponse(agent_profile=profile, audit_id=audit_id)
+    return {"agent_profile": profile, "audit_id": audit_id}

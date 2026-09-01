@@ -1,6 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
+from app.agent_apps.api import normalize_market_tag
 from app.models import AgentProfileDraftRequest, SelectedSkillRequest
 
 
@@ -23,6 +24,7 @@ def test_models_normalize_agent_profile_acl_and_use_only_builtin_avatar_referenc
     assert definition.allowed_department_ids == ["药品注册"]
     assert definition.allowed_roles == ["user"]
     assert definition.allowed_user_ids == ["user-a"]
+    assert normalize_market_tag(" 客户服务 ") == "客户服务"
 
     for unsafe_department_id in (
         " 研发一部",

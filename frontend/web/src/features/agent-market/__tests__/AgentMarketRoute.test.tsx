@@ -9,7 +9,10 @@ test("market keeps one, two, and three cards responsive while resolving durable 
     "utf8",
   );
 
-  assert.match(source, /agentProfileApi\s*\.\s*listPublished\(\{\s*query,\s*category\s*\}\)/);
+  assert.match(source, /agentProfileApi\s*\.\s*listPublished\(\)/);
+  assert.doesNotMatch(source, /listPublished\(\{\s*query\s*,\s*category\s*\}\)/);
+  assert.match(source, /activeTab === "favorites"/);
+  assert.match(source, /我的收藏/);
   assert.match(source, /agentProfileApi\s*\.\s*getPublished\(agentId\)/);
   assert.doesNotMatch(source, /agentProfileApi\s*\.\s*createConversation\(/);
   assert.match(source, /navigate\(buildAgentMarketWorkspacePath\(profile\)\)/);
