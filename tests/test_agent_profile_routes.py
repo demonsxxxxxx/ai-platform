@@ -58,14 +58,25 @@ def test_retired_agent_apps_route_points_authenticated_clients_to_profiles(monke
 def test_agent_apps_public_profile_detail_uses_safe_authority_projection(monkeypatch):
     async def public_profile(_conn, *, principal, agent_id):
         assert (principal.tenant_id, agent_id) == ("default", "agt_support")
-        return AgentProfilePublicProjection(
-            agent_id="agt_support",
-            expected_revision=7,
-            name="Support assistant",
-            description="Approved support help.",
-            avatar_ref="builtin:assistant",
-            category="support",
-        )
+        return {
+            "agent_id": "agt_support",
+            "expected_revision": 7,
+            "name": "Support assistant",
+            "description": "Approved support help.",
+            "welcome_message": "",
+            "starter_prompts": [],
+            "capability_summary": "",
+            "recommended_tasks": [],
+            "supported_input_types": ["text", "file"],
+            "expected_outputs": [],
+            "permissions_and_data_access_notice": "",
+            "published_at": None,
+            "avatar_ref": "builtin:assistant",
+            "avatar_seed": "",
+            "category": "support",
+            "market_tag": "",
+            "is_favorite": False,
+        }
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
