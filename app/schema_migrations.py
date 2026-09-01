@@ -24,7 +24,8 @@ MODEL_CONTROL_PLANE_SCHEMA_VERSION = "2026.08.28.1"
 RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION = "2026.08.30.1"
 RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SCHEMA_VERSION = "2026.08.30.2"
 RUN_ATTEMPT_HEARTBEAT_CLOCK_SAFETY_SCHEMA_VERSION = "2026.08.30.3"
-TARGET_SCHEMA_VERSION = RUN_ATTEMPT_HEARTBEAT_CLOCK_SAFETY_SCHEMA_VERSION
+EXPERT_MARKET_SCHEMA_VERSION = "2026.09.01.1"
+TARGET_SCHEMA_VERSION = EXPERT_MARKET_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # Keeping this ledger stable preserves readiness for the saved rollback binary.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION
@@ -53,6 +54,7 @@ CRITICAL_COLUMNS = (
     ("sessions", "title_source", "text", True),
     ("agent_profile_revisions", "skill_set", "jsonb", True),
     ("agent_profile_revisions", "avatar_seed", "text", True),
+    ("agent_profile_revisions", "market_tag", "text", True),
     # Temporary physical compatibility for the previous binary; product DTOs ignore it.
     ("agent_profile_revisions", "supported_file_types", "jsonb", True),
     ("runs", "execution_kind", "text", True),

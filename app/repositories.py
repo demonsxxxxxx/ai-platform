@@ -139,8 +139,6 @@ get_current_published_agent_profile = (
 list_agent_profile_revision_history = (
     agent_profile_persistence.list_agent_profile_revision_history
 )
-list_agent_profile_favorite_ids = agent_profile_persistence.list_agent_profile_favorite_ids
-set_agent_profile_favorite = agent_profile_persistence.set_agent_profile_favorite
 list_current_published_agent_profiles = (
     agent_profile_persistence.list_current_published_agent_profiles
 )

@@ -13,14 +13,17 @@ from fastapi import HTTPException
 
 from app import repositories
 from app.agent_apps.api import safe_agent_avatar_seed
+from app.agent_apps.domain.profile_contracts import (
+    AgentProfileAdminProjection,
+    AgentProfileDraftRequest,
+    AgentProfilePublicProjection,
+)
+from app.agent_apps.infrastructure import postgres as agent_profile_persistence
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
 from app.models import (
     AgentConversationIdentity,
-    AgentProfileAdminProjection,
-    AgentProfileDraftRequest,
-    AgentProfilePublicProjection,
     ChatSessionResponse,
     ChatStreamRequest,
     SelectedAgentProfileRequest,
@@ -123,6 +126,10 @@ def _safe_category(value: Any) -> str:
 def _safe_market_tag(value: Any) -> str:
     candidate = str(value or "").strip()
     return candidate if "\x00" not in candidate else ""
+
+
+def _market_tag(definition: AgentProfileDraftRequest) -> str:
+    return _safe_market_tag(getattr(definition, "market_tag", ""))
 
 
 def _safe_visibility(value: Any) -> str:
@@ -275,7 +282,7 @@ def _revision_hash(
         "avatar_asset_id": definition.avatar_asset_id,
         "avatar_seed": definition.avatar_seed,
         "category": definition.category,
-        **({"market_tag": definition.market_tag} if include_market_tag else {}),
+        **({"market_tag": _market_tag(definition)} if include_market_tag else {}),
         "visibility": definition.visibility,
         "allowed_department_ids": definition.allowed_department_ids,
         "allowed_roles": definition.allowed_roles,
@@ -647,11 +654,11 @@ def _revision_hash_matches(row: dict[str, Any], content_hash: str) -> bool:
         return True
     if (
         current_shape
-        and not definition.market_tag
+        and not _market_tag(definition)
         and content_hash == _revision_hash(definition, include_market_tag=False)
     ):
         return True
-    if definition.market_tag:
+    if _market_tag(definition):
         return False
     if current_shape and content_hash == _omitted_file_type_skill_set_revision_hash(
         definition,
@@ -960,7 +967,7 @@ class AgentProfileAuthority:
             avatar_asset_id=definition.avatar_asset_id,
             avatar_seed=definition.avatar_seed,
             category=definition.category,
-            market_tag=definition.market_tag,
+            market_tag=_market_tag(definition),
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
             allowed_roles=definition.allowed_roles,
@@ -1050,7 +1057,7 @@ class AgentProfileAuthority:
             avatar_asset_id=definition.avatar_asset_id,
             avatar_seed=definition.avatar_seed or agent_id,
             category=definition.category,
-            market_tag=definition.market_tag,
+            market_tag=_market_tag(definition),
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
             allowed_roles=definition.allowed_roles,
@@ -1169,7 +1176,7 @@ class AgentProfileAuthority:
             # omit avatar_seed and use an empty value as their schema marker.
             avatar_seed=authoring_row["avatar_seed"],
             category=definition.category,
-            market_tag=definition.market_tag,
+            market_tag=_market_tag(definition),
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
             allowed_roles=definition.allowed_roles,
@@ -1299,7 +1306,7 @@ class AgentProfileAuthority:
             query=query,
             category=category,
         )
-        favorite_ids = await repositories.list_agent_profile_favorite_ids(
+        favorite_ids = await agent_profile_persistence.list_agent_profile_favorite_ids(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1334,7 +1341,7 @@ class AgentProfileAuthority:
             await self._authorize_public_row(conn, principal=principal, row=row)
         except HTTPException as exc:
             raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
-        favorite_ids = await repositories.list_agent_profile_favorite_ids(
+        favorite_ids = await agent_profile_persistence.list_agent_profile_favorite_ids(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1365,7 +1372,7 @@ class AgentProfileAuthority:
             await self._authorize_public_row(conn, principal=principal, row=row)
         except HTTPException as exc:
             raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
-        await repositories.set_agent_profile_favorite(
+        await agent_profile_persistence.set_agent_profile_favorite(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,

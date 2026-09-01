@@ -137,7 +137,7 @@ async def create_agent_profile_revision(
           published_from_revision, withdrawn_from_revision
         )
         values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s,
-                %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s::jsonb,
+                %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s::jsonb,
                 %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s,
                 %s, %s, %s, case when %s::text is null then null else now() end, %s, %s)
         returning tenant_id, agent_id, revision, revision_status as status, name, description, instructions,

@@ -803,6 +803,8 @@ def test_agent_profile_admin_wire_never_projects_retired_file_type_field(monkeyp
     admin_projection = schema["components"]["schemas"]["AgentProfileAdminProjection"]
     draft_request = schema["components"]["schemas"]["AgentProfileDraftRequest"]
     assert "supported_file_types" not in admin_projection["properties"]
+    assert "market_tag" in admin_projection["properties"]
+    assert "market_tag" in draft_request["properties"]
     assert "model_id" not in admin_projection["properties"]
     assert "model_id" not in draft_request["properties"]
     assert "model_id" not in current_response.json()["agent_profiles"][0]

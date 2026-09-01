@@ -5,8 +5,9 @@ import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
 
+from app.agent_apps.domain.profile_contracts import AgentProfilePublicProjection
 from app.main import create_app
-from app.models import AgentProfilePublicProjection, ChatStreamResponse
+from app.models import ChatStreamResponse
 
 
 def auth_settings():

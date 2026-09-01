@@ -248,7 +248,6 @@ class AgentProfileDraftRequest(BaseModel):
     avatar_asset_id: str | None = None
     avatar_seed: str = Field(default="", max_length=128)
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
-    market_tag: str = Field(default="", max_length=80)
     visibility: Literal["tenant", "restricted"] = "tenant"
     allowed_department_ids: list[str] = Field(default_factory=list)
     allowed_roles: list[str] = Field(default_factory=list)
@@ -308,12 +307,6 @@ class AgentProfileDraftRequest(BaseModel):
                 raise ValueError("mcp_tool_ids contains duplicates")
             normalized.append(tool_id)
         return normalized
-
-    @field_validator("market_tag")
-    @classmethod
-    def normalize_market_tag(cls, value: str, info):
-        values = normalize_agent_profile_display_items([value], info.field_name, item_limit=80)
-        return values[0] if values else ""
 
     @field_validator("allowed_department_ids")
     @classmethod
@@ -424,8 +417,6 @@ class AgentProfilePublicProjection(BaseModel):
     avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
     avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
-    market_tag: str = ""
-    is_favorite: bool = False
     published_at: Any | None = None
 
     _validate_supported_input_types = field_validator("supported_input_types")(
@@ -467,7 +458,6 @@ class AgentProfileAdminProjection(BaseModel):
     avatar_asset_id: str | None = None
     avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
-    market_tag: str = ""
     visibility: Literal["tenant", "restricted"] = "tenant"
     allowed_department_ids: list[str] = Field(default_factory=list)
     allowed_roles: list[str] = Field(default_factory=list)

@@ -3,6 +3,15 @@ import unicodedata
 from fastapi import APIRouter, Depends, HTTPException, Query, Request as HttpRequest
 from app import repositories
 from app.agent_apps import AgentProfileAuthority
+from app.agent_apps.domain.profile_contracts import (
+    AgentProfileAdminListResponse,
+    AgentProfileCatalogResponse,
+    AgentProfileDraftRequest,
+    AgentProfileDraftTestRequest,
+    AgentProfileHistoryResponse,
+    AgentProfileMutationResponse,
+    AgentProfilePublicProjection,
+)
 from app.agent_profiles import (
     list_admin_profiles,
     list_public_profiles,
@@ -13,15 +22,8 @@ from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
 from app.department_directory import validate_profile_department_authorities
 from app.models import (
-    AgentProfileAdminListResponse,
     AgentAppRunRequest,
-    AgentProfileCatalogResponse,
-    AgentProfileDraftRequest,
-    AgentProfileDraftTestRequest,
-    AgentProfileHistoryResponse,
-    AgentProfileMutationResponse,
     AgentProfilePublishRequest,
-    AgentProfilePublicProjection,
     AgentProfileTrialRunRequest,
     AgentProfileTrialRunResponse,
     AgentProfileUnpublishRequest,
