@@ -167,6 +167,15 @@ export function AgentBuilderWorkbench({
     );
   }, [profileQuery, workbench.profiles]);
 
+  const marketTagSuggestions = useMemo(
+    () => [...new Set(
+      workbench.profiles
+        .map((profile) => profile.market_tag?.trim())
+        .filter((tag): tag is string => Boolean(tag)),
+    )].sort((left, right) => left.localeCompare(right, "zh-CN")),
+    [workbench.profiles],
+  );
+
   const closeDialog = useCallback(() => setDialog(null), []);
   const performRefresh = useCallback((discardUnsavedChanges = false) => {
     retryCatalog();
@@ -598,6 +607,7 @@ export function AgentBuilderWorkbench({
               <AgentBuilderEnterpriseFields
                 disabled={interactionBusy}
                 editor={activeEditor}
+                marketTagSuggestions={marketTagSuggestions}
                 onChange={(patch) =>
                   updateEditor((editor) => ({
                     ...editor,

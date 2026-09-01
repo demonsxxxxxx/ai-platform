@@ -109,6 +109,7 @@ create table agent_profile_revisions (
   avatar_seed text not null default '',
   category text not null
     check (category in ('general', 'support', 'writing', 'research', 'operations')),
+  market_tag text not null default '',
   visibility text not null,
   allowed_department_ids jsonb not null,
   allowed_roles jsonb not null,
@@ -136,6 +137,15 @@ create index idx_agent_profile_revisions_published
 create unique index idx_agent_profile_revisions_published_from_draft
   on agent_profile_revisions(tenant_id, agent_id, published_from_revision)
   where revision_status = 'published' and published_from_revision is not null;
+
+create table agent_profile_favorites (
+  tenant_id text not null references tenants(id),
+  user_id text not null references users(id),
+  agent_id text not null,
+  created_at timestamptz not null default now(),
+  primary key (tenant_id, user_id, agent_id),
+  foreign key (tenant_id, agent_id) references agents(tenant_id, id)
+);
 """
 
 
