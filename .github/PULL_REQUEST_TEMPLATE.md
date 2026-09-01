@@ -24,7 +24,9 @@ release, deployment, or rollback authority.
 
 - Reached boundaries and preserved invariants:
 
-## High-risk changes only
+## High-risk or goal-sized changes only
 
 - Design or Change Contract:
 - Independent review and rollback or migration plan:
+- s72 candidate acceptance for a goal-sized product change (exact PR head,
+  image digest, isolated environment, tested journeys, and result):

@@ -75,6 +75,19 @@ def test_agent_coding_contract_has_one_authority_and_risk_scaled_evidence():
     assert "falsifiable regression test" in workflow_flat
     assert "Pull-request text written by the author is not proof" in workflow_flat
     assert "review comments are the disposition record" in workflow_flat.casefold()
+    assert "Every goal-sized product change must remain a draft" in agents_flat
+    assert "separate immutable candidate image" in agents_flat
+    assert "the change is blocked" in agents_flat
+    for candidate_rule in (
+        "## Goal-sized product candidate acceptance",
+        "exact pull-request head commit",
+        "immutable candidate image identity",
+        "isolated candidate stack",
+        "the gate is `BLOCKED`",
+        "Any change to the commit, image, or runtime configuration invalidates that acceptance",
+        "candidate runtime verified",
+    ):
+        assert candidate_rule in workflow_flat
     assert "python tools/run_test_stage.py" in agents
     assert "docs/agent-rules/local-test-execution.md" in agents
     for execution_rule in (
@@ -96,7 +109,7 @@ def test_agent_coding_contract_has_one_authority_and_risk_scaled_evidence():
         "## Scope",
         "## Verification",
         "## Risk",
-        "## High-risk changes only",
+        "## High-risk or goal-sized changes only",
     ):
         assert heading in pull_request_template
     for required_field in (
@@ -109,6 +122,7 @@ def test_agent_coding_contract_has_one_authority_and_risk_scaled_evidence():
         "Reached boundaries and preserved invariants:",
         "Design or Change Contract:",
         "Independent review and rollback or migration plan:",
+        "s72 candidate acceptance for a goal-sized product change",
     ):
         assert required_field in pull_request_template
     for removed_boilerplate in (

@@ -46,6 +46,30 @@ acted. Until an independent reviewer is available, do not claim formal approval;
 retain the risk-specific tests and owner authorization without inventing a
 review identity.
 
+## Goal-sized product candidate acceptance
+
+A goal-sized product change must enter review as a draft pull request and pass
+pre-merge product acceptance on s72 before it is marked ready or merged. The
+acceptance subject is the exact pull-request head commit after its required CI
+checks pass. Ordinary focused changes continue to use the local and CI path
+above unless their acceptance depends on assembled product behavior.
+
+The s72 subject must use an immutable candidate image identity and an isolated
+candidate stack. It must not retag a `main` release image, replace the
+latest-main stack, or share its writable database, Redis, workspace, or volume
+state. Candidate deployment follows the repository's SSH, read-only readiness,
+single mutation-lease, secret-handling, and controlled-host rules. Before the
+first candidate deployment, an approved executable candidate procedure must
+own image admission, deployment, rollback, and cleanup. Until that procedure
+and its image path exist, the gate is `BLOCKED`; source tests, CI image builds,
+or an ad hoc source build on s72 are not substitutes.
+
+The pull request records the exact head commit, candidate image digest, named
+isolated environment, tested user journeys, and observed result. Any change to
+the commit, image, or runtime configuration invalidates that acceptance. This
+candidate result does not prove that merged `main` was packaged or deployed;
+the normal post-merge release and external-acceptance path remains required.
+
 ## Local readiness
 
 Before pushing, run the smallest checks that can falsify the change from the
@@ -82,20 +106,29 @@ per-change JSON are not durable architecture artifacts.
 
 ## Evidence levels
 
-Use precise evidence language:
+Use precise evidence language and qualify candidate evidence explicitly:
 
 - `local`: named local checks passed on the candidate worktree;
 - `CI`: named required jobs passed for the GitHub subject;
-- `packaged`: an immutable image was built and verified;
-- `deployed`: that image and configuration were applied to a named environment;
-- `runtime verified`: the exact deployed subject passed its controlled runtime
-  checks; and
+- `candidate packaged`: an immutable image was built for the exact pull-request
+  head but is not a releasable `main` image;
+- `candidate deployed`: that candidate image and isolated configuration were
+  applied to the named s72 candidate environment;
+- `candidate runtime verified`: that exact candidate subject passed the named
+  controlled product checks;
+- `packaged`: an immutable release image was built and verified from `main`;
+- `deployed`: that release image and configuration were applied to a named
+  environment;
+- `runtime verified`: the exact deployed release subject passed its controlled
+  runtime checks; and
 - `external acceptance`: a documented actor completed the named end-to-end
   workflow.
 
-Never promote source, local, CI, or historical evidence into a deployment or
-runtime claim. Runtime evidence is produced after merge by the release and
-controlled-host procedures, not prefilled in an ordinary pull request.
+Never promote source, local, CI, candidate, or historical evidence into a
+`main` deployment or release-runtime claim. Pre-merge runtime evidence is valid
+only as qualified s72 candidate evidence under the goal-sized gate above;
+release runtime evidence and External Acceptance still require the post-merge
+release procedure.
 
 ## Merge and release
 

@@ -108,8 +108,14 @@ roadmap or Controller Current rather than this durable entry file.
 
 Use a focused pull request for ordinary changes. Use a separate design and the
 full issue-to-release closure loop only for goal-sized work, high-risk changes,
-gate closures, and defects that need independent lifecycle tracking. The review,
-verification, and release rules live in
+gate closures, and defects that need independent lifecycle tracking. Every
+goal-sized product change must remain a draft until the exact pull-request head
+passes required CI and product acceptance on s72 from a separate immutable
+candidate image in an isolated candidate stack. A new commit, image, or runtime
+configuration invalidates that acceptance. If the governed candidate image or
+isolated s72 lane is unavailable, the change is blocked; local tests, CI image
+builds, and ad hoc source deployments do not substitute. The review,
+verification, candidate-evidence, and release rules live in
 `docs/agent-rules/github-issue-pr-workflow.md`.
 
 `docs/agent-rules/multi-agent-context-workflow.md` is the single source for task
