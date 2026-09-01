@@ -93,9 +93,14 @@ Use precise evidence language:
 - `external acceptance`: a documented actor completed the named end-to-end
   workflow.
 
-Never promote source, local, CI, or historical evidence into a deployment or
-runtime claim. Runtime evidence is produced after merge by the release and
-controlled-host procedures, not prefilled in an ordinary pull request.
+Never promote source, local, CI, or historical evidence into a production
+runtime claim. Runtime evidence normally begins after merge under the release
+and controlled-host procedures. A separately governed isolated pre-merge
+candidate may produce candidate-runtime evidence only when a stable
+accepted-base required context binds the exact PR base/head, immutable digests,
+configuration, trusted delivery run, and controlled-host evidence. That result
+never makes the candidate release eligible and never substitutes for post-merge
+production External Acceptance.
 
 ## Merge and release
 

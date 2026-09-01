@@ -129,6 +129,7 @@ BACKEND_TEST_SHARDS = {
     "release-governance-policy": (
         "tests/test_architecture_governance.py",
         "tests/test_backend_ci_workflow.py",
+        "tests/test_sse_candidate_gate.py",
         "tests/test_trusted_governance.py",
         "tests/test_code_governance.py",
         "tests/test_source_authority_docs.py",
@@ -185,6 +186,7 @@ def test_backend_required_check_is_stable_for_every_main_pull_request():
     assert "python -m compileall -q app tools scripts" in workflow
     assert "tests/test_b2_sandbox_readiness.py" not in workflow
     assert "tests/test_backend_ci_workflow.py" in workflow
+    assert "tests/test_sse_candidate_gate.py" in workflow
     assert "tests/test_packaging_publish_workflow.py" in workflow
     assert "tests/test_release_image_manifest.py" in workflow
     assert "tests/test_governance_readiness.py" in workflow
@@ -268,7 +270,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     all_selectors = [
         selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors
     ]
-    assert len(all_selectors) == len(set(all_selectors)) == 78
+    assert len(all_selectors) == len(set(all_selectors)) == 79
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job

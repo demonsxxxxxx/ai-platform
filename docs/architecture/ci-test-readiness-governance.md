@@ -62,6 +62,8 @@ Required checks keep stable aggregate names while internal work runs in parallel
 
 ```text
 trusted governance (accepted base authority)
+|-- trusted governance v2
+`-- sse candidate acceptance (stable context; exact base/head evidence when affected)
 
 backend validation
 |-- backend test shards
@@ -86,7 +88,25 @@ Rules:
    `tools/require_zero_junit_skips.py` against the exact report.
 8. Image jobs retain a stable successful result when an exact diff is
    `not_affected`; they do not disappear from branch protection.
-9. CI success is CI evidence only.
+9. The `sse candidate acceptance` context is emitted by accepted-base
+   `pull_request_target` code with read-only GitHub permissions. Unaffected
+   changes report `not_applicable`; affected same-repository changes require the
+   newest exact-base/exact-head `sse-candidate` Deployment and its newest status
+   to be successful. Forks, policy changes, stale heads, malformed evidence, API
+   ambiguity, and missing evidence fail closed.
+10. Candidate evidence binds the quarantined backend and frontend image digests,
+    trusted delivery workflow run, configuration digest, smoke revision, and
+    redacted evidence digest. Every workflow declares its token permissions
+    explicitly; effective job permissions cannot inherit checks, statuses, or
+    deployments write authority. The only reserved Deployment writer is the
+    protected manual-dispatch candidate-delivery workflow: exactly one
+    environment-bound Ubuntu job may hold `deployments: write`, while
+    `checks: write` and `statuses: write` remain forbidden. Alternate writers
+    and duplicate check contexts are rejected by accepted-base governance.
+11. Candidate acceptance proves only the named isolated pre-merge subject. It
+    is not main packaging, production deployment, release eligibility, or
+    post-merge External Acceptance.
+12. CI success is CI evidence only.
 
 ## 5. Runtime readiness boundary
 

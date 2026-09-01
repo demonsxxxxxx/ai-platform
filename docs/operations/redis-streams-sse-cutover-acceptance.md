@@ -170,6 +170,40 @@ CI must run the backend streaming/callback suites and frontend SSE suites for
 changes to their production paths. It must verify generated v4 protocol
 artifacts and run the full negative checker before an image is release eligible.
 
+## Isolated pre-merge candidate gate
+
+Changes to the public SSE producer, projection, persistence, replay, gateway, or
+frontend reducer paths require the stable `sse candidate acceptance` context.
+Accepted-base code classifies the complete exact base-to-head diff. Unaffected
+changes report `not_applicable`; policy changes, forks, missing API authority,
+or ambiguous evidence fail closed.
+
+An affected same-repository pull request is accepted only from the newest
+`sse-candidate` GitHub Deployment for its exact base and head. "Newest" follows
+the GitHub REST endpoints' documented reverse-chronological response order;
+Deployment and status IDs are opaque identities, not clocks. The Deployment
+binds quarantined backend and frontend image digests, the protected-main
+delivery workflow run and attempt, configuration digest, smoke revision, and a
+redacted evidence digest. Its newest status must be successful and the pull
+request identities are re-read after evidence validation. A new commit, rebase,
+base movement, newer Deployment, or newer non-success status invalidates the
+old result. The delivery writer first records its final Deployment status and
+finishes successfully; an operator then reruns the accepted-base candidate job.
+Every later candidate Deployment or status transition requires another gate
+run, so acceptance always describes the newest evidence visible at its decision
+point.
+
+Accepted-base classification conservatively includes all backend `app/`,
+frontend application `src/`, SSE schema, and candidate deployment code rather
+than trying to enumerate individual runtime owners.
+
+Candidate execution uses one advisory-locked s72 slot, drains conflicting work,
+keeps candidate images non-release-eligible, and restores stable main before the
+operator completes the acceptance status. It must not share mutable production
+volumes or exercise destructive migration/rollback cases. The candidate gate
+proves only the named isolated pre-merge contour; post-merge packaging,
+production deployment, and External Acceptance remain separately required.
+
 ## External Acceptance
 
 The following evidence cannot be claimed from local mocks, source inspection, or

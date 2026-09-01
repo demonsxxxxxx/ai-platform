@@ -14,7 +14,11 @@ TRUSTED_WORKFLOW_PATH = Path(
     ".github/workflows/ai-platform-trusted-governance-v2.yml"
 )
 BACKEND_WORKFLOW_PATH = Path(".github/workflows/ai-platform-backend.yml")
+CANDIDATE_DELIVERY_WORKFLOW_PATH = Path(
+    ".github/workflows/ai-platform-sse-candidate-delivery.yml"
+)
 TRUSTED_RUNNER_PATH = Path("tools/trusted_governance.py")
+CANDIDATE_GATE_PATH = Path("tools/sse_candidate_gate.py")
 _COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
 _POLICY_NAMES = frozenset(
     {
@@ -70,6 +74,34 @@ python -P "$GOVERNANCE_BASE_WORKTREE/tools/trusted_governance.py" validate \
     --format text
 )"""
 
+EXPECTED_CANDIDATE_GATE_RUN = r"""set -euo pipefail
+test "$GITHUB_REPOSITORY" = "demonsxxxxxx/ai-platform"
+[[ "$GOVERNANCE_PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+[[ "$GOVERNANCE_BASE_REF" =~ ^[0-9a-f]{40}$ ]]
+[[ "$GOVERNANCE_HEAD_REF" =~ ^[0-9a-f]{40}$ ]]
+[[ "$GOVERNANCE_HEAD_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+GOVERNANCE_PULL_REF="refs/remotes/origin/pull/$GOVERNANCE_PR_NUMBER/head"
+GOVERNANCE_FETCH_BASIC="$(printf 'x-access-token:%s' "$GOVERNANCE_FETCH_TOKEN" | base64 --wrap=0)"
+echo "::add-mask::$GOVERNANCE_FETCH_BASIC"
+git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $GOVERNANCE_FETCH_BASIC" fetch --no-tags origin "+refs/pull/$GOVERNANCE_PR_NUMBER/head:$GOVERNANCE_PULL_REF"
+unset GOVERNANCE_FETCH_TOKEN GOVERNANCE_FETCH_BASIC
+test "$(git rev-parse "$GOVERNANCE_PULL_REF^{commit}")" = "$GOVERNANCE_HEAD_REF"
+git cat-file -e "$GOVERNANCE_BASE_REF^{commit}"
+git cat-file -e "$GOVERNANCE_HEAD_REF^{commit}"
+test "$(git rev-parse "$GOVERNANCE_BASE_REF^{commit}")" = "$GOVERNANCE_BASE_REF"
+test "$(git rev-parse "$GOVERNANCE_HEAD_REF^{commit}")" = "$GOVERNANCE_HEAD_REF"
+git merge-base --is-ancestor "$GOVERNANCE_BASE_REF" "$GOVERNANCE_HEAD_REF"
+GOVERNANCE_HEAD_WORKTREE="$RUNNER_TEMP/sse-candidate-gate-head"
+git worktree add --detach "$GOVERNANCE_HEAD_WORKTREE" "$GOVERNANCE_HEAD_REF"
+python -P "$GITHUB_WORKSPACE/tools/sse_candidate_gate.py" \
+  --head-root "$GOVERNANCE_HEAD_WORKTREE" \
+  --repository "$GITHUB_REPOSITORY" \
+  --pr-number "$GOVERNANCE_PR_NUMBER" \
+  --base-ref "$GOVERNANCE_BASE_REF" \
+  --head-ref "$GOVERNANCE_HEAD_REF" \
+  --head-repository "$GOVERNANCE_HEAD_REPOSITORY"
+"""
+
 
 class TrustedGovernanceError(RuntimeError):
     pass
@@ -83,6 +115,8 @@ def _construct_unique_mapping(loader, node, deep=False):
     mapping = {}
     for key_node, value_node in node.value:
         key = loader.construct_object(key_node, deep=deep)
+        if key == "<<":
+            raise TrustedGovernanceError("workflow YAML merge keys are forbidden")
         if key in mapping:
             raise TrustedGovernanceError(f"duplicate workflow key: {key}")
         mapping[key] = loader.construct_object(value_node, deep=deep)
@@ -165,6 +199,122 @@ def load_workflow(root: Path, relative_path: Path) -> Mapping[str, object]:
             f"cannot parse workflow {relative_path.name}"
         ) from error
     return _mapping(payload, relative_path.name)
+
+
+def _workflow_paths(root: Path) -> tuple[Path, ...]:
+    completed = subprocess.run(
+        ["git", "-C", str(root), "ls-tree", "-r", "-z", "--name-only", "HEAD", "--", ".github/workflows"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    if completed.returncode != 0:
+        raise TrustedGovernanceError("cannot enumerate workflow authority")
+    try:
+        paths = tuple(
+            Path(value.decode("utf-8"))
+            for value in completed.stdout.split(b"\0")
+            if value and value.endswith((b".yml", b".yaml"))
+        )
+    except UnicodeDecodeError as error:
+        raise TrustedGovernanceError("workflow paths must be UTF-8") from error
+    if not paths or len(paths) != len(set(paths)):
+        raise TrustedGovernanceError("workflow authority is missing or ambiguous")
+    return paths
+
+
+def _could_render_candidate_context(value: object) -> bool:
+    if not isinstance(value, str):
+        raise TrustedGovernanceError("workflow job name must be a string")
+    target = "sse candidate acceptance"
+    parts = [part for part in re.split(r"\$\{\{.*?\}\}", value) if part]
+    position = 0
+    for part in parts:
+        position = target.find(part, position)
+        if position < 0:
+            return False
+        position += len(part)
+    return value == target or ("${{" in value and not parts) or (
+        "${{" in value and position <= len(target)
+    )
+
+
+def _validate_delivery_writer(
+    workflow: Mapping[str, object],
+    jobs: Mapping[str, object],
+    workflow_permissions: Mapping[str, object],
+) -> None:
+    triggers = _mapping(workflow.get("on"), "candidate delivery triggers")
+    if set(triggers) != {"workflow_dispatch"}:
+        raise TrustedGovernanceError(
+            "candidate delivery must use protected manual dispatch"
+        )
+    if workflow_permissions != {"contents": "read"}:
+        raise TrustedGovernanceError(
+            "candidate delivery workflow permissions changed"
+        )
+
+    writer_count = 0
+    for job in jobs.values():
+        job_mapping = _mapping(job, "candidate delivery job")
+        permissions = _mapping(
+            job_mapping.get("permissions"),
+            "candidate delivery jobs must declare explicit permissions",
+        )
+        if any(
+            permissions.get(permission) == "write"
+            for permission in ("checks", "statuses")
+        ):
+            raise TrustedGovernanceError(
+                "alternate candidate authority writer is forbidden"
+            )
+        if permissions.get("deployments") != "write":
+            continue
+        writer_count += 1
+        if (
+            job_mapping.get("runs-on") != "ubuntu-24.04"
+            or job_mapping.get("environment") != "sse-candidate-delivery"
+        ):
+            raise TrustedGovernanceError(
+                "candidate delivery writer isolation changed"
+            )
+    if writer_count != 1:
+        raise TrustedGovernanceError(
+            "candidate delivery must define one Deployment writer"
+        )
+
+
+def _validate_no_alternate_candidate_authority(root: Path) -> None:
+    for path in _workflow_paths(root):
+        workflow = load_workflow(root, path)
+        jobs = _mapping(workflow.get("jobs"), f"{path.name} jobs")
+        if path != TRUSTED_WORKFLOW_PATH and any(
+            _could_render_candidate_context(
+                _mapping(job, f"{path.name} job").get("name", job_id)
+            )
+            for job_id, job in jobs.items()
+        ):
+            raise TrustedGovernanceError("SSE candidate context must be unique")
+        workflow_permissions = _mapping(
+            workflow.get("permissions"),
+            f"{path.name} must declare explicit workflow permissions",
+        )
+        if path == CANDIDATE_DELIVERY_WORKFLOW_PATH:
+            _validate_delivery_writer(workflow, jobs, workflow_permissions)
+            continue
+        for job in jobs.values():
+            job_mapping = _mapping(job, f"{path.name} job")
+            effective_permissions = _mapping(
+                job_mapping.get("permissions", workflow_permissions),
+                f"{path.name} permissions",
+            )
+            if any(
+                effective_permissions.get(permission) == "write"
+                for permission in ("checks", "statuses", "deployments")
+            ):
+                raise TrustedGovernanceError(
+                    "alternate candidate authority writer is forbidden"
+                )
 
 
 def _assignment_name(node: ast.stmt) -> str | None:
@@ -305,7 +455,11 @@ def validate_trusted_workflow(
         raise TrustedGovernanceError("trusted Python version is not accepted")
 
     jobs = _mapping(workflow["jobs"], "trusted workflow jobs")
-    _exact_keys(jobs, {"trusted-governance-v2"}, "trusted workflow jobs")
+    _exact_keys(
+        jobs,
+        {"trusted-governance-v2", "sse-candidate-acceptance"},
+        "trusted workflow jobs",
+    )
     job = _mapping(jobs["trusted-governance-v2"], "trusted governance v2 job")
     _exact_keys(
         job,
@@ -368,6 +522,100 @@ def validate_trusted_workflow(
     run = governance["run"]
     if not isinstance(run, str) or run.rstrip() != EXPECTED_GOVERNANCE_RUN:
         raise TrustedGovernanceError("trusted governance launcher changed")
+
+    candidate = _mapping(
+        jobs["sse-candidate-acceptance"], "SSE candidate acceptance job"
+    )
+    _exact_keys(
+        candidate,
+        {
+            "name",
+            "runs-on",
+            "timeout-minutes",
+            "permissions",
+            "steps",
+        },
+        "SSE candidate acceptance job",
+    )
+    if (
+        candidate["name"] != "sse candidate acceptance"
+        or candidate["runs-on"] != "ubuntu-24.04"
+        or candidate["timeout-minutes"] != "10"
+    ):
+        raise TrustedGovernanceError("SSE candidate context changed")
+    if candidate["permissions"] != {
+        "actions": "read",
+        "contents": "read",
+        "deployments": "read",
+        "pull-requests": "read",
+    }:
+        raise TrustedGovernanceError("SSE candidate permissions changed")
+
+    candidate_steps = [
+        _mapping(step, f"SSE candidate step {index}")
+        for index, step in enumerate(
+            _sequence(candidate["steps"], "SSE candidate steps")
+        )
+    ]
+    if [step.get("name") for step in candidate_steps] != [
+        "Checkout exact trusted base for candidate gate",
+        "Set up candidate gate Python",
+        "Fetch exact candidate and verify acceptance evidence",
+    ]:
+        raise TrustedGovernanceError("SSE candidate steps changed")
+
+    candidate_checkout, candidate_python, candidate_gate = candidate_steps
+    _exact_keys(
+        candidate_checkout,
+        {"name", "uses", "with"},
+        "SSE candidate checkout step",
+    )
+    _action(
+        candidate_checkout,
+        "actions/checkout",
+        "SSE candidate checkout step",
+        effective_policy,
+    )
+    if candidate_checkout["with"] != {
+        "ref": "${{ github.event.pull_request.base.sha }}",
+        "fetch-depth": "0",
+        "persist-credentials": "false",
+    }:
+        raise TrustedGovernanceError("SSE candidate checkout inputs changed")
+
+    _exact_keys(
+        candidate_python,
+        {"name", "uses", "with"},
+        "SSE candidate Python step",
+    )
+    _action(
+        candidate_python,
+        "actions/setup-python",
+        "SSE candidate Python step",
+        effective_policy,
+    )
+    if candidate_python["with"] != {
+        "python-version": "${{ env.GOVERNANCE_PYTHON_VERSION }}"
+    }:
+        raise TrustedGovernanceError("SSE candidate Python inputs changed")
+
+    _exact_keys(candidate_gate, {"name", "env", "run"}, "SSE candidate gate step")
+    if candidate_gate["env"] != {
+        "GOVERNANCE_PR_NUMBER": "${{ github.event.number }}",
+        "GOVERNANCE_BASE_REF": "${{ github.event.pull_request.base.sha }}",
+        "GOVERNANCE_HEAD_REF": "${{ github.event.pull_request.head.sha }}",
+        "GOVERNANCE_HEAD_REPOSITORY": "${{ github.event.pull_request.head.repo.full_name }}",
+        "GOVERNANCE_FETCH_TOKEN": "${{ github.token }}",
+        "GOVERNANCE_API_TOKEN": "${{ github.token }}",
+        "PYTHONSAFEPATH": "1",
+    }:
+        raise TrustedGovernanceError("SSE candidate environment changed")
+    candidate_run = candidate_gate["run"]
+    if (
+        not isinstance(candidate_run, str)
+        or candidate_run.rstrip() != EXPECTED_CANDIDATE_GATE_RUN.rstrip()
+    ):
+        raise TrustedGovernanceError("SSE candidate launcher changed")
 
 
 def _backend_mode(root: Path) -> str:
@@ -524,6 +772,11 @@ def validate_transition(
     *,
     changed_paths: Sequence[str],
 ) -> None:
+    base_gate = _git_blob_text(base_root, CANDIDATE_GATE_PATH)
+    head_gate = _git_blob_text(head_root, CANDIDATE_GATE_PATH)
+    if base_gate != head_gate:
+        raise TrustedGovernanceError("SSE candidate gate executable logic changed")
+
     base_runner = _git_blob_text(base_root, TRUSTED_RUNNER_PATH)
     head_runner = _git_blob_text(head_root, TRUSTED_RUNNER_PATH)
     base_policy = _runner_policy(base_runner)
@@ -544,6 +797,8 @@ def validate_transition(
 
     validate_trusted_workflow(base_root, base_policy)
     validate_trusted_workflow(head_root, head_policy)
+    _validate_no_alternate_candidate_authority(base_root)
+    _validate_no_alternate_candidate_authority(head_root)
     base_mode = _backend_mode(base_root)
     head_mode = _backend_mode(head_root)
     if base_mode == "preflight" and head_mode != "preflight":

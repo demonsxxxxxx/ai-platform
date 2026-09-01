@@ -86,3 +86,62 @@ jobs:
               --head-ref "$GOVERNANCE_HEAD_REF" \
               --format text
           )
+
+  sse-candidate-acceptance:
+    name: sse candidate acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      deployments: read
+      pull-requests: read
+    steps:
+      - name: Checkout exact trusted base for candidate gate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up candidate gate Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.GOVERNANCE_PYTHON_VERSION }}
+
+      - name: Fetch exact candidate and verify acceptance evidence
+        env:
+          GOVERNANCE_PR_NUMBER: ${{ github.event.number }}
+          GOVERNANCE_BASE_REF: ${{ github.event.pull_request.base.sha }}
+          GOVERNANCE_HEAD_REF: ${{ github.event.pull_request.head.sha }}
+          GOVERNANCE_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          GOVERNANCE_FETCH_TOKEN: ${{ github.token }}
+          GOVERNANCE_API_TOKEN: ${{ github.token }}
+          PYTHONSAFEPATH: "1"
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "demonsxxxxxx/ai-platform"
+          [[ "$GOVERNANCE_PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          [[ "$GOVERNANCE_BASE_REF" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GOVERNANCE_HEAD_REF" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GOVERNANCE_HEAD_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          GOVERNANCE_PULL_REF="refs/remotes/origin/pull/$GOVERNANCE_PR_NUMBER/head"
+          GOVERNANCE_FETCH_BASIC="$(printf 'x-access-token:%s' "$GOVERNANCE_FETCH_TOKEN" | base64 --wrap=0)"
+          echo "::add-mask::$GOVERNANCE_FETCH_BASIC"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $GOVERNANCE_FETCH_BASIC" fetch --no-tags origin "+refs/pull/$GOVERNANCE_PR_NUMBER/head:$GOVERNANCE_PULL_REF"
+          unset GOVERNANCE_FETCH_TOKEN GOVERNANCE_FETCH_BASIC
+          test "$(git rev-parse "$GOVERNANCE_PULL_REF^{commit}")" = "$GOVERNANCE_HEAD_REF"
+          git cat-file -e "$GOVERNANCE_BASE_REF^{commit}"
+          git cat-file -e "$GOVERNANCE_HEAD_REF^{commit}"
+          test "$(git rev-parse "$GOVERNANCE_BASE_REF^{commit}")" = "$GOVERNANCE_BASE_REF"
+          test "$(git rev-parse "$GOVERNANCE_HEAD_REF^{commit}")" = "$GOVERNANCE_HEAD_REF"
+          git merge-base --is-ancestor "$GOVERNANCE_BASE_REF" "$GOVERNANCE_HEAD_REF"
+          GOVERNANCE_HEAD_WORKTREE="$RUNNER_TEMP/sse-candidate-gate-head"
+          git worktree add --detach "$GOVERNANCE_HEAD_WORKTREE" "$GOVERNANCE_HEAD_REF"
+          python -P "$GITHUB_WORKSPACE/tools/sse_candidate_gate.py" \
+            --head-root "$GOVERNANCE_HEAD_WORKTREE" \
+            --repository "$GITHUB_REPOSITORY" \
+            --pr-number "$GOVERNANCE_PR_NUMBER" \
+            --base-ref "$GOVERNANCE_BASE_REF" \
+            --head-ref "$GOVERNANCE_HEAD_REF" \
+            --head-repository "$GOVERNANCE_HEAD_REPOSITORY"

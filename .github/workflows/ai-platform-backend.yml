@@ -196,6 +196,7 @@ jobs:
             test_files: >-
               tests/test_architecture_governance.py
               tests/test_backend_ci_workflow.py
+              tests/test_sse_candidate_gate.py
               tests/test_trusted_governance.py
               tests/test_code_governance.py
               tests/test_source_authority_docs.py
