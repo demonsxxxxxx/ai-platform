@@ -51,6 +51,8 @@ from app.executors.claude_agent_sdk_runner import (
 from app.executors.claude.prompts import build_harness_chat_prompt
 from app.execution.api import (
     SkillInvocationEvidenceBinder,
+    claude_sdk_failure_code,
+    claude_sdk_failure_message,
     sandbox_reconciliation_payload,
 )
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
@@ -95,20 +97,6 @@ _MAX_WORKSPACE_ARTIFACT_FILE_BYTES = 64 * 1024 * 1024
 _MAX_WORKSPACE_ARTIFACT_TOTAL_BYTES = 256 * 1024 * 1024
 
 _SANDBOX_SUCCESS_TERMINAL_STATUSES = {"completed", "succeeded"}
-_SELECTED_SKILL_INVOCATION_ERRORS = {
-    "claude_agent_sdk_selected_skill_not_invoked",
-    "claude_agent_sdk_selected_skill_hook_failed",
-    "claude_agent_sdk_selected_skill_not_authorized",
-}
-_SDK_ACTIONABLE_FAILURE_CODES = {
-    *_SELECTED_SKILL_INVOCATION_ERRORS,
-    "claude_agent_sdk_cancelled",
-    "claude_agent_sdk_missing_structured_terminal",
-    "claude_agent_sdk_turn_limit_exceeded",
-    "claude_agent_sdk_timeout",
-    "claude_agent_sdk_tool_admission_failed",
-    "claude_agent_sdk_upstream_error",
-}
 _TOOL_PERMISSION_POLL_INTERVAL_SECONDS = 0.25
 
 
@@ -644,7 +632,7 @@ class ClaudeAgentWorkerAdapter:
                     "sdk_turn_diagnostics": turn_diagnostics,
                 },
             )
-        error_code = self._sdk_failure_code(sdk_result)
+        error_code = claude_sdk_failure_code(sdk_result)
         sdk_used = bool(sdk_result and sdk_result.used_sdk)
         sdk_error = sdk_result.error if sdk_result else "claude_agent_sdk_disabled"
         turn_diagnostics = _public_sdk_turn_diagnostics(
@@ -661,7 +649,7 @@ class ClaudeAgentWorkerAdapter:
             executor_version=self.executor_version,
             capabilities=self._run_capabilities(payload),
             result={
-                "message": self._sdk_failure_message(sdk_result),
+                "message": claude_sdk_failure_message(sdk_result),
                 "error_code": error_code,
                 "sdk_used": sdk_used,
                 "sdk_error": sdk_error,
@@ -678,45 +666,6 @@ class ClaudeAgentWorkerAdapter:
             },
         )
 
-    def _sdk_failure_code(self, sdk_result) -> str:
-        if sdk_result is None:
-            return "claude_agent_sdk_disabled"
-        error_text = str(getattr(sdk_result, "error", "") or "")
-        if error_text in _SDK_ACTIONABLE_FAILURE_CODES:
-            return error_text
-        if error_text.startswith("claude_agent_sdk_unavailable"):
-            return "claude_agent_sdk_unavailable"
-        if getattr(sdk_result, "used_sdk", False):
-            return "claude_agent_sdk_runtime_error"
-        if error_text == "claude_agent_sdk_disabled":
-            return "claude_agent_sdk_disabled"
-        return "claude_agent_sdk_required"
-
-    def _sdk_failure_message(self, sdk_result) -> str:
-        error_code = self._sdk_failure_code(sdk_result)
-        if error_code in _SELECTED_SKILL_INVOCATION_ERRORS:
-            return "The selected capability did not complete its required Skill execution. Please retry."
-        messages = {
-            "claude_agent_sdk_cancelled": "This run was cancelled before completion.",
-            "claude_agent_sdk_turn_limit_exceeded": (
-                "This run reached its turn limit. Continue in the same session or narrow the request."
-            ),
-            "claude_agent_sdk_timeout": "This run timed out. Retry or split the request.",
-            "claude_agent_sdk_missing_structured_terminal": (
-                "The executor ended without an authoritative terminal result. Please retry."
-            ),
-            "claude_agent_sdk_tool_admission_failed": (
-                "The selected capability or tool was not admitted by platform policy."
-            ),
-            "claude_agent_sdk_upstream_error": (
-                "The execution service failed. Please retry later."
-            ),
-            "claude_agent_sdk_disabled": "Claude Agent SDK is required for this run.",
-            "claude_agent_sdk_required": "Claude Agent SDK is required for this run.",
-            "claude_agent_sdk_unavailable": "Claude Agent SDK is required for this run.",
-        }
-        return messages.get(error_code, "Claude Agent SDK execution failed")
-
     def _sdk_completed_normally(self, sdk_result) -> bool:
         return bool(
             sdk_result
@@ -730,7 +679,7 @@ class ClaudeAgentWorkerAdapter:
         return terminal_reason if isinstance(terminal_reason, str) and terminal_reason else None
 
     def _sdk_required_result(self, payload: RunPayload, sdk_result) -> ExecutorResult:
-        error_code = self._sdk_failure_code(sdk_result)
+        error_code = claude_sdk_failure_code(sdk_result)
         sdk_used = bool(sdk_result and sdk_result.used_sdk)
         sdk_error = sdk_result.error if sdk_result else "claude_agent_sdk_disabled"
         turn_diagnostics = _public_sdk_turn_diagnostics(
@@ -1727,7 +1676,7 @@ class ClaudeAgentWorkerAdapter:
             message = (
                 "任务已取消"
                 if runtime_status in {"cancelled", "canceled"}
-                else self._sdk_failure_message(
+                else claude_sdk_failure_message(
                     type("SdkFailure", (), {"error": error_code})()
                 )
             )
@@ -1969,7 +1918,7 @@ class ClaudeAgentWorkerAdapter:
             used_skill_names=used_skill_names,
             pins=prepared.pinned_manifests,
         )
-        failure_code = self._sdk_failure_code(sdk_result)
+        failure_code = claude_sdk_failure_code(sdk_result)
         turn_diagnostics = _public_sdk_turn_diagnostics(
             payload,
             getattr(sdk_result, "turn_diagnostics", {}) if sdk_result else {},
@@ -1984,7 +1933,11 @@ class ClaudeAgentWorkerAdapter:
             executor_version=self.executor_version,
             capabilities=self._run_capabilities(payload),
             result={
-                "message": self._sdk_failure_message(sdk_result) if sdk_result else "Claude Agent SDK execution failed",
+                "message": (
+                    claude_sdk_failure_message(sdk_result)
+                    if sdk_result
+                    else "Claude Agent SDK execution failed"
+                ),
                 "error_code": failure_code,
                 "sdk_used": bool(sdk_result and sdk_result.used_sdk),
                 "sdk_error": sdk_result.error if sdk_result else "claude_agent_sdk_required",

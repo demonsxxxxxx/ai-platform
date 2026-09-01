@@ -43,6 +43,22 @@ PUBLIC_STREAM_EVENT_TYPES: Final = frozenset(
         "stream.end",
     )
 )
+PUBLIC_PROJECTION_FAILURE_REASONS: Final = frozenset(
+    (
+        "answer_too_large",
+        "invalid_configuration",
+        "invalid_input",
+        "private_replacement_invalid",
+        "private_token_already_published",
+        "private_token_boundary_conflict",
+        "private_token_prefix_overflow",
+        "sanitizer_bound_exceeded",
+        "sanitizer_failed",
+        "sanitizer_rejected",
+        "terminal_text_mismatch",
+        "upstream_projection_failed",
+    )
+)
 
 
 class StreamOpenControlV4Payload(TypedDict):
@@ -239,6 +255,7 @@ class RunFailedEventV4Payload(TypedDict):
     code: str
     default_message: str
     detail: str | None
+    projection_failure_reason: NotRequired[Literal["answer_too_large", "invalid_configuration", "invalid_input", "private_replacement_invalid", "private_token_already_published", "private_token_boundary_conflict", "private_token_prefix_overflow", "sanitizer_bound_exceeded", "sanitizer_failed", "sanitizer_rejected", "terminal_text_mismatch", "upstream_projection_failed"]]
 
 
 class PublicApplicationEnvelopeV4(TypedDict):

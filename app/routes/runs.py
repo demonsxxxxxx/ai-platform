@@ -1894,6 +1894,7 @@ async def get_run(
         public_terminal_projection(
             run_status,
             run.get("error_code"),
+            result,
         )
         if not show_raw_skill
         else None

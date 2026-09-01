@@ -53,6 +53,41 @@ model or network call. That smoke imports the installed distribution, checks
 metadata and signatures, constructs every option and hook shape used here, and
 instantiates the stream and terminal message types.
 
+## Change Contract: public answer projection failures
+
+- **Owner:** the executor public-answer gate and Claude Agent SDK adapter for
+  classification; the Runs public-terminal projection for ordinary-user output;
+  the generated SSE v4 contract and frontend terminal catalog for transport and
+  local presentation.
+- **Bounded paths:** the public-answer gate, Claude SDK runner, existing sandbox
+  error-code allowlists, Runs public-terminal projection and its existing Chat,
+  Run, provenance, and v4 consumers, the v4 schema and generated contracts, the
+  existing frontend v4 adapter and terminal catalog, owning tests, and this
+  contract.
+- **Invariants:** projection remains fail-closed; raw SDK/Hook errors, answer
+  bodies, paths, tool inputs, credentials, and executor-private identifiers never
+  enter ordinary-user output; true tool admission failures keep their existing
+  code.
+- **Acceptance:** every gate failure retains its first allowlisted reason and
+  returns `claude_agent_sdk_public_projection_failed`; Runs exposes that fixed
+  category and the reason only when the terminal status is `failed`, the error
+  code matches, and the reason is allowlisted; historical failures without a
+  retained reason remain unknown rather than inferred.
+- **Regression proof:** gate tests cover size, sanitizer, replacement, terminal
+  consistency, and upstream-projector reasons; SDK/sandbox tests prove the new
+  code is distinct from tool admission and contains no raw failure text; Runs,
+  Chat, v4, route, and frontend live/replay tests prove ordinary-user projection
+  and historical hydration preserve only the fixed category and reason, while
+  schema/catalog parity rejects drift.
+- **Evidence ceiling:** source and local tests cannot recover a reason discarded
+  by an older deployed image; runtime acceptance begins with a new failure from
+  the exact packaged image.
+- **Rollback:** remove the optional diagnostic reason and new public code while
+  retaining fail-closed projection; no data migration is required.
+- **Stop conditions:** any request to expose raw executor text, weaken
+  sanitization, alter tool admission, or add an ordinary-user private-diagnostics
+  endpoint requires a revised contract.
+
 ## Redis Lifecycle Authority
 
 `REDIS_MAX_CONNECTIONS=10` controls `Redis.from_url(max_connections=...)` for

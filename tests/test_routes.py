@@ -2744,6 +2744,36 @@ async def test_get_run_allowlists_terminal_failure_and_preserves_admin_diagnosti
     assert admin.error_code == "claude_agent_sdk_runtime_error"
     assert admin.error_message == raw_terms[3]
 
+    async def fake_projection_failure(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "ses-a",
+            **RUN_SCHEMA_FIELDS,
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "status": "failed",
+            "input_json": {},
+            "result_json": {
+                "sdk_turn_diagnostics": {
+                    "projection_failure_reason": "sanitizer_rejected",
+                    "private": raw_terms[0],
+                }
+            },
+            "error_code": "claude_agent_sdk_public_projection_failed",
+            "error_message": raw_terms[3],
+        }
+
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_authorized_run",
+        fake_projection_failure,
+    )
+    projection_failure = await get_run("run-a", principal=principal())
+
+    assert projection_failure.error_code == "claude_agent_sdk_public_projection_failed"
+    assert projection_failure.result["projection_failure_reason"] == "sanitizer_rejected"
+    assert "sanitizer_rejected" in projection_failure.error_message
+    assert all(term not in projection_failure.model_dump_json() for term in raw_terms)
+
 
 @pytest.mark.asyncio
 async def test_get_run_omits_retired_multi_agent_result_but_keeps_redacted_steps(monkeypatch):

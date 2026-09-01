@@ -87,6 +87,7 @@ def test_stateful_assignment_sanitizer_fails_closed_at_bounded_ceiling():
     assert gate.accept('access_token="') == ()
     assert gate.accept("x" * 64) == ()
     assert gate.failed is True
+    assert gate.failure_reason == "sanitizer_bound_exceeded"
     assert gate.finish(final_text='access_token="' + ("x" * 64), release=True).chunks == ()
 
 
@@ -366,6 +367,7 @@ def test_verified_capability_fails_closed_on_incompatible_terminal_text():
 
     assert published == ("verified public answer ",)
     assert gate.failed is True
+    assert gate.failure_reason == "terminal_text_mismatch"
     assert finished.chunks == ()
     assert finished.final_text == ""
 
@@ -421,10 +423,12 @@ def test_over_bound_initial_or_dynamic_private_token_fails_closed():
     dynamic.seal({"y" * 65: "tool invocation"})
 
     assert initial.failed is True
+    assert initial.failure_reason == "private_replacement_invalid"
     assert initial.accept("must not publish") == ()
     assert initial.finish(final_text="must not publish", release=True).chunks == ()
     assert published == ("ordinary pre-hook ",)
     assert dynamic.failed is True
+    assert dynamic.failure_reason == "private_replacement_invalid"
     assert dynamic.accept("sealed private text") == ()
     assert dynamic.finish(final_text="sealed private text", release=True).chunks == ()
 
@@ -437,6 +441,7 @@ def test_sealed_answer_over_bound_fails_closed_without_truncation():
     finished = gate.finish(final_text="x" * 129, release=True)
 
     assert gate.failed is True
+    assert gate.failure_reason == "answer_too_large"
     assert finished.chunks == () and finished.final_text == ""
 
 
@@ -461,4 +466,5 @@ def test_unsafe_sanitizer_result_fails_closed_without_raw_text():
 
     assert gate.accept("raw-secret") == ()
     assert gate.failed is True
+    assert gate.failure_reason == "sanitizer_rejected"
     assert gate.finish(final_text="raw-secret", release=True).chunks == ()

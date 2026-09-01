@@ -608,6 +608,51 @@ def test_executor_failure_normalizer_preserves_tool_evidence_code_without_privat
     assert "private-token" not in str(normalized)
 
 
+def test_executor_failure_normalizer_keeps_only_safe_projection_reason():
+    common = {
+        "status": "failed",
+        "run_id": "run-a",
+        "error_code": "claude_agent_sdk_public_projection_failed",
+    }
+    safe = executor_client_module.normalize_executor_reported_failure(
+        {
+            **common,
+            "sdk_turn_diagnostics": {
+                "projection_failure_reason": "terminal_text_mismatch",
+                "private": "must-not-cross",
+            },
+        },
+        expected_run_id="run-a",
+    )
+    unsafe = executor_client_module.normalize_executor_reported_failure(
+        {
+            **common,
+            "sdk_turn_diagnostics": {
+                "projection_failure_reason": "C:/private/path?token=secret"
+            },
+        },
+        expected_run_id="run-a",
+    )
+    unrelated = executor_client_module.normalize_executor_reported_failure(
+        {
+            **common,
+            "error_code": "claude_agent_sdk_tool_admission_failed",
+            "sdk_turn_diagnostics": {
+                "projection_failure_reason": "terminal_text_mismatch"
+            },
+        },
+        expected_run_id="run-a",
+    )
+
+    assert safe["sdk_turn_diagnostics"] == {
+        "projection_failure_reason": "terminal_text_mismatch"
+    }
+    assert "sdk_turn_diagnostics" not in unsafe
+    assert "sdk_turn_diagnostics" not in unrelated
+    assert "must-not-cross" not in str(safe)
+    assert "secret" not in str(unsafe)
+
+
 def test_executor_failure_normalizer_drops_unknown_private_fields():
     private = "https://executor.test/run?token=private-token"
 

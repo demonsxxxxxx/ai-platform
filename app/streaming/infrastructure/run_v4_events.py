@@ -43,6 +43,7 @@ async def append_current_run_terminal_v4_row(
         status=fact.status,
         terminal_event_id=intent.terminal_event_id,
         error_code=fact.error_code,
+        projection_failure_reason=fact.projection_failure_reason,
         reason_code=(
             "timeout"
             if "timeout" in fact.terminal_reason.lower()

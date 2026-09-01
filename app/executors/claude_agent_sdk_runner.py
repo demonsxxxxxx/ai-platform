@@ -42,7 +42,10 @@ from app.executors.claude.prompts import (
     translation_target_language as _prompt_translation_target_language,
     with_selected_skill_invocation_requirement as _with_selected_skill_invocation_requirement,
 )
-from app.execution.api import ClaudeSdkAgentEventAdapter
+from app.execution.api import (
+    ClaudeSdkAgentEventAdapter,
+    projected_public_answer_failure_reason,
+)
 from app.executors.claude_stream_projection import ClaudeStreamProjector
 from app.executors.public_answer_stream import PublicAnswerStreamGate
 from app.required_tool_contract import (
@@ -143,6 +146,7 @@ _SDK_TIMEOUT = "claude_agent_sdk_timeout"
 _SDK_MISSING_STRUCTURED_TERMINAL = "claude_agent_sdk_missing_structured_terminal"
 _MAX_REQUIRED_ANSWER_TEXT_CHARS = 262_144
 _MAX_PUBLIC_DELTA_CHARS = 8_192
+_SDK_PUBLIC_PROJECTION_FAILED = "claude_agent_sdk_public_projection_failed"
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
 SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-turn-diagnostics.v1"
@@ -237,6 +241,13 @@ def _diagnostic_terminal_class(error_code: str | None) -> tuple[str, str | None,
             "selected_skill_not_invoked",
             _SDK_SELECTED_SKILL_NOT_INVOKED,
             "retry_selected_skill",
+            True,
+        )
+    if error_code == _SDK_PUBLIC_PROJECTION_FAILED:
+        return (
+            "public_projection_failure",
+            _SDK_PUBLIC_PROJECTION_FAILED,
+            "retry_or_report_projection_failure",
             True,
         )
     if error_code in {
@@ -347,7 +358,11 @@ def project_sdk_turn_diagnostics(
     tool_policy_denials_detail = _public_tool_policy_denials(
         raw_counters.get("tool_policy_denials_detail")
     )
-    return {
+    projection_failure_reason = projected_public_answer_failure_reason(
+        error_code,
+        raw,
+    )
+    projected = {
         "schema_version": SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION,
         "terminal_class": terminal_class,
         "error_code": public_error_code,
@@ -359,6 +374,9 @@ def project_sdk_turn_diagnostics(
         "used_skills": used_skills,
         "tool_policy_denials_detail": tool_policy_denials_detail,
     }
+    if projection_failure_reason is not None:
+        projected["projection_failure_reason"] = projection_failure_reason
+    return projected
 
 
 def _canonical_sdk_error(
@@ -928,12 +946,17 @@ async def run_claude_agent_sdk(
         )
         read_only_lifecycle_denials_finalized = True
 
-    def turn_diagnostics(error_code: str | None) -> dict[str, Any]:
+    def turn_diagnostics(
+        error_code: str | None,
+        *,
+        projection_failure_reason: str | None = None,
+    ) -> dict[str, Any]:
         finalize_read_only_lifecycle_denials()
         return project_sdk_turn_diagnostics(
             {
                 "counters": diagnostic_counters,
                 "last_public_stage": last_public_stage,
+                "projection_failure_reason": projection_failure_reason,
             },
             error_code=error_code,
             selected_skill_id=(
@@ -2098,13 +2121,13 @@ async def run_claude_agent_sdk(
         if terminal_error is None and answer_stream_gate.final_text_exceeds_bound(
             structured_result_text
         ):
-            terminal_error = _SDK_TOOL_ADMISSION_FAILED
+            terminal_error = _SDK_PUBLIC_PROJECTION_FAILED
         finished_answer = answer_stream_gate.finish(
             final_text=structured_result_text,
             release=terminal_error is None,
         )
         if terminal_error is None and answer_stream_gate.failed:
-            terminal_error = _SDK_TOOL_ADMISSION_FAILED
+            terminal_error = _SDK_PUBLIC_PROJECTION_FAILED
         if terminal_error is None and isinstance(message, ResultMessage):
             terminal_candidates: list[Any] = []
             for public_text in finished_answer.chunks:
@@ -2146,7 +2169,14 @@ async def run_claude_agent_sdk(
             received_structured_terminal=received_structured_terminal,
             used_skills=list(used_skill_names),
             used_skills_source="executor_hook" if used_skill_names else "",
-            turn_diagnostics=turn_diagnostics(terminal_error),
+            turn_diagnostics=turn_diagnostics(
+                terminal_error,
+                projection_failure_reason=(
+                    answer_stream_gate.failure_reason
+                    if terminal_error == _SDK_PUBLIC_PROJECTION_FAILED
+                    else None
+                ),
+            ),
             capability_evidence=list(capability_evidence),
         )
 

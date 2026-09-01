@@ -3481,7 +3481,27 @@ async def test_sandbox_required_general_chat_bridges_agent_event_to_keyword_work
 
 
 @pytest.mark.asyncio
-async def test_sdk_runtime_error_is_reported_without_delegate(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("error_code", "diagnostics", "expected_projection_reason"),
+    [
+        ("claude_agent_sdk_runtime_error", {}, None),
+        (
+            "claude_agent_sdk_public_projection_failed",
+            {
+                "projection_failure_reason": "sanitizer_rejected",
+                "private": "C:/tenant/private/answer.txt",
+            },
+            "sanitizer_rejected",
+        ),
+    ],
+)
+async def test_sdk_runtime_error_is_reported_without_delegate(
+    monkeypatch,
+    tmp_path,
+    error_code,
+    diagnostics,
+    expected_projection_reason,
+):
     current_settings = settings(tmp_path, sdk_enabled=True)
 
     async def no_files(payload, workspace):
@@ -3496,9 +3516,10 @@ async def test_sdk_runtime_error_is_reported_without_delegate(monkeypatch, tmp_p
         executor_response={
             "status": "failed",
             "message": "model gateway timeout",
-            "error_code": "claude_agent_sdk_runtime_error",
+            "error_code": error_code,
             "error_message": "model gateway timeout",
             "sdk_used": True,
+            "sdk_turn_diagnostics": diagnostics,
         },
     )
 
@@ -3509,9 +3530,16 @@ async def test_sdk_runtime_error_is_reported_without_delegate(monkeypatch, tmp_p
     )
 
     assert result.status == "failed"
-    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
+    assert result.result["error_code"] == error_code
     assert result.result["sdk_used"] is True
     assert result.result["delegate_used"] is False
+    if expected_projection_reason is None:
+        assert "projection_failure_reason" not in result.result["sdk_turn_diagnostics"]
+    else:
+        assert result.result["sdk_turn_diagnostics"]["projection_failure_reason"] == (
+            expected_projection_reason
+        )
+    assert "C:/tenant" not in str(result.result)
 
 
 @pytest.mark.asyncio

@@ -150,6 +150,7 @@ export interface EventData {
   content?: string;
   detail_kind?: string;
   detail_code?: string;
+  projection_failure_reason?: string;
   thinking_id?: string;
   error?: string;
   type?: string;
@@ -552,6 +553,7 @@ export interface HistoryEventData {
   content?: string;
   detail_kind?: string;
   detail_code?: string;
+  projection_failure_reason?: string;
   tool?: string;
   tool_call_id?: string;
   args?: Record<string, unknown>;
