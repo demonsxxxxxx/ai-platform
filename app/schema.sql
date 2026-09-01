@@ -2948,9 +2948,9 @@ on conflict (id) do nothing;
 
 insert into skills(id, name, version, description, input_modes, output_modes, executor_type)
 values
-  ('qa-file-reviewer', 'QA Word Review', '0.1.0', 'Review Word documents and return commented Word artifacts.', '["docx"]'::jsonb, '["reviewed_docx", "findings_json"]'::jsonb, 'claude-agent-worker'),
+  ('qa-file-reviewer', 'QA Word Review', '0.1.0', 'Review Word documents and return commented Word artifacts.', '["docx"]'::jsonb, '["result_docx", "result_json"]'::jsonb, 'claude-agent-worker'),
   ('minimax-docx', 'Minimax DOCX', '0.1.0', 'Internal Word document composition dependency used by first-party document Skills.', '["docx"]'::jsonb, '["docx"]'::jsonb, 'claude-agent-worker'),
-  ('baoyu-translate', 'Baoyu Translate', '0.1.0', 'Translate Word documents and return translated Word artifacts.', '["docx"]'::jsonb, '["translated_docx"]'::jsonb, 'claude-agent-worker'),
+  ('baoyu-translate', 'Baoyu Translate', '0.1.0', 'Translate Word documents and return translated Word artifacts.', '["docx"]'::jsonb, '["result_docx"]'::jsonb, 'claude-agent-worker'),
   ('ragflow-knowledge-search', 'RAGFlow Knowledge Search', '0.1.0', 'Query company knowledge base with scoped citations through the platform-managed MCP tool.', '["chat"]'::jsonb, '["answer", "citations"]'::jsonb, 'claude-agent-worker')
 on conflict (id) do update set
   name = excluded.name,

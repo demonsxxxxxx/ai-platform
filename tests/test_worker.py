@@ -856,8 +856,8 @@ def primary_manifest_version(skill_id: str, manifests: list[dict]) -> str:
 
 def reviewed_docx_artifact() -> ArtifactManifest:
     return ArtifactManifest(
-        artifact_type="reviewed_docx",
-        label="Reviewed Word",
+        artifact_type="result_docx",
+        label="Word 文件",
         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         storage_key="tenants/tenant-a/runs/run-a/artifacts/reviewed.docx",
         size_bytes=1,
@@ -3253,9 +3253,9 @@ async def test_worker_fails_and_terminalizes_when_a_pending_permission_would_byp
 @pytest.mark.parametrize(
     ("case", "artifact_types", "required_artifact_types", "skill_id", "expected_status"),
     [
-        ("correct_type", ["reviewed_docx"], [], "qa-file-reviewer", "succeeded"),
+        ("correct_type", ["result_docx"], [], "qa-file-reviewer", "succeeded"),
         ("wrong_type_only", ["execution_log"], [], "qa-file-reviewer", "failed"),
-        ("mixed_types", ["execution_log", "reviewed_docx"], [], "qa-file-reviewer", "succeeded"),
+        ("mixed_types", ["execution_log", "result_docx"], [], "qa-file-reviewer", "succeeded"),
         ("non_required_non_claude", [], [], "general-chat", "succeeded"),
     ],
 )
@@ -3349,14 +3349,14 @@ async def test_worker_enforces_declared_required_artifact_types(
     [
         ("document_resume_without_artifact", "qa-file-reviewer", "qa-word-review", ["file-a"], [], "failed"),
         (
-            "document_resume_with_reviewed_docx",
+            "document_resume_with_result_docx",
             "qa-file-reviewer",
             "qa-word-review",
             ["file-a"],
             [
                 ArtifactManifest(
-                    artifact_type="reviewed_docx",
-                    label="Reviewed Word",
+                    artifact_type="result_docx",
+                    label="Word 文件",
                     content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     storage_key="tenants/tenant-a/runs/run-a/artifacts/reviewed.docx",
                     size_bytes=1024,
@@ -5690,7 +5690,7 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
                 result={"message": "done"},
                 artifacts=[
                     ArtifactManifest(
-                        artifact_type="reviewed_docx",
+                        artifact_type="result_docx",
                         label="Reviewed Word",
                         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         storage_key="tenants/tenant-a/runs/run-a/artifacts/reviewed.docx",
@@ -7730,7 +7730,7 @@ async def test_worker_persists_artifact_manifest_contract(monkeypatch):
                 result={"message": "done"},
                 artifacts=[
                     ArtifactManifest(
-                        artifact_type="reviewed_docx",
+                        artifact_type="result_docx",
                         label="批注 Word",
                         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         storage_key="tenants/tenant-a/runs/run-a/artifacts/1/reviewed.docx",
@@ -7775,12 +7775,12 @@ async def test_worker_persists_artifact_manifest_contract(monkeypatch):
     assert outcome.status == "succeeded"
     assert created[0]["trace_id"] == "trace_run_a"
     assert created[0]["manifest_json"]["schema_version"] == "ai-platform.artifact-manifest.v1"
-    assert created[0]["manifest_json"]["artifact_type"] == "reviewed_docx"
+    assert created[0]["manifest_json"]["artifact_type"] == "result_docx"
     assert created[0]["manifest_json"]["source_file_id"] == "file-a"
     assert "local_path" not in created[0]["manifest_json"]
     artifact_event = next(item for item in events if item["event_type"] == "artifact_ready")
     assert artifact_event["payload"]["artifact_id"] == created[0]["artifact_id"]
-    assert artifact_event["payload"]["artifact_type"] == "reviewed_docx"
+    assert artifact_event["payload"]["artifact_type"] == "result_docx"
     assert artifact_event["payload"]["download_url"] == f"/api/ai/artifacts/{created[0]['artifact_id']}/download"
     assert artifact_event["payload"]["lineage"] == {
         "source_run_id": "run-a",
@@ -9286,7 +9286,7 @@ async def test_worker_adds_artifact_links_to_success_result_message(monkeypatch)
                 },
                 artifacts=[
                     ArtifactManifest(
-                        artifact_type="reviewed_docx",
+                        artifact_type="result_docx",
                         label="审核 Word",
                         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         storage_key="tenants/tenant-a/workspaces/workspace-a/sessions/session-a/runs/run-a/artifacts/1/reviewed.docx",
@@ -9345,7 +9345,7 @@ async def test_worker_sanitizes_artifact_manifest_paths_before_persisting(monkey
                 result={"message": "done"},
                 artifacts=[
                     ArtifactManifest(
-                        artifact_type="reviewed_docx",
+                        artifact_type="result_docx",
                         label="审核 Word",
                         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         storage_key="tenants/tenant-a/workspaces/workspace-a/sessions/session-a/runs/run-a/artifacts/1/reviewed.docx",
@@ -9386,7 +9386,7 @@ async def test_worker_sanitizes_artifact_manifest_paths_before_persisting(monkey
     manifest = created[0]["manifest_json"]
     assert manifest == {
         "schema_version": "ai-platform.artifact-manifest.v1",
-        "artifact_type": "reviewed_docx",
+        "artifact_type": "result_docx",
         "source_executor": "qa-file-reviewer-local",
     }
     assert "/tmp/" not in str(manifest)
@@ -9408,7 +9408,7 @@ async def test_worker_appends_user_visible_execution_timeline(monkeypatch):
                 result={"message": "done"},
                 artifacts=[
                     ArtifactManifest(
-                        artifact_type="reviewed_docx",
+                        artifact_type="result_docx",
                         label="批注 Word",
                         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         storage_key=(
@@ -9783,7 +9783,7 @@ def _install_task6_worker_fakes(
                 result={"message": "done"},
                 artifacts=[
                     ArtifactManifest(
-                        artifact_type="reviewed_docx",
+                        artifact_type="result_docx",
                         label="Reviewed Word",
                         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         storage_key="tenants/tenant-a/runs/run-a/artifacts/reviewed.docx",

@@ -1069,7 +1069,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "3d573c1e8ccbc535a8258a0916b4fa71a5afb9476a737fb0e23e39249eb94751"
+        "7deb225fe43a0e36d9cd7c84722b401a578d8d7ce57a6da7e4c945d84c64cbaf"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "
