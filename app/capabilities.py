@@ -36,8 +36,8 @@ CAPABILITIES: dict[str, CapabilityDefinition] = {
         agent_id="qa-word-review",
         skill_id="qa-file-reviewer",
         input_modes=["docx"],
-        output_modes=["reviewed_docx"],
-        required_artifact_types=["reviewed_docx"],
+        output_modes=["result_docx", "result_json"],
+        required_artifact_types=["result_docx"],
     ),
     "document_translation": CapabilityDefinition(
         capability_id="document_translation",
@@ -46,8 +46,8 @@ CAPABILITIES: dict[str, CapabilityDefinition] = {
         agent_id="baoyu-translate",
         skill_id="baoyu-translate",
         input_modes=["docx"],
-        output_modes=["translated_docx"],
-        required_artifact_types=["translated_docx"],
+        output_modes=["result_docx"],
+        required_artifact_types=["result_docx"],
     ),
     "knowledge_answer": CapabilityDefinition(
         capability_id="knowledge_answer",

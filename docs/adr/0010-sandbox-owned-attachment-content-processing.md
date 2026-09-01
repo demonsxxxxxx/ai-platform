@@ -72,16 +72,16 @@ Owner: file continuity and storage boundary.
 Output: immutable facts containing only file ID, basename, content type, byte
 count, and digest. These facts are not document content.
 
-### A3. Structural package safety
+### A3. XLSX package safety and opaque document staging
 
-For container formats such as DOCX/XLSX, the platform performs only
-non-semantic archive safety checks: bounded entry count, bounded compressed and
-uncompressed sizes, bounded compression ratio, no absolute or traversal paths,
-no duplicate normalized names, and no encrypted package. Office active content,
-macros, ActiveX, and OLE objects remain denied. Opaque embedded package entries
-and external relationships are neither interpreted nor dereferenced by the
-platform. The selected Skill may inspect accepted original bytes only inside
-its sandbox and under its existing tool and network policy.
+For XLSX, the platform performs non-semantic archive safety checks: bounded entry
+count, bounded compressed and uncompressed sizes, bounded compression ratio, no
+absolute or traversal paths, no duplicate normalized names, no encrypted package,
+and no active Office content. DOCX and PDF files are opaque after A1-A2 and file-type
+classification: the platform does not enumerate DOCX ZIP entries or inspect DOCX macros,
+ActiveX, OLE/CFB payloads, embedded packages, or relationships, and it does not parse,
+decrypt, count pages, or inspect PDF contents. The selected Skill may inspect accepted
+original bytes only inside its sandbox and under its existing tool and network policy.
 
 This step must not read cells, paragraphs, tables, document text, formulas, or
 PDF page text. It must not produce a summary.
@@ -142,7 +142,9 @@ execution path:
 - typed attachment preprocessing requirements and parser evidence;
 - the Run-execution XLSX parser contract, evidence, and model-context limits;
 - `platform_typed_attachment_data` model messages;
-- server parsing of DOCX/PDF/text as a prerequisite for attachment staging;
+- DOCX package inspection, including macro, ActiveX, OLE/CFB, embedded-package,
+  relationship, encryption, and archive-structure admission checks;
+- PDF parsing, decryption, page-limit, and active-content admission checks;
 - the Agent-facing parsed-content retrieval path;
 - parser-specific admission failures such as `xlsx_cell_limit_exceeded`.
 
@@ -168,18 +170,17 @@ The cutover does not relax these controls:
   rejection;
 - upload, per-file, total-stage, file-count, sandbox disk, CPU, memory, timeout,
   and artifact collection quotas;
-- archive bomb, encryption, macro, ActiveX, and OLE protection;
-- embedded packages and external relationships are never interpreted, executed,
-  or dereferenced by the platform;
+- XLSX archive bomb, encryption, macro, ActiveX, and OLE protection;
+- DOCX and PDF package structures and contents are opaque to platform staging;
+  they are handled only by the selected sandbox Skill under its existing policy;
 - no direct Agent authority to platform storage, databases, Redis, or host
   filesystem;
 - public error redaction: no content, file ID, storage key, absolute path, or
   raw exception appears in the browser.
 
-File-size and archive-structure limits are security/resource boundaries. XLSX
-cell count, DOCX paragraph/table count, PDF page text extraction, and prompt
-budget limits are content-processing boundaries and are removed from attachment
-admission.
+File-size and XLSX archive-structure limits are security/resource boundaries. XLSX cell
+count, DOCX paragraph/table count, PDF parsing/page/content processing, and prompt
+budget limits are content-processing boundaries and are removed from attachment admission.
 
 ## Runtime Contract
 

@@ -174,10 +174,28 @@ create index if not exists idx_agent_profile_favorites_user
 """,
     "alter table agent_profile_revisions add column if not exists market_tag text not null default '';\n",
 )
+CURRENT_ATTACHMENT_OUTPUT_MODE_SEEDS = """  ('qa-file-reviewer', 'QA Word Review', '0.1.0', 'Review Word documents and return commented Word artifacts.', '["docx"]'::jsonb, '["result_docx", "result_json"]'::jsonb, 'claude-agent-worker'),
+  ('minimax-docx', 'Minimax DOCX', '0.1.0', 'Internal Word document composition dependency used by first-party document Skills.', '["docx"]'::jsonb, '["docx"]'::jsonb, 'claude-agent-worker'),
+  ('baoyu-translate', 'Baoyu Translate', '0.1.0', 'Translate Word documents and return translated Word artifacts.', '["docx"]'::jsonb, '["result_docx"]'::jsonb, 'claude-agent-worker'),
+"""
+REMOTE_ATTACHMENT_OUTPUT_MODE_SEEDS = """  ('qa-file-reviewer', 'QA Word Review', '0.1.0', 'Review Word documents and return commented Word artifacts.', '["docx"]'::jsonb, '["reviewed_docx", "findings_json"]'::jsonb, 'claude-agent-worker'),
+  ('minimax-docx', 'Minimax DOCX', '0.1.0', 'Internal Word document composition dependency used by first-party document Skills.', '["docx"]'::jsonb, '["docx"]'::jsonb, 'claude-agent-worker'),
+  ('baoyu-translate', 'Baoyu Translate', '0.1.0', 'Translate Word documents and return translated Word artifacts.', '["docx"]'::jsonb, '["translated_docx"]'::jsonb, 'claude-agent-worker'),
+"""
+
+
+def _restore_remote_attachment_output_mode_seeds(current_sql: str) -> str:
+    assert current_sql.count(CURRENT_ATTACHMENT_OUTPUT_MODE_SEEDS) == 1
+    return current_sql.replace(
+        CURRENT_ATTACHMENT_OUTPUT_MODE_SEEDS,
+        REMOTE_ATTACHMENT_OUTPUT_MODE_SEEDS,
+    )
 
 
 def _remote_successor_activation_schema_sql() -> str:
-    current_sql = Path("app/schema.sql").read_text(encoding="utf-8")
+    current_sql = _restore_remote_attachment_output_mode_seeds(
+        Path("app/schema.sql").read_text(encoding="utf-8")
+    )
     assert current_sql.count(CURRENT_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SQL) == 1
     current_sql = current_sql.replace(
         CURRENT_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SQL,
@@ -216,7 +234,9 @@ def _remote_successor_activation_schema_sql() -> str:
 
 
 def _remote_run_attempt_reconciler_takeover_schema_sql() -> str:
-    current_sql = Path("app/schema.sql").read_text(encoding="utf-8")
+    current_sql = _restore_remote_attachment_output_mode_seeds(
+        Path("app/schema.sql").read_text(encoding="utf-8")
+    )
     assert current_sql.count(CURRENT_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SQL) == 1
     for fragment in EXPERT_MARKET_SCHEMA_FRAGMENTS:
         assert current_sql.count(fragment) == 1
