@@ -145,9 +145,16 @@ test("composer preserves prompt and attachments until submission is accepted", (
   const chatView = read("src/components/layout/AppContent/ChatView.tsx");
 
   assert.match(inputTypes, /SubmissionOutcome/);
-  assert.match(inputTypes, /draft\?:\s*string/);
-  assert.match(chatView, /composerDraft/);
-  assert.match(chatView, /draft:\s*composerDraft/);
+  assert.match(inputTypes, /initialDraft\?:\s*string/);
+  assert.doesNotMatch(inputTypes, /onDraftChange/);
+  assert.doesNotMatch(chatView, /const \[composerDraft, setComposerDraft\]/);
+  assert.doesNotMatch(chatView, /pendingComposerInput/);
+  assert.match(chatView, /draftSnapshotRef:\s*composerDraftSnapshotRef/);
+  assert.match(chatView, /draftScopeKey:\s*sessionId/);
+  assert.match(
+    input,
+    /const \[input, setLocalInput\] = useState\(inputRef\.current\)/,
+  );
   assert.match(input, /await onSend/);
   assert.match(input, /outcome\.status === "accepted"/);
   assert.doesNotMatch(

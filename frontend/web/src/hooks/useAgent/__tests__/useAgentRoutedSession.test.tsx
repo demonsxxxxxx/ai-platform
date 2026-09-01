@@ -675,6 +675,37 @@ test("queued submit clears chat-queue when the current SSE v4 stream opens", asy
   }
 });
 
+test("pending enqueue retains the created session for draft handoff", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+
+  sessionApi.submitChat = (async (...args) => ({
+    session_id: "session-pending-enqueue",
+    run_id: "run-pending-enqueue",
+    status: "accepted_pending_enqueue",
+    submission_id: String(args[7]),
+  })) as typeof sessionApi.submitChat;
+
+  try {
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("等待入队"), {
+        status: "failed",
+      });
+    });
+    await settle(harness.act);
+
+    assert.equal(harness.hook.sessionId, "session-pending-enqueue");
+    assert.equal(
+      harness.hook.newlyCreatedSession?.id,
+      "session-pending-enqueue",
+    );
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    await harness.cleanup();
+  }
+});
+
 test("useAgent defers the locked Skill label until the server projects it", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
