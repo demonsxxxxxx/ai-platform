@@ -12,12 +12,7 @@ from uuid import UUID
 from fastapi import HTTPException
 
 from app import repositories
-from app.agent_apps.api import safe_agent_avatar_seed
-from app.agent_apps.domain.profile_contracts import (
-    AgentProfileAdminProjection,
-    AgentProfileDraftRequest,
-    AgentProfilePublicProjection,
-)
+from app.agent_apps.api import agent_profile_contracts, safe_agent_avatar_seed
 from app.agent_apps.infrastructure import postgres as agent_profile_persistence
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
@@ -29,6 +24,11 @@ from app.models import (
     SelectedAgentProfileRequest,
     SelectedSkillRequest,
 )
+
+_agent_profile_contracts = agent_profile_contracts()
+AgentProfileAdminProjection = _agent_profile_contracts.AgentProfileAdminProjection
+AgentProfileDraftRequest = _agent_profile_contracts.AgentProfileDraftRequest
+AgentProfilePublicProjection = _agent_profile_contracts.AgentProfilePublicProjection
 
 
 _AVATAR_REFS = {"builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"}

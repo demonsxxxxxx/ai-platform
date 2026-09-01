@@ -9,6 +9,12 @@ from app.agent_apps.domain.profile_definition import (
 from app.skills.api import is_internal_dependency_skill
 
 
+def agent_profile_contracts():
+    from app.agent_apps.application import profile_contracts
+
+    return profile_contracts
+
+
 def normalize_agent_skill_set(skill_set, selected_skill):
     return _normalize_agent_skill_set(
         skill_set,
@@ -17,6 +23,7 @@ def normalize_agent_skill_set(skill_set, selected_skill):
     )
 
 __all__ = [
+    "agent_profile_contracts",
     "discard_legacy_agent_profile_model_id",
     "normalize_agent_avatar_seed",
     "normalize_agent_profile_display_items",

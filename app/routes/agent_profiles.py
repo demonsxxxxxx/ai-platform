@@ -3,15 +3,7 @@ import unicodedata
 from fastapi import APIRouter, Depends, HTTPException, Query, Request as HttpRequest
 from app import repositories
 from app.agent_apps import AgentProfileAuthority
-from app.agent_apps.domain.profile_contracts import (
-    AgentProfileAdminListResponse,
-    AgentProfileCatalogResponse,
-    AgentProfileDraftRequest,
-    AgentProfileDraftTestRequest,
-    AgentProfileHistoryResponse,
-    AgentProfileMutationResponse,
-    AgentProfilePublicProjection,
-)
+from app.agent_apps.api import agent_profile_contracts
 from app.agent_profiles import (
     list_admin_profiles,
     list_public_profiles,
@@ -35,6 +27,15 @@ from app.models import (
     SelectedAgentProfileRequest,
 )
 from app.validation import assert_safe_id
+
+_agent_profile_contracts = agent_profile_contracts()
+AgentProfileAdminListResponse = _agent_profile_contracts.AgentProfileAdminListResponse
+AgentProfileCatalogResponse = _agent_profile_contracts.AgentProfileCatalogResponse
+AgentProfileDraftRequest = _agent_profile_contracts.AgentProfileDraftRequest
+AgentProfileDraftTestRequest = _agent_profile_contracts.AgentProfileDraftTestRequest
+AgentProfileHistoryResponse = _agent_profile_contracts.AgentProfileHistoryResponse
+AgentProfileMutationResponse = _agent_profile_contracts.AgentProfileMutationResponse
+AgentProfilePublicProjection = _agent_profile_contracts.AgentProfilePublicProjection
 
 router = APIRouter()
 _authority = AgentProfileAuthority(

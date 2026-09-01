@@ -1,8 +1,10 @@
 import pytest
 from pydantic import ValidationError
 
-from app.agent_apps.domain.profile_contracts import AgentProfileDraftRequest
+from app.agent_apps.api import agent_profile_contracts
 from app.models import SelectedSkillRequest
+
+AgentProfileDraftRequest = agent_profile_contracts().AgentProfileDraftRequest
 
 
 def test_models_normalize_agent_profile_acl_and_use_only_builtin_avatar_references():
