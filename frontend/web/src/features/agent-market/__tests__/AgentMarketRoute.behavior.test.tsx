@@ -569,17 +569,17 @@ test("market search commits Chinese IME text only after composition ends", async
   const { AgentMarketRoute } = await import("../AgentMarketRoute.tsx");
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const shellHarness = await prepareShellHarness();
-  const profile = {
+  const profiles: AgentProfilePublicProjection[] = Array.from({ length: 10 }, (_, index) => ({
     ...enterpriseProfileFields,
-    agent_id: "agt_support",
+    agent_id: `agt_support_${index + 1}`,
     expected_revision: 1,
-    name: "支持助手",
+    name: `支持助手 ${index + 1}`,
     description: "处理支持请求。",
     avatar_ref: "builtin:assistant",
     category: "support",
-  } as const;
+  }));
   const originalListPublished = agentProfileApi.listPublished;
-  agentProfileApi.listPublished = async () => ({ agent_profiles: [profile] });
+  agentProfileApi.listPublished = async () => ({ agent_profiles: profiles });
   let currentPath = "";
   function LocationProbe() {
     const location = useLocation();
@@ -615,6 +615,17 @@ test("market search commits Chinese IME text only after composition ends", async
       await Promise.resolve();
       await Promise.resolve();
     });
+
+    assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 9);
+    const pageTwo = container
+      .querySelectorAll("button")
+      .find((button) => button.textContent === "2");
+    assert.ok(pageTwo);
+    await React.act(async () => {
+      pageTwo.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
 
     const search = container.querySelector("[data-agent-market-search]");
     assert.ok(search);

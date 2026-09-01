@@ -811,6 +811,7 @@ def test_agent_profile_admin_wire_never_projects_retired_file_type_field(monkeyp
     )
 
     assert legacy_response.status_code == 200
+    assert legacy_response.json()["agent_profiles"][0]["agent_id"] == "agt_support"
     assert "supported_file_types" not in legacy_response.json()["agent_profiles"][0]
     assert current_response.status_code == 200
     assert "supported_file_types" not in current_response.json()["agent_profiles"][0]

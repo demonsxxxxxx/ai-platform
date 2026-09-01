@@ -278,7 +278,7 @@ async def admin_list_agent_profiles(
         raise HTTPException(status_code=403, detail="not_ai_admin")
     async with transaction() as conn:
         profiles = await list_admin_profiles(conn, principal=principal)
-    return {"agent_profiles": profiles}
+    return {"agent_profiles": [profile.model_dump(mode="json") for profile in profiles]}
 
 
 @router.get("/admin/agent-profiles/{agent_id}/history")
@@ -296,7 +296,7 @@ async def admin_agent_profile_history(
         raise HTTPException(status_code=400, detail="agent_id_invalid") from exc
     async with transaction() as conn:
         profiles = await _authority.list_history(conn, principal=principal, agent_id=safe_agent_id)
-    return {"agent_profiles": profiles}
+    return {"agent_profiles": [profile.model_dump(mode="json") for profile in profiles]}
 
 
 @router.post("/admin/agent-profiles")
