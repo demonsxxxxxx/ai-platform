@@ -173,9 +173,10 @@ def public_terminal_projection(
     message = PUBLIC_TERMINAL_DETAIL_MESSAGES[detail_code]
     projected_result: dict[str, object] = {"message": message}
     event_payload: dict[str, object] = {}
-    projection_failure_reason = public_projection_failure_reason_from_result(
-        raw_error_code,
-        result,
+    projection_failure_reason = (
+        public_projection_failure_reason_from_result(raw_error_code, result)
+        if normalized_status == "failed"
+        else None
     )
     if projection_failure_reason is not None:
         message = (

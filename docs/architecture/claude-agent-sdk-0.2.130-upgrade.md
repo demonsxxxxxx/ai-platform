@@ -70,9 +70,9 @@ instantiates the stream and terminal message types.
   code.
 - **Acceptance:** every gate failure retains its first allowlisted reason and
   returns `claude_agent_sdk_public_projection_failed`; Runs exposes that fixed
-  category and the reason only when both the error code and allowlisted reason
-  agree; historical failures without a retained reason remain unknown rather
-  than inferred.
+  category and the reason only when the terminal status is `failed`, the error
+  code matches, and the reason is allowlisted; historical failures without a
+  retained reason remain unknown rather than inferred.
 - **Regression proof:** gate tests cover size, sanitizer, replacement, terminal
   consistency, and upstream-projector reasons; SDK/sandbox tests prove the new
   code is distinct from tool admission and contains no raw failure text; Runs,

@@ -316,7 +316,15 @@ def test_terminal_projection_has_one_runs_owner_and_preserves_fences():
     assert unknown["error_code"] == "run_failed"
     assert "executor_private_exception" not in str(unknown)
 
-    cancelled = public_terminal_projection("canceled", "executor_private_exception")
+    cancelled = public_terminal_projection(
+        "canceled",
+        "claude_agent_sdk_public_projection_failed",
+        {
+            "sdk_turn_diagnostics": {
+                "projection_failure_reason": "terminal_text_mismatch"
+            }
+        },
+    )
     assert cancelled == {
         "detail_kind": "cancelled",
         "detail_code": "run_cancelled",
