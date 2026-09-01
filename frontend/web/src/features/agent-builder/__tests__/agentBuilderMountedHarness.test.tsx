@@ -437,7 +437,16 @@ test("mounted workbench hydrates, refreshes, and creates only an explicit local 
   const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
   const originals = { ...agentProfileApi };
   const responses = [
-    [profile()],
+    [
+      profile(),
+      ...Array.from(
+        { length: 20 },
+        (_, index) => profile({
+          agent_id: `agt_support_${index + 2}`,
+          name: `支持助手 ${index + 2}`,
+        }),
+      ),
+    ],
     [profile({ revision: 5, name: "支持助手新版" })],
   ];
   let listCalls = 0;
@@ -472,6 +481,17 @@ test("mounted workbench hydrates, refreshes, and creates only an explicit local 
     assert.match(container.textContent, /support-skill2026\.07\.28/);
     assert.match(container.textContent, /支持知识检索/);
     assert.match(container.textContent, /revision 4/);
+
+    const pageTwo = findButton(container, "2");
+    await React.act(async () => {
+      await reactProps(pageTwo).onClick?.({} as never);
+      await Promise.resolve();
+    });
+    const directoryProfiles = container.querySelectorAll("button").filter(
+      (button) => button.getAttribute("aria-label")?.startsWith("编辑专家 "),
+    );
+    assert.equal(directoryProfiles.length, 1);
+    assert.match(directoryProfiles[0].getAttribute("aria-label") ?? "", /支持助手 21/);
 
     const refreshButton = container.querySelector('[aria-label="刷新专家与授权目录"]');
     assert.ok(refreshButton);
