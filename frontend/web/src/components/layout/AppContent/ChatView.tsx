@@ -27,7 +27,10 @@ import {
   updatePersistentToolPanel,
   type PersistentToolPanelState,
 } from "../../chat/ChatMessage/items/persistentToolPanelState";
-import { ChatInput } from "../../chat/ChatInput";
+import {
+  ChatInput,
+  type ChatInputDraftSnapshot,
+} from "../../chat/ChatInput";
 import { WelcomePage } from "../../chat/WelcomePage";
 import { AgentIdentityAvatar } from "../../agent/AgentIdentityAvatar";
 import { WorkbenchRightPanel } from "../../workbench/WorkbenchRightPanel";
@@ -130,6 +133,7 @@ interface ChatViewProps {
   composerPlaceholder?: string;
   initialComposerDraft?: string;
   initialComposerDraftKey?: string;
+  composerDraftHandoffKey?: string | null;
   agentEmptyProfile?: AgentProfilePublicProjection;
   tools: ToolState[];
   onToggleTool: (name: string) => void;
@@ -204,6 +208,7 @@ export function ChatView({
   composerPlaceholder,
   initialComposerDraft,
   initialComposerDraftKey,
+  composerDraftHandoffKey,
   agentEmptyProfile,
   tools,
   onToggleTool,
@@ -263,8 +268,21 @@ export function ChatView({
     [sessionId, user?.id, user?.is_active, user?.roles, user?.tenant_id],
   );
   const previousArtifactDownloadScopeRef = useRef(artifactDownloadScopeContext);
-  const [composerDraft, setComposerDraft] = useState("");
-  const appliedInitialDraftKeyRef = useRef<string | null>(null);
+  const composerDraftSnapshotRef = useRef<ChatInputDraftSnapshot>({
+    value: "",
+    appliedInitialDraftKey: null,
+    scopeKey: sessionId,
+    revision: 0,
+    selectedSkillState,
+    selectedSkillRevision: 0,
+    pendingScopeHandoff: false,
+  });
+  const setComposerInput = useCallback((value: string) => {
+    const snapshot = composerDraftSnapshotRef.current;
+    snapshot.revision += 1;
+    snapshot.value = value;
+    snapshot.apply?.(value);
+  }, []);
   const [workspaceProjection, setWorkspaceProjection] =
     useState<SessionWorkspaceProjection>({
       session_id: null,
@@ -280,13 +298,6 @@ export function ChatView({
   const hasVisibleStreamingMessage = messages.some(
     (message) => message.role === "assistant" && message.isStreaming,
   );
-
-  useEffect(() => {
-    if (!initialComposerDraft || !initialComposerDraftKey) return;
-    if (appliedInitialDraftKeyRef.current === initialComposerDraftKey) return;
-    appliedInitialDraftKeyRef.current = initialComposerDraftKey;
-    setComposerDraft((current) => current || initialComposerDraft);
-  }, [initialComposerDraft, initialComposerDraftKey]);
 
   const showStreamingFooterSkeleton = shouldShowStreamingFooterSkeleton({
     connectionStatus,
@@ -344,7 +355,7 @@ export function ChatView({
     isLoadingHistory,
     messageListSessionKey,
   );
-  const [visibleRange, setVisibleRange] = useState<ListRange | null>(null);
+  const visibleRangeRef = useRef<ListRange | null>(null);
 
   useEffect(() => {
     const previousSessionId = previousSessionIdRef.current;
@@ -417,18 +428,16 @@ export function ChatView({
     [messages, visibleWorkspaceProjection.inputFiles],
   );
 
-  const activeOutlineId = useMemo(() => {
-    const rangeActiveId = getOutlineActiveAnchorIdForRange(
-      messages,
-      visibleRange,
-    );
-    if (rangeActiveId) {
-      return rangeActiveId;
-    }
+  const getActiveOutlineId = useCallback(
+    (range: ListRange | null) => {
+      const rangeActiveId = getOutlineActiveAnchorIdForRange(messages, range);
+      if (rangeActiveId) return rangeActiveId;
 
-    const latestMessage = messages[messages.length - 1];
-    return latestMessage ? createMessageAnchorId(latestMessage.id) : null;
-  }, [messages, visibleRange]);
+      const latestMessage = messages[messages.length - 1];
+      return latestMessage ? createMessageAnchorId(latestMessage.id) : null;
+    },
+    [messages],
+  );
 
   const handleOutlineNavigate = useCallback(
     (anchorId: string, messageIndex: number) => {
@@ -451,6 +460,17 @@ export function ChatView({
     [virtuosoRef],
   );
 
+  const renderOutlinePanel = useCallback(
+    (range: ListRange | null) => (
+      <MessageOutlinePanel
+        items={outlineItems}
+        activeId={getActiveOutlineId(range)}
+        onNavigate={handleOutlineNavigate}
+      />
+    ),
+    [getActiveOutlineId, handleOutlineNavigate, outlineItems],
+  );
+
   const handleOpenOutline = useCallback(() => {
     if (isPersistentToolPanelOpen("outline")) {
       closePersistentToolPanel();
@@ -463,20 +483,9 @@ export function ChatView({
       status: "idle",
       panelKey: "outline",
       viewMode: isMobile ? "center" : "sidebar",
-      children: (
-        <MessageOutlinePanel
-          items={outlineItems}
-          activeId={activeOutlineId}
-          onNavigate={handleOutlineNavigate}
-        />
-      ),
+      children: renderOutlinePanel(visibleRangeRef.current),
     });
-  }, [
-    outlineItems,
-    activeOutlineId,
-    handleOutlineNavigate,
-    t,
-  ]);
+  }, [renderOutlinePanel, t]);
 
   useEffect(() => {
     if (outlineToggleRef) {
@@ -489,17 +498,11 @@ export function ChatView({
     updatePersistentToolPanel(
       (prev: PersistentToolPanelState) => ({
         ...prev,
-        children: (
-          <MessageOutlinePanel
-            items={outlineItems}
-            activeId={activeOutlineId}
-            onNavigate={handleOutlineNavigate}
-          />
-        ),
+        children: renderOutlinePanel(visibleRangeRef.current),
       }),
       "outline",
     );
-  }, [outlineItems, activeOutlineId, handleOutlineNavigate]);
+  }, [renderOutlinePanel]);
 
   const [, forcePreviewRender] = useState(0);
   const activePreviewStateRef = useRef<ActiveRevealPreviewState | null>(
@@ -693,14 +696,27 @@ export function ChatView({
     [t],
   );
 
-  const handleVirtuosoRangeChanged = useCallback((range: ListRange) => {
-    setVisibleRange((current) =>
-      current?.startIndex === range.startIndex &&
-      current?.endIndex === range.endIndex
-        ? current
-        : range,
-    );
-  }, []);
+  const handleVirtuosoRangeChanged = useCallback(
+    (range: ListRange) => {
+      const current = visibleRangeRef.current;
+      if (
+        current?.startIndex === range.startIndex &&
+        current?.endIndex === range.endIndex
+      ) {
+        return;
+      }
+      visibleRangeRef.current = range;
+      if (!isPersistentToolPanelOpen("outline")) return;
+      updatePersistentToolPanel(
+        (panel: PersistentToolPanelState) => ({
+          ...panel,
+          children: renderOutlinePanel(range),
+        }),
+        "outline",
+      );
+    },
+    [renderOutlinePanel],
+  );
   const virtuosoComponents = useMemo(
     () => ({
       Scroller: (
@@ -781,8 +797,11 @@ export function ChatView({
 
   // Shared ChatInput props to avoid duplication
   const chatInputProps = {
-    draft: composerDraft,
-    onDraftChange: setComposerDraft,
+    initialDraft: initialComposerDraft,
+    initialDraftKey: initialComposerDraftKey,
+    draftSnapshotRef: composerDraftSnapshotRef,
+    draftScopeKey: sessionId,
+    draftScopeHandoffKey: composerDraftHandoffKey,
     onSend: onSendMessage,
     onStop: onStopGeneration,
     isLoading: sessionRunning,
@@ -921,7 +940,7 @@ export function ChatView({
               className="min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-left text-sm text-[var(--theme-text)] hover:border-[var(--theme-primary)]"
               key={prompt}
               disabled={!canSendMessage || isLoading}
-              onClick={() => setComposerDraft(prompt)}
+              onClick={() => setComposerInput(prompt)}
               type="button"
             >
               {prompt}

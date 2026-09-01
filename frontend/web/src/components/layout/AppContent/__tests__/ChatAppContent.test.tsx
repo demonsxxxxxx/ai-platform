@@ -284,6 +284,7 @@ test("first-send Agent creation is single-flight and binds before returning", as
   const coordinator = { current: null as Promise<string> | null };
   let createCalls = 0;
   let bindCalls = 0;
+  let handoffOwner: string | null = null;
   let releaseCreate!: () => void;
   const createGate = new Promise<void>((resolve) => {
     releaseCreate = resolve;
@@ -303,19 +304,25 @@ test("first-send Agent creation is single-flight and binds before returning", as
   const bindConversation = async (sessionId: string) => {
     bindCalls += 1;
     assert.equal(sessionId, "session-agent");
+    assert.equal(handoffOwner, sessionId);
     return true;
+  };
+  const onConversationCreated = (sessionId: string) => {
+    handoffOwner = sessionId;
   };
 
   const first = ensureAgentConversationForFirstSend({
     coordinator,
     profile: safeWorkspace,
     createConversation,
+    onConversationCreated,
     bindConversation,
   });
   const duplicate = ensureAgentConversationForFirstSend({
     coordinator,
     profile: safeWorkspace,
     createConversation,
+    onConversationCreated,
     bindConversation,
   });
   assert.equal(createCalls, 1);
@@ -327,6 +334,66 @@ test("first-send Agent creation is single-flight and binds before returning", as
   ]);
   assert.equal(createCalls, 1);
   assert.equal(bindCalls, 1);
+});
+
+test("a cancelled Agent first send cannot bind or submit after delayed creation", async () => {
+  const creationCoordinator = { current: null as Promise<string> | null };
+  const submissionCoordinator: Parameters<
+    typeof submitAgentFirstMessageSingleFlight
+  >[0]["coordinator"] = { current: null };
+  let generation = 0;
+  let ownerCalls = 0;
+  let bindCalls = 0;
+  let submitCalls = 0;
+  let releaseCreate!: () => void;
+  const createGate = new Promise<void>((resolve) => {
+    releaseCreate = resolve;
+  });
+  const isCurrent = () => generation === 0;
+
+  const outcome = submitAgentFirstMessageSingleFlight({
+    coordinator: submissionCoordinator,
+    submissionKey: "delayed-first-send",
+    isCurrent,
+    ensureConversation: () =>
+      ensureAgentConversationForFirstSend({
+        coordinator: creationCoordinator,
+        profile: safeWorkspace,
+        isCurrent,
+        createConversation: async () => {
+          await createGate;
+          return {
+            session_id: "session-agent",
+            workspace_id: "default",
+            agent_id: safeIdentity.agent_id,
+            title: safeIdentity.name,
+            purpose: "conversation" as const,
+            agent_conversation: safeIdentity,
+          };
+        },
+        onConversationCreated: () => {
+          ownerCalls += 1;
+        },
+        bindConversation: async () => {
+          bindCalls += 1;
+          return true;
+        },
+      }),
+    submitMessage: async () => {
+      submitCalls += 1;
+      return { status: "accepted" };
+    },
+  });
+
+  generation += 1;
+  creationCoordinator.current = null;
+  submissionCoordinator.current = null;
+  releaseCreate();
+
+  assert.deepEqual(await outcome, { status: "failed" });
+  assert.equal(ownerCalls, 0);
+  assert.equal(bindCalls, 0);
+  assert.equal(submitCalls, 0);
 });
 
 test("first-send creation rejects a mismatched pinned identity before binding", async () => {
@@ -713,7 +780,15 @@ test("projects the Agent welcome and recommendations only in the empty Chat UI",
   assert.doesNotMatch(chatViewSource, /<Bot\b/);
   assert.match(chatViewSource, /agentEmptyProfile\.welcome_message/);
   assert.match(chatViewSource, /data-agent-starter-prompts/);
-  assert.match(chatViewSource, /onClick=\{\(\) => setComposerDraft\(prompt\)\}/);
+  assert.match(chatViewSource, /onClick=\{\(\) => setComposerInput\(prompt\)\}/);
+  assert.match(
+    appContentSource,
+    /onConversationCreated:\s*\(createdSessionId\)\s*=>\s*\{[\s\S]*?setAgentWorkspaceDraftHandoffKey\(createdSessionId\)/,
+  );
+  assert.match(
+    appContentSource,
+    /composerDraftHandoffKey=\{[\s\S]*?agentWorkspaceDraftHandoffKey/,
+  );
   assert.doesNotMatch(chatViewSource, /onSendMessage\(prompt\)/);
   assert.doesNotMatch(appContentSource, /data-agent-workspace-welcome/);
   assert.doesNotMatch(appContentSource, /data-agent-workspace-start/);

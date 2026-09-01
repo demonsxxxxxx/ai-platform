@@ -5,7 +5,6 @@ import io
 import json
 import sys
 import types
-import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -753,8 +752,6 @@ async def test_submit_run_classifies_context_file_size_failure_without_starting_
     "error_code",
     [
         "context_file_pdf_password_required",
-        "context_file_pdf_active_content_unsupported",
-        "context_file_docx_macros_unsupported",
         "xlsx_encrypted_unsupported",
     ],
 )
@@ -861,69 +858,6 @@ def symlink_or_skip(target, link):
         link.symlink_to(target, target_is_directory=target.is_dir())
     except (NotImplementedError, OSError) as exc:
         pytest.skip(f"symlink creation not available: {exc}")
-
-
-def usable_docx_bytes(
-    *,
-    document: bytes | None = None,
-    content_types: bytes | None = None,
-    relationships: bytes | None = None,
-    include_relationships: bool = True,
-    extra_entries: dict[str, bytes] | None = None,
-) -> bytes:
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        content_types_entry = zipfile.ZipInfo("[Content_Types].xml", date_time=(2024, 1, 1, 0, 0, 0))
-        content_types_entry.compress_type = zipfile.ZIP_DEFLATED
-        archive.writestr(
-            content_types_entry,
-            content_types
-            if content_types is not None
-            else (
-                b'<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-                b'<Override PartName="/word/document.xml" '
-                b'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
-                b"</Types>"
-            ),
-        )
-        if include_relationships:
-            relationship_entry = zipfile.ZipInfo("_rels/.rels", date_time=(2024, 1, 1, 0, 0, 0))
-            relationship_entry.compress_type = zipfile.ZIP_DEFLATED
-            archive.writestr(
-                relationship_entry,
-                relationships
-                if relationships is not None
-                else (
-                    b'<?xml version="1.0"?><Relationships '
-                    b'xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                    b'<Relationship Id="rId1" '
-                    b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                    b'Target="word/document.xml"/>'
-                    b"</Relationships>"
-                ),
-            )
-        if document is not None:
-            document_entry = zipfile.ZipInfo("word/document.xml", date_time=(2024, 1, 1, 0, 0, 0))
-            document_entry.compress_type = zipfile.ZIP_DEFLATED
-            archive.writestr(
-                document_entry,
-                document,
-            )
-        for name, content in (extra_entries or {}).items():
-            extra_entry = zipfile.ZipInfo(name, date_time=(2024, 1, 1, 0, 0, 0))
-            extra_entry.compress_type = zipfile.ZIP_DEFLATED
-            archive.writestr(extra_entry, content)
-    return buffer.getvalue()
-
-
-def valid_docx_bytes() -> bytes:
-    return usable_docx_bytes(
-        document=(
-            b'<?xml version="1.0"?><w:document '
-            b'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-            b"<w:body><w:p/></w:body></w:document>"
-        )
-    )
 
 
 def test_registry_exposes_claude_agent_worker():
@@ -1063,75 +997,13 @@ def test_collect_workspace_artifacts_enforces_delivery_limits_before_storage(
         ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(payload(), workspace)
 
 
-@pytest.mark.parametrize(
-    "content",
-    [
-        b"",
-        b"not-a-zip",
-        usable_docx_bytes(document=None),
-        usable_docx_bytes(document=b""),
-        usable_docx_bytes(document=b"<document/>"),
-        usable_docx_bytes(document=b"<w:document>not valid XML</w:document>"),
-        usable_docx_bytes(document=b"<document><body><p/></body></document>", content_types=b"not XML"),
-        usable_docx_bytes(document=b"<document><body><p/></body></document>", include_relationships=False),
-        usable_docx_bytes(
-            document=b"<document><body><p/></body></document>",
-            relationships=(
-                b'<Relationships><Relationship '
-                b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                b'Target="../word/document.xml"/></Relationships>'
-            ),
-        ),
-        usable_docx_bytes(
-            document=(
-                b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-                b"<w:body><w:p/></w:body></w:document>"
-            ),
-            relationships=(
-                b'<Relationships><Relationship Id="rId1" '
-                b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                b'Target="word/document.xml"/></Relationships>'
-            ),
-        ),
-        usable_docx_bytes(
-            document=(
-                b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-                b"<w:body><w:p/></w:body></w:document>"
-            ),
-            relationships=(
-                b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                b'<Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                b'Target="word/document.xml"/></Relationships>'
-            ),
-        ),
-        usable_docx_bytes(
-            document=(
-                b'<w:document xmlns:w="urn:wrong-wordprocessingml">'
-                b"<w:body><w:p/></w:body></w:document>"
-            ),
-        ),
-    ],
-    ids=[
-        "zero-byte",
-        "corrupt-zip",
-        "missing-document",
-        "empty-document",
-        "document-without-body",
-        "invalid-document-xml",
-        "invalid-content-types",
-        "missing-root-relationship",
-        "path-traversing-root-relationship",
-        "namespace-less-root-relationship",
-        "wrong-wordprocessingml-namespace",
-        "missing-root-relationship-id",
-    ],
-)
 @pytest.mark.parametrize("skill_id", ["qa-file-reviewer", "baoyu-translate"])
-def test_collect_workspace_artifacts_rejects_unusable_required_docx(monkeypatch, tmp_path, content, skill_id):
+def test_collect_workspace_artifacts_stores_docx_opaque(monkeypatch, tmp_path, skill_id):
     workspace = tmp_path / "workspace"
     output = workspace / "output"
     output.mkdir(parents=True)
-    (output / "review.docx").write_bytes(content)
+    content = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1opaque-docx-artifact"
+    (output / "document.docx").write_bytes(content)
     stored = []
 
     class FakeStorage:
@@ -1146,190 +1018,9 @@ def test_collect_workspace_artifacts_rejects_unusable_required_docx(monkeypatch,
         workspace,
     )
 
-    assert artifacts == []
-    assert stored == []
-
-
-@pytest.mark.parametrize("skill_id", ["qa-file-reviewer", "baoyu-translate"])
-@pytest.mark.parametrize(
-    ("limit_name", "limit_value", "content"),
-    [
-        ("_REQUIRED_DOCX_MAX_ENTRY_COUNT", 3, usable_docx_bytes(document=valid_docx_bytes(), extra_entries={"extra.txt": b"x"})),
-        ("_REQUIRED_DOCX_MAX_COMPRESSED_BYTES", 1, valid_docx_bytes()),
-        ("_REQUIRED_DOCX_MAX_UNCOMPRESSED_BYTES", 1, valid_docx_bytes()),
-    ],
-)
-def test_collect_workspace_artifacts_rejects_required_docx_zip_bounds_before_read(
-    monkeypatch,
-    tmp_path,
-    skill_id,
-    limit_name,
-    limit_value,
-    content,
-):
-    workspace = tmp_path / "workspace"
-    output = workspace / "output"
-    output.mkdir(parents=True)
-    (output / "review.docx").write_bytes(content)
-
-    def fail_read(*_args, **_kwargs):
-        raise AssertionError("bounded metadata rejection must happen before archive.read")
-
-    monkeypatch.setattr(claude_agent_worker, limit_name, limit_value)
-    monkeypatch.setattr(zipfile.ZipFile, "read", fail_read)
-
-    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-        payload(skill_id=skill_id),
-        workspace,
-    )
-
-    assert artifacts == []
-
-
-def test_required_docx_rejects_duplicate_case_colliding_or_encrypted_part_before_read(monkeypatch, tmp_path):
-    workspace = tmp_path / "workspace"
-    output = workspace / "output"
-    output.mkdir(parents=True)
-    path = output / "review.docx"
-    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for name, content in {
-            "[Content_Types].xml": (
-                b'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-                b'<Override PartName="/word/document.xml" '
-                b'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
-                b"</Types>"
-            ),
-            "_rels/.rels": (
-                b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                b'<Relationship Id="rId1" '
-                b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                b'Target="word/document.xml"/></Relationships>'
-            ),
-            "word/document.xml": (
-                b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-                b"<w:body><w:p/></w:body></w:document>"
-            ),
-        }.items():
-            archive.writestr(name, content)
-        archive.writestr("WORD/DOCUMENT.XML", b"duplicate")
-
-    def fail_read(*_args, **_kwargs):
-        raise AssertionError("unsafe archive metadata must fail before archive.read")
-
-    monkeypatch.setattr(zipfile.ZipFile, "read", fail_read)
-    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-        payload(skill_id="qa-file-reviewer"), workspace
-    )
-
-    assert artifacts == []
-
-
-@pytest.mark.parametrize(
-    ("skill_id", "expected_type"),
-    [("qa-file-reviewer", "reviewed_docx"), ("baoyu-translate", "translated_docx")],
-)
-def test_collect_workspace_artifacts_accepts_usable_required_docx(monkeypatch, tmp_path, skill_id, expected_type):
-    workspace = tmp_path / "workspace"
-    output = workspace / "output"
-    output.mkdir(parents=True)
-    content = valid_docx_bytes()
-    (output / "review.docx").write_bytes(content)
-    stored = []
-
-    class FakeStorage:
-        def put_bytes(self, *, storage_key, content, content_type):
-            stored.append((storage_key, content, content_type))
-            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
-
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-
-    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-        payload(skill_id=skill_id),
-        workspace,
-    )
-
-    assert [artifact.artifact_type for artifact in artifacts] == [expected_type]
+    assert [artifact.artifact_type for artifact in artifacts] == ["result_docx"]
+    assert artifacts[0].label == "Word 文件"
     assert stored[0][1] == content
-
-
-@pytest.mark.parametrize(
-    ("relationship_id", "accepted"),
-    [
-        ("关系\u0301", True),
-        ("Ångström", True),
-        ("", False),
-        ("1relationship", False),
-        ("relationship:id", False),
-        ("relationship id", False),
-    ],
-    ids=["unicode-letter-mark", "unicode-letter", "missing", "numeric-start", "colon", "whitespace"],
-)
-def test_required_docx_validates_xml_ncname_relationship_ids(monkeypatch, tmp_path, relationship_id, accepted):
-    workspace = tmp_path / "workspace"
-    output = workspace / "output"
-    output.mkdir(parents=True)
-    relationships = (
-        b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        + f'<Relationship Id="{relationship_id}" '.encode()
-        + b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-        + b'Target="word/document.xml"/></Relationships>'
-    )
-    (output / "review.docx").write_bytes(usable_docx_bytes(document=(
-        b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        b"<w:body><w:p/></w:body></w:document>"
-    ), relationships=relationships))
-    stored = []
-
-    class FakeStorage:
-        def put_bytes(self, *, storage_key, content, content_type):
-            stored.append(content)
-            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
-
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-        payload(skill_id="qa-file-reviewer"), workspace
-    )
-
-    assert bool(artifacts) is accepted
-    assert bool(stored) is accepted
-
-
-@pytest.mark.parametrize(
-    "relationships",
-    [
-        (
-            b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-            b'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
-            b'<Relationship Id="rId1" Type="urn:example:other" Target="custom.xml"/>'
-            b"</Relationships>"
-        ),
-        (
-            b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-            b'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
-            b'<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
-            b"</Relationships>"
-        ),
-    ],
-    ids=["duplicate-relationship-id", "multiple-office-document-relationships"],
-)
-def test_required_docx_rejects_non_unique_or_ambiguous_root_relationships(monkeypatch, tmp_path, relationships):
-    workspace = tmp_path / "workspace"
-    output = workspace / "output"
-    output.mkdir(parents=True)
-    (output / "review.docx").write_bytes(usable_docx_bytes(document=(
-        b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        b"<w:body><w:p/></w:body></w:document>"
-    ), relationships=relationships))
-
-    class FakeStorage:
-        def put_bytes(self, **_kwargs):
-            raise AssertionError("invalid relationship packages must not be stored")
-
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-        payload(skill_id="qa-file-reviewer"), workspace
-    )
-    assert artifacts == []
 
 
 @pytest.mark.asyncio
@@ -1583,7 +1274,7 @@ async def test_agent_run_records_pinned_manifest_dependency_graph(monkeypatch, t
     assert runtime_requests[0].attempt_id == "qat-test-attempt"
     assert runtime_requests[0].context_manifest["queue_attempt_id"] == "qat-test-attempt"
     assert result.executor_payload["skill_manifests"][0]["dependency_ids"] == ["legacy-helper"]
-    assert result.executor_payload["required_artifact_types"] == ["reviewed_docx"]
+    assert result.executor_payload["required_artifact_types"] == ["result_docx"]
 
 
 def test_general_chat_does_not_stage_all_platform_skills_by_default():
@@ -1596,8 +1287,8 @@ def test_general_chat_does_not_stage_all_platform_skills_by_default():
 
 
 def test_file_skill_artifact_contract_is_owned_by_the_selected_capability():
-    assert _required_artifact_types(payload(skill_id="qa-file-reviewer")) == ("reviewed_docx",)
-    assert _required_artifact_types(payload(skill_id="baoyu-translate")) == ("translated_docx",)
+    assert _required_artifact_types(payload(skill_id="qa-file-reviewer")) == ("result_docx",)
+    assert _required_artifact_types(payload(skill_id="baoyu-translate")) == ("result_docx",)
     assert _required_artifact_types(payload(skill_id="general-chat", file_ids=[])) == ()
 
 
