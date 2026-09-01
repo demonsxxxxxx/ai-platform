@@ -25,6 +25,7 @@ import {
   selectPublishedMarketProfile,
 } from "./agentMarketSelection";
 import { AgentIdentityAvatar } from "../../components/agent/AgentIdentityAvatar";
+import { Pagination } from "../../components/common/Pagination";
 
 type LoadPhase = "loading" | "ready" | "error" | "unavailable";
 interface LoadState<T> {
@@ -41,6 +42,7 @@ function loadState<T>(key: string, value: T, phase: LoadPhase = "loading", error
 }
 
 const MARKET_CATALOG_LOAD_ERROR = "暂时无法加载已发布的专家，请稍后重新加载。";
+const MARKET_PAGE_SIZE = 12;
 
 /** Reuse the production shell and session sidebar for the ordinary-user market. */
 function AgentMarketShell({ children }: { children: ReactNode }) {
@@ -312,6 +314,7 @@ function AgentMarketCatalog({
   const searchQuery = searchParams.get("q") ?? "";
   const [searchInput, setSearchInput] = useState(searchQuery);
   const isSearchComposing = useRef(false);
+  const [page, setPage] = useState(1);
   useEffect(() => {
     if (!isSearchComposing.current) setSearchInput(searchQuery);
   }, [searchQuery]);
@@ -333,6 +336,20 @@ function AgentMarketCatalog({
     [activeTab, activeTag, catalog.value, searchQuery],
   );
 
+  const pageCount = Math.max(1, Math.ceil(visibleProfiles.length / MARKET_PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const paginatedProfiles = useMemo(
+    () => visibleProfiles.slice(
+      (currentPage - 1) * MARKET_PAGE_SIZE,
+      currentPage * MARKET_PAGE_SIZE,
+    ),
+    [currentPage, visibleProfiles],
+  );
+
+  useEffect(() => {
+    if (page !== currentPage) setPage(currentPage);
+  }, [currentPage, page]);
+
   const handleOpenWorkspace = useCallback(
     (profile: AgentProfilePublicProjection) => {
       navigate(buildAgentMarketWorkspacePath(profile));
@@ -345,6 +362,7 @@ function AgentMarketCatalog({
       const next = new URLSearchParams(searchParams);
       if (tag === null) next.delete("tag");
       else next.set("tag", tag);
+      setPage(1);
       setSearchParams(next, { replace: true });
     },
     [searchParams, setSearchParams],
@@ -356,6 +374,7 @@ function AgentMarketCatalog({
       if (tab === "tags") next.delete("tab");
       else next.set("tab", "favorites");
       if (tab === "favorites") next.delete("tag");
+      setPage(1);
       setSearchParams(next, { replace: true });
     },
     [searchParams, setSearchParams],
@@ -366,6 +385,7 @@ function AgentMarketCatalog({
       const next = new URLSearchParams(searchParams);
       if (query) next.set("q", query);
       else next.delete("q");
+      setPage(1);
       setSearchParams(next, { replace: true });
     },
     [searchParams, setSearchParams],
@@ -383,6 +403,7 @@ function AgentMarketCatalog({
     refresh();
   }, [refresh]);
   const handleClearFilters = useCallback(() => {
+    setPage(1);
     setSearchParams(new URLSearchParams(), { replace: true });
   }, [setSearchParams]);
 
@@ -549,7 +570,7 @@ function AgentMarketCatalog({
               aria-label="已发布专家"
               className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,22rem),1fr))] gap-4"
             >
-              {visibleProfiles.map((profile) => (
+              {paginatedProfiles.map((profile) => (
                 <ExpertMarketCard
                   key={`${profile.agent_id}:${profile.expected_revision}`}
                   profile={profile}
@@ -570,6 +591,12 @@ function AgentMarketCatalog({
                 />
               ))}
             </section>
+            <Pagination
+              page={currentPage}
+              pageSize={MARKET_PAGE_SIZE}
+              total={visibleProfiles.length}
+              onChange={setPage}
+            />
           </>
         )}
       </div>
