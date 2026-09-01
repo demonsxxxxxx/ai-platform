@@ -296,14 +296,9 @@ async def test_materialize_files_rejects_declared_total_before_object_reads(
 
 
 @pytest.mark.asyncio
-async def test_materialize_files_rejects_unsafe_content_before_workspace_write(
-    monkeypatch,
-    tmp_path,
-):
-    name = "unsafe.pdf"
-    content_type = PDF_CONTENT_TYPE
+async def test_materialize_files_stages_pdf_active_content(monkeypatch, tmp_path):
+    name = "active.pdf"
     raw = _unsafe_pdf_bytes()
-    error_code = "context_file_pdf_active_content_unsupported"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
@@ -319,7 +314,7 @@ async def test_materialize_files_rejects_unsafe_content_before_workspace_write(
     async def fake_get_scoped_context_file(_conn, **_kwargs):
         return {
             "original_name": name,
-            "content_type": content_type,
+            "content_type": PDF_CONTENT_TYPE,
             "size_bytes": len(raw),
             "sha256": hashlib.sha256(raw).hexdigest(),
             "storage_key": f"files/{name}",
@@ -333,13 +328,10 @@ async def test_materialize_files_rejects_unsafe_content_before_workspace_write(
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
-    with pytest.raises(ValueError, match=error_code) as captured:
-        await adapter._materialize_files(payload(file_ids=["file-unsafe"]), workspace)
+    materialized = await adapter._materialize_files(payload(file_ids=["file-active"]), workspace)
 
-    assert captured.value.attachment_index == 1
-    assert captured.value.file_kind == "pdf"
-
-    assert list(workspace.iterdir()) == []
+    assert list(materialized) == [name]
+    assert (workspace / "inputs" / name).read_bytes() == raw
 
 
 @pytest.mark.asyncio
@@ -371,7 +363,9 @@ async def test_materialize_files_reports_original_attachment_ordinal(monkeypatch
             "original_name": f"{file_id}.{suffix}",
             "content_type": content_type,
             "size_bytes": len(raw),
-            "sha256": hashlib.sha256(raw).hexdigest(),
+            "sha256": (
+                "0" * 64 if file_id == "file-unsafe" else hashlib.sha256(raw).hexdigest()
+            ),
             "storage_key": f"files/{file_id}",
         }
 
@@ -383,10 +377,7 @@ async def test_materialize_files_reports_original_attachment_ordinal(monkeypatch
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
-    with pytest.raises(
-        ValueError,
-        match="context_file_pdf_active_content_unsupported",
-    ) as captured:
+    with pytest.raises(ValueError, match="context_file_identity_mismatch") as captured:
         await adapter._materialize_files(
             payload(file_ids=["file-safe", "file-unsafe"]),
             workspace,

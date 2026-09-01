@@ -768,8 +768,8 @@ def primary_manifest_version(skill_id: str, manifests: list[dict]) -> str:
 
 def reviewed_docx_artifact() -> ArtifactManifest:
     return ArtifactManifest(
-        artifact_type="reviewed_docx",
-        label="Reviewed Word",
+        artifact_type="result_docx",
+        label="Word 文件",
         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         storage_key="tenants/tenant-a/runs/run-a/artifacts/reviewed.docx",
         size_bytes=1,
@@ -3179,9 +3179,9 @@ async def test_worker_fails_and_terminalizes_when_a_pending_permission_would_byp
 @pytest.mark.parametrize(
     ("case", "artifact_types", "required_artifact_types", "skill_id", "expected_status"),
     [
-        ("correct_type", ["reviewed_docx"], [], "qa-file-reviewer", "succeeded"),
+        ("correct_type", ["result_docx"], [], "qa-file-reviewer", "succeeded"),
         ("wrong_type_only", ["execution_log"], [], "qa-file-reviewer", "failed"),
-        ("mixed_types", ["execution_log", "reviewed_docx"], [], "qa-file-reviewer", "succeeded"),
+        ("mixed_types", ["execution_log", "result_docx"], [], "qa-file-reviewer", "succeeded"),
         ("non_required_non_claude", [], [], "general-chat", "succeeded"),
     ],
 )
@@ -3275,14 +3275,14 @@ async def test_worker_enforces_declared_required_artifact_types(
     [
         ("document_resume_without_artifact", "qa-file-reviewer", "qa-word-review", ["file-a"], [], "failed"),
         (
-            "document_resume_with_reviewed_docx",
+            "document_resume_with_result_docx",
             "qa-file-reviewer",
             "qa-word-review",
             ["file-a"],
             [
                 ArtifactManifest(
-                    artifact_type="reviewed_docx",
-                    label="Reviewed Word",
+                    artifact_type="result_docx",
+                    label="Word 文件",
                     content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     storage_key="tenants/tenant-a/runs/run-a/artifacts/reviewed.docx",
                     size_bytes=1024,
