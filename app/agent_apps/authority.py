@@ -12,23 +12,22 @@ from uuid import UUID
 from fastapi import HTTPException
 
 from app import repositories
-from app.agent_apps.api import agent_profile_contracts, safe_agent_avatar_seed
+from app.agent_apps.api import safe_agent_avatar_seed
 from app.agent_apps.infrastructure import postgres as agent_profile_persistence
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
 from app.models import (
     AgentConversationIdentity,
+    AgentProfileDraftRequest,
     ChatSessionResponse,
     ChatStreamRequest,
     SelectedAgentProfileRequest,
     SelectedSkillRequest,
 )
 
-_agent_profile_contracts = agent_profile_contracts()
-AgentProfileAdminProjection = _agent_profile_contracts.AgentProfileAdminProjection
-AgentProfileDraftRequest = _agent_profile_contracts.AgentProfileDraftRequest
-AgentProfilePublicProjection = _agent_profile_contracts.AgentProfilePublicProjection
+AgentProfileAdminProjection = dict[str, Any]
+AgentProfilePublicProjection = dict[str, Any]
 
 
 _AVATAR_REFS = {"builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"}
@@ -725,7 +724,6 @@ def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
         avatar_asset_id=(str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
         avatar_seed=_safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         category=_safe_category(row.get("category")),
-        market_tag=_safe_market_tag(row.get("market_tag")),
         visibility=_safe_visibility(row.get("visibility")),
         allowed_department_ids=_safe_string_list(row.get("allowed_department_ids")),
         allowed_roles=_safe_string_list(row.get("allowed_roles")),
@@ -745,7 +743,7 @@ def _merge_omitted_profile_fields(
 
     prior = _draft_from_row(prior_row)
     updates = {
-        field: getattr(prior, field)
+        field: getattr(prior, field, "")
         for field in _PRESENCE_AWARE_PROFILE_FIELDS
         if field not in definition.model_fields_set
     }
@@ -753,7 +751,7 @@ def _merge_omitted_profile_fields(
 
 
 def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
-    return AgentProfileAdminProjection(
+    return dict(
         agent_id=str(row["agent_id"]),
         revision=int(row["revision"]),
         published_revision=(
@@ -1318,11 +1316,9 @@ class AgentProfileAuthority:
             except HTTPException:
                 continue
             visible.append(
-                AgentProfilePublicProjection.model_validate(
-                    profile_public_projection(
-                        row,
-                        is_favorite=str(row["agent_id"]) in favorite_ids,
-                    )
+                profile_public_projection(
+                    row,
+                    is_favorite=str(row["agent_id"]) in favorite_ids,
                 )
             )
         return visible
@@ -1346,9 +1342,7 @@ class AgentProfileAuthority:
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
         )
-        return AgentProfilePublicProjection.model_validate(
-            profile_public_projection(row, is_favorite=agent_id in favorite_ids)
-        )
+        return profile_public_projection(row, is_favorite=agent_id in favorite_ids)
 
     async def set_favorite(
         self,
@@ -1379,9 +1373,7 @@ class AgentProfileAuthority:
             agent_id=agent_id,
             favorite=favorite,
         )
-        return AgentProfilePublicProjection.model_validate(
-            profile_public_projection(row, is_favorite=favorite)
-        )
+        return profile_public_projection(row, is_favorite=favorite)
 
     async def _authorize_public_row(
         self,
