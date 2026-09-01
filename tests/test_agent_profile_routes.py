@@ -6,7 +6,7 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.models import AgentProfilePublicProjection, ChatStreamResponse
+from app.models import ChatStreamResponse
 
 
 def auth_settings():
@@ -58,14 +58,25 @@ def test_retired_agent_apps_route_points_authenticated_clients_to_profiles(monke
 def test_agent_apps_public_profile_detail_uses_safe_authority_projection(monkeypatch):
     async def public_profile(_conn, *, principal, agent_id):
         assert (principal.tenant_id, agent_id) == ("default", "agt_support")
-        return AgentProfilePublicProjection(
-            agent_id="agt_support",
-            expected_revision=7,
-            name="Support assistant",
-            description="Approved support help.",
-            avatar_ref="builtin:assistant",
-            category="support",
-        )
+        return {
+            "agent_id": "agt_support",
+            "expected_revision": 7,
+            "name": "Support assistant",
+            "description": "Approved support help.",
+            "welcome_message": "",
+            "starter_prompts": [],
+            "capability_summary": "",
+            "recommended_tasks": [],
+            "supported_input_types": ["text", "file"],
+            "expected_outputs": [],
+            "permissions_and_data_access_notice": "",
+            "published_at": None,
+            "avatar_ref": "builtin:assistant",
+            "avatar_seed": "",
+            "category": "support",
+            "market_tag": "",
+            "is_favorite": False,
+        }
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
@@ -100,10 +111,43 @@ def test_agent_apps_public_profile_detail_uses_safe_authority_projection(monkeyp
         "avatar_ref": "builtin:assistant",
         "avatar_seed": "",
         "category": "support",
+        "market_tag": "",
+        "is_favorite": False,
     }
 
 
-def test_dedicated_agent_run_restores_session_and_delegates_without_client_selectors(monkeypatch):
+def test_agent_profile_favorite_uses_authenticated_principal_and_safe_projection(monkeypatch):
+    observed: dict[str, object] = {}
+
+    async def set_favorite(_conn, *, principal, agent_id, favorite):
+        observed["request"] = (principal.tenant_id, principal.user_id, agent_id, favorite)
+        return {
+            "agent_id": agent_id,
+            "expected_revision": 7,
+            "name": "Support assistant",
+            "description": "Approved support help.",
+            "avatar_ref": "builtin:assistant",
+            "category": "support",
+            "market_tag": "客户服务",
+            "is_favorite": True,
+        }
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.agent_profiles._authority.set_favorite", set_favorite)
+    client = TestClient(create_app())
+
+    response = client.put(
+        "/api/ai/agent-profiles/agt_support/favorite",
+        headers=auth_headers(),
+        json={"favorite": True},
+    )
+
+    assert response.status_code == 200
+    assert observed["request"] == ("default", "user-a", "agt_support", True)
+    assert response.json()["market_tag"] == "客户服务"
+    assert response.json()["is_favorite"] is True
+
     observed: dict[str, object] = {}
 
     async def get_session(_conn, *, tenant_id, user_id, session_id):
@@ -139,6 +183,7 @@ def test_dedicated_agent_run_restores_session_and_delegates_without_client_selec
             "submission_id": "11111111-1111-4111-8111-111111111111",
             "file_ids": ["file-a"],
             "user_timezone": "Asia/Shanghai",
+            "thinking_effort": "high",
         },
     )
 
@@ -154,6 +199,7 @@ def test_dedicated_agent_run_restores_session_and_delegates_without_client_selec
     assert chat_request["selected_agent_profile"] is None
     assert chat_request["selected_skill"] is None
     assert chat_request["selected_mcp_tool_ids"] is None
+    assert chat_request["agent_options"] == {"enable_thinking": "high"}
     assert "model_id" not in chat_request
 
 
@@ -164,6 +210,7 @@ def test_dedicated_agent_run_restores_session_and_delegates_without_client_selec
         ("", {"x-skill-id": "private-skill"}, {}, 400),
         ("", {}, {"selected_mcp_tool_ids": ["private-tool"]}, 422),
         ("", {}, {"agent_id": "agt_other"}, 422),
+        ("", {}, {"thinking_effort": "max"}, 422),
     ],
 )
 def test_dedicated_agent_run_rejects_every_override_before_storage_or_dispatch(

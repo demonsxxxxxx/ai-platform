@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import json
+import re
 from typing import Any, Protocol
 
 from psycopg import AsyncConnection
@@ -36,6 +38,30 @@ def _validated_attempt_owner(*, owner_kind: str, owner_id: str) -> tuple[str, st
     if not isinstance(owner_id, str) or not owner_id.strip():
         raise ValueError("run_attempt_owner_id_invalid")
     return owner_kind, owner_id.strip()
+
+
+def _validated_worker_queue_lease(
+    *,
+    queue_message_id: str | None,
+    lease_expires_at: datetime | None,
+    last_heartbeat_at: datetime | None,
+) -> tuple[str, datetime, datetime] | None:
+    values = (queue_message_id, lease_expires_at, last_heartbeat_at)
+    if all(value is None for value in values):
+        return None
+    if any(value is None for value in values):
+        raise ValueError("run_attempt_queue_lease_incomplete")
+    assert queue_message_id is not None
+    assert lease_expires_at is not None
+    assert last_heartbeat_at is not None
+    if not re.fullmatch(r"[0-9a-f]{64}", queue_message_id):
+        raise ValueError("run_attempt_queue_message_id_invalid")
+    for value in (lease_expires_at, last_heartbeat_at):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("run_attempt_queue_lease_timezone_required")
+    if lease_expires_at <= last_heartbeat_at:
+        raise ValueError("run_attempt_queue_lease_window_invalid")
+    return queue_message_id, lease_expires_at, last_heartbeat_at
 
 
 async def load_current_terminal_event_fact(
@@ -258,12 +284,20 @@ async def start_worker_run_attempt(
     queue_attempt_id: str,
     worker_id: str,
     execution_spec: ExecutionSpec,
+    queue_message_id: str | None = None,
+    lease_expires_at: datetime | None = None,
+    last_heartbeat_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Create and advance one worker-owned attempt through the dispatch boundary."""
 
     owner_kind, owner_id = _validated_attempt_owner(
         owner_kind="queue_worker",
         owner_id=worker_id,
+    )
+    queue_lease = _validated_worker_queue_lease(
+        queue_message_id=queue_message_id,
+        lease_expires_at=lease_expires_at,
+        last_heartbeat_at=last_heartbeat_at,
     )
     existing = await get_run_attempt_for_queue_attempt(
         conn,
@@ -279,6 +313,10 @@ async def start_worker_run_attempt(
             and str(existing.get("owner_id") or "") == owner_id
             and str(existing.get("execution_spec_sha256") or "")
             == execution_spec.spec_sha256
+            and (
+                queue_lease is None
+                or str(existing.get("queue_message_id") or "") == queue_lease[0]
+            )
         ):
             return existing
         raise RepositoryConflictError("run_attempt_worker_start_conflict")
@@ -309,6 +347,15 @@ async def start_worker_run_attempt(
         execution_spec=execution_spec,
     )
     for requested_status in ("queued", "claimed", "running"):
+        queue_lease_kwargs = (
+            {
+                "queue_message_id": queue_lease[0],
+                "lease_expires_at": queue_lease[1],
+                "last_heartbeat_at": queue_lease[2],
+            }
+            if requested_status == "queued" and queue_lease is not None
+            else {}
+        )
         attempt = await transition_run_attempt(
             conn,
             tenant_id=tenant_id,
@@ -319,6 +366,7 @@ async def start_worker_run_attempt(
             expected_owner_kind=str(attempt["owner_kind"]),
             expected_owner_id=str(attempt["owner_id"]),
             expected_owner_generation=int(attempt["owner_generation"]),
+            **queue_lease_kwargs,
         )
     return attempt
 
@@ -545,6 +593,81 @@ async def assert_worker_run_attempt_current(
     if str(row.get("status") or "") in TERMINAL_RUN_ATTEMPT_STATUSES:
         raise RepositoryConflictError("run_attempt_worker_authority_terminal")
     return row
+
+
+async def heartbeat_worker_run_attempt(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    queue_attempt_id: str,
+    queue_message_id: str,
+    worker_id: str,
+    expected_owner_generation: int,
+    lease_expires_at: datetime,
+    last_heartbeat_at: datetime,
+) -> dict[str, Any]:
+    """Converge queue lease timing without preserving future-skewed state."""
+
+    owner_kind, owner_id = _validated_attempt_owner(
+        owner_kind="queue_worker",
+        owner_id=worker_id,
+    )
+    queue_lease = _validated_worker_queue_lease(
+        queue_message_id=queue_message_id,
+        lease_expires_at=lease_expires_at,
+        last_heartbeat_at=last_heartbeat_at,
+    )
+    assert queue_lease is not None
+    if not attempt_id.strip() or not queue_attempt_id.strip():
+        raise ValueError("run_attempt_worker_heartbeat_identity_invalid")
+    if expected_owner_generation < 1:
+        raise ValueError("run_attempt_owner_generation_invalid")
+    cursor = await conn.execute(
+        """
+        update run_attempts
+        set last_heartbeat_at = %s,
+            lease_expires_at = %s,
+            updated_at = now()
+        where tenant_id = %s
+          and run_id = %s
+          and id = %s
+          and queue_attempt_id = %s
+          and queue_message_id = %s
+          and status = 'running'
+          and owner_kind = %s
+          and owner_id = %s
+          and owner_generation = %s
+          and (
+            last_heartbeat_at is null
+            or last_heartbeat_at <= %s
+          )
+          and (
+            lease_expires_at is null
+            or lease_expires_at <= %s
+          )
+        returning *
+        """,
+        (
+            queue_lease[2],
+            queue_lease[1],
+            tenant_id,
+            run_id,
+            attempt_id,
+            queue_attempt_id,
+            queue_lease[0],
+            owner_kind,
+            owner_id,
+            expected_owner_generation,
+            queue_lease[2],
+            queue_lease[1],
+        ),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise RepositoryConflictError("run_attempt_worker_heartbeat_conflict")
+    return dict(row)
 
 
 async def request_run_attempt_cancel(

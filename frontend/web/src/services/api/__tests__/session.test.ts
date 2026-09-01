@@ -413,6 +413,7 @@ test("builds the selector-free Agent App run URL and deduplicated file body", ()
       message: "Review this",
       submission_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
       file_ids: ["file-a"],
+      thinking_effort: "off",
       user_timezone: "Asia/Shanghai",
     },
   );
@@ -439,6 +440,7 @@ test("omits unfinished Agent App attachments without a server file id", () => {
       message: "Review this",
       submission_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
       file_ids: [],
+      thinking_effort: "off",
     },
   );
 });
@@ -472,6 +474,7 @@ test("pinned Agent conversations submit only through the dedicated selector-free
       "general-agent",
       ["client-mcp"],
       { agent_id: "agt_support", expected_revision: 7 },
+      "high",
     );
 
     assert.equal(
@@ -481,6 +484,7 @@ test("pinned Agent conversations submit only through the dedicated selector-free
     assert.equal(calls[0]?.body.message, "Review this");
     assert.equal(calls[0]?.body.submission_id, "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4");
     assert.deepEqual(calls[0]?.body.file_ids, []);
+    assert.equal(calls[0]?.body.thinking_effort, "high");
     for (const forbidden of [
       "agent_options",
       "selected_agent_profile",

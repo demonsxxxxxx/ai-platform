@@ -73,7 +73,11 @@ BACKEND_TEST_SHARDS = {
     ),
     "repository-worker-streaming": (
         "tests/test_repositories.py",
+        "tests/test_queue.py",
+        "tests/test_run_attempt_application.py",
+        "tests/test_run_attempt_repository.py",
         "tests/test_worker_main.py",
+        "tests/test_worker_heartbeat_postgres_redis_integration.py",
         "tests/test_sse_runtime_cutover.py",
         "tests/test_streaming_redis.py",
         "tests/test_streaming_control.py",
@@ -114,6 +118,7 @@ BACKEND_TEST_SHARDS = {
     "schema-migrations": (
         "tests/test_schema_migrations.py",
         "tests/test_schema_migrations_postgres.py",
+        "tests/test_schema.py::test_schema_declares_attempt_identity_state_and_fences",
     ),
     "v4-durable-streaming": (
         "tests/test_streaming_v4_durable.py",
@@ -263,7 +268,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     all_selectors = [
         selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors
     ]
-    assert len(all_selectors) == len(set(all_selectors)) == 73
+    assert len(all_selectors) == len(set(all_selectors)) == 78
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job

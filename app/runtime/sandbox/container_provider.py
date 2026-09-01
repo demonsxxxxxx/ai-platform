@@ -1041,12 +1041,6 @@ def _executor_environment(
         "CLAUDE_AGENT_SDK_ENABLED": _env_bool(getattr(settings, "claude_agent_sdk_enabled", False)),
         "CLAUDE_AGENT_SDK_TIMEOUT_SECONDS": _env_value(settings, "claude_agent_sdk_timeout_seconds", 0),
         "CLAUDE_AGENT_SDK_MAX_TURNS": _env_value(settings, "claude_agent_sdk_max_turns", 128),
-        "CLAUDE_AGENT_SDK_EFFORT": _env_value(settings, "claude_agent_sdk_effort", "xhigh"),
-        "CLAUDE_AGENT_SDK_MAX_THINKING_TOKENS": _env_value(
-            settings,
-            "claude_agent_sdk_max_thinking_tokens",
-            16384,
-        ),
         "CLAUDE_AGENT_PERMISSION_MODE": _env_value(settings, "claude_agent_permission_mode", "dontAsk"),
         "CLAUDE_AGENT_ALLOWED_TOOLS": _env_value(settings, "claude_agent_allowed_tools", "Read,Glob,LS"),
         "CLAUDE_AGENT_DISALLOWED_TOOLS": _env_value(

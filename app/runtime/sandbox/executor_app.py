@@ -29,6 +29,7 @@ from fastapi import FastAPI, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
+from app.control_plane_contracts import normalize_thinking_effort
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
@@ -1741,6 +1742,9 @@ async def _default_executor_runner(
             "require_selected_skill_invocation": request.config.get(
                 "require_selected_skill_invocation", True
             ) is not False,
+            "thinking_effort": normalize_thinking_effort(
+                request.config.get("thinking_effort")
+            ),
         }
         if system_prompt is not None:
             sdk_kwargs["system_prompt"] = system_prompt

@@ -9,6 +9,15 @@ from app.agent_apps.domain.profile_definition import (
 from app.skills.api import is_internal_dependency_skill
 
 
+def normalize_market_tag(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("market_tag_invalid")
+    normalized = value.strip()
+    if not normalized:
+        return ""
+    return normalize_agent_profile_display_items([normalized], "market_tag", item_limit=80)[0]
+
+
 def normalize_agent_skill_set(skill_set, selected_skill):
     return _normalize_agent_skill_set(
         skill_set,
@@ -21,6 +30,7 @@ __all__ = [
     "normalize_agent_avatar_seed",
     "normalize_agent_profile_display_items",
     "normalize_agent_skill_set",
+    "normalize_market_tag",
     "pin_agent_skill_set",
     "safe_agent_avatar_seed",
 ]

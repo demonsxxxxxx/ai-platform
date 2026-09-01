@@ -6,10 +6,6 @@ import {
   capabilityDistributionApi,
   type DepartmentDirectoryNode,
 } from "../../services/api/capabilityDistribution";
-import {
-  AGENT_PROFILE_CATEGORIES,
-  AGENT_PROFILE_CATEGORY_LABELS,
-} from "../../types/agentProfile";
 import type { AgentBuilderEditor } from "./agentBuilderAdapter";
 import { AgentAvatarPicker } from "./AgentAvatarPicker";
 
@@ -79,10 +75,12 @@ function ListField({
 export function AgentBuilderEnterpriseFields({
   disabled,
   editor,
+  marketTagSuggestions = [],
   onChange,
 }: {
   disabled: boolean;
   editor: AgentBuilderEditor;
+  marketTagSuggestions?: readonly string[];
   onChange: (update: Partial<AgentBuilderEditor>) => void;
 }) {
   const [directory, setDirectory] = useState<DepartmentDirectoryNode[] | null>(
@@ -163,23 +161,20 @@ export function AgentBuilderEnterpriseFields({
               onChange={(update) => onChange(update)}
             />
             <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium">专家分类</span>
-              <select
+              <span className="text-sm font-medium">市场标签</span>
+              <input
+                aria-label="市场标签"
                 className={INPUT_CLASS}
                 disabled={disabled}
-                onChange={(event) =>
-                  onChange({
-                    category: event.target.value as AgentBuilderEditor["category"],
-                  })
-                }
-                value={editor.category}
-              >
-                {AGENT_PROFILE_CATEGORIES.map((category) => (
-                  <option key={category} value={category}>
-                    {AGENT_PROFILE_CATEGORY_LABELS[category]}
-                  </option>
-                ))}
-              </select>
+                list="agent-market-tag-suggestions"
+                maxLength={80}
+                onChange={(event) => onChange({ marketTag: event.target.value })}
+                placeholder="例如：人力资源"
+                value={editor.marketTag}
+              />
+              <datalist id="agent-market-tag-suggestions">
+                {marketTagSuggestions.map((tag) => <option key={tag} value={tag} />)}
+              </datalist>
             </label>
           </div>
         </div>

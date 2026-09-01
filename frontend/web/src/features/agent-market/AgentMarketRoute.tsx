@@ -7,6 +7,7 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
+  Star,
 } from "lucide-react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
@@ -17,11 +18,6 @@ import { SIDEBAR_COLLAPSED_STORAGE_KEY } from "../../hooks/useAuth";
 import { authApi } from "../../services/api";
 import { agentProfileApi } from "../../services/api/agentProfile";
 import type { AgentProfilePublicProjection } from "../../types";
-import {
-  AGENT_PROFILE_CATEGORIES,
-  AGENT_PROFILE_CATEGORY_LABELS,
-  type AgentProfileCategory,
-} from "../../types/agentProfile";
 import {
   buildAgentMarketDetailPath,
   buildAgentMarketWorkspacePath,
@@ -45,13 +41,6 @@ function loadState<T>(key: string, value: T, phase: LoadPhase = "loading", error
 }
 
 const MARKET_CATALOG_LOAD_ERROR = "暂时无法加载已发布的专家，请稍后重新加载。";
-const MARKET_CATEGORIES: ReadonlyArray<{ value: AgentProfileCategory | "all"; label: string }> = [
-  { value: "all", label: "全部" },
-  ...AGENT_PROFILE_CATEGORIES.map((value) => ({
-    value,
-    label: AGENT_PROFILE_CATEGORY_LABELS[value],
-  })),
-];
 
 /** Reuse the production shell and session sidebar for the ordinary-user market. */
 function AgentMarketShell({ children }: { children: ReactNode }) {
@@ -106,8 +95,6 @@ function AgentMarketShell({ children }: { children: ReactNode }) {
 
 function usePublishedAgentCatalog(
   catalogKey: string,
-  query: string | undefined,
-  category: AgentProfileCategory | undefined,
   enabled: boolean,
 ) {
   const [retry, setRetry] = useState(0);
@@ -118,7 +105,7 @@ function usePublishedAgentCatalog(
     let active = true;
     setCatalog(loadState(catalogKey, []));
     void agentProfileApi
-      .listPublished({ query, category })
+      .listPublished()
       .then((response) => {
         if (active)
           setCatalog(loadState(catalogKey, response.agent_profiles, "ready"));
@@ -128,10 +115,22 @@ function usePublishedAgentCatalog(
           setCatalog(loadState(catalogKey, [], "error", MARKET_CATALOG_LOAD_ERROR));
       });
     return () => { active = false; };
-  }, [catalogKey, enabled, category, query, retry]);
+  }, [catalogKey, enabled, retry]);
 
   const refresh = useCallback(() => setRetry((current) => current + 1), []);
-  return { catalog: catalog.key === catalogKey ? catalog : loadState(catalogKey, []), refresh };
+  const toggleFavorite = useCallback(async (profile: AgentProfilePublicProjection) => {
+    const updated = await agentProfileApi.setFavorite(profile.agent_id, !profile.is_favorite);
+    setCatalog((current) => current.key !== catalogKey || current.phase !== "ready"
+      ? current
+      : { ...current, value: current.value.map((item) =>
+        item.agent_id === updated.agent_id ? updated : item,
+      ) });
+  }, [catalogKey]);
+  return {
+    catalog: catalog.key === catalogKey ? catalog : loadState(catalogKey, []),
+    refresh,
+    toggleFavorite,
+  };
 }
 
 function getErrorStatus(error: unknown): number | undefined {
@@ -202,10 +201,12 @@ function ExpertMarketCard({
   profile,
   onOpenWorkspace,
   onOpenDetail,
+  onToggleFavorite,
 }: {
   profile: AgentProfilePublicProjection;
   onOpenWorkspace: (profile: AgentProfilePublicProjection) => void;
   onOpenDetail: (profile: AgentProfilePublicProjection) => void;
+  onToggleFavorite: (profile: AgentProfilePublicProjection) => void;
 }) {
   return (
     <article
@@ -226,14 +227,24 @@ function ExpertMarketCard({
               <h2 className="line-clamp-2 text-base font-semibold leading-6 text-[var(--theme-text)]">
                 {profile.name}
               </h2>
-              <BadgeCheck
-                aria-label="企业已发布"
-                className="mt-0.5 shrink-0 text-[var(--theme-success)]"
-                size={17}
-              />
+              <div className="flex shrink-0 items-center gap-1">
+                <button
+                  aria-label={profile.is_favorite ? `取消收藏 ${profile.name}` : `收藏 ${profile.name}`}
+                  className="rounded-md p-1 text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-amber-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
+                  onClick={() => onToggleFavorite(profile)}
+                  type="button"
+                >
+                  <Star aria-hidden="true" fill={profile.is_favorite ? "currentColor" : "none"} size={17} />
+                </button>
+                <BadgeCheck
+                  aria-label="企业已发布"
+                  className="text-[var(--theme-success)]"
+                  size={17}
+                />
+              </div>
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--theme-text-secondary)]">
-              <span>{AGENT_PROFILE_CATEGORY_LABELS[profile.category]}</span>
+              <span>{profile.market_tag || "未分类"}</span>
               <span aria-hidden="true">·</span>
               <span className="tabular-nums">版本 {profile.expected_revision}</span>
             </div>
@@ -286,11 +297,15 @@ function ExpertMarketCard({
 function AgentMarketCatalog({
   catalog,
   refresh,
-  activeCategory,
+  activeTag,
+  activeTab,
+  toggleFavorite,
 }: {
   catalog: CatalogState;
   refresh: () => void;
-  activeCategory: AgentProfileCategory | "all";
+  activeTag: string | null;
+  activeTab: "tags" | "favorites";
+  toggleFavorite: (profile: AgentProfilePublicProjection) => Promise<void>;
 }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -300,15 +315,22 @@ function AgentMarketCatalog({
   useEffect(() => {
     if (!isSearchComposing.current) setSearchInput(searchQuery);
   }, [searchQuery]);
+  const marketTags = useMemo(
+    () => [...new Set(
+      catalog.value
+        .map((profile) => profile.market_tag?.trim())
+        .filter((tag): tag is string => Boolean(tag)),
+    )].sort((left, right) => left.localeCompare(right, "zh-CN")),
+    [catalog.value],
+  );
   const hasActiveFilter =
-    searchQuery.trim().length > 0 || activeCategory !== "all";
+    searchQuery.trim().length > 0 || (activeTab === "tags" && activeTag !== null);
   const visibleProfiles = useMemo(
-    () =>
-      filterPublishedMarketProfiles(catalog.value, searchQuery).filter(
-        (profile) =>
-          activeCategory === "all" || profile.category === activeCategory,
-      ),
-    [activeCategory, catalog.value, searchQuery],
+    () => filterPublishedMarketProfiles(catalog.value, searchQuery).filter((profile) =>
+      (activeTab !== "favorites" || profile.is_favorite) &&
+      (activeTab !== "tags" || activeTag === null || profile.market_tag === activeTag),
+    ),
+    [activeTab, activeTag, catalog.value, searchQuery],
   );
 
   const handleOpenWorkspace = useCallback(
@@ -318,11 +340,22 @@ function AgentMarketCatalog({
     [navigate],
   );
 
-  const handleCategory = useCallback(
-    (category: AgentProfileCategory | "all") => {
+  const handleTag = useCallback(
+    (tag: string | null) => {
       const next = new URLSearchParams(searchParams);
-      if (category === "all") next.delete("category");
-      else next.set("category", category);
+      if (tag === null) next.delete("tag");
+      else next.set("tag", tag);
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
+  const handleTab = useCallback(
+    (tab: "tags" | "favorites") => {
+      const next = new URLSearchParams(searchParams);
+      if (tab === "tags") next.delete("tab");
+      else next.set("tab", "favorites");
+      if (tab === "favorites") next.delete("tag");
       setSearchParams(next, { replace: true });
     },
     [searchParams, setSearchParams],
@@ -384,6 +417,34 @@ function AgentMarketCatalog({
         </header>
 
         <div className="sticky top-0 z-10 mt-6 border-y border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] py-4">
+          <div aria-label="专家市场视图" className="mb-3 flex gap-5 border-b border-[var(--theme-border)]" role="tablist">
+            <button
+              aria-selected={activeTab === "tags"}
+              className={`border-b-2 px-1 pb-2 text-sm font-medium ${
+                activeTab === "tags"
+                  ? "border-[var(--theme-primary)] text-[var(--theme-primary)]"
+                  : "border-transparent text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)]"
+              }`}
+              onClick={() => handleTab("tags")}
+              role="tab"
+              type="button"
+            >
+              标签
+            </button>
+            <button
+              aria-selected={activeTab === "favorites"}
+              className={`border-b-2 px-1 pb-2 text-sm font-medium ${
+                activeTab === "favorites"
+                  ? "border-[var(--theme-primary)] text-[var(--theme-primary)]"
+                  : "border-transparent text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)]"
+              }`}
+              onClick={() => handleTab("favorites")}
+              role="tab"
+              type="button"
+            >
+              我的收藏
+            </button>
+          </div>
           <div className="grid gap-3 lg:grid-cols-[minmax(18rem,34rem)_minmax(0,1fr)] lg:items-center">
             <label className="relative block w-full">
               <span className="sr-only">搜索专家</span>
@@ -412,28 +473,42 @@ function AgentMarketCatalog({
                 value={searchInput}
               />
             </label>
-            <div
-              data-agent-market-filter
-              aria-label="专家分类"
-              className="flex max-w-full flex-wrap items-center gap-1 lg:justify-end"
-              role="group"
-            >
-              {MARKET_CATEGORIES.map((category) => (
+            {activeTab === "tags" ? (
+              <div
+                data-agent-market-filter
+                aria-label="市场标签"
+                className="flex max-w-full flex-wrap items-center gap-1 lg:justify-end"
+                role="group"
+              >
                 <button
-                  aria-pressed={activeCategory === category.value}
+                  aria-pressed={activeTag === null}
                   className={`min-h-9 rounded-md border px-3 text-xs transition-colors ${
-                    activeCategory === category.value
+                    activeTag === null
                       ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-white"
                       : "border-transparent text-[var(--theme-text-secondary)] hover:border-[var(--theme-border)] hover:bg-[var(--theme-workbench-panel)] hover:text-[var(--theme-text)]"
                   }`}
-                  key={category.value}
-                  onClick={() => handleCategory(category.value)}
+                  onClick={() => handleTag(null)}
                   type="button"
                 >
-                  {category.label}
+                  全部
                 </button>
-              ))}
-            </div>
+                {marketTags.map((tag) => (
+                  <button
+                    aria-pressed={activeTag === tag}
+                    className={`min-h-9 rounded-md border px-3 text-xs transition-colors ${
+                      activeTag === tag
+                        ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-white"
+                        : "border-transparent text-[var(--theme-text-secondary)] hover:border-[var(--theme-border)] hover:bg-[var(--theme-workbench-panel)] hover:text-[var(--theme-text)]"
+                    }`}
+                    key={tag}
+                    onClick={() => handleTag(tag)}
+                    type="button"
+                  >
+                    {tag}
+                  </button>
+                ))}
+              </div>
+            ) : <div />}
           </div>
         </div>
 
@@ -455,8 +530,12 @@ function AgentMarketCatalog({
           </section>
         ) : visibleProfiles.length === 0 ? (
           <section aria-live="polite" className="border-t border-[var(--theme-border)] py-10">
-            <h2 className="text-base font-semibold">没有匹配的专家</h2>
-            <p className="mt-2 text-sm text-[var(--theme-text-secondary)]">请尝试其他名称或用途关键词。</p>
+            <h2 className="text-base font-semibold">
+              {activeTab === "favorites" ? "尚未收藏专家" : "没有匹配的专家"}
+            </h2>
+            <p className="mt-2 text-sm text-[var(--theme-text-secondary)]">
+              {activeTab === "favorites" ? "在标签页点击星标即可收藏专家。" : "请尝试其他名称或标签。"}
+            </p>
             <button className="btn-secondary mt-4" onClick={handleClearFilters} type="button">
               清除筛选
             </button>
@@ -474,6 +553,9 @@ function AgentMarketCatalog({
                 <ExpertMarketCard
                   key={`${profile.agent_id}:${profile.expected_revision}`}
                   profile={profile}
+                  onToggleFavorite={(selectedProfile) => {
+                    void toggleFavorite(selectedProfile).catch(handleRefresh);
+                  }}
                   onOpenWorkspace={(selectedProfile) => {
                     void handleOpenWorkspace(selectedProfile);
                   }}
@@ -538,7 +620,7 @@ function AgentMarketDetail({
             />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-[var(--theme-primary)]">
-                <span>{AGENT_PROFILE_CATEGORY_LABELS[profile.category]}</span>
+                <span>{profile.market_tag || "未分类"}</span>
                 <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200">
                   企业已发布
                 </span>
@@ -632,20 +714,16 @@ export function AgentMarketRoute() {
   const [searchParams] = useSearchParams();
   const { agentId, revision } = useParams<{ agentId?: string; revision?: string }>();
   const isDetailRoute = agentId !== undefined || revision !== undefined;
-  const searchQuery = searchParams.get("q")?.trim() || undefined;
-  const requestedCategory = searchParams.get("category");
-  const activeCategory = MARKET_CATEGORIES.some(
-    (category) => category.value === requestedCategory,
-  )
-    ? (requestedCategory as AgentProfileCategory | "all")
-    : "all";
-  const catalogCategory =
-    activeCategory === "all" ? undefined : activeCategory;
-  const catalogKey = `catalog:${searchQuery ?? ""}:${catalogCategory ?? "all"}`;
-  const { catalog, refresh: refreshCatalog } = usePublishedAgentCatalog(
+  const requestedTag = searchParams.get("tag")?.trim();
+  const activeTag = requestedTag || null;
+  const activeTab = searchParams.get("tab") === "favorites" ? "favorites" : "tags";
+  const catalogKey = "catalog";
+  const {
+    catalog,
+    refresh: refreshCatalog,
+    toggleFavorite,
+  } = usePublishedAgentCatalog(
     catalogKey,
-    searchQuery,
-    catalogCategory,
     !isDetailRoute,
   );
   const detailKey = `detail:${agentId ?? ""}:${revision ?? ""}`;
@@ -669,9 +747,11 @@ export function AgentMarketRoute() {
     return (
       <AgentMarketShell>
         <AgentMarketCatalog
-          activeCategory={activeCategory}
+          activeTab={activeTab}
+          activeTag={activeTag}
           catalog={catalog}
           refresh={refreshCatalog}
+          toggleFavorite={toggleFavorite}
         />
       </AgentMarketShell>
     );

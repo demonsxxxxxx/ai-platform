@@ -207,6 +207,7 @@ export const AgentOptionButton = memo(function AgentOptionButton({
                 }
           }
           title={`${description}: ${selectedLabel}`}
+          aria-label={`${description}: ${selectedLabel}`}
         >
           <ActiveIcon size={18} />
         </button>

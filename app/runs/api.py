@@ -1,5 +1,16 @@
 """Public in-process contracts owned by the Runs bounded context."""
 
+from app.runs.domain.thinking import (
+    RUN_THINKING_EFFORT_INPUT_KEY as RUN_THINKING_EFFORT_INPUT_KEY,
+)
+from app.runs.domain.thinking import (
+    THINKING_EFFORT_LEVELS as THINKING_EFFORT_LEVELS,
+)
+from app.runs.domain.thinking import ThinkingEffort as ThinkingEffort
+from app.runs.domain.thinking import (
+    normalize_thinking_effort as normalize_thinking_effort,
+)
+
 from app.runs.application.cancellation import (
     CancelRequestAuthority as CancelRequestAuthority,
 )
@@ -92,6 +103,9 @@ from app.runs.application.attempt_lifecycle import (
 )
 from app.runs.application.attempt_lifecycle import (
     get_run_attempt_for_queue_attempt as get_run_attempt_for_queue_attempt,
+)
+from app.runs.application.attempt_lifecycle import (
+    heartbeat_worker_run_attempt as heartbeat_worker_run_attempt,
 )
 from app.runs.application.attempt_lifecycle import (
     get_latest_run_attempt as get_latest_run_attempt,
