@@ -2417,11 +2417,7 @@ async def process_run_payload(
                     execution_spec,
                     attempt_id=attempt_id,
                 )
-                run_payload = await mcp_api.attach_mcp_server_configs(
-                    conn,
-                    principal=capability_authorization.principal,
-                    run_payload=run_payload,
-                )
+                run_payload = await mcp_api.attach_mcp_server_configs(conn, principal=capability_authorization.principal, run_payload=run_payload)
             except ValueError as exc:
                 mcp_error = exc if isinstance(exc, mcp_api.McpRuntimeContextError) else None
                 error_code = mcp_error.code if mcp_error else "execution_spec_invalid"
@@ -2429,14 +2425,9 @@ async def process_run_payload(
                     conn,
                     payload=payload,
                     run_identity=run_identity,
-                    v4_capabilities=v4_capabilities,
-                    attempt_lifecycle=attempt_lifecycle,
+                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                     error_code=error_code,
-                    error_message=(
-                        "MCP runtime configuration is unavailable"
-                        if mcp_error
-                        else "Execution specification is invalid"
-                    ),
+                    error_message="MCP runtime configuration is unavailable" if mcp_error else "Execution specification is invalid",
                     event_stage="authorization" if mcp_error else "worker",
                     event_payload={
                         "visible_to_user": bool(mcp_error),
