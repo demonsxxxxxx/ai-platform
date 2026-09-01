@@ -333,7 +333,7 @@ async def test_catalog_truncation_is_deterministic_bounded_and_explicit(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_catalog_truncation_preserves_every_agent_skill_set_root(monkeypatch):
+async def test_agent_skill_set_catalog_excludes_other_discoverable_skills(monkeypatch):
     monkeypatch.setattr(catalog, "MAX_AUTHORIZED_SKILL_CATALOG_ENTRIES", 2)
     rows = [_skill_row(skill_id) for skill_id in ("skill-a", "skill-y", "skill-z")]
     rows_by_id = {str(row["skill_id"]): row for row in rows}
@@ -355,8 +355,9 @@ async def test_catalog_truncation_preserves_every_agent_skill_set_root(monkeypat
     )
 
     assert resolution.snapshot.available_skill_ids == ("skill-z", "skill-y")
-    assert resolution.snapshot.truncated is True
-    assert resolution.snapshot.omitted_count == 1
+    assert resolution.snapshot.truncated is False
+    assert resolution.snapshot.omitted_count == 0
+    assert resolution.snapshot.entry("skill-a") is None
     assert resolution.snapshot.materialized_skill_ids == ("skill-z", "skill-y")
 
 
