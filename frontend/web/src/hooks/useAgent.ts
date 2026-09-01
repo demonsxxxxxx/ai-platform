@@ -2262,8 +2262,36 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           messagesRef.current = pendingMessages;
           setMessages(pendingMessages);
           if (!requestSessionId && submitData.session_id) {
-            sessionIdRef.current = submitData.session_id;
-            setSessionId(submitData.session_id);
+            const pendingSessionId = submitData.session_id;
+            const routedAgentId = resolveChatSessionAgentId(
+              submitData,
+              requestAgentId,
+            );
+            sessionIdRef.current = pendingSessionId;
+            setSessionId(pendingSessionId);
+            sessionAgentIdRef.current = routedAgentId;
+            setSessionAgentId(routedAgentId);
+            if (selectedAgentProfileForRequest === null) {
+              sessionAgentAuthorityRef.current = {
+                sessionId: pendingSessionId,
+                profile: null,
+              };
+            }
+            const now = new Date().toISOString();
+            setNewlyCreatedSession({
+              id: pendingSessionId,
+              agent_id: routedAgentId,
+              created_at: now,
+              updated_at: now,
+              is_active: true,
+              metadata: {
+                current_run_id: submitData.run_id,
+                agent_id: routedAgentId,
+                agent_options: fullAgentOptions,
+                disabled_skills: disabledSkills,
+                selected_mcp_tool_ids: selectedMcpToolIds,
+              },
+            });
           }
           submissionUncertaintyRef.current = {
             sessionId: submitData.session_id || requestSessionId,

@@ -14,6 +14,10 @@ const chatViewSource = readFileSync(
   ),
   "utf8",
 );
+const chatInputSource = readFileSync(
+  resolve(process.cwd(), "src", "components", "chat", "ChatInput.tsx"),
+  "utf8",
+);
 
 test("drives the Virtuoso session key through state so session switches remount the message list", () => {
   assert.match(chatViewSource, /setMessageListSessionKey/);
@@ -52,4 +56,39 @@ test("anchors floating scroll buttons to the chat input", () => {
   assert.match(chatViewSource, /const composer = \(\s*<div className="relative"/);
   assert.match(chatViewSource, /<ChatInput\s+\{\.\.\.chatInputProps\}/);
   assert.doesNotMatch(chatViewSource, /bottom-\d+/);
+});
+
+test("keeps live composer draft state out of ChatView", () => {
+  assert.doesNotMatch(chatViewSource, /const \[composerDraft, setComposerDraft\]/);
+  assert.doesNotMatch(chatViewSource, /pendingComposerInput/);
+  assert.match(
+    chatViewSource,
+    /draftSnapshotRef:\s*composerDraftSnapshotRef/,
+  );
+  assert.match(chatViewSource, /draftScopeKey:\s*sessionId/);
+  assert.match(
+    chatInputSource,
+    /const \[input, setLocalInput\] = useState\(inputRef\.current\)/,
+  );
+  assert.match(
+    chatInputSource,
+    /if \(!initialDraft \|\| !initialDraftKey\) return;/,
+  );
+  assert.match(
+    chatInputSource,
+    /setInput\(\(current\) => current \|\| initialDraft\)/,
+  );
+});
+
+test("projects visible-range changes only into an open message outline", () => {
+  assert.match(
+    chatViewSource,
+    /const visibleRangeRef = useRef<ListRange \| null>\(null\)/,
+  );
+  assert.doesNotMatch(chatViewSource, /const \[visibleRange, setVisibleRange\]/);
+  assert.doesNotMatch(chatViewSource, /setVisibleRange\(/);
+  assert.match(
+    chatViewSource,
+    /if \(!isPersistentToolPanelOpen\("outline"\)\) return;/,
+  );
 });
