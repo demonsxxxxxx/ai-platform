@@ -398,6 +398,12 @@ create table if not exists agent_profile_revisions (
   content_hash text not null,
   avatar_ref text not null
     check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research')),
+  avatar_style_ref text not null default ''
+    check (avatar_style_ref = '' or avatar_style_ref in (
+      'builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research',
+      'builtin:cartoon', 'builtin:emoji', 'builtin:pixel', 'builtin:portrait',
+      'builtin:abstract', 'builtin:planet', 'builtin:clay', 'builtin:icon'
+    )),
   avatar_asset_id text,
   avatar_seed text not null default '',
   category text not null
@@ -915,6 +921,7 @@ alter table agent_profile_revisions add column if not exists published_from_revi
 alter table agent_profile_revisions add column if not exists withdrawn_from_revision bigint;
 alter table agent_profile_revisions add column if not exists revision_status text;
 alter table agent_profile_revisions add column if not exists avatar_ref text;
+alter table agent_profile_revisions add column if not exists avatar_style_ref text not null default '';
 alter table agent_profile_revisions add column if not exists avatar_asset_id text;
 alter table agent_profile_revisions add column if not exists avatar_seed text not null default '';
 alter table agent_profile_revisions add column if not exists skill_set jsonb not null default '[]'::jsonb;
@@ -944,6 +951,7 @@ alter table agent_profiles drop constraint if exists chk_agent_profiles_lifecycl
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_status_check;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_revision_status_check;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_avatar_ref_check;
+alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_avatar_style_ref_check;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_category_check;
 alter table agent_profile_revisions drop constraint if exists chk_agent_profile_revisions_visibility;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_visibility_check;
@@ -979,6 +987,14 @@ update agent_profile_revisions
 set avatar_ref = 'builtin:agent'
 where avatar_ref is null
    or avatar_ref not in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research');
+update agent_profile_revisions
+set avatar_style_ref = ''
+where avatar_style_ref is null
+   or avatar_style_ref not in (
+     '', 'builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research',
+     'builtin:cartoon', 'builtin:emoji', 'builtin:pixel', 'builtin:portrait',
+     'builtin:abstract', 'builtin:planet', 'builtin:clay', 'builtin:icon'
+   );
 update agent_profile_revisions
 set category = 'general'
 where category is null
@@ -1050,6 +1066,12 @@ alter table agent_profile_revisions add constraint agent_profile_revisions_revis
   check (revision_status in ('draft', 'published', 'withdrawn'));
 alter table agent_profile_revisions add constraint agent_profile_revisions_avatar_ref_check
   check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research'));
+alter table agent_profile_revisions add constraint agent_profile_revisions_avatar_style_ref_check
+  check (avatar_style_ref = '' or avatar_style_ref in (
+    'builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research',
+    'builtin:cartoon', 'builtin:emoji', 'builtin:pixel', 'builtin:portrait',
+    'builtin:abstract', 'builtin:planet', 'builtin:clay', 'builtin:icon'
+  ));
 alter table agent_profile_revisions add constraint agent_profile_revisions_category_check
   check (category in ('general', 'support', 'writing', 'research', 'operations'));
 alter table agent_profile_revisions add constraint chk_agent_profile_revisions_visibility

@@ -1,6 +1,19 @@
 import type { SelectedSkillRequest } from "./skill";
 
-export const AGENT_PROFILE_AVATAR_REFS = ["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] as const;
+export const AGENT_PROFILE_AVATAR_REFS = [
+  "builtin:agent",
+  "builtin:assistant",
+  "builtin:document",
+  "builtin:research",
+  "builtin:cartoon",
+  "builtin:emoji",
+  "builtin:pixel",
+  "builtin:portrait",
+  "builtin:abstract",
+  "builtin:planet",
+  "builtin:clay",
+  "builtin:icon",
+] as const;
 
 export type AgentProfileAvatarRef = (typeof AGENT_PROFILE_AVATAR_REFS)[number];
 
