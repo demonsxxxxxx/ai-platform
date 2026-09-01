@@ -76,18 +76,29 @@ def test_agent_coding_contract_has_one_authority_and_risk_scaled_evidence():
     assert "Pull-request text written by the author is not proof" in workflow_flat
     assert "review comments are the disposition record" in workflow_flat.casefold()
     assert "Every goal-sized product change must remain a draft" in agents_flat
-    assert "separate immutable candidate image" in agents_flat
+    assert "source, local, and CI checks cannot prove" in agents_flat
+    assert "stable accepted-base required context" in agents_flat
+    assert "bind the exact head to image digests" in agents_flat
     assert "the change is blocked" in agents_flat
     for candidate_rule in (
         "## Goal-sized product candidate acceptance",
+        "A change is goal-sized for this workflow when",
+        "An otherwise focused change with that dependency follows this section",
         "exact pull-request head commit",
         "immutable candidate image identity",
         "isolated candidate stack",
+        "trusted build provenance",
+        "machine-binds each image digest to the exact pull-request head",
+        "The owning Change Contract must name the executable candidate procedure",
+        "stable accepted-base required context",
+        "workflow-generated acceptance record",
+        "links that record rather than manually copying its subject fields",
         "the gate is `BLOCKED`",
-        "Any change to the commit, image, or runtime configuration invalidates that acceptance",
+        "Any change to the commit, image, or runtime configuration invalidates acceptance",
         "candidate runtime verified",
     ):
         assert candidate_rule in workflow_flat
+    assert "The pull request records the exact head commit" not in workflow_flat
     assert "python tools/run_test_stage.py" in agents
     assert "docs/agent-rules/local-test-execution.md" in agents
     for execution_rule in (
@@ -122,7 +133,9 @@ def test_agent_coding_contract_has_one_authority_and_risk_scaled_evidence():
         "Reached boundaries and preserved invariants:",
         "Design or Change Contract:",
         "Independent review and rollback or migration plan:",
-        "s72 candidate acceptance for a goal-sized product change",
+        "s72 candidate acceptance record link for a goal-sized product change",
+        "workflow-generated exact PR head",
+        "trusted image provenance and digests",
     ):
         assert required_field in pull_request_template
     for removed_boilerplate in (

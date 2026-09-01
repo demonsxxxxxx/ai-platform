@@ -28,5 +28,6 @@ release, deployment, or rollback authority.
 
 - Design or Change Contract:
 - Independent review and rollback or migration plan:
-- s72 candidate acceptance for a goal-sized product change (exact PR head,
-  image digest, isolated environment, tested journeys, and result):
+- s72 candidate acceptance record link for a goal-sized product change
+  (workflow-generated exact PR head, trusted image provenance and digests,
+  runtime configuration, isolated environment, tested journeys, and result):
