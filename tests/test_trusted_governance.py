@@ -8,6 +8,7 @@ import pytest
 
 from tools.trusted_governance import (
     BACKEND_WORKFLOW_PATH,
+    CANDIDATE_GATE_PATH,
     TRUSTED_RUNNER_PATH,
     TRUSTED_WORKFLOW_PATH,
     TrustedGovernanceError,
@@ -45,10 +46,10 @@ def _initialize_repository(root: Path) -> None:
 
 def _copy_contract_root(tmp_path: Path, name: str) -> Path:
     root = tmp_path / name
+    shutil.copytree(ROOT / ".github/workflows", root / ".github/workflows")
     for relative_path in (
-        TRUSTED_WORKFLOW_PATH,
-        BACKEND_WORKFLOW_PATH,
         TRUSTED_RUNNER_PATH,
+        CANDIDATE_GATE_PATH,
     ):
         target = root / relative_path
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -82,6 +83,8 @@ def _write_backend(root: Path, mode: str, *, duplicate_governance: bool = False)
             "        run: python tools/architecture_governance.py check\n"
         )
     payload = f"""name: backend fixture
+permissions:
+  contents: read
 jobs:
   {validation_id}:
     name: {validation_name}
@@ -201,10 +204,207 @@ def test_v2_contract_rejects_candidate_launcher_changes(tmp_path: Path) -> None:
         validate_trusted_workflow(root)
 
 
+def test_candidate_context_permissions_and_launcher_are_fixed(tmp_path: Path) -> None:
+    permissions = _copy_contract_root(tmp_path, "candidate-permissions")
+    _replace(
+        permissions / TRUSTED_WORKFLOW_PATH,
+        "      deployments: read\n      pull-requests: read",
+        "      deployments: write\n      pull-requests: read",
+    )
+    _commit(permissions)
+    with pytest.raises(TrustedGovernanceError, match="candidate permissions changed"):
+        validate_trusted_workflow(permissions)
+
+    launcher = _copy_contract_root(tmp_path, "candidate-launcher")
+    _replace(
+        launcher / TRUSTED_WORKFLOW_PATH,
+        'python -P "$GITHUB_WORKSPACE/tools/sse_candidate_gate.py"',
+        'python -P "$GOVERNANCE_HEAD_WORKTREE/tools/sse_candidate_gate.py"',
+    )
+    _commit(launcher)
+    with pytest.raises(TrustedGovernanceError, match="candidate launcher changed"):
+        validate_trusted_workflow(launcher)
+
+
+def test_candidate_gate_logic_requires_a_governance_migration(tmp_path: Path) -> None:
+    base = _copy_contract_root(tmp_path, "candidate-gate-base")
+    head = _copy_contract_root(tmp_path, "candidate-gate-head")
+    _replace(
+        head / CANDIDATE_GATE_PATH,
+        'ENVIRONMENT = "sse-candidate"',
+        'ENVIRONMENT = "other"',
+    )
+    _commit(head)
+
+    with pytest.raises(TrustedGovernanceError, match="gate executable logic changed"):
+        validate_transition(
+            base,
+            head,
+            changed_paths=(CANDIDATE_GATE_PATH.as_posix(),),
+        )
+
+
+def test_designated_candidate_delivery_writer_is_narrowly_admitted(
+    tmp_path: Path,
+) -> None:
+    base = _copy_contract_root(tmp_path, "writer-base")
+    head = _copy_contract_root(tmp_path, "writer-head")
+    writer_path = head / ".github/workflows/ai-platform-sse-candidate-delivery.yml"
+    writer_path.write_text(
+        "name: ai-platform SSE candidate delivery\n"
+        "on:\n  workflow_dispatch:\n    inputs:\n"
+        "      pr_number:\n        required: true\n        type: string\n"
+        "permissions:\n  contents: read\n"
+        "jobs:\n"
+        "  build:\n    name: build quarantined candidate\n"
+        "    runs-on: ubuntu-24.04\n"
+        "    permissions:\n      contents: read\n      packages: write\n"
+        "    steps:\n      - run: true\n"
+        "  publish-deployment:\n    name: publish candidate Deployment\n"
+        "    runs-on: ubuntu-24.04\n"
+        "    environment: sse-candidate-delivery\n"
+        "    permissions:\n      actions: read\n      contents: read\n"
+        "      deployments: write\n      pull-requests: read\n"
+        "    steps:\n      - run: true\n",
+        encoding="utf-8",
+    )
+    _commit(head)
+
+    validate_transition(
+        base,
+        head,
+        changed_paths=(".github/workflows/ai-platform-sse-candidate-delivery.yml",),
+    )
+
+
+@pytest.mark.parametrize(
+    ("trigger", "environment", "extra_permission", "reason"),
+    [
+        ("pull_request_target", "sse-candidate-delivery", "", "manual dispatch"),
+        ("workflow_dispatch", "production", "", "writer isolation"),
+        (
+            "workflow_dispatch",
+            "sse-candidate-delivery",
+            "      statuses: write\n",
+            "writer is forbidden",
+        ),
+    ],
+)
+def test_designated_candidate_delivery_writer_rejects_unsafe_authority(
+    tmp_path: Path,
+    trigger: str,
+    environment: str,
+    extra_permission: str,
+    reason: str,
+) -> None:
+    base = _copy_contract_root(tmp_path, f"unsafe-writer-base-{trigger}")
+    head = _copy_contract_root(tmp_path, f"unsafe-writer-head-{trigger}")
+    writer_path = head / ".github/workflows/ai-platform-sse-candidate-delivery.yml"
+    writer_path.write_text(
+        "name: ai-platform SSE candidate delivery\n"
+        f"on:\n  {trigger}: {{}}\n"
+        "permissions:\n  contents: read\n"
+        "jobs:\n  publish-deployment:\n"
+        "    name: publish candidate Deployment\n"
+        "    runs-on: ubuntu-24.04\n"
+        f"    environment: {environment}\n"
+        "    permissions:\n      contents: read\n      deployments: write\n"
+        f"{extra_permission}"
+        "    steps:\n      - run: true\n",
+        encoding="utf-8",
+    )
+    _commit(head)
+
+    with pytest.raises(TrustedGovernanceError, match=reason):
+        validate_transition(
+            base,
+            head,
+            changed_paths=(
+                ".github/workflows/ai-platform-sse-candidate-delivery.yml",
+            ),
+        )
+
+
+def test_alternate_candidate_context_or_writer_is_rejected(tmp_path: Path) -> None:
+    base = _copy_contract_root(tmp_path, "alternate-base")
+
+    writer = _copy_contract_root(tmp_path, "alternate-writer")
+    writer_path = writer / ".github/workflows/alternate.yml"
+    writer_path.write_text(
+        "name: alternate\non: pull_request\npermissions:\n  deployments: write\n"
+        "jobs:\n  alternate:\n    name: alternate\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - run: true\n",
+        encoding="utf-8",
+    )
+    _commit(writer)
+    with pytest.raises(TrustedGovernanceError, match="writer is forbidden"):
+        validate_transition(
+            base,
+            writer,
+            changed_paths=(".github/workflows/alternate.yml",),
+        )
+
+    merged = _copy_contract_root(tmp_path, "merged-writer")
+    merged_path = merged / ".github/workflows/merged.yml"
+    merged_path.write_text(
+        "name: merged\non: pull_request\npermissions:\n  contents: read\n"
+        "writer: &writer\n  deployments: write\n"
+        "jobs:\n  alternate:\n    name: alternate\n    runs-on: ubuntu-latest\n"
+        "    permissions:\n      <<: *writer\n      contents: read\n"
+        "    steps:\n      - run: true\n",
+        encoding="utf-8",
+    )
+    _commit(merged)
+    with pytest.raises(TrustedGovernanceError, match="merge keys are forbidden"):
+        validate_transition(
+            base,
+            merged,
+            changed_paths=(".github/workflows/merged.yml",),
+        )
+
+    inherited = _copy_contract_root(tmp_path, "inherited-writer")
+    inherited_path = inherited / ".github/workflows/inherited.yml"
+    inherited_path.write_text(
+        "name: inherited\non: pull_request\n"
+        "jobs:\n  alternate:\n    name: alternate\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - run: true\n",
+        encoding="utf-8",
+    )
+    _commit(inherited)
+    with pytest.raises(TrustedGovernanceError, match="explicit workflow permissions"):
+        validate_transition(
+            base,
+            inherited,
+            changed_paths=(".github/workflows/inherited.yml",),
+        )
+
+    duplicate = _copy_contract_root(tmp_path, "alternate-context")
+    duplicate_path = duplicate / ".github/workflows/alternate.yml"
+    duplicate_path.write_text(
+        "name: alternate\non: pull_request\npermissions:\n  contents: read\n"
+        "jobs:\n  alternate:\n    name: sse ${{ matrix.middle }}\n"
+        "    runs-on: ubuntu-latest\n    strategy:\n      matrix:\n"
+        "        middle: [candidate acceptance]\n"
+        "    steps:\n      - run: true\n",
+        encoding="utf-8",
+    )
+    _commit(duplicate)
+    with pytest.raises(TrustedGovernanceError, match="context must be unique"):
+        validate_transition(
+            base,
+            duplicate,
+            changed_paths=(".github/workflows/alternate.yml",),
+        )
+
+
 def test_v2_contract_rejects_deleted_candidate_workflow(tmp_path: Path) -> None:
     base = _copy_contract_root(tmp_path, "base")
     head = tmp_path / "head"
-    for relative_path in (BACKEND_WORKFLOW_PATH, TRUSTED_RUNNER_PATH):
+    for relative_path in (
+        BACKEND_WORKFLOW_PATH,
+        TRUSTED_RUNNER_PATH,
+        CANDIDATE_GATE_PATH,
+    ):
         target = head / relative_path
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / relative_path, target)
