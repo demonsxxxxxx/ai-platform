@@ -105,6 +105,9 @@ test("expert management follows the directory and first-class configuration layo
   assert.match(workbenchSource, /title="配置 Skill Set"/);
   assert.match(enterpriseFieldsSource, /AgentAvatarPicker/);
   assert.match(avatarPickerSource, /头像风格/);
+  assert.match(avatarPickerSource, /<select/);
+  assert.match(avatarPickerSource, /aria-label="选择头像风格"/);
+  assert.match(avatarPickerSource, /AGENT_AVATAR_STYLE_OPTIONS\.map/);
   assert.match(avatarPickerSource, /换一批/);
   assert.doesNotMatch(enterpriseFieldsSource, /头像种子/);
   assert.doesNotMatch(enterpriseFieldsSource, /支持输入|支持文件类型|文件格式/);

@@ -449,8 +449,8 @@ async def test_successor_activation_schema_advances_to_concurrent_due_index_sche
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.01.1"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.EXPERT_MARKET_SCHEMA_VERSION
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.01.2"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.AGENT_AVATAR_STYLE_SCHEMA_VERSION
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -488,6 +488,12 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert (
         "agent_profile_revisions",
         "avatar_seed",
+        "text",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "agent_profile_revisions",
+        "avatar_style_ref",
         "text",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
@@ -1065,11 +1071,22 @@ def test_every_critical_run_attempt_constraint_has_an_exact_definition():
     assert defined == critical
 
 
+def test_profile_avatar_style_keeps_legacy_avatar_ref_rollback_compatible():
+    schema = " ".join(schema_migrations.schema_sql().split()).lower()
+
+    assert (
+        "alter table agent_profile_revisions add column if not exists "
+        "avatar_style_ref text not null default ''"
+    ) in schema
+    assert "check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research'))" in schema
+    assert "avatar_style_ref = '' or avatar_style_ref in" in schema
+
+
 def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "7deb225fe43a0e36d9cd7c84722b401a578d8d7ce57a6da7e4c945d84c64cbaf"
+        "1086dc48dc680425d440fdeca736980024afe9bc13b0dde2460821e5e01498f7"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

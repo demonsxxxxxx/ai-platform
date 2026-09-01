@@ -105,6 +105,12 @@ create table agent_profile_revisions (
   content_hash text not null,
   avatar_ref text not null
     check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research')),
+  avatar_style_ref text not null default ''
+    check (avatar_style_ref = '' or avatar_style_ref in (
+      'builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research',
+      'builtin:cartoon', 'builtin:emoji', 'builtin:pixel', 'builtin:portrait',
+      'builtin:abstract', 'builtin:planet', 'builtin:clay', 'builtin:icon'
+    )),
   avatar_asset_id text,
   avatar_seed text not null default '',
   category text not null
@@ -160,6 +166,7 @@ drop index if exists idx_agent_profile_revisions_published_from_draft;
 alter table agent_profile_revisions drop constraint if exists uq_agent_profile_revision_publication;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_status_check;
 alter table agent_profile_revisions drop column if exists revision_status;
+alter table agent_profile_revisions drop column if exists avatar_style_ref;
 alter table agent_profile_revisions drop column if exists avatar_ref;
 alter table agent_profile_revisions drop column if exists category;
 alter table agent_profile_revisions drop column if exists visibility;
@@ -490,6 +497,8 @@ async def test_create_agent_profile_revision_persists_draft_and_publish_in_postg
                 published_by=None,
                 expected_previous_revision=0,
                 published_from_revision=None,
+                avatar_ref="builtin:agent",
+                avatar_style_ref="builtin:planet",
             )
 
         async with conn.transaction():
@@ -517,6 +526,8 @@ async def test_create_agent_profile_revision_persists_draft_and_publish_in_postg
         assert draft["revision"] == 1
         assert draft["status"] == "draft"
         assert draft["mcp_tool_ids"] == ["mcp-draft"]
+        assert draft["avatar_ref"] == "builtin:agent"
+        assert draft["avatar_style_ref"] == "builtin:planet"
         assert draft["content_hash"] == "a" * 64
         assert draft["published_at"] is None
         assert published["revision"] == 2
@@ -527,7 +538,7 @@ async def test_create_agent_profile_revision_persists_draft_and_publish_in_postg
 
         rows_cursor = await conn.execute(
             """
-            select revision, status, mcp_tool_ids, content_hash, created_by,
+            select revision, status, mcp_tool_ids, avatar_ref, avatar_style_ref, content_hash, created_by,
                    published_by, published_at, published_from_revision
             from agent_profile_revisions
             where tenant_id = %s and agent_id = %s
@@ -541,6 +552,8 @@ async def test_create_agent_profile_revision_persists_draft_and_publish_in_postg
                 "revision": 1,
                 "status": "draft",
                 "mcp_tool_ids": ["mcp-draft"],
+                "avatar_ref": "builtin:agent",
+                "avatar_style_ref": "builtin:planet",
                 "content_hash": "a" * 64,
                 "created_by": "creator-a",
                 "published_by": None,
@@ -551,6 +564,8 @@ async def test_create_agent_profile_revision_persists_draft_and_publish_in_postg
                 "revision": 2,
                 "status": "published",
                 "mcp_tool_ids": ["mcp-published"],
+                "avatar_ref": "builtin:agent",
+                "avatar_style_ref": "",
                 "content_hash": "b" * 64,
                 "created_by": "creator-a",
                 "published_by": "publisher-a",
