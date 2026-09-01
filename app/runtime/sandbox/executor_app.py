@@ -364,6 +364,7 @@ _SDK_PRESERVED_FAILURE_CODES = frozenset(
         "claude_agent_sdk_selected_skill_not_authorized",
         "claude_agent_sdk_turn_limit_exceeded",
         "claude_agent_sdk_timeout",
+        "claude_agent_sdk_public_projection_failed",
         "claude_agent_sdk_tool_admission_failed",
         "claude_agent_sdk_upstream_error",
     }

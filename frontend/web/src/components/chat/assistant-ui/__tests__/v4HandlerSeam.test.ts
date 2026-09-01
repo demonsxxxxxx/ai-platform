@@ -51,15 +51,17 @@ test("v4 handler seam delegates message and terminal events to legacy owners", (
     terminal_event_id: "terminal-2",
     hydrate_required: true,
     projection_version: "ai-platform.chat-public-projection.v1",
-    code: "run_failed",
+    code: "claude_agent_sdk_public_projection_failed",
     default_message: "Run failed",
     detail: null,
+    projection_failure_reason: "terminal_text_mismatch",
   });
   assert.ok(failed);
   const projectedFailed = projectV4EventToLegacyHandler(failed, "message-1");
   assert.ok(projectedFailed);
   assert.equal(projectedFailed.streamEvent.event, "final_detail");
   assert.match(projectedFailed.streamEvent.data, /detail_kind.*failed/);
+  assert.match(projectedFailed.streamEvent.data, /terminal_text_mismatch/);
   assert.doesNotMatch(projectedFailed.streamEvent.data, /Run failed/);
 });
 

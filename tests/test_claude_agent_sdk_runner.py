@@ -6,6 +6,7 @@ import pytest
 
 from app.executors.claude_agent_sdk_runner import (
     _sdk_run_timeout_seconds,
+    project_sdk_turn_diagnostics,
     run_claude_agent_sdk,
 )
 from app.required_tool_contract import (
@@ -39,6 +40,40 @@ def test_sdk_timeout_is_unbounded_by_default_and_bounded_when_configured():
         )
         is None
     )
+
+
+def test_public_diagnostics_allow_only_fixed_projection_failure_reasons():
+    common = {
+        "error_code": "claude_agent_sdk_public_projection_failed",
+        "selected_skill_id": None,
+        "used_skill_ids": [],
+        "public_skill_metadata": {},
+    }
+
+    allowed = project_sdk_turn_diagnostics(
+        {"projection_failure_reason": "answer_too_large"},
+        **common,
+    )
+    rejected = project_sdk_turn_diagnostics(
+        {"projection_failure_reason": "C:/private/path?token=secret"},
+        **common,
+    )
+    unrelated = [
+        project_sdk_turn_diagnostics(
+            {"projection_failure_reason": "answer_too_large"},
+            error_code=error_code,
+            selected_skill_id=None,
+            used_skill_ids=[],
+            public_skill_metadata={},
+        )
+        for error_code in (None, "claude_agent_sdk_tool_admission_failed")
+    ]
+
+    assert allowed["projection_failure_reason"] == "answer_too_large"
+    assert "projection_failure_reason" not in rejected
+    assert all("projection_failure_reason" not in item for item in unrelated)
+    assert "private" not in str(rejected)
+    assert "secret" not in str(rejected)
 
 
 def _settings():
@@ -1800,8 +1835,16 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
             for private_value in (first["identity"], "mcp-call-1", first["mcp_server_config"]["url"]):
                 assert private_value not in result.message
     else:
-        expected = "claude_agent_sdk_tool_admission_failed" if outcome == "overflow" else "required_tool_completion_evidence_mismatch"
+        expected = (
+            "claude_agent_sdk_public_projection_failed"
+            if outcome == "overflow"
+            else "required_tool_completion_evidence_mismatch"
+        )
         assert (result.error, result.message, deltas) == (expected, "", [])
+        if outcome == "overflow":
+            assert result.turn_diagnostics["projection_failure_reason"] == (
+                "upstream_projection_failed"
+            )
 
 
 @pytest.mark.asyncio
@@ -2798,7 +2841,8 @@ async def test_sandbox_stream_duplicate_stop_never_replays_terminal_result(monke
         on_text=deltas.append,
     )
 
-    assert result.error == "claude_agent_sdk_tool_admission_failed"
+    assert result.error == "claude_agent_sdk_public_projection_failed"
+    assert result.turn_diagnostics["projection_failure_reason"] == "upstream_projection_failed"
     assert deltas
     assert "short answer".startswith("".join(deltas))
 
@@ -2823,7 +2867,8 @@ async def test_governed_unfinished_stream_fails_closed_without_terminal_replay(m
     )
 
     assert captured["include_partial_messages"] is True
-    assert result.error == "claude_agent_sdk_tool_admission_failed"
+    assert result.error == "claude_agent_sdk_public_projection_failed"
+    assert result.turn_diagnostics["projection_failure_reason"] == "upstream_projection_failed"
     assert deltas
     assert "safe partial must finish".startswith("".join(deltas))
 

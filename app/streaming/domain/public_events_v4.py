@@ -12,6 +12,7 @@ from typing import Protocol
 
 from app.streaming.domain.protocol_v4 import (
     INTERNAL_STREAM_EVENT_SCHEMA,
+    PUBLIC_PROJECTION_FAILURE_REASONS,
     PUBLIC_RUN_STREAM_SCHEMA,
     PUBLIC_STREAM_EVENT_TYPES,
     STREAM_PROJECTION_VERSION,
@@ -120,6 +121,7 @@ _EVENT_FIELD_VALUES: dict[tuple[str, str], frozenset[object]] = {
     ("policy.allowed", "decision_code"): frozenset({"allowed"}),
     ("policy.denied", "decision_code"): frozenset({"capability_not_authorized", "policy_denied"}),
     ("run.cancelled", "reason_code"): frozenset({"user_cancelled", "policy_cancelled", "timeout"}),
+    ("run.failed", "projection_failure_reason"): PUBLIC_PROJECTION_FAILURE_REASONS,
 }
 
 
@@ -343,7 +345,7 @@ _PAYLOAD_FIELDS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     ),
     "run.failed": (
         frozenset({"terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail"}),
-        frozenset({"terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail"}),
+        frozenset({"terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail", "projection_failure_reason"}),
     ),
 }
 _MESSAGE_EVENT_TYPES = frozenset(_MESSAGE_EVENT_TYPES)
@@ -603,6 +605,10 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
         elif key == "detail":
             if value is not None:
                 _bounded_string(value, name=key, maximum=2048)
+        elif key == "projection_failure_reason":
+            allowed_reasons = _EVENT_FIELD_VALUES.get((event_type, key), frozenset())
+            if value not in allowed_reasons:
+                raise V4ProjectionError("v4_projection_failure_reason_invalid")
         elif key == "category" or key == "current_category":
             if value not in _TOOL_CATEGORIES:
                 raise V4ProjectionError(f"v4_{key}_invalid")
@@ -650,6 +656,12 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
                 raise V4ProjectionError("v4_projection_version_invalid")
         else:
             raise V4ProjectionError("v4_payload_key_unimplemented")
+    if (
+        event_type == "run.failed"
+        and "projection_failure_reason" in result
+        and result.get("code") != "claude_agent_sdk_public_projection_failed"
+    ):
+        raise V4ProjectionError("v4_projection_failure_code_invalid")
     display_name = result.get("display_name")
     if event_type == "tool.started" and "input_summary" in result:
         if result["input_summary"] != f"Starting {display_name}":

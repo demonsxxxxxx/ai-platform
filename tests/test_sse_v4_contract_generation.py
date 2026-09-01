@@ -120,6 +120,50 @@ def test_v4_rejects_unknown_events_and_payload_fields():
     assert list(validator.iter_errors(unknown_event))
 
 
+def test_v4_projection_failure_reason_is_optional_and_allowlisted():
+    validator = _validator("PublicRunStreamEventV4")
+    payload = {
+        "terminal_event_id": "terminal-1",
+        "hydrate_required": True,
+        "projection_version": "ai-platform.chat-public-projection.v1",
+        "code": "claude_agent_sdk_public_projection_failed",
+        "default_message": "Public projection failed",
+        "detail": None,
+    }
+    assert list(validator.iter_errors(_v4_event("run.failed", payload))) == []
+    assert (
+        list(
+            validator.iter_errors(
+                _v4_event(
+                    "run.failed",
+                    {**payload, "projection_failure_reason": "answer_too_large"},
+                )
+            )
+        )
+        == []
+    )
+    assert list(
+        validator.iter_errors(
+            _v4_event(
+                "run.failed",
+                {
+                    **payload,
+                    "code": "failed",
+                    "projection_failure_reason": "answer_too_large",
+                },
+            )
+        )
+    )
+    assert list(
+        validator.iter_errors(
+            _v4_event(
+                "run.failed",
+                {**payload, "projection_failure_reason": "private SDK error"},
+            )
+        )
+    )
+
+
 def test_v4_enforces_message_identity_and_transport_controls():
     validator = _validator("PublicRunStreamEventV4")
     missing_message = _v4_event("message.started", {}, message_id=None)

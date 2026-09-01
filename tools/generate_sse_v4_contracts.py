@@ -163,6 +163,13 @@ def _constants(schema: Mapping[str, Any]) -> dict[str, object]:
         isinstance(value, str) for value in event_types
     ):
         raise ValueError("sse_v4_event_types_invalid")
+    projection_failure_reasons = definitions["RunFailedEventV4"]["allOf"][1][
+        "properties"
+    ]["payload"]["properties"]["projection_failure_reason"]["enum"]
+    if not isinstance(projection_failure_reasons, list) or not all(
+        isinstance(value, str) for value in projection_failure_reasons
+    ):
+        raise ValueError("sse_v4_projection_failure_reasons_invalid")
     design_id = definitions["StreamOpenControlV4"]["allOf"][1]["properties"][
         "payload"
     ]["properties"]["design_id"]["const"]
@@ -172,6 +179,7 @@ def _constants(schema: Mapping[str, Any]) -> dict[str, object]:
         "projection_version": internal["projection_version"]["const"],
         "design_id": design_id,
         "event_types": tuple(event_types),
+        "projection_failure_reasons": tuple(projection_failure_reasons),
     }
 
 
@@ -210,6 +218,14 @@ def _render_python(schema: Mapping[str, Any]) -> str:
         "PUBLIC_STREAM_EVENT_TYPES: Final = frozenset(",
         "    (",
         *(f"        {json.dumps(value)}," for value in event_types),
+        "    )",
+        ")",
+        "PUBLIC_PROJECTION_FAILURE_REASONS: Final = frozenset(",
+        "    (",
+        *(
+            f"        {json.dumps(value)},"
+            for value in constants["projection_failure_reasons"]
+        ),
         "    )",
         ")",
         "",
@@ -313,6 +329,11 @@ def _render_typescript(schema: Mapping[str, Any]) -> str:
         "export const PUBLIC_STREAM_EVENT_TYPES = [",
     ]
     lines.extend(f"  {json.dumps(value)}," for value in constants["event_types"])
+    lines.extend(["] as const;", "", "export const PUBLIC_PROJECTION_FAILURE_REASONS = ["])
+    lines.extend(
+        f"  {json.dumps(value)},"
+        for value in constants["projection_failure_reasons"]
+    )
     lines.extend(["] as const;", ""])
     for name, definition in definitions.items():
         if name not in _PUBLIC_TYPES:

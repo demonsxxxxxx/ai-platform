@@ -238,12 +238,27 @@ def public_chat_terminal_projection(run: dict[str, object]) -> dict[str, object]
             "event_payload": {"detail_code": "result_unavailable"},
             "severity": "info",
         }
-    terminal = public_terminal_projection(status, run.get("error_code"))
+    terminal = public_terminal_projection(
+        status,
+        run.get("error_code"),
+        run.get("result_json"),
+    )
     if terminal is None:
         return None
     detail_kind = str(terminal["detail_kind"])
     detail_code = str(terminal["detail_code"])
     message = str(terminal["message"])
+    terminal_event_payload = terminal.get("event_payload")
+    projection_failure_reason = (
+        terminal_event_payload.get("projection_failure_reason")
+        if isinstance(terminal_event_payload, dict)
+        else None
+    )
+    reason_payload = (
+        {"projection_failure_reason": projection_failure_reason}
+        if isinstance(projection_failure_reason, str)
+        else {}
+    )
     return {
         "event_type": "final_detail",
         "payload": {
@@ -251,9 +266,10 @@ def public_chat_terminal_projection(run: dict[str, object]) -> dict[str, object]
             "detail_kind": detail_kind,
             "detail_code": detail_code,
             "message": message,
+            **reason_payload,
         },
         "message": message,
-        "event_payload": {"detail_code": detail_code},
+        "event_payload": {"detail_code": detail_code, **reason_payload},
         "severity": "error" if detail_kind == "failed" else "info",
     }
 

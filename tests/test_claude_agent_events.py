@@ -915,7 +915,8 @@ async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(
         require_selected_skill_invocation=False,
     )
 
-    assert result.error == "claude_agent_sdk_tool_admission_failed"
+    assert result.error == "claude_agent_sdk_public_projection_failed"
+    assert result.turn_diagnostics["projection_failure_reason"] == "sanitizer_bound_exceeded"
     assert result.message == ""
     assert published == []
     assert candidates == []
@@ -1058,7 +1059,7 @@ async def test_outer_cancellation_propagates_while_agent_callback_waits(monkeypa
     [
         ("a" * 262_144, None),
         ("é" * 262_144, None),
-        ("a" * 262_145, "claude_agent_sdk_tool_admission_failed"),
+        ("a" * 262_145, "claude_agent_sdk_public_projection_failed"),
     ],
     ids=["ascii", "multibyte", "max-plus-one"],
 )
@@ -1144,6 +1145,7 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
     deltas = [candidate.payload["delta"] for candidate in candidates if candidate.event_type == "message.delta"]
     if expected_error is not None:
         assert result.error == expected_error
+        assert result.turn_diagnostics["projection_failure_reason"] == "answer_too_large"
         assert result.message == ""
         assert candidates == []
         assert callback_batches == []
