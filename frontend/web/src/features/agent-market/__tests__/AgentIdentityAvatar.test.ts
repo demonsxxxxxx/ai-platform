@@ -28,7 +28,20 @@ test("each supported avatar style is deterministic and visibly distinct", async 
 
   assert.deepEqual(
     sources.map(({ ref }) => ref),
-    ["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"],
+    [
+      "builtin:agent",
+      "builtin:assistant",
+      "builtin:document",
+      "builtin:research",
+      "builtin:cartoon",
+      "builtin:emoji",
+      "builtin:pixel",
+      "builtin:portrait",
+      "builtin:abstract",
+      "builtin:planet",
+      "builtin:clay",
+      "builtin:icon",
+    ],
   );
   assert.equal(new Set(sources.map(({ source }) => source)).size, sources.length);
 });

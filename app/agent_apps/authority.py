@@ -12,7 +12,11 @@ from uuid import UUID
 from fastapi import HTTPException
 
 from app import repositories
-from app.agent_apps.api import safe_agent_avatar_seed
+from app.agent_apps.api import (
+    AGENT_PROFILE_AVATAR_REFS,
+    safe_agent_avatar_ref,
+    safe_agent_avatar_seed,
+)
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
@@ -31,7 +35,6 @@ from app.models import (
 AgentProfilePublicProjection = dict[str, Any]
 
 
-_AVATAR_REFS = {"builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"}
 _CATEGORIES = {"general", "support", "writing", "research", "operations"}
 _VISIBILITIES = {"tenant", "restricted"}
 _AGENT_PROFILE_DEPARTMENT_AUTHORITY_INVALID = "agent_profile_department_authority_invalid"
@@ -109,9 +112,17 @@ class AgentProfileAdmission:
             object.__setattr__(self, "configured_mcp_tool_ids", self.mcp_tool_ids)
 
 
+_LEGACY_AVATAR_REFS = frozenset(
+    {"builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"}
+)
+
+
+def _storage_avatar_ref(value: str) -> str:
+    return value if value in _LEGACY_AVATAR_REFS else "builtin:agent"
+
+
 def _safe_avatar_ref(value: Any) -> str:
-    candidate = str(value or "").strip()
-    return candidate if candidate in _AVATAR_REFS else "builtin:agent"
+    return safe_agent_avatar_ref(value)
 
 
 def _safe_avatar_seed(value: Any, *, fallback: str) -> str:
@@ -222,7 +233,9 @@ def profile_public_projection(
         "permissions_and_data_access_notice": str(
             row.get("permissions_and_data_access_notice") or ""
         ),
-        "avatar_ref": _safe_avatar_ref(row.get("avatar_ref")),
+        "avatar_ref": _safe_avatar_ref(
+            row.get("avatar_style_ref") or row.get("avatar_ref")
+        ),
         "avatar_seed": _safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         "category": _safe_category(row.get("category")),
         "market_tag": _safe_market_tag(row.get("market_tag")),
@@ -557,7 +570,7 @@ def _strict_hash_row_shape(row: dict[str, Any]) -> tuple[dict[str, list[str] | N
     ):
         raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
     for field, allowed in (
-        ("avatar_ref", _AVATAR_REFS),
+        ("avatar_ref", AGENT_PROFILE_AVATAR_REFS),
         ("category", _CATEGORIES),
         ("visibility", _VISIBILITIES),
     ):
@@ -723,7 +736,7 @@ def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
         instructions=str(row["instructions"]),
         skill_set=_skill_set(row),
         mcp_tool_ids=_mcp_tool_ids(row),
-        avatar_ref=_safe_avatar_ref(row.get("avatar_ref")),
+        avatar_ref=_safe_avatar_ref(row.get("avatar_style_ref") or row.get("avatar_ref")),
         avatar_asset_id=(str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
         avatar_seed=_safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         category=_safe_category(row.get("category")),
@@ -778,7 +791,7 @@ def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
         skill_set=_skill_set(row),
         selected_skill=_skill_set(row)[0],
         mcp_tool_ids=_mcp_tool_ids(row),
-        avatar_ref=_safe_avatar_ref(row.get("avatar_ref")),
+        avatar_ref=_safe_avatar_ref(row.get("avatar_style_ref") or row.get("avatar_ref")),
         avatar_asset_id=(str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
         avatar_seed=_safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         category=_safe_category(row.get("category")),
@@ -1012,7 +1025,8 @@ class AgentProfileAuthority:
             legacy_supported_file_types=list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
             expected_outputs=definition.expected_outputs,
             permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
-            avatar_ref=definition.avatar_ref,
+            avatar_ref=_storage_avatar_ref(definition.avatar_ref),
+            avatar_style_ref=definition.avatar_ref,
             avatar_asset_id=definition.avatar_asset_id,
             avatar_seed=definition.avatar_seed,
             category=definition.category,
@@ -1102,7 +1116,8 @@ class AgentProfileAuthority:
             legacy_supported_file_types=list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
             expected_outputs=definition.expected_outputs,
             permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
-            avatar_ref=definition.avatar_ref,
+            avatar_ref=_storage_avatar_ref(definition.avatar_ref),
+            avatar_style_ref=definition.avatar_ref,
             avatar_asset_id=definition.avatar_asset_id,
             avatar_seed=definition.avatar_seed or agent_id,
             category=definition.category,
@@ -1219,7 +1234,8 @@ class AgentProfileAuthority:
             ),
             expected_outputs=definition.expected_outputs,
             permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
-            avatar_ref=definition.avatar_ref,
+            avatar_ref=_storage_avatar_ref(definition.avatar_ref),
+            avatar_style_ref=definition.avatar_ref,
             avatar_asset_id=definition.avatar_asset_id,
             # Preserve the persisted value exactly: historical hashes intentionally
             # omit avatar_seed and use an empty value as their schema marker.
