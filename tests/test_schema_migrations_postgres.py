@@ -157,6 +157,23 @@ where state = 'admission_pending'
   and admission_confirmed_at is not null;
 
 """
+EXPERT_MARKET_SCHEMA_FRAGMENTS = (
+    "  market_tag text not null default '',\n",
+    """create table if not exists agent_profile_favorites (
+  tenant_id text not null references tenants(id),
+  user_id text not null references users(id),
+  agent_id text not null,
+  created_at timestamptz not null default now(),
+  primary key (tenant_id, user_id, agent_id),
+  foreign key (tenant_id, agent_id) references agents(tenant_id, id)
+);
+
+create index if not exists idx_agent_profile_favorites_user
+  on agent_profile_favorites(tenant_id, user_id, created_at desc);
+
+""",
+    "alter table agent_profile_revisions add column if not exists market_tag text not null default '';\n",
+)
 
 
 def _remote_successor_activation_schema_sql() -> str:
@@ -167,6 +184,9 @@ def _remote_successor_activation_schema_sql() -> str:
         "",
     )
     for fragment in MODEL_CONTROL_PLANE_SCHEMA_FRAGMENTS:
+        assert current_sql.count(fragment) == 1
+        current_sql = current_sql.replace(fragment, "")
+    for fragment in EXPERT_MARKET_SCHEMA_FRAGMENTS:
         assert current_sql.count(fragment) == 1
         current_sql = current_sql.replace(fragment, "")
     assert current_sql.count(CURRENT_RUN_ATTEMPT_OWNER_GUARD_SQL) == 1
@@ -198,6 +218,9 @@ def _remote_successor_activation_schema_sql() -> str:
 def _remote_run_attempt_reconciler_takeover_schema_sql() -> str:
     current_sql = Path("app/schema.sql").read_text(encoding="utf-8")
     assert current_sql.count(CURRENT_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SQL) == 1
+    for fragment in EXPERT_MARKET_SCHEMA_FRAGMENTS:
+        assert current_sql.count(fragment) == 1
+        current_sql = current_sql.replace(fragment, "")
     remote_sql = current_sql.replace(
         CURRENT_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SQL,
         "",
