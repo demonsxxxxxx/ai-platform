@@ -1052,6 +1052,41 @@ async def test_materialize_files_rejects_symlinked_workspace(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_materialize_files_rejects_symlinked_inputs_directory(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    symlink_or_skip(outside, workspace / "inputs")
+
+    class FailIfRead:
+        def get_bytes_bounded(self, **_kwargs):
+            raise AssertionError("symlinked inputs must fail before object storage")
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def fake_get_scoped_context_file(_conn, **_kwargs):
+        return {
+            "original_name": "input.doc",
+            "size_bytes": 3,
+            "storage_key": "files/input.doc",
+        }
+
+    adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FailIfRead)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.get_scoped_context_file",
+        fake_get_scoped_context_file,
+    )
+    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+
+    with pytest.raises(ValueError, match="inputs directory"):
+        await adapter._materialize_files(payload(file_ids=["file_1"]), workspace)
+
+
+@pytest.mark.asyncio
 async def test_materialize_files_rejects_existing_symlinked_target(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1733,6 +1768,7 @@ async def test_sandbox_selected_skill_validates_only_reported_invocation(
 @pytest.mark.asyncio
 async def test_agent_run_threads_materialized_file_names_in_payload_order(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
+    document_body_marker = "server-must-not-extract-this-document-body"
     write_skill(tmp_path / "skills", name="baoyu-translate", description="Translate Word documents.")
     pins = _registry_pins(
         tmp_path / "skills",
@@ -1741,7 +1777,7 @@ async def test_agent_run_threads_materialized_file_names_in_payload_order(monkey
     )
 
     async def materialize_files(payload, workspace):
-        (workspace / "z.docx").write_bytes(b"z")
+        (workspace / "z.docx").write_text(document_body_marker, encoding="utf-8")
         (workspace / "a.docx").write_bytes(b"a")
         return ["z.docx", "a.docx"]
 
@@ -1761,6 +1797,8 @@ async def test_agent_run_threads_materialized_file_names_in_payload_order(monkey
 
     assert result.status == "succeeded"
     assert runtime_requests[0].materialized_file_names == ["z.docx", "a.docx"]
+    assert "z.docx" in runtime_requests[0].input_message
+    assert document_body_marker not in runtime_requests[0].input_message
 
 
 
@@ -4159,6 +4197,18 @@ def test_build_skill_prompt_uses_backend_managed_skills_without_forced_selector(
     assert "sample.docx" in prompt
     assert "backend-managed skills" in prompt
     assert "staged Skill" in prompt
+
+
+def test_build_skill_prompt_keeps_office_processing_local_to_the_sandbox():
+    prompt = build_skill_prompt(
+        skill_id="general-chat",
+        user_message="review the slides",
+        file_names=["legacy.ppt"],
+    )
+
+    assert "`anydoc.to_markdown(path, ocr='reject')`" in prompt
+    assert "Never enable hosted OCR or transmit attachments to external services" in prompt
+    assert "legacy.ppt" in prompt
 
 
 def test_build_skill_prompt_includes_bounded_executor_context_pack():
