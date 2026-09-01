@@ -96,6 +96,7 @@ COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 CONTAINER_ID = re.compile(r"[0-9a-f]{64}\Z")
 DIGEST_REF = re.compile(r"(?P<repository>[^@]+)@sha256:[0-9a-f]{64}\Z")
 SERVICES = ("api", "worker", "frontend", "postgres", "redis", "minio")
+PERSISTENT_SERVICES = ("postgres", "redis", "minio")
 PROJECT_SERVICES = (*SERVICES, "workspace-init", "migrate")
 ROLLBACK_QUEUE_KEY_PREFIX = "ai-platform:runs"
 ROLLBACK_PROCESSING_META_KEY = f"{ROLLBACK_QUEUE_KEY_PREFIX}:processing-meta"
@@ -178,6 +179,7 @@ class Subject:
     backend_image: str
     frontend_image: str
     env_file: Path | None = None
+    persistent_compose_config: str = ""
 
     @property
     def executor_image(self) -> str:
@@ -496,6 +498,35 @@ class Quickstart:
         selected_repo = self.repo if repo is None else repo
         return ",".join(str(selected_repo / path) for path in COMPOSE_FILES)
 
+    def _managed_persistent_compose_config(
+        self,
+        containers: dict[str, RuntimeContainer],
+    ) -> str | None:
+        configs = {containers[service].config_files for service in PERSISTENT_SERVICES}
+        working_dirs = {containers[service].working_dir for service in PERSISTENT_SERVICES}
+        if len(configs) != 1 or len(working_dirs) != 1:
+            return None
+        config = next(iter(configs))
+        working_dir = next(iter(working_dirs))
+        if config == self._expected_compose_config():
+            release = self.repo
+        else:
+            try:
+                release = Path(config.split(",", 1)[0]).parents[2]
+            except IndexError:
+                return None
+            if (
+                release.parent != self.root / "releases"
+                or COMMIT.fullmatch(release.name) is None
+            ):
+                return None
+        if (
+            config != self._expected_compose_config(release)
+            or working_dir != str(release / COMPOSE_FILES[0].parent)
+        ):
+            return None
+        return config
+
     def _app_compose_identity_mismatches(
         self,
         container: RuntimeContainer,
@@ -529,14 +560,19 @@ class Quickstart:
             str(self.root / "releases" / commit / path) for path in COMPOSE_FILES
         )
         runtime_repo = self.root / "releases" / commit
+        persistent_config = self._managed_persistent_compose_config(values)
         if (
             COMMIT.fullmatch(commit) is None
             or sorted(observed_services) != sorted(PROJECT_SERVICES)
+            or persistent_config is None
             or any(
                 (
                     item.project != PROJECT
                     or item.service != service
-                    or item.config_files != expected_config
+                    or (
+                        service not in PERSISTENT_SERVICES
+                        and item.config_files != expected_config
+                    )
                 )
                 for service, item in values.items()
             )
@@ -560,7 +596,12 @@ class Quickstart:
             match = DIGEST_REF.fullmatch(ref)
             if match is None or match.group("repository") != repository:
                 raise QuickstartError("current runtime subject is invalid")
-        return Subject(commit, backend, app_values["frontend"].image)
+        return Subject(
+            commit,
+            backend,
+            app_values["frontend"].image,
+            persistent_compose_config=persistent_config,
+        )
 
     def _validate_env(self, path: Path) -> Path:
         try:
@@ -659,13 +700,18 @@ class Quickstart:
         ready = self._http_json("/api/ai/ready")
         if health.get("status") != "ok" or ready.get("status") != "ready" or ready.get("runtime_commit") != subject.commit:
             raise QuickstartError("API health failed")
-        for service in SERVICES:
-            container = self._inspect(service)
+        containers = {service: self._inspect(service) for service in SERVICES}
+        if self._managed_persistent_compose_config(containers) is None:
+            raise QuickstartError("container health failed")
+        for service, container in containers.items():
             healthy = service == "worker" or container.health == "healthy"
             if (
                 container.project != PROJECT
                 or container.service != service
-                or container.config_files != self._expected_compose_config()
+                or (
+                    service not in PERSISTENT_SERVICES
+                    and container.config_files != self._expected_compose_config()
+                )
                 or container.status != "running"
                 or not healthy
             ):
