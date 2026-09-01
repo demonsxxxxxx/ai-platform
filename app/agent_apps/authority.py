@@ -803,6 +803,15 @@ class AgentProfileAuthority:
         self._favorite_ids_loader = favorite_ids_loader
         self._favorite_setter = favorite_setter
 
+    def configure_favorite_persistence(
+        self,
+        *,
+        favorite_ids_loader: Callable[..., Awaitable[set[str]]],
+        favorite_setter: Callable[..., Awaitable[None]],
+    ) -> None:
+        self._favorite_ids_loader = favorite_ids_loader
+        self._favorite_setter = favorite_setter
+
     async def _list_favorite_ids(self, conn, *, tenant_id: str, user_id: str) -> set[str]:
         if self._favorite_ids_loader is None:
             return set()

@@ -6,12 +6,9 @@ from app import repositories
 from app.agent_apps import AgentProfileAuthority
 from app.agent_apps.api import normalize_market_tag
 from app.agent_profiles import (
-    get_public_profile,
     list_admin_profiles,
-    list_public_profiles,
     publish_draft,
     save_draft,
-    set_favorite,
 )
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
@@ -47,6 +44,13 @@ _DEDICATED_OVERRIDE_HEADERS = frozenset(
         "x-mcp-tool-ids",
     }
 )
+
+
+def configure_agent_profile_favorites(*, favorite_ids_loader, favorite_setter) -> None:
+    _authority.configure_favorite_persistence(
+        favorite_ids_loader=favorite_ids_loader,
+        favorite_setter=favorite_setter,
+    )
 
 
 def _reject_dedicated_capability_overrides(http_request: HttpRequest) -> None:
@@ -143,9 +147,9 @@ async def list_agent_profiles(
     normalized_query = _normalize_catalog_query(query)
     async with transaction() as conn:
         if normalized_query is None and category is None:
-            profiles = await list_public_profiles(conn, principal=principal)
+            profiles = await _authority.list_public(conn, principal=principal)
         else:
-            profiles = await list_public_profiles(
+            profiles = await _authority.list_public(
                 conn,
                 principal=principal,
                 query=normalized_query,
@@ -166,7 +170,7 @@ async def get_agent_profile(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
     async with transaction() as conn:
-        return await get_public_profile(conn, principal=principal, agent_id=safe_agent_id)
+        return await _authority.get_public(conn, principal=principal, agent_id=safe_agent_id)
 
 
 @router.put("/agent-profiles/{agent_id}/favorite")
@@ -181,7 +185,7 @@ async def favorite_agent_profile(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
     async with transaction() as conn:
-        return await set_favorite(
+        return await _authority.set_favorite(
             conn,
             principal=principal,
             agent_id=safe_agent_id,
@@ -201,7 +205,7 @@ async def unfavorite_agent_profile(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
     async with transaction() as conn:
-        return await set_favorite(
+        return await _authority.set_favorite(
             conn,
             principal=principal,
             agent_id=safe_agent_id,

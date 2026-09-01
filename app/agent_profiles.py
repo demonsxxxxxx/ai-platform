@@ -1,6 +1,5 @@
 """Compatibility seam for callers migrated to :mod:`app.agent_apps`."""
 
-from app.agent_apps.infrastructure import postgres as agent_profile_persistence
 from app.agent_apps.authority import (
     AgentProfileAdmission,
     AgentProfileAuthority,
@@ -10,26 +9,8 @@ from app.agent_apps.authority import (
 from app.department_directory import validate_profile_department_authorities
 
 
-async def _list_favorite_ids(conn, *, tenant_id, user_id):
-    return await agent_profile_persistence.list_agent_profile_favorite_ids(
-        conn, tenant_id=tenant_id, user_id=user_id
-    )
-
-
-async def _set_favorite(conn, *, tenant_id, user_id, agent_id, favorite):
-    await agent_profile_persistence.set_agent_profile_favorite(
-        conn,
-        tenant_id=tenant_id,
-        user_id=user_id,
-        agent_id=agent_id,
-        favorite=favorite,
-    )
-
-
 _authority = AgentProfileAuthority(
     department_authority_validator=validate_profile_department_authorities,
-    favorite_ids_loader=_list_favorite_ids,
-    favorite_setter=_set_favorite,
 )
 
 __all__ = [
@@ -45,7 +26,6 @@ __all__ = [
     "resolve_bound_profile_for_submission",
     "resolve_profile_for_admission",
     "save_draft",
-    "set_favorite",
 ]
 
 
@@ -76,17 +56,6 @@ async def list_public_profiles(conn, *, principal, query=None, category=None):
     """List public profiles through the authoritative module."""
 
     return await _authority.list_public(conn, principal=principal, query=query, category=category)
-
-
-async def set_favorite(conn, *, principal, agent_id, favorite):
-    """Persist an authorized current user's expert favorite."""
-
-    return await _authority.set_favorite(
-        conn,
-        principal=principal,
-        agent_id=agent_id,
-        favorite=favorite,
-    )
 
 
 async def get_public_profile(conn, *, principal, agent_id):

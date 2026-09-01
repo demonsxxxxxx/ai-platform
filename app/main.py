@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.agent_apps.infrastructure import postgres as agent_profile_persistence
 from app.bootstrap.model_services import (
     build_model_management_router,
     configure_model_services,
@@ -12,7 +13,10 @@ from app.bootstrap.run_lifecycle import build_run_cancellation_use_case
 from app.bootstrap.streaming import build_run_stream_runtime
 from app.db import close_pool, transaction
 from app.redis_client import close_redis_client
-from app.routes.agent_profiles import router as agent_profiles_router
+from app.routes.agent_profiles import (
+    configure_agent_profile_favorites,
+    router as agent_profiles_router,
+)
 from app.routes.admin_runtime import router as admin_runtime_router
 from app.routes.admin_runs import router as admin_runs_router
 from app.routes.admin_skills import router as admin_skills_router
@@ -66,6 +70,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     configure_model_services()
+    configure_agent_profile_favorites(
+        favorite_ids_loader=agent_profile_persistence.list_agent_profile_favorite_ids,
+        favorite_setter=agent_profile_persistence.set_agent_profile_favorite,
+    )
     app = FastAPI(title="AI Platform API", version="0.1.0", lifespan=lifespan)
     settings = get_settings()
     app.add_middleware(
