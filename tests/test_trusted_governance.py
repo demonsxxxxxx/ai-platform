@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -62,6 +63,22 @@ def _replace(path: Path, before: str, after: str) -> None:
     text = path.read_text(encoding="utf-8")
     assert text.count(before) == 1
     path.write_text(text.replace(before, after), encoding="utf-8")
+
+
+def _replace_in_workflow_job(
+    path: Path, job_id: str, before: str, after: str
+) -> None:
+    text = path.read_text(encoding="utf-8")
+    match = re.search(rf"(?m)^  {re.escape(job_id)}:\n", text)
+    assert match is not None
+    start = match.end()
+    next_job = re.search(r"(?m)^  [A-Za-z0-9_-]+:\n", text[start:])
+    end = len(text) if next_job is None else start + next_job.start()
+    job = text[start:end]
+    assert job.count(before) == 1
+    path.write_text(
+        text[:start] + job.replace(before, after) + text[end:], encoding="utf-8"
+    )
 
 
 def _write_backend(root: Path, mode: str, *, duplicate_governance: bool = False) -> None:
@@ -146,45 +163,60 @@ def test_v2_contract_rejects_duplicate_workflow_keys(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("before", "after", "message"),
+    ("before", "after", "message", "job_id"),
     [
         (
             "uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
             "uses: attacker/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
             "accepted actions/checkout commit",
+            "trusted-governance-v2",
         ),
         (
             "uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
             "uses: actions/setup-python@0000000000000000000000000000000000000000",
             "accepted actions/setup-python commit",
+            "trusted-governance-v2",
         ),
         (
             "permissions:\n  contents: read",
             "permissions:\n  contents: write",
             "permissions changed",
+            None,
         ),
         (
             "python -m pip install ruff==0.11.13 PyYAML==6.0.3",
             "python -m pip install ruff PyYAML requests",
             "dependency command is not accepted",
+            None,
         ),
         (
             'GOVERNANCE_PYTHON_VERSION: "3.13.14"',
             'GOVERNANCE_PYTHON_VERSION: "3.14.0"',
             "Python version is not accepted",
+            None,
         ),
         (
             "fetch-depth: 0",
             "fetch-depth: 1",
             "checkout inputs changed",
+            "trusted-governance-v2",
         ),
     ],
 )
 def test_v2_contract_rejects_weakened_trusted_workflow(
-    tmp_path: Path, before: str, after: str, message: str
+    tmp_path: Path,
+    before: str,
+    after: str,
+    message: str,
+    job_id: str | None,
 ) -> None:
     root = _copy_contract_root(tmp_path, "weakened")
-    _replace(root / TRUSTED_WORKFLOW_PATH, before, after)
+    if job_id is None:
+        _replace(root / TRUSTED_WORKFLOW_PATH, before, after)
+    else:
+        _replace_in_workflow_job(
+            root / TRUSTED_WORKFLOW_PATH, job_id, before, after
+        )
     _commit(root)
 
     with pytest.raises(TrustedGovernanceError, match=message):
@@ -193,8 +225,9 @@ def test_v2_contract_rejects_weakened_trusted_workflow(
 
 def test_v2_contract_rejects_candidate_launcher_changes(tmp_path: Path) -> None:
     root = _copy_contract_root(tmp_path, "launcher")
-    _replace(
+    _replace_in_workflow_job(
         root / TRUSTED_WORKFLOW_PATH,
+        "sse-candidate-acceptance",
         'git merge-base --is-ancestor "$GOVERNANCE_BASE_REF" "$GOVERNANCE_HEAD_REF"',
         'git merge-base "$GOVERNANCE_BASE_REF" "$GOVERNANCE_HEAD_REF"',
     )
@@ -566,8 +599,8 @@ def test_cli_reports_a_bounded_failure(
     root = _copy_contract_root(tmp_path, "invalid")
     _replace(
         root / TRUSTED_WORKFLOW_PATH,
-        "contents: read",
-        "contents: write",
+        "permissions:\n  contents: read\n\nconcurrency:",
+        "permissions:\n  contents: write\n\nconcurrency:",
     )
     _commit(root)
     head = _git(root, "rev-parse", "HEAD")
