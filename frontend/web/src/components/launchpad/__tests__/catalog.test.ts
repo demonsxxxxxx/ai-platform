@@ -1,18 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 import {
-  configureLaunchpadCatalog,
   filterLaunchpadGroups,
+  getLaunchpadIconUrl,
   launchpadGroups,
-  launchpadTabs,
-  resolveLaunchpadDestination,
 } from "../catalog.ts";
 
-function findCatalogMetadataKeyPaths(value: unknown, key: string, path = "$"): string[] {
-  if (!value || typeof value !== "object") {
-    return [];
-  }
+function findCatalogMetadataKeyPaths(
+  value: unknown,
+  key: string,
+  path = "$",
+): string[] {
+  if (!value || typeof value !== "object") return [];
 
   if (Array.isArray(value)) {
     return value.flatMap((item, index) =>
@@ -31,143 +33,86 @@ function findCatalogMetadataKeyPaths(value: unknown, key: string, path = "$"): s
   );
 }
 
-test("launchpad catalog contains only company navigation and AI app entries", () => {
-  const tabCounts = new Map<string, number>();
-  for (const group of launchpadGroups) {
-    tabCounts.set(
-      group.tab,
-      (tabCounts.get(group.tab) ?? 0) + group.entries.length,
-    );
-  }
-
-  assert.equal(tabCounts.get("lingxi"), undefined);
-  assert.equal(tabCounts.get("common"), 122);
-  assert.equal(tabCounts.get("ai"), 4);
-});
-
-test("lingxi platform is an external jump instead of an embedded catalog category", () => {
-  const lingxi = launchpadTabs.find((tab) => tab.key === "lingxi") as
-    | { runtimeUrlKey?: string; unavailableReason?: string; url?: string }
-    | undefined;
-
-  assert.equal(lingxi?.runtimeUrlKey, "lingxi");
-  assert.equal(lingxi?.url, undefined);
-  assert.equal(lingxi?.unavailableReason, "运行时地址未配置");
-  assert.equal(launchpadGroups.some((group) => group.tab === "lingxi"), false);
-});
-
-test("launchpad catalog does not retain copied legacy icon or system metadata", () => {
-  assert.deepEqual(findCatalogMetadataKeyPaths(launchpadGroups, "icon"), []);
-  assert.deepEqual(findCatalogMetadataKeyPaths(launchpadGroups, "systemKey"), []);
-});
-
-test("search filters by app name, description, and group name", () => {
-  const result = filterLaunchpadGroups(launchpadGroups, "SOP");
-
-  assert.ok(result.some((group) => group.name === "知识库"));
-  assert.ok(
-    result
-      .flatMap((group) => group.entries)
-      .some((entry) => entry.name === "SOP问询助手"),
-  );
-});
-
-test("runtime-managed destinations fail closed when browser config is unavailable", () => {
-  const wordTranslate = launchpadGroups
-    .flatMap((group) => group.entries)
-    .find((entry) => entry.name === "Word文档翻译");
-  assert.deepEqual(resolveLaunchpadDestination(wordTranslate!), {
-    kind: "unavailable",
-    reason: "运行时地址未配置",
-  });
-
-  const wordReview = launchpadGroups
-    .flatMap((group) => group.entries)
-    .find((entry) => entry.name === "Word文档审核");
-  assert.deepEqual(resolveLaunchpadDestination(wordReview!), {
-    kind: "unavailable",
-    reason: "运行时地址未配置",
-  });
-
-  const ragflow = launchpadGroups
-    .flatMap((group) => group.entries)
-    .find((entry) => entry.name === "SOP问询助手");
-  assert.deepEqual(resolveLaunchpadDestination(ragflow!), {
-    kind: "unavailable",
-    reason: "运行时地址未配置",
-  });
-
-  assert.doesNotMatch(
-    JSON.stringify({ launchpadTabs, launchpadGroups }),
-    /https?:\/\/10\.56\./,
-  );
-});
-
-test("runtime browser config materializes only the explicitly projected destinations", () => {
-  const configured = configureLaunchpadCatalog({
-    lingxi: "http://10.56.0.25:8189/#/TaskManagement/indexSpace/",
-    sop_assistant: "https://apps.example.test/#/AI/RAGFlowSOP",
-    word_translate: null,
-    word_review: "https://apps.example.test/#/AI/WordReview",
-  });
-  const lingxi = configured.tabs.find((tab) => tab.key === "lingxi");
-  const entries = configured.groups.flatMap((group) => group.entries);
-
-  assert.equal(
-    lingxi?.url,
-    "http://10.56.0.25:8189/#/TaskManagement/indexSpace/",
-  );
-  assert.equal(lingxi?.unavailableReason, undefined);
-  assert.deepEqual(
-    resolveLaunchpadDestination(
-      entries.find((entry) => entry.name === "SOP问询助手")!,
-    ),
-    { kind: "url", href: "https://apps.example.test/#/AI/RAGFlowSOP" },
-  );
-  assert.deepEqual(
-    resolveLaunchpadDestination(
-      entries.find((entry) => entry.name === "Word文档翻译")!,
-    ),
-    { kind: "unavailable", reason: "运行时地址未配置" },
-  );
-
-  const unavailable = configureLaunchpadCatalog(
-    {
-      lingxi: null,
-      sop_assistant: null,
-      word_translate: null,
-      word_review: null,
-    },
-    "运行时配置不可用",
-  );
-  assert.equal(
-    unavailable.tabs.find((tab) => tab.key === "lingxi")
-      ?.unavailableReason,
-    "运行时配置不可用",
-  );
-});
-
-test("lingxi application labels are no longer copied into the company catalog", () => {
+test("launchpad contains only the copied web-navigation catalog", () => {
   const entries = launchpadGroups.flatMap((group) => group.entries);
 
-  assert.ok(!entries.some((entry) => entry.name === "AD设备管理"));
-  assert.ok(!entries.some((entry) => entry.name === "AD配液系统"));
-  assert.ok(!entries.some((entry) => entry.name === "商务运营管理系统"));
-  assert.ok(!entries.some((entry) => entry.name === "合同管理系统"));
+  assert.equal(launchpadGroups.length, 13);
+  assert.equal(entries.length, 121);
+  assert.equal(new Set(entries.map((entry) => entry.id)).size, 121);
+  assert.equal(new Set(entries.map((entry) => entry.icon)).size, 84);
+  assert.deepEqual(
+    launchpadGroups.map((group) => group.name),
+    [
+      "内网登录",
+      "AI",
+      "翻译",
+      "绘图",
+      "文献检索",
+      "文献期刊",
+      "专利检索",
+      "药物蛋白数据库",
+      "预测工具",
+      "中国药监机构或协会",
+      "国外药监机构或协会",
+      "药典查询",
+      "财经资讯",
+    ],
+  );
+
+  assert.ok(entries.some((entry) => entry.name === "ai-platform"));
+  assert.ok(!entries.some((entry) => entry.name === "公司规章制度"));
+  assert.ok(!entries.some((entry) => entry.name === "SOP问询助手"));
+  assert.ok(!entries.some((entry) => entry.name === "Word文档翻译"));
 });
 
-test("destination resolver marks entries without urls unavailable", () => {
-  assert.deepEqual(
-    resolveLaunchpadDestination({
-      id: "unknown",
-      tab: "common",
-      groupId: "test",
-      groupName: "测试",
-      name: "未映射系统",
-    }),
-    {
-      kind: "unavailable",
-      reason: "待接入",
-    },
+test("copied launchpad icons exist in the frontend public directory", () => {
+  const entries = launchpadGroups.flatMap((group) => group.entries);
+
+  for (const entry of entries) {
+    assert.ok(
+      existsSync(join(process.cwd(), "public", "launchpad-icons", entry.icon)),
+      `missing copied icon for ${entry.name}: ${entry.icon}`,
+    );
+  }
+  assert.equal(
+    getLaunchpadIconUrl("满意度调研.jpg"),
+    "/launchpad-icons/%E6%BB%A1%E6%84%8F%E5%BA%A6%E8%B0%83%E7%A0%94.jpg",
   );
+});
+
+test("launchpad catalog removes obsolete tab and runtime metadata", () => {
+  for (const key of [
+    "tab",
+    "runtimeUrlKey",
+    "unavailableReason",
+    "systemKey",
+    "color",
+  ]) {
+    assert.deepEqual(findCatalogMetadataKeyPaths(launchpadGroups, key), []);
+  }
+});
+
+test("search filters by website name, description, and category", () => {
+  const byName = filterLaunchpadGroups(launchpadGroups, "DeepSeek");
+  assert.deepEqual(
+    byName.flatMap((group) => group.entries).map((entry) => entry.name),
+    ["DeepSeek"],
+  );
+
+  const byDescription = filterLaunchpadGroups(launchpadGroups, "共同编辑");
+  assert.deepEqual(
+    byDescription.flatMap((group) => group.entries).map((entry) => entry.name),
+    ["vDrive(内部)", "vDrive(外部)"],
+  );
+
+  const byCategory = filterLaunchpadGroups(launchpadGroups, "药典查询");
+  assert.equal(byCategory.length, 1);
+  assert.equal(byCategory[0]?.entries.length, 3);
+});
+
+test("every copied web-navigation entry has a direct destination and icon", () => {
+  for (const entry of launchpadGroups.flatMap((group) => group.entries)) {
+    assert.match(entry.url, /^https?:\/\//);
+    assert.match(entry.icon, /\.(?:png|jpe?g)$/i);
+  }
 });

@@ -43,6 +43,16 @@ ACL and must never create a second department authority.
 Full raw prompts, Claude transcripts, file bytes, and sandbox directories are
 not valid PostgreSQL payloads.
 
+### Change Contract: persisted user profile metadata
+
+- **Owner:** Identity owns authenticated user profile metadata; Company Navigation owns only its `company_navigation_favorite_ids` value.
+- **Bounded paths:** this document, `app/schema.sql`, `app/schema_migrations.py`, `app/identity/api.py`, `app/identity/infrastructure/postgres.py`, the existing authenticated profile routes, Company Navigation frontend state, and their focused tests.
+- **Reached invariants:** company login remains identity authority; the returned employee `workId` remains `AuthPrincipal.user_id` and `users.id`; every metadata read and write binds both the authenticated `tenant_id` and user ID; client metadata cannot replace trusted principal fields; the final merged JSON value is bounded before write.
+- **Acceptance and regression proof:** focused backend tests prove tenant/user-scoped locked merge, rejection of oversized or reserved metadata, and route read-after-write behavior; focused frontend tests prove catalog-filtered server metadata and removal of browser-local favorite authority.
+- **Evidence ceiling:** source and local focused checks do not prove that a deployed PostgreSQL schema was migrated or that cross-browser persistence works on a packaged runtime.
+- **Migration and rollback:** add one non-null JSONB object column with an empty-object default and advance the schema ledger; rollback restores the previous application image while leaving the additive column installed and unused.
+- **Stop conditions:** stop if employee `workId` is not stably provisioned as the scoped local user, the migration becomes destructive, tenant/user predicates are absent, the final merged value cannot be bounded under lock, or Company Navigation would require Redis or browser storage as durable authority.
+
 ## Schema lifecycle and readiness
 
 The supported upgrade command is:
@@ -230,6 +240,7 @@ cannot bypass the bound. Oversized values fail before their write with a stable
 | Context snapshot payload | 256 KiB |
 | Artifact manifest | 64 KiB |
 | Audit payload | 32 KiB |
+| User profile metadata | 16 KiB |
 | Message content | 256 KiB |
 | Message metadata | 64 KiB |
 

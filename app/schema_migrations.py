@@ -27,7 +27,8 @@ RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SCHEMA_VERSION = "2026.08.30.2"
 RUN_ATTEMPT_HEARTBEAT_CLOCK_SAFETY_SCHEMA_VERSION = "2026.08.30.3"
 EXPERT_MARKET_SCHEMA_VERSION = "2026.09.01.1"
 AGENT_AVATAR_STYLE_SCHEMA_VERSION = "2026.09.01.2"
-TARGET_SCHEMA_VERSION = AGENT_AVATAR_STYLE_SCHEMA_VERSION
+USER_PROFILE_METADATA_SCHEMA_VERSION = "2026.09.02.1"
+TARGET_SCHEMA_VERSION = USER_PROFILE_METADATA_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # Keeping this ledger stable preserves readiness for the saved rollback binary.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION
@@ -37,6 +38,7 @@ INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
     "schema_migrations",
     "schema_index_migrations",
+    "users",
     "runs",
     "model_gateway_revisions",
     "model_catalog_entries",
@@ -57,6 +59,7 @@ CRITICAL_RELATIONS = (
     "mcp_tools",
 )
 CRITICAL_COLUMNS = (
+    ("users", "metadata_json", "jsonb", True),
     ("sessions", "title_source", "text", True),
     ("agent_profile_revisions", "skill_set", "jsonb", True),
     ("agent_profile_revisions", "avatar_seed", "text", True),
@@ -202,6 +205,7 @@ CRITICAL_COLUMNS = (
     ("mcp_server_credentials", "credential_envelope", "text", True),
 )
 CRITICAL_CONSTRAINTS = (
+    ("users", "chk_users_metadata_json_object"),
     ("runs", "fk_runs_model_gateway_revision"),
     ("model_gateway_revisions", "chk_model_gateway_revision_positive"),
     ("model_gateway_revisions", "chk_model_gateway_base_url"),
@@ -346,6 +350,12 @@ MODEL_CRITICAL_CONSTRAINT_DEFINITIONS = (
 )
 
 CRITICAL_CONSTRAINT_DEFINITIONS = (
+    (
+        "users",
+        "chk_users_metadata_json_object",
+        "c",
+        "CHECK ((jsonb_typeof(metadata_json) = 'object'::text))",
+    ),
     (
         "mcp_servers",
         "mcp_servers_endpoint_not_persisted",

@@ -800,7 +800,15 @@ def test_lambchat_permissions_include_user_and_admin_capabilities():
 
 
 def test_lambchat_profile_endpoint_returns_principal_and_metadata(monkeypatch):
+    class FakeProfileMetadataService:
+        async def merge(self, *, patch, **_scope):
+            return dict(patch)
+
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr(
+        "app.bootstrap.identity.ProfileMetadataService",
+        lambda _store: FakeProfileMetadataService(),
+    )
     client = TestClient(create_app())
 
     response = client.put(
@@ -818,7 +826,15 @@ def test_lambchat_profile_endpoint_returns_principal_and_metadata(monkeypatch):
 
 
 def test_lambchat_profile_keeps_empty_principal_permissions(monkeypatch):
+    class FakeProfileMetadataService:
+        async def get(self, **_scope):
+            return {}
+
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr(
+        "app.bootstrap.identity.ProfileMetadataService",
+        lambda _store: FakeProfileMetadataService(),
+    )
     client = TestClient(create_app())
 
     me_response = client.get("/api/auth/me", headers=auth_headers())
