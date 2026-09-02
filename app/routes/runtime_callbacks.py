@@ -16,6 +16,7 @@ from app.db import transaction
 from app.platform.public_payload import sanitize_public_reasoning_text
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.public_execution import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
+from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.kernel_contracts import CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE
 from app.runtime.sandbox.callback_tokens import (
@@ -23,12 +24,14 @@ from app.runtime.sandbox.callback_tokens import (
     callback_token_id_matches_binding,
     callback_token_matches,
 )
+from app.runtime.sandbox.container_provider import create_container_provider
 from app.runtime.sandbox.contracts import (
     ExecutorCallbackEvent,
     ExecutorContextRetrievalRequest,
     executor_callback_receipt_event_count,
 )
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
+from app.runtime.sandbox.providers.opensandbox.startup import renew_opensandbox_lifetime
 from app.runtime.sandbox.executor_signals import (
     ExecutorSignalUnavailable,
     publish_executor_terminal_signal,
@@ -273,6 +276,7 @@ async def record_executor_callback(
                     detail="sandbox_executor_terminal_conflict",
                 ) from exc
         elif lease_id:
+            settings = get_settings()
             heartbeat = await sandbox_lease_repository.record_sandbox_executor_heartbeat(
                 conn,
                 tenant_id=tenant_id,
@@ -280,13 +284,34 @@ async def record_executor_callback(
                 attempt_id=callback.attempt_id,
                 lease_id=lease_id,
                 executor_status="running",
-                ttl_seconds=get_settings().sandbox_lease_ttl_seconds,
+                ttl_seconds=settings.sandbox_lease_ttl_seconds,
             )
             if heartbeat is None:
                 raise HTTPException(
                     status_code=409,
                     detail="sandbox_runtime_attempt_inactive",
                 )
+            if (
+                callback.state_patch.get("executor_heartbeat") is True
+                and isinstance(heartbeat, dict)
+                and str(heartbeat.get("provider") or "").strip().lower() == "opensandbox"
+            ):
+                try:
+                    persisted_lease = container_lease_from_persisted_row(heartbeat)
+                    if persisted_lease is None or persisted_lease.provider != "opensandbox":
+                        raise ValueError("sandbox_runtime_renewal_lease_unavailable")
+                    provider = create_container_provider(persisted_lease.provider)
+                    await renew_opensandbox_lifetime(
+                        provider,
+                        persisted_lease,
+                        settings,
+                        ttl_seconds=settings.sandbox_lease_ttl_seconds,
+                    )
+                except Exception as exc:  # noqa: BLE001 - renewal is one disclosure-safe failure boundary.
+                    raise HTTPException(
+                        status_code=503,
+                        detail="sandbox_runtime_renewal_failed",
+                    ) from exc
         await _require_current_runtime_attempt(
             conn,
             tenant_id=tenant_id,
