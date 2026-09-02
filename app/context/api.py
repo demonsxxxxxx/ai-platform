@@ -2,12 +2,41 @@ from __future__ import annotations
 
 import secrets
 
-from app.context.application.worker_snapshot import materialize_worker_context_snapshot
+from app.context.application.provider_sessions import (
+    ProviderSessionOperationResult,
+    execute_provider_session_callback,
+    provider_session_has_main_transcript,
+)
+from app.context.application.worker_snapshot import (
+    materialize_worker_context_snapshot as _materialize_worker_context_snapshot,
+)
 from app.context.domain.conversation import (
     MAX_CONVERSATION_CONTEXT_CANDIDATES,
     ConversationContextError,
     build_executor_conversation_context,
     empty_executor_conversation_context,
+)
+from app.context.domain.provider_sessions import (
+    MAX_PROVIDER_SESSION_BATCH_BYTES,
+    MAX_PROVIDER_SESSION_BATCH_COUNT,
+    MAX_PROVIDER_SESSION_ENTRIES,
+    MAX_PROVIDER_SESSION_ENTRY_BYTES,
+    MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES,
+    PROVIDER_SESSION_CONTEXT_EPOCH,
+    PROVIDER_SESSION_ENGINE_CLAUDE,
+    PROVIDER_SESSION_RESUME_CONTEXT_KEY,
+    ProviderSessionConflictError,
+    ProviderSessionContinuityError,
+    ProviderSessionEntry,
+    ProviderSessionNotFoundError,
+    ProviderSessionScope,
+    claude_provider_session_id_for_session,
+    normalize_provider_entry,
+    normalize_provider_entry_batch,
+    normalize_provider_subpath,
+    provider_session_id_for_scope,
+    provider_session_id_for_session,
+    select_provider_conversation_context,
 )
 
 
@@ -145,6 +174,37 @@ def context_file_executor_failure(
     return error_code, message, diagnostic
 
 
+async def _provider_transcript_state(conn: object, **kwargs: object) -> bool:
+    kwargs.pop("run_id", None)
+    return await provider_session_has_main_transcript(conn, **kwargs)
+
+
+async def materialize_worker_context_snapshot(
+    conn: object,
+    *,
+    identity: dict[str, str],
+    context_snapshot_id: str,
+    snapshot_loader,
+    message_loader,
+    context_projector,
+    provider_transcript_loader=None,
+):
+    if (
+        provider_transcript_loader is None
+        and identity.get("agent_id")
+        and identity.get("engine") == PROVIDER_SESSION_ENGINE_CLAUDE
+    ):
+        provider_transcript_loader = _provider_transcript_state
+    return await _materialize_worker_context_snapshot(
+        conn,
+        identity=identity,
+        context_snapshot_id=context_snapshot_id,
+        snapshot_loader=snapshot_loader,
+        message_loader=message_loader,
+        context_projector=context_projector,
+        provider_transcript_loader=provider_transcript_loader,
+    )
+
 __all__ = [
     "CONTEXT_FILE_ERROR_CODES",
     "CONTEXT_FILE_FAILURE_SCHEMA_VERSION",
@@ -157,4 +217,26 @@ __all__ = [
     "empty_executor_conversation_context",
     "materialize_worker_context_snapshot",
     "normalize_context_file_error_code",
+    "MAX_PROVIDER_SESSION_BATCH_BYTES",
+    "MAX_PROVIDER_SESSION_BATCH_COUNT",
+    "MAX_PROVIDER_SESSION_ENTRIES",
+    "MAX_PROVIDER_SESSION_ENTRY_BYTES",
+    "MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES",
+    "PROVIDER_SESSION_CONTEXT_EPOCH",
+    "PROVIDER_SESSION_ENGINE_CLAUDE",
+    "PROVIDER_SESSION_RESUME_CONTEXT_KEY",
+    "ProviderSessionConflictError",
+    "ProviderSessionContinuityError",
+    "ProviderSessionEntry",
+    "ProviderSessionNotFoundError",
+    "ProviderSessionOperationResult",
+    "ProviderSessionScope",
+    "claude_provider_session_id_for_session",
+    "normalize_provider_entry",
+    "normalize_provider_entry_batch",
+    "normalize_provider_subpath",
+    "provider_session_id_for_scope",
+    "provider_session_id_for_session",
+    "select_provider_conversation_context",
+    "execute_provider_session_callback",
 ]

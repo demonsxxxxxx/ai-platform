@@ -950,6 +950,13 @@ def default_cancel_not_requested(monkeypatch):
             ),
         )
 
+    async def no_provider_transcript(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(
+        "app.context.api.provider_session_has_main_transcript",
+        no_provider_transcript,
+    )
     monkeypatch.setattr("app.worker.parse_queue_payload", capture_queue_payload)
     monkeypatch.setattr("app.worker._payload_from_locked_run", materialize_legacy_locked_run)
     monkeypatch.setattr(

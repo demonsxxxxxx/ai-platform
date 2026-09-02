@@ -49,12 +49,7 @@ from app.executors.claude_agent_sdk_runner import (
     sandbox_runtime_tool_policy_subjects as _sandbox_runtime_tool_policy_subjects,
 )
 from app.executors.claude.prompts import build_harness_chat_prompt
-from app.execution.api import (
-    SkillInvocationEvidenceBinder,
-    claude_sdk_failure_code,
-    claude_sdk_failure_message,
-    sandbox_reconciliation_payload,
-)
+from app.execution import api as execution_api
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
 from app.required_tool_contract import (
     RequiredCapabilityDecision,
@@ -616,7 +611,7 @@ class ClaudeAgentWorkerAdapter:
                 result={
                     "message": sdk_result.message or "",
                     "sdk_used": True,
-                    "sdk_session_id": sdk_result.session_id,
+                    "sdk_session_id": execution_api.sdk_session_id_for_run(payload.run_id),
                     "sdk_error": None,
                     "delegate_used": False,
                     "worker_boundary": self.executor_type,
@@ -625,7 +620,7 @@ class ClaudeAgentWorkerAdapter:
                 artifacts=[],
                 executor_payload={
                     "sdk_used": True,
-                    "sdk_session_id": sdk_result.session_id,
+                    "sdk_session_id": execution_api.sdk_session_id_for_run(payload.run_id),
                     "sdk_usage": sdk_result.usage,
                     "sdk_terminal_reason": self._sdk_terminal_reason(sdk_result),
                     "delegate_used": False,
@@ -633,7 +628,7 @@ class ClaudeAgentWorkerAdapter:
                     "sdk_turn_diagnostics": turn_diagnostics,
                 },
             )
-        error_code = claude_sdk_failure_code(sdk_result)
+        error_code = execution_api.claude_sdk_failure_code(sdk_result)
         sdk_used = bool(sdk_result and sdk_result.used_sdk)
         sdk_error = sdk_result.error if sdk_result else "claude_agent_sdk_disabled"
         turn_diagnostics = _public_sdk_turn_diagnostics(
@@ -650,7 +645,7 @@ class ClaudeAgentWorkerAdapter:
             executor_version=self.executor_version,
             capabilities=self._run_capabilities(payload),
             result={
-                "message": claude_sdk_failure_message(sdk_result),
+                "message": execution_api.claude_sdk_failure_message(sdk_result),
                 "error_code": error_code,
                 "sdk_used": sdk_used,
                 "sdk_error": sdk_error,
@@ -680,7 +675,7 @@ class ClaudeAgentWorkerAdapter:
         return terminal_reason if isinstance(terminal_reason, str) and terminal_reason else None
 
     def _sdk_required_result(self, payload: RunPayload, sdk_result) -> ExecutorResult:
-        error_code = claude_sdk_failure_code(sdk_result)
+        error_code = execution_api.claude_sdk_failure_code(sdk_result)
         sdk_used = bool(sdk_result and sdk_result.used_sdk)
         sdk_error = sdk_result.error if sdk_result else "claude_agent_sdk_disabled"
         turn_diagnostics = _public_sdk_turn_diagnostics(
@@ -720,7 +715,7 @@ class ClaudeAgentWorkerAdapter:
         )
 
     def _wrap_file_skill_result(
-        self,
+        self, payload: RunPayload,
         result: ExecutorResult,
         *,
         multi_agent: bool = False,
@@ -734,7 +729,7 @@ class ClaudeAgentWorkerAdapter:
             result={
                 **result.result,
                 "sdk_used": bool(result.result.get("sdk_used", result.executor_payload.get("sdk_used", False))),
-                "sdk_session_id": result.result.get("sdk_session_id", result.executor_payload.get("sdk_session_id")),
+                "sdk_session_id": execution_api.sdk_session_id_for_run(payload.run_id),
                 "sdk_message": result.result.get("sdk_message", result.result.get("message", "")),
                 "sdk_error": result.result.get("sdk_error", result.executor_payload.get("sdk_error")),
                 "delegate_used": bool(result.result.get("delegate_used", result.executor_payload.get("delegate_used", True))),
@@ -745,7 +740,7 @@ class ClaudeAgentWorkerAdapter:
             executor_payload={
                 **result.executor_payload,
                 "sdk_used": bool(result.executor_payload.get("sdk_used", result.result.get("sdk_used", False))),
-                "sdk_session_id": result.executor_payload.get("sdk_session_id", result.result.get("sdk_session_id")),
+                "sdk_session_id": execution_api.sdk_session_id_for_run(payload.run_id),
                 "sdk_usage": result.executor_payload.get("sdk_usage", {}),
                 "sdk_error": result.executor_payload.get("sdk_error", result.result.get("sdk_error")),
                 "delegate_used": bool(result.executor_payload.get("delegate_used", result.result.get("delegate_used", True))),
@@ -777,7 +772,7 @@ class ClaudeAgentWorkerAdapter:
         if completed_outputs:
             resume_preflight_failure = await self._preflight_resume_pinned_skills(payload, event_sink=event_sink)
             if resume_preflight_failure is not None:
-                return self._wrap_file_skill_result(resume_preflight_failure, multi_agent=True)
+                return self._wrap_file_skill_result(payload, resume_preflight_failure, multi_agent=True)
 
         for index, step in enumerate(steps, start=1):
             step_key = str(step["step_key"])
@@ -844,7 +839,7 @@ class ClaudeAgentWorkerAdapter:
                             "error": str(skill_result.result.get("message") or "File skill failed"),
                         },
                     )
-                    return self._wrap_file_skill_result(skill_result, multi_agent=True)
+                    return self._wrap_file_skill_result(payload, skill_result, multi_agent=True)
                 output = str(skill_result.result.get("message") or "File skill completed")
                 extra_payload = {
                     "output": output,
@@ -873,7 +868,7 @@ class ClaudeAgentWorkerAdapter:
                 skill_result = self._multi_agent_resume_result(completed_outputs)
             else:
                 skill_result = await self._run_file_skill_once(payload, event_sink=event_sink)
-        return self._wrap_file_skill_result(skill_result, multi_agent=True)
+        return self._wrap_file_skill_result(payload, skill_result, multi_agent=True)
 
     async def _preflight_resume_pinned_skills(
         self,
@@ -1311,7 +1306,7 @@ class ClaudeAgentWorkerAdapter:
         runtime_context_manifest["queue_attempt_id"] = payload.attempt_id
         adapter_reconciliation_context = {
             "schema_version": "ai-platform.claude-agent-reconciliation-context.v1",
-            "run_payload": sandbox_reconciliation_payload(payload),
+            "run_payload": execution_api.sandbox_reconciliation_payload(payload),
             "workspace": str(prepared.workspace),
             "allowed_skill_names": list(prepared.allowed_skill_names),
             "staged_skill_names": list(prepared.staged_skill_names),
@@ -1325,7 +1320,7 @@ class ClaudeAgentWorkerAdapter:
         reconciliation_context = {
             "schema_version": "ai-platform.executor-reconciliation.v1",
             "adapter_name": "claude-agent-worker",
-            "run_payload": sandbox_reconciliation_payload(payload),
+            "run_payload": execution_api.sandbox_reconciliation_payload(payload),
             "adapter_context": adapter_reconciliation_context,
         }
         request = SandboxRuntimeRequest(
@@ -1363,7 +1358,7 @@ class ClaudeAgentWorkerAdapter:
             ),
             context_manifest=runtime_context_manifest,
             context_retrieval_scope=self._context_retrieval_scope_for_payload(payload, context_pack),
-            sdk_session_id=sdk_session_id_for_run(payload.run_id),
+            **execution_api.claude_provider_session_dispatch(payload, context_pack),
             governed_permission_wait=False,
             require_selected_skill_invocation=False,
             reconciliation_context=reconciliation_context,
@@ -1580,7 +1575,7 @@ class ClaudeAgentWorkerAdapter:
             sandbox_timings = {}
         common_payload = {
             "sdk_used": bool(executor_response.get("sdk_used")),
-            "sdk_session_id": executor_response.get("sdk_session_id"),
+            "sdk_session_id": execution_api.sdk_session_id_for_run(payload.run_id),
             "sdk_usage": executor_response.get("sdk_usage", {}) or {},
             "runtime_terminal_status": runtime_status,
             "delegate_used": False,
@@ -1680,7 +1675,7 @@ class ClaudeAgentWorkerAdapter:
             message = (
                 "任务已取消"
                 if runtime_status in {"cancelled", "canceled"}
-                else claude_sdk_failure_message(
+                else execution_api.claude_sdk_failure_message(
                     type("SdkFailure", (), {"error": error_code})()
                 )
             )
@@ -1732,7 +1727,7 @@ class ClaudeAgentWorkerAdapter:
                 "message": str(executor_response.get("message") or ""),
                 "artifact_count": len(artifacts),
                 "sdk_used": bool(executor_response.get("sdk_used")),
-                "sdk_session_id": executor_response.get("sdk_session_id"),
+                "sdk_session_id": execution_api.sdk_session_id_for_run(payload.run_id),
                 "sdk_error": None,
                 "delegate_used": False,
                 "worker_boundary": self.executor_type,
@@ -1831,7 +1826,7 @@ class ClaudeAgentWorkerAdapter:
                         "message": "Capability execution evidence was incomplete. Please retry.",
                         "error_code": selected_skill_error,
                         "sdk_used": True,
-                        "sdk_session_id": sdk_result.session_id,
+                        "sdk_session_id": execution_api.sdk_session_id_for_run(payload.run_id),
                         "sdk_error": selected_skill_error,
                         "delegate_used": False,
                         "worker_boundary": self.executor_type,
@@ -1843,7 +1838,7 @@ class ClaudeAgentWorkerAdapter:
                     artifacts=[],
                     executor_payload={
                         "sdk_used": True,
-                        "sdk_session_id": sdk_result.session_id,
+                        "sdk_session_id": execution_api.sdk_session_id_for_run(payload.run_id),
                         "sdk_usage": sdk_result.usage,
                         "sdk_terminal_reason": self._sdk_terminal_reason(sdk_result),
                         "sdk_error": selected_skill_error,
@@ -1879,7 +1874,7 @@ class ClaudeAgentWorkerAdapter:
                     "message": sdk_result.message or "",
                     "artifact_count": len(artifacts),
                     "sdk_used": True,
-                    "sdk_session_id": sdk_result.session_id,
+                    "sdk_session_id": execution_api.sdk_session_id_for_run(payload.run_id),
                     "sdk_error": None,
                     "delegate_used": False,
                     "worker_boundary": self.executor_type,
@@ -1891,7 +1886,7 @@ class ClaudeAgentWorkerAdapter:
                 artifacts=artifacts,
                 executor_payload={
                     "sdk_used": True,
-                    "sdk_session_id": sdk_result.session_id,
+                    "sdk_session_id": execution_api.sdk_session_id_for_run(payload.run_id),
                     "sdk_usage": sdk_result.usage,
                     "sdk_terminal_reason": self._sdk_terminal_reason(sdk_result),
                     "delegate_used": False,
@@ -1917,7 +1912,7 @@ class ClaudeAgentWorkerAdapter:
             used_skill_names=used_skill_names,
             pins=prepared.pinned_manifests,
         )
-        failure_code = claude_sdk_failure_code(sdk_result)
+        failure_code = execution_api.claude_sdk_failure_code(sdk_result)
         turn_diagnostics = _public_sdk_turn_diagnostics(
             payload,
             getattr(sdk_result, "turn_diagnostics", {}) if sdk_result else {},
@@ -1933,7 +1928,7 @@ class ClaudeAgentWorkerAdapter:
             capabilities=self._run_capabilities(payload),
             result={
                 "message": (
-                    claude_sdk_failure_message(sdk_result)
+                    execution_api.claude_sdk_failure_message(sdk_result)
                     if sdk_result
                     else "Claude Agent SDK execution failed"
                 ),
@@ -2131,7 +2126,7 @@ class ClaudeAgentWorkerAdapter:
             )
 
         skill_evidence_binder = (
-            SkillInvocationEvidenceBinder(
+            execution_api.SkillInvocationEvidenceBinder(
                 allowed_skill_names=evidence_skill_names,
                 project_record=project_skill_evidence,
             )
@@ -2144,7 +2139,7 @@ class ClaudeAgentWorkerAdapter:
                 "prompt": prompt,
                 "cwd": workspace,
                 "skill_id": payload.skill_id,
-                "session_id": sdk_session_id_for_run(payload.run_id),
+                "session_id": execution_api.sdk_session_id_for_run(payload.run_id),
                 **run_controls.executor_model_controls(payload),
                 "skills": (
                     []

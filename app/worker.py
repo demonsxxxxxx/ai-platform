@@ -1998,7 +1998,7 @@ async def _ensure_worker_context_snapshot(
     trace_id: str,
     run_identity: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
-    identity = run_identity or _payload_identity(payload)
+    identity = {**(run_identity or _payload_identity(payload)), "engine": "claude" if payload.executor_type == "claude-agent-worker" else ""}
     return await materialize_worker_context_snapshot(
         conn,
         identity=identity,

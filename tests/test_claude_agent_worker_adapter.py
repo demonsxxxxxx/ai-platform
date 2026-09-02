@@ -44,6 +44,7 @@ from app.required_tool_contract import (
     parse_required_tool_declaration,
 )
 from app.runtime.kernel_contracts import AgentEvent
+from app.execution.api import sdk_session_id_for_run
 from app.runtime.sandbox.container_provider import (
     DockerContainerProvider,
     FakeContainerProvider,
@@ -3744,7 +3745,7 @@ async def test_general_chat_propagates_worker_cancel_from_sdk_stream(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_worker_passes_distinct_run_scoped_sdk_session_ids_to_sandbox(monkeypatch, tmp_path):
+async def test_worker_passes_stable_platform_session_sdk_ids_to_sandbox(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills", name="qa-file-reviewer")
     async def no_files(payload, workspace):
@@ -3775,7 +3776,7 @@ async def test_worker_passes_distinct_run_scoped_sdk_session_ids_to_sandbox(monk
 
     captured_session_ids = [request.sdk_session_id for request in runtime_requests]
     assert captured_session_ids[0]
-    assert captured_session_ids[0] != captured_session_ids[1]
+    assert captured_session_ids[0] == captured_session_ids[1]
     assert captured_session_ids[2] == captured_session_ids[0]
     for request in runtime_requests:
         bash_subjects = [
@@ -4012,7 +4013,7 @@ async def test_qa_file_reviewer_multi_agent_plan_emits_steps_and_runs_staged_sdk
     assert received_event_sinks == [event_sink]
     assert result.result["sdk_used"] is True
     assert result.result["delegate_used"] is False
-    assert result.result["sdk_session_id"] == "sdk-session"
+    assert result.result["sdk_session_id"] == sdk_session_id_for_run("run_1")
     assert result.executor_payload["sdk_used"] is True
     assert result.executor_payload["delegate_used"] is False
     assert result.executor_payload["sdk_usage"] == {"input_tokens": 1}

@@ -3,9 +3,10 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from app import repositories
+from app.context import api as context_api
 from app.context_manifest import available_context_retrieval_tools
 from app.context.retrieval import (
     ContextRetrievalAuthority,
@@ -28,6 +29,8 @@ from app.runtime.sandbox.container_provider import create_container_provider
 from app.runtime.sandbox.contracts import (
     ExecutorCallbackEvent,
     ExecutorContextRetrievalRequest,
+    ProviderSessionCallbackRequest,
+    ProviderSessionCallbackResponse,
     executor_callback_receipt_event_count,
 )
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
@@ -55,6 +58,29 @@ logger = logging.getLogger(__name__)
 
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled", "canceled"}
 _TERMINAL_EXECUTOR_CALLBACK_STATUSES = {"completed", "failed", "cancelled"}
+MAX_PROVIDER_SESSION_CALLBACK_BODY_BYTES = context_api.MAX_PROVIDER_SESSION_BATCH_BYTES + 64 * 1024
+
+
+async def _enforce_provider_session_callback_body_limit(request: Request) -> bytes:
+    """Bound raw callback bytes before FastAPI materializes the request model."""
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > MAX_PROVIDER_SESSION_CALLBACK_BODY_BYTES:
+            raise HTTPException(status_code=413, detail="provider_session_request_too_large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _provider_session_callback_from_request(
+    request: Request,
+) -> ProviderSessionCallbackRequest:
+    body = await _enforce_provider_session_callback_body_limit(request)
+    try:
+        return ProviderSessionCallbackRequest.model_validate_json(body)
+    except Exception as exc:  # noqa: BLE001 - expose only a stable validation detail.
+        raise HTTPException(status_code=422, detail="provider_session_request_invalid") from exc
 
 
 def _executor_callback_receipt(
@@ -347,6 +373,87 @@ async def record_executor_callback(
     )
 
 
+_PROVIDER_SESSION_LIMIT_ERRORS = frozenset(
+    {
+        "provider_session_entry_too_large",
+        "provider_session_entry_batch_too_large",
+        "provider_session_transcript_too_large",
+    }
+)
+_PROVIDER_SESSION_CONFLICT_ERRORS = frozenset(
+    {
+        "provider_session_identity_mismatch",
+        "provider_session_writer_conflict",
+        "provider_session_binding_scope_invalid",
+        "provider_session_writer_identity_invalid",
+        "provider_session_entry_conflict",
+    }
+)
+
+
+def _provider_session_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, context_api.ProviderSessionNotFoundError):
+        return HTTPException(status_code=404, detail="provider_session_not_found")
+    code = str(exc)
+    if code in _PROVIDER_SESSION_LIMIT_ERRORS:
+        return HTTPException(status_code=413, detail=code)
+    if code in _PROVIDER_SESSION_CONFLICT_ERRORS:
+        return HTTPException(status_code=409, detail=code)
+    return HTTPException(status_code=503, detail="provider_session_callback_failed")
+
+
+@router.post(
+    "/runtime/callbacks/provider-session",
+    response_model=ProviderSessionCallbackResponse,
+)
+async def provider_session_callback(
+    callback: ProviderSessionCallbackRequest = Depends(_provider_session_callback_from_request),
+    callback_token: str | None = Header(default=None, alias="X-AI-Platform-Callback-Token"),
+) -> ProviderSessionCallbackResponse:
+    """Broker one exact-run Claude SessionStore operation."""
+
+    _require_valid_callback_token(
+        callback_token,
+        callback.callback_token_id,
+        run_id=callback.run_id,
+        attempt_id=callback.attempt_id,
+    )
+    try:
+        async with transaction() as conn:
+            run_identity, _lease = await _lock_current_runtime_attempt_then_run(
+                conn,
+                run_id=callback.run_id,
+                attempt_id=callback.attempt_id,
+            )
+            result = await context_api.execute_provider_session_callback(
+                conn,
+                tenant_id=str(run_identity.get("tenant_id") or ""),
+                workspace_id=str(run_identity.get("workspace_id") or ""),
+                user_id=str(run_identity.get("user_id") or ""),
+                session_id=str(run_identity.get("session_id") or ""),
+                agent_id=str(run_identity.get("agent_id") or ""),
+                run_id=callback.run_id,
+                attempt_id=callback.attempt_id,
+                provider_session_id=callback.provider_session_id,
+                action=callback.action,
+                entries=callback.entries,
+                subpath=callback.subpath,
+            )
+            return ProviderSessionCallbackResponse(
+                action=result.action,
+                entries=list(result.entries),
+                subpaths=list(result.subpaths),
+                accepted=result.accepted,
+                entry_count=result.entry_count,
+            )
+    except HTTPException:
+        raise
+    except (context_api.ProviderSessionContinuityError, ValueError) as exc:
+        raise _provider_session_http_error(exc) from exc
+    except Exception as exc:  # noqa: BLE001 - callback details stay private.
+        raise HTTPException(status_code=503, detail="provider_session_callback_failed") from exc
+
+
 async def _require_current_runtime_attempt(
     conn,
     *,
@@ -378,12 +485,12 @@ async def _lock_current_runtime_attempt_then_run(
     *,
     run_id: str,
     attempt_id: str,
-    session_id: str,
+    session_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     run_hint = await repositories.get_run_identity(conn, run_id=run_id, for_update=False)
     if run_hint is None:
         raise HTTPException(status_code=404, detail="run_not_found")
-    if str(run_hint.get("session_id") or "") != session_id:
+    if session_id is not None and str(run_hint.get("session_id") or "") != session_id:
         raise HTTPException(status_code=409, detail="callback_session_mismatch")
     if str(run_hint.get("status") or "").lower() in TERMINAL_RUN_STATUSES:
         raise HTTPException(status_code=409, detail="run_already_terminal")
@@ -397,7 +504,7 @@ async def _lock_current_runtime_attempt_then_run(
     locked_run = await repositories.get_run_identity(conn, run_id=run_id, for_update=True)
     if locked_run is None or str(locked_run.get("tenant_id") or "") != tenant_id:
         raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_inactive")
-    if str(locked_run.get("session_id") or "") != session_id:
+    if session_id is not None and str(locked_run.get("session_id") or "") != session_id:
         raise HTTPException(status_code=409, detail="callback_session_mismatch")
     if str(locked_run.get("status") or "").lower() in TERMINAL_RUN_STATUSES:
         raise HTTPException(status_code=409, detail="run_already_terminal")

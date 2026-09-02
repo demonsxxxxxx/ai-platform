@@ -168,7 +168,15 @@ def _captured_sdk_prompt(captured):
     return captured["sdk_user_messages"][0]["message"]["content"]
 
 
-def _fake_sdk(captured, *, hook_invocations, thinking_text=None):
+def _fake_sdk(
+    captured,
+    *,
+    hook_invocations,
+    thinking_text=None,
+    mirror_error=False,
+    append_provider_session=True,
+    append_provider_subpath=None,
+):
     class ThinkingBlock:
         def __init__(self, thinking):
             self.thinking = thinking
@@ -181,6 +189,9 @@ def _fake_sdk(captured, *, hook_invocations, thinking_text=None):
         pass
 
     class StreamEvent:
+        pass
+
+    class MirrorErrorMessage:
         pass
 
     class ResultMessage:
@@ -202,10 +213,21 @@ def _fake_sdk(captured, *, hook_invocations, thinking_text=None):
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
             captured.update(kwargs)
+            self.__dict__.update(kwargs)
 
     async def query(*, prompt, options):
-        del options
         captured["sdk_user_messages"] = [item async for item in prompt]
+        if mirror_error:
+            yield MirrorErrorMessage()
+            return
+        if append_provider_session and getattr(options, "session_store", None) is not None:
+            session_key = getattr(options, "session_id", None) or getattr(options, "resume", None)
+            await options.session_store.append(
+                {"session_id": session_key, "subpath": append_provider_subpath}
+                if append_provider_subpath
+                else session_key,
+                [{"uuid": "entry-ack"}],
+            )
         for hook_name, hook_input, tool_call_id in hook_invocations:
             matchers = captured["hooks"][hook_name]
             if hook_name == "PreToolUse":
@@ -232,6 +254,7 @@ def _fake_sdk(captured, *, hook_invocations, thinking_text=None):
         AssistantMessage=AssistantMessage,
         ClaudeAgentOptions=ClaudeAgentOptions,
         HookMatcher=HookMatcher,
+        MirrorErrorMessage=MirrorErrorMessage,
         ResultMessage=ResultMessage,
         StreamEvent=StreamEvent,
         TextBlock=TextBlock,
@@ -3861,3 +3884,172 @@ async def test_outer_cancellation_reaches_sdk_query_cleanup(monkeypatch, tmp_pat
         await task
     assert cleaned_up.is_set()
     assert events == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored_transcript", "expected_option"),
+    [(None, "session_id"), ([{"uuid": "entry-1"}], "resume")],
+)
+async def test_sdk_provider_session_options_are_exclusive_and_eager(
+    monkeypatch,
+    tmp_path,
+    stored_transcript,
+    expected_option,
+):
+    captured = {}
+
+    append_calls = []
+
+    class Store:
+        async def load(self, provider_session_id):
+            assert provider_session_id == "stable-provider-id"
+            return stored_transcript
+
+        async def append(self, provider_session_id, entries):
+            append_calls.append((provider_session_id, entries))
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _fake_sdk(captured, hook_invocations=[]))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="continue",
+        cwd=tmp_path,
+        skill_id=None,
+        session_id="stable-provider-id",
+        session_store=Store(),
+        provider_session_resume_required=expected_option == "resume",
+    )
+
+    assert result.error is None
+    assert captured["session_store_flush"] == "eager"
+    assert captured["session_store"] is not None
+    assert captured[expected_option] == "stable-provider-id"
+    assert {"session_id", "resume"}.intersection(captured) == {expected_option}
+    assert append_calls == [("stable-provider-id", [{"uuid": "entry-ack"}])]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("append_subpath", [None, "child-agent"])
+async def test_sdk_provider_session_requires_main_append_for_success(
+    monkeypatch, tmp_path, append_subpath
+):
+    captured = {}
+
+    class Store:
+        async def load(self, _provider_session_id):
+            return None
+
+        async def append(self, _provider_session_id, _entries):
+            return None
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(
+            captured,
+            hook_invocations=[],
+            append_provider_session=append_subpath is not None,
+            append_provider_subpath=append_subpath,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="continue",
+        cwd=tmp_path,
+        skill_id=None,
+        session_id="stable-provider-id",
+        session_store=Store(),
+    )
+
+    assert result.error == "claude_agent_sdk_provider_session_failed"
+    assert result.message == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored_transcript", "resume_required"),
+    [(None, True), ([{"uuid": "entry-1"}], False)],
+)
+async def test_sdk_provider_session_resume_state_mismatch_fails_closed(
+    monkeypatch,
+    tmp_path,
+    stored_transcript,
+    resume_required,
+):
+    captured = {}
+
+    class Store:
+        async def load(self, _provider_session_id):
+            return stored_transcript
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _fake_sdk(captured, hook_invocations=[]))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="continue",
+        cwd=tmp_path,
+        skill_id=None,
+        session_id="stable-provider-id",
+        session_store=Store(),
+        provider_session_resume_required=resume_required,
+    )
+
+    assert result.error == "claude_agent_sdk_provider_session_failed"
+    assert result.message == ""
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_sdk_provider_session_preflight_failure_is_private_and_fail_closed(monkeypatch, tmp_path):
+    captured = {}
+
+    class Store:
+        async def load(self, _provider_session_id):
+            raise RuntimeError("private callback details")
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _fake_sdk(captured, hook_invocations=[]))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="continue",
+        cwd=tmp_path,
+        skill_id=None,
+        session_id="stable-provider-id",
+        session_store=Store(),
+    )
+
+    assert result.error == "claude_agent_sdk_provider_session_failed"
+    assert result.message == ""
+    assert "private callback details" not in repr(result)
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_sdk_mirror_error_is_a_private_fail_closed_provider_failure(monkeypatch, tmp_path):
+    captured = {}
+
+    class Store:
+        async def load(self, _provider_session_id):
+            return [{"uuid": "entry-1"}]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(captured, hook_invocations=[], mirror_error=True),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="continue",
+        cwd=tmp_path,
+        skill_id=None,
+        session_id="stable-provider-id",
+        session_store=Store(),
+    )
+
+    assert result.error == "claude_agent_sdk_provider_session_failed"
+    assert result.message == ""
+    assert "MirrorError" not in repr(result)
+    assert "entry-1" not in repr(result)

@@ -20,6 +20,9 @@ does not represent deployed runtime state.
 - `architecture/agent-conversation-context.md` defines platform-owned conversation
   continuity, snapshot-authorized executor-private messages, complete-turn
   context budgeting, and the separation from public context projections.
+- `architecture/claude-provider-session-continuity.md` defines Claude-native
+  provider transcript continuity, bounded callback persistence, and the
+  bootstrap/resume boundary with platform message and snapshot authority.
 - `architecture/source-code-architecture.md` defines the normative backend
   package tree, dependency direction, naming, compatibility, deletion proof,
   and strangler migration contract. ADR 0006 records the decision and rejected

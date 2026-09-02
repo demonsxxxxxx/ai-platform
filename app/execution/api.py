@@ -36,6 +36,7 @@ from app.execution.application.claude_agent_events import (
 from app.execution.application.stale_terminalization import (
     stage_stale_run_reconciliation,
 )
+from app.execution.domain.provider_sessions import sdk_session_id_for_run
 from app.execution.domain.public_projection import (
     claude_sdk_failure_code,
     claude_sdk_failure_message,
@@ -46,6 +47,7 @@ from app.execution.domain.public_projection import (
 from typing import Any
 
 from app.execution.application.model_control_plane import configured_model_control_plane
+from app.execution.application.provider_sessions import claude_provider_session_dispatch
 from app.execution.application.model_selection import (
     RunModelSelection as RunModelSelection,
 )
@@ -76,6 +78,7 @@ __all__ = [
     "WorkerRunCancelled",
     "claude_sdk_failure_code",
     "claude_sdk_failure_message",
+    "claude_provider_session_dispatch",
     "context_file_failure_event_fields",
     "context_file_failure_event_payload",
     "context_file_failure_log_extra",
@@ -85,6 +88,7 @@ __all__ = [
     "restored_executor_reconciliation_queue_payload",
     "restored_sandbox_run_payload",
     "sandbox_reconciliation_payload",
+    "sdk_session_id_for_run",
     "stage_stale_run_reconciliation",
     "submit_run_until_cancelled",
     "list_public_models",

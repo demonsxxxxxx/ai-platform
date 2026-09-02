@@ -529,6 +529,72 @@ alter table sessions drop constraint if exists chk_sessions_title_source;
 alter table sessions add constraint chk_sessions_title_source
   check (title_source in ('initial', 'generated', 'user'));
 
+-- Claude provider continuity is executor-private and inherits Session deletion.
+-- The binding is scoped by the authoritative platform Session, not sandbox data.
+create unique index if not exists idx_sessions_provider_scope
+  on sessions(tenant_id, workspace_id, user_id, id, agent_id);
+
+create table if not exists provider_session_bindings (
+  tenant_id text not null references tenants(id),
+  workspace_id text not null,
+  user_id text not null,
+  session_id text not null,
+  agent_id text not null,
+  engine text not null,
+  provider_session_id uuid not null,
+  context_epoch bigint not null default 1,
+  next_sequence bigint not null default 1,
+  writer_run_id text,
+  writer_attempt_id text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint chk_provider_session_bindings_engine check (engine = 'claude'),
+  constraint chk_provider_session_bindings_context_epoch check (context_epoch >= 1),
+  constraint chk_provider_session_bindings_next_sequence check (next_sequence >= 1),
+  constraint pk_provider_session_bindings primary key (tenant_id, session_id, engine),
+  constraint uq_provider_session_bindings_provider_session_id unique (provider_session_id),
+  constraint uq_provider_session_bindings_scope unique (
+    tenant_id, workspace_id, user_id, session_id, agent_id, engine,
+    provider_session_id
+  ),
+  constraint fk_provider_session_bindings_session foreign key (
+    tenant_id, workspace_id, user_id, session_id, agent_id
+  ) references sessions(tenant_id, workspace_id, user_id, id, agent_id)
+    on delete cascade
+);
+
+create table if not exists provider_session_entries (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  workspace_id text not null,
+  user_id text not null,
+  session_id text not null,
+  agent_id text not null,
+  engine text not null,
+  provider_session_id uuid not null,
+  subpath text not null default '',
+  sequence bigint not null,
+  sdk_entry_uuid text,
+  entry_json jsonb not null,
+  created_at timestamptz not null default now(),
+  constraint chk_provider_session_entries_engine check (engine = 'claude'),
+  constraint chk_provider_session_entries_sequence check (sequence >= 1),
+  constraint uq_provider_session_entries_sequence unique (tenant_id, provider_session_id, subpath, sequence),
+  constraint fk_provider_session_entries_binding foreign key (
+    tenant_id, workspace_id, user_id, session_id, agent_id, engine,
+    provider_session_id
+  ) references provider_session_bindings(
+    tenant_id, workspace_id, user_id, session_id, agent_id, engine,
+    provider_session_id
+  ) on delete cascade
+);
+
+create unique index if not exists uq_provider_session_entries_sdk_uuid
+  on provider_session_entries(tenant_id, provider_session_id, subpath, sdk_entry_uuid)
+  where sdk_entry_uuid is not null and sdk_entry_uuid <> '';
+create index if not exists idx_provider_session_entries_order
+  on provider_session_entries(tenant_id, provider_session_id, subpath, sequence);
+
 create table if not exists model_gateway_revisions (
   revision bigint primary key,
   base_url text not null,
