@@ -213,7 +213,7 @@ export function ModelCatalogPanel() {
               <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
                 {t(
                   "models.publicProjectionDescription",
-                  "聊天和选择器只读取公开可用模型，不暴露密钥、网关配置或租户外信息。",
+                  "聊天和选择器只读取公开可用模型，不暴露密钥、网关配置或内部部署信息。",
                 )}
               </p>
             </div>
