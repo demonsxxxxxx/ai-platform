@@ -380,9 +380,13 @@ jobs:
   release-manifest:
     name: release image ready manifest
     needs: [publish]
+    concurrency:
+      group: ai-platform-packaging-public-evidence
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
+    environment: packaging-publish
     permissions:
-      contents: read
+      contents: write
       packages: read
     steps:
       - name: Checkout exact verifier source
@@ -492,6 +496,19 @@ jobs:
             --expected-role backend \
             --expected-role frontend
 
+      - name: Create public ready evidence archive
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          python -m zipfile -c release-image-evidence.zip \
+            release-image-manifest.json \
+            subject-*.json \
+            sbom-*.spdx.json \
+            trivy-*.json \
+            cosign-*.json \
+            provenance-*.json
+          python -m zipfile -t release-image-evidence.zip
+
       - name: Upload ready release image evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -505,3 +522,40 @@ jobs:
             trivy-*.json
             cosign-*.json
             provenance-*.json
+
+      - name: Publish public latest-main evidence
+        if: github.event_name == 'push'
+        env:
+          ASSET_LABEL: release-image-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          ASSET_PATH: release-image-evidence.zip
+          GH_CLI_BIN: ${{ env.GH_CLI_BIN }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: latest-main-evidence
+        run: |
+          set -euo pipefail
+          test -n "$GH_CLI_BIN"
+          current_main="$(
+            "$GH_CLI_BIN" api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" \
+              --jq '.object.sha'
+          )"
+          test "$current_main" = "$GITHUB_SHA"
+          if release_state="$(
+            "$GH_CLI_BIN" release view "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json isDraft,isPrerelease,tagName \
+              --jq '.tagName + " " + (.isDraft | tostring) + " " + (.isPrerelease | tostring)' \
+              2>/dev/null
+          )"; then
+            test "$release_state" = "$RELEASE_TAG false true"
+          else
+            "$GH_CLI_BIN" release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Latest main deployment evidence" \
+              --notes "Public rolling evidence for anonymous latest-main deployment admission." \
+              --prerelease
+          fi
+          "$GH_CLI_BIN" release upload "$RELEASE_TAG" \
+            "$ASSET_PATH#$ASSET_LABEL" \
+            --clobber \
+            --repo "$GITHUB_REPOSITORY"

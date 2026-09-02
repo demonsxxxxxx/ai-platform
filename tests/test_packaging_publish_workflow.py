@@ -135,7 +135,13 @@ def test_publish_permissions_are_job_scoped_and_environment_protected():
     )
 
     manifest = workflow["jobs"]["release-manifest"]
-    assert manifest["permissions"] == {"contents": "read", "packages": "read"}
+    assert "concurrency" not in workflow
+    assert manifest["concurrency"] == {
+        "group": "ai-platform-packaging-public-evidence",
+        "cancel-in-progress": "false",
+    }
+    assert manifest["permissions"] == {"contents": "write", "packages": "read"}
+    assert manifest["environment"] == "packaging-publish"
     assert "attestations" not in manifest["permissions"]
     assert "id-token" not in manifest["permissions"]
 
@@ -204,7 +210,8 @@ def test_publish_matrix_is_exactly_backend_and_frontend_on_linux_amd64():
     text = _workflow_text()
     assert "platforms: linux/amd64" in text
     assert "linux/arm64" not in text
-    assert "latest" not in text.lower()
+    assert ":latest" not in text.lower()
+    assert "tags: latest" not in text.lower()
     assert "${{ matrix.subject }}:${{ github.sha }}" in text
     assert "${{ matrix.subject }}@${{ steps.build.outputs.digest }}" in text
     assert "docker image inspect" not in text
@@ -479,8 +486,27 @@ def test_release_manifest_reverifies_exact_downloaded_bundles_with_pinned_gh():
     assert '> "provenance-$role.assembly-verified.json"' in verify["run"]
     assert "set -x" not in verify["run"]
     assert 'echo "$GH_TOKEN"' not in verify["run"]
+    public = next(
+        step
+        for step in steps
+        if step.get("name") == "Publish public latest-main evidence"
+    )
+    assert public["if"] == "github.event_name == 'push'"
+    assert public["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert public["env"]["GH_CLI_BIN"] == "${{ env.GH_CLI_BIN }}"
+    assert public["env"]["RELEASE_TAG"] == "latest-main-evidence"
+    assert public["env"]["ASSET_PATH"] == "release-image-evidence.zip"
+    assert public["env"]["ASSET_LABEL"] == (
+        "release-image-evidence-${{ github.sha }}-${{ github.run_id }}-"
+        "${{ github.run_attempt }}"
+    )
+    assert 'release upload "$RELEASE_TAG"' in public["run"]
+    assert '"$ASSET_PATH#$ASSET_LABEL"' in public["run"]
+    assert "--clobber" in public["run"]
+    assert "set -x" not in public["run"]
+    assert 'echo "$GH_TOKEN"' not in public["run"]
     for step in steps:
-        if step is verify:
+        if step is verify or step is public:
             continue
         assert "GH_TOKEN" not in step.get("env", {})
 
@@ -495,7 +521,7 @@ def test_release_manifest_authenticates_private_ghcr_before_local_bundle_verific
         step for step in steps if step.get("name") == "Reverify downloaded provenance bundles"
     )
 
-    assert manifest["permissions"] == {"contents": "read", "packages": "read"}
+    assert manifest["permissions"] == {"contents": "write", "packages": "read"}
     assert "attestations" not in manifest["permissions"]
     assert names.index("Log in to GHCR for assembly") < names.index(
         "Reverify downloaded provenance bundles"
@@ -535,8 +561,13 @@ def test_release_manifest_authenticates_private_ghcr_before_local_bundle_verific
     assert logout["if"] == "always()"
     assert logout["run"] == "docker logout ghcr.io"
 
+    public = next(
+        step
+        for step in steps
+        if step.get("name") == "Publish public latest-main evidence"
+    )
     for step in steps:
-        if step is verify:
+        if step is verify or step is public:
             continue
         assert "GH_TOKEN" not in step.get("env", {})
     for step in steps:
@@ -699,6 +730,48 @@ def test_artifact_and_evidence_names_bind_run_attempt():
         "$GITHUB_RUN_ATTEMPT-${{ matrix.role }}/trivy-${{ matrix.role }}.json"
         in subject_record["run"]
     )
+
+
+def test_public_evidence_archive_is_complete_and_only_pushes_roll_main():
+    workflow = _workflow()
+    manifest = workflow["jobs"]["release-manifest"]
+    steps = manifest["steps"]
+    archive = next(
+        step
+        for step in steps
+        if step.get("name") == "Create public ready evidence archive"
+    )
+    public = next(
+        step
+        for step in steps
+        if step.get("name") == "Publish public latest-main evidence"
+    )
+
+    assert archive["if"] == "github.event_name == 'push'"
+    assert "python -m zipfile -c release-image-evidence.zip" in archive["run"]
+    for pattern in (
+        "release-image-manifest.json",
+        "subject-*.json",
+        "sbom-*.spdx.json",
+        "trivy-*.json",
+        "cosign-*.json",
+        "provenance-*.json",
+    ):
+        assert pattern in archive["run"]
+    assert "python -m zipfile -t release-image-evidence.zip" in archive["run"]
+    assert public["if"] == "github.event_name == 'push'"
+    assert "--prerelease" in public["run"]
+    assert "--target \"$GITHUB_SHA\"" in public["run"]
+    assert 'api "repos/$GITHUB_REPOSITORY/git/ref/heads/main"' in public["run"]
+    assert 'test "$current_main" = "$GITHUB_SHA"' in public["run"]
+    assert "--json isDraft,isPrerelease,tagName" in public["run"]
+    assert 'test "$release_state" = "$RELEASE_TAG false true"' in public["run"]
+    upload_index = public["run"].index('release upload "$RELEASE_TAG"')
+    assert public["run"].index('test "$current_main" = "$GITHUB_SHA"') < upload_index
+    assert public["run"].index(
+        'test "$release_state" = "$RELEASE_TAG false true"'
+    ) < upload_index
+    assert "--clobber" in public["run"]
 
 
 def test_ready_manifest_requires_both_subject_records_and_is_uploaded_as_run_evidence():

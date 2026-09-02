@@ -219,19 +219,31 @@ commands, logs, or evidence.
 Unknown profiles, production selection, non-OpenSandbox providers, or a
 one-sided network-mode change fail during process startup.
 
-For the internal-test direct OpenSandbox release, the latest-main quickstart resolves the
-current fixed-repository `main` SHA and waits up to 30 minutes for successful
-backend, frontend, and packaging `push` runs for that exact SHA. It also requires
-the `backend required`, `frontend required`, and `release image ready manifest`
-jobs to have completed successfully. The private repository requires
-`GH_TOKEN`/`GITHUB_TOKEN` with repository Contents and Actions read access, or an
-authenticated local `gh` CLI session. The Docker host must already be logged in
-to `ghcr.io`.
+For the internal-test direct OpenSandbox release, the latest-main quickstart
+resolves the current fixed-repository `main` SHA and waits up to 30 minutes for
+successful backend, frontend, and packaging `push` runs for that exact SHA. It
+also requires the `backend required`, `frontend required`, and
+`release image ready manifest` jobs to have completed successfully. Repository,
+Actions, and rolling release metadata are read anonymously through the configured
+host proxy; the controller removes inherited `GH_TOKEN` and `GITHUB_TOKEN`
+values and sends no Authorization header. The Docker host must already be logged
+in to `ghcr.io`.
 
-The quickstart downloads only the packaging ready artifact whose name is derived
-from the exact SHA, workflow run ID, and run attempt. It applies bounded archive
-extraction and runs the target checkout's semantic release-manifest verifier over
-the manifest, SBOM, provenance, signature, and scan evidence. Only then does it
+The packaging final job uses its protected, job-scoped GitHub Actions token to
+publish the already-verified ready bundle as the fixed
+`release-image-evidence.zip` asset on the public `latest-main-evidence`
+prerelease. That complete bundle, including SBOM and vulnerability scan evidence,
+is intentionally public. Packaging publication is serialized. A publisher must
+prove that its event SHA is still current `main` and validate any existing
+rolling release as a public prerelease before replacing the asset. The rolling
+release tag is transport rather than authority; any remaining stale publication
+race produces a label mismatch and fails closed. The quickstart
+requires the fixed public URL, `github-actions[bot]` uploader, exact
+SHA/run/attempt asset label, GitHub `sha256`, downloaded bytes, and internal
+manifest to agree. It then applies bounded archive extraction and runs the
+target checkout's semantic release-manifest verifier over the manifest, SBOM,
+provenance, signature, and scan evidence. The existing 30-day Actions artifact remains rollback-compatible
+evidence but is not downloaded by the host. Only then does it
 atomically prepare `/data/ai-platform-internal-test/incoming/latest-main.json` as
 a non-secret owner-managed file with exactly these fields:
 
@@ -261,9 +273,9 @@ already prepared the exact checkout and subject may still use the compatible
 `./scripts/deploy-latest.sh --profile internal-test` retry path.
 
 One owner-managed advisory lock covers Actions discovery, exact checkout
-materialization, artifact verification, subject replacement, image pull,
-Compose mutation, health checks, and rollback. The quickstart removes GitHub API
-credentials from the child deployment environment, rechecks fresh
+materialization, public evidence verification, subject replacement, image pull,
+Compose mutation, health checks, and rollback. The quickstart removes inherited
+GitHub API credentials before anonymous discovery, rechecks fresh
 `origin/main`, requires immutable role-specific image refs, validates the
 existing runtime-scoped managed `.env` as an owner-matching `0600` regular file
 without reading or printing its values, and runs Compose semantic preflight
@@ -388,9 +400,10 @@ separately below.
 
 The base host must already provide Python 3.11 or newer, Docker with Compose v2,
 systemd, and a registered Docker `runsc` runtime. Root must have private GHCR
-pull access and either `GH_TOKEN`/`GITHUB_TOKEN` with repository Contents and
-Actions read access or an authenticated `gh` CLI session. Before the command,
-restore these files through the approved secret-management path:
+pull access. Source, Actions metadata, and public release evidence use the same
+anonymous latest-main admission path as internal-test; inherited GitHub API
+tokens are removed. Before the command, restore these files through the approved
+secret-management path:
 
 ```text
 /data/ai-platform-prod/config/production/.env        root:root 0600

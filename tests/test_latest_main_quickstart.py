@@ -99,10 +99,10 @@ class ApprovedClient:
     def __init__(self, *, archive: bytes | None = None) -> None:
         self.archive = archive or _archive_bytes()
         self.calls: list[tuple[str, dict[str, str]]] = []
-        self.downloads: list[int] = []
+        self.downloads: list[str] = []
         self.job_changes: dict[str, object] = {}
         self.run_changes: dict[str, object] = {}
-        self.artifact_changes: dict[str, object] = {}
+        self.asset_changes: dict[str, object] = {}
         self.main_commits = [COMMIT]
 
     def get_json(
@@ -121,23 +121,23 @@ class ApprovedClient:
                 else self.main_commits[0]
             )
             return {"ref": latest.MAIN_REF, "object": {"type": "commit", "sha": commit}}
-        if "/actions/workflows/" in path:
-            file_name = path.split("/actions/workflows/", 1)[1].split("/runs", 1)[0]
-            spec = next(
-                item for item in latest.WORKFLOWS if item.file_name == file_name
-            )
-            run = {
-                "id": RUN_IDS[file_name],
-                "run_attempt": 1,
-                "head_sha": COMMIT,
-                "head_branch": "main",
-                "event": "push",
-                "path": spec.path,
-                "status": "completed",
-                "conclusion": "success",
-                **self.run_changes,
-            }
-            return {"workflow_runs": [run]}
+        if path.endswith("/actions/runs"):
+            runs = []
+            for spec in latest.WORKFLOWS:
+                runs.append(
+                    {
+                        "id": RUN_IDS[spec.file_name],
+                        "run_attempt": 1,
+                        "head_sha": COMMIT,
+                        "head_branch": "main",
+                        "event": "push",
+                        "path": spec.path,
+                        "status": "completed",
+                        "conclusion": "success",
+                        **self.run_changes,
+                    }
+                )
+            return {"total_count": len(runs), "workflow_runs": runs}
         if path.endswith("/jobs"):
             run_id = int(path.split("/actions/runs/", 1)[1].split("/jobs", 1)[0])
             spec = next(
@@ -152,29 +152,32 @@ class ApprovedClient:
                 **self.job_changes,
             }
             return {"total_count": 1, "jobs": [job]}
-        if path.endswith("/artifacts"):
-            name = f"release-image-evidence-{COMMIT}-103-1"
+        if path.endswith(
+            f"/releases/tags/{latest.PUBLIC_EVIDENCE_RELEASE_TAG}"
+        ):
+            label = f"release-image-evidence-{COMMIT}-103-1"
             return {
-                "artifacts": [
+                "tag_name": latest.PUBLIC_EVIDENCE_RELEASE_TAG,
+                "draft": False,
+                "prerelease": True,
+                "assets": [
                     {
-                        "id": 9001,
-                        "name": name,
-                        "size_in_bytes": len(self.archive),
-                        "expired": False,
-                        "digest": "sha256:" + hashlib.sha256(self.archive).hexdigest(),
-                        "workflow_run": {
-                            "id": 103,
-                            "head_sha": COMMIT,
-                            "head_branch": "main",
-                        },
-                        **self.artifact_changes,
+                        "name": latest.PUBLIC_EVIDENCE_ASSET_NAME,
+                        "label": label,
+                        "size": len(self.archive),
+                        "state": "uploaded",
+                        "digest": "sha256:"
+                        + hashlib.sha256(self.archive).hexdigest(),
+                        "browser_download_url": latest.PUBLIC_EVIDENCE_ASSET_URL,
+                        "uploader": {"login": latest.PUBLIC_EVIDENCE_UPLOADER},
+                        **self.asset_changes,
                     }
-                ]
+                ],
             }
         raise AssertionError(path)
 
-    def download_artifact(self, artifact_id: int, destination: Path) -> str:
-        self.downloads.append(artifact_id)
+    def download_public_asset(self, url: str, destination: Path) -> str:
+        self.downloads.append(url)
         destination.write_bytes(self.archive)
         destination.chmod(0o600)
         return hashlib.sha256(self.archive).hexdigest()
@@ -195,10 +198,16 @@ def test_wait_requires_three_exact_sha_workflows_and_final_jobs() -> None:
 
     assert candidate.source_commit == COMMIT
     assert set(candidate.runs) == {spec.file_name for spec in latest.WORKFLOWS}
-    workflow_calls = [call for call in client.calls if "/actions/workflows/" in call[0]]
-    assert len(workflow_calls) == 3
-    assert all(call[1]["head_sha"] == COMMIT for call in workflow_calls)
-    assert all(call[1]["event"] == "push" for call in workflow_calls)
+    workflow_calls = [
+        call for call in client.calls if call[0].endswith("/actions/runs")
+    ]
+    assert len(workflow_calls) == 1
+    assert workflow_calls[0][1] == {
+        "branch": "main",
+        "event": "push",
+        "head_sha": COMMIT,
+        "per_page": "100",
+    }
     assert len([call for call in client.calls if call[0].endswith("/jobs")]) == 3
 
 
@@ -252,26 +261,88 @@ def test_main_advance_restarts_exact_sha_admission() -> None:
     queried_shas = [
         query["head_sha"]
         for path, query in client.calls
-        if "/actions/workflows/" in path
+        if path.endswith("/actions/runs")
     ]
     assert COMMIT in queried_shas and OLD_COMMIT in queried_shas
 
 
-def test_ready_artifact_is_bound_to_packaging_run_attempt() -> None:
+def test_public_evidence_is_bound_to_packaging_run_attempt() -> None:
     client = ApprovedClient()
-    artifact = latest.find_ready_artifact(client, _candidate())
+    asset = latest.find_public_evidence_asset(client, _candidate())
 
-    assert artifact is not None
-    assert artifact.artifact_id == 9001
-    assert artifact.name == f"release-image-evidence-{COMMIT}-103-1"
+    assert asset is not None
+    assert asset.name == latest.PUBLIC_EVIDENCE_ASSET_NAME
+    assert asset.label == f"release-image-evidence-{COMMIT}-103-1"
+    assert asset.download_url == latest.PUBLIC_EVIDENCE_ASSET_URL
 
 
-def test_ready_artifact_requires_github_archive_digest() -> None:
+def test_public_evidence_requires_github_archive_digest() -> None:
     client = ApprovedClient()
-    client.artifact_changes = {"digest": None}
+    client.asset_changes = {"digest": None}
 
-    with pytest.raises(latest.LatestMainError, match="artifact digest is invalid"):
-        latest.find_ready_artifact(client, _candidate())
+    with pytest.raises(latest.LatestMainError, match="evidence digest is invalid"):
+        latest.find_public_evidence_asset(client, _candidate())
+
+
+def test_stale_public_evidence_label_waits_for_selected_run() -> None:
+    client = ApprovedClient()
+    client.asset_changes = {"label": f"release-image-evidence-{OLD_COMMIT}-99-1"}
+
+    assert latest.find_public_evidence_asset(client, _candidate()) is None
+
+
+def test_anonymous_api_404_is_classified_as_missing() -> None:
+    class MissingOpener:
+        def open(self, request: Request, **_kwargs: object) -> object:
+            raise HTTPError(request.full_url, 404, "not found", {}, io.BytesIO())
+
+    client = latest.GitHubClient(
+        opener=MissingOpener(),
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(latest._GitHubNotFoundError):
+        client.get_json(
+            f"/repos/{latest.REPOSITORY}/releases/tags/"
+            f"{latest.PUBLIC_EVIDENCE_RELEASE_TAG}"
+        )
+
+
+def test_missing_public_release_is_retried_within_appearance_window() -> None:
+    class AppearingClient(ApprovedClient):
+        missing = True
+
+        def get_json(self, path: str, **kwargs: object) -> object:
+            if path.endswith(
+                f"/releases/tags/{latest.PUBLIC_EVIDENCE_RELEASE_TAG}"
+            ) and self.missing:
+                self.missing = False
+                raise latest._GitHubNotFoundError("not found")
+            return super().get_json(path, **kwargs)
+
+    sleeps: list[float] = []
+    asset = latest.wait_for_public_evidence_asset(
+        AppearingClient(),
+        _candidate(),
+        monotonic=lambda: 0.0,
+        sleep=sleeps.append,
+    )
+
+    assert asset.name == latest.PUBLIC_EVIDENCE_ASSET_NAME
+    assert sleeps == [latest.POLL_INTERVAL_SECONDS]
+
+
+def test_public_evidence_requires_actions_uploader_and_exact_url() -> None:
+    client = ApprovedClient()
+    client.asset_changes = {"uploader": {"login": "maintainer"}}
+    with pytest.raises(latest.LatestMainError, match="evidence is invalid"):
+        latest.find_public_evidence_asset(client, _candidate())
+
+    client.asset_changes = {
+        "browser_download_url": "https://example.invalid/release-image-evidence.zip"
+    }
+    with pytest.raises(latest.LatestMainError, match="evidence is invalid"):
+        latest.find_public_evidence_asset(client, _candidate())
 
 
 def test_safe_archive_extraction_rejects_path_escape_and_symlink(
@@ -372,7 +443,7 @@ def test_deploy_latest_materializes_verifies_atomically_writes_and_hands_off(
     persisted = sandbox_quickstart._load_subject(subject_path, root)
     assert persisted == subject
     assert stat.S_IMODE(subject_path.stat().st_mode) == 0o600
-    assert client.downloads == [9001]
+    assert client.downloads == [latest.PUBLIC_EVIDENCE_ASSET_URL]
 
 
 def test_pre_admission_failure_preserves_previous_subject_bytes(tmp_path: Path) -> None:
@@ -467,16 +538,20 @@ def test_deployment_lock_rejects_overlap(tmp_path: Path) -> None:
         pass
 
 
-def test_github_token_is_claimed_and_removed_from_environment() -> None:
+def test_github_tokens_are_removed_before_anonymous_access() -> None:
     environment = {
         "GH_TOKEN": "secret-one",
         "GITHUB_TOKEN": "secret-two",
         "PATH": "/bin",
     }
 
-    assert latest._claim_github_token(environment) == "secret-one"
-    assert "GH_TOKEN" not in environment
-    assert "GITHUB_TOKEN" not in environment
+    latest._drop_github_tokens(environment)
+
+    assert environment == {"PATH": "/bin"}
+    request = latest.GitHubClient()._github_request(
+        f"{latest.API_ROOT}/repos/{latest.REPOSITORY}/git/ref/heads/main"
+    )
+    assert request.get_header("Authorization") is None
 
 
 def test_target_quickstart_child_environment_excludes_github_credentials(
@@ -504,33 +579,11 @@ def test_target_quickstart_child_environment_excludes_github_credentials(
     assert not forbidden & set(observed[0])
 
 
-def test_github_cli_token_fallback_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(latest.shutil, "which", lambda _name: "/usr/bin/gh")
-    observed: list[list[str]] = []
-    observed_environments: list[dict[str, str]] = []
-
-    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        observed.append(command)
-        observed_environments.append(kwargs["env"])
-        assert kwargs["stderr"] is subprocess.DEVNULL
-        return subprocess.CompletedProcess(command, 0, stdout="cli-token\n", stderr="")
-
-    assert (
-        latest._claim_github_token(
-            {"PATH": "/bin", "HOME": "/managed/home", "DEPLOY_SECRET": "hidden"},
-            run=run,
-        )
-        == "cli-token"
-    )
-    assert observed == [["/usr/bin/gh", "auth", "token"]]
-    assert observed_environments == [{"PATH": "/bin", "HOME": "/managed/home"}]
-
-
-def test_artifact_redirect_strips_authorization_and_rejects_http() -> None:
+def test_release_redirect_accepts_only_github_https() -> None:
     handler = latest._ArtifactRedirectHandler()
     request = Request(
-        "https://api.github.com/repos/demonsxxxxxx/ai-platform/actions/artifacts/1/zip",
-        headers={"Authorization": "Bearer secret", "User-Agent": "test"},
+        latest.PUBLIC_EVIDENCE_ASSET_URL,
+        headers={"User-Agent": "test"},
     )
     redirected = handler.redirect_request(
         request,
@@ -538,23 +591,27 @@ def test_artifact_redirect_strips_authorization_and_rejects_http() -> None:
         302,
         "Found",
         {},
-        "https://example.blob.core.windows.net/actions-results/release.zip",
+        "https://release-assets.githubusercontent.com/release.zip",
     )
     assert redirected is not None
-    assert redirected.get_header("Authorization") is None
 
-    with pytest.raises(HTTPError):
-        handler.redirect_request(
-            request,
-            None,
-            302,
-            "Found",
-            {},
-            "http://example.blob.core.windows.net/release.zip",
-        )
+    for rejected in (
+        "http://release-assets.githubusercontent.com/release.zip",
+        "https://results.actions.githubusercontent.com/release.zip",
+        "https://example.blob.core.windows.net/release.zip",
+    ):
+        with pytest.raises(HTTPError):
+            handler.redirect_request(
+                request,
+                None,
+                302,
+                "Found",
+                {},
+                rejected,
+            )
 
 
-def test_artifact_download_retries_from_api_and_removes_partial_file(
+def test_public_evidence_download_retries_and_removes_partial_file(
     tmp_path: Path,
 ) -> None:
     class Response:
@@ -569,7 +626,7 @@ def test_artifact_download_retries_from_api_and_removes_partial_file(
             return None
 
         def geturl(self) -> str:
-            return "https://results.actions.githubusercontent.com/release.zip"
+            return "https://release-assets.githubusercontent.com/release.zip"
 
         def read(self, _size: int) -> bytes:
             value = next(self.chunks, b"")
@@ -592,17 +649,19 @@ def test_artifact_download_retries_from_api_and_removes_partial_file(
             return next(self.responses)
 
     opener = Opener()
-    client = latest.GitHubClient("token", opener=opener, sleep=lambda _seconds: None)
+    client = latest.GitHubClient(opener=opener, sleep=lambda _seconds: None)
     client._curl_path = None
-    destination = tmp_path / "artifact.zip"
+    destination = tmp_path / "evidence.zip"
 
-    digest = client.download_artifact(42, destination)
+    digest = client.download_public_asset(
+        latest.PUBLIC_EVIDENCE_ASSET_URL, destination
+    )
 
     assert destination.read_bytes() == b"complete"
     assert digest == hashlib.sha256(b"complete").hexdigest()
     assert len(opener.requests) == 2
     assert all(
-        request.full_url.endswith("/actions/artifacts/42/zip")
+        request.full_url == latest.PUBLIC_EVIDENCE_ASSET_URL
         for request in opener.requests
     )
 
@@ -610,13 +669,13 @@ def test_artifact_download_retries_from_api_and_removes_partial_file(
 def test_curl_download_receives_only_short_lived_url_through_stdin(
     tmp_path: Path,
 ) -> None:
-    client = latest.GitHubClient("long-lived-token", sleep=lambda _seconds: None)
+    client = latest.GitHubClient(sleep=lambda _seconds: None)
     client._curl_path = "/usr/bin/curl"
     signed_url = (
-        "https://results.actions.githubusercontent.com/release.zip?sig=short-lived"
+        "https://release-assets.githubusercontent.com/release.zip?sig=short-lived"
     )
-    client._resolve_artifact_download_url = lambda _artifact_id: signed_url
-    destination = tmp_path / "artifact.zip"
+    client._resolve_public_asset_download_url = lambda _url: signed_url
+    destination = tmp_path / "evidence.zip"
     observed: list[tuple[list[str], str, dict[str, str]]] = []
 
     def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -626,14 +685,15 @@ def test_curl_download_receives_only_short_lived_url_through_stdin(
 
     client._curl_run = run
 
-    digest = client.download_artifact(42, destination)
+    digest = client.download_public_asset(
+        latest.PUBLIC_EVIDENCE_ASSET_URL, destination
+    )
 
     assert digest == hashlib.sha256(b"verified archive").hexdigest()
     assert len(observed) == 1
     command, config, environment = observed[0]
     assert command == ["/usr/bin/curl", "-q", "--config", "-"]
     assert signed_url not in command
-    assert "long-lived-token" not in config
     assert "Authorization" not in config
     assert signed_url in config
     assert "\nlocation\n" not in config
@@ -644,22 +704,22 @@ def test_curl_download_receives_only_short_lived_url_through_stdin(
 def test_curl_download_reacquires_url_and_resumes_temporary_partial(
     tmp_path: Path,
 ) -> None:
-    client = latest.GitHubClient("long-lived-token", sleep=lambda _seconds: None)
+    client = latest.GitHubClient(sleep=lambda _seconds: None)
     client._curl_path = "/usr/bin/curl"
     urls = iter(
         [
-            "https://results.actions.githubusercontent.com/release.zip?sig=one",
-            "https://results.actions.githubusercontent.com/release.zip?sig=two",
+            "https://release-assets.githubusercontent.com/release.zip?sig=one",
+            "https://release-assets.githubusercontent.com/release.zip?sig=two",
         ]
     )
-    resolved: list[int] = []
+    resolved: list[str] = []
 
-    def resolve(artifact_id: int) -> str:
-        resolved.append(artifact_id)
+    def resolve(url: str) -> str:
+        resolved.append(url)
         return next(urls)
 
-    client._resolve_artifact_download_url = resolve
-    destination = tmp_path / "artifact.zip"
+    client._resolve_public_asset_download_url = resolve
+    destination = tmp_path / "evidence.zip"
     attempts = 0
 
     def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -675,9 +735,14 @@ def test_curl_download_reacquires_url_and_resumes_temporary_partial(
 
     client._curl_run = run
 
-    digest = client.download_artifact(42, destination)
+    digest = client.download_public_asset(
+        latest.PUBLIC_EVIDENCE_ASSET_URL, destination
+    )
 
-    assert resolved == [42, 42]
+    assert resolved == [
+        latest.PUBLIC_EVIDENCE_ASSET_URL,
+        latest.PUBLIC_EVIDENCE_ASSET_URL,
+    ]
     assert destination.read_bytes() == b"partial-complete"
     assert digest == hashlib.sha256(b"partial-complete").hexdigest()
 
@@ -697,7 +762,6 @@ def test_actions_wait_budget_bounds_blocked_api_request() -> None:
             raise AssertionError("wall timeout did not interrupt the request")
 
     client = latest.GitHubClient(
-        "token",
         opener=BlockingOpener(),
         sleep=lambda _seconds: None,
     )
