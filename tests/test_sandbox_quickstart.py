@@ -335,15 +335,23 @@ def test_inspect_preserves_empty_source_commit_and_optional_health(
     ))
 
 
+@pytest.mark.parametrize("persistent_commit", [COMMIT, OLD_COMMIT])
 @pytest.mark.parametrize("extra_service", [False, True])
 def test_current_runtime_requires_exact_internal_test_topology(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra_service: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    extra_service: bool,
+    persistent_commit: str,
 ) -> None:
     root = tmp_path / "managed"
     release = quickstart.Quickstart(tmp_path, root)
     release.docker = ["docker"]
     expected_config = ",".join(
         str(root / "releases" / COMMIT / path) for path in quickstart.COMPOSE_FILES
+    )
+    persistent_config = ",".join(
+        str(root / "releases" / persistent_commit / path)
+        for path in quickstart.COMPOSE_FILES
     )
     services = list(quickstart.PROJECT_SERVICES)
     if extra_service:
@@ -357,8 +365,14 @@ def test_current_runtime_requires_exact_internal_test_topology(
     def inspect(service: str) -> quickstart.RuntimeContainer:
         image = FRONTEND if service == "frontend" else BACKEND
         commit = COMMIT if service in {"api", "worker", "frontend"} else ""
-        container = _container(runtime_repo, service, commit=commit, image=image)
-        assert container.config_files == expected_config
+        repo = (
+            root / "releases" / persistent_commit
+            if service in quickstart.PERSISTENT_SERVICES
+            else runtime_repo
+        )
+        container = _container(repo, service, commit=commit, image=image)
+        if service not in quickstart.PERSISTENT_SERVICES:
+            assert container.config_files == expected_config
         return container
 
     monkeypatch.setattr(release, "_inspect", inspect)
@@ -366,13 +380,35 @@ def test_current_runtime_requires_exact_internal_test_topology(
         with pytest.raises(quickstart.QuickstartError, match="runtime subject is invalid"):
             release._current_runtime()
     else:
-        assert release._current_runtime() == quickstart.Subject(COMMIT, BACKEND, FRONTEND)
+        assert release._current_runtime() == quickstart.Subject(
+            COMMIT,
+            BACKEND,
+            FRONTEND,
+            persistent_compose_config=persistent_config,
+        )
 
 
-def test_runtime_rejects_wrong_compose_file_selection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("gate", "error"),
+    [
+        ("current", "runtime subject is invalid"),
+        ("health", "container health failed"),
+    ],
+)
+@pytest.mark.parametrize(
+    "identity", ["mixed", "unmanaged", "malformed", "wrong-working-dir"]
+)
+def test_invalid_persistent_compose_identity_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    identity: str,
+    gate: str,
+    error: str,
 ) -> None:
-    release = quickstart.Quickstart(tmp_path, tmp_path / "managed")
+    root = tmp_path / "managed"
+    runtime_repo = root / "releases" / COMMIT
+    persistent_repo = root / "releases" / OLD_COMMIT
+    release = quickstart.Quickstart(runtime_repo, root)
     release.docker = ["docker"]
     monkeypatch.setattr(
         release.runner,
@@ -381,14 +417,75 @@ def test_runtime_rejects_wrong_compose_file_selection(
     )
     monkeypatch.setattr(
         release,
-        "_inspect",
-        lambda service: _container(
-            Path("/data/ai-platform-internal-test/releases/other"),
+        "_http_json",
+        lambda path: (
+            {"status": "ok"}
+            if path.endswith("/health")
+            else {"status": "ready", "runtime_commit": COMMIT}
+        ),
+    )
+
+    def inspect(service: str) -> quickstart.RuntimeContainer:
+        repo = runtime_repo
+        if service in quickstart.PERSISTENT_SERVICES:
+            repo = persistent_repo
+        if identity == "mixed" and service == "redis":
+            repo = root / "releases" / ("3" * 40)
+        if identity == "unmanaged" and service in quickstart.PERSISTENT_SERVICES:
+            repo = tmp_path / "unmanaged" / OLD_COMMIT
+        if identity == "malformed" and service in quickstart.PERSISTENT_SERVICES:
+            repo = root / "releases" / "other"
+        container = _container(
+            repo,
             service,
             commit=COMMIT if service in {"api", "worker", "frontend"} else "",
             image=FRONTEND if service == "frontend" else BACKEND,
-        ),
+            health="none" if service == "worker" else "healthy",
+        )
+        if identity == "wrong-working-dir" and service == "redis":
+            return replace(container, working_dir=str(tmp_path / "unmanaged"))
+        return container
+
+    monkeypatch.setattr(release, "_inspect", inspect)
+
+    with pytest.raises(quickstart.QuickstartError, match=error):
+        if gate == "current":
+            release._current_runtime()
+        else:
+            release._health(quickstart.Subject(COMMIT, BACKEND, FRONTEND))
+
+
+@pytest.mark.parametrize("one_shot", ["workspace-init", "migrate"])
+def test_runtime_rejects_wrong_one_shot_compose_file_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    one_shot: str,
+) -> None:
+    root = tmp_path / "managed"
+    runtime_repo = root / "releases" / COMMIT
+    historical_repo = root / "releases" / OLD_COMMIT
+    release = quickstart.Quickstart(runtime_repo, root)
+    release.docker = ["docker"]
+    monkeypatch.setattr(
+        release.runner,
+        "run",
+        lambda *_args, **_kwargs: "\n".join(quickstart.PROJECT_SERVICES),
     )
+
+    def inspect(service: str) -> quickstart.RuntimeContainer:
+        repo = (
+            historical_repo
+            if service in quickstart.PERSISTENT_SERVICES or service == one_shot
+            else runtime_repo
+        )
+        return _container(
+            repo,
+            service,
+            commit=COMMIT if service in {"api", "worker", "frontend"} else "",
+            image=FRONTEND if service == "frontend" else BACKEND,
+        )
+
+    monkeypatch.setattr(release, "_inspect", inspect)
 
     with pytest.raises(quickstart.QuickstartError, match="runtime subject is invalid"):
         release._current_runtime()
@@ -476,15 +573,27 @@ def test_unavailable_rollback_blocks_target_up(
     assert not any(event.startswith("compose:up") for event in events)
 
 
+@pytest.mark.parametrize("change", ["application", "persistent"])
 def test_runtime_change_after_pull_blocks_up(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
 ) -> None:
     events: list[str] = []
     release = _release(tmp_path, monkeypatch, events)
     previous = quickstart.Subject(
-        OLD_COMMIT, BACKEND.replace("3", "5"), FRONTEND.replace("4", "6")
+        OLD_COMMIT,
+        BACKEND.replace("3", "5"),
+        FRONTEND.replace("4", "6"),
+        persistent_compose_config="old",
     )
-    changed = quickstart.Subject("7" * 40, previous.backend_image, previous.frontend_image)
+    changed = replace(
+        previous,
+        commit="7" * 40 if change == "application" else previous.commit,
+        persistent_compose_config=(
+            "new" if change == "persistent" else previous.persistent_compose_config
+        ),
+    )
     runtimes = iter((previous, changed))
     monkeypatch.setattr(release, "_current_runtime", lambda: next(runtimes))
 
@@ -509,10 +618,16 @@ def test_http_protocol_error_is_normalized_for_rollback(
         release._wait_health(quickstart.Subject(COMMIT, BACKEND, FRONTEND))
 
 
+@pytest.mark.parametrize("persistent_commit", [COMMIT, OLD_COMMIT])
 def test_health_probes_configured_opensandbox_from_api_and_worker(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    persistent_commit: str,
 ) -> None:
-    release = quickstart.Quickstart(tmp_path)
+    root = tmp_path / "managed"
+    runtime_repo = root / "releases" / COMMIT
+    persistent_repo = root / "releases" / persistent_commit
+    release = quickstart.Quickstart(runtime_repo, root)
     release.docker = ["docker"]
     subject = quickstart.Subject(COMMIT, BACKEND, FRONTEND)
     probe_commands: list[list[str]] = []
@@ -530,7 +645,11 @@ def test_health_probes_configured_opensandbox_from_api_and_worker(
         release,
         "_inspect",
         lambda service: _container(
-            tmp_path,
+            (
+                persistent_repo
+                if service in quickstart.PERSISTENT_SERVICES
+                else runtime_repo
+            ),
             service,
             commit=COMMIT if service in {"api", "worker", "frontend"} else "",
             image=FRONTEND if service == "frontend" else BACKEND,
