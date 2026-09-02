@@ -15,19 +15,12 @@
 
 ## Risk
 
-List only boundaries this change reaches: authentication, authorization, tenant
-or workspace isolation; secrets, credentials, or ordinary-user projection
-redaction; destructive lifecycle, retention, schema migration, or irreversible
-data compatibility; sandbox, command, tool, Skill, MCP, or executor admission;
-public API, callback, event, or streaming protocols; and workflow, image,
-release, deployment, or rollback authority.
+Name only the risk boundaries defined in
+`docs/agent-rules/github-issue-pr-workflow.md` that this change reaches.
 
 - Reached boundaries and preserved invariants:
 
-## High-risk or goal-sized changes only
+## High-risk changes only
 
 - Design or Change Contract:
 - Independent review and rollback or migration plan:
-- s72 candidate acceptance record link for a goal-sized product change
-  (workflow-generated exact PR head, trusted image provenance and digests,
-  runtime configuration, isolated environment, tested journeys, and result):

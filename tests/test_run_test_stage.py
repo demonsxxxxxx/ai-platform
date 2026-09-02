@@ -208,7 +208,7 @@ def test_runner_rejects_invalid_worktree_or_selector(
     assert not (repo / ".pytest-tmp" / "test-runs").exists()
 
 
-def test_runner_rejects_untracked_test_selector(tmp_path):
+def test_runner_accepts_untracked_test_selector(tmp_path):
     repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
     (repo / "tests" / "test_untracked.py").write_text(
         "def test_untracked():\n    assert True\n",
@@ -217,11 +217,15 @@ def test_runner_rejects_untracked_test_selector(tmp_path):
 
     completed = _runner(repo, "--stage", "untracked", "tests/test_untracked.py")
 
-    assert completed.returncode == 2
-    failure = json.loads(completed.stderr.strip().splitlines()[-1])
-    assert failure["category"] == "invalid_test_plan"
-    assert failure["code"] == "test_selector_untracked"
-    assert not (repo / ".pytest-tmp" / "test-runs").exists()
+    assert completed.returncode == 0, completed.stderr
+    evidence = _single_evidence(repo)
+    assert evidence["status"] == "passed"
+    assert evidence["pytest"] == {
+        "errors": 0,
+        "failures": 0,
+        "skipped": 0,
+        "tests": 1,
+    }
 
 
 def test_runner_preserves_pytest_failure(tmp_path):

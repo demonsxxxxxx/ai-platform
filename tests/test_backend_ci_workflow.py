@@ -18,8 +18,6 @@ WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-backend.yml"
 FRONTEND_WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-frontend.yml"
 PYPROJECT = ROOT / "pyproject.toml"
 CODE_GOVERNANCE = ROOT / "tools" / "code_governance.py"
-AGENT_RULES = ROOT / "AGENTS.md"
-ISSUE_WORKFLOW = ROOT / "docs" / "agent-rules" / "github-issue-pr-workflow.md"
 TRUSTED_RUFF_REGEX = r"[0-9]+\.[0-9]+\.[0-9]+"
 TRUSTED_JSONSCHEMA_REGEX = r"[0-9]+(?:\.[0-9]+)+"
 TRUSTED_WORKFLOW_IMPORTS = (
@@ -1043,26 +1041,3 @@ def test_backend_image_job_builds_only_affected_pull_request_candidates_and_chec
     required_job = workflow.split("  required:", 1)[1]
     assert "IMAGE_RESULT: ${{ needs.backend-image.result }}" in required_job
     assert "IMAGE_DISPOSITION" not in required_job
-
-
-def test_backend_required_contract_preserves_high_risk_design_boundaries():
-    guidance = " ".join(
-        "\n".join(
-            [
-                AGENT_RULES.read_text(encoding="utf-8"),
-                ISSUE_WORKFLOW.read_text(encoding="utf-8"),
-            ]
-        ).split()
-    )
-
-    assert "Use a bounded Change Contract for goal-sized work" in guidance
-    for boundary in (
-        "authentication, authorization, tenant or workspace isolation",
-        "secrets, credentials, or ordinary-user projection redaction",
-        "destructive lifecycle, retention, schema migration",
-        "sandbox, command, tool, Skill, MCP, or executor admission",
-        "public API, callback, event, or streaming protocols",
-        "workflow, image, release, deployment, or rollback authority",
-    ):
-        assert boundary in guidance
-    assert "A separate ADR or design is required only" in guidance

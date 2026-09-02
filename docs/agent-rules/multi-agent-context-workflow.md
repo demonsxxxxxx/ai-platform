@@ -29,18 +29,24 @@ does not own implementation, workflow continuation, or the final decision.
 - It receives no write lease, remote mutation authority, deployment authority,
   destructive-operation authority, or decisive high-risk review gate.
 - Do not turn or re-charter a disposable probe into a writer. Return discovered
-  durable work to a persistent owner.
+  durable work to the main agent or a designated persistent owner.
 
 ### Persistent tasks
 
-Use a persistent, project-bound Codex task for implementation, multi-round
-testing or review, browser acceptance, release, deployment, or other work that
-needs durable ownership. Repository work uses an independent clean worktree.
+Use a persistent delegated task only when work needs continuity beyond a bounded
+probe. It reuses its existing project worktree by default. Create another clean
+worktree only when concurrent writers need filesystem isolation or an
+independent fixed-commit check cannot safely use the existing worktree; a new
+issue or task alone is not a reason.
 
-Dispatch records the goal and role, project/worktree/branch, exact base and head,
-writable and forbidden paths, permission and lease scope, evidence ceiling, and
-terminal condition. A goal or role change requires a new task; changed source or
-authority requires explicit re-charter.
+Dispatch records the goal and role, project/worktree/branch, current source
+identity, writable and forbidden paths, permission and lease scope, evidence
+ceiling, and terminal condition. A goal or role change requires a new task;
+changed source or authority requires explicit re-charter. Creating a worktree
+does not trigger a dependency install: install only dependencies required by a
+selected check and missing from that worktree. At the terminal condition, report
+any added worktree and its generated dependency directories for authorized
+cleanup instead of retaining them silently.
 
 ## Authority Boundary
 
@@ -48,12 +54,8 @@ authority requires explicit re-charter.
   another task or disposable probe the same authority.
 - A task may mutate only subjects explicitly covered by its dispatch and proven
   permission posture. Shared filesystem access alone is not permission.
-- Exactly one persistent writer holds a given write scope. Transfer ownership
-  only after the prior writer releases it and identifies the exact safe SHA.
-- Direct controller mutation is break-glass only: the normal persistent-task
-  path is unavailable and the user explicitly authorizes the exact mutation.
-  Explicit task authority is required; broad standing authorization is
-  insufficient.
+- Exactly one writer holds a given write scope. Transfer ownership only after
+  the prior writer releases it and records the current source and worktree state.
 - Preserve reviewer independence for auth, tenant isolation, concurrency,
   sandboxing, public contracts, and deployment. A disposable probe is not the
   sole final reviewer for these subjects.
@@ -63,9 +65,9 @@ authority requires explicit re-charter.
 - Read-only release readiness must pass for the exact release subject under
   `docs/operations/release-operations-runbook.md` before granting mutation
   authority. Missing, stale, or blocked evidence keeps the release blocked.
-- After readiness passes, use exactly one project-bound persistent release task
-  and one mutation lease. Do not run a second release attempt or mutate the host
-  outside that lease.
+- After readiness passes, use exactly one designated release owner and one
+  mutation lease. Do not run a second release attempt or mutate the host outside
+  that lease.
 - The release owner returns a terminal evidence packet. The controller may
   perform a final parity check but does not become a second release owner.
 
@@ -81,14 +83,10 @@ authority requires explicit re-charter.
 - Record review evidence and status claims according to
   `docs/agent-rules/github-issue-pr-workflow.md`; chat-only output is not durable
   PR or issue evidence.
-- Do not persist a session board or phase ledger in repository docs. The active
-  controller checkpoint is the only current coordination record.
+- Do not persist a session board or phase ledger in repository docs. Keep current
+  coordination state in the active task record.
 
-## Recovery And Reporting
+## Reporting
 
-- If a turn fails with `No tool output found`, treat it as an orphan-call protocol
-  error unless a recorded request demonstrably lacks its output. Restore from the
-  current checkpoint in a new turn; do not guess a result or replay the entire
-  tool sequence.
-- The main agent reports the final conclusion. Never claim an unobserved review,
-  test, deployment, or runtime result.
+The main agent reports the final conclusion. Never claim an unobserved review,
+test, deployment, or runtime result.

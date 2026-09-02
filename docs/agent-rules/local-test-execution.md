@@ -11,12 +11,7 @@ This procedure makes local pytest execution bounded, observable, and tied to
 one explicit Git worktree. It does not select tests automatically and does not
 replace required CI, deployment checks, or External Acceptance.
 
-The only direct-pytest exception is the runner's introducing change. That
-bootstrap records the exact command and target worktree, first creates
-`.pytest-tmp/`, and uses a fresh workspace-local basetemp child. After the
-runner is accepted on `main`, every ordinary local pytest stage must use the
-runner and its worktree lock. A candidate-owned runner cannot certify its own
-introduction as trusted readiness authority.
+Every ordinary local pytest stage uses the runner and its worktree lock.
 
 ## Required Entry Point
 
@@ -46,11 +41,11 @@ is classified as `required_dependency_missing`. An opt-in local integration
 may omit the flag and may skip, but the resulting `passed_with_skips` report is
 not required-integration evidence.
 
-The runner accepts only explicit selectors for Git-tracked `tests/*.py` files
-or their `file.py::node` forms. It rejects directories, pytest options,
-absolute paths, missing or untracked files, selectors outside `tests/`,
-duplicate selectors, and invocations from a worktree subdirectory or a
-different checkout.
+The runner accepts only explicit selectors for existing `tests/*.py` files or
+their `file.py::node` forms in the current worktree, including new untracked
+tests. It rejects directories, pytest options, absolute paths, missing files,
+selectors outside `tests/`, duplicate selectors, and invocations from a
+worktree subdirectory or a different checkout.
 
 ## Execution Invariants
 
@@ -98,28 +93,12 @@ explicit user decision tied to a named risk and does not replace focused proof.
 Do not broaden Ruff or another static tool to unrelated paths merely because a
 focused command was entered incorrectly.
 
-## Async And Background Work
+## Isolation
 
-A test touching event loops, background tasks, clients, subprocesses, ports,
-Redis, database pools, or application lifespan must prove cleanup as part of
-the owning behavior:
-
-- production tasks have an explicit supervisor, registry, or application
-  lifespan owner; a fixture cannot own a production runtime task;
-- tasks created only by a test may be owned and closed by that test's fixture;
-  a bare untracked `asyncio.create_task` is not acceptable;
-- waits use a bounded deadline and tests use events, barriers, or queues instead
-  of long real sleeps to establish ordering;
-- clients and applications use context managers or explicit `close`/`aclose`;
-- cancellation, parent cancellation, shutdown, callback failure, and repeated
-  close are covered when those states are reachable;
-- the owning service reports no pending tasks after shutdown; and
-- a process-spawning test proves that descendants terminate with the stage.
-
-If tests pass individually but fail or hang when grouped, classify the result
-as `test_isolation_failure`. Stop expanding the suite and fix leaked tasks,
-globals, clients, ports, environment mutation, or fixture teardown. Individual
-passes do not override the grouped failure.
+Tests must close resources they create. If tests pass individually but fail or
+hang when grouped, classify the result as `test_isolation_failure`; fix leaked
+tasks, globals, clients, ports, environment mutation, or fixture teardown before
+expanding the suite.
 
 ## Failure Semantics
 
@@ -133,12 +112,10 @@ Use these categories in issue, PR, and handoff records:
 | `invalid_test_plan` | Cwd, selector, stage, or pytest selection is invalid. | Correct the plan before running tests. |
 | `infrastructure_failure` | Git, Python, process ownership, filesystem, or another required local facility failed. | Repair the facility and rerun the same bounded subject. |
 | `required_dependency_missing` | A required integration stage skipped its real dependency. | Provision the dependency; a skip is not evidence. |
-| `baseline_reproduced` | The exact failing node and normalized failure signature reproduce at the fixed base. | Record the base evidence and track the defect separately; do not deselect it permanently. |
-| `governance_violation` | Source or verification violates repository authority. | Fix the named rule and rerun against a new fixed subject when needed. |
 
-A stage classified as `invalid_test_plan`, `test_timeout`,
-`infrastructure_failure`, or `governance_violation` fails closed with a
-non-zero exit. `--require-zero-skips` likewise returns non-zero with
+A stage classified as `invalid_test_plan`, `test_timeout`, or
+`infrastructure_failure` fails closed with a non-zero exit.
+`--require-zero-skips` likewise returns non-zero with
 `required_dependency_missing` when any test skips. An ordinary pytest failure
 preserves pytest's native failure exit code.
 
@@ -169,8 +146,7 @@ Report the observed evidence level precisely:
 Do not:
 
 - wrap several suites in `spawnSync` or another all-output capture;
-- after the one introducing-change bootstrap exception above, start pytest
-  directly instead of using the accepted runner;
+- start pytest directly instead of using the runner;
 - start pytest from the user profile, repository parent, or a stale worktree;
 - supply a system temporary directory as basetemp;
 - bypass the worktree lock after `test_runner_busy`;

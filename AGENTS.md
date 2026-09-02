@@ -6,127 +6,61 @@ This file applies to the current `ai-platform` repository root.
 
 ## Local Verification
 
-- This Windows workstation currently does not provide a local `docker` command. If `docker` is not recognized, do not repeatedly retry local `docker compose` checks.
-- For local readiness, prefer repository-native checks such as:
-  - `python -m compileall -q app tools scripts`
-  - `python tools/run_test_stage.py --stage example-owning --timeout-seconds 300 -- tests/test_run_test_stage.py`
-  - relevant integration or smoke checks for the changed path
-- After the local test-stage runner is accepted on `main`, use it for ordinary
-  local pytest execution. The introducing change may test the runner directly
-  with the repository's existing pytest command and a workspace-local
-  basetemp; a candidate-owned runner cannot certify its own introduction.
-- Run pytest from the target worktree root with explicit test files or node IDs.
-  Do not use nested `spawnSync`/capture runners, bypass the per-worktree lock,
-  or treat partial output from a timeout as a pass. If tests pass separately but
-  fail or hang together, stop and fix the test-isolation failure.
-- The normative local procedure and failure taxonomy live in
+- Run the smallest repository-native checks that can falsify the change.
+- Run ordinary local pytest stages from the target worktree root through
+  `python tools/run_test_stage.py`; the procedure and result semantics live in
   `docs/agent-rules/local-test-execution.md`.
-- Do not run or require full-repository pytest by default. Full pytest is
-  prohibited as a routine gate because it wastes time; run it only if the user
-  explicitly requests it for a specific risk decision.
+- Do not run full-repository pytest as a routine gate. Run it only when the user
+  requests it for a named risk decision.
 - Run Docker validation, builds, restarts, and runtime smoke only on a
-  Docker-capable environment. The authoritative commands and recovery paths
-  live in `docs/operations/release-operations-runbook.md`.
-- The local test-stage runner creates a unique basetemp under the workspace-local,
-  git-ignored `.pytest-tmp/` directory. Never rely on the system temp path.
-  When directly testing the runner itself, create `.pytest-tmp/` first, pass a
-  fresh child through `--basetemp`, and report any stale-root reason.
+  Docker-capable environment. Follow
+  `docs/operations/release-operations-runbook.md` for release operations.
 
 ## Remote Runtime Access
 
-- Remote access to s72 is allowed only through SSH MCP.
-- Always call `mcp__ssh_mcp_server__list_servers` first to confirm that the
-  connection name is configured. A `disconnected` status only means no active
-  SSH session exists yet; it is not by itself a connection failure.
-- Then make one bounded, secret-safe `mcp__ssh_mcp_server__execute_command`
-  call with `connectionName='s72'` so the MCP server can connect on demand.
-- Never fall back to system `ssh`, `scp`, or `plink`, local SSH configuration,
-  a browser, or local Docker state to infer the remote runtime.
-- The remote operation is `BLOCKED` only when SSH MCP is unavailable, the
-  connection is absent, or the actual connection attempt fails.
+- Access s72 only through SSH MCP. Confirm the configured connection and make
+  one bounded, secret-safe connection attempt before reporting it unavailable.
+- Do not fall back to system SSH tools, a browser, or local Docker state to infer
+  remote runtime state.
 - Commands and output must not contain `.env` values, account identifiers,
   passwords, tokens, or prompts.
 
 ## Authority
 
-- Use the current repository root as the local `ai-platform` source.
-- Use the current user instruction, current code and tests, the architecture
-  documents indexed by `docs/README.md`, fresh evidence for the exact runtime
-  subject, and only issues named by the active goal and confirmed from fresh
-  GitHub state.
-- Do not treat short-term execution notes, old local paths, or historical service layouts as product requirements.
-Keep concrete issue numbers, owners, ordering, and current gate state in the
-roadmap or Controller Current rather than this durable entry file.
+- Use the current repository root, current user instruction, current code and
+  tests, and the durable authorities indexed by `docs/README.md`.
+- Confirm issue state from GitHub and runtime state from fresh evidence for the
+  exact subject. Historical evidence, old paths, and short-term notes are not
+  current product or runtime authority.
+- Keep current owners, ordering, blockers, and completion state in the active
+  task, issue, or pull request rather than durable policy documents.
+- `.codegraph` is a navigation cache, not source or runtime authority. Read the
+  current source before editing.
 
-## Documentation Authority
+## Working And Delegation
 
-- `docs/README.md` is the document index. It directs durable policy, operations,
-  and evidence ownership without becoming a project status board.
-- Historical runtime observations belong only in reviewed, redacted structured
-  evidence under `docs/release-evidence/`; they never establish current runtime
-  state without fresh verification.
+- Work in the current project worktree by default. Delegate only when isolation,
+  parallelism, continuity, or independent evidence is worth the coordination
+  cost.
+- Create another worktree only for concurrent writers or an independent
+  fixed-commit check that cannot safely use the current worktree. A new issue or
+  delegated task alone is not a reason.
+- Install only dependencies required by a selected check and missing from that
+  worktree. Report added worktrees and generated dependency directories for
+  authorized cleanup when the task ends.
+- Detailed ownership, permission, release-lease, and handoff rules live in
+  `docs/agent-rules/multi-agent-context-workflow.md`.
 
-## CodeGraph Navigation
-
-- This repository's existing `.codegraph/codegraph.db` is a local navigation
-  index, not implementation or runtime authority.
-- In Pi, prefer the CodeGraph MCP server's `codegraph_explore` tool for concept,
-  symbol, flow, caller/callee, and impact discovery. Phrase the requested graph
-  relationship explicitly and keep `maxFiles <= 4`.
-- The MCP server runs with its project path fixed to this repository and keeps a
-  debounced file watcher active. Treat any pending-file warning as stale data and
-  read the current source directly before continuing.
-- Always read the current source before editing. Use the native `codegraph` Pi
-  tool only for a specific graph action or when MCP is unavailable; run its
-  `sync` action before relying on CLI query results.
-- Never run `init`, full `index`, or `uninit` automatically. Fall back to
-  repository-scoped `fffind`/`ffgrep` for exact text, unsupported files, or empty
-  graph results. Never search Pi sessions or protected credential paths, and
-  never treat graph output as runtime evidence.
-
-## Change Control
+## Change Control And Delivery
 
 - A focused ordinary change may use its pull request as the complete change
-  record. Before editing a goal-sized or high-risk change, record a bounded
-  Change Contract in the persistent task, design, or pull request. High-risk
-  changes include authentication, authorization, tenant or workspace isolation;
-  secrets, credentials, or ordinary-user projection redaction; destructive
-  lifecycle, retention, schema migration, or irreversible data compatibility;
-  sandbox, command, tool, Skill, MCP, or executor admission; public API,
-  callback, event, or streaming protocols; and workflow, image, release,
-  deployment, or rollback authority.
-- A Change Contract names the owner, bounded paths, reached invariants,
-  acceptance, falsifiable regression proof, evidence ceiling, rollback when
-  relevant, and stop conditions. Revise it before expanding scope.
+  record. High-risk changes follow the Change Contract, review, verification,
+  and delivery rules in `docs/agent-rules/github-issue-pr-workflow.md`.
 - Every behavior change needs a falsifiable owning test. Claim assembled or
   runtime behavior only after observing that path. Template text and Agent
   self-report are not evidence.
 - `AGENTS.md` is repository coding authority. Product Agent.md content belongs
   to the Agent Profile/Workspace domain and is not implementation authority.
-
-## Delivery Workflow
-
-Use a focused pull request for ordinary changes. Use a separate design and the
-full issue-to-release closure loop only for goal-sized work, high-risk changes,
-gate closures, and defects that need independent lifecycle tracking. A product
-change is goal-sized for this workflow when acceptance depends on assembled
-browser, API, worker, or Sandbox behavior, or another controlled-host property
-that source, local, and CI checks cannot prove. Every goal-sized product change
-must remain a draft until the exact pull-request head passes prerequisite CI and
-product acceptance on s72 from a separate immutable candidate image in an
-isolated candidate stack. The owning Change Contract must name the executable
-candidate procedure and stable accepted-base required context; its trusted
-record must bind the exact head to image digests and runtime configuration. A
-new commit, image, or runtime configuration invalidates that acceptance. If the
-governed candidate image, procedure, required context, or isolated s72 lane is
-unavailable, the change is blocked; local tests, CI image builds, and ad hoc
-source deployments do not substitute. The review, verification,
-candidate-evidence, and release rules live in
-`docs/agent-rules/github-issue-pr-workflow.md`.
-
-`docs/agent-rules/multi-agent-context-workflow.md` is the single source for task
-lifetimes, ownership, authority, delegation, release leases, and context
-handoff. Do not restate those rules here.
 
 ## Product Boundaries
 
