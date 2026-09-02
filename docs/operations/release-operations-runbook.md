@@ -6,7 +6,7 @@ security boundaries live in repository code, tests, architecture decisions, and
 `AGENTS.md`; task ownership, readiness, leases, and break-glass authority live in
 `docs/agent-rules/multi-agent-context-workflow.md`.
 
-## Manual Exact-Main Build Authority
+## Canonical Exact-Main Command
 
 This controlled build path remains available when an operator explicitly needs
 the Git-native release authority. It is not the normal `deploy-latest` flow,
@@ -14,8 +14,8 @@ which consumes the qualified immutable Deployment Release described below. Run
 this path only after read-only readiness has passed and exactly one project-bound
 release owner holds the single mutation lease. It does not grant a lease or
 replace the workflow gates. The operator must provide absolute `SOURCE` and
-`ROOT` paths for the current controlled host; the repository does not hard-code
-a server identity or host filesystem layout.
+`ROOT` paths for the current controlled host; the repository does not hard-code a server identity
+or host filesystem layout.
 
 Resolve `SOURCE` to the operator-approved clean coordination checkout and
 `ROOT` to the operator-approved managed release root before running either

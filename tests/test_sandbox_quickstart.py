@@ -169,7 +169,7 @@ def test_invalid_origin_is_rejected(tmp_path: Path) -> None:
         release._verify_source(quickstart.Subject(COMMIT, BACKEND, FRONTEND))
 
 
-def test_git_main_check_uses_canonical_url_and_sanitized_environment(
+def test_git_source_check_uses_local_canonical_origin_and_sanitized_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "managed"
@@ -178,24 +178,20 @@ def test_git_main_check_uses_canonical_url_and_sanitized_environment(
         path = repo / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("services: {}\n", encoding="utf-8")
-    network_calls: list[tuple[list[str], dict[str, str]]] = []
-    local_environments: list[dict[str, str]] = []
+    local_calls: list[tuple[list[str], dict[str, str]]] = []
 
     class CanonicalRunner(quickstart.Runner):
         def run(self, command: object, **kwargs: object) -> str:
             command = list(command)
+            local_calls.append((command, kwargs["environment"]))
             joined = " ".join(command)
             if "rev-parse" in joined:
-                local_environments.append(kwargs["environment"])
                 return COMMIT
             if "status" in joined:
-                local_environments.append(kwargs["environment"])
                 return ""
             if "remote.origin.url" in joined:
-                local_environments.append(kwargs["environment"])
                 return quickstart.ORIGIN_URL
-            network_calls.append((command, kwargs["environment"]))
-            return COMMIT + "\trefs/heads/main"
+            pytest.fail("unexpected network Git command")
 
     monkeypatch.setenv("GIT_SSH_COMMAND", "untrusted-command")
     monkeypatch.setenv("GIT_DIR", str(tmp_path / "other.git"))
@@ -203,14 +199,17 @@ def test_git_main_check_uses_canonical_url_and_sanitized_environment(
     release = quickstart.Quickstart(repo, root, runner=CanonicalRunner())
     release._verify_source(quickstart.Subject(COMMIT, BACKEND, FRONTEND))
 
-    command, environment = network_calls[0]
-    assert quickstart.ORIGIN_URL in command and "origin" not in command
-    assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
-    assert environment["GIT_CONFIG_GLOBAL"] == quickstart.os.devnull
-    assert "GIT_SSH_COMMAND" not in environment
+    origin_command = next(
+        command for command, _ in local_calls if "remote.origin.url" in command
+    )
+    assert "--local" in origin_command
     assert all(
-        "GIT_DIR" not in environment and "GIT_WORK_TREE" not in environment
-        for environment in local_environments
+        environment["GIT_CONFIG_NOSYSTEM"] == "1"
+        and environment["GIT_CONFIG_GLOBAL"] == quickstart.os.devnull
+        and "GIT_SSH_COMMAND" not in environment
+        and "GIT_DIR" not in environment
+        and "GIT_WORK_TREE" not in environment
+        for _, environment in local_calls
     )
 
 

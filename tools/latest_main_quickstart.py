@@ -779,7 +779,7 @@ def resolve_managed_env(root: Path, explicit: Path | None) -> Path:
         selected = None
     if selected is None:
         raise LatestMainError(
-            "first latest-main deployment requires --env-file or AI_PLATFORM_QUICKSTART_ENV_FILE"
+            "first deployment requires --env-file or AI_PLATFORM_QUICKSTART_ENV_FILE"
         )
     try:
         return sandbox_quickstart.Quickstart(root, root)._validate_env(Path(selected))
