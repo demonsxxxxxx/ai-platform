@@ -661,7 +661,8 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert runtime_dockerfile.index(copy_full_template) < runtime_dockerfile.index(
         extract_base_template
     )
-    assert "package-import-method=copy" in npmrc
+    assert "package-import-method=copy" not in npmrc
+    assert "pnpm install --frozen-lockfile --package-import-method=copy" in dockerfile
     assert "AI_PLATFORM_BUILD_COMMIT" in provenance_script
     assert "AI_PLATFORM_BUILD_DIRTY" in provenance_script
     assert "AI_PLATFORM_API_UPSTREAM" in nginx_template

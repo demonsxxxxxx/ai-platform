@@ -15,12 +15,8 @@
 
 ## Risk
 
-List only boundaries this change reaches: authentication, authorization, tenant
-or workspace isolation; secrets, credentials, or ordinary-user projection
-redaction; destructive lifecycle, retention, schema migration, or irreversible
-data compatibility; sandbox, command, tool, Skill, MCP, or executor admission;
-public API, callback, event, or streaming protocols; and workflow, image,
-release, deployment, or rollback authority.
+Name only the risk boundaries defined in
+`docs/agent-rules/github-issue-pr-workflow.md` that this change reaches.
 
 - Reached boundaries and preserved invariants:
 

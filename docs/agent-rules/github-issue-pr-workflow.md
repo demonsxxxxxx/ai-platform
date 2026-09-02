@@ -1,8 +1,9 @@
 # GitHub Pull Request Workflow
 
-This file owns pull-request scope, review, verification, and evidence language.
-Product and deployment invariants remain in their architecture documents and the
-release runbook.
+This file owns pull-request scope, review, and verification. Evidence levels
+remain in `../architecture/ci-test-readiness-governance.md`; product and
+deployment invariants remain in their architecture documents and the release
+runbook.
 
 ## Ordinary changes
 
@@ -24,8 +25,7 @@ SHAs into pull-request text.
 
 ## High-risk changes
 
-Use a bounded Change Contract for goal-sized work or changes that reach any of
-these boundaries:
+Use a bounded Change Contract for changes that reach any of these boundaries:
 
 - authentication, authorization, tenant or workspace isolation;
 - secrets, credentials, or ordinary-user projection redaction;
@@ -80,22 +80,12 @@ Promote a lesson only to its smallest durable owner:
 A new rule replaces or consolidates overlapping policy. Review wording and
 per-change JSON are not durable architecture artifacts.
 
-## Evidence levels
+## Evidence
 
-Use precise evidence language:
-
-- `local`: named local checks passed on the candidate worktree;
-- `CI`: named required jobs passed for the GitHub subject;
-- `packaged`: an immutable image was built and verified;
-- `deployed`: that image and configuration were applied to a named environment;
-- `runtime verified`: the exact deployed subject passed its controlled runtime
-  checks; and
-- `external acceptance`: a documented actor completed the named end-to-end
-  workflow.
-
-Never promote source, local, CI, or historical evidence into a deployment or
-runtime claim. Runtime evidence is produced after merge by the release and
-controlled-host procedures, not prefilled in an ordinary pull request.
+Use the evidence levels and boundaries defined in
+`../architecture/ci-test-readiness-governance.md`. Never promote source, local,
+CI, or historical evidence into a deployment, runtime, or External Acceptance
+claim.
 
 ## Merge and release
 
