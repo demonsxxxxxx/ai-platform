@@ -9,7 +9,7 @@ WORKDIR /workspace
 COPY frontend/web/.npmrc frontend/web/package.json frontend/web/pnpm-lock.yaml frontend/web/pnpm-workspace.yaml ./frontend/web/
 
 WORKDIR /workspace/frontend/web
-RUN corepack enable && corepack pnpm install --frozen-lockfile
+RUN corepack enable && corepack pnpm install --frozen-lockfile --package-import-method=copy
 
 ARG AI_PLATFORM_BUILD_COMMIT=unknown
 ARG AI_PLATFORM_BUILD_DIRTY=unknown

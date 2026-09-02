@@ -3,7 +3,7 @@
 This runbook contains host commands, recovery paths, and terminal evidence for
 ai-platform releases on an operator-approved Docker-capable host. Product and
 security boundaries live in repository code, tests, architecture decisions, and
-`AGENTS.md`; task ownership, readiness, leases, and break-glass authority live in
+`AGENTS.md`; task ownership, readiness, and release leases live in
 `docs/agent-rules/multi-agent-context-workflow.md`.
 
 ## Canonical Exact-Main Command

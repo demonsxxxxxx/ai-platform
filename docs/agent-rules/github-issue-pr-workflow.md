@@ -1,8 +1,9 @@
 # GitHub Pull Request Workflow
 
-This file owns pull-request scope, review, verification, and evidence language.
-Product and deployment invariants remain in their architecture documents and the
-release runbook.
+This file owns pull-request scope, review, and verification. Evidence levels
+remain in `../architecture/ci-test-readiness-governance.md`; product and
+deployment invariants remain in their architecture documents and the release
+runbook.
 
 ## Ordinary changes
 
@@ -24,8 +25,7 @@ SHAs into pull-request text.
 
 ## High-risk changes
 
-Use a bounded Change Contract for goal-sized work or changes that reach any of
-these boundaries:
+Use a bounded Change Contract for changes that reach any of these boundaries:
 
 - authentication, authorization, tenant or workspace isolation;
 - secrets, credentials, or ordinary-user projection redaction;
@@ -45,38 +45,6 @@ check. Pull-request text written by the author is not proof that another reviewe
 acted. Until an independent reviewer is available, do not claim formal approval;
 retain the risk-specific tests and owner authorization without inventing a
 review identity.
-
-## Goal-sized product candidate acceptance
-
-A change is goal-sized for this workflow when its acceptance depends on
-assembled browser, API, worker, or Sandbox behavior, or another controlled-host
-property that source, local, and CI checks cannot prove. An otherwise focused
-change with that dependency follows this section.
-
-A goal-sized product change must enter review as a draft pull request and pass
-pre-merge product acceptance on s72 before it is marked ready or merged. The
-acceptance subject is the exact pull-request head commit after its prerequisite
-source and build CI checks pass.
-
-The s72 subject must use an immutable candidate image identity and an isolated
-candidate stack. Candidate image admission verifies trusted build provenance
-that machine-binds each image digest to the exact pull-request head. The stack
-must not retag a `main` release image, replace the latest-main stack, or share
-its writable database, Redis, workspace, or volume state. Candidate deployment
-follows the repository's SSH, read-only readiness, single mutation-lease,
-secret-handling, and controlled-host rules. The owning Change Contract must
-name the executable candidate procedure, its owner, and the stable accepted-base
-required context. That context binds a workflow-generated acceptance record to
-the exact head, image digests, runtime configuration, named isolated
-environment, tested user journeys, and observed result. The pull-request author
-links that record rather than manually copying its subject fields.
-
-Until the procedure, required context, candidate image path, and isolated s72
-lane exist, the gate is `BLOCKED`; source tests, CI image builds, or an ad hoc
-source build on s72 are not substitutes. Any change to the commit, image, or
-runtime configuration invalidates acceptance. Candidate acceptance does not
-prove that merged `main` was packaged or deployed; the normal post-merge release
-and external-acceptance path remains required.
 
 ## Local readiness
 
@@ -112,31 +80,12 @@ Promote a lesson only to its smallest durable owner:
 A new rule replaces or consolidates overlapping policy. Review wording and
 per-change JSON are not durable architecture artifacts.
 
-## Evidence levels
+## Evidence
 
-Use precise evidence language and qualify candidate evidence explicitly:
-
-- `local`: named local checks passed on the candidate worktree;
-- `CI`: named required jobs passed for the GitHub subject;
-- `candidate packaged`: an immutable image was built for the exact pull-request
-  head but is not a releasable `main` image;
-- `candidate deployed`: that candidate image and isolated configuration were
-  applied to the named s72 candidate environment;
-- `candidate runtime verified`: that exact candidate subject passed the named
-  controlled product checks;
-- `packaged`: an immutable release image was built and verified from `main`;
-- `deployed`: that release image and configuration were applied to a named
-  environment;
-- `runtime verified`: the exact deployed release subject passed its controlled
-  runtime checks; and
-- `external acceptance`: a documented actor completed the named end-to-end
-  workflow.
-
-Never promote source, local, CI, candidate, or historical evidence into a
-`main` deployment or release-runtime claim. Pre-merge runtime evidence is valid
-only as qualified s72 candidate evidence under the goal-sized gate above;
-release runtime evidence and External Acceptance still require the post-merge
-release procedure.
+Use the evidence levels and boundaries defined in
+`../architecture/ci-test-readiness-governance.md`. Never promote source, local,
+CI, or historical evidence into a deployment, runtime, or External Acceptance
+claim.
 
 ## Merge and release
 

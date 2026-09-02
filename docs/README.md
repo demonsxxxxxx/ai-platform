@@ -9,7 +9,7 @@ does not represent deployed runtime state.
 - `agent-rules/multi-agent-context-workflow.md` defines ownership, leases, and
   handoff.
 - `agent-rules/github-issue-pr-workflow.md` defines risk-scaled PR scope,
-  review, verification, and evidence language.
+  review, verification, and use of the evidence levels below.
 - `agent-rules/local-test-execution.md` defines the bounded, observable,
   worktree-safe procedure for local pytest stages and their failure taxonomy.
 - `architecture/runtime-authorities.md` maps each runtime capability to its
