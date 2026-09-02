@@ -328,13 +328,6 @@ PROXY_ENVIRONMENT = (
 )
 
 
-def _git_network_environment() -> dict[str, str]:
-    allowed = ("PATH", "LANG", "LC_ALL", *PROXY_ENVIRONMENT)
-    result = {key: os.environ[key] for key in allowed if key in os.environ}
-    result.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
-    return result
-
-
 def _git_local_environment() -> dict[str, str]:
     result = {
         key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL") if key in os.environ
@@ -631,7 +624,7 @@ class Quickstart:
             not (repo / path).is_file() or (repo / path).is_symlink()
             for path in COMPOSE_FILES
         ):
-            raise QuickstartError("run quickstart from the prepared exact-main release checkout")
+            raise QuickstartError("run quickstart from the prepared exact release checkout")
         git_environment = _git_local_environment()
         head = self.runner.run(
             ["git", "rev-parse", "HEAD"], cwd=repo, output=True,
@@ -652,14 +645,6 @@ class Quickstart:
         )
         if origin.rstrip("/") != ORIGIN_URL:
             raise QuickstartError("prepared subject has an invalid origin")
-        remote = self.runner.run(
-            ["git", "-c", "credential.helper=", "ls-remote", "--exit-code",
-             ORIGIN_URL, "refs/heads/main"],
-            cwd=self.root, output=True, timeout=60,
-            environment=_git_network_environment(),
-        ).split()
-        if remote != [subject.commit, "refs/heads/main"]:
-            raise QuickstartError("prepared subject is not fresh origin/main")
 
     def _compose(self, env_file: Path, subject: Subject, *arguments: str) -> None:
         self._validate_env(env_file)

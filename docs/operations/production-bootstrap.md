@@ -11,9 +11,9 @@ sudo -n ./scripts/deploy-latest.sh --profile production --latest \
 ```
 
 The command converges the independently managed OpenSandbox host service,
-waits for the exact current `main` commit to pass the backend, frontend, and
-packaging workflows, verifies the digest-bound release evidence, and deploys
-the production base Compose file plus `docker-compose.opensandbox.yml`.
+resolves the newest qualified immutable Deployment Release, admits its strict
+manifest and digest-bound images, and deploys the production base Compose file
+plus `docker-compose.opensandbox.yml`.
 
 The internal-test profile and the existing one-time legacy-to-direct OpenSandbox
 transition retain their current meanings.
@@ -40,9 +40,9 @@ rollback to an already verified direct-OpenSandbox production runtime.
 - `docs/operations/latest-main-image-quickstart.md`
 - this contract
 
-The controller reuses `tools/latest_main_quickstart.py` for exact-main Actions
-and packaging admission, `tools/release_authority.py` for immutable image and
-Compose authority, and the existing legacy transition controller for runtime
+The controller reuses `tools/latest_main_quickstart.py` for anonymous immutable
+Deployment Release admission, `tools/release_authority.py` for immutable image
+and Compose authority, and the existing legacy transition controller for runtime
 parity and quiescence checks. It does not create another release,
 sandbox-lifecycle, model-credential, or callback authority.
 
@@ -121,9 +121,10 @@ operation.
 
 ## Release and runtime invariants
 
-- The candidate is the exact 40-character SHA at the fixed repository's
-  `refs/heads/main`, with successful required final jobs for backend, frontend,
-  and packaging and the same run's verified public release evidence.
+- The candidate is the latest published, non-prerelease, immutable Deployment
+  Release. Its exact tag, target commit, GitHub Actions bot ownership, asset
+  label, GitHub digest, and strict manifest must agree on the Packaging run,
+  attempt, Backend image, and Frontend image.
 - Backend and frontend are admitted only as role-bound GHCR digest references
   whose release labels and local image identities pass release-authority checks.
 - The target checkout is owner-managed, clean, exact-SHA, and materialized under
@@ -151,7 +152,11 @@ Failure before Compose mutation leaves the application runtime unchanged. For
 an existing verified direct-OpenSandbox runtime, target deployment or parity
 failure stops every available target admission container, proves quiescence
 again, and then performs one bounded restore from the exact previous checkout
-and local immutable images. If that rollback fence cannot be proved, the
+and the Backend and Frontend image IDs captured before preparation. Commit
+equality alone is not convergence: a qualified rerun of the same commit with
+new immutable digests deploys those images, and a failed attempt restores the
+captured IDs before restarting the previous runtime. If that rollback fence
+cannot be proved, the
 controller leaves admission stopped and does not start the previous image set.
 A cold bootstrap has no previous application runtime to restore. A failed first
 start fences admission and removes only the newly created Compose containers and
@@ -169,8 +174,8 @@ digest-selected image ID and entrypoint, and the expected host configuration.
 The command stops without mutation for missing base-host prerequisites, unsafe
 configuration metadata, placeholder or inconsistent OpenSandbox configuration,
 untrusted unit ownership, active work, schema drift, incomplete runtime
-membership, failed Actions or artifact evidence, mutable/mismatched images, or
-failed Compose semantic preflight. Scope expansion into OS package installation,
+membership, invalid or mutable Deployment Release metadata, manifest or digest
+mismatch, mutable/mismatched images, or failed Compose semantic preflight. Scope expansion into OS package installation,
 secret-manager integration, DNS/TLS provisioning, or automated product-level
 acceptance requires a revised contract.
 
