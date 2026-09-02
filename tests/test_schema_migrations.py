@@ -449,11 +449,15 @@ async def test_successor_activation_schema_advances_to_concurrent_due_index_sche
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.01.2"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.AGENT_AVATAR_STYLE_SCHEMA_VERSION
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.02.1"
+    assert (
+        schema_migrations.TARGET_SCHEMA_VERSION
+        == schema_migrations.USER_PROFILE_METADATA_SCHEMA_VERSION
+    )
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
+        "users",
         "runs",
         "model_gateway_revisions",
         "model_catalog_entries",
@@ -473,6 +477,16 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "mcp_server_credentials",
         "mcp_tools",
     )
+    assert (
+        "users",
+        "metadata_json",
+        "jsonb",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "users",
+        "chk_users_metadata_json_object",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert (
         "sessions",
         "title_source",
@@ -691,6 +705,12 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert all(item[4].endswith("end ") for item in trigger_contract)
     assert all("\n" in item[4] for item in trigger_contract)
     assert schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS == (
+        (
+            "users",
+            "chk_users_metadata_json_object",
+            "c",
+            "CHECK ((jsonb_typeof(metadata_json) = 'object'::text))",
+        ),
         (
             "mcp_servers",
             "mcp_servers_endpoint_not_persisted",
@@ -1086,7 +1106,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "1086dc48dc680425d440fdeca736980024afe9bc13b0dde2460821e5e01498f7"
+        "2e95e74b8f78d73d39cc295f207b9d70abc581a87ec9c3912b8fbe30300bcb0b"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

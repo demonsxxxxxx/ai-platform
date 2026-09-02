@@ -1206,25 +1206,6 @@ UI_PERMISSIONS = [
 
 CHAT_STREAM_TERMINAL_EVENT_TYPES = {"run_succeeded", "run_failed", "run_cancelled", "run_canceled"}
 
-
-def _profile_payload(principal: AuthPrincipal, metadata: dict[str, Any] | None = None) -> dict[str, object]:
-    merged_metadata = {"display_name": principal.display_name, "source": principal.source}
-    if metadata:
-        merged_metadata.update(metadata)
-    return {
-        "id": principal.user_id,
-        "username": principal.user_id,
-        "email": "",
-        "avatar_url": None,
-        "roles": principal.roles,
-        "permissions": principal.permissions,
-        "is_active": True,
-        "metadata": merged_metadata,
-        "created_at": "",
-        "updated_at": "",
-    }
-
-
 @router.get("/auth/permissions")
 async def permissions() -> dict[str, object]:
     permission_infos = [
@@ -1235,20 +1216,6 @@ async def permissions() -> dict[str, object]:
         "groups": [{"name": "AI Platform POC", "permissions": permission_infos}],
         "all_permissions": permission_infos,
     }
-
-
-@router.get("/auth/profile")
-async def profile(principal: AuthPrincipal = Depends(require_principal)) -> dict[str, object]:
-    return _profile_payload(principal)
-
-
-@router.put("/auth/profile/metadata")
-async def update_profile_metadata(
-    payload: dict[str, Any], principal: AuthPrincipal = Depends(require_principal)
-) -> dict[str, object]:
-    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-    return _profile_payload(principal, metadata=metadata)
-
 
 @router.get("/agent/models/available")
 async def available_models(

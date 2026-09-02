@@ -41,8 +41,30 @@ create table if not exists users (
   email text,
   external_id text,
   status text not null default 'active',
-  created_at timestamptz not null default now()
+  metadata_json jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  constraint chk_users_metadata_json_object check (jsonb_typeof(metadata_json) = 'object')
 );
+
+alter table users
+  add column if not exists metadata_json jsonb not null default '{}'::jsonb;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'chk_users_metadata_json_object'
+      and conrelid = 'users'::regclass
+  ) then
+    alter table users
+      add constraint chk_users_metadata_json_object
+      check (jsonb_typeof(metadata_json) = 'object') not valid;
+  end if;
+end
+$$;
+
+alter table users validate constraint chk_users_metadata_json_object;
 
 create table if not exists skills (
   id text primary key,

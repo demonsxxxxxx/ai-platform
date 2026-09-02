@@ -250,8 +250,10 @@ export const authApi = {
   /**
    * 获取用户个人资料
    */
-  async getProfile(): Promise<User> {
-    return authFetch<User>(`${API_BASE}/api/auth/profile`);
+  async getProfile(options: { signal?: AbortSignal } = {}): Promise<User> {
+    return authFetch<User>(`${API_BASE}/api/auth/profile`, {
+      signal: options.signal,
+    });
   },
 
   /**

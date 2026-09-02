@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.bootstrap.agent_profiles import configure_agent_profile_routes
+from app.bootstrap.identity import build_identity_profile_router
 from app.bootstrap.model_services import (
     build_model_management_router,
     configure_model_services,
@@ -104,6 +105,7 @@ def create_app() -> FastAPI:
     app.include_router(frontend_projections_router, prefix="/api")
     app.include_router(role_governance_router, prefix="/api")
     app.include_router(workbench_projections_router, prefix="/api")
+    app.include_router(build_identity_profile_router(), prefix="/api")
     app.include_router(lambchat_compat_router, prefix="/api")
     app.include_router(mcp_router, prefix="/api")
     app.include_router(chat_sessions_router, prefix="/api")
