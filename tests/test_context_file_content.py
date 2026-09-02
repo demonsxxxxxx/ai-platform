@@ -9,12 +9,16 @@ from pypdf import PdfWriter
 
 from app.context.api import ContextFileContentError
 from app.context.file_content import (
-    DOCX_CONTENT_TYPE,
     MAX_CONTEXT_FILE_STAGE_BYTES,
-    PDF_CONTENT_TYPE,
     validate_context_file_for_stage,
 )
 from app.file_parser_contracts import XLSX_CONTENT_TYPE
+
+
+DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+PDF_CONTENT_TYPE = "application/pdf"
+PPTX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+_CFB_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
 
 def _row(name: str, content_type: str, raw: bytes) -> dict[str, object]:
@@ -106,24 +110,29 @@ def test_validate_context_file_for_stage_accepts_xlsx_above_legacy_cell_limit():
     ("name", "content_type", "raw"),
     [
         ("notes.txt", "text/plain", b"bounded text"),
+        ("source.doc", "application/msword", _CFB_MAGIC + b"legacy Word"),
         ("source.docx", DOCX_CONTENT_TYPE, _docx_bytes()),
         ("source.pdf", PDF_CONTENT_TYPE, _opaque_pdf_bytes()),
+        ("book.xls", "application/vnd.ms-excel", _CFB_MAGIC + b"legacy Excel"),
         ("book.xlsx", XLSX_CONTENT_TYPE, _xlsx_bytes_with_cells(2)),
+        ("slides.ppt", "application/vnd.ms-powerpoint", _CFB_MAGIC + b"legacy PowerPoint"),
+        ("slides.pptx", PPTX_CONTENT_TYPE, b"PK\x03\x04opaque PowerPoint"),
+        ("source.bin", "application/octet-stream", b"opaque binary"),
     ],
-    ids=("text", "docx", "pdf", "xlsx"),
+    ids=("text", "doc", "docx", "pdf", "xls", "xlsx", "ppt", "pptx", "binary"),
 )
-def test_validate_context_file_for_stage_accepts_governed_types(name, content_type, raw):
+def test_validate_context_file_for_stage_accepts_opaque_authorized_types(name, content_type, raw):
     validate_context_file_for_stage(_row(name, content_type, raw), raw)
 
 
-def test_validate_context_file_for_stage_rejects_identity_and_type_mismatch():
+def test_validate_context_file_for_stage_rejects_identity_mismatch_without_parsing_type():
     raw = b"hello"
     with pytest.raises(ContextFileContentError, match="context_file_identity_mismatch"):
         validate_context_file_for_stage(
             {**_row("notes.txt", "text/plain", raw), "sha256": "0" * 64}, raw
         )
-    with pytest.raises(ContextFileContentError, match="context_file_type_unsupported"):
-        validate_context_file_for_stage(_row("notes.pdf", PDF_CONTENT_TYPE, raw), raw)
+
+    validate_context_file_for_stage(_row("notes.pdf", PDF_CONTENT_TYPE, raw), raw)
 
 
 def test_validate_context_file_for_stage_rejects_oversize_file():
@@ -156,11 +165,21 @@ def test_validate_context_file_for_stage_accepts_opaque_pdf_without_parsing(raw)
     validate_context_file_for_stage(_row("source.pdf", PDF_CONTENT_TYPE, raw), raw)
 
 
-def test_validate_context_file_for_stage_rejects_invalid_xlsx_archive():
+@pytest.mark.parametrize(
+    ("name", "content_type"),
+    [
+        ("source.xlsx", XLSX_CONTENT_TYPE),
+        ("source.xlsx", "application/octet-stream"),
+        ("source.bin", XLSX_CONTENT_TYPE),
+    ],
+)
+def test_validate_context_file_for_stage_rejects_invalid_declared_xlsx_archive(
+    name, content_type
+):
     raw = b"PK-not-a-zip"
 
     with pytest.raises(ContextFileContentError, match="context_file_xlsx_archive_invalid"):
-        validate_context_file_for_stage(_row("source.xlsx", XLSX_CONTENT_TYPE, raw), raw)
+        validate_context_file_for_stage(_row(name, content_type, raw), raw)
 
 
 def test_validate_context_file_for_stage_rejects_xlsx_ole_content():
