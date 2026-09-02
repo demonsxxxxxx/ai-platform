@@ -186,9 +186,11 @@ def _trusted_download_host(host: str | None) -> bool:
     if not host:
         return False
     lowered = host.lower().rstrip(".")
-    return lowered in {"api.github.com", "github.com"} or lowered.endswith(
-        ".githubusercontent.com"
-    )
+    return lowered in {
+        "api.github.com",
+        "github.com",
+        "release-assets.githubusercontent.com",
+    }
 
 
 class _ArtifactRedirectHandler(HTTPRedirectHandler):
