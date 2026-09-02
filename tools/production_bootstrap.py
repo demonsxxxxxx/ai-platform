@@ -117,6 +117,8 @@ class OpenSandboxHostConfig:
 class CurrentRuntime:
     repo_root: Path
     commit: str
+    backend_image_id: str
+    frontend_image_id: str
 
 
 class Runner:
@@ -1236,11 +1238,45 @@ def _current_runtime(
             target_commit=commit,
             docker_cmd=docker_cmd,
         )
+        api = transition._inspect_container(docker, transition.CONTAINERS["api"])
+        frontend = transition._inspect_container(
+            docker, transition.CONTAINERS["frontend"]
+        )
+        backend_image_id = api.get("Image")
+        frontend_image_id = frontend.get("Image")
+        if not all(
+            isinstance(image_id, str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is not None
+            for image_id in (backend_image_id, frontend_image_id)
+        ):
+            raise BootstrapError("existing production image identity is invalid")
     except BootstrapError:
         raise
     except (authority.ReleaseAuthorityError, transition.TransitionError) as exc:
         raise BootstrapError("existing direct production runtime is invalid") from exc
-    return CurrentRuntime(repo_root=repo_root, commit=commit)
+    return CurrentRuntime(
+        repo_root=repo_root,
+        commit=commit,
+        backend_image_id=backend_image_id,
+        frontend_image_id=frontend_image_id,
+    )
+
+
+def _restore_current_image_tags(
+    current: CurrentRuntime,
+    docker: Sequence[str],
+) -> None:
+    references = authority.build_image_references(current.commit)
+    for role, image_id in (
+        ("backend", current.backend_image_id),
+        ("frontend", current.frontend_image_id),
+    ):
+        transition._run(
+            [*docker, "tag", image_id, references[role]],
+            timeout=30,
+        )
+        if authority._image_record(list(docker), references[role]).get("id") != image_id:
+            raise BootstrapError(f"previous production {role} image restore failed")
 
 
 def _compose_preflight(
@@ -1391,7 +1427,7 @@ def deploy_production_subject(
             application_env_file=env_file,
         )
         try:
-            authority.prepare_packaged_release_images(
+            targets = authority.prepare_packaged_release_images(
                 subject.commit,
                 backend_image=subject.backend_image,
                 frontend_image=subject.frontend_image,
@@ -1399,6 +1435,12 @@ def deploy_production_subject(
             )
             _compose_preflight(checkout, subject.commit, env_file, docker)
         except BaseException:
+            image_restore_error: BaseException | None = None
+            if current is not None and current.commit == subject.commit:
+                try:
+                    _restore_current_image_tags(current, docker)
+                except BaseException as exc:
+                    image_restore_error = exc
             if current is not None:
                 try:
                     host_bootstrap.rollback()
@@ -1406,10 +1448,24 @@ def deploy_production_subject(
                     raise BootstrapError(
                         "production preflight failed and OpenSandbox host restore failed"
                     ) from host_rollback_error
+            if image_restore_error is not None:
+                raise BootstrapError(
+                    "production preflight failed and previous image restore failed"
+                ) from image_restore_error
             raise
         if current is not None and current.commit == subject.commit:
-            print("production: already converged")
-            return subject
+            target_backend_id = authority._image_record(
+                list(docker), targets["backend"]
+            ).get("id")
+            target_frontend_id = authority._image_record(
+                list(docker), targets["frontend"]
+            ).get("id")
+            if (
+                current.backend_image_id == target_backend_id
+                and current.frontend_image_id == target_frontend_id
+            ):
+                print("production: already converged")
+                return subject
         if current is not None:
             try:
                 transition._stop_admission(docker)
@@ -1459,6 +1515,8 @@ def deploy_production_subject(
                     "target deployment failed and rollback safety could not be proven"
                 ) from rollback_fence_error
             try:
+                if current.commit == subject.commit:
+                    _restore_current_image_tags(current, docker)
                 host_bootstrap.rollback()
                 _deploy_checkout(
                     current.repo_root,
@@ -1502,35 +1560,26 @@ def _interrupt(*_args: object) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Bootstrap or update production from fully approved images."
+        description="Bootstrap or update production from a qualified deployment Release."
     )
     parser.add_argument(
         "--latest",
         action="store_true",
-        help="wait for exact-main Actions evidence, resolve image digests, and deploy",
+        help="resolve the latest qualified deployment Release and deploy exact image digests",
     )
     parser.add_argument(
         "--env-file",
         type=Path,
         help="first-deployment root-owned 0600 env path under the managed config root",
     )
-    parser.add_argument(
-        "--ci-timeout-seconds",
-        type=int,
-        default=latest.DEFAULT_CI_TIMEOUT_SECONDS,
-        help=argparse.SUPPRESS,
-    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    if not args.latest and (
-        args.env_file is not None
-        or args.ci_timeout_seconds != latest.DEFAULT_CI_TIMEOUT_SECONDS
-    ):
+    if not args.latest and args.env_file is not None:
         print(
-            "production bootstrap: failed: --env-file and CI timeout require --latest"
+            "production bootstrap: failed: --env-file requires --latest"
         )
         return 2
     previous_handlers = {
@@ -1546,11 +1595,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     selected_env = Path(os.environ.pop(latest.ENV_PATH_VARIABLE))
                 latest._drop_github_tokens(os.environ)
                 client = latest.GitHubClient()
-                latest.deploy_latest_main(
+                latest.deploy_latest_release(
                     root=MANAGED_ROOT,
                     client=client,
                     env_file=selected_env,
-                    ci_timeout_seconds=args.ci_timeout_seconds,
                     deploy=lambda checkout: deploy_production_subject(
                         checkout,
                         root=MANAGED_ROOT,

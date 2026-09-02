@@ -6,14 +6,16 @@ security boundaries live in repository code, tests, architecture decisions, and
 `AGENTS.md`; task ownership, readiness, leases, and break-glass authority live in
 `docs/agent-rules/multi-agent-context-workflow.md`.
 
-## Canonical Exact-Main Command
+## Manual Exact-Main Build Authority
 
-The normal release uses exactly this Git-native authority flow with the base
-Compose file and Docker sandbox overlay. Run it only after read-only readiness
-has passed and exactly one project-bound release owner holds the single mutation
-lease. It does not grant a lease or replace the workflow gates. The operator must
-provide absolute `SOURCE` and `ROOT` paths for the current controlled host; the
-repository does not hard-code a server identity or host filesystem layout.
+This controlled build path remains available when an operator explicitly needs
+the Git-native release authority. It is not the normal `deploy-latest` flow,
+which consumes the qualified immutable Deployment Release described below. Run
+this path only after read-only readiness has passed and exactly one project-bound
+release owner holds the single mutation lease. It does not grant a lease or
+replace the workflow gates. The operator must provide absolute `SOURCE` and
+`ROOT` paths for the current controlled host; the repository does not hard-code
+a server identity or host filesystem layout.
 
 Resolve `SOURCE` to the operator-approved clean coordination checkout and
 `ROOT` to the operator-approved managed release root before running either
@@ -219,37 +221,44 @@ commands, logs, or evidence.
 Unknown profiles, production selection, non-OpenSandbox providers, or a
 one-sided network-mode change fail during process startup.
 
-For the internal-test direct OpenSandbox release, the latest-main quickstart
-resolves the current fixed-repository `main` SHA and waits up to 30 minutes for
-successful backend, frontend, and packaging `push` runs for that exact SHA. It
-also requires the `backend required`, `frontend required`, and
-`release image ready manifest` jobs to have completed successfully. Repository,
-Actions, and rolling release metadata are read anonymously through the configured
-host proxy; the controller removes inherited `GH_TOKEN` and `GITHUB_TOKEN`
-values and sends no Authorization header. The Docker host must already be logged
-in to `ghcr.io`.
+For an internal-test release, Packaging remains responsible for Backend and
+Frontend builds, SBOMs, vulnerability gates, signatures, attestations,
+provenance verification, and strict manifest assembly. Its complete ready
+evidence remains a run-bound 30-day Actions artifact for review; the host does
+not download it.
 
-The packaging final job uses its protected, job-scoped GitHub Actions token to
-publish the already-verified ready bundle as the fixed
-`release-image-evidence.zip` asset on the public `latest-main-evidence`
-prerelease. That complete bundle, including SBOM and vulnerability scan evidence,
-is intentionally public. Packaging publication is serialized. A publisher must
-prove that its event SHA is still current `main` and validate any existing
-rolling release as a public prerelease before replacing the asset. The rolling
-release tag is transport rather than authority; any remaining stale publication
-race produces a label mismatch and fails closed. The quickstart
-requires the fixed public URL, `github-actions[bot]` uploader, exact
-SHA/run/attempt asset label, GitHub `sha256`, downloaded bytes, and internal
-manifest to agree. It then applies bounded archive extraction and runs the
-target checkout's semantic release-manifest verifier over the manifest, SBOM,
-provenance, signature, and scan evidence. The existing 30-day Actions artifact remains rollback-compatible
-evidence but is not downloaded by the host. Only then does it
-atomically prepare `/data/ai-platform-internal-test/incoming/latest-main.json` as
-a non-secret owner-managed file with exactly these fields:
+After all Packaging checks pass, the protected release-manifest job creates one
+stable GitHub Release named `deployment-<commit>-<run-id>-<run-attempt>` with
+only `release-image-manifest.json`. The repository's immutable-releases setting
+must already be enabled through a one-time administrator operation; the workflow
+keeps only `contents: write` and does not receive Administration permission.
+Publication is serialized. The job proves the event SHA is still `main`, invokes
+pinned GitHub CLI once with the versioned tag, manifest asset, and
+`--latest=false`, then verifies through ordinary Release metadata that the result
+is immutable. A mutable result fails the job and is never host authority.
+Qualified Releases and tags are intentionally permanent rollback/audit
+identities.
+
+The host lists up to 100 public Releases once and selects the newest published,
+non-prerelease deployment Release with `immutable=true`; it does not trust
+GitHub's mutable "Latest" marker. It removes inherited `GH_TOKEN` and
+`GITHUB_TOKEN`, uses anonymous HTTPS through the configured proxy, and makes no
+Actions run or job queries. It requires the exact versioned tag and target,
+`github-actions[bot]` Release and asset ownership, a published non-prerelease
+immutable Release, the exact asset label and URL, bounded size, and GitHub's
+`sha256`. The downloaded manifest must bind the same repository, workflow,
+commit, run, attempt, platform, and immutable Backend and Frontend digests. The
+host does not extract a public evidence ZIP or rerun CI's SBOM, Trivy, signature,
+provenance, or attestation checks. The Docker host must already be logged in to
+`ghcr.io`.
+
+Only then does the controller atomically prepare
+`/data/ai-platform-internal-test/incoming/latest-main.json` as a non-secret
+owner-managed file with exactly these fields:
 
 ```json
 {
-  "source_commit": "<fresh-main-40-hex-sha>",
+  "source_commit": "<qualified-release-40-hex-sha>",
   "backend_image": "ghcr.io/demonsxxxxxx/ai-platform-backend@sha256:<digest>",
   "frontend_image": "ghcr.io/demonsxxxxxx/ai-platform-frontend@sha256:<digest>",
   "env_file": "/data/ai-platform-internal-test/config/<managed-subject>/.env",
@@ -258,7 +267,7 @@ a non-secret owner-managed file with exactly these fields:
 ```
 
 For an existing deployment, the controller reuses the stable managed `.env` path
-from the current subject. It materializes the matching exact-main checkout at
+from the current subject. It materializes the matching exact Release checkout at
 `/data/ai-platform-internal-test/releases/<source_commit>` and completes the
 deployment with one command from any trusted checkout containing this wrapper:
 
@@ -272,12 +281,11 @@ On the first deployment, supply the managed path once with
 already prepared the exact checkout and subject may still use the compatible
 `./scripts/deploy-latest.sh --profile internal-test` retry path.
 
-One owner-managed advisory lock covers Actions discovery, exact checkout
-materialization, public evidence verification, subject replacement, image pull,
+One owner-managed advisory lock covers Release resolution, exact checkout
+materialization, manifest verification, subject replacement, image pull,
 Compose mutation, health checks, and rollback. The quickstart removes inherited
-GitHub API credentials before anonymous discovery, rechecks fresh
-`origin/main`, requires immutable role-specific image refs, validates the
-existing runtime-scoped managed `.env` as an owner-matching `0600` regular file
+GitHub API credentials before anonymous Release access, requires immutable
+role-specific image refs, validates the existing runtime-scoped managed `.env` as an owner-matching `0600` regular file
 without reading or printing its values, and runs Compose semantic preflight
 before either pull or up. It uses only the base file plus
 `docker-compose.opensandbox-internal-test.yml` and never builds on the managed
@@ -331,8 +339,8 @@ processing or retry-only lease. The automatic quickstart enforces the same gate;
 after its recovery worker drains the queue, rerun the release or perform an
 operator-approved recovery before retrying image rollback.
 
-`ci_success` is written only after exact-run Actions and packaging evidence
-verification. Keep the selected managed env path stable across successive
+`ci_success` is written only after immutable Deployment Release metadata,
+manifest digest, semantic image binding, checkout, and environment admission. Keep the selected managed env path stable across successive
 releases. A failure before subject replacement preserves the previous subject
 byte-for-byte. A deployment failure after admission keeps the approved target
 subject for an explicit retry. The small image rollback proves that the previous
@@ -400,9 +408,8 @@ separately below.
 
 The base host must already provide Python 3.11 or newer, Docker with Compose v2,
 systemd, and a registered Docker `runsc` runtime. Root must have private GHCR
-pull access. Source, Actions metadata, and public release evidence use the same
-anonymous latest-main admission path as internal-test; inherited GitHub API
-tokens are removed. Before the command, restore these files through the approved
+pull access. Source and immutable Deployment Release metadata use the same anonymous
+admission path as internal-test; inherited GitHub API tokens are removed. Before the command, restore these files through the approved
 secret-management path:
 
 ```text
@@ -456,8 +463,8 @@ and a matching Docker socket group. The lifecycle address must already be
 assigned to the production host. It creates or validates the canonical
 server-state and platform-workspace directories, installs the exact checkout's
 reviewed `opensandbox.service`, pulls its immutable images, and proves
-service/container identity plus `/health`. It then reuses the exact-main Actions
-admission, materializes `/data/ai-platform-prod/releases/<commit>`, validates the
+service/container identity plus `/health`. It then reuses immutable Deployment
+Release admission, materializes `/data/ai-platform-prod/releases/<commit>`, validates the
 production Compose semantics, and converges project `ai-platform-internal` with
 the base file plus `docker-compose.opensandbox.yml`.
 

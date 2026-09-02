@@ -23,6 +23,8 @@ SERVER_IMAGE = "ghcr.io/example/opensandbox-server@sha256:" + "5" * 64
 EXECD_IMAGE = "ghcr.io/example/opensandbox-execd@sha256:" + "6" * 64
 EGRESS_IMAGE = "ghcr.io/example/opensandbox-egress@sha256:" + "8" * 64
 SERVER_IMAGE_ID = "sha256:" + "7" * 64
+BACKEND_IMAGE_ID = "sha256:" + "9" * 64
+FRONTEND_IMAGE_ID = "sha256:" + "a" * 64
 
 
 @pytest.fixture(autouse=True)
@@ -1262,6 +1264,77 @@ def test_cold_production_bootstrap_uses_host_then_exact_production_deploy(
     ]
 
 
+def test_same_commit_new_image_failure_restores_previous_image_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    _mock_production_admission(monkeypatch, tmp_path, events)
+    old_backend = "sha256:" + "b" * 64
+    old_frontend = "sha256:" + "c" * 64
+    current = bootstrap.CurrentRuntime(
+        repo_root=tmp_path / "releases" / COMMIT,
+        commit=COMMIT,
+        backend_image_id=old_backend,
+        frontend_image_id=old_frontend,
+    )
+    monkeypatch.setattr(
+        bootstrap, "_current_runtime", lambda *_args, **_kwargs: current
+    )
+
+    def prepare(*_args: object, **_kwargs: object) -> dict[str, str]:
+        events.append("images")
+        return {"backend": "target-backend", "frontend": "target-frontend"}
+
+    references = bootstrap.authority.build_image_references(COMMIT)
+    image_ids = {
+        "target-backend": BACKEND_IMAGE_ID,
+        "target-frontend": FRONTEND_IMAGE_ID,
+        references["backend"]: old_backend,
+        references["frontend"]: old_frontend,
+    }
+    monkeypatch.setattr(bootstrap.authority, "prepare_packaged_release_images", prepare)
+    monkeypatch.setattr(
+        bootstrap.authority,
+        "_image_record",
+        lambda _docker, image: {"id": image_ids[image]},
+    )
+    tag_commands: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs: object) -> None:
+        events.append("restore-images")
+        tag_commands.append(command)
+
+    monkeypatch.setattr(bootstrap.transition, "_run", run)
+    deployments = 0
+
+    def deploy(*_args: object, **_kwargs: object) -> None:
+        nonlocal deployments
+        deployments += 1
+        events.append(f"deploy-{deployments}")
+        if deployments == 1:
+            raise bootstrap.authority.ReleaseAuthorityError("target")
+
+    monkeypatch.setattr(bootstrap, "_deploy_checkout", deploy)
+
+    with pytest.raises(
+        bootstrap.BootstrapError, match="previous production runtime was restored"
+    ):
+        bootstrap.deploy_production_subject(
+            tmp_path / "releases" / COMMIT,
+            root=tmp_path,
+            host_bootstrap_factory=bootstrap.HostBootstrap,
+        )
+
+    assert "schema" not in events
+    assert tag_commands == [
+        ["docker", "tag", old_backend, references["backend"]],
+        ["docker", "tag", old_frontend, references["frontend"]],
+    ]
+    assert deployments == 2
+    assert events.index("deploy-1") < events.index("restore-images")
+    assert events.index("restore-images") < events.index("deploy-2")
+
+
 def test_cold_production_failure_removes_partial_admission_but_keeps_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1294,18 +1367,25 @@ def test_cold_production_failure_removes_partial_admission_but_keeps_host(
     ]
 
 
-def test_existing_production_preflight_failure_restores_the_host_unit(
+def test_same_commit_preflight_failure_restores_images_and_host_unit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
     _mock_production_admission(monkeypatch, tmp_path, events)
-    previous = bootstrap.CurrentRuntime(
-        repo_root=tmp_path / "releases" / OLD_COMMIT,
-        commit=OLD_COMMIT,
+    current = bootstrap.CurrentRuntime(
+        repo_root=tmp_path / "releases" / COMMIT,
+        commit=COMMIT,
+        backend_image_id=BACKEND_IMAGE_ID,
+        frontend_image_id=FRONTEND_IMAGE_ID,
     )
     monkeypatch.setattr(
-        bootstrap, "_current_runtime", lambda *_args, **_kwargs: previous
+        bootstrap, "_current_runtime", lambda *_args, **_kwargs: current
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "_restore_current_image_tags",
+        lambda *_args: events.append("restore-images"),
     )
     monkeypatch.setattr(
         bootstrap,
@@ -1325,10 +1405,10 @@ def test_existing_production_preflight_failure_restores_the_host_unit(
     assert events == [
         "env",
         "quiescent",
-        "schema",
         f"host:{COMMIT}",
         "host-existing",
         "images",
+        "restore-images",
         "host-rollback",
     ]
 
@@ -1341,6 +1421,8 @@ def test_existing_production_failure_restores_verified_previous_runtime(
     previous = bootstrap.CurrentRuntime(
         repo_root=tmp_path / "releases" / OLD_COMMIT,
         commit=OLD_COMMIT,
+        backend_image_id=BACKEND_IMAGE_ID,
+        frontend_image_id=FRONTEND_IMAGE_ID,
     )
     monkeypatch.setattr(
         bootstrap, "_current_runtime", lambda *_args, **_kwargs: previous
@@ -1389,6 +1471,8 @@ def test_existing_production_does_not_restore_without_rollback_fence(
     previous = bootstrap.CurrentRuntime(
         repo_root=tmp_path / "releases" / OLD_COMMIT,
         commit=OLD_COMMIT,
+        backend_image_id=BACKEND_IMAGE_ID,
+        frontend_image_id=FRONTEND_IMAGE_ID,
     )
     monkeypatch.setattr(
         bootstrap, "_current_runtime", lambda *_args, **_kwargs: previous
@@ -1416,7 +1500,7 @@ def test_existing_production_does_not_restore_without_rollback_fence(
     assert deployments == [f"{COMMIT}:{COMMIT}"]
 
 
-def test_latest_main_drops_inherited_tokens_before_anonymous_deployment(
+def test_latest_release_drops_inherited_tokens_before_anonymous_deployment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed: list[bool] = []
@@ -1430,7 +1514,7 @@ def test_latest_main_drops_inherited_tokens_before_anonymous_deployment(
     monkeypatch.setattr(bootstrap.latest, "GitHubClient", lambda: "anonymous")
     monkeypatch.setattr(
         bootstrap.latest,
-        "deploy_latest_main",
+        "deploy_latest_release",
         lambda **kwargs: observed.append(
             kwargs["client"] == "anonymous"
             and not set(bootstrap.latest.TOKEN_VARIABLES) & set(bootstrap.os.environ)

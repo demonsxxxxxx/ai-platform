@@ -76,7 +76,7 @@ def _subject_file(path: Path, **changes: object) -> Path:
         {"frontend_image": BACKEND},
     ],
 )
-def test_subject_requires_ci_success_exact_main_and_role_digests(
+def test_subject_requires_ci_success_release_commit_and_role_digests(
     tmp_path: Path, changes: dict[str, object]
 ) -> None:
     path = _subject_file(tmp_path / "latest-main.json", **changes)
@@ -122,7 +122,7 @@ def test_managed_env_is_only_checked_for_metadata(monkeypatch: pytest.MonkeyPatc
     assert release._validate_env(env_file) == env_file
 
 
-def test_fresh_main_mismatch_is_rejected(tmp_path: Path) -> None:
+def test_qualified_release_checkout_does_not_query_current_main(tmp_path: Path) -> None:
     repo = tmp_path / "managed" / "releases" / COMMIT
     for relative in quickstart.COMPOSE_FILES:
         path = repo / relative
@@ -138,14 +138,14 @@ def test_fresh_main_mismatch_is_rejected(tmp_path: Path) -> None:
                 return COMMIT
             if "status" in joined:
                 return ""
-            return OLD_COMMIT + "\trefs/heads/main"
+            raise AssertionError(f"unexpected source command: {joined}")
 
     release = quickstart.Quickstart(repo, tmp_path / "managed", runner=SourceRunner())
-    with pytest.raises(quickstart.QuickstartError, match="not fresh origin/main"):
-        release._verify_source(quickstart.Subject(COMMIT, BACKEND, FRONTEND))
+
+    release._verify_source(quickstart.Subject(COMMIT, BACKEND, FRONTEND))
 
 
-def test_invalid_origin_is_rejected_before_network_access(tmp_path: Path) -> None:
+def test_invalid_origin_is_rejected(tmp_path: Path) -> None:
     root = tmp_path / "managed"
     repo = root / "releases" / COMMIT
     for relative in quickstart.COMPOSE_FILES:

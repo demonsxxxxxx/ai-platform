@@ -1,137 +1,148 @@
-# Latest-main image quickstart change contract
+# Deployment Release quickstart contract
 
 ## Goal
 
-Provide one host command that waits for the current authoritative `main` commit
-to finish the backend, frontend, and packaging GitHub Actions workflows, resolves
-the two published GHCR image digests from the packaging evidence, materializes
-the exact release checkout, and delegates deployment to the selected managed
-environment controller.
-
-The operator command is:
+Provide one host command that deploys the latest qualified, immutable Deployment
+Release without reconstructing GitHub Actions on the target host:
 
 ```bash
 ./scripts/deploy-latest.sh --profile internal-test --latest
 ```
 
-The same profile command without `--latest` remains available for a
-controller-prepared `incoming/latest-main.json` subject.
+The same profile command without `--latest` retries the controller-approved
+`incoming/latest-main.json` subject.
 
 ## Bounded change surface
 
-- `scripts/deploy-latest.sh`
-- `scripts/quickstart-s72.sh` (internal-test alias)
+- `.github/workflows/ai-platform-packaging-publish.yml`
 - `tools/latest_main_quickstart.py`
-- `tests/test_deploy_latest_entry.py`
+- `tools/sandbox_quickstart.py`
+- `tools/production_bootstrap.py`
+- `tests/test_packaging_publish_workflow.py`
 - `tests/test_latest_main_quickstart.py`
 - `tests/test_sandbox_quickstart.py`
-- `.github/workflows/ai-platform-packaging-publish.yml`
-- `tests/test_packaging_publish_workflow.py`
-- `.github/workflows/ai-platform-backend.yml`
-- `tests/test_backend_ci_workflow.py`
+- `tests/test_production_bootstrap.py`
 - `README.md`
 - `docs/operations/release-operations-runbook.md`
+- `docs/operations/production-bootstrap.md`
 - this contract
 
-The existing Compose convergence, health checking, runtime inspection, data
-volume preservation, and image rollback implementation remains owned by
-`tools/sandbox_quickstart.py`.
+Compose convergence, runtime health checks, data-volume preservation, and image
+rollback remain owned by `tools/sandbox_quickstart.py` for internal test and
+`tools/production_bootstrap.py` for production.
 
-## Admission and authority contract
+## Publication authority
 
-The latest deployment candidate is the exact 40-character SHA currently at the
-fixed repository's `refs/heads/main`. For that same SHA, the controller must
-require completed successful `push` runs and successful final jobs for all of:
+Packaging remains the build and supply-chain authority. For one exact `main`
+push, it builds Backend and Frontend images, generates and binds SBOMs, rejects
+fixable HIGH or CRITICAL vulnerabilities, signs and attests the immutable image
+subjects, reverifies downloaded provenance, and assembles the existing strict
+`release-image-manifest.json`.
 
-| Workflow | Required final job |
-| --- | --- |
-| `.github/workflows/ai-platform-backend.yml` | `backend required` |
-| `.github/workflows/ai-platform-frontend.yml` | `frontend required` |
-| `.github/workflows/ai-platform-packaging-publish.yml` | `release image ready manifest` |
+The complete ready evidence remains a run-bound, 30-day Actions artifact for
+review and rollback investigation. The public deployment Release contains only
+`release-image-manifest.json`.
 
-The successful packaging run publishes the verified ready bundle both as its
-30-day Actions artifact and as the fixed `release-image-evidence.zip` asset on
-the public `latest-main-evidence` prerelease. The public asset label is derived
-only from the exact SHA, run ID, and run attempt. The rolling release tag is a
-transport location, never deployment authority. The controller requires the
-exact label, `github-actions[bot]` uploader, GitHub-provided `sha256` digest,
-fixed public download URL, and the selected run's internal manifest to agree.
-The downloaded archive is bounded and extracted without following archive paths
-or links. The exact target checkout's `release_image_manifest.py verify`
-command must validate all manifest, SBOM, provenance, signature, and scan
-evidence before either image digest is admitted.
+The release-manifest job has serialized, environment-protected `contents: write`
+authority. The repository's GitHub immutable-releases setting must be enabled as
+a one-time administrator operation. The workflow does not receive repository
+Administration permission. For each push, it proves its event SHA is still
+`main`, then uses pinned GitHub CLI to create the unique
+`deployment-<commit>-<run-id>-<run-attempt>` Release with the manifest asset and
+`--latest=false`. GitHub CLI stages the asset on a draft before publishing when
+immutable releases are enabled. The workflow then verifies through ordinary
+Release metadata that `isImmutable=true`; otherwise the job fails.
 
-The controller never accepts mutable image tags. It atomically replaces
-`incoming/latest-main.json` only after workflow, public asset, checkout,
-manifest, and managed environment validation all succeed. A failure before that
-replace leaves the previous subject byte-for-byte unchanged.
+A failed run cannot overwrite another run's tag or asset. A mutable Release
+created while the repository setting is misconfigured is never qualified and is
+ignored by host admission; rerunning the workflow uses a new run-attempt tag.
+Every successfully qualified Release and tag is intentionally permanent and
+serves as a rollback/audit identity.
+
+## Host admission
+
+`--latest` means the newest qualified Deployment Release, not the current tip of
+`main` or GitHub's mutable "Latest" marker. The host makes one anonymous
+`/releases?per_page=100` API request, skips non-deployment and mutable Releases,
+and validates the first published immutable deployment candidate. Admission
+requires:
+
+- the exact versioned tag and target commit;
+- a published, non-prerelease, immutable Release authored by
+  `github-actions[bot]`;
+- exactly one `release-image-manifest.json` asset with the exact
+  commit/run/attempt label, uploader, public URL, bounded size, and GitHub
+  `sha256` digest;
+- downloaded bytes matching that digest; and
+- a strict manifest bound to the same repository, workflow, commit, run,
+  attempt, `linux/amd64` platform, and exact Backend and Frontend GHCR digest
+  references.
+
+The host does not query Actions runs or jobs, wait for `main`, extract a public
+evidence archive, or rerun CI's SBOM, Trivy, signature, provenance, or attestation
+verification.
+
+The existing release authority materializes or reuses
+`<managed-root>/releases/<commit>`, proving the commit belongs to protected
+`main`, the origin is canonical, and the checkout is exact and clean. Runtime
+preflight rechecks the local commit, origin, checkout cleanliness, Compose files,
+and immutable images. It deliberately does not require the qualified release to
+remain the current `main` tip.
+
+Only after Release, asset, manifest, checkout, and managed-environment admission
+succeed does the controller atomically replace `incoming/latest-main.json`. A
+failure before replacement preserves the previous subject byte-for-byte.
 
 ## Host and secret contract
 
-The repository, Actions metadata, and rolling release evidence are public. The
-controller uses anonymous HTTPS and deliberately removes inherited `GH_TOKEN`
-and `GITHUB_TOKEN` values before GitHub access; it never invokes `gh auth` or
-sends an Authorization header. Packaging uses only its job-scoped ephemeral
-`${{ github.token }}` with protected `contents: write` permission to roll the
-public asset after the complete bundle verifies. Packaging publication is
-serialized. Each publisher first proves that its exact event SHA is still
-current `main` and validates any existing rolling release as a public
-prerelease before replacing its asset. If `main` advances in the remaining
-publication race, the asset's stale label cannot match the controller's newly
-selected run, so admission remains fail-closed. The complete bundle, including SBOM and
-vulnerability scan evidence, is public by design. The host must already be
-logged in to `ghcr.io` for private image pulls.
+Repository source, Release metadata, and the manifest asset are public. The
+controller removes inherited `GH_TOKEN` and `GITHUB_TOKEN`, invokes no GitHub CLI,
+and sends no Authorization header. Packaging uses only its protected,
+job-scoped `${{ github.token }}`. The Docker host must already be logged in to
+GHCR for private immutable-image pulls.
 
-Anonymous Actions polling uses one repository-runs query per 90-second cycle to
-stay within the public GitHub API budget. API rejection or rate limiting blocks
-deployment before subject replacement or Compose mutation.
+An existing subject supplies the stable managed `.env` path. On first deployment,
+the operator supplies `--env-file`; the controller records only its path and
+validates owner/mode metadata without reading or printing its contents.
 
-An existing valid quickstart subject supplies the stable managed `.env` path.
-For the first deployment, the operator supplies the path with `--env-file`; the
-controller records only that path and never reads or prints the file contents.
-
-One owner-managed advisory lock covers candidate discovery, checkout
-materialization, public evidence verification, subject replacement, pull,
-Compose mutation, health checks, and rollback. Contention fails without mutating
-the runtime.
+One owner-managed lock covers Release resolution, checkout materialization,
+subject replacement, image pull, Compose mutation, health checks, and rollback.
+Contention fails without runtime mutation.
 
 ## Failure and rollback contract
 
-- Missing, pending beyond the bounded wait, failed, cancelled, or mismatched
-  Actions evidence blocks deployment before Compose mutation.
-- Download, archive, manifest, checkout, or environment validation failure
-  blocks deployment before subject replacement and Compose mutation.
-- Public evidence download and archive validation complete before target
-  checkout materialization. The run-scoped Actions artifact remains for 30 days
-  only as rollback-compatible evidence; the host does not consume it. A
-  successfully materialized exact-commit checkout is retained as an
-  owner-managed retry and rollback asset; this command does not delete release
-  checkouts automatically.
+- Missing, malformed, or mismatched Release metadata, or the absence of a
+  qualified immutable Deployment Release, blocks before subject replacement or
+  Compose mutation.
+- Manifest download, digest, semantic binding, checkout, or environment failure
+  blocks before subject replacement or Compose mutation.
+- The Actions evidence artifact remains audit evidence; the host does not consume
+  it.
+- Successfully materialized checkouts are retained for approved retry and
+  rollback; this command does not delete them.
 - Image pull failure blocks target startup.
-- Target startup or health failure delegates to the existing one-attempt image
-  rollback. Persistent data volumes remain in place; database migrations are
+- Startup or health failure delegates to the existing one-attempt runtime
+  rollback. Persistent data volumes remain in place and database migrations are
   not reversed.
-- The approved target subject remains available for an operator retry after a
-  post-admission deployment failure.
+- A post-admission deployment failure retains the approved target subject for an
+  operator retry.
 
 ## Falsifiable acceptance
 
-Focused tests must prove exact-SHA three-workflow gating, final-job gating,
-anonymous low-rate Actions discovery, public asset label/uploader/URL/digest
-binding, bounded archive extraction, external run/attempt binding, semantic
-manifest verification, inherited-token removal, atomic subject
-preservation/replacement, checkout handoff, lock contention, zero-argument
-compatibility, and CI ownership of both quickstart test files. Static
-compilation and shell syntax checks must also pass. Docker runtime acceptance remains explicitly unavailable on hosts
-without Docker and Compose.
+Focused tests must prove immutable Release publication, fresh-main checks before
+publication, single-use versioned tags, minimal public manifest publication,
+Release/asset/digest binding, strict manifest-to-image binding, inherited-token
+removal, atomic subject preservation/replacement, checkout handoff, lock
+contention, source validation without current-tip polling, production caller
+compatibility, and retention of complete run-bound Actions evidence. Static
+compilation, Ruff, YAML, shell syntax, and required Ubuntu checks must pass.
+Docker runtime acceptance remains separate and requires an authorized
+Docker-capable host.
 
 ## Production consumer
 
-The exact-main resolver and public release-evidence admission in this contract
-are also reused by
-`sudo -n ./scripts/deploy-latest.sh --profile production --latest`. That profile
-has a separate production change contract in
-`docs/operations/production-bootstrap.md`. It uses `/data/ai-platform-prod`, the
-direct governed OpenSandbox overlay, host-service convergence, production
-quiescence, and production parity/rollback checks. The `internal-test` profile
-selects only the internal-test overlay.
+`sudo -n ./scripts/deploy-latest.sh --profile production --latest` reuses this
+Release admission and then applies the separate production host, quiescence,
+OpenSandbox, parity, and rollback contract in
+`docs/operations/production-bootstrap.md`. The `internal-test` profile continues
+to select only the internal-test Compose overlay.
