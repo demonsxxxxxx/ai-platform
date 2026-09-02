@@ -17,6 +17,7 @@ import {
 import {
   comparePublicRunStreamCursors,
   type V4AdapterBinding,
+  type V4PublicEvent,
   type V4SseFrame,
 } from "../../components/chat/assistant-ui/publicEventAdapter";
 import { clearAllLoadingStates } from "./messageParts";
@@ -59,6 +60,13 @@ export interface SSEConnectionContext extends EventHandlerContext {
     status: TerminalRunStatus,
     messageId: string,
   ) => Promise<void>;
+  hydrateActiveRun?: (
+    sessionId: string,
+    runId: string,
+    streamVersion: number,
+    streamIncarnation: number,
+    expectedCursorEventId: string,
+  ) => Promise<string | null>;
 }
 
 /**
@@ -195,7 +203,7 @@ function isRefreshRetryRequested(error: unknown): error is RefreshRetryRequested
 }
 
 class SSEReplayGapError extends Error {
-  constructor() {
+  constructor(readonly gap: V4PublicEvent) {
     super("sse_replay_gap");
     this.name = "SSEReplayGapError";
   }
@@ -322,11 +330,13 @@ export async function recoverReplayGap(
     runId,
     messageId,
     streamVersion,
+    gap,
   }: {
     sessionId: string;
     runId: string;
     messageId: string;
     streamVersion: number;
+    gap: V4PublicEvent;
   },
   dependencies: ReconnectDependencies = {},
 ): Promise<void> {
@@ -346,47 +356,87 @@ export async function recoverReplayGap(
     return;
   }
 
-  const acceptedStreamCursorRef = ctx.acceptedStreamCursorRef;
-  const cursor = acceptedStreamCursorRef?.current;
-  if (
-    acceptedStreamCursorRef &&
-    cursor?.sessionId === sessionId &&
-    cursor.runId === runId
-  ) {
-    acceptedStreamCursorRef.current = {
-      sessionId: null,
-      runId: null,
-      eventId: null,
-      streamIncarnation: null,
-    };
-  }
-  const acceptedRunEventSequenceRef = ctx.acceptedRunEventSequenceRef;
-  const sequence = acceptedRunEventSequenceRef?.current;
-  if (
-    acceptedRunEventSequenceRef &&
-    sequence?.sessionId === sessionId &&
-    sequence.runId === runId
-  ) {
-    acceptedRunEventSequenceRef.current = {
-      sessionId: null,
-      runId: null,
-      sequence: null,
-    };
-  }
+  const payload = gap.event.payload as Record<string, unknown>;
+  const reason = payload.reason;
+  const currentIncarnation = payload.current_stream_incarnation;
+  const latestAvailableEventId = payload.latest_available_event_id;
+  const acceptedCursorAtGap = ctx.acceptedStreamCursorRef?.current;
+  const expectedCursorEventId =
+    acceptedCursorAtGap?.sessionId === sessionId &&
+    acceptedCursorAtGap.runId === runId &&
+    acceptedCursorAtGap.streamIncarnation === gap.streamIncarnation
+      ? acceptedCursorAtGap.eventId
+      : null;
+  const ownsExpectedCursor = () => {
+    const cursor = ctx.acceptedStreamCursorRef?.current;
+    return Boolean(
+      cursor &&
+        cursor.sessionId === sessionId &&
+        cursor.runId === runId &&
+        cursor.streamIncarnation === gap.streamIncarnation &&
+        cursor.eventId === expectedCursorEventId,
+    );
+  };
+  const canResumeActive =
+    (reason === "retained_history_unavailable" ||
+      reason === "stream_continuity_unproven") &&
+    currentIncarnation === gap.streamIncarnation &&
+    typeof expectedCursorEventId === "string" &&
+    typeof latestAvailableEventId === "string" &&
+    latestAvailableEventId.length > 0;
+  const resumeCursor = canResumeActive
+    ? `${runId}:${currentIncarnation}:${latestAvailableEventId}`
+    : null;
+
   ctx.publicStreamPresentation?.flush({
     sessionId,
     runId,
     assistantMessageId: messageId,
     streamVersion,
   });
-  ctx.publicStreamPresentation?.invalidate();
-  ctx.setMessages((messages) =>
-    messages.map((message) =>
-      message.id === messageId ? { ...message, isStreaming: false } : message,
-    ),
-  );
   ctx.setConnectionStatus("recovering_gap");
   ctx.setIsInitializingSandbox(false);
+
+  let stoppedForTerminalRecovery = false;
+  const stopForTerminalRecovery = () => {
+    if (stoppedForTerminalRecovery) return;
+    stoppedForTerminalRecovery = true;
+    const acceptedStreamCursorRef = ctx.acceptedStreamCursorRef;
+    const cursor = acceptedStreamCursorRef?.current;
+    if (
+      acceptedStreamCursorRef &&
+      cursor?.sessionId === sessionId &&
+      cursor.runId === runId
+    ) {
+      acceptedStreamCursorRef.current = {
+        sessionId: null,
+        runId: null,
+        eventId: null,
+        streamIncarnation: null,
+      };
+    }
+    const acceptedRunEventSequenceRef = ctx.acceptedRunEventSequenceRef;
+    const sequence = acceptedRunEventSequenceRef?.current;
+    if (
+      acceptedRunEventSequenceRef &&
+      sequence?.sessionId === sessionId &&
+      sequence.runId === runId
+    ) {
+      acceptedRunEventSequenceRef.current = {
+        sessionId: null,
+        runId: null,
+        sequence: null,
+      };
+    }
+    ctx.publicStreamPresentation?.invalidate();
+    ctx.setMessages((messages) =>
+      messages.map((message) =>
+        message.id === messageId ? { ...message, isStreaming: false } : message,
+      ),
+    );
+  };
+
+  if (!resumeCursor) stopForTerminalRecovery();
 
   const owner: ReplayGapRecoveryOwner = {
     sessionId,
@@ -426,15 +476,69 @@ export async function recoverReplayGap(
           settleUnavailable();
           return;
         }
-        const status = terminalRunStatus(statusResult.status);
-        if (status) {
+        const terminalStatus = terminalRunStatus(statusResult.status);
+        if (!terminalStatus && isActiveRunStatus(statusResult.status)) {
+          if (
+            resumeCursor &&
+            typeof expectedCursorEventId === "string" &&
+            ctx.hydrateActiveRun &&
+            ctx.acceptedStreamCursorRef &&
+            dependencies.connect
+          ) {
+            const hydratedMessageId = await ctx.hydrateActiveRun(
+              sessionId,
+              runId,
+              streamVersion,
+              gap.streamIncarnation,
+              expectedCursorEventId,
+            );
+            if (!isCurrent() || !ownsExpectedCursor()) return;
+            if (!hydratedMessageId) {
+              settleUnavailable();
+              return;
+            }
+            ctx.acceptedStreamCursorRef.current = {
+              sessionId,
+              runId,
+              eventId: resumeCursor,
+              streamIncarnation: gap.streamIncarnation,
+            };
+            ctx.streamingMessageIdRef.current = hydratedMessageId;
+            ctx.publicStreamPresentation?.activate({
+              sessionId,
+              runId,
+              assistantMessageId: hydratedMessageId,
+              streamVersion,
+            });
+            ctx.setConnectionStatus("reconnecting");
+            if (ctx.replayGapRecoveryRef?.current === owner) {
+              ctx.replayGapRecoveryRef.current = null;
+            }
+            await dependencies.connect(
+              sessionId,
+              runId,
+              hydratedMessageId,
+              ctx,
+              true,
+            );
+            return;
+          }
+          stopForTerminalRecovery();
+        }
+        if (terminalStatus) {
+          stopForTerminalRecovery();
           if (!isCurrent()) {
             return;
           }
           if (ctx.hydrateTerminalRun) {
-            await ctx.hydrateTerminalRun(sessionId, runId, status, messageId);
+            await ctx.hydrateTerminalRun(
+              sessionId,
+              runId,
+              terminalStatus,
+              messageId,
+            );
           } else {
-            ctx.onRunTerminal?.(runId, status, messageId);
+            ctx.onRunTerminal?.(runId, terminalStatus, messageId);
           }
           return;
         }
@@ -842,11 +946,17 @@ export async function connectToSSE(
             ctx,
             binding,
             currentGeneration: streamVersion,
-            onGap: () => {
+            onGap: (gapEvent) => {
               receivedNonTerminalApplicationError = true;
-              throw new SSEReplayGapError();
+              throw new SSEReplayGapError(gapEvent);
             },
             onCommitted: commitAcceptedStreamEvent,
+            onTerminalSettled: (accepted) => {
+              if (accepted || !pendingTerminalHydration) return;
+              const pending = pendingTerminalHydration;
+              pendingTerminalHydration = null;
+              pending.resolve();
+            },
           });
           if (!accepted) {
             const matchesPendingTerminal = Boolean(
@@ -946,8 +1056,23 @@ export async function connectToSSE(
           runId: targetRunId,
           messageId,
           streamVersion,
+          gap: err.gap,
         },
-        tokenDependencies.replayGapDependencies,
+        {
+          ...tokenDependencies.replayGapDependencies,
+          connect:
+            tokenDependencies.replayGapDependencies?.connect ||
+            ((nextSessionId, nextRunId, nextMessageId, nextCtx, retried) =>
+              connectToSSE(
+                nextSessionId,
+                nextRunId,
+                nextMessageId,
+                nextCtx,
+                retried,
+                fetchStream,
+                tokenDependencies,
+              )),
+        },
       );
       return;
     }
