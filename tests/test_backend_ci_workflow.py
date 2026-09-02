@@ -58,6 +58,9 @@ BACKEND_TEST_SHARDS = {
         "tests/test_claude_agent_sdk_installed_contract.py",
         "tests/test_claude_agent_sdk_runner.py",
         "tests/test_claude_agent_worker_adapter.py",
+        "tests/test_claude_agent_worker_file_continuity.py",
+        "tests/test_context_file_content.py",
+        "tests/test_sandbox_document_capability.py",
         "tests/test_required_tool_contract.py",
         "tests/test_intent_router.py",
         "tests/test_public_answer_stream.py",
@@ -268,7 +271,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     all_selectors = [
         selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors
     ]
-    assert len(all_selectors) == len(set(all_selectors)) == 78
+    assert len(all_selectors) == len(set(all_selectors)) == 81
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job
@@ -1015,7 +1018,12 @@ def test_backend_image_job_builds_only_affected_pull_request_candidates_and_chec
     assert 'labels["org.opencontainers.image.revision"]' in image_job
     assert 'labels["ai-platform.source-repository"]' in image_job
     assert '--env IMAGE_SOURCE_COMMIT="$IMAGE_SOURCE_COMMIT"' in image_job
-    assert "import app.main, claude_agent_sdk" in image_job
+    assert "--network none" in image_job
+    assert "target=/tmp/sandbox-documents,readonly" in image_job
+    assert "import anydoc, app.main, claude_agent_sdk" in image_job
+    assert 'anydoc.to_markdown(root / name, ocr=\\"reject\\")' in image_job
+    for fixture in ("legacy.doc", "legacy.xls", "legacy.ppt", "modern.pptx"):
+        assert fixture in image_job
     assert "http://127.0.0.1:18020/api/ai/health" in image_job
     assert "python - <<'PY'" not in startup_step
     assert "os.urandom(32)" in startup_step
