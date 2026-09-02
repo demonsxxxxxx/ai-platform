@@ -42,6 +42,12 @@ function formatCapability(value: string): string {
   return value.replace(/[:_]/g, " ");
 }
 
+const SCOPE_LABEL_KEYS = {
+  tenant: "roles.plaza.scope.levels.company",
+  department: "roles.plaza.scope.levels.department",
+  workspace: "roles.plaza.scope.levels.workspace",
+} as const;
+
 function formatTimestamp(value: string | null | undefined): string {
   if (!value) return "-";
   const date = new Date(value);
@@ -105,6 +111,7 @@ function RoleCard({
 }) {
   const { t } = useTranslation();
   const requesting = operation?.kind === "role" && operation.id === role.role_id;
+  const enterpriseAdmin = role.role_id === "tenant_admin";
 
   return (
     <article
@@ -115,15 +122,19 @@ function RoleCard({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-sm font-semibold text-[var(--theme-text)]">
-              {role.name}
+              {enterpriseAdmin
+                ? t("roles.plaza.roleDirectory.enterpriseAdmin")
+                : role.name}
             </h3>
             <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[11px] font-medium text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
-              {role.scope}
+              {t(SCOPE_LABEL_KEYS[role.scope])}
             </span>
           </div>
-          <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
-            {role.role_id}
-          </p>
+          {!enterpriseAdmin ? (
+            <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
+              {role.role_id}
+            </p>
+          ) : null}
         </div>
         <GovernanceAvailabilityBadge
           state={role.assignable ? "enabled" : role.requestable ? "enabled" : "disabled"}
@@ -136,7 +147,9 @@ function RoleCard({
       </div>
 
       <p className="mt-3 line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
-        {role.description || t("roles.plaza.roleDirectory.noDescription")}
+        {enterpriseAdmin
+          ? t("roles.plaza.roleDirectory.enterpriseAdminDescription")
+          : role.description || t("roles.plaza.roleDirectory.noDescription")}
       </p>
 
       <div className="mt-3 flex flex-wrap gap-1.5">
@@ -483,7 +496,6 @@ export function RolesPanel() {
                 </div>
                 <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
                   {t("roles.plaza.scope.description", {
-                    tenant: overview?.scope.tenant_id ?? "-",
                     workspace: overview?.scope.workspace_id ?? "-",
                   })}
                 </p>
@@ -562,7 +574,8 @@ export function RolesPanel() {
                             {skill.skill_id}
                           </span>
                           <span className="shrink-0 rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
-                            {skill.availability_state} / {skill.inherited_from}
+                            {skill.availability_state} /{" "}
+                            {t(SCOPE_LABEL_KEYS[skill.inherited_from])}
                           </span>
                         </div>
                       ))
@@ -606,7 +619,10 @@ export function RolesPanel() {
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <h3 className="font-semibold text-[var(--theme-text)]">
-                            {request.target_type}: {request.target_id}
+                            {request.target_type}:{" "}
+                            {request.target_id === "tenant_admin"
+                              ? t("roles.plaza.roleDirectory.enterpriseAdmin")
+                              : request.target_id}
                           </h3>
                           <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[11px] font-medium text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
                             {request.status}
@@ -617,7 +633,10 @@ export function RolesPanel() {
                         </p>
                         {request.reason ? (
                           <p className="mt-2 line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                            {request.reason}
+                            {request.reason.replaceAll(
+                              "tenant_admin",
+                              t("roles.plaza.roleDirectory.enterpriseAdmin"),
+                            )}
                           </p>
                         ) : null}
                       </div>
@@ -687,7 +706,10 @@ export function RolesPanel() {
                           {audit.action}
                         </h3>
                         <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
-                          {audit.actor_id} · {audit.target_type}:{audit.target_id}
+                          {audit.actor_id} · {audit.target_type}:
+                          {audit.target_id === "tenant_admin"
+                            ? t("roles.plaza.roleDirectory.enterpriseAdmin")
+                            : audit.target_id}
                         </p>
                         <p className="mt-1 text-xs text-[var(--theme-text-tertiary)]">
                           {audit.audit_id} · {formatTimestamp(audit.created_at)}

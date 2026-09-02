@@ -1576,14 +1576,21 @@
       "roleDirectory": {
         "description": "当前工作区返回 {{count}} 个可见角色。普通用户只能申请可申请角色。",
         "empty": "当前账号没有可见角色。",
+        "enterpriseAdmin": "企业管理员",
+        "enterpriseAdminDescription": "企业管理角色；分配前需要平台管理员审核。",
         "noCapabilities": "暂无能力标签",
         "noDescription": "未提供描述",
         "title": "角色目录"
       },
       "scope": {
-        "description": "租户 {{tenant}} · 工作区 {{workspace}} 的部门、工作区和 Skill 继承范围。",
+        "description": "工作区 {{workspace}} 的部门、工作区和 Skill 继承范围。",
         "emptyDepartments": "当前账号没有可见部门范围。",
         "emptySkills": "暂无 Skill 继承范围。",
+        "levels": {
+          "company": "全公司",
+          "department": "部门",
+          "workspace": "工作区"
+        },
         "skillsTitle": "Skill 可用范围",
         "title": "部门与工作区范围"
       },
@@ -1657,7 +1664,7 @@
       "title": "模型管理"
     },
     "runs": {
-      "description": "查看当前租户最近的 Chat、Run 和 Worker 生命周期状态。",
+      "description": "查看最近的 Chat、Run 和 Worker 生命周期状态。",
       "title": "运行监控"
     },
     "notifications": {
@@ -1677,7 +1684,7 @@
       "title": "技能管理"
     },
     "users": {
-      "description": "管理用户账户、角色和访问权限。管理多租户用户生命周期和安全设置。",
+      "description": "管理用户账户、角色和访问权限。",
       "title": "用户管理"
     }
   },
@@ -2468,7 +2475,7 @@
     "noModels": "暂无可用模型",
     "provider": "供应商",
     "publicProjection": "公开模型投影",
-    "publicProjectionDescription": "聊天和选择器只读取公开可用模型，不暴露密钥、网关配置或租户外信息。",
+    "publicProjectionDescription": "聊天和选择器只读取公开可用模型，不暴露密钥、网关配置或内部部署信息。",
     "searchPlaceholder": "搜索模型、供应商或能力",
     "pinModel": "置顶",
     "setDefault": "设为默认",
@@ -2553,7 +2560,7 @@
           }
         },
         "details": {
-          "adminProjection": "管理员控制：系统运行配置、租户开关和平台参数按设置权限分层展示。",
+          "adminProjection": "管理员控制：系统运行配置、功能开关和平台参数按设置权限分层展示。",
           "auditProjection": "审计边界：配置变更需要作者、时间、来源和回滚线索，普通页面只读。",
           "nextContract": "已接入合同：个人偏好和系统配置读取分层；密钥网关保持脱敏与权限约束。",
           "publicProjection": "当前状态：个人偏好和系统设置读取安全投影，写操作继续由管理员治理。"
@@ -2632,7 +2639,7 @@
         "description": "后端返回了安全投影，但治理元数据要求该页面保持受限模式。"
       },
       "governance": {
-        "projection": "投影：{{projection}} · 租户 {{tenant}} · 工作区 {{workspace}}",
+        "projection": "投影：{{projection}} · 工作区 {{workspace}}",
         "secretProjected": "后端报告存在密钥材料，当前投影已按安全策略脱敏展示。",
         "summaryTitle": "读写治理摘要",
         "scope": "作用范围",
@@ -2650,9 +2657,9 @@
         "title": "用户",
         "subtitle": "安全公司用户目录投影；生命周期变更继续受治理。",
         "taskTitle": "核对公司用户目录",
-        "taskDescription": "读取后端安全目录投影，展示账号、租户、部门和角色范围；启停、授权和删除继续由管理员流程处理。",
+        "taskDescription": "读取后端安全目录投影，展示账号、部门和角色范围；启停、授权和删除继续由管理员流程处理。",
         "directoryTitle": "公司目录",
-        "directoryDescription": "按当前工作区权限返回的可见账号，不暴露未授权租户数据。",
+        "directoryDescription": "按当前工作区权限返回可见账号，不暴露无权查看的用户数据。",
         "search": "搜索用户",
         "empty": "当前投影中没有可见用户。",
         "total": "目录总数",
@@ -2662,7 +2669,6 @@
         "activeState": "启用",
         "inactiveState": "停用",
         "account": "账号",
-        "tenant": "租户",
         "department": "部门",
         "roles": "角色覆盖",
         "rolesDetail": "来自安全角色投影",
@@ -2674,6 +2680,7 @@
           "developer": "开发者",
           "manager": "经理",
           "superuser": "超级用户",
+          "tenant_admin": "企业管理员",
           "user": "普通用户"
         }
       },

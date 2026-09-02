@@ -68,7 +68,7 @@ const QUEUE_REASON_LABELS: Record<string, string> = {
   workers_busy: "Worker 忙碌",
   worker_capacity_full: "Worker 容量已满",
   queued_behind_existing_work: "等待前序任务",
-  tenant_quota_full: "租户并发已满",
+  tenant_quota_full: "企业并发已满",
   user_quota_full: "用户并发已满",
   processing_lease_reclaimable: "存在可回收任务",
 };
@@ -801,7 +801,7 @@ export function RunMonitorPanel() {
     >
       <PanelHeader
         title="运行监控"
-        subtitle="查看当前租户最近的 Chat、Run 与 Worker 生命周期状态"
+        subtitle="查看最近的 Chat、Run 与 Worker 生命周期状态"
         icon={<Activity size={20} />}
         actions={headerActions}
         searchValue={searchQuery}
@@ -828,7 +828,7 @@ export function RunMonitorPanel() {
           icon={<Clock3 size={17} />}
           value={summary.queued}
           label="正在排队"
-          detail={`租户队列 ${numericValue(queueInsight?.depths?.tenant_queued)}`}
+          detail={`企业队列 ${numericValue(queueInsight?.depths?.tenant_queued)}`}
         />
         <MetricTile
           icon={<ServerCog size={17} />}
