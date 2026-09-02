@@ -1416,7 +1416,7 @@ def test_existing_production_does_not_restore_without_rollback_fence(
     assert deployments == [f"{COMMIT}:{COMMIT}"]
 
 
-def test_latest_main_token_is_claimed_then_removed_before_deployment(
+def test_latest_main_drops_inherited_tokens_before_anonymous_deployment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed: list[bool] = []
@@ -1427,14 +1427,17 @@ def test_latest_main_token_is_claimed_then_removed_before_deployment(
 
     monkeypatch.setattr(bootstrap, "_require_root_posix", lambda: None)
     monkeypatch.setattr(bootstrap.latest, "deployment_lock", unlocked)
-    monkeypatch.setattr(bootstrap.latest, "GitHubClient", lambda token: token)
+    monkeypatch.setattr(bootstrap.latest, "GitHubClient", lambda: "anonymous")
     monkeypatch.setattr(
         bootstrap.latest,
         "deploy_latest_main",
-        lambda **_kwargs: observed.append("GH_TOKEN" not in bootstrap.os.environ),
+        lambda **kwargs: observed.append(
+            kwargs["client"] == "anonymous"
+            and not set(bootstrap.latest.TOKEN_VARIABLES) & set(bootstrap.os.environ)
+        ),
     )
     monkeypatch.setenv("GH_TOKEN", "test-token")
-    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "second-token")
 
     assert (
         bootstrap.main(

@@ -1544,8 +1544,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 selected_env = args.env_file
                 if selected_env is None and os.environ.get(latest.ENV_PATH_VARIABLE):
                     selected_env = Path(os.environ.pop(latest.ENV_PATH_VARIABLE))
-                token = latest._claim_github_token(os.environ)
-                client = latest.GitHubClient(token)
+                latest._drop_github_tokens(os.environ)
+                client = latest.GitHubClient()
                 latest.deploy_latest_main(
                     root=MANAGED_ROOT,
                     client=client,
