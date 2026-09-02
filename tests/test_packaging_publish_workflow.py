@@ -137,7 +137,7 @@ def test_publish_permissions_are_job_scoped_and_environment_protected():
     manifest = workflow["jobs"]["release-manifest"]
     assert "concurrency" not in workflow
     assert manifest["concurrency"] == {
-        "group": "ai-platform-packaging-public-evidence",
+        "group": "ai-platform-packaging-deployment-release",
         "cancel-in-progress": "false",
     }
     assert manifest["permissions"] == {"contents": "write", "packages": "read"}
@@ -489,20 +489,32 @@ def test_release_manifest_reverifies_exact_downloaded_bundles_with_pinned_gh():
     public = next(
         step
         for step in steps
-        if step.get("name") == "Publish public latest-main evidence"
+        if step.get("name") == "Publish immutable deployment Release"
     )
     assert public["if"] == "github.event_name == 'push'"
     assert public["env"]["GH_TOKEN"] == "${{ github.token }}"
     assert public["env"]["GH_CLI_BIN"] == "${{ env.GH_CLI_BIN }}"
-    assert public["env"]["RELEASE_TAG"] == "latest-main-evidence"
-    assert public["env"]["ASSET_PATH"] == "release-image-evidence.zip"
-    assert public["env"]["ASSET_LABEL"] == (
-        "release-image-evidence-${{ github.sha }}-${{ github.run_id }}-"
+    assert public["env"]["RELEASE_TAG"] == (
+        "deployment-${{ github.sha }}-${{ github.run_id }}-"
         "${{ github.run_attempt }}"
     )
-    assert 'release upload "$RELEASE_TAG"' in public["run"]
+    assert public["env"]["ASSET_PATH"] == "release-image-manifest.json"
+    assert public["env"]["ASSET_LABEL"] == (
+        "release-image-manifest-${{ github.sha }}-${{ github.run_id }}-"
+        "${{ github.run_attempt }}"
+    )
+    assert 'release create "$RELEASE_TAG"' in public["run"]
     assert '"$ASSET_PATH#$ASSET_LABEL"' in public["run"]
-    assert "--clobber" in public["run"]
+    assert "release upload" not in public["run"]
+    assert "release edit" not in public["run"]
+    assert "--draft" not in public["run"]
+    assert "/immutable-releases" not in public["run"]
+    assert "--latest=false" in public["run"]
+    assert 'release view "$RELEASE_TAG"' in public["run"]
+    assert "--json isImmutable" in public["run"]
+    assert 'test "$immutable" = "true"' in public["run"]
+    assert public["run"].rstrip().endswith('test "$immutable" = "true"')
+    assert "--clobber" not in public["run"]
     assert "set -x" not in public["run"]
     assert 'echo "$GH_TOKEN"' not in public["run"]
     for step in steps:
@@ -564,7 +576,7 @@ def test_release_manifest_authenticates_private_ghcr_before_local_bundle_verific
     public = next(
         step
         for step in steps
-        if step.get("name") == "Publish public latest-main evidence"
+        if step.get("name") == "Publish immutable deployment Release"
     )
     for step in steps:
         if step is verify or step is public:
@@ -732,46 +744,39 @@ def test_artifact_and_evidence_names_bind_run_attempt():
     )
 
 
-def test_public_evidence_archive_is_complete_and_only_pushes_roll_main():
+def test_deployment_release_is_immutable_minimal_and_fresh_main_bound():
     workflow = _workflow()
-    manifest = workflow["jobs"]["release-manifest"]
-    steps = manifest["steps"]
-    archive = next(
+    steps = workflow["jobs"]["release-manifest"]["steps"]
+    release = next(
         step
         for step in steps
-        if step.get("name") == "Create public ready evidence archive"
-    )
-    public = next(
-        step
-        for step in steps
-        if step.get("name") == "Publish public latest-main evidence"
+        if step.get("name") == "Publish immutable deployment Release"
     )
 
-    assert archive["if"] == "github.event_name == 'push'"
-    assert "python -m zipfile -c release-image-evidence.zip" in archive["run"]
-    for pattern in (
-        "release-image-manifest.json",
-        "subject-*.json",
-        "sbom-*.spdx.json",
-        "trivy-*.json",
-        "cosign-*.json",
-        "provenance-*.json",
-    ):
-        assert pattern in archive["run"]
-    assert "python -m zipfile -t release-image-evidence.zip" in archive["run"]
-    assert public["if"] == "github.event_name == 'push'"
-    assert "--prerelease" in public["run"]
-    assert "--target \"$GITHUB_SHA\"" in public["run"]
-    assert 'api "repos/$GITHUB_REPOSITORY/git/ref/heads/main"' in public["run"]
-    assert 'test "$current_main" = "$GITHUB_SHA"' in public["run"]
-    assert "--json isDraft,isPrerelease,tagName" in public["run"]
-    assert 'test "$release_state" = "$RELEASE_TAG false true"' in public["run"]
-    upload_index = public["run"].index('release upload "$RELEASE_TAG"')
-    assert public["run"].index('test "$current_main" = "$GITHUB_SHA"') < upload_index
-    assert public["run"].index(
-        'test "$release_state" = "$RELEASE_TAG false true"'
-    ) < upload_index
-    assert "--clobber" in public["run"]
+    assert not any(
+        step.get("name") == "Create public ready evidence archive"
+        for step in steps
+    )
+    assert release["if"] == "github.event_name == 'push'"
+    assert release["env"]["ASSET_PATH"] == "release-image-manifest.json"
+    assert release["env"]["RELEASE_TAG"].startswith("deployment-${{ github.sha }}-")
+    assert "release-image-evidence.zip" not in release["run"]
+    assert "zipfile" not in release["run"]
+    assert "--prerelease" not in release["run"]
+    assert "--clobber" not in release["run"]
+    assert '--target "$GITHUB_SHA"' in release["run"]
+    assert "/immutable-releases" not in release["run"]
+    assert 'api "repos/$GITHUB_REPOSITORY/git/ref/heads/main"' in release["run"]
+    assert 'test "$current_main" = "$GITHUB_SHA"' in release["run"]
+    assert 'release create "$RELEASE_TAG"' in release["run"]
+    assert '"$ASSET_PATH#$ASSET_LABEL"' in release["run"]
+    assert "release upload" not in release["run"]
+    assert "release edit" not in release["run"]
+    assert "--latest=false" in release["run"]
+    assert 'release view "$RELEASE_TAG"' in release["run"]
+    assert "--json isImmutable" in release["run"]
+    assert 'test "$immutable" = "true"' in release["run"]
+    assert release["run"].rstrip().endswith('test "$immutable" = "true"')
 
 
 def test_ready_manifest_requires_both_subject_records_and_is_uploaded_as_run_evidence():
