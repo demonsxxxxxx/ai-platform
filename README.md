@@ -40,9 +40,11 @@ GHCR digests, starts the existing Compose project, and runs API, container, and
 OpenSandbox health checks. Startup or health failure makes one image rollback
 attempt while preserving the existing data volumes.
 
-The private repository requires either `GH_TOKEN`/`GITHUB_TOKEN` with repository
-Contents and Actions read access, or an authenticated `gh` CLI session. The
-Docker host must already be logged in to `ghcr.io`. Existing deployments reuse
+Repository, Actions, and release evidence are read anonymously through the
+configured host proxy; the quickstart removes inherited `GH_TOKEN` and
+`GITHUB_TOKEN` values and sends no Authorization header. The complete rolling
+release evidence bundle is public by design. The Docker host must already be
+logged in to `ghcr.io`. Existing deployments reuse
 the managed `.env` path from `incoming/latest-main.json`; the first deployment
 supplies it once:
 
@@ -84,8 +86,9 @@ incompatible SDK `networkPolicy`.
 
 Docker with Compose v2, systemd, the Docker `runsc` runtime, and the exact
 active `ai-platform-opensandbox-network-guard.service` from the target checkout
-must already be installed. The root Docker account must be logged in to GHCR,
-and GitHub Contents/Actions read credentials must be available to the command.
+must already be installed. The root Docker account must be logged in to GHCR;
+GitHub source, Actions metadata, and public release evidence are read
+anonymously.
 
 Then rebuild the OpenSandbox host service and production application from the
 newest fully approved exact-main images:

@@ -6,7 +6,6 @@ import {
   MessageCircle,
   RefreshCw,
   Search,
-  ShieldCheck,
   Star,
 } from "lucide-react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -42,7 +41,7 @@ function loadState<T>(key: string, value: T, phase: LoadPhase = "loading", error
 }
 
 const MARKET_CATALOG_LOAD_ERROR = "暂时无法加载已发布的专家，请稍后重新加载。";
-const MARKET_PAGE_SIZE = 12;
+const MARKET_PAGE_SIZE = 9;
 
 /** Reuse the production shell and session sidebar for the ordinary-user market. */
 function AgentMarketShell({ children }: { children: ReactNode }) {
@@ -232,7 +231,11 @@ function ExpertMarketCard({
               <div className="flex shrink-0 items-center gap-1">
                 <button
                   aria-label={profile.is_favorite ? `取消收藏 ${profile.name}` : `收藏 ${profile.name}`}
-                  className="rounded-md p-1 text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-amber-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
+                  className={`rounded-md p-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] ${
+                    profile.is_favorite
+                      ? "bg-amber-100 text-amber-600 dark:bg-amber-950/60 dark:text-amber-300"
+                      : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-amber-500"
+                  }`}
                   onClick={() => onToggleFavorite(profile)}
                   type="button"
                 >
@@ -410,17 +413,35 @@ function AgentMarketCatalog({
   return (
     <main data-agent-market className="min-h-0 flex-1 overflow-y-auto bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]">
       <div className="mx-auto flex w-full max-w-[86rem] flex-col px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-        <header className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2 text-sm font-medium text-[var(--theme-primary)]">
-              <ShieldCheck size={16} aria-hidden="true" />
-              企业专家目录
-            </div>
-            <h1 className="mt-2 text-2xl font-semibold">专家市场</h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--theme-text-secondary)]">
-              选择一位企业专家，直接描述要完成的任务。能力、模型与工具由管理员统一治理。
-            </p>
-          </div>
+        <header className="flex flex-wrap items-center gap-3">
+          <h1 className="mr-auto text-2xl font-semibold">专家市场</h1>
+          <label className="relative order-3 block w-full sm:order-none sm:w-[22rem]">
+            <span className="sr-only">搜索专家</span>
+            <Search
+              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]"
+              size={17}
+              aria-hidden="true"
+            />
+            <input
+              data-agent-market-search
+              aria-label="搜索专家"
+              className="h-10 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] pl-10 pr-3 text-sm text-[var(--theme-text)] outline-none placeholder:text-[var(--theme-text-secondary)] focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary)]/20"
+              maxLength={160}
+              onChange={(event) => handleSearchInput(event.target.value)}
+              onCompositionStart={() => {
+                isSearchComposing.current = true;
+              }}
+              onCompositionEnd={(event) => {
+                isSearchComposing.current = false;
+                const query = event.currentTarget.value;
+                setSearchInput(query);
+                handleSearch(query);
+              }}
+              placeholder="搜索专家名称、能力或任务"
+              type="search"
+              value={searchInput}
+            />
+          </label>
           <button
             aria-label="刷新专家目录"
             className="btn-secondary inline-flex items-center gap-2"
@@ -437,7 +458,7 @@ function AgentMarketCatalog({
           </button>
         </header>
 
-        <div className="sticky top-0 z-10 mt-6 border-y border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] py-4">
+        <div className="sticky top-0 z-10 mt-4 border-y border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] py-3">
           <div aria-label="专家市场视图" className="mb-3 flex gap-5 border-b border-[var(--theme-border)]" role="tablist">
             <button
               aria-selected={activeTab === "tags"}
@@ -466,39 +487,12 @@ function AgentMarketCatalog({
               我的收藏
             </button>
           </div>
-          <div className="grid gap-3 lg:grid-cols-[minmax(18rem,34rem)_minmax(0,1fr)] lg:items-center">
-            <label className="relative block w-full">
-              <span className="sr-only">搜索专家</span>
-              <Search
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]"
-                size={17}
-                aria-hidden="true"
-              />
-              <input
-                data-agent-market-search
-                aria-label="搜索专家"
-                className="h-11 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] pl-10 pr-3 text-sm text-[var(--theme-text)] outline-none placeholder:text-[var(--theme-text-secondary)] focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary)]/20"
-                maxLength={160}
-                onChange={(event) => handleSearchInput(event.target.value)}
-                onCompositionStart={() => {
-                  isSearchComposing.current = true;
-                }}
-                onCompositionEnd={(event) => {
-                  isSearchComposing.current = false;
-                  const query = event.currentTarget.value;
-                  setSearchInput(query);
-                  handleSearch(query);
-                }}
-                placeholder="搜索专家名称、能力或任务"
-                type="search"
-                value={searchInput}
-              />
-            </label>
+          <div className="flex flex-wrap items-center justify-between gap-3">
             {activeTab === "tags" ? (
               <div
                 data-agent-market-filter
                 aria-label="市场标签"
-                className="flex max-w-full flex-wrap items-center gap-1 lg:justify-end"
+                className="ml-auto flex max-w-full flex-wrap items-center gap-1"
                 role="group"
               >
                 <button
@@ -563,9 +557,6 @@ function AgentMarketCatalog({
           </section>
         ) : (
           <>
-            <p className="mb-4 text-sm text-[var(--theme-text-secondary)]" aria-live="polite">
-              找到 {visibleProfiles.length} 位专家
-            </p>
             <section
               aria-label="已发布专家"
               className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,22rem),1fr))] gap-4"
@@ -591,12 +582,14 @@ function AgentMarketCatalog({
                 />
               ))}
             </section>
-            <Pagination
-              page={currentPage}
-              pageSize={MARKET_PAGE_SIZE}
-              total={visibleProfiles.length}
-              onChange={setPage}
-            />
+            <div className="mt-6">
+              <Pagination
+                page={currentPage}
+                pageSize={MARKET_PAGE_SIZE}
+                total={visibleProfiles.length}
+                onChange={setPage}
+              />
+            </div>
           </>
         )}
       </div>

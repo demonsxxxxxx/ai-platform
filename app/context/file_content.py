@@ -24,18 +24,7 @@ _CFB_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 _ACTIVE_CONTENT_MARKERS = ("macroenabled", "vbaproject", "activex", "oleobject")
 _ACTIVE_RELATIONSHIP_TYPES = frozenset({"control", "oleobject", "vbaproject"})
 
-DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-PDF_CONTENT_TYPE = "application/pdf"
 XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-TEXT_CONTENT_TYPES = frozenset(
-    {
-        "application/json",
-        "text/csv",
-        "text/markdown",
-        "text/plain",
-    }
-)
-TEXT_EXTENSIONS = frozenset({".csv", ".json", ".markdown", ".md", ".txt"})
 
 
 def _content_type(value: object) -> str:
@@ -61,19 +50,12 @@ def _validate_identity(row: dict[str, Any], raw: bytes) -> None:
         raise ContextFileContentError("context_file_identity_mismatch")
 
 
-def _classify(row: dict[str, Any], raw: bytes) -> str:
+def _declared_as_xlsx(row: dict[str, Any]) -> bool:
     name = row.get("original_name") or row.get("name")
-    extension = _extension(name)
-    declared_type = _content_type(row.get("content_type"))
-    if extension in TEXT_EXTENSIONS and declared_type in TEXT_CONTENT_TYPES:
-        return "text"
-    if extension == ".docx" and declared_type == DOCX_CONTENT_TYPE and raw.startswith(b"PK"):
-        return "docx"
-    if extension == ".pdf" and declared_type == PDF_CONTENT_TYPE and raw.startswith(b"%PDF-"):
-        return "pdf"
-    if extension == ".xlsx" and declared_type == XLSX_CONTENT_TYPE and raw.startswith(b"PK"):
-        return "xlsx"
-    raise ContextFileContentError("context_file_type_unsupported")
+    return (
+        _extension(name) == ".xlsx"
+        or _content_type(row.get("content_type")) == XLSX_CONTENT_TYPE
+    )
 
 
 def _xml_multibyte_encoding(prefix: bytes) -> str | None:
@@ -254,5 +236,5 @@ def validate_context_file_for_stage(row: dict[str, Any], raw: bytes) -> None:
     if len(raw) > MAX_CONTEXT_FILE_STAGE_BYTES:
         raise ContextFileContentError("context_file_too_large")
     _validate_identity(row, raw)
-    if _classify(row, raw) == "xlsx":
+    if _declared_as_xlsx(row):
         _validate_xlsx_archive_security(raw)

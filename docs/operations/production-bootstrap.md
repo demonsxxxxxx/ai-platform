@@ -123,7 +123,7 @@ operation.
 
 - The candidate is the exact 40-character SHA at the fixed repository's
   `refs/heads/main`, with successful required final jobs for backend, frontend,
-  and packaging and a verified ready artifact for the same run attempts.
+  and packaging and the same run's verified public release evidence.
 - Backend and frontend are admitted only as role-bound GHCR digest references
   whose release labels and local image identities pass release-authority checks.
 - The target checkout is owner-managed, clean, exact-SHA, and materialized under
@@ -142,8 +142,8 @@ operation.
   an application update.
 - One owner-managed lock covers candidate discovery, host convergence, image
   preparation, Compose mutation, health/parity checks, and rollback.
-- GitHub credentials are removed before Docker, systemd, Compose, and health
-  commands execute.
+- Inherited GitHub credentials are removed before anonymous admission and before
+  Docker, systemd, Compose, and health commands execute.
 
 ## Failure, rollback, and stop conditions
 

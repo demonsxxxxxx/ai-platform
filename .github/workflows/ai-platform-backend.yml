@@ -101,6 +101,9 @@ jobs:
               tests/test_claude_agent_sdk_installed_contract.py
               tests/test_claude_agent_sdk_runner.py
               tests/test_claude_agent_worker_adapter.py
+              tests/test_claude_agent_worker_file_continuity.py
+              tests/test_context_file_content.py
+              tests/test_sandbox_document_capability.py
               tests/test_required_tool_contract.py
               tests/test_intent_router.py
               tests/test_public_answer_stream.py
@@ -469,12 +472,15 @@ jobs:
           assert labels["ai-platform.build-dirty"] == "false"
           assert labels["ai-platform.release-role"] == "backend"
           PY
-          docker run --rm --env IMAGE_SOURCE_COMMIT="$IMAGE_SOURCE_COMMIT" "$image" sh -eu -c '
-            test "$(id -u):$(id -g)" = "10001:10001"
-            test -x /app/docker-entrypoint.sh
-            test "$(cat /app/.ai-platform-source-revision)" = "$IMAGE_SOURCE_COMMIT"
-            python -c "import app.main, claude_agent_sdk; assert callable(app.main.create_app)"
-          '
+          docker run --rm --network none \
+            --env IMAGE_SOURCE_COMMIT="$IMAGE_SOURCE_COMMIT" \
+            --mount "type=bind,source=$PWD/tests/fixtures/sandbox-documents,target=/tmp/sandbox-documents,readonly" \
+            "$image" sh -eu -c '
+              test "$(id -u):$(id -g)" = "10001:10001"
+              test -x /app/docker-entrypoint.sh
+              test "$(cat /app/.ai-platform-source-revision)" = "$IMAGE_SOURCE_COMMIT"
+              python -c "import anydoc, app.main, claude_agent_sdk; from pathlib import Path; root = Path(\"/tmp/sandbox-documents\"); cases = {\"legacy.doc\": \"Привет, мир!\", \"legacy.xls\": \"fifteen and a half\", \"legacy.ppt\": \"Notes for the second slide\", \"modern.pptx\": \"Relocated deck title\"}; assert callable(app.main.create_app); assert all(marker in anydoc.to_markdown(root / name, ocr=\"reject\") for name, marker in cases.items())"
+            '
 
       - name: Verify backend image startup
         if: steps.image-scope.outputs.build == 'true'
