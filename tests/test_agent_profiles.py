@@ -857,6 +857,7 @@ def test_agent_profile_admin_write_accepts_and_discards_legacy_model_field(monke
                 name=definition.name,
                 instructions=definition.instructions,
                 selected_skill=definition.selected_skill,
+                market_tag=definition.market_tag,
                 content_hash="a" * 64,
             ),
             "audit_profile_save",
@@ -892,6 +893,7 @@ def test_agent_profile_admin_write_accepts_and_discards_legacy_model_field(monke
     assert response.status_code == 200
     assert unknown_field_response.status_code == 422
     assert "model_id" not in response.json()
+    assert response.json()["market_tag"] == "客户服务"
     assert len(saved_definitions) == 1
     assert not hasattr(saved_definitions[0], "model_id")
     assert saved_definitions[0]._legacy_model_id == "platform-selected"

@@ -231,10 +231,10 @@ function ExpertMarketCard({
               <div className="flex shrink-0 items-center gap-1">
                 <button
                   aria-label={profile.is_favorite ? `取消收藏 ${profile.name}` : `收藏 ${profile.name}`}
-                  className={`rounded-md p-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] ${
+                  className={`rounded-full p-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] ${
                     profile.is_favorite
-                      ? "bg-amber-100 text-amber-600 dark:bg-amber-950/60 dark:text-amber-300"
-                      : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-amber-500"
+                      ? "text-amber-600 dark:text-amber-300"
+                      : "text-[var(--theme-text-secondary)] hover:text-amber-500"
                   }`}
                   onClick={() => onToggleFavorite(profile)}
                   type="button"

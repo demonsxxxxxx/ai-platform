@@ -222,8 +222,6 @@ class SelectedAgentProfileRequest(BaseModel):
 
 
 class AgentProfileDraftRequest(BaseModel):
-    """Admin definition whose field presence governs create-versus-update defaults."""
-
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=160)
@@ -248,6 +246,7 @@ class AgentProfileDraftRequest(BaseModel):
     avatar_asset_id: str | None = None
     avatar_seed: str = Field(default="", max_length=128)
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    market_tag: str = Field(default="", max_length=80)
     visibility: Literal["tenant", "restricted"] = "tenant"
     allowed_department_ids: list[str] = Field(default_factory=list)
     allowed_roles: list[str] = Field(default_factory=list)
@@ -433,8 +432,6 @@ class AgentProfileCatalogResponse(BaseModel):
 
 
 class AgentProfileAdminProjection(BaseModel):
-    """Admin-only revision projection, including server-owned instructions."""
-
     model_config = ConfigDict(extra="forbid")
 
     agent_id: str
@@ -458,6 +455,7 @@ class AgentProfileAdminProjection(BaseModel):
     avatar_asset_id: str | None = None
     avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    market_tag: str = ""
     visibility: Literal["tenant", "restricted"] = "tenant"
     allowed_department_ids: list[str] = Field(default_factory=list)
     allowed_roles: list[str] = Field(default_factory=list)

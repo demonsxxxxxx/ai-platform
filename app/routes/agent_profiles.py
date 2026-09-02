@@ -73,15 +73,12 @@ def _normalize_catalog_query(query: str | None) -> str | None:
 
 def _parse_draft_payload(payload: dict[str, Any]) -> AgentProfileDraftRequest:
     definition_payload = dict(payload)
-    market_tag = definition_payload.pop("market_tag", None)
+    if "market_tag" in definition_payload:
+        definition_payload["market_tag"] = normalize_market_tag(definition_payload["market_tag"])
     try:
-        definition = AgentProfileDraftRequest.model_validate(definition_payload)
-        if market_tag is not None:
-            definition.__dict__["market_tag"] = normalize_market_tag(market_tag)
-            definition.__pydantic_fields_set__.add("market_tag")
+        return AgentProfileDraftRequest.model_validate(definition_payload)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return definition
 
 
 async def _submit_dedicated_agent_run(

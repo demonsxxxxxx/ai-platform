@@ -236,6 +236,16 @@ def _profile_row(
     return _seal_profile_row(row) if content_hash is None else row
 
 
+def test_admin_profile_revision_projection_preserves_market_tag():
+    from app.agent_apps.authority import _admin_projection, _draft_from_row
+
+    row = _profile_row()
+    row["market_tag"] = "客户服务"
+
+    assert _draft_from_row(row).market_tag == "客户服务"
+    assert _admin_projection(row).market_tag == "客户服务"
+
+
 def _seal_profile_row(row: dict[str, object]) -> dict[str, object]:
     from app.agent_apps.authority import _draft_from_row, _revision_hash
 
