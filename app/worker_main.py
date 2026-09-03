@@ -14,7 +14,7 @@ import uuid
 
 from app import queue
 from app import repositories
-from app.attachments.infrastructure import postgres as file_upload_persistence
+from app.files.infrastructure import postgres as file_upload_persistence
 from app.bootstrap.mcp import configure_mcp_runtime
 from app.bootstrap.model_services import configure_model_services
 from app.bootstrap.streaming import build_worker_v4_runtime

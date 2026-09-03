@@ -11,12 +11,12 @@ import zipfile
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 
-from app.attachments.api import (
+from app.files.api import (
     MAX_UPLOAD_BYTES,
     MultipartUploadCompleteRequest,
     MultipartUploadCreateRequest,
 )
-from app.attachments.infrastructure.postgres import (
+from app.files.infrastructure.postgres import (
     abort_file_upload_session,
     claim_file_upload_session,
     complete_file_upload_session,
