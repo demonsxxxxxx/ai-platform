@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.bootstrap.agent_profiles import configure_agent_profile_routes
+from app.bootstrap.files import configure_file_upload_services
 from app.bootstrap.identity import build_identity_profile_router
 from app.bootstrap.model_services import (
     build_model_management_router,
@@ -71,6 +72,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    configure_file_upload_services()
     configure_mcp_runtime()
     configure_model_services()
     configure_agent_profile_routes(configure_agent_profile_favorites)
