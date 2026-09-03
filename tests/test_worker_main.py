@@ -1867,7 +1867,11 @@ async def test_run_once_keeps_queue_maintenance_running_during_long_processing(m
         calls.append(("heartbeat", message_id, worker_id))
         return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
 
+    async def cleanup_file_upload_sessions():
+        return 0
+
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.worker_main.cleanup_expired_file_upload_sessions", cleanup_file_upload_sessions)
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
     monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
