@@ -41,6 +41,7 @@ async function loadReactHarness({
   onAuthScopeLayout,
   preserveSubmissionReferences = false,
   sessionRouteLifecycle = false,
+  sessionRouteBasePath,
   initialRoute = "/chat",
 }: {
   agentOptions?: UseAgentOptions;
@@ -48,6 +49,7 @@ async function loadReactHarness({
   onAuthScopeLayout?: () => void;
   preserveSubmissionReferences?: boolean;
   sessionRouteLifecycle?: boolean;
+  sessionRouteBasePath?: string;
   initialRoute?: string;
 } = {}) {
   if (!preserveSubmissionReferences) {
@@ -137,8 +139,8 @@ async function loadReactHarness({
     dom.window.location.href = `http://test.local${location.pathname}`;
 
     useConversationRouteIdentityReset({
-      conversationIdentityKey: `generic:${routeSessionId ?? ""}`,
-      hasAgentWorkspace: false,
+      conversationIdentityKey: `${sessionRouteBasePath ? "agent" : "generic"}:${routeSessionId ?? ""}`,
+      hasAgentWorkspace: Boolean(sessionRouteBasePath),
       routeSessionId,
       sessionId: agent.sessionId,
       onIdentityChange: () => {
@@ -147,11 +149,13 @@ async function loadReactHarness({
       },
     });
     const sessionSync = useSessionSync({
-      activeTab: routeActiveTab === "chat" ? "chat" : "skills",
+      activeTab:
+        sessionRouteBasePath || routeActiveTab === "chat" ? "chat" : "skills",
       sessionId: agent.sessionId,
       loadHistory: agent.loadHistory,
       clearMessages: agent.clearMessages,
       onConfigRestored: (config) => restoredRouteConfigs.push(config),
+      sessionRouteBasePath,
     });
     routeSnapshot = {
       navigate,
@@ -202,7 +206,9 @@ async function loadReactHarness({
               Routes,
               null,
               React.createElement(Route, {
-                path: "/:activeTab/:sessionId?",
+                path: sessionRouteBasePath
+                  ? `${sessionRouteBasePath}/:sessionId?`
+                  : "/:activeTab/:sessionId?",
                 element: children,
               }),
             ),
@@ -752,6 +758,83 @@ test("useAgent defers the locked Skill label until the server projects it", asyn
     sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("Agent first-send URL canonicalization keeps the live SSE owner", async () => {
+  const routeBasePath = "/agent-market/agt_support/7/chat";
+  const harness = await loadReactHarness({
+    sessionRouteLifecycle: true,
+    sessionRouteBasePath: routeBasePath,
+    initialRoute: routeBasePath,
+  });
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalWindowFetch = dom.window.fetch;
+  let exactHistoryLoads = 0;
+  let streamSignal: AbortSignal | null = null;
+  let finishStream: (() => void) | null = null;
+
+  sessionApi.getAuthoritative = async (sessionId) => {
+    exactHistoryLoads += 1;
+    return originalGetAuthoritative(sessionId);
+  };
+  sessionApi.markRead = async () => {};
+  sessionApi.getEvents = async () => ({ events: [] });
+  sessionApi.generateTitle = async () => ({
+    title: "专家首发会话",
+    session_id: "session-agent-first",
+  });
+  sessionApi.submitChat = (async () => ({
+    session_id: "session-agent-first",
+    run_id: "run-agent-first",
+    trace_id: "trace-agent-first",
+    status: "queued",
+  })) as typeof sessionApi.submitChat;
+  const nonClosingStream = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    streamSignal = init?.signal as AbortSignal;
+    const stream = controlledPublicRunLifecycle(
+      "run-agent-first",
+      "cancelled",
+    );
+    finishStream = stream.finish;
+    return stream.response;
+  }) as typeof fetch;
+  dom.window.fetch = nonClosingStream;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.sendMessage("执行专家任务");
+    });
+    await settle(harness.act);
+
+    assert.equal(harness.route.pathname, `${routeBasePath}/session-agent-first`);
+    assert.equal(harness.route.sessionId, "session-agent-first");
+    assert.equal(exactHistoryLoads, 0);
+    assert.ok(streamSignal, "the first-send SSE should be open");
+    assert.equal((streamSignal as AbortSignal).aborted, false);
+    assert.equal(harness.hook.currentRunId, "run-agent-first");
+
+    await harness.act(async () => {
+      finishStream?.();
+      finishStream = null;
+      await Promise.resolve();
+    });
+    assert.equal(exactHistoryLoads, 0);
+  } finally {
+    const pendingFinish = finishStream as (() => void) | null;
+    pendingFinish?.();
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.getAuthoritative = originalGetAuthoritative;
+    sessionApi.getEvents = originalGetEvents;
+    dom.window.fetch = originalWindowFetch;
     await harness.cleanup();
   }
 });
@@ -5150,6 +5233,486 @@ test("useAgent reconciles a reload SSE interruption to its failed run status", a
     sessionApi.markRead = originalMarkRead;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
+  }
+});
+
+test("useAgent hydrates an active same-incarnation gap before replay resumes", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = dom.window.fetch;
+  const animationWindow = dom.window as typeof dom.window &
+    Pick<Window, "requestAnimationFrame" | "cancelAnimationFrame">;
+  const originalRequestAnimationFrame = animationWindow.requestAnimationFrame;
+  const originalCancelAnimationFrame = animationWindow.cancelAnimationFrame;
+  animationWindow.requestAnimationFrame = ((callback: FrameRequestCallback) =>
+    dom.window.setTimeout(() => callback(0), 0)) as unknown as typeof animationWindow.requestAnimationFrame;
+  animationWindow.cancelAnimationFrame = ((handle: number) =>
+    dom.window.clearTimeout(handle)) as typeof animationWindow.cancelAnimationFrame;
+  const runId = "run-active-gap";
+  const messageId = "protocol-active-gap";
+  const requestCursors: Array<string | null> = [];
+  const eventQueries: Array<string | undefined> = [];
+  const initialStreams: Array<ReturnType<typeof controlledNonClosingSseResponse>> = [];
+  const replacementStreams: Array<ReturnType<typeof controlledNonClosingSseResponse>> = [];
+  let statusCalls = 0;
+
+  const envelope = (
+    eventType: string,
+    eventId: string,
+    sequence: number | null,
+    payload: Record<string, unknown>,
+  ) => ({
+    schema: eventType.startsWith("stream.")
+      ? "ai-platform.public-run-stream-control.v4"
+      : PUBLIC_RUN_STREAM_SCHEMA,
+    event_id: eventId,
+    run_id: runId,
+    message_id: eventType.startsWith("message.") ? messageId : null,
+    seq: sequence,
+    event_type: eventType,
+    stream_incarnation: 1,
+    replayable: eventType !== "stream.gap",
+    trace_ref: null,
+    causation_event_id: null,
+    emitted_at: "2026-08-21T00:00:02Z",
+    payload,
+  });
+  const frame = (
+    cursor: string,
+    eventType: string,
+    eventId: string,
+    sequence: number | null,
+    payload: Record<string, unknown>,
+  ) =>
+    `id: ${runId}:1:${cursor}\nevent: ${eventType}\ndata: ${JSON.stringify(
+      envelope(eventType, eventId, sequence, payload),
+    )}\n\n`;
+
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-active-gap",
+    agent_id: "general-agent",
+    created_at: "2026-08-21T00:00:00Z",
+    updated_at: "2026-08-21T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = (async (_sessionId, options) => {
+    eventQueries.push(options?.run_id);
+    if (!options?.run_id) {
+      return {
+        current_run_id: runId,
+        events: [
+          {
+            id: "active-gap:user",
+            event_type: "user:message",
+            run_id: runId,
+            timestamp: "2026-08-21T00:00:00Z",
+            data: { content: "继续恢复" },
+          },
+        ],
+      };
+    }
+    return {
+      current_run_id: runId,
+      events: [
+        {
+          id: "active-gap:user",
+          event_type: "user:message",
+          run_id: runId,
+          timestamp: "2026-08-21T00:00:00Z",
+          data: { content: "继续恢复" },
+        },
+        {
+          id: "active-gap:durable",
+          event_type: "message:chunk",
+          run_id: runId,
+          sequence: 12,
+          timestamp: "2026-08-21T00:00:01Z",
+          data: {
+            event_id: "active-gap:durable",
+            run_id: runId,
+            content: "durable-before-gap",
+            sequence: 12,
+          },
+        },
+      ],
+    };
+  }) as typeof sessionApi.getEvents;
+  sessionApi.getStatus = async () => {
+    statusCalls += 1;
+    return {
+      session_id: "session-active-gap",
+      run_id: runId,
+      status: "running",
+      raw_status: "running",
+    };
+  };
+  dom.window.fetch = async (_input, init) => {
+    requestCursors.push(new Headers(init?.headers).get("Last-Event-ID"));
+    if (requestCursors.length === 1) {
+      const initialStream = controlledNonClosingSseResponse(
+        frame("1-0", "stream.open", "active-gap-open", null, {
+          design_id: STREAM_DESIGN_ID,
+        }) + frame("3-0", "message.started", "active-gap-started", 20, {}),
+      );
+      initialStreams.push(initialStream);
+      return initialStream.response;
+    }
+    if (requestCursors.length === 2) {
+      return new Response(
+        frame("4-0", "stream.gap", "active-gap-gap", null, {
+          reason: "retained_history_unavailable",
+          recovery: "reload_durable_state",
+          requested_event_id: "3-0",
+          requested_stream_incarnation: 1,
+          current_stream_incarnation: 1,
+          earliest_available_event_id: "4-0",
+          latest_available_event_id: "9-0",
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    }
+    const replacementStream = controlledNonClosingSseResponse(
+      frame("10-0", "stream.open", "active-gap-reopen", null, {
+        design_id: STREAM_DESIGN_ID,
+      }) +
+        frame("12-0", "message.delta", "active-gap-resumed", 21, {
+          delta: "+resumed",
+        }),
+    );
+    replacementStreams.push(replacementStream);
+    return replacementStream.response;
+  };
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-active-gap");
+    });
+    await settle(harness.act);
+    for (
+      let attempt = 0;
+      attempt < 30 &&
+      !harness.hook.messages.some(
+        (message) => message.runId === runId && message.role === "assistant",
+      );
+      attempt += 1
+    ) {
+      await harness.act(
+        () => new Promise<void>((resolve) => setTimeout(resolve, 10)),
+      );
+    }
+    await harness.act(
+      () => new Promise<void>((resolve) => setTimeout(resolve, 50)),
+    );
+    for (const stream of initialStreams) stream.close();
+    for (let attempt = 0; attempt < 350 && requestCursors.length < 3; attempt += 1) {
+      await harness.act(
+        () => new Promise<void>((resolve) => setTimeout(resolve, 10)),
+      );
+    }
+    await settle(harness.act);
+    for (
+      let attempt = 0;
+      attempt < 30 &&
+      !harness.hook.messages.some((message) =>
+        message.content.includes("+resumed"),
+      );
+      attempt += 1
+    ) {
+      await harness.act(
+        () => new Promise<void>((resolve) => setTimeout(resolve, 10)),
+      );
+    }
+
+    const assistant = harness.hook.messages.find(
+      (message) => message.runId === runId && message.role === "assistant",
+    );
+    assert.equal(statusCalls, 3);
+    assert.deepEqual(requestCursors, [
+      null,
+      `${runId}:1:3-0`,
+      `${runId}:1:9-0`,
+    ]);
+    assert.deepEqual(eventQueries, [undefined, runId]);
+    assert.equal(assistant?.id, runId);
+    assert.equal(assistant?.content, "durable-before-gap+resumed");
+    assert.equal(harness.hook.currentRunId, runId);
+    assert.equal(harness.hook.connectionStatus, "connected");
+  } finally {
+    for (const stream of initialStreams) stream.close();
+    for (const stream of replacementStreams) stream.close();
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+    animationWindow.requestAnimationFrame = originalRequestAnimationFrame;
+    animationWindow.cancelAnimationFrame = originalCancelAnimationFrame;
+  }
+});
+
+test("useAgent preserves accepted body and tool state through terminal-only stream-missing convergence", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = dom.window.fetch;
+  const animationWindow = dom.window as typeof dom.window &
+    Pick<Window, "requestAnimationFrame" | "cancelAnimationFrame">;
+  const originalRequestAnimationFrame = animationWindow.requestAnimationFrame;
+  const originalCancelAnimationFrame = animationWindow.cancelAnimationFrame;
+  animationWindow.requestAnimationFrame = ((callback: FrameRequestCallback) =>
+    dom.window.setTimeout(() => callback(0), 0)) as unknown as typeof animationWindow.requestAnimationFrame;
+  animationWindow.cancelAnimationFrame = ((handle: number) =>
+    dom.window.clearTimeout(handle)) as typeof animationWindow.cancelAnimationFrame;
+  const runId = "run-stream-missing-terminal";
+  const messageId = "protocol-stream-missing-terminal";
+  const requestCursors: Array<string | null> = [];
+  const eventQueries: Array<string | undefined> = [];
+  const initialStreams: Array<ReturnType<typeof controlledNonClosingSseResponse>> = [];
+  let statusCalls = 0;
+
+  const envelope = (
+    eventType: string,
+    eventId: string,
+    sequence: number | null,
+    payload: Record<string, unknown>,
+  ) => ({
+    schema: eventType.startsWith("stream.")
+      ? "ai-platform.public-run-stream-control.v4"
+      : PUBLIC_RUN_STREAM_SCHEMA,
+    event_id: eventId,
+    run_id: runId,
+    message_id: eventType.startsWith("stream.") ? null : messageId,
+    seq: sequence,
+    event_type: eventType,
+    stream_incarnation: 1,
+    replayable: eventType !== "stream.gap",
+    trace_ref: null,
+    causation_event_id: null,
+    emitted_at: "2026-08-21T00:00:02Z",
+    payload,
+  });
+  const frame = (
+    cursor: string,
+    eventType: string,
+    eventId: string,
+    sequence: number | null,
+    payload: Record<string, unknown>,
+  ) =>
+    `id: ${runId}:1:${cursor}\nevent: ${eventType}\ndata: ${JSON.stringify(
+      envelope(eventType, eventId, sequence, payload),
+    )}\n\n`;
+
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-stream-missing-terminal",
+    agent_id: "general-agent",
+    created_at: "2026-08-21T00:00:00Z",
+    updated_at: "2026-08-21T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = (async (_sessionId, options) => {
+    eventQueries.push(options?.run_id);
+    if (!options?.run_id) {
+      return {
+        current_run_id: runId,
+        events: [
+          {
+            id: "stream-missing:user",
+            event_type: "user:message",
+            run_id: runId,
+            timestamp: "2026-08-21T00:00:00Z",
+            data: { content: "恢复缺失流" },
+          },
+        ],
+      };
+    }
+    return {
+      current_run_id: runId,
+      events: [
+        {
+          id: "stream-missing:user",
+          event_type: "user:message",
+          run_id: runId,
+          timestamp: "2026-08-21T00:00:00Z",
+          data: { content: "恢复缺失流" },
+        },
+        {
+          id: "stream-missing:answer",
+          event_type: "message:chunk",
+          run_id: runId,
+          sequence: 2,
+          timestamp: "2026-08-21T00:00:01Z",
+          data: {
+            projection_version: "ai-platform.chat-public-projection.v1",
+            projection_kind: "assistant_delta",
+            event_id: "stream-missing:answer",
+            sequence: 2,
+            run_id: runId,
+            content: "缺失前已公开正文",
+          },
+        },
+        {
+          id: "stream-missing:tool-denied",
+          event_type: "public_tool_activity",
+          run_id: runId,
+          sequence: 3,
+          timestamp: "2026-08-21T00:00:02Z",
+          data: {
+            projection_version: "ai-platform.chat-public-projection.v1",
+            event_id: "stream-missing:tool-denied",
+            run_id: runId,
+            event_type: "public_tool_activity",
+            stage: "tool",
+            message: "Tool execution denied",
+            severity: "warning",
+            progress_kind: "blocked",
+            wait_reason: "permission",
+            operation_id: "op-stream-missing",
+            category: "write",
+            display_name: "Write",
+            denial_code: "policy_denied",
+            status: "denied",
+          },
+        },
+        {
+          id: "stream-missing:terminal",
+          event_type: "done",
+          run_id: runId,
+          timestamp: "2026-08-21T00:00:03Z",
+          data: { run_id: runId, status: "failed" },
+        },
+      ],
+    };
+  }) as typeof sessionApi.getEvents;
+  sessionApi.getStatus = async () => {
+    statusCalls += 1;
+    return {
+      session_id: "session-stream-missing-terminal",
+      run_id: runId,
+      status: statusCalls <= 2 ? "running" : "failed",
+      raw_status: statusCalls <= 2 ? "running" : "failed",
+    };
+  };
+  dom.window.fetch = async (_input, init) => {
+    requestCursors.push(new Headers(init?.headers).get("Last-Event-ID"));
+    if (requestCursors.length === 1) {
+      const initialStream = controlledNonClosingSseResponse(
+        frame("1-0", "stream.open", "stream-missing-open", null, {
+          design_id: STREAM_DESIGN_ID,
+        }) +
+          frame("2-0", "message.started", "stream-missing-started", 1, {}) +
+          frame("3-0", "message.delta", "stream-missing-delta", 2, {
+            delta: "缺失前已公开正文",
+          }) +
+          frame("4-0", "tool.started", "stream-missing-tool", 3, {
+            operation_id: "op-stream-missing",
+            category: "write",
+            display_name: "Write",
+          }),
+      );
+      initialStreams.push(initialStream);
+      return initialStream.response;
+    }
+    return new Response(
+      frame("5-0", "stream.gap", "stream-missing-gap", null, {
+        reason: "stream_missing",
+        recovery: "reload_durable_state",
+        requested_event_id: "4-0",
+        requested_stream_incarnation: 1,
+        current_stream_incarnation: 1,
+        earliest_available_event_id: null,
+        latest_available_event_id: null,
+      }),
+      { headers: { "content-type": "text/event-stream" } },
+    );
+  };
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-stream-missing-terminal");
+    });
+    await settle(harness.act);
+    for (
+      let attempt = 0;
+      attempt < 50 &&
+      !harness.hook.messages.some(
+        (message) =>
+          message.runId === runId &&
+          message.content === "缺失前已公开正文" &&
+          message.parts?.some(
+            (part) =>
+              part.type === "tool" &&
+              part.public_operation_id === "op-stream-missing" &&
+              part.status === "started",
+          ),
+      );
+      attempt += 1
+    ) {
+      await harness.act(
+        () => new Promise<void>((resolve) => setTimeout(resolve, 10)),
+      );
+    }
+    for (const stream of initialStreams) stream.close();
+    for (
+      let attempt = 0;
+      attempt < 350 && harness.hook.currentRunId !== null;
+      attempt += 1
+    ) {
+      await harness.act(
+        () => new Promise<void>((resolve) => setTimeout(resolve, 10)),
+      );
+    }
+    await settle(harness.act);
+
+    const assistant = harness.hook.messages.find(
+      (message) => message.runId === runId && message.role === "assistant",
+    );
+    const deniedTool = assistant?.parts?.find(
+      (part) =>
+        part.type === "tool" &&
+        part.public_operation_id === "op-stream-missing",
+    );
+    const unavailable = harness.hook.messages
+      .flatMap((message) => message.parts || [])
+      .filter(
+        (part) =>
+          part.type === "run_status" &&
+          part.event_id === `terminal-result-unavailable:${runId}`,
+      );
+
+    assert.deepEqual(requestCursors, [null, `${runId}:1:4-0`]);
+    assert.deepEqual(eventQueries, [undefined, runId]);
+    assert.equal(statusCalls, 3);
+    assert.equal(assistant?.content, "缺失前已公开正文");
+    assert.equal(deniedTool?.type, "tool");
+    if (deniedTool?.type !== "tool") {
+      throw new Error("expected hydrated public tool state");
+    }
+    assert.equal(deniedTool.status, "denied");
+    assert.equal(unavailable.length, 0);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+  } finally {
+    for (const stream of initialStreams) stream.close();
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+    animationWindow.requestAnimationFrame = originalRequestAnimationFrame;
+    animationWindow.cancelAnimationFrame = originalCancelAnimationFrame;
   }
 });
 

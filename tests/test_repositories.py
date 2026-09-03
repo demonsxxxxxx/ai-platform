@@ -5854,7 +5854,7 @@ async def test_list_run_events_supports_sequence_cursor_and_limit():
 
     sql, params = conn.calls[0]
     assert "sequence > %s" in sql
-    assert "order by sequence asc, created_at asc" in sql
+    assert "order by event.sequence asc, event.created_at asc" in sql
     assert "limit %s" in sql
     assert params == ("tenant-a", "run-a", 7, 20)
 

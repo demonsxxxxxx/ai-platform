@@ -38,6 +38,7 @@ function createContext(
       current: { sessionId: null, runId: null, eventId: null },
     },
     v4TerminalEventIdsRef: { current: new Set<string>() },
+    v4TerminalReservationsRef: { current: new Set<string>() },
     v4MessageCandidateRef: { current: null },
     lastHistoryTimestampRef: { current: lastHistoryTimestamp },
     activeSubagentStackRef: { current: [] },
@@ -1058,6 +1059,116 @@ test("commits a public delta before a later execution state and keeps history se
   assert.deepEqual(historyProcess.steps, [liveStep]);
 });
 
+test("queues buffered text before a generic tool event and ignores the cancelled frame", () => {
+  const ctx = createContext(
+    [{
+      id: "assistant-fallback-order",
+      role: "assistant",
+      content: "",
+      timestamp: new Date(),
+      parts: [],
+      isStreaming: true,
+    }],
+    null,
+  );
+  ctx.currentRunIdRef.current = "run-fallback-order";
+  ctx.acceptedRunEventSequenceRef!.current = {
+    sessionId: "session-1",
+    runId: "run-fallback-order",
+    sequence: 7,
+  };
+  const binding = {
+    sessionId: "session-1",
+    runId: "run-fallback-order",
+    streamVersion: 0,
+  };
+  let cancelledFrame: FrameRequestCallback | null = null;
+  const presentation = new PublicStreamPresentation({
+    now: () => 0,
+    requestAnimationFrame: (callback) => {
+      cancelledFrame = callback;
+      return 1;
+    },
+    cancelAnimationFrame: () => undefined,
+    setTimeout: () => 1 as unknown as ReturnType<typeof setTimeout>,
+    clearTimeout: () => undefined,
+  });
+  presentation.activate({
+    sessionId: binding.sessionId,
+    runId: binding.runId,
+    assistantMessageId: "assistant-fallback-order",
+    streamVersion: binding.streamVersion,
+  });
+  ctx.publicStreamPresentation = presentation;
+  const applyMessages = ctx.setMessages;
+  const pending: Array<React.SetStateAction<Message[]>> = [];
+  ctx.setMessages = (updater) => pending.push(updater);
+
+  assert.equal(
+    handleStreamEvent(
+      {
+        event: "message:chunk",
+        data: JSON.stringify({
+          projection_version: "ai-platform.chat-public-projection.v1",
+          projection_kind: "assistant_delta",
+          run_id: binding.runId,
+          event_id: "evt-delta-8",
+          sequence: 8,
+          content: "正文",
+        }),
+      },
+      "assistant-fallback-order",
+      "evt-delta-8",
+      undefined,
+      ctx,
+      binding,
+    ),
+    true,
+  );
+  assert.equal(
+    handleStreamEvent(
+      {
+        event: "run_event",
+        data: JSON.stringify({
+          projection_version: "ai-platform.chat-public-projection.v1",
+          projection_kind: "public_event",
+          event_id: "evt-tool-9",
+          run_id: binding.runId,
+          sequence: 9,
+          event_type: "public_tool_activity",
+          operation_id: "operation-1",
+          category: "read",
+          display_name: "Read project file",
+          status: "started",
+        }),
+      },
+      "assistant-fallback-order",
+      "evt-tool-9",
+      undefined,
+      ctx,
+      binding,
+    ),
+    true,
+  );
+
+  assert.equal(pending.length, 2);
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 7);
+  applyMessages(pending.shift()!);
+  assert.equal(ctx.messages()[0]?.content, "正文");
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 8);
+  applyMessages(pending.shift()!);
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 9);
+  assert.deepEqual(ctx.messages()[0]?.parts?.map((part) => part.type), [
+    "text",
+    "tool",
+  ]);
+
+  (cancelledFrame as FrameRequestCallback | null)?.(0);
+  assert.equal(pending.length, 0);
+  assert.equal(ctx.messages()[0]?.content, "正文");
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 9);
+});
+
 test("creates a new streaming assistant for a running run after the latest user message", () => {
   const messages: Message[] = [
     {
@@ -1709,10 +1820,10 @@ test("v4 stream.end is terminal-fenced and terminal recovery is exactly once", (
   ctx.v4TerminalFenceRef = { current: null };
   ctx.v4TerminalEventIdsRef = { current: new Set<string>() };
   let terminalCalls = 0;
-  let acceptTerminal: (() => void) | undefined;
-  ctx.onRunTerminal = (_runId, _status, _messageId, onAccepted) => {
+  let acceptTerminal: ((accepted: boolean) => void) | undefined;
+  ctx.onRunTerminal = (_runId, _status, _messageId, onSettled) => {
     terminalCalls += 1;
-    acceptTerminal = onAccepted;
+    acceptTerminal = onSettled;
     return true;
   };
   const terminal = {
@@ -1759,12 +1870,194 @@ test("v4 stream.end is terminal-fenced and terminal recovery is exactly once", (
   const commits: boolean[] = [];
   assert.equal(handlePublicRunStreamFrameV4({ frame: terminal, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => commits.push(semanticApplied) }), true);
   assert.deepEqual(commits, []);
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, null);
+  assert.equal(ctx.v4TerminalReservationsRef?.current.has("terminal-1"), true);
   assert.equal(handlePublicRunStreamFrameV4({ frame: terminal, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7 }), false);
   assert.equal(handlePublicRunStreamFrameV4({ frame: end, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7 }), false);
-  acceptTerminal?.();
+  acceptTerminal?.(true);
   assert.deepEqual(commits, [false]);
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 1);
+  assert.equal(ctx.v4TerminalReservationsRef?.current.size, 0);
   assert.equal(handlePublicRunStreamFrameV4({ frame: end, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7 }), true);
   assert.equal(terminalCalls, 1);
+});
+
+test("v4 terminal waits for buffered text reducer application before sequence and cursor acceptance", () => {
+  const ctx = createContext(
+    [{
+      id: "assistant-terminal-order",
+      role: "assistant",
+      content: "",
+      timestamp: new Date(),
+      parts: [],
+      isStreaming: true,
+    }],
+    null,
+  );
+  ctx.currentRunIdRef.current = "run-terminal-order";
+  ctx.v4TerminalFenceRef = { current: null };
+  ctx.v4MessageOwnerRef = {
+    current: {
+      sessionId: "session-1",
+      runId: "run-terminal-order",
+      streamVersion: 0,
+      streamIncarnation: 2,
+      protocolMessageId: "message-terminal-order",
+      reducerMessageId: "assistant-terminal-order",
+    },
+  };
+  ctx.acceptedRunEventSequenceRef!.current = {
+    sessionId: "session-1",
+    runId: "run-terminal-order",
+    sequence: 7,
+  };
+  ctx.acceptedStreamCursorRef!.current = {
+    sessionId: "session-1",
+    runId: "run-terminal-order",
+    eventId: "run-terminal-order:2:0-0",
+    streamIncarnation: 2,
+  };
+  let retainedFrame: FrameRequestCallback | null = null;
+  const presentation = new PublicStreamPresentation({
+    now: () => 0,
+    requestAnimationFrame: (callback) => {
+      retainedFrame = callback;
+      return 1;
+    },
+    cancelAnimationFrame: () => undefined,
+    setTimeout: () => 1 as unknown as ReturnType<typeof setTimeout>,
+    clearTimeout: () => undefined,
+  });
+  presentation.activate({
+    sessionId: "session-1",
+    runId: "run-terminal-order",
+    assistantMessageId: "assistant-terminal-order",
+    streamVersion: 0,
+  });
+  ctx.publicStreamPresentation = presentation;
+  const applyMessages = ctx.setMessages;
+  const pending: Array<React.SetStateAction<Message[]>> = [];
+  ctx.setMessages = (updater) => pending.push(updater);
+  let settleTerminal: ((accepted: boolean) => boolean) | undefined;
+  ctx.onRunTerminal = (_runId, _status, _messageId, onSettled) => {
+    settleTerminal = onSettled;
+    return true;
+  };
+  const binding = {
+    sessionId: "session-1",
+    runId: "run-terminal-order",
+    streamVersion: 0,
+    streamIncarnation: 2,
+    generation: 7,
+  } as const;
+  const adapterBinding = {
+    runId: binding.runId,
+    streamIncarnation: binding.streamIncarnation,
+    generation: binding.generation,
+  } as const;
+  const delta = {
+    eventHeader: "message.delta",
+    transportCursor: "run-terminal-order:2:1-0",
+    generation: 7,
+    value: {
+      schema: "ai-platform.public-run-stream-event.v4",
+      event_id: "event-delta",
+      run_id: "run-terminal-order",
+      message_id: "message-terminal-order",
+      seq: 8,
+      event_type: "message.delta",
+      stream_incarnation: 2,
+      replayable: true,
+      trace_ref: null,
+      causation_event_id: null,
+      emitted_at: "2026-01-01T00:00:00Z",
+      payload: { delta: "正文" },
+    },
+  } as const;
+  const terminal = {
+    eventHeader: "run.succeeded",
+    transportCursor: "run-terminal-order:2:2-0",
+    generation: 7,
+    value: {
+      schema: "ai-platform.public-run-stream-event.v4",
+      event_id: "event-terminal",
+      run_id: "run-terminal-order",
+      message_id: null,
+      seq: 30,
+      event_type: "run.succeeded",
+      stream_incarnation: 2,
+      replayable: true,
+      trace_ref: null,
+      causation_event_id: null,
+      emitted_at: "2026-01-01T00:00:01Z",
+      payload: { terminal_event_id: "terminal-order", hydrate_required: true },
+    },
+  } as const;
+
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame: delta,
+    adapterBinding,
+    messageId: "assistant-terminal-order",
+    ctx,
+    binding,
+    currentGeneration: 7,
+    onCommitted: () => {
+      ctx.acceptedStreamCursorRef!.current.eventId = delta.transportCursor;
+    },
+  }), true);
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame: terminal,
+    adapterBinding,
+    messageId: "assistant-terminal-order",
+    ctx,
+    binding,
+    currentGeneration: 7,
+    onCommitted: () => {
+      ctx.acceptedStreamCursorRef!.current.eventId = terminal.transportCursor;
+    },
+  }), true);
+
+  assert.equal(pending.length, 1);
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 7);
+  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, "run-terminal-order:2:0-0");
+  applyMessages(pending.shift()!);
+  assert.equal(ctx.messages()[0]?.content, "正文");
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 8);
+  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, delta.transportCursor);
+  settleTerminal?.(true);
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 30);
+  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, terminal.transportCursor);
+
+  (retainedFrame as FrameRequestCallback | null)?.(0);
+  assert.equal(pending.length, 0);
+  assert.equal(ctx.messages()[0]?.content, "正文");
+
+  const staleTerminal = {
+    ...terminal,
+    transportCursor: "run-terminal-order:2:3-0",
+    value: {
+      ...terminal.value,
+      event_id: "event-terminal-stale",
+      seq: 31,
+      payload: { terminal_event_id: "terminal-stale", hydrate_required: true },
+    },
+  } as const;
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame: staleTerminal,
+    adapterBinding,
+    messageId: "assistant-terminal-order",
+    ctx,
+    binding,
+    currentGeneration: 7,
+    onCommitted: () => {
+      ctx.acceptedStreamCursorRef!.current.eventId = staleTerminal.transportCursor;
+    },
+  }), true);
+  ctx.currentRunIdRef.current = "run-replacement";
+  assert.equal(settleTerminal?.(true), false);
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 30);
+  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, terminal.transportCursor);
+  assert.equal(ctx.v4TerminalReservationsRef!.current.size, 0);
 });
 
 test("v4 frames fail closed without exact session, incarnation, and generation authority", () => {

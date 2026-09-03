@@ -194,3 +194,78 @@ cleanup, and injected fault behavior. They do not prove deployment,
 Nginx/browser byte delivery, Redis Pub/Sub behavior across real API replicas, or
 50-concurrent-run capacity. Those claims require the exact runtime evidence
 listed in the cutover and acceptance document.
+
+## Change Contract: progressive public Run timeline
+
+- **Owner:** Streaming owns committed public-event order; the Engine adapter owns
+  SDK normalization; Execution owns capability evidence and Run success; the
+  frontend reducer owns applied sequence and cursor acceptance.
+- **Bounded paths:** `app/executors/claude_agent_sdk_runner.py`,
+  `app/executors/public_answer_stream.py`, the existing Claude public-event
+  adapter, the durable Chat history projector, `frontend/web/src/hooks/useAgent/`,
+  this document, ADR 0012, and their focused tests. The Redis envelope, key,
+  cursor, publication-claim, authorization, and Run terminal authorities are
+  unchanged.
+- **Public timeline invariant:** a disclosure-safe Assistant text prefix outside
+  an active Tool invocation becomes a durable `message.delta` without waiting
+  for an `AssistantMessage`, tool completion, or `ResultMessage`. Tool
+  authorization does not disable the SDK stream projector. The exact
+  `PreToolUse` to acknowledged terminal-hook interval remains closed for every
+  admitted read-only or effectful Tool so anomalous in-flight SDK text cannot
+  expose raw Tool output. A terminal receipt reopens only the exact matching
+  capability kind, canonical identity, and invocation ID; unrelated or duplicate
+  terminal receipts fail closed. An exact producer-attributed policy rejection
+  commits `tool.denied` and projects as a denied Tool with blocked/permission
+  semantics; aggregate admission failures never synthesize Tool identity.
+  `message.delta` is provisional user-visible narration; it is never evidence
+  that a capability ran or that a Run succeeded.
+- **Safety invariant:** hidden reasoning, raw tool input or output, commands,
+  paths, credentials, storage keys, private Tool, Skill, MCP, task, Attempt, and
+  stream identities remain prohibited. Exact invocation-interval text is not a
+  public Assistant source. Stateful cross-chunk sanitization, cumulative bounds,
+  strict callback validation, tool admission, capability receipts, and
+  platform-owned terminalization remain fail closed.
+- **Ordering invariant:** public Tool lifecycle events bracket the actual
+  invocation. A start commits before execution; a completion or failure commits
+  only after its verified receipt. Subsequent Assistant text commits later in
+  the same PostgreSQL Run-local sequence. The frontend may coalesce only
+  adjacent text and may advance sequence or cursor only after reducer or
+  terminal-hydration acceptance.
+- **Gap recovery invariant:** active same-incarnation
+  `retained_history_unavailable` and `stream_continuity_unproven` gaps resume
+  only after PostgreSQL V4 hydration has applied and only from the
+  server-provided latest retained cursor. Durable history owns state through
+  that anchor; Redis replay/live owns later events. `stream_missing`,
+  cross-incarnation recovery without a validated current anchor, and active
+  successor-incarnation creation remain terminal-only recovery until the
+  Run/Attempt owner defines a separate active-successor contract; the frontend
+  never synthesizes one.
+- **Single-body invariant:** V4 `message.delta` is the public incremental body
+  authority. Complete SDK messages are fallback or reconciliation inputs. A
+  successful Result body must byte-exactly extend the selected streamed or
+  complete Assistant body; only its unsent suffix may enter the same stateful
+  public gate, and any conflict fails closed. Terminal results cannot duplicate
+  already committed text. Failed and cancelled durable history reconstructs the
+  same accepted V4 body and never trusts an unmanaged metadata marker as
+  publication authority.
+- **Acceptance:** focused tests prove text-only, read-only Tool, effectful local
+  Tool, Skill, MCP, sequential capability, denial/failure, terminal race,
+  reconnect, and failed-history behavior. Tests delay both animation-frame and
+  React functional-updater execution where ordering depends on application.
+  Serialized ordinary-user responses contain no internal marker or identity.
+- **Falsifiable regression proof:** an effectful local Tool Run emits a safe
+  `message.delta` before `ResultMessage`; a higher-sequence Tool or terminal
+  event cannot erase an earlier received delta; and refreshing a failed V4-only
+  Run preserves that delta exactly once.
+- **Evidence ceiling:** source and local/CI tests cannot prove real SDK timing,
+  proxy flushing, Redis fan-out, browser paint, or restart recovery. Those claims
+  require an immutable candidate image on the controlled Linux environment and
+  the applicable External Acceptance matrix.
+- **Rollback:** restore the prior reviewed image. No schema, cursor, Redis key,
+  or durable migration is introduced by this repair.
+- **Stop conditions:** stop before code expands the public schema, weakens
+  sanitizer or admission controls, treats narration as capability evidence,
+  trusts callback-owned publication metadata, creates a second body or terminal
+  authority, requires same-incarnation Redis reconstruction, or depends on a
+  product choice not fixed above. Active successor-incarnation recovery is a
+  stop condition for this Change Contract.

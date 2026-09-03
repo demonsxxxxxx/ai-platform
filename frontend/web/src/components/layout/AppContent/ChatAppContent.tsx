@@ -1182,10 +1182,6 @@ export function ChatAppContent({
           submitMessage: async (createdSessionId, firstSendOptions) => {
             setAgentWorkspaceError(null);
             const submission = sendMessage(content, firstSendOptions, attachments, null);
-            navigate(
-              buildAgentMarketWorkspacePath(startProfile, createdSessionId),
-              { replace: true },
-            );
             onAgentWorkspaceSessionCreated?.(createdSessionId);
             return submission;
           },

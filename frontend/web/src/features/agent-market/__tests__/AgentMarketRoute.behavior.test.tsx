@@ -1147,7 +1147,7 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     await draftStarterPrompt(0);
     assert.equal(currentPath, "/agent-market/agt_support/4/chat");
     await submitDraft(1, "session-support-1");
-    assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-support-1");
+    assert.equal(currentPath, "/agent-market/agt_support/4/chat");
 
     const startNewTask = container
       .querySelectorAll("button")
@@ -1169,7 +1169,7 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     await draftStarterPrompt(1);
     assert.equal(currentPath, "/agent-market/agt_support/4/chat");
     await submitDraft(2, "session-support-2");
-    assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-support-2");
+    assert.equal(currentPath, "/agent-market/agt_support/4/chat");
     assert.deepEqual(
       selections.map(({ selection }) => selection),
       [

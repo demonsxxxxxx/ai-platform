@@ -58,6 +58,7 @@ export interface EventHandlerContext {
   acceptedStreamCursorRef?: React.MutableRefObject<AcceptedStreamCursor>;
   /** v4 terminal fence: stream.end is accepted only after its terminal event. */
   v4TerminalEventIdsRef?: React.MutableRefObject<Set<string>>;
+  v4TerminalReservationsRef?: React.MutableRefObject<Set<string>>;
   v4TerminalFenceRef?: React.MutableRefObject<V4TerminalFence | null>;
   v4MessageOwnerRef?: React.MutableRefObject<V4MessageOwner | null>;
   v4MessageCandidateRef?: React.MutableRefObject<V4MessageCandidate | null>;
@@ -73,7 +74,7 @@ export interface EventHandlerContext {
     runId: string,
     status: TerminalRunStatus,
     messageId: string,
-    onAccepted?: () => void,
+    onSettled?: (accepted: boolean) => boolean,
   ) => boolean;
   onRunStatusUnavailable?: (runId: string, messageId: string) => boolean;
   dismissQueueToast?: () => void;
@@ -149,14 +150,20 @@ export function acceptV4TerminalFence(
   event: V4PublicEvent,
   ctx: EventHandlerContext,
   terminalEventId: string,
+  streamVersion: number,
   onAccepted: () => void,
 ): () => void {
   const sessionId = ctx.sessionIdRef.current;
   const runId = event.runId;
-  const streamVersion = ctx.streamVersionRef.current;
   return () => {
-    if (!sessionId || ctx.sessionIdRef.current !== sessionId) return;
-    if (ctx.currentRunIdRef.current && ctx.currentRunIdRef.current !== runId) return;
+    if (
+      !sessionId ||
+      ctx.sessionIdRef.current !== sessionId ||
+      ctx.currentRunIdRef.current !== runId ||
+      ctx.streamVersionRef.current !== streamVersion
+    ) {
+      return;
+    }
     ctx.v4TerminalFenceRef!.current = {
       sessionId,
       runId,
@@ -263,7 +270,7 @@ function isCurrentV4GapOwner(
   );
 }
 
-function claimV4TerminalSequence(
+function canAcceptV4TerminalSequence(
   event: V4PublicEvent,
   ctx: EventHandlerContext,
   binding: V4StreamEventBinding,
@@ -271,15 +278,26 @@ function claimV4TerminalSequence(
   if (event.sequence === null) return true;
   const accepted = ctx.acceptedRunEventSequenceRef?.current;
   if (!accepted) return false;
-  if (
-    accepted.sessionId === binding.sessionId &&
-    accepted.runId === binding.runId &&
-    accepted.sequence !== null &&
-    event.sequence <= accepted.sequence
-  ) {
-    return false;
-  }
-  if (ctx.acceptedRunEventSequenceRef) {
+  return (
+    ctx.sessionIdRef.current === binding.sessionId &&
+    ctx.currentRunIdRef.current === binding.runId &&
+    ctx.streamVersionRef.current === binding.streamVersion &&
+    !(
+      accepted.sessionId === binding.sessionId &&
+      accepted.runId === binding.runId &&
+      accepted.sequence !== null &&
+      event.sequence <= accepted.sequence
+    )
+  );
+}
+
+function commitV4TerminalSequence(
+  event: V4PublicEvent,
+  ctx: EventHandlerContext,
+  binding: V4StreamEventBinding,
+): boolean {
+  if (!canAcceptV4TerminalSequence(event, ctx, binding)) return false;
+  if (event.sequence !== null && ctx.acceptedRunEventSequenceRef) {
     ctx.acceptedRunEventSequenceRef.current = {
       sessionId: binding.sessionId,
       runId: binding.runId,
@@ -379,6 +397,7 @@ export function handlePublicRunStreamEventV4(
   ctx: EventHandlerContext,
   binding: StreamEventBinding | undefined,
   onCommitted?: (semanticApplied: boolean) => void,
+  onTerminalSettled?: (accepted: boolean) => void,
 ): boolean {
   if (!isStrictV4Binding(binding)) return false;
   const terminalEventId =
@@ -416,26 +435,53 @@ export function handlePublicRunStreamEventV4(
     return false;
   }
   if (terminalStatus && event.eventType !== "stream.end") {
-    if (terminalEventId && (ctx.v4TerminalEventIdsRef?.current.has(terminalEventId) || ctx.v4TerminalFenceRef?.current?.terminalEventId === terminalEventId)) return false;
-    if (!claimV4TerminalSequence(event, ctx, binding)) return false;
+    if (
+      !terminalEventId ||
+      !ctx.onRunTerminal ||
+      ctx.v4TerminalEventIdsRef?.current.has(terminalEventId) ||
+      ctx.v4TerminalReservationsRef?.current.has(terminalEventId) ||
+      ctx.v4TerminalFenceRef?.current?.terminalEventId === terminalEventId ||
+      !canAcceptV4TerminalSequence(event, ctx, binding)
+    ) {
+      return false;
+    }
+    ctx.v4TerminalReservationsRef?.current.add(terminalEventId);
     const owner = presentationOwner(binding, messageId);
     if (owner) ctx.publicStreamPresentation?.flush(owner);
-    if (!terminalEventId || !ctx.onRunTerminal) return false;
-    if (!ctx.v4TerminalFenceRef) {
-      const accepted = ctx.onRunTerminal(event.runId, terminalStatus, messageId);
-      if (accepted) ctx.v4TerminalEventIdsRef?.current.add(terminalEventId);
-      onCommitted?.(false);
-      return accepted;
-    }
+    const settle = (accepted: boolean): boolean => {
+      ctx.v4TerminalReservationsRef?.current.delete(terminalEventId);
+      if (!accepted || !commitV4TerminalSequence(event, ctx, binding)) {
+        onTerminalSettled?.(false);
+        return false;
+      }
+      if (!ctx.v4TerminalFenceRef) {
+        ctx.v4TerminalEventIdsRef?.current.add(terminalEventId);
+        onCommitted?.(false);
+        onTerminalSettled?.(true);
+        return true;
+      }
+      acceptV4TerminalFence(
+        event,
+        ctx,
+        terminalEventId,
+        binding.streamVersion,
+        () => {
+          onCommitted?.(false);
+        },
+      )();
+      onTerminalSettled?.(true);
+      return true;
+    };
     const accepted = ctx.onRunTerminal(
       event.runId,
       terminalStatus,
       messageId,
-      acceptV4TerminalFence(event, ctx, terminalEventId, () => {
-        onCommitted?.(false);
-      }),
+      settle,
     );
-    if (!accepted) return false;
+    if (!accepted) {
+      ctx.v4TerminalReservationsRef?.current.delete(terminalEventId);
+      return false;
+    }
     return true;
   }
   if (event.eventType === "stream.end") {
@@ -556,6 +602,7 @@ export function handlePublicRunStreamFrameV4({
   currentGeneration,
   onGap,
   onCommitted,
+  onTerminalSettled,
 }: {
   frame: V4SseFrame;
   adapterBinding: V4AdapterBinding;
@@ -565,6 +612,7 @@ export function handlePublicRunStreamFrameV4({
   currentGeneration: number;
   onGap?: (event: V4PublicEvent) => void;
   onCommitted?: (semanticApplied: boolean) => void;
+  onTerminalSettled?: (accepted: boolean) => void;
 }): boolean {
   if (
     !isStrictV4Binding(binding) ||
@@ -595,6 +643,7 @@ export function handlePublicRunStreamFrameV4({
     ctx,
     binding,
     onCommitted,
+    onTerminalSettled,
   );
 }
 
@@ -1068,9 +1117,8 @@ export function handleStreamEvent(
     }
   }
 
+  if (owner) ctx.publicStreamPresentation?.flush(owner);
   commitMessageEvent();
-
-  // Pop subagent stack after agent:result
   if (eventType === "agent:result") {
     const agentId = data.agent_id || "unknown";
     const stackIndex = subagentStack.findIndex(

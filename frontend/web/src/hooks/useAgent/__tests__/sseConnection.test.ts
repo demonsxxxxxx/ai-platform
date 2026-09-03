@@ -246,7 +246,10 @@ test("flushes accepted public text before reconnect status can replay-deduplicat
     setConnectionStatus: () => undefined,
     setIsInitializingSandbox: () => undefined,
     setSandboxError: () => undefined,
-    onRunTerminal: () => true,
+    onRunTerminal: (_runId, _status, _messageId, settle) => {
+      settle?.(true);
+      return true;
+    },
   } satisfies SSEConnectionContext & {
     isReconnectFromHistoryRef: { current: boolean };
   };
@@ -410,7 +413,10 @@ test("retries startup-not-ready inside one SSE owner and persists the accepted c
       reducerMessageId: "assistant-old",
     },
   };
-  context.onRunTerminal = () => true;
+  context.onRunTerminal = (_runId, _status, _messageId, settle) => {
+    settle?.(true);
+    return true;
+  };
   const ownerHeaders: Array<Record<string, string>> = [];
   let startupAttempts = 0;
   const fetchStream: SSEFetchEventSource = async (_input, init) => {
@@ -1349,7 +1355,10 @@ test("does not let a deferred stale 401 refresh mutate a replacement SSE stream"
 
 test("retries a current 401 once and aborts only its captured stream controller", async () => {
   const { context, connectionStates } = createTokenRefreshContext();
-  context.onRunTerminal = () => true;
+  context.onRunTerminal = (_runId, _status, _messageId, settle) => {
+    settle?.(true);
+    return true;
+  };
   const signals: AbortSignal[] = [];
   let fetchCalls = 0;
   let refreshCalls = 0;
@@ -1492,7 +1501,10 @@ test("flushes a paused accepted answer delta exactly once before a 401 refresh h
     setConnectionStatus: () => undefined,
     setIsInitializingSandbox: () => undefined,
     setSandboxError: () => undefined,
-    onRunTerminal: () => true,
+    onRunTerminal: (_runId, _status, _messageId, settle) => {
+      settle?.(true);
+      return true;
+    },
   } satisfies SSEConnectionContext;
 
   await connectToSSE(
@@ -2390,7 +2402,7 @@ test("resets reconnect budget only after a unique current-run progress frame", a
 });
 
 test("holds duplicate terminal transport and immediate stream.end behind hydration acceptance", async () => {
-  let acceptTerminal: (() => void) | undefined;
+  let acceptTerminal: ((accepted: boolean) => boolean) | undefined;
   let terminalCalls = 0;
   const connectionStates: string[] = [];
   const context = {
@@ -2410,6 +2422,7 @@ test("holds duplicate terminal transport and immediate stream.end behind hydrati
       current: { sessionId: null, runId: null, eventId: null, streamIncarnation: null },
     },
     v4TerminalEventIdsRef: { current: new Set<string>() },
+    v4TerminalReservationsRef: { current: new Set<string>() },
     v4TerminalFenceRef: { current: null },
     lastHistoryTimestampRef: { current: null },
     activeSubagentStackRef: { current: [] },
@@ -2468,9 +2481,83 @@ test("holds duplicate terminal transport and immediate stream.end behind hydrati
   assert.equal(terminalCalls, 1);
   assert.equal(context.acceptedStreamCursorRef.current.eventId, null);
   assert.deepEqual(connectionStates, ["connecting", "connected"]);
-  acceptTerminal?.();
+  acceptTerminal?.(true);
   await Promise.resolve();
   assert.equal(context.acceptedStreamCursorRef.current.eventId, "run-1:1:3-0");
+  assert.equal(connectionStates.at(-1), "disconnected");
+});
+
+test("failed terminal hydration releases close without accepting its cursor", async () => {
+  let settleTerminal: ((accepted: boolean) => boolean) | undefined;
+  const connectionStates: string[] = [];
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: "assistant-1" },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    messagesRef: { current: [] as Message[] },
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: "session-1", runId: "run-1", sequence: null },
+    },
+    acceptedStreamCursorRef: {
+      current: {
+        sessionId: null,
+        runId: null,
+        eventId: null,
+        streamIncarnation: null,
+      },
+    },
+    v4TerminalEventIdsRef: { current: new Set<string>() },
+    v4TerminalReservationsRef: { current: new Set<string>() },
+    v4TerminalFenceRef: { current: null },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: (status: string) => connectionStates.push(status),
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunTerminal: (_runId, _status, _messageId, onSettled) => {
+      settleTerminal = onSettled;
+      return true;
+    },
+  } satisfies SSEConnectionContext;
+
+  await connectToSSE(
+    "session-1",
+    "run-1",
+    "assistant-1",
+    context,
+    false,
+    async (_input, init) => {
+      await init.onopen?.(new Response(null, { status: 200 }));
+      init.onmessage?.(
+        v4Frame({
+          cursor: "run-1:1:1-0",
+          runId: "run-1",
+          eventType: "run.succeeded",
+          eventId: "terminal-event-1",
+          payload: { terminal_event_id: "terminal-1", hydrate_required: true },
+        }) as never,
+      );
+      await init.onclose?.();
+    },
+  );
+
+  assert.equal(context.acceptedStreamCursorRef.current.eventId, null);
+  assert.equal(context.acceptedRunEventSequenceRef.current.sequence, null);
+  assert.equal(context.v4TerminalReservationsRef.current.size, 1);
+  settleTerminal?.(false);
+  await Promise.resolve();
+  assert.equal(context.acceptedStreamCursorRef.current.eventId, null);
+  assert.equal(context.acceptedRunEventSequenceRef.current.sequence, null);
+  assert.equal(context.v4TerminalReservationsRef.current.size, 0);
+  assert.equal(context.v4TerminalFenceRef.current, null);
   assert.equal(connectionStates.at(-1), "disconnected");
 });
 
@@ -2644,6 +2731,224 @@ test("replay gap preserves partial output until an active run reaches terminal h
   assert.equal(context.currentRunIdRef.current, "run-1");
 });
 
+test("active retained-history gap hydrates durable V4 state and reconnects from the latest same-incarnation anchor", async () => {
+  let hydrateCalls = 0;
+  let reconnectCalls = 0;
+  const connectionStates: string[] = [];
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: "assistant-1" },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    statusRetryCountRef: { current: 0 },
+    replayGapRecoveryRef: { current: null },
+    messagesRef: { current: [] as Message[] },
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: "session-1", runId: "run-1", sequence: 20 },
+    },
+    acceptedStreamCursorRef: {
+      current: { sessionId: "session-1", runId: "run-1", eventId: "run-1:1:1-0", streamIncarnation: 1 },
+    },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: (status: string) => connectionStates.push(status),
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    hydrateActiveRun: async (
+      _sessionId,
+      _runId,
+      _version,
+      incarnation,
+      expectedCursorEventId,
+    ) => {
+      hydrateCalls += 1;
+      assert.equal(incarnation, 1);
+      assert.equal(expectedCursorEventId, "run-1:1:1-0");
+      context.acceptedRunEventSequenceRef.current.sequence = Math.max(
+        context.acceptedRunEventSequenceRef.current.sequence || 0,
+        12,
+      );
+      return "assistant-hydrated";
+    },
+  } satisfies SSEConnectionContext;
+
+  await connectToSSE(
+    "session-1",
+    "run-1",
+    "assistant-1",
+    context,
+    false,
+    async (_input, init) => {
+      await init.onopen?.(new Response(null, { status: 200 }));
+      init.onmessage?.(
+        v4Frame({
+          cursor: "run-1:1:2-0",
+          runId: "run-1",
+          eventType: "stream.gap",
+          eventId: "gap-active",
+          payload: {
+            reason: "retained_history_unavailable",
+            recovery: "reload_durable_state",
+            requested_event_id: "1-0",
+            requested_stream_incarnation: 1,
+            current_stream_incarnation: 1,
+            earliest_available_event_id: "2-0",
+            latest_available_event_id: "9-0",
+          },
+        }) as never,
+      );
+    },
+    {
+      replayGapDependencies: {
+        getStatus: async () => ({
+          session_id: "session-1",
+          run_id: "run-1",
+          status: "running",
+        }),
+        connect: async (_sessionId, _runId, messageId, nextContext) => {
+          reconnectCalls += 1;
+          assert.equal(messageId, "assistant-hydrated");
+          assert.equal(
+            nextContext.acceptedStreamCursorRef?.current.eventId,
+            "run-1:1:9-0",
+          );
+        },
+      },
+    },
+  );
+
+  assert.equal(hydrateCalls, 1);
+  assert.equal(reconnectCalls, 1);
+  assert.equal(context.streamingMessageIdRef.current, "assistant-hydrated");
+  assert.equal(context.acceptedRunEventSequenceRef.current.sequence, 20);
+  assert.deepEqual(context.acceptedStreamCursorRef.current, {
+    sessionId: "session-1",
+    runId: "run-1",
+    eventId: "run-1:1:9-0",
+    streamIncarnation: 1,
+  });
+  assert.deepEqual(connectionStates, [
+    "connecting",
+    "connected",
+    "recovering_gap",
+    "reconnecting",
+  ]);
+});
+
+test("active retained-history gap cannot overwrite a cursor that advances during hydration", async () => {
+  let reconnectCalls = 0;
+  const connectionStates: string[] = [];
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: "assistant-1" },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    statusRetryCountRef: { current: 0 },
+    replayGapRecoveryRef: { current: null },
+    messagesRef: { current: [] as Message[] },
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: "session-1", runId: "run-1", sequence: 20 },
+    },
+    acceptedStreamCursorRef: {
+      current: {
+        sessionId: "session-1",
+        runId: "run-1",
+        eventId: "run-1:1:1-0",
+        streamIncarnation: 1,
+      },
+    },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: (status: string) => connectionStates.push(status),
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    hydrateActiveRun: async (
+      _sessionId,
+      _runId,
+      _version,
+      _incarnation,
+      expectedCursorEventId,
+    ) => {
+      assert.equal(expectedCursorEventId, "run-1:1:1-0");
+      context.acceptedStreamCursorRef.current = {
+        sessionId: "session-1",
+        runId: "run-1",
+        eventId: "run-1:1:4-0",
+        streamIncarnation: 1,
+      };
+      return "assistant-hydrated";
+    },
+  } satisfies SSEConnectionContext;
+
+  await connectToSSE(
+    "session-1",
+    "run-1",
+    "assistant-1",
+    context,
+    false,
+    async (_input, init) => {
+      await init.onopen?.(new Response(null, { status: 200 }));
+      init.onmessage?.(
+        v4Frame({
+          cursor: "run-1:1:2-0",
+          runId: "run-1",
+          eventType: "stream.gap",
+          eventId: "gap-cursor-race",
+          payload: {
+            reason: "retained_history_unavailable",
+            recovery: "reload_durable_state",
+            requested_event_id: "1-0",
+            requested_stream_incarnation: 1,
+            current_stream_incarnation: 1,
+            earliest_available_event_id: "2-0",
+            latest_available_event_id: "9-0",
+          },
+        }) as never,
+      );
+    },
+    {
+      replayGapDependencies: {
+        getStatus: async () => ({
+          session_id: "session-1",
+          run_id: "run-1",
+          status: "running",
+        }),
+        connect: async () => {
+          reconnectCalls += 1;
+        },
+      },
+    },
+  );
+
+  assert.equal(reconnectCalls, 0);
+  assert.equal(context.streamingMessageIdRef.current, "assistant-1");
+  assert.deepEqual(context.acceptedStreamCursorRef.current, {
+    sessionId: "session-1",
+    runId: "run-1",
+    eventId: "run-1:1:4-0",
+    streamIncarnation: 1,
+  });
+  assert.deepEqual(connectionStates, [
+    "connecting",
+    "connected",
+    "recovering_gap",
+  ]);
+});
+
 test("fresh no-cursor gap enters durable recovery without committing its cursor", async () => {
   let hydrateCalls = 0;
   const connectionStates: string[] = [];
@@ -2726,6 +3031,95 @@ test("fresh no-cursor gap enters durable recovery without committing its cursor"
 });
 
 
+test("non-resumable gap clears rejected state before unavailable status convergence", async () => {
+  const states: string[] = [];
+  let invalidations = 0;
+  let messages: Message[] = [
+    {
+      id: "assistant-1",
+      role: "assistant",
+      content: "partial",
+      timestamp: new Date(),
+      parts: [{ type: "text", content: "partial" }],
+      isStreaming: true,
+    },
+  ];
+  const context = {
+    isMountedRef: { current: true },
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    streamVersionRef: { current: 4 },
+    streamingMessageIdRef: { current: "assistant-1" },
+    acceptedStreamCursorRef: {
+      current: {
+        sessionId: "session-1",
+        runId: "run-1",
+        eventId: "run-1:1:8-0",
+        streamIncarnation: 1,
+      },
+    },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: "session-1", runId: "run-1", sequence: 8 },
+    },
+    publicStreamPresentation: {
+      flush: () => true,
+      invalidate: () => {
+        invalidations += 1;
+      },
+    } as unknown as PublicStreamPresentation,
+    setMessages: (updater: React.SetStateAction<Message[]>) => {
+      messages = typeof updater === "function" ? updater(messages) : updater;
+    },
+    setConnectionStatus: (status: string) => states.push(status),
+    setIsInitializingSandbox: () => undefined,
+  } satisfies Partial<SSEConnectionContext>;
+
+  await recoverReplayGap(
+    context as unknown as SSEConnectionContext,
+    {
+      sessionId: "session-1",
+      runId: "run-1",
+      messageId: "assistant-1",
+      streamVersion: 4,
+      gap: {
+        streamIncarnation: 1,
+        event: {
+          payload: {
+            reason: "stream_missing",
+            recovery: "reload_durable_state",
+            requested_event_id: "8-0",
+            requested_stream_incarnation: 1,
+            current_stream_incarnation: 1,
+            earliest_available_event_id: null,
+            latest_available_event_id: null,
+          },
+        },
+      } as never,
+    },
+    {
+      getStatus: async () => {
+        throw new Error("unavailable");
+      },
+    },
+  );
+
+  assert.deepEqual(context.acceptedStreamCursorRef.current, {
+    sessionId: null,
+    runId: null,
+    eventId: null,
+    streamIncarnation: null,
+  });
+  assert.deepEqual(context.acceptedRunEventSequenceRef.current, {
+    sessionId: null,
+    runId: null,
+    sequence: null,
+  });
+  assert.equal(invalidations, 1);
+  assert.equal(messages[0]?.isStreaming, false);
+  assert.deepEqual(states, ["recovering_gap", "disconnected"]);
+});
+
+
 test("does not mutate shared state when a stale owner receives a replay gap", async () => {
   const states: string[] = [];
   const context = {
@@ -2755,6 +3149,7 @@ test("does not mutate shared state when a stale owner receives a replay gap", as
     runId: "run-old",
     messageId: "assistant-old",
     streamVersion: 1,
+    gap: {} as never,
   });
 
   assert.deepEqual(states, []);
