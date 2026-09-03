@@ -143,7 +143,7 @@ class PublicAnswerStreamGate:
         ):
             self._fail("invalid_input")
             return
-        held_chars = self._private_prefix_chars(self._pending)
+        held_chars = self._private_replacement_prefix_chars(self._pending)
         if held_chars:
             self._pending = self._pending[:-held_chars]
             self._logical_view = self._logical_view[:-held_chars]
@@ -287,6 +287,14 @@ class PublicAnswerStreamGate:
         return sanitized
 
     def _private_prefix_chars(self, text: str) -> int:
+        sanitizer_hold = sanitizer_unstable_suffix_length(
+            text,
+            max_chars=self._max_private_token_chars,
+            track_ambiguous_prefixes=True,
+        )
+        return max(self._private_replacement_prefix_chars(text), sanitizer_hold)
+
+    def _private_replacement_prefix_chars(self, text: str) -> int:
         held = 0
         for token in self._tokens:
             limit = min(len(text), len(token) - 1)
@@ -294,12 +302,7 @@ class PublicAnswerStreamGate:
                 if text.endswith(token[:size]):
                     held = size
                     break
-        sanitizer_hold = sanitizer_unstable_suffix_length(
-            text,
-            max_chars=self._max_private_token_chars,
-            track_ambiguous_prefixes=True,
-        )
-        return max(held, sanitizer_hold)
+        return held
 
     def _project_across_publication_boundary(self, candidate: str) -> str | None:
         consumed = 0

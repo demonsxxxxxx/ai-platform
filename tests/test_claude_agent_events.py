@@ -706,6 +706,11 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         "public_tool_label": "Read file",
     }
     candidates = []
+    tool_lifecycle = []
+
+    async def acknowledge_tool_lifecycle(fact):
+        tool_lifecycle.append((fact["tool_name"], fact["lifecycle"]))
+        return True
 
     async def query_fn(*, prompt, options):
         del prompt
@@ -784,6 +789,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         query_fn=query_fn,
         thinking_effort="high",
         on_text=lambda value: asyncio.sleep(0),
+        on_tool_lifecycle=acknowledge_tool_lifecycle,
         on_agent_event=lambda batch: candidates.extend(batch) or True,
         run_id="run-1187",
         attempt_id="attempt-1",
@@ -821,6 +827,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
     ]
     assert deltas == ["safe ", "answer"]
     assert "".join(deltas) == result.message
+    assert tool_lifecycle == [("Read", "started"), ("Read", "completed")]
     summaries = [
         candidate.summary
         for candidate in candidates

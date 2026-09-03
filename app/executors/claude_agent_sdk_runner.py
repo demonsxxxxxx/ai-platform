@@ -2229,7 +2229,8 @@ async def run_claude_agent_sdk(
                         assistant_text_blocks.append(text)
                 assistant_text = (
                     "".join(assistant_text_blocks)
-                    if all(isinstance(text, str) for text in assistant_text_blocks)
+                    if assistant_text_blocks
+                    and all(isinstance(text, str) for text in assistant_text_blocks)
                     else None
                 )
                 if isinstance(assistant_text, str):
@@ -2243,6 +2244,8 @@ async def run_claude_agent_sdk(
                     for public_text in answer_stream_gate.accept(missing_text):
                         await publish_terminal_text(public_text)
                     last_assistant_text = assistant_text
+                elif projected_message_text:
+                    last_assistant_text = projected_message_text
                 projected_message_text = ""
             elif isinstance(message, ResultMessage):
                 diagnostic_counters["result_messages"] += 1

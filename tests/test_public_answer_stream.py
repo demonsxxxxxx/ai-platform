@@ -368,6 +368,24 @@ def test_capability_lifecycle_does_not_defer_safe_assistant_narration():
     assert finished.final_text == public_text
 
 
+def test_capability_boundary_preserves_safe_sanitizer_pending_text():
+    gate = PublicAnswerStreamGate(
+        private_replacements={},
+        sanitizer=sanitize_public_text,
+    )
+    invocation_key = ("builtin", "Read", CALL_ID)
+
+    before = gate.accept("safe answer")
+    gate.seal({CALL_ID: "tool invocation"}, invocation_key=invocation_key)
+    assert gate.accept("private tool output") == ()
+    assert gate.release_after_verified_capability(invocation_key) is True
+    finished = gate.finish(final_text="safe answer", release=True)
+
+    assert before == ("safe ",)
+    assert finished.chunks == ("answer",)
+    assert finished.final_text == "safe answer"
+
+
 def test_overlapping_capability_invocations_keep_disclosure_closed_until_all_complete():
     gate = _gate()
 
@@ -410,7 +428,10 @@ def test_unmatched_completion_cannot_reopen_an_active_invocation():
     )
     assert gate.accept("private file content") == ()
     assert gate.release_after_verified_capability(active_key) is True
-    assert gate.accept("safe after") == ("safe after",)
+    after = gate.accept("safe after")
+    finished = gate.finish(final_text="safe after", release=True)
+
+    assert "".join((*after, *finished.chunks)) == "safe after"
 
 
 def test_failed_terminal_does_not_retract_already_published_narration():
