@@ -142,7 +142,9 @@ concrete authority class. HTTP status and wire DTOs remain transport concerns.
 `starter_prompts`, `capability_summary`, `recommended_tasks`,
 `supported_input_types`, `expected_outputs`,
 `permissions_and_data_access_notice`, `avatar_ref`, `avatar_seed`, `category`,
-and `published_at`.
+`completed_tasks`, and `published_at`. `completed_tasks` is the tenant-scoped
+count of successful runs for the published profile; it is a display statistic,
+not an admission or authorization field.
 
 Unknown fields are forbidden. Construction must call the Agent Apps public
 projection policy; serializing a persistence record, admitted private

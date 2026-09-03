@@ -24,6 +24,7 @@ const profile: AgentProfilePublicProjection = {
   permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
   avatar_ref: "builtin:assistant" as const,
   category: "support" as const,
+  market_tag: "客户支持",
   published_at: "2026-08-04T01:00:00Z",
 };
 
@@ -62,6 +63,7 @@ test("market search covers the safe public identity and use fields", () => {
       description: "核对报销材料",
       capability_summary: "核对企业财务单据。",
       recommended_tasks: ["报销材料核验"],
+      market_tag: "",
       avatar_ref: "builtin:document" as const,
       category: "operations" as const,
     },
@@ -71,5 +73,6 @@ test("market search covers the safe public identity and use fields", () => {
   assert.deepEqual(filterPublishedMarketProfiles(profiles, "报销"), [profiles[1]]);
   assert.deepEqual(filterPublishedMarketProfiles(profiles, "授权范围"), [profile]);
   assert.deepEqual(filterPublishedMarketProfiles(profiles, "支持请求分流"), [profile]);
+  assert.deepEqual(filterPublishedMarketProfiles(profiles, "客户支持"), [profile]);
   assert.deepEqual(filterPublishedMarketProfiles(profiles, ""), profiles);
 });

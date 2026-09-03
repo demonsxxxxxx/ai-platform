@@ -453,7 +453,14 @@ async def get_current_published_agent_profile(
                agent_profile_revisions.category, agent_profile_revisions.market_tag,
                agent_profile_revisions.visibility, agent_profile_revisions.allowed_department_ids,
                agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
-               agent_profile_revisions.created_at, agent_profile_revisions.published_at
+               agent_profile_revisions.created_at, agent_profile_revisions.published_at,
+               (
+                 select count(*)
+                 from runs
+                 where runs.tenant_id = agent_profile_revisions.tenant_id
+                   and runs.agent_id = agent_profile_revisions.agent_id
+                   and runs.status = 'succeeded'
+               ) as completed_tasks
         from agent_profiles
         join agent_profile_revisions
           on agent_profile_revisions.tenant_id = agent_profiles.tenant_id
@@ -607,7 +614,14 @@ async def list_current_published_agent_profiles(
                agent_profile_revisions.category, agent_profile_revisions.market_tag,
                agent_profile_revisions.visibility, agent_profile_revisions.allowed_department_ids,
                agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
-               agent_profile_revisions.created_at, agent_profile_revisions.published_at
+               agent_profile_revisions.created_at, agent_profile_revisions.published_at,
+               (
+                 select count(*)
+                 from runs
+                 where runs.tenant_id = agent_profile_revisions.tenant_id
+                   and runs.agent_id = agent_profile_revisions.agent_id
+                   and runs.status = 'succeeded'
+               ) as completed_tasks
         from agent_profiles
         join agent_profile_revisions
           on agent_profile_revisions.tenant_id = agent_profiles.tenant_id

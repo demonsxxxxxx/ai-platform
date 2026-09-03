@@ -52,6 +52,7 @@ export interface AgentProfilePublicProjection extends SelectedAgentProfileReques
   avatar_seed?: string;
   category: AgentProfileCategory;
   market_tag?: string;
+  completed_tasks?: number;
   is_favorite?: boolean;
   published_at: string | null;
 }
@@ -112,6 +113,11 @@ function projectAvatarSeed(record: Record<string, unknown>, code: string): strin
 
 function requirePositiveRevision(value: unknown, code: string): number {
   if (!Number.isInteger(value) || (value as number) < 1) throw new Error(code);
+  return value as number;
+}
+
+function requireNonNegativeInteger(value: unknown, code: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) throw new Error(code);
   return value as number;
 }
 
@@ -202,6 +208,9 @@ export function projectAgentProfilePublicProjection(value: unknown): AgentProfil
     market_tag: record.market_tag === undefined
       ? ""
       : requireString(record.market_tag, PROFILE_ERROR, true),
+    ...(record.completed_tasks === undefined
+      ? {}
+      : { completed_tasks: requireNonNegativeInteger(record.completed_tasks, PROFILE_ERROR) }),
     is_favorite: record.is_favorite === true,
   };
 }
