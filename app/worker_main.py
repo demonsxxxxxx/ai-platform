@@ -14,7 +14,11 @@ import uuid
 
 from app import queue
 from app import repositories
-from app.files.infrastructure import postgres as file_upload_persistence
+from app.files.api import (
+    delete_expired_file_upload_session,
+    expire_file_upload_sessions,
+    retry_expired_file_upload_session,
+)
 from app.bootstrap.mcp import configure_mcp_runtime
 from app.bootstrap.model_services import configure_model_services
 from app.bootstrap.streaming import build_worker_v4_runtime
@@ -626,7 +630,7 @@ async def reconcile_stale_runs_for_worker(
 
 async def cleanup_expired_file_upload_sessions() -> int:
     async with transaction() as conn:
-        expired_sessions = await file_upload_persistence.expire_file_upload_sessions(conn, limit=100)
+        expired_sessions = await expire_file_upload_sessions(conn, limit=100)
     if not expired_sessions:
         return 0
     storage = ObjectStorage()
@@ -639,13 +643,13 @@ async def cleanup_expired_file_upload_sessions() -> int:
             )
         except Exception:
             async with transaction() as conn:
-                await file_upload_persistence.retry_expired_file_upload_session(
+                await retry_expired_file_upload_session(
                     conn,
                     upload_session_id=str(session["id"]),
                 )
         else:
             async with transaction() as conn:
-                await file_upload_persistence.delete_expired_file_upload_session(
+                await delete_expired_file_upload_session(
                     conn,
                     upload_session_id=str(session["id"]),
                 )
