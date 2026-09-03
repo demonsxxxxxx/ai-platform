@@ -9,6 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
+from app.files.api import MultipartUploadCreateRequest
 from app.routes import files as files_routes
 from app.routes import lambchat_compat as compat_routes
 from app.storage import StoredObject
@@ -200,7 +201,7 @@ async def test_multipart_initiation_persists_bounded_part_contract(monkeypatch):
     monkeypatch.setattr(files_routes, "new_id", lambda prefix: f"{prefix}-1")
 
     response = await files_routes.initiate_multipart_upload(
-        request=files_routes.MultipartUploadCreateRequest(
+        request=MultipartUploadCreateRequest(
             workspace_id="default",
             name="large.pdf",
             content_type="application/pdf",
@@ -226,7 +227,7 @@ async def test_multipart_initiation_rejects_below_threshold(monkeypatch):
 
     with pytest.raises(HTTPException) as exc_info:
         await files_routes.initiate_multipart_upload(
-            request=files_routes.MultipartUploadCreateRequest(
+            request=MultipartUploadCreateRequest(
                 name="small.txt",
                 size_bytes=files_routes.MULTIPART_THRESHOLD_BYTES - 1,
             ),

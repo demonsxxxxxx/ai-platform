@@ -19,6 +19,7 @@ from app.files.api import (
     expire_file_upload_sessions,
     retry_expired_file_upload_session,
 )
+from app.bootstrap.files import configure_file_upload_services
 from app.bootstrap.mcp import configure_mcp_runtime
 from app.bootstrap.model_services import configure_model_services
 from app.bootstrap.streaming import build_worker_v4_runtime
@@ -1188,6 +1189,7 @@ async def run_worker_pool(
 
 
 async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
+    configure_file_upload_services()
     configure_mcp_runtime()
     await require_schema_current()
     worker_runtime = build_worker_v4_runtime(transaction)
@@ -1207,6 +1209,7 @@ def main() -> None:
     parser.add_argument("--timeout", type=int, default=5, help="Queue lease timeout in seconds")
     args = parser.parse_args()
 
+    configure_file_upload_services()
     configure_model_services()
     if args.once:
         outcome = asyncio.run(run_once_and_close(timeout_seconds=args.timeout))

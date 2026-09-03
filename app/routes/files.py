@@ -8,13 +8,11 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import quote
 import zipfile
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 
 from app.files.api import (
     MAX_UPLOAD_BYTES,
-    MultipartUploadCompleteRequest,
-    MultipartUploadCreateRequest,
     abort_file_upload_session,
     claim_file_upload_session,
     complete_file_upload_session,
@@ -23,6 +21,8 @@ from app.files.api import (
     expire_file_upload_sessions,
     get_authorized_file_upload_session,
     get_file_storage_usage,
+    parse_multipart_upload_complete_request,
+    parse_multipart_upload_create_request,
     retry_expired_file_upload_session,
 )
 from app.artifact_preview import artifact_preview_allowed
@@ -549,10 +549,13 @@ async def upload_file(
 
 @router.post("/files/uploads")
 async def initiate_multipart_upload(
-    request: MultipartUploadCreateRequest,
+    request: object = Body(...),
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
-    _require_upload_permissions(principal)
+    try:
+        request = parse_multipart_upload_create_request(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if request.size_bytes < MULTIPART_THRESHOLD_BYTES:
         raise HTTPException(status_code=400, detail="multipart_threshold_not_reached")
     try:
@@ -711,9 +714,13 @@ async def upload_multipart_part(
 @router.post("/files/uploads/{upload_session_id}/complete", response_model=UploadFileResponse)
 async def complete_multipart_upload(
     upload_session_id: str,
-    request: MultipartUploadCompleteRequest,
+    request: object = Body(...),
     principal: AuthPrincipal = Depends(require_principal),
 ) -> UploadFileResponse:
+    try:
+        request = parse_multipart_upload_complete_request(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     _require_upload_permissions(principal)
     try:
         upload_session_id = assert_safe_id(upload_session_id, "upload_session_id")
