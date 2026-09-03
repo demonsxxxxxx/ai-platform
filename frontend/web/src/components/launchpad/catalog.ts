@@ -21,11 +21,11 @@ type SiteRow = readonly [
 ];
 
 const siteRows: readonly SiteRow[] = [
+  ["内网登录","灵犀平台","http://10.56.0.25:8189/#/TaskManagement/indexSpace","lingxi-platform.png","公司自研平台"],
   ["内网登录","QMS质量管理系统","http://dms.intbio.com/portal/index.html#/login","QMS_icon.png","DMS&TMS系统"],
   ["内网登录","vDrive(内部)","http://vdr-internal.intbio.com/","内部网盘.png","DataRoom_内部员工数据分享、共同编辑以及传输平台"],
   ["内网登录","OA","http://oa.intbio.com:8090/login.jsp","OA_icon.png","OA流程管理系统"],
   ["内网登录","ERP","http://erp.intbio.com:8080/","erp_icon.png","请通过用友客户端登录"],
-  ["内网登录","ai-platform","http://ai.intbio.com:18001/auth/login","992a2dfcd3b932d05562580ad636b4c5.jpeg","小智AI - 要么随波逐流，要么驾驭小智AI，即刻登录，掌控全局。"],
   ["内网登录","公司邮箱","https://qiye.aliyun.com/","emial.png","企业邮箱"],
   ["内网登录","GMP域账号自助管理","http://pwd.intbio.com/RDWeb/Pages/zh-CN/password.aspx","pwd.jpg","GMP域账号密码重置"],
   ["内网登录","合理化建议","http://vdr-internal.intbio.com/index.html#doc/enterprise/2121","d9576b3de14945df873fb75acd8f8342.jpg","公司合理化建议"],

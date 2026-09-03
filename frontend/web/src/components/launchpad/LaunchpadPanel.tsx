@@ -123,6 +123,7 @@ function DirectorySection({
       <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         {entries.map((entry) => {
           const isFavorite = favoriteIds.has(entry.id);
+          const isFeaturedPlatform = entry.id === "内网登录:灵犀平台";
 
           return (
             <div
@@ -139,7 +140,13 @@ function DirectorySection({
                 })}
                 className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pl-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-ring)]"
               >
-                <span className="relative flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-[var(--theme-border)] bg-white shadow-sm">
+                <span
+                  className={`relative flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-[var(--theme-border)] bg-white shadow-sm ${
+                    isFeaturedPlatform
+                      ? "motion-safe:animate-pulse shadow-[0_0_14px_rgba(139,92,246,0.42)]"
+                      : ""
+                  }`}
+                >
                   <Globe2
                     aria-hidden="true"
                     className="size-4 text-[var(--theme-text-secondary)]"
@@ -147,7 +154,7 @@ function DirectorySection({
                   <img
                     src={getLaunchpadIconUrl(entry.icon)}
                     alt=""
-                    className="absolute inset-0 size-full bg-white object-contain p-1.5"
+                    className="absolute inset-0 size-full bg-white object-contain"
                     loading="lazy"
                     onError={(event) => {
                       event.currentTarget.hidden = true;
