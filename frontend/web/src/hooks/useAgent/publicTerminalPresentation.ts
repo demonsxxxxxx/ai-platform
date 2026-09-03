@@ -109,7 +109,7 @@ export const PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS = {
   ),
   context_file_too_large: failed(
     "chat.runTerminal.contextFileTooLarge",
-    "文件超过 32 MB 处理上限。请选择更小的文件后重试。",
+    "文件超过 128 MB，或文件总量超过 256 MB。请选择更小的文件或减少文件数量后重试。",
     "chat.runStatus.event.contextFileTooLarge",
     "文件超过处理上限",
     "file_preprocessing",

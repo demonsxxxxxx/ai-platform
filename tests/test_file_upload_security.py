@@ -55,11 +55,16 @@ async def fake_create_file(conn, **kwargs):
     return None
 
 
+async def fake_file_storage_usage(conn, **kwargs):
+    return {"stored_bytes": 0, "reserved_bytes": 0, "active_uploads": 0}
+
+
 def install_basic_upload_fakes(monkeypatch):
     monkeypatch.setattr(files_routes, "transaction", fake_transaction)
     monkeypatch.setattr(files_routes, "ensure_workspace", fake_ensure_workspace)
     monkeypatch.setattr(files_routes, "ensure_user", fake_ensure_user)
     monkeypatch.setattr(files_routes, "create_file", fake_create_file)
+    monkeypatch.setattr(files_routes, "get_file_storage_usage", fake_file_storage_usage)
     monkeypatch.setattr(files_routes, "new_id", lambda prefix: "file_upload_1")
 
 
@@ -138,19 +143,104 @@ async def test_compat_upload_rejects_missing_permission_before_body_read(monkeyp
 
 @pytest.mark.asyncio
 async def test_bounded_upload_accepts_the_exact_byte_limit():
-    content = b"A" * files_routes.MAX_UPLOAD_BYTES
+    content = b"A" * files_routes.MAX_DIRECT_UPLOAD_BYTES
     upload = FakeUploadFile("exact-limit.txt", "text/plain", content)
 
     result = await files_routes._read_bounded_upload(upload)
 
     assert result == content
-    assert upload.read_calls == [files_routes.MAX_UPLOAD_BYTES + 1]
+    assert upload.read_calls == [files_routes.MAX_DIRECT_UPLOAD_BYTES + 1]
+
+
+@pytest.mark.asyncio
+async def test_multipart_request_body_is_bounded_before_joining_chunks():
+    class Request:
+        async def stream(self):
+            yield b"ab"
+            yield b"cd"
+
+    assert await files_routes._read_bounded_request_body(Request(), 4) == b"abcd"
+
+    class OversizedRequest:
+        async def stream(self):
+            yield b"abc"
+            yield b"de"
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files_routes._read_bounded_request_body(OversizedRequest(), 4)
+    assert exc_info.value.status_code == 413
+    assert exc_info.value.detail == "multipart_part_too_large"
+
+
+@pytest.mark.asyncio
+async def test_multipart_initiation_persists_bounded_part_contract(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class RecordingStorage:
+        def create_multipart_upload(self, *, storage_key, content_type):
+            captured["storage_key"] = storage_key
+            return "s3-upload-1"
+
+        def abort_multipart_upload(self, **kwargs):
+            raise AssertionError("successful initiation must not abort")
+
+    async def fake_expire(conn, **kwargs):
+        return []
+
+    async def fake_create_session(conn, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(files_routes, "ObjectStorage", RecordingStorage)
+    monkeypatch.setattr(files_routes, "transaction", fake_transaction)
+    monkeypatch.setattr(files_routes, "expire_file_upload_sessions", fake_expire)
+    monkeypatch.setattr(files_routes, "ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr(files_routes, "ensure_user", fake_ensure_user)
+    monkeypatch.setattr(files_routes, "get_file_storage_usage", fake_file_storage_usage)
+    monkeypatch.setattr(files_routes, "create_file_upload_session", fake_create_session)
+    monkeypatch.setattr(files_routes, "new_id", lambda prefix: f"{prefix}-1")
+
+    response = await files_routes.initiate_multipart_upload(
+        request=files_routes.MultipartUploadCreateRequest(
+            workspace_id="default",
+            name="large.pdf",
+            content_type="application/pdf",
+            size_bytes=files_routes.MULTIPART_THRESHOLD_BYTES,
+        ),
+        principal=upload_principal(),
+    )
+
+    assert response["part_size_bytes"] == files_routes.MULTIPART_PART_BYTES
+    assert len(response["parts"]) == 4
+    assert captured["expected_size_bytes"] == files_routes.MULTIPART_THRESHOLD_BYTES
+    assert captured["part_count"] == 4
+    assert captured["upload_id"] == "s3-upload-1"
+
+
+@pytest.mark.asyncio
+async def test_multipart_initiation_rejects_below_threshold(monkeypatch):
+    class ForbiddenStorage:
+        def __init__(self):
+            raise AssertionError("small files must use the single-request path")
+
+    monkeypatch.setattr(files_routes, "ObjectStorage", ForbiddenStorage)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files_routes.initiate_multipart_upload(
+            request=files_routes.MultipartUploadCreateRequest(
+                name="small.txt",
+                size_bytes=files_routes.MULTIPART_THRESHOLD_BYTES - 1,
+            ),
+            principal=upload_principal(),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "multipart_threshold_not_reached"
 
 
 @pytest.mark.asyncio
 async def test_upload_rejects_oversize_with_bounded_read_and_no_storage_write(monkeypatch):
     install_basic_upload_fakes(monkeypatch)
-    upload = FakeUploadFile("large.txt", "text/plain", b"A" * (files_routes.MAX_UPLOAD_BYTES + 1))
+    upload = FakeUploadFile("large.txt", "text/plain", b"A" * (files_routes.MAX_DIRECT_UPLOAD_BYTES + 1))
 
     class ForbiddenStorage:
         def put_bytes(self, *, storage_key, content, content_type):
@@ -168,7 +258,7 @@ async def test_upload_rejects_oversize_with_bounded_read_and_no_storage_write(mo
 
     assert exc_info.value.status_code == 413
     assert exc_info.value.detail == "file_too_large"
-    assert upload.read_calls == [files_routes.MAX_UPLOAD_BYTES + 1]
+    assert upload.read_calls == [files_routes.MAX_DIRECT_UPLOAD_BYTES + 1]
 
 
 @pytest.mark.parametrize(
@@ -206,7 +296,7 @@ async def test_upload_rejects_active_content_by_extension_mime_or_sniff(
 
     assert exc_info.value.status_code == 415
     assert exc_info.value.detail == "unsupported_file_type"
-    assert upload.read_calls == [files_routes.MAX_UPLOAD_BYTES + 1]
+    assert upload.read_calls == [files_routes.MAX_DIRECT_UPLOAD_BYTES + 1]
 
 
 @pytest.mark.parametrize(
@@ -243,7 +333,7 @@ async def test_upload_rejects_bom_wrapped_active_content_before_repository_or_st
 
     assert exc_info.value.status_code == 415
     assert exc_info.value.detail == "unsupported_file_type"
-    assert upload.read_calls == [files_routes.MAX_UPLOAD_BYTES + 1]
+    assert upload.read_calls == [files_routes.MAX_DIRECT_UPLOAD_BYTES + 1]
 
 
 @pytest.mark.asyncio

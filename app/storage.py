@@ -1,4 +1,6 @@
 import hashlib
+import os
+import tempfile
 from dataclasses import dataclass
 
 import boto3
@@ -10,6 +12,13 @@ from app.settings import get_settings
 @dataclass(frozen=True)
 class StoredObject:
     storage_key: str
+    sha256: str
+    size_bytes: int
+
+
+@dataclass(frozen=True)
+class DownloadedObject:
+    path: str
     sha256: str
     size_bytes: int
 
@@ -79,6 +88,87 @@ class ObjectStorage:
                 chunks.append(chunk)
         finally:
             body.close()
+
+    def create_multipart_upload(self, *, storage_key: str, content_type: str) -> str:
+        self.ensure_bucket()
+        response = self.client.create_multipart_upload(
+            Bucket=self.bucket,
+            Key=storage_key,
+            ContentType=content_type,
+        )
+        return str(response["UploadId"])
+
+    def upload_multipart_part(
+        self,
+        *,
+        storage_key: str,
+        upload_id: str,
+        part_number: int,
+        content: bytes,
+    ) -> str:
+        response = self.client.upload_part(
+            Bucket=self.bucket,
+            Key=storage_key,
+            UploadId=upload_id,
+            PartNumber=part_number,
+            Body=content,
+        )
+        return str(response["ETag"])
+
+    def complete_multipart_upload(
+        self,
+        *,
+        storage_key: str,
+        upload_id: str,
+        parts: list[dict[str, object]],
+    ) -> None:
+        self.client.complete_multipart_upload(
+            Bucket=self.bucket,
+            Key=storage_key,
+            UploadId=upload_id,
+            MultipartUpload={"Parts": parts},
+        )
+
+    def abort_multipart_upload(self, *, storage_key: str, upload_id: str) -> None:
+        self.client.abort_multipart_upload(
+            Bucket=self.bucket,
+            Key=storage_key,
+            UploadId=upload_id,
+        )
+
+    def download_to_tempfile(self, *, storage_key: str, max_bytes: int) -> DownloadedObject:
+        """Download one object to disk without holding the complete object in memory."""
+
+        if max_bytes < 0:
+            raise ValueError("max_bytes must be non-negative")
+        response = self.client.get_object(Bucket=self.bucket, Key=storage_key)
+        body = response["Body"]
+        digest = hashlib.sha256()
+        size_bytes = 0
+        temporary = tempfile.NamedTemporaryFile(prefix="ai-platform-upload-", delete=False)
+        try:
+            while True:
+                chunk = body.read(min(64 * 1024, max_bytes - size_bytes + 1))
+                if not chunk:
+                    break
+                size_bytes += len(chunk)
+                if size_bytes > max_bytes:
+                    raise ObjectStorageSizeLimitError("object_size_limit_exceeded")
+                digest.update(chunk)
+                temporary.write(chunk)
+            temporary.flush()
+        except BaseException:
+            temporary.close()
+            os.unlink(temporary.name)
+            raise
+        finally:
+            body.close()
+        temporary.close()
+        return DownloadedObject(
+            path=temporary.name,
+            sha256=digest.hexdigest(),
+            size_bytes=size_bytes,
+        )
 
     def delete_object(self, *, storage_key: str) -> None:
         """Idempotently delete one object; PostgreSQL owns durable receipts."""

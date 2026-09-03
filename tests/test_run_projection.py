@@ -416,7 +416,7 @@ def test_context_file_size_terminal_projection_is_specific_and_safe():
 
     assert projection["detail_code"] == "context_file_too_large"
     assert projection["error_code"] == "context_file_too_large"
-    assert projection["message"] == "文件超过 32 MB 处理上限。请选择更小的文件后重试。"
+    assert projection["message"] == "文件超过 128 MB，或文件总量超过 256 MB。请选择更小的文件或减少文件数量后重试。"
     assert projection["event_payload"] == {}
 
 

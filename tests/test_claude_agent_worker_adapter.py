@@ -752,7 +752,7 @@ async def test_submit_run_classifies_context_file_size_failure_without_starting_
 
     assert result.status == "failed"
     assert result.result["error_code"] == "context_file_too_large"
-    assert result.result["message"] == "The input file exceeds the 32 MiB processing limit."
+    assert result.result["message"] == "Input file exceeds 128 MiB or the input set exceeds 256 MiB."
     assert runtime_requests == []
     diagnostic = result.executor_payload["context_file_failure"]
     assert diagnostic["reason_code"] == "context_file_too_large"

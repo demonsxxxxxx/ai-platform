@@ -35,6 +35,7 @@ from app.db import transaction
 from app.executors.registry import AdapterRegistry
 from app.executor_reconciler import run_executor_terminal_reconciler
 from app.runtime.sandbox.container_provider import create_container_provider
+from app.storage import ObjectStorage
 from app.routes.sandbox_runtime_cleanup import (
     SandboxRuntimeCleanupError,
     cleanup_expired_sandbox_leases as _cleanup_expired_sandbox_lease_records,
@@ -622,6 +623,34 @@ async def reconcile_stale_runs_for_worker(
     return results
 
 
+async def cleanup_expired_file_upload_sessions() -> int:
+    async with transaction() as conn:
+        expired_sessions = await repositories.expire_file_upload_sessions(conn, limit=100)
+    if not expired_sessions:
+        return 0
+    storage = ObjectStorage()
+    for session in expired_sessions:
+        try:
+            await asyncio.to_thread(
+                storage.abort_multipart_upload,
+                storage_key=str(session["storage_key"]),
+                upload_id=str(session["upload_id"]),
+            )
+        except Exception:
+            async with transaction() as conn:
+                await repositories.retry_expired_file_upload_session(
+                    conn,
+                    upload_session_id=str(session["id"]),
+                )
+        else:
+            async with transaction() as conn:
+                await repositories.delete_expired_file_upload_session(
+                    conn,
+                    upload_session_id=str(session["id"]),
+                )
+    return len(expired_sessions)
+
+
 async def run_worker_maintenance(
     settings: object | None = None,
     *,
@@ -638,6 +667,7 @@ async def run_worker_maintenance(
             settings,
             v4_capabilities=v4_capabilities,
         ),
+        "file_upload_session_cleanup": cleanup_expired_file_upload_sessions,
         "queue_reclaim": lambda: queue.reclaim_expired_leases(
             visibility_timeout_seconds=int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900))
         ),
