@@ -14,6 +14,7 @@ from fastapi import HTTPException
 from app import repositories
 from app.agent_apps.api import (
     AGENT_PROFILE_AVATAR_REFS,
+    AgentProfilePublicProjection,
     safe_agent_avatar_ref,
     safe_agent_avatar_seed,
 )
@@ -31,9 +32,6 @@ from app.models import (
     SelectedAgentProfileRequest,
     SelectedSkillRequest,
 )
-
-AgentProfilePublicProjection = dict[str, Any]
-
 
 _CATEGORIES = {"general", "support", "writing", "research", "operations"}
 _VISIBILITIES = {"tenant", "restricted"}
@@ -220,7 +218,7 @@ def profile_public_projection(
     row: dict[str, Any],
     *,
     is_favorite: bool | None = None,
-) -> dict[str, Any]:
+) -> AgentProfilePublicProjection:
     """Return the only Agent Profile card/detail fields available to ordinary users."""
 
     projection = {
