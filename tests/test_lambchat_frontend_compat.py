@@ -594,7 +594,7 @@ def test_upload_config_exposes_canonical_byte_contract_with_legacy_aliases():
     response = client.get("/api/upload/config")
 
     assert response.status_code == 200
-    assert MAX_UPLOAD_BYTES == 50 * 1024 * 1024
+    assert MAX_UPLOAD_BYTES == 512 * 1024 * 1024
     payload = response.json()
     expected_limits_bytes = {
         "image": MAX_UPLOAD_BYTES,
@@ -603,9 +603,9 @@ def test_upload_config_exposes_canonical_byte_contract_with_legacy_aliases():
         "document": MAX_UPLOAD_BYTES,
     }
     assert payload["uploadLimitsBytes"] == expected_limits_bytes
-    assert payload["maxFiles"] == 10
+    assert payload["maxFiles"] == 32
     assert payload["max_file_size_bytes"] == MAX_UPLOAD_BYTES
-    assert payload["uploadLimits"] == {**expected_limits_bytes, "maxFiles": 10}
+    assert payload["uploadLimits"] == {**expected_limits_bytes, "maxFiles": 32}
     assert payload["max_file_size"] == MAX_UPLOAD_BYTES
 
 

@@ -1255,7 +1255,7 @@ async def upload_config() -> dict[str, object]:
         "audio": MAX_UPLOAD_BYTES,
         "document": MAX_UPLOAD_BYTES,
     }
-    max_files = 10
+    max_files = 32
     return {
         "enabled": True,
         "provider": "ai-platform",

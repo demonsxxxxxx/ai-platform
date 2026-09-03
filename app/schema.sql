@@ -2839,6 +2839,30 @@ create index if not exists idx_sandbox_leases_attempt
 -- alter table sandbox_leases drop column if exists runtime_container_name;
 -- alter table sandbox_leases drop column if exists runtime_container_id;
 
+create table if not exists file_upload_sessions (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  workspace_id text not null references workspaces(id),
+  user_id text not null references users(id),
+  session_id text,
+  file_id text not null unique,
+  original_name text not null,
+  content_type text not null,
+  expected_size_bytes bigint not null check (expected_size_bytes > 0),
+  part_size_bytes bigint not null check (part_size_bytes > 0),
+  part_count integer not null check (part_count > 0),
+  storage_key text not null unique,
+  upload_id text not null unique,
+  state text not null default 'pending',
+  expires_at timestamptz not null,
+  completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  check (state in ('pending', 'completing', 'completed', 'aborted', 'expired'))
+);
+
+create index if not exists idx_file_upload_sessions_scope
+  on file_upload_sessions(tenant_id, workspace_id, user_id, state, expires_at);
+
 create table if not exists files (
   id text primary key,
   tenant_id text not null references tenants(id),

@@ -1665,6 +1665,14 @@ async def test_upload_file_response_does_not_expose_storage_key(monkeypatch):
     async def fake_create_file(conn, **kwargs):
         assert kwargs["storage_key"].startswith("tenants/tenant-a/")
 
+    async def fake_get_file_storage_usage(conn, **kwargs):
+        assert kwargs == {
+            "tenant_id": "tenant-a",
+            "workspace_id": "default",
+            "user_id": "user-a",
+        }
+        return {"stored_bytes": 0, "reserved_bytes": 0, "active_uploads": 0}
+
     class FakeUpload:
         filename = "demo.txt"
         content_type = "text/plain"
@@ -1688,6 +1696,7 @@ async def test_upload_file_response_does_not_expose_storage_key(monkeypatch):
     monkeypatch.setattr("app.routes.files.ensure_workspace", fake_ensure_workspace)
     monkeypatch.setattr("app.routes.files.ensure_user", fake_ensure_user)
     monkeypatch.setattr("app.routes.files.create_file", fake_create_file)
+    monkeypatch.setattr("app.routes.files.get_file_storage_usage", fake_get_file_storage_usage)
     monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
     monkeypatch.setattr("app.routes.files.new_id", lambda prefix: "file_uploaded")
 

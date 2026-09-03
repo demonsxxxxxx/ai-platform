@@ -19,7 +19,7 @@ PUBLIC_TERMINAL_DETAIL_MESSAGES = {
     "tool_invocation_evidence_mismatch": "工具调用证据未完整确认（tool_invocation_evidence_mismatch）。请重试；如问题持续，请联系管理员。",
     "required_capability_unavailable": "任务所需执行能力当前不可用。请调整请求或联系管理员。",
     "skill_sandbox_admission_failed": "所选 Skill 未能通过隔离沙箱准入。请调整 Skill 或联系管理员。",
-    "context_file_too_large": "文件超过 32 MB 处理上限。请选择更小的文件后重试。",
+    "context_file_too_large": "文件超过 128 MB，或文件总量超过 256 MB。请选择更小的文件或减少文件数量后重试。",
     "context_file_pdf_password_required": "PDF 文件需要密码。请先解除密码保护后重新上传。",
     "context_file_password_required": "文件受密码保护。请先解除密码保护后重新上传。",
     "context_file_unsafe_content": "文件包含不允许的活动内容、宏或外部引用。请导出安全副本后重试。",
