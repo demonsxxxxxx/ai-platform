@@ -845,7 +845,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
 
 
 @pytest.mark.asyncio
-async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(monkeypatch):
+async def test_runner_stops_ordinary_stream_at_cumulative_publication_bound(monkeypatch):
     import claude_agent_sdk as sdk
 
     monkeypatch.setattr(
@@ -867,7 +867,7 @@ async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(
     )
     published: list[str] = []
     candidates = []
-    answer = "a" * 262_145
+    answer = "a " * 131_073
 
     async def query_fn(*, prompt, options):
         del prompt, options
@@ -880,14 +880,17 @@ async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(
                 "content_block": {"type": "text"},
             },
         )
-        for index in range(65):
+        for index, offset in enumerate(range(0, len(answer), 4_096)):
             yield sdk.StreamEvent(
                 uuid=f"stream-delta-{index}",
                 session_id="sdk-session",
                 event={
                     "type": "content_block_delta",
                     "index": 0,
-                    "delta": {"type": "text_delta", "text": "a" * 4_096},
+                    "delta": {
+                        "type": "text_delta",
+                        "text": answer[offset : offset + 4_096],
+                    },
                 },
             )
         yield sdk.StreamEvent(
@@ -923,10 +926,15 @@ async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(
     )
 
     assert result.error == "claude_agent_sdk_public_projection_failed"
-    assert result.turn_diagnostics["projection_failure_reason"] == "sanitizer_bound_exceeded"
+    assert result.turn_diagnostics["projection_failure_reason"] == "answer_too_large"
     assert result.message == ""
-    assert published == []
-    assert candidates == []
+    assert published
+    assert answer.startswith("".join(published))
+    assert len("".join(published).encode("utf-8")) == 262_144
+    assert [candidate.event_type for candidate in candidates] == [
+        "message.started",
+        *["message.delta"] * 64,
+    ]
 
 
 @pytest.mark.asyncio

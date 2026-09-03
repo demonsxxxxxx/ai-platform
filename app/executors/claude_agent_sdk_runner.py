@@ -1226,9 +1226,7 @@ async def run_claude_agent_sdk(
         required_skill_identity=(
             selected_sdk_skill if require_selected_skill_invocation else None
         ),
-        available_skill_identities=(
-            allowed_skill_names if not require_selected_skill_invocation else ()
-        ),
+        available_skill_identities=allowed_skill_names,
         registered_mcp_servers=mcp_servers,
     )
     required_capability_declarations = {
@@ -1273,24 +1271,26 @@ async def run_claude_agent_sdk(
     sandbox_bash_lifecycle_governed = "Bash" in strict_tool_lifecycle_names
     governed_builtin_invocation_states: dict[tuple[str, str], str] = {}
     governed_builtin_lifecycle_rejected = False
+    read_only_lifecycle_rejected = False
     actual_sandbox_bash_invocation_observed = False
-    private_mcp_replacements = {
-        identity: "external tool"
+    private_capability_tokens = {
+        identity
         for kind, identity in capability_plan.available
-        if kind == "mcp"
+        if kind in {"skill", "mcp"}
     }
-    private_mcp_replacements.update(
-        {
-            str(config["url"]): "external tool endpoint"
-            for server_id, config in mcp_servers.items()
-            if server_id != "ai-platform-context"
-            and isinstance(config, dict)
-            and isinstance(config.get("url"), str)
-            and config["url"]
-        }
+    private_capability_tokens.update(
+        str(config["url"])
+        for server_id, config in mcp_servers.items()
+        if server_id != "ai-platform-context"
+        and isinstance(config, dict)
+        and isinstance(config.get("url"), str)
+        and config["url"]
     )
+    private_replacement = "\ufffd"
     answer_stream_gate = PublicAnswerStreamGate(
-        private_replacements=private_mcp_replacements,
+        private_replacements={
+            token: private_replacement for token in private_capability_tokens
+        },
         sanitizer=sanitize_public_text,
         max_sealed_chars=_MAX_REQUIRED_ANSWER_TEXT_CHARS,
     )
@@ -1299,7 +1299,7 @@ async def run_claude_agent_sdk(
         call_id = canonical_tool_call_id(value)
         if call_id is not None:
             answer_stream_gate.register_private_replacements(
-                {call_id: "tool invocation"}
+                {call_id: private_replacement}
             )
 
     sdk_prompt = (
@@ -1408,9 +1408,9 @@ async def run_claude_agent_sdk(
             answer_stream_gate.fail_closed()
             return reject_capability_evidence()
         if lifecycle_phase == "invocation_requested":
-            private_replacements = {tool_call_id: "tool invocation"}
-            if capability_kind == "mcp":
-                private_replacements[canonical_identity] = "external tool"
+            private_replacements = {tool_call_id: private_replacement}
+            if capability_kind in {"mcp", "skill"}:
+                private_replacements[canonical_identity] = private_replacement
             answer_stream_gate.seal(
                 private_replacements,
                 capability_boundary=True,
@@ -1475,6 +1475,9 @@ async def run_claude_agent_sdk(
         return False
 
     def record_read_only_lifecycle_denial() -> None:
+        nonlocal read_only_lifecycle_rejected
+
+        read_only_lifecycle_rejected = True
         diagnostic_counters["tool_lifecycle_denials"] += 1
 
     async def record_tool_lifecycle(
@@ -1528,7 +1531,7 @@ async def run_claude_agent_sdk(
             return False
         if lifecycle_observed and lifecycle == "started":
             answer_stream_gate.seal(
-                {call_id: "tool invocation"},
+                {call_id: private_replacement},
                 capability_boundary=True,
                 invocation_key=gate_key,
             )
@@ -2362,6 +2365,11 @@ async def run_claude_agent_sdk(
         )
         if terminal_error is None and agent_event_callback_failed:
             terminal_error = "agent_event_callback_not_acknowledged"
+        if terminal_error is None and (
+            read_only_lifecycle_rejected
+            or "started" in observed_read_only_invocation_states.values()
+        ):
+            terminal_error = _SDK_TOOL_ADMISSION_FAILED
         if terminal_error is None and capability_evidence_rejected:
             terminal_error = "required_tool_completion_evidence_mismatch"
         if terminal_error is None:

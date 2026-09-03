@@ -117,14 +117,19 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             "Write",
             {"file_path": "outputs/delivery/report.txt", "content": "safe"},
         )
-        hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
-        await hook(
-            {
-                "hook_event_name": "PostToolUse",
-                "tool_name": "Skill",
-                "tool_input": {"skill": "qa-file-reviewer"},
-                "tool_use_id": "tool-1",
-            },
+        skill_input = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Skill",
+            "tool_input": {"skill": "qa-file-reviewer"},
+            "tool_use_id": "tool-1",
+        }
+        await options.kwargs["hooks"]["PreToolUse"][0].hooks[0](
+            skill_input,
+            "tool-1",
+            {},
+        )
+        await options.kwargs["hooks"]["PostToolUse"][0].hooks[0](
+            {**skill_input, "hook_event_name": "PostToolUse"},
             "tool-1",
             {},
         )
@@ -204,6 +209,9 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         lifecycle_facts.append((fact["invocation_id"], fact["lifecycle"]))
         return True
 
+    async def acknowledge_capability_evidence(_evidence):
+        return True
+
     result = await run_claude_agent_sdk(
         prompt="hello",
         cwd=tmp_path,
@@ -211,7 +219,9 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         skills=["qa-file-reviewer"],
         tool_policy_subjects=subjects,
         execution_policy="sandbox_brokered",
+        require_selected_skill_invocation=False,
         on_tool_lifecycle=acknowledge_tool_lifecycle,
+        on_capability_evidence=acknowledge_capability_evidence,
     )
 
     assert result.error is None
@@ -5227,14 +5237,19 @@ async def test_sdk_runner_preserves_skill_use_when_query_raises_after_hook(monke
             captured.update(kwargs)
 
     async def query(prompt, options):
-        hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
-        await hook(
-            {
-                "hook_event_name": "PostToolUse",
-                "tool_name": "Skill",
-                "tool_input": {"skill": "qa-file-reviewer"},
-                "tool_use_id": "tool-1",
-            },
+        skill_input = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Skill",
+            "tool_input": {"skill": "qa-file-reviewer"},
+            "tool_use_id": "tool-1",
+        }
+        await options.kwargs["hooks"]["PreToolUse"][0].hooks[0](
+            skill_input,
+            "tool-1",
+            {},
+        )
+        await options.kwargs["hooks"]["PostToolUse"][0].hooks[0](
+            {**skill_input, "hook_event_name": "PostToolUse"},
             "tool-1",
             {},
         )
@@ -5267,11 +5282,16 @@ async def test_sdk_runner_preserves_skill_use_when_query_raises_after_hook(monke
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
 
+    async def acknowledge_capability_evidence(_evidence):
+        return True
+
     result = await run_claude_agent_sdk(
         prompt="hello",
         cwd=tmp_path,
         skill_id="general-chat",
         skills=["qa-file-reviewer"],
+        require_selected_skill_invocation=False,
+        on_capability_evidence=acknowledge_capability_evidence,
     )
 
     assert result.used_sdk is True
@@ -5311,14 +5331,19 @@ async def test_sdk_runner_preserves_skill_use_when_timeout_fires_after_hook(monk
             self.kwargs = kwargs
 
     async def query(prompt, options):
-        hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
-        await hook(
-            {
-                "hook_event_name": "PostToolUse",
-                "tool_name": "Skill",
-                "tool_input": {"skill": "qa-file-reviewer"},
-                "tool_use_id": "tool-1",
-            },
+        skill_input = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Skill",
+            "tool_input": {"skill": "qa-file-reviewer"},
+            "tool_use_id": "tool-1",
+        }
+        await options.kwargs["hooks"]["PreToolUse"][0].hooks[0](
+            skill_input,
+            "tool-1",
+            {},
+        )
+        await options.kwargs["hooks"]["PostToolUse"][0].hooks[0](
+            {**skill_input, "hook_event_name": "PostToolUse"},
             "tool-1",
             {},
         )
@@ -5351,11 +5376,16 @@ async def test_sdk_runner_preserves_skill_use_when_timeout_fires_after_hook(monk
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
 
+    async def acknowledge_capability_evidence(_evidence):
+        return True
+
     result = await run_claude_agent_sdk(
         prompt="hello",
         cwd=tmp_path,
         skill_id="general-chat",
         skills=["qa-file-reviewer"],
+        require_selected_skill_invocation=False,
+        on_capability_evidence=acknowledge_capability_evidence,
     )
 
     assert result.used_sdk is True
@@ -5399,7 +5429,7 @@ async def test_sdk_runner_propagates_cancelled_error_from_stream_callback(monkey
         session_id = "sdk-session"
         usage = {}
         model_usage = {}
-        result = "done"
+        result = "partial"
         is_error = False
         errors = []
         stop_reason = None
