@@ -25,6 +25,7 @@ from app.streaming.infrastructure.redis_v4_rebuild import RedisV4SuccessorRebuil
 from tests.test_streaming_v4_durable import (
     _successor_claim_with_terminal,
     _successor_end_bytes,
+    _terminal_payload,
 )
 
 from app.streaming.contracts import STREAM_DESIGN_ID, canonical_json_bytes
@@ -815,6 +816,83 @@ async def test_real_pending_terminal_end_partial_retry_keeps_row_pending() -> No
                 "stream_publication_state": "published",
                 "stream_publication_redis_id": rows[-1][0],
             }
+        finally:
+            await client.delete(key, f"{key}:state")
+            await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_expired_terminal_stream_is_suppressed_without_attempt_row() -> None:
+    async with _pg_schema() as (dsn, schema_name, (tenant, run, attempt)):
+        terminal_id = "evt4_expired_terminal"
+        async with _pg_connection_factory(dsn, schema_name) as conn:
+            await conn.execute("update runs set status = 'failed' where id = %s", (run,))
+            await conn.execute(
+                "update sse_stream_authorities set state = 'terminal' where tenant_id = %s and run_id = %s",
+                (tenant, run),
+            )
+            await _pg_insert_v4_row(
+                conn,
+                tenant=tenant,
+                run=run,
+                attempt=attempt,
+                sequence=1,
+                event_id=terminal_id,
+                event_type="run.failed",
+                payload=_terminal_payload(terminal_id, "run.failed"),
+            )
+            await conn.execute(
+                "delete from run_attempts where tenant_id = %s and run_id = %s",
+                (tenant, run),
+            )
+            await conn.execute(
+                """
+                update sandbox_leases
+                set status = 'released',
+                    released_at = clock_timestamp(),
+                    release_reason = 'terminal_reconciled',
+                    executor_reconciliation_status = 'finalized',
+                    executor_reconciled_at = clock_timestamp()
+                where tenant_id = %s and run_id = %s and attempt_id = %s
+                """,
+                (tenant, run, attempt),
+            )
+        client, key, _ = await _pg_redis_stream(tenant, run)
+        await client.delete(key, f"{key}:state")
+        bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+        try:
+            assert await _pg_publish_claimed(
+                dsn,
+                schema_name,
+                tenant=tenant,
+                run=run,
+                attempt=attempt,
+                limit=1,
+                bridge=bridge,
+            ) == 0
+            async with _pg_connection_factory(dsn, schema_name) as conn:
+                result = await conn.execute(
+                    """
+                    select stream_publication_state, stream_publication_attempts,
+                           stream_publication_redis_id, stream_publication_next_attempt_at,
+                           stream_publication_last_error,
+                           payload_json #>> '{__stream_v4,publication_state}' as payload_state,
+                           payload_json #>> '{__stream_v4,suppression_reason}' as suppression_reason
+                    from run_events where id = %s
+                    """,
+                    (terminal_id,),
+                )
+                disposition = await result.fetchone()
+            assert disposition == {
+                "stream_publication_state": "suppressed",
+                "stream_publication_attempts": 1,
+                "stream_publication_redis_id": None,
+                "stream_publication_next_attempt_at": None,
+                "stream_publication_last_error": "terminal_stream_expired",
+                "payload_state": "suppressed",
+                "suppression_reason": "terminal_stream_expired",
+            }
+            assert await client.exists(key, f"{key}:state") == 0
         finally:
             await client.delete(key, f"{key}:state")
             await client.aclose()
