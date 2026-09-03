@@ -605,6 +605,10 @@ async def test_list_published_agent_profiles_searches_safe_public_use_fields():
     assert "jsonb_array_elements_text" in conn.sql
     assert "jsonb_typeof(agent_profile_revisions.recommended_tasks) = 'array'" in conn.sql
     assert "normalize(recommended_task.value, NFKC) ilike %s" in conn.sql
+    assert "select count(*)" in conn.sql
+    assert "runs.tenant_id = agent_profile_revisions.tenant_id" in conn.sql
+    assert "runs.agent_id = agent_profile_revisions.agent_id" in conn.sql
+    assert "runs.status = 'succeeded'" in conn.sql
     assert conn.sql.count("escape E'\\\\'") == 4
     assert conn.params == (
         "company-default",

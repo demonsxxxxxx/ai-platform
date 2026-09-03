@@ -685,6 +685,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       avatar_ref: "builtin:document",
       category: "operations",
       market_tag: "财务",
+      completed_tasks: 7,
       model_id: "private-model",
       mcp_tool_ids: ["private-mcp"],
       selected_skill: {
@@ -788,10 +789,13 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     assert.ok(categoryGroup);
     assert.equal(categoryGroup.getAttribute("role"), "group");
     assert.equal(categoryGroup.getAttribute("aria-label"), "市场标签");
-    const tabs = container.querySelectorAll('[role="tab"]');
-    assert.equal(tabs.length, 2);
+    const favoriteControl = container.querySelector("[data-agent-market-favorites]");
+    assert.ok(favoriteControl);
+    assert.equal(favoriteControl.getAttribute("aria-pressed"), "false");
+    assert.ok(container.querySelector("[data-agent-market-view]"));
+    assert.ok(container.querySelector("[data-agent-market-sort]"));
     assert.equal(
-      categoryGroup.querySelectorAll("button").find((button) => button.textContent === "财务")?.getAttribute(
+      categoryGroup.querySelectorAll("button").find((button) => button.textContent?.includes("财务"))?.getAttribute(
         "aria-pressed",
       ),
       "true",
@@ -803,6 +807,26 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       "false",
     );
     assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
+    const listView = container.querySelector('[aria-label="列表视图"]');
+    assert.ok(listView);
+    await React.act(async () => {
+      listView.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    assert.equal(listView.getAttribute("aria-pressed"), "true");
+    const marketCardClassName = container.querySelector("[data-agent-market-card]")?.getAttribute("class") ?? "";
+    assert.match(marketCardClassName, /flex-col/);
+    assert.match(marketCardClassName, /sm:flex-row/);
+    const taskSort = container
+      .querySelector('[data-agent-market-sort]')
+      ?.querySelectorAll("button")
+      .find((button) => button.textContent === "完成任务最多");
+    assert.ok(taskSort);
+    await React.act(async () => {
+      taskSort.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    assert.equal(taskSort.getAttribute("aria-pressed"), "true");
     assert.equal(catalogRequest, undefined);
 
     const favoritesTab = container
@@ -818,9 +842,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 0);
     assert.match(container.textContent, /尚未收藏专家/);
 
-    const tagsTab = container
-      .querySelectorAll("button")
-      .find((button) => button.textContent === "标签");
+    const tagsTab = container.querySelector("[data-agent-market-favorites]");
     assert.ok(tagsTab);
     await React.act(async () => {
       tagsTab.dispatchEvent({ type: "click", bubbles: true });
@@ -841,6 +863,8 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
     assert.match(container.textContent, /财务助手/);
     assert.match(container.textContent, /财务/);
+    assert.match(container.textContent, /已完成任务/);
+    assert.match(container.textContent, /7/);
     assert.doesNotMatch(container.textContent, /支持助手/);
 
     const primaryAction = container

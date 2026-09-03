@@ -143,6 +143,10 @@ def _market_tag(definition: AgentProfileDraftRequest) -> str:
     return _safe_market_tag(getattr(definition, "market_tag", ""))
 
 
+def _safe_completed_tasks(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
 def _safe_visibility(value: Any) -> str:
     candidate = str(value or "").strip()
     return candidate if candidate in _VISIBILITIES else "restricted"
@@ -241,6 +245,8 @@ def profile_public_projection(
         "market_tag": _safe_market_tag(row.get("market_tag")),
         "published_at": row.get("published_at"),
     }
+    if "completed_tasks" in row:
+        projection["completed_tasks"] = _safe_completed_tasks(row.get("completed_tasks"))
     if is_favorite is not None:
         projection["is_favorite"] = is_favorite
     return projection

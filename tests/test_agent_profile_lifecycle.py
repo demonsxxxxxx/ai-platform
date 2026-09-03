@@ -102,6 +102,8 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "category": "support",
         "market_tag": "",
     }
+    assert profile_public_projection({**row, "completed_tasks": 12})["completed_tasks"] == 12
+    assert "completed_tasks" not in profile_public_projection(row)
 
 
 @pytest.mark.asyncio

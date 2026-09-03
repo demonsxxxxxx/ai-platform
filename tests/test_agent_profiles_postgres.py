@@ -80,6 +80,13 @@ create table agents (
   constraint uq_agents_tenant_id unique (tenant_id, id)
 );
 
+create table runs (
+  id text primary key,
+  tenant_id text not null,
+  agent_id text not null,
+  status text not null
+);
+
 create table agent_profile_revisions (
   tenant_id text not null references tenants(id),
   agent_id text not null,

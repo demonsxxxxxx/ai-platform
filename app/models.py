@@ -416,6 +416,7 @@ class AgentProfilePublicProjection(BaseModel):
     avatar_ref: AgentProfileAvatarRef = "builtin:agent"
     avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    completed_tasks: int = Field(default=0, ge=0)
     published_at: Any | None = None
 
     _validate_supported_input_types = field_validator("supported_input_types")(
