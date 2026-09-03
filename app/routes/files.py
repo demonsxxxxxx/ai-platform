@@ -10,8 +10,23 @@ import zipfile
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
 
+from app.attachments.api import (
+    MAX_UPLOAD_BYTES,
+    MultipartUploadCompleteRequest,
+    MultipartUploadCreateRequest,
+)
+from app.attachments.infrastructure.postgres import (
+    abort_file_upload_session,
+    claim_file_upload_session,
+    complete_file_upload_session,
+    create_file_upload_session,
+    delete_expired_file_upload_session,
+    expire_file_upload_sessions,
+    get_authorized_file_upload_session,
+    get_file_storage_usage,
+    retry_expired_file_upload_session,
+)
 from app.artifact_preview import artifact_preview_allowed
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.control_plane_contracts import standard_trace_id
@@ -34,21 +49,12 @@ from app.repositories import (
     FileDeletionBlockedError,
     ObjectDeletionStateError,
     RepositoryNotFoundError,
-    abort_file_upload_session,
     append_audit_log,
-    claim_file_upload_session,
-    complete_file_upload_session,
     create_file,
-    create_file_upload_session,
     ensure_user,
-    expire_file_upload_sessions,
-    delete_expired_file_upload_session,
-    retry_expired_file_upload_session,
     ensure_workspace,
     get_admin_artifact,
     get_authorized_artifact,
-    get_authorized_file_upload_session,
-    get_file_storage_usage,
     get_authorized_run,
     get_authorized_session,
     get_scoped_context_file,
@@ -61,7 +67,6 @@ from app.settings import get_settings
 from app.validation import assert_safe_id
 
 router = APIRouter()
-MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 MAX_DIRECT_UPLOAD_BYTES = 32 * 1024 * 1024
 MULTIPART_THRESHOLD_BYTES = 32 * 1024 * 1024
 MULTIPART_PART_BYTES = 8 * 1024 * 1024
@@ -136,23 +141,6 @@ class UploadFileResponse:
     name: str
     sha256: str
     size_bytes: int
-
-
-class MultipartUploadCreateRequest(BaseModel):
-    workspace_id: str = "default"
-    session_id: str | None = None
-    name: str = Field(min_length=1, max_length=255)
-    content_type: str = "application/octet-stream"
-    size_bytes: int = Field(gt=0, le=MAX_UPLOAD_BYTES)
-
-
-class MultipartUploadPart(BaseModel):
-    part_number: int = Field(ge=1, le=10_000)
-    etag: str = Field(min_length=1, max_length=512)
-
-
-class MultipartUploadCompleteRequest(BaseModel):
-    parts: list[MultipartUploadPart] = Field(min_length=1, max_length=10_000)
 
 
 def _effective_permission_set(principal: AuthPrincipal) -> set[str]:
