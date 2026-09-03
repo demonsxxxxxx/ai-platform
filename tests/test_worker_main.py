@@ -513,10 +513,10 @@ def default_sandbox_cleanup(monkeypatch):
     async def require_schema_current():
         return {"ready": True}
 
-    async def progress_pending_tool_permission_terminalizations_for_worker(settings=None):
+    async def progress_pending_tool_permission_terminalizations_for_worker(settings=None, **_kwargs):
         return []
 
-    async def reconcile_stale_runs_for_worker(settings=None):
+    async def reconcile_stale_runs_for_worker(settings=None, **_kwargs):
         return []
 
     async def renew_run_reconciliation_fence(_fence, *, ttl_seconds):

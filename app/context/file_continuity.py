@@ -382,10 +382,23 @@ async def materialize_run_context_files(
             temporary_path: Path | None = None
             try:
                 if hasattr(storage, "download_to_tempfile"):
-                    downloaded = storage.download_to_tempfile(
-                        storage_key=storage_key,
-                        max_bytes=size_bytes,
-                    )
+                    try:
+                        downloaded = storage.download_to_tempfile(
+                            storage_key=storage_key,
+                            max_bytes=size_bytes,
+                        )
+                    except ObjectStorageSizeLimitError as exc:
+                        raise ContextFileContentError(
+                            "context_file_identity_mismatch",
+                            file_kind=file_kind,
+                            attachment_index=attachment_index,
+                        ) from exc
+                    except Exception as exc:
+                        raise ContextFileContentError(
+                            "context_file_storage_unavailable",
+                            file_kind=file_kind,
+                            attachment_index=attachment_index,
+                        ) from exc
                     temporary_path = Path(downloaded.path)
                     if downloaded.size_bytes != size_bytes or (
                         row.get("sha256")
@@ -400,29 +413,30 @@ async def materialize_run_context_files(
                     if filename.casefold().endswith(".xlsx") or str(row.get("content_type") or "").split(";", 1)[0].casefold() == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
                         validate_context_file_for_stage(row, target.read_bytes())
                 else:
-                    content = storage.get_bytes_bounded(
-                        storage_key=storage_key,
-                        max_bytes=size_bytes,
-                    )
+                    try:
+                        content = storage.get_bytes_bounded(
+                            storage_key=storage_key,
+                            max_bytes=size_bytes,
+                        )
+                    except ObjectStorageSizeLimitError as exc:
+                        raise ContextFileContentError(
+                            "context_file_identity_mismatch",
+                            file_kind=file_kind,
+                            attachment_index=attachment_index,
+                        ) from exc
+                    except Exception as exc:
+                        raise ContextFileContentError(
+                            "context_file_storage_unavailable",
+                            file_kind=file_kind,
+                            attachment_index=attachment_index,
+                        ) from exc
                     validate_context_file_for_stage(row, content)
                     target.write_bytes(content)
-            except ObjectStorageSizeLimitError as exc:
-                raise ContextFileContentError(
-                    "context_file_identity_mismatch",
-                    file_kind=file_kind,
-                    attachment_index=attachment_index,
-                ) from exc
             except ContextFileContentError as exc:
                 raise exc.bind_attachment(
                     attachment_index=attachment_index,
                     file_kind=file_kind,
                 )
-            except Exception as exc:
-                raise ContextFileContentError(
-                    "context_file_storage_unavailable",
-                    file_kind=file_kind,
-                    attachment_index=attachment_index,
-                ) from exc
             finally:
                 if temporary_path is not None:
                     temporary_path.unlink(missing_ok=True)

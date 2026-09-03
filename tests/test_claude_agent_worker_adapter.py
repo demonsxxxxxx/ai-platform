@@ -1082,7 +1082,7 @@ async def test_materialize_files_rejects_symlinked_inputs_directory(monkeypatch,
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
-    with pytest.raises(ValueError, match="inputs directory"):
+    with pytest.raises(ContextFileContentError, match="context_file_staging_write_failed"):
         await adapter._materialize_files(payload(file_ids=["file_1"]), workspace)
 
 
@@ -1115,7 +1115,7 @@ async def test_materialize_files_rejects_existing_symlinked_target(monkeypatch, 
     monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_scoped_context_file", fake_get_scoped_context_file)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
-    with pytest.raises(ValueError, match="inputs directory"):
+    with pytest.raises(ContextFileContentError, match="context_file_staging_write_failed"):
         await adapter._materialize_files(payload(file_ids=["file_1"]), workspace)
 
 
