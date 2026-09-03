@@ -28,7 +28,8 @@ RUN_ATTEMPT_HEARTBEAT_CLOCK_SAFETY_SCHEMA_VERSION = "2026.08.30.3"
 EXPERT_MARKET_SCHEMA_VERSION = "2026.09.01.1"
 AGENT_AVATAR_STYLE_SCHEMA_VERSION = "2026.09.01.2"
 USER_PROFILE_METADATA_SCHEMA_VERSION = "2026.09.02.1"
-TARGET_SCHEMA_VERSION = USER_PROFILE_METADATA_SCHEMA_VERSION
+FILE_UPLOAD_SESSION_SCHEMA_VERSION = "2026.09.03.1"
+TARGET_SCHEMA_VERSION = FILE_UPLOAD_SESSION_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # Keeping this ledger stable preserves readiness for the saved rollback binary.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION
@@ -50,6 +51,7 @@ CRITICAL_RELATIONS = (
     "sse_stream_rebuild_items",
     "messages",
     "files",
+    "file_upload_sessions",
     "artifacts",
     "object_deletion_outbox",
     "audit_logs",

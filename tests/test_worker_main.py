@@ -513,10 +513,10 @@ def default_sandbox_cleanup(monkeypatch):
     async def require_schema_current():
         return {"ready": True}
 
-    async def progress_pending_tool_permission_terminalizations_for_worker(settings=None):
+    async def progress_pending_tool_permission_terminalizations_for_worker(settings=None, **_kwargs):
         return []
 
-    async def reconcile_stale_runs_for_worker(settings=None):
+    async def reconcile_stale_runs_for_worker(settings=None, **_kwargs):
         return []
 
     async def renew_run_reconciliation_fence(_fence, *, ttl_seconds):
@@ -1867,7 +1867,11 @@ async def test_run_once_keeps_queue_maintenance_running_during_long_processing(m
         calls.append(("heartbeat", message_id, worker_id))
         return QueueHeartbeatOutcome("heartbeat", heartbeat_at=100.0)
 
+    async def cleanup_file_upload_sessions():
+        return 0
+
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.worker_main.cleanup_expired_file_upload_sessions", cleanup_file_upload_sessions)
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
     monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)

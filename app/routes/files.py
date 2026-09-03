@@ -1,15 +1,30 @@
 import codecs
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import io
 import re
 import unicodedata
-from pathlib import PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import quote
 import zipfile
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 
+from app.files.api import (
+    MAX_UPLOAD_BYTES,
+    abort_file_upload_session,
+    claim_file_upload_session,
+    complete_file_upload_session,
+    create_file_upload_session,
+    delete_expired_file_upload_session,
+    expire_file_upload_sessions,
+    get_authorized_file_upload_session,
+    get_file_storage_usage,
+    parse_multipart_upload_complete_request,
+    parse_multipart_upload_create_request,
+    retry_expired_file_upload_session,
+)
 from app.artifact_preview import artifact_preview_allowed
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.control_plane_contracts import standard_trace_id
@@ -46,10 +61,13 @@ from app.repositories import (
     queue_unbound_file_for_deletion,
 )
 from app.storage import ObjectStorage, ObjectStorageSizeLimitError
+from app.settings import get_settings
 from app.validation import assert_safe_id
 
 router = APIRouter()
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_DIRECT_UPLOAD_BYTES = 32 * 1024 * 1024
+MULTIPART_THRESHOLD_BYTES = 32 * 1024 * 1024
+MULTIPART_PART_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_FILENAME_UTF8_BYTES = 255
 WINDOWS_INVALID_FILENAME_CHARS = frozenset('<>:"/\\|?*')
 WINDOWS_RESERVED_FILE_BASENAMES = frozenset(
@@ -324,9 +342,20 @@ async def _authorized_input_file(
     return dict(file_row)
 
 
+async def _read_bounded_request_body(request: Request, max_bytes: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(status_code=413, detail="multipart_part_too_large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 async def _read_bounded_upload(file: UploadFile) -> bytes:
-    content = await file.read(MAX_UPLOAD_BYTES + 1)
-    if len(content) > MAX_UPLOAD_BYTES:
+    content = await file.read(MAX_DIRECT_UPLOAD_BYTES + 1)
+    if len(content) > MAX_DIRECT_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="file_too_large")
     return content
 
@@ -361,9 +390,9 @@ def _reject_unsupported_upload() -> None:
     raise HTTPException(status_code=415, detail="unsupported_file_type")
 
 
-def _validate_zip_payload(content: bytes) -> None:
+def _validate_zip_payload(content: bytes | Path) -> None:
     try:
-        archive = zipfile.ZipFile(io.BytesIO(content))
+        archive = zipfile.ZipFile(io.BytesIO(content) if isinstance(content, bytes) else content)
     except (zipfile.BadZipFile, ValueError):
         _reject_unsupported_upload()
     total_uncompressed = 0
@@ -408,6 +437,26 @@ def _validate_upload_content(*, filename: str, declared_content_type: str, conte
         or content.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"))
     ):
         _validate_zip_payload(content)
+
+
+def _validate_upload_file(*, filename: str, declared_content_type: str, path: Path) -> None:
+    with path.open("rb") as stream:
+        sample = stream.read(ACTIVE_SNIFF_BYTES)
+    suffix = PurePosixPath(filename).suffix.lower()
+    normalized_content_type = _normalized_content_type(declared_content_type)
+    if (
+        suffix in ACTIVE_CONTENT_EXTENSIONS
+        or normalized_content_type in ACTIVE_CONTENT_MIME_TYPES
+        or normalized_content_type.endswith("+xml")
+        or _looks_like_active_content(sample)
+    ):
+        _reject_unsupported_upload()
+    if (
+        suffix in ZIP_CLASS_EXTENSIONS
+        or normalized_content_type in ZIP_CLASS_MIME_TYPES
+        or sample.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"))
+    ):
+        _validate_zip_payload(path)
 
 
 @router.post("/files", response_model=UploadFileResponse)
@@ -459,26 +508,360 @@ async def upload_file(
         content=content,
         content_type=content_type,
     )
-    async with transaction() as conn:
-        await create_file(
-            conn,
-            file_id=file_id,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            user_id=principal.user_id,
-            session_id=session_id,
-            original_name=display_name,
-            content_type=content_type,
-            size_bytes=stored.size_bytes,
-            storage_key=stored.storage_key,
-            sha256=stored.sha256,
-        )
+    try:
+        async with transaction() as conn:
+            usage = await get_file_storage_usage(
+                conn,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=principal.user_id,
+            )
+            if (
+                usage["stored_bytes"]
+                + usage["reserved_bytes"]
+                + stored.size_bytes
+                > get_settings().file_storage_quota_bytes
+            ):
+                raise HTTPException(status_code=413, detail="file_storage_quota_exceeded")
+            await create_file(
+                conn,
+                file_id=file_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=principal.user_id,
+                session_id=session_id,
+                original_name=display_name,
+                content_type=content_type,
+                size_bytes=stored.size_bytes,
+                storage_key=stored.storage_key,
+                sha256=stored.sha256,
+            )
+    except BaseException:
+        ObjectStorage().delete_object(storage_key=stored.storage_key)
+        raise
     return UploadFileResponse(
         file_id=file_id,
         name=display_name,
         sha256=stored.sha256,
         size_bytes=stored.size_bytes,
     )
+
+
+@router.post("/files/uploads")
+async def initiate_multipart_upload(
+    request: object = Body(...),
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    try:
+        request = parse_multipart_upload_create_request(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if request.size_bytes < MULTIPART_THRESHOLD_BYTES:
+        raise HTTPException(status_code=400, detail="multipart_threshold_not_reached")
+    try:
+        tenant_id = assert_safe_id(principal.tenant_id, "tenant_id")
+        workspace_id = assert_safe_id(request.workspace_id, "workspace_id")
+        session_id = assert_safe_id(request.session_id, "session_id") if request.session_id else None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    display_name = _normalize_upload_filename(request.name)
+    content_type = _normalized_content_type(request.content_type) or "application/octet-stream"
+    file_id = new_id("file")
+    upload_session_id = new_id("upload")
+    storage_key = f"tenants/{tenant_id}/workspaces/{workspace_id}/sessions/{session_id or 'unbound'}/files/{file_id}/content"
+    storage = ObjectStorage()
+    async with transaction() as conn:
+        expired_sessions = await expire_file_upload_sessions(conn)
+    for expired in expired_sessions:
+        try:
+            storage.abort_multipart_upload(
+                storage_key=expired["storage_key"],
+                upload_id=expired["upload_id"],
+            )
+        except Exception:
+            async with transaction() as conn:
+                await retry_expired_file_upload_session(
+                    conn,
+                    upload_session_id=str(expired["id"]),
+                )
+        else:
+            async with transaction() as conn:
+                await delete_expired_file_upload_session(
+                    conn,
+                    upload_session_id=str(expired["id"]),
+                )
+    upload_id = storage.create_multipart_upload(
+        storage_key=storage_key,
+        content_type=content_type,
+    )
+    part_count = (request.size_bytes + MULTIPART_PART_BYTES - 1) // MULTIPART_PART_BYTES
+    try:
+        async with transaction() as conn:
+            await ensure_workspace(conn, tenant_id=tenant_id, workspace_id=workspace_id)
+            await ensure_user(
+                conn,
+                tenant_id=tenant_id,
+                user_id=principal.user_id,
+                display_name=principal.display_name,
+            )
+            if session_id and await get_authorized_session(
+                conn,
+                tenant_id=tenant_id,
+                user_id=principal.user_id,
+                session_id=session_id,
+            ) is None:
+                raise RepositoryNotFoundError("session_not_found")
+            usage = await get_file_storage_usage(
+                conn,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=principal.user_id,
+            )
+            settings = get_settings()
+            if usage["active_uploads"] >= settings.file_upload_max_active_sessions:
+                raise HTTPException(status_code=429, detail="upload_session_limit_exceeded")
+            if (
+                usage["stored_bytes"]
+                + usage["reserved_bytes"]
+                + request.size_bytes
+                > settings.file_storage_quota_bytes
+            ):
+                raise HTTPException(status_code=413, detail="file_storage_quota_exceeded")
+            await create_file_upload_session(
+                conn,
+                upload_session_id=upload_session_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=principal.user_id,
+                session_id=session_id,
+                file_id=file_id,
+                original_name=display_name,
+                content_type=content_type,
+                expected_size_bytes=request.size_bytes,
+                part_size_bytes=MULTIPART_PART_BYTES,
+                part_count=part_count,
+                storage_key=storage_key,
+                upload_id=upload_id,
+            )
+    except RepositoryNotFoundError as exc:
+        storage.abort_multipart_upload(storage_key=storage_key, upload_id=upload_id)
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except BaseException:
+        storage.abort_multipart_upload(storage_key=storage_key, upload_id=upload_id)
+        raise
+    return {
+        "upload_session_id": upload_session_id,
+        "name": display_name,
+        "size_bytes": request.size_bytes,
+        "part_size_bytes": MULTIPART_PART_BYTES,
+        "parts": [
+            {
+                "part_number": part_number,
+                "url": f"/api/ai/files/uploads/{upload_session_id}/parts/{part_number}",
+            }
+            for part_number in range(1, part_count + 1)
+        ],
+    }
+
+
+@router.put("/files/uploads/{upload_session_id}/parts/{part_number}")
+async def upload_multipart_part(
+    upload_session_id: str,
+    part_number: int,
+    request: Request,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, str]:
+    _require_upload_permissions(principal)
+    try:
+        upload_session_id = assert_safe_id(upload_session_id, "upload_session_id")
+        tenant_id = assert_safe_id(principal.tenant_id, "tenant_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    async with transaction() as conn:
+        row = await get_authorized_file_upload_session(
+            conn,
+            upload_session_id=upload_session_id,
+            tenant_id=tenant_id,
+            user_id=principal.user_id,
+        )
+    if row is None:
+        raise HTTPException(status_code=404, detail="upload_session_not_found")
+    if row["state"] != "pending":
+        raise HTTPException(status_code=409, detail="upload_session_not_pending")
+    if row["expires_at"] <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=410, detail="upload_session_expired")
+    if part_number < 1 or part_number > int(row["part_count"]):
+        raise HTTPException(status_code=400, detail="invalid_multipart_part")
+    expected_size = min(
+        int(row["part_size_bytes"]),
+        int(row["expected_size_bytes"]) - (part_number - 1) * int(row["part_size_bytes"]),
+    )
+    content = await _read_bounded_request_body(request, expected_size)
+    if len(content) != expected_size:
+        raise HTTPException(status_code=400, detail="multipart_part_size_mismatch")
+    try:
+        etag = ObjectStorage().upload_multipart_part(
+            storage_key=row["storage_key"],
+            upload_id=row["upload_id"],
+            part_number=part_number,
+            content=content,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="multipart_part_upload_failed") from exc
+    return {"etag": etag}
+
+
+@router.post("/files/uploads/{upload_session_id}/complete", response_model=UploadFileResponse)
+async def complete_multipart_upload(
+    upload_session_id: str,
+    request: object = Body(...),
+    principal: AuthPrincipal = Depends(require_principal),
+) -> UploadFileResponse:
+    try:
+        request = parse_multipart_upload_complete_request(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _require_upload_permissions(principal)
+    try:
+        upload_session_id = assert_safe_id(upload_session_id, "upload_session_id")
+        tenant_id = assert_safe_id(principal.tenant_id, "tenant_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    part_numbers = [part.part_number for part in request.parts]
+    if part_numbers != sorted(set(part_numbers)):
+        raise HTTPException(status_code=400, detail="invalid_multipart_parts")
+    storage = ObjectStorage()
+    async with transaction() as conn:
+        row = await get_authorized_file_upload_session(
+            conn,
+            upload_session_id=upload_session_id,
+            tenant_id=tenant_id,
+            user_id=principal.user_id,
+            for_update=True,
+        )
+    if row is None:
+        raise HTTPException(status_code=404, detail="upload_session_not_found")
+    if row["state"] != "pending":
+        raise HTTPException(status_code=409, detail="upload_session_not_pending")
+    if row["expires_at"] <= datetime.now(timezone.utc):
+        storage.abort_multipart_upload(storage_key=row["storage_key"], upload_id=row["upload_id"])
+        async with transaction() as conn:
+            await abort_file_upload_session(conn, upload_session_id=upload_session_id, state="expired")
+        raise HTTPException(status_code=410, detail="upload_session_expired")
+    expected_parts = int(row["part_count"])
+    if part_numbers != list(range(1, expected_parts + 1)):
+        raise HTTPException(status_code=400, detail="invalid_multipart_parts")
+    async with transaction() as conn:
+        claimed = await claim_file_upload_session(
+            conn,
+            upload_session_id=upload_session_id,
+        )
+    if not claimed:
+        raise HTTPException(status_code=409, detail="upload_session_not_pending")
+    parts = [{"ETag": part.etag, "PartNumber": part.part_number} for part in request.parts]
+    try:
+        storage.complete_multipart_upload(
+            storage_key=row["storage_key"],
+            upload_id=row["upload_id"],
+            parts=parts,
+        )
+        downloaded = storage.download_to_tempfile(
+            storage_key=row["storage_key"],
+            max_bytes=MAX_UPLOAD_BYTES,
+        )
+        temporary_path = Path(downloaded.path)
+        try:
+            if downloaded.size_bytes != int(row["expected_size_bytes"]):
+                raise HTTPException(status_code=400, detail="multipart_size_mismatch")
+            _validate_upload_file(
+                filename=row["original_name"],
+                declared_content_type=row["content_type"],
+                path=temporary_path,
+            )
+        finally:
+            temporary_path.unlink(missing_ok=True)
+    except ObjectStorageSizeLimitError as exc:
+        storage.delete_object(storage_key=row["storage_key"])
+        async with transaction() as conn:
+            await abort_file_upload_session(conn, upload_session_id=upload_session_id)
+        raise HTTPException(status_code=413, detail="file_too_large") from exc
+    except HTTPException:
+        storage.delete_object(storage_key=row["storage_key"])
+        async with transaction() as conn:
+            await abort_file_upload_session(conn, upload_session_id=upload_session_id)
+        raise
+    except BaseException as exc:
+        storage.delete_object(storage_key=row["storage_key"])
+        async with transaction() as conn:
+            await abort_file_upload_session(conn, upload_session_id=upload_session_id)
+        raise HTTPException(status_code=400, detail="multipart_completion_failed") from exc
+    try:
+        async with transaction() as conn:
+            current = await get_authorized_file_upload_session(
+                conn,
+                upload_session_id=upload_session_id,
+                tenant_id=tenant_id,
+                user_id=principal.user_id,
+                for_update=True,
+            )
+            if current is None or current["state"] != "completing":
+                raise RepositoryNotFoundError("upload_session_not_pending")
+            await create_file(
+                conn,
+                file_id=current["file_id"],
+                tenant_id=tenant_id,
+                workspace_id=current["workspace_id"],
+                user_id=principal.user_id,
+                session_id=current["session_id"],
+                original_name=current["original_name"],
+                content_type=current["content_type"],
+                size_bytes=downloaded.size_bytes,
+                storage_key=current["storage_key"],
+                sha256=downloaded.sha256,
+            )
+            await complete_file_upload_session(conn, upload_session_id=upload_session_id)
+    except RepositoryNotFoundError as exc:
+        storage.delete_object(storage_key=row["storage_key"])
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except BaseException:
+        storage.delete_object(storage_key=row["storage_key"])
+        raise
+    return UploadFileResponse(
+        file_id=row["file_id"],
+        name=row["original_name"],
+        sha256=downloaded.sha256,
+        size_bytes=downloaded.size_bytes,
+    )
+
+
+@router.post("/files/uploads/{upload_session_id}/abort", status_code=204)
+async def abort_multipart_upload(
+    upload_session_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> Response:
+    _require_upload_permissions(principal)
+    try:
+        upload_session_id = assert_safe_id(upload_session_id, "upload_session_id")
+        tenant_id = assert_safe_id(principal.tenant_id, "tenant_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    async with transaction() as conn:
+        row = await get_authorized_file_upload_session(
+            conn,
+            upload_session_id=upload_session_id,
+            tenant_id=tenant_id,
+            user_id=principal.user_id,
+            for_update=True,
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="upload_session_not_found")
+        await abort_file_upload_session(conn, upload_session_id=upload_session_id)
+    if row["state"] == "pending":
+        ObjectStorage().abort_multipart_upload(
+            storage_key=row["storage_key"],
+            upload_id=row["upload_id"],
+        )
+    return Response(status_code=204)
 
 
 @router.delete("/files/{file_id}", response_model=FileDeletionResponse)

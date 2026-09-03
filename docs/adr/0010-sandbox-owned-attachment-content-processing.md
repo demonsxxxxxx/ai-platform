@@ -229,6 +229,43 @@ The model receives metadata equivalent to:
 This example is metadata only. It is not an alternative content-extraction
 channel and no attachment text or cell values may be appended to it.
 
+## Upload and staging change contract
+
+This approved change aligns the file path with the raw-file decision above.
+
+Owner: file upload route, storage adapter, context materializer, and Sandbox
+workspace-transfer owners.
+
+Bounded paths: `app/routes/files.py`, `app/storage.py`,
+`app/context/file_continuity.py`, `app/context/file_content.py`,
+`app/runtime/sandbox/container_provider.py`, the owning upload/context tests,
+frontend upload configuration, and this ADR. No document parser, Agent/Skill
+prompt, public projection, or unrelated storage lifecycle behavior is in scope.
+
+Reached invariants: authenticated tenant/workspace/user/session authorization,
+immutable file identity, SHA-256 verification, safe names and paths, archive
+resource controls, atomic staging, public error redaction, and Sandbox CPU,
+memory, disk, process, and timeout controls remain fail-closed. Multipart parts
+are transport fragments only and are never exposed as separate files.
+
+Acceptance: the complete nine-file `3.2.S.3.1-IP266` corpus (approximately
+164.18 MiB, with one approximately 63.49 MiB file) can upload and pass Run
+admission under the new limits; a 129 MiB input or a 257 MiB input set fails
+before workspace writes; staging does not retain the complete input set in
+memory; interrupted or expired multipart sessions cannot create a file row;
+cross-user and cross-workspace uploads cannot be completed; and the exact
+legacy safety regressions remain covered.
+
+Evidence ceiling: local static and focused tests prove source behavior only.
+Actual memory use, Sandbox disk capacity, and production object-storage
+performance require CI and controlled Docker-host runtime evidence. This change
+must stop before raising Run limits if stream staging, real-Sandbox transfer, or
+resource-boundary tests fail.
+
+Rollback: revert the release-atomic code and documentation change. Existing
+completed file objects and file rows remain readable; incomplete upload sessions
+are abortable and may be garbage-collected without changing historical files.
+
 ## Limit Matrix
 
 The raw-file contract does not remove resource boundaries. It replaces
@@ -236,9 +273,13 @@ content-derived admission limits with byte- and structure-derived limits.
 
 | Boundary | Limit | Enforcement owner | Purpose |
 | --- | ---: | --- | --- |
-| Run input file | 32 MiB per file | workspace materializer | bounded disk and transfer |
-| Run input set | 128 MiB total | workspace materializer | bounded sandbox staging |
-| Run input set | 512 files | workspace materializer | bounded descriptor and disk work |
+| Stored upload object | 512 MiB | upload session and object storage | bounded persistent object |
+| Legacy single-request upload | 32 MiB | upload route | bounded compatibility path |
+| Multipart threshold | 32 MiB | upload client and storage adapter | retryable transport |
+| Multipart part | 8 MiB | upload client and upload route | bounded request |
+| Run input file | 128 MiB | workspace materializer | bounded disk and transfer |
+| Run input set | 256 MiB total | workspace materializer | bounded sandbox staging |
+| Run input set | 32 files | Run request and materializer | bounded descriptor and disk work |
 | Declared XLSX archive | 2,000 entries | archive safety validator | zip-bomb and archive-work bound |
 | Declared XLSX compressed entry | 8 MiB | archive safety validator | bounded decompression |
 | Declared XLSX expanded package | 32 MiB | archive safety validator | zip-bomb and memory bound |
@@ -288,6 +329,11 @@ behavior.
 
 - A valid XLSX with more than 2,048 populated cells materializes to `inputs/`
   and can start an Agent run.
+- The complete nine-file `3.2.S.3.1-IP266` corpus (approximately 164.18 MiB)
+  can upload through Multipart and pass Run admission; a 129 MiB file or a
+  257 MiB input set fails before workspace writes.
+- Multipart sessions are tenant-, workspace-, and user-bound; duplicate completion,
+  expiry, abort, and quota failures do not create file rows or leave live uploads.
 - Valid DOC, DOCX, XLS, XLSX, PPT, and PPTX inputs are materialized without
   platform content extraction or a parser-supported-type gate.
 - The pinned local Sandbox parser extracts fixed markers from synthetic DOC, XLS,
@@ -304,5 +350,9 @@ behavior.
 
 ## Rollback
 
-Revert the release-atomic PR. No data migration, schema change, or persisted
-parser state is introduced by this decision.
+Revert the release-atomic code and documentation change using the repository's
+schema rollback procedure. The additive `file_upload_sessions` table and settings
+are ignored by older file paths; completed file rows and objects remain readable,
+while pending or completing sessions can be aborted and garbage-collected. Do not
+raise Run limits in a rollback image that still has the former 32/128 MiB staging
+contract.
