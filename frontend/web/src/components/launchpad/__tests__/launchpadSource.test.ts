@@ -42,11 +42,14 @@ test("company navigation provides searchable responsive website sections", () =>
 test("website cards use copied icons and safe external anchors", () => {
   assert.match(panelSource, /getLaunchpadIconUrl/);
   assert.match(panelSource, /<img/);
+  assert.match(panelSource, /size-12/);
+  assert.match(panelSource, /object-contain/);
   assert.match(panelSource, /href=\{entry\.url\}/);
   assert.match(panelSource, /target="_blank"/);
   assert.match(panelSource, /rel="noopener noreferrer"/);
   assert.match(panelSource, /companyNavigation\.openEntry/);
   assert.match(panelSource, /onError=/);
+  assert.match(panelSource, /motion-safe:animate-pulse/);
   assert.doesNotMatch(panelSource, /window\.open/);
 });
 

@@ -59,7 +59,17 @@ test("launchpad contains only the copied web-navigation catalog", () => {
     ],
   );
 
-  assert.ok(entries.some((entry) => entry.name === "ai-platform"));
+  assert.equal(launchpadGroups[0]?.entries[0]?.name, "灵犀平台");
+  assert.deepEqual(
+    entries.find((entry) => entry.name === "灵犀平台"),
+    {
+      id: "内网登录:灵犀平台",
+      name: "灵犀平台",
+      description: "公司自研平台",
+      icon: "lingxi-platform.png",
+      url: "http://10.56.0.25:8189/#/TaskManagement/indexSpace",
+    },
+  );
   assert.ok(!entries.some((entry) => entry.name === "公司规章制度"));
   assert.ok(!entries.some((entry) => entry.name === "SOP问询助手"));
   assert.ok(!entries.some((entry) => entry.name === "Word文档翻译"));
