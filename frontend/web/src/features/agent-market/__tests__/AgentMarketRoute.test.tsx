@@ -19,7 +19,7 @@ test("market keeps one, two, and three cards responsive while resolving durable 
   assert.match(source, /navigate\(catalogReturnPath, \{ replace: true \}\)/);
   assert.match(source, /AppShell/);
   assert.match(source, /SessionSidebar/);
-  assert.match(source, /min-h-screen/);
+  assert.match(source, /min-h-0 flex-1 overflow-y-auto/);
   assert.match(source, /lg:grid-cols-\[15rem_minmax\(0,1fr\)\]/);
   assert.doesNotMatch(source, /<Check/);
   assert.doesNotMatch(source, /BadgeCheck/);
