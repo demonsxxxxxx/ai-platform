@@ -851,11 +851,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     });
     assert.equal(currentPath, "/agent-market?q=%E8%B4%A2%E5%8A%A1");
     assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
-    assert.ok(container.querySelector("[data-workbench-header]"), "market must render in AppShell");
-    assert.ok(
-      container.querySelector("[data-librechat-desktop-sidebar]"),
-      "market must retain SessionSidebar",
-    );
+    assert.ok(container.querySelector("[data-agent-market]"));
 
     const search = container.querySelector("[data-agent-market-search]");
     assert.ok(search);
@@ -869,7 +865,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
 
     const primaryAction = container
       .querySelectorAll("button")
-      .find((button) => button.getAttribute("aria-label") === "使用 财务助手 开始任务");
+      .find((button) => button.getAttribute("aria-label") === "使用 财务助手 开始合作");
     assert.ok(primaryAction, "filtered published card should open its dedicated workspace");
     assert.equal(primaryAction.nodeName, "BUTTON", "native button semantics preserve keyboard activation");
     assert.equal(primaryAction.getAttribute("type"), "button");
@@ -909,7 +905,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     assert.ok(container.querySelector("[data-agent-market-detail]"));
     assert.match(container.textContent, /核对报销材料/);
     assert.match(container.textContent, /企业已发布/);
-    assert.match(container.textContent, /版本 2/);
+    assert.doesNotMatch(container.textContent, /版本 2/);
     assert.match(container.textContent, /适合处理/);
     assert.doesNotMatch(
       container.textContent,
@@ -1131,7 +1127,7 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     assert.equal(currentPath, "/agent-market");
     const marketStart = container
       .querySelectorAll("button")
-      .find((button) => button.getAttribute("aria-label") === "使用 支持助手 开始任务");
+      .find((button) => button.getAttribute("aria-label") === "使用 支持助手 开始合作");
     assert.ok(marketStart);
     await React.act(async () => {
       marketStart.dispatchEvent({ type: "click", bubbles: true });

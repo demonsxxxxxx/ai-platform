@@ -185,6 +185,14 @@ Both projection models are closed typed records (`extra="forbid"`). Adding,
 renaming, or exposing a field is a product/security behavior change, not a
 source replay.
 
+`revision` remains the immutable server snapshot and optimistic-concurrency
+binding. It is not the business release number: saving a draft may create a
+new snapshot without creating a release. Published history uses the existing
+non-null `published_at` marker and numbers only those publication snapshots
+sequentially for administrator-facing `v1`, `v2`, and later releases. A
+previously published snapshot keeps that marker when a later publication
+demotes its lifecycle status, so the release sequence remains stable.
+
 `agent_profile_revisions.model_id` remains a private, not-null compatibility
 column only. Active Profile requests, projections, admission, and execution never
 read or expose it as model authority. New authored and published revisions write
