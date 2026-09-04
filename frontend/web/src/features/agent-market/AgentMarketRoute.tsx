@@ -461,8 +461,8 @@ function AgentMarketCatalog({
   }, [setSearchParams]);
 
   return (
-    <main data-agent-market className="min-h-screen overflow-y-auto bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]">
-      <div className="mx-auto flex w-full flex-col px-4 py-6 sm:px-8 lg:px-10 lg:py-8">
+    <main data-agent-market className="min-h-0 flex-1 overflow-y-auto bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]">
+      <div className="mx-auto flex w-full max-w-[86rem] flex-col px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
         <header className="flex flex-col gap-4 lg:flex-row lg:items-center lg:gap-7">
           <div className="min-w-0 lg:w-60 lg:shrink-0">
             <div className="flex items-center gap-2">
@@ -939,13 +939,15 @@ export function AgentMarketRoute() {
 
   if (!isDetailRoute) {
     return (
-      <AgentMarketCatalog
-        activeTab={activeTab}
-        activeTag={activeTag}
-        catalog={catalog}
-        refresh={refreshCatalog}
-        toggleFavorite={toggleFavorite}
-      />
+      <AgentMarketShell>
+        <AgentMarketCatalog
+          activeTab={activeTab}
+          activeTag={activeTag}
+          catalog={catalog}
+          refresh={refreshCatalog}
+          toggleFavorite={toggleFavorite}
+        />
+      </AgentMarketShell>
     );
   }
 
