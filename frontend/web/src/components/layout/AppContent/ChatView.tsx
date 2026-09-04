@@ -1,9 +1,11 @@
 import {
+  createContext,
   useMemo,
   useCallback,
   useState,
   useEffect,
   useRef,
+  useContext,
   type ComponentType,
   type ReactNode,
 } from "react";
@@ -121,6 +123,17 @@ import {
 import { mergeProjectedSessionFiles } from "./sessionInputFiles";
 
 const FLOATING_SCROLL_BUTTON_OFFSET_CLASS = "bottom-full mb-3";
+
+const AssistantUiMessageContentContext = createContext<ReactNode>(null);
+
+function AssistantUiProjectedMessage() {
+  const content = useContext(AssistantUiMessageContentContext);
+  return <AssistantUiMessageFrame>{content}</AssistantUiMessageFrame>;
+}
+
+const ASSISTANT_UI_MESSAGE_COMPONENTS = {
+  Message: AssistantUiProjectedMessage,
+};
 
 interface ChatViewProps {
   messages: Message[];
@@ -762,26 +775,26 @@ export function ChatView({
 
   const virtuosoItemContent = useCallback(
     (index: number, message: (typeof messages)[number]) => (
-      <ThreadPrimitive.Unstable_MessageById
-        messageId={message.id}
-        components={{
-          Message: () => (
-            <AssistantUiMessageFrame>
-              <ChatMessage
-          message={message}
-          artifactDownloadScopeContext={artifactDownloadScopeContext}
-          sessionId={sessionId ?? undefined}
-          runId={currentRunId ?? undefined}
-          isLastMessage={index === messages.length - 1}
-          activePreview={activePreview}
-          latestAutoPreview={latestAutoPreview}
-          onOpenPreview={handleOpenPreview}
-          onForkMessage={handleForkMessage}
-              />
-            </AssistantUiMessageFrame>
-          ),
-        }}
-      />
+      <AssistantUiMessageContentContext.Provider
+        value={
+          <ChatMessage
+            message={message}
+            artifactDownloadScopeContext={artifactDownloadScopeContext}
+            sessionId={sessionId ?? undefined}
+            runId={currentRunId ?? undefined}
+            isLastMessage={index === messages.length - 1}
+            activePreview={activePreview}
+            latestAutoPreview={latestAutoPreview}
+            onOpenPreview={handleOpenPreview}
+            onForkMessage={handleForkMessage}
+          />
+        }
+      >
+        <ThreadPrimitive.Unstable_MessageById
+          messageId={message.id}
+          components={ASSISTANT_UI_MESSAGE_COMPONENTS}
+        />
+      </AssistantUiMessageContentContext.Provider>
     ),
     [
       sessionId,
