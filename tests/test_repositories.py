@@ -13249,19 +13249,6 @@ async def test_admin_run_detail_sanitizes_secret_and_runtime_payloads(monkeypatc
             "result_json": {
                 "message": "failed client_secret=admin-result-secret",
                 "runtime_private_payload": {"cwd": "/var/lib/ai-platform/run-a"},
-                "runtime_diagnostics": {
-                    "error_code": "claude_agent_sdk_tool_admission_failed",
-                    "failure_source": "sdk_result_error",
-                    "sdk": {"errors": ["actual SDK failure at step 7"]},
-                    "tool_policy_denials": [
-                        {
-                            "tool_name": "Bash",
-                            "invocation_id": "tool-call-7",
-                            "reason": "tool_parameters_not_authorized",
-                            "tool_input": {"command": "printf diagnostic"},
-                        }
-                    ],
-                },
                 "used_skills": ["qa-file-reviewer"],
             },
             "error_code": "executor_failure token=admin-detail-code-token",
@@ -13363,19 +13350,6 @@ async def test_admin_run_detail_sanitizes_secret_and_runtime_payloads(monkeypatc
 
     assert detail["run"]["input"]["skill_ids"] == ["qa-file-reviewer"]
     assert detail["run"]["result"]["used_skills"] == ["qa-file-reviewer"]
-    assert detail["run"]["result"]["runtime_diagnostics"] == {
-        "error_code": "claude_agent_sdk_tool_admission_failed",
-        "failure_source": "sdk_result_error",
-        "sdk": {"errors": ["actual SDK failure at step 7"]},
-        "tool_policy_denials": [
-            {
-                "tool_name": "Bash",
-                "invocation_id": "tool-call-7",
-                "reason": "tool_parameters_not_authorized",
-                "tool_input": {"command": "printf diagnostic"},
-            }
-        ],
-    }
     assert detail["steps"][0]["payload"]["skill_ids"] == ["qa-file-reviewer"]
     serialized = json.dumps(detail, ensure_ascii=False, default=str)
     assert "sk-admin-input" not in serialized

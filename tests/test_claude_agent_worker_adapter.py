@@ -50,7 +50,7 @@ from app.runtime.sandbox.container_provider import (
     OpenSandboxContainerProvider,
     _prepare_trusted_skill_mount,
 )
-from app.runtime.sandbox.runtime_diagnostics import (
+from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
 )
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager

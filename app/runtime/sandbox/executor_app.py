@@ -58,7 +58,7 @@ from app.required_tool_contract import (
 )
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.context_retrieval_client import PlatformContextRetrievalClient
-from app.runtime.sandbox.runtime_diagnostics import (
+from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     normalize_sdk_runtime_diagnostics,
     runtime_diagnostic_text,

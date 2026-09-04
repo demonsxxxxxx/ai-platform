@@ -8,7 +8,7 @@ from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
 from app.models import AdminRunDetailResponse, AdminRunListResponse, RunControlResponse
 from app.queue import get_queue_insight, get_run_queue_position, remove_queued_run
-from app.runs.api import RunCancellationUseCase
+from app.runs.api import RunCancellationUseCase, admin_runtime_diagnostics_from_run
 from app.routes.sandbox_runtime_cleanup import (
     SandboxRuntimeCleanupError,
     release_stopped_sandbox_leases_for_cancel,
@@ -295,10 +295,22 @@ async def admin_run_detail(
     try:
         async with transaction() as conn:
             detail = await repositories.get_admin_run_detail(conn, tenant_id=principal.tenant_id, run_id=run_id)
+            raw_run = (
+                await repositories.get_run(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    run_id=run_id,
+                )
+                if detail is not None and detail["run"]["status"] == "failed"
+                else None
+            )
+            runtime_diagnostics = admin_runtime_diagnostics_from_run(raw_run)
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if detail is None:
         raise HTTPException(status_code=404, detail="run_not_found")
     detail = dict(detail)
+    if runtime_diagnostics:
+        detail["run"]["result"]["runtime_diagnostics"] = runtime_diagnostics
     detail["run"] = await attach_live_queue_context(detail["run"], tenant_id=principal.tenant_id)
     return AdminRunDetailResponse.model_validate(detail)

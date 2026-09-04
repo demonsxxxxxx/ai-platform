@@ -48,7 +48,7 @@ from app.runtime.sandbox.executor_app import (
     _default_executor_runner,
     create_executor_app,
 )
-from app.runtime.sandbox.runtime_diagnostics import (
+from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
 )
 from app.tool_permission_lifecycle import tool_permission_budget

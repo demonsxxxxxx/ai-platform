@@ -6960,13 +6960,9 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
     run_input = sanitize_public_payload(run["input_json"] if isinstance(run.get("input_json"), dict) else {})
     if not isinstance(run_input, dict):
         run_input = {}
-    raw_result = run["result_json"] if isinstance(run.get("result_json"), dict) else {}
-    runtime_diagnostics = raw_result.get("runtime_diagnostics")
-    run_result = sanitize_public_payload(raw_result)
+    run_result = sanitize_public_payload(run["result_json"] if isinstance(run.get("result_json"), dict) else {})
     if not isinstance(run_result, dict):
         run_result = {}
-    if isinstance(runtime_diagnostics, dict):
-        run_result["runtime_diagnostics"] = runtime_diagnostics
     return {
         "run": {
             "run_id": run["id"],

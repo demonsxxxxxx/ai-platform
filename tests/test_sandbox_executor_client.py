@@ -8,7 +8,7 @@ import app.runtime.sandbox.executor_client as executor_client_module
 from app.runtime.sandbox.contracts import ContainerLease, ExecutorCallbackEvent, ExecutorTaskRequest
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events, container_started_event
 from app.runtime.sandbox.executor_client import SandboxExecutorClient, SandboxExecutorHttpError
-from app.runtime.sandbox.runtime_diagnostics import (
+from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES,
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
 )

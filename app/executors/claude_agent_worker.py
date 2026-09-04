@@ -76,7 +76,7 @@ from app.runtime.sandbox.container_provider import (
 )
 from app.runtime.sandbox.contracts import ContextRetrievalScope, SandboxRuntimeRequest
 from app.runtime.sandbox.runtime import SandboxRuntime
-from app.runtime.sandbox.runtime_diagnostics import normalize_sdk_runtime_diagnostics
+from app.sandbox.api import normalize_sdk_runtime_diagnostics
 from app.session_continuity import sdk_session_id_for_run
 from app.settings import get_settings
 from app.skills.catalog import (
@@ -1601,6 +1601,16 @@ class ClaudeAgentWorkerAdapter:
         runtime_diagnostics = normalize_sdk_runtime_diagnostics(
             executor_response.get("runtime_diagnostics")
         )
+        failure_result_context = {
+            "sdk_used": bool(executor_response.get("sdk_used")),
+            "sdk_session_id": executor_response.get("sdk_session_id"),
+            "delegate_used": False,
+            "worker_boundary": self.executor_type,
+            "allowed_skills": prepared.allowed_skill_names,
+            "staged_skills": prepared.staged_skill_names,
+            "used_skills": used_skill_names,
+            "runtime_diagnostics": runtime_diagnostics,
+        }
         if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES and selected_capability_error is not None:
             turn_diagnostics = _public_sdk_turn_diagnostics(
                 payload,
@@ -1618,16 +1628,9 @@ class ClaudeAgentWorkerAdapter:
                 result={
                     "message": "Capability execution evidence was incomplete. Please retry.",
                     "error_code": selected_capability_error,
-                    "sdk_used": bool(executor_response.get("sdk_used")),
-                    "sdk_session_id": executor_response.get("sdk_session_id"),
                     "sdk_error": selected_capability_error,
-                    "delegate_used": False,
-                    "worker_boundary": self.executor_type,
-                    "allowed_skills": prepared.allowed_skill_names,
-                    "staged_skills": prepared.staged_skill_names,
-                    "used_skills": used_skill_names,
                     "sdk_turn_diagnostics": turn_diagnostics,
-                    "runtime_diagnostics": runtime_diagnostics,
+                    **failure_result_context,
                 },
                 artifacts=[],
                 executor_payload={
@@ -1656,16 +1659,9 @@ class ClaudeAgentWorkerAdapter:
                 result={
                     "message": message,
                     "error_code": error_code,
-                    "sdk_used": bool(executor_response.get("sdk_used")),
-                    "sdk_session_id": executor_response.get("sdk_session_id"),
                     "sdk_error": error_code,
-                    "delegate_used": False,
-                    "worker_boundary": self.executor_type,
-                    "allowed_skills": prepared.allowed_skill_names,
-                    "staged_skills": prepared.staged_skill_names,
-                    "used_skills": used_skill_names,
                     "sdk_turn_diagnostics": turn_diagnostics,
-                    "runtime_diagnostics": runtime_diagnostics,
+                    **failure_result_context,
                 },
                 artifacts=[],
                 executor_payload={
@@ -1705,16 +1701,9 @@ class ClaudeAgentWorkerAdapter:
                 result={
                     "message": message,
                     "error_code": error_code,
-                    "sdk_used": bool(executor_response.get("sdk_used")),
-                    "sdk_session_id": executor_response.get("sdk_session_id"),
                     "sdk_error": sdk_error,
-                    "delegate_used": False,
-                    "worker_boundary": self.executor_type,
-                    "allowed_skills": prepared.allowed_skill_names,
-                    "staged_skills": prepared.staged_skill_names,
-                    "used_skills": used_skill_names,
                     "sdk_turn_diagnostics": turn_diagnostics,
-                    "runtime_diagnostics": runtime_diagnostics,
+                    **failure_result_context,
                 },
                 artifacts=[],
                 executor_payload={

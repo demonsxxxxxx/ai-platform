@@ -8,7 +8,7 @@ import httpx
 
 from app.execution.api import projected_public_answer_failure_reason
 from app.runtime.sandbox.contracts import ExecutorTaskDispatchReceipt, ExecutorTaskRequest
-from app.runtime.sandbox.runtime_diagnostics import normalize_sdk_runtime_diagnostics
+from app.sandbox.api import normalize_sdk_runtime_diagnostics
 from app.settings import get_settings
 
 
