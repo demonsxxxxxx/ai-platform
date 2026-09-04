@@ -1629,6 +1629,72 @@ create trigger trg_agent_profile_legacy_insert_compatibility
 before insert on agent_profile_revisions
 for each row execute function agent_profile_legacy_insert_compatibility();
 
+-- New Agent Apps writers persist name-only Skill references. These triggers keep
+-- the legacy trigger's contract unchanged for rollback binaries: the prepare
+-- trigger supplies a private validation marker, and the finalize trigger removes
+-- it before the row is stored.
+create or replace function agent_profile_name_only_skill_set_prepare()
+returns trigger
+language plpgsql
+as $$
+declare
+  normalized_skill_set jsonb;
+begin
+  if new.revision_status is not null
+     and jsonb_typeof(new.skill_set) = 'array'
+     and jsonb_array_length(new.skill_set) > 0
+     and not exists (
+       select 1
+       from jsonb_array_elements(new.skill_set) item
+       where jsonb_typeof(item) <> 'object' or item ? 'expected_version'
+     ) then
+    select jsonb_agg(
+      item || jsonb_build_object('expected_version', 'profile-current')
+      order by ordinal
+    )
+    into normalized_skill_set
+    from jsonb_array_elements(new.skill_set) with ordinality as elements(item, ordinal);
+    new.skill_set := normalized_skill_set;
+    new.skill_version := 'profile-current';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists trg_agent_profile_aa_name_only_skill_set_prepare on agent_profile_revisions;
+create trigger trg_agent_profile_aa_name_only_skill_set_prepare
+before insert on agent_profile_revisions
+for each row execute function agent_profile_name_only_skill_set_prepare();
+
+create or replace function agent_profile_name_only_skill_set_finalize()
+returns trigger
+language plpgsql
+as $$
+declare
+  normalized_skill_set jsonb;
+begin
+  if new.revision_status is not null
+     and new.skill_version = 'profile-current'
+     and jsonb_typeof(new.skill_set) = 'array'
+     and jsonb_array_length(new.skill_set) > 0
+     and not exists (
+       select 1
+       from jsonb_array_elements(new.skill_set) item
+       where item->>'expected_version' is distinct from 'profile-current'
+     ) then
+    select jsonb_agg(item - 'expected_version' order by ordinal)
+    into normalized_skill_set
+    from jsonb_array_elements(new.skill_set) with ordinality as elements(item, ordinal);
+    new.skill_set := normalized_skill_set;
+    new.skill_version := '';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists trg_agent_profile_zz_name_only_skill_set_finalize on agent_profile_revisions;
+create trigger trg_agent_profile_zz_name_only_skill_set_finalize
+before insert on agent_profile_revisions
+for each row execute function agent_profile_name_only_skill_set_finalize();
+
 drop trigger if exists trg_agent_profile_legacy_insert_reconcile on agent_profile_revisions;
 create trigger trg_agent_profile_legacy_insert_reconcile
 after insert on agent_profile_revisions

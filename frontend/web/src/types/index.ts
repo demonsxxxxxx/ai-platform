@@ -77,6 +77,7 @@ export type {
   AgentProfileDraftRequest,
   AgentProfileMutationResponse,
   AgentProfilePublicProjection,
+  AgentProfileSkillReference,
   SelectedAgentProfileRequest,
 } from "./agentProfile";
 

@@ -5,6 +5,7 @@ from app.agent_apps.domain.profile_definition import (
     discard_legacy_agent_profile_model_id,
     normalize_agent_avatar_seed,
     normalize_agent_profile_display_items,
+    normalize_agent_skill_reference,
     normalize_agent_skill_set as _normalize_agent_skill_set,
     safe_agent_avatar_seed,
 )
@@ -26,6 +27,13 @@ AgentProfileAvatarRef = Literal[
     "builtin:icon",
 ]
 AGENT_PROFILE_AVATAR_REFS = frozenset(AgentProfileAvatarRef.__args__)
+
+
+class AgentProfileSkillReference(TypedDict):
+    """A profile Skill name, with an optional legacy version for old revisions."""
+
+    skill_id: str
+    expected_version: NotRequired[str | None]
 
 
 class AgentProfilePublicProjection(TypedDict):
@@ -66,9 +74,15 @@ def safe_agent_avatar_ref(value: object, *, fallback: str = "builtin:agent") -> 
 
 
 def normalize_agent_skill_set(skill_set, selected_skill):
+    normalized_skill_set = [normalize_agent_skill_reference(skill) for skill in skill_set]
+    normalized_selected_skill = (
+        normalize_agent_skill_reference(selected_skill)
+        if selected_skill is not None
+        else None
+    )
     return _normalize_agent_skill_set(
-        skill_set,
-        selected_skill,
+        normalized_skill_set,
+        normalized_selected_skill,
         is_internal_dependency_skill,
     )
 
@@ -76,9 +90,11 @@ __all__ = [
     "AGENT_PROFILE_AVATAR_REFS",
     "AgentProfileAvatarRef",
     "AgentProfilePublicProjection",
+    "AgentProfileSkillReference",
     "discard_legacy_agent_profile_model_id",
     "normalize_agent_avatar_seed",
     "normalize_agent_profile_display_items",
+    "normalize_agent_skill_reference",
     "normalize_agent_skill_set",
     "normalize_market_tag",
     "pin_agent_skill_set",

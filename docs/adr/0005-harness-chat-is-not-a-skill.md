@@ -48,9 +48,9 @@ Skills or forcing typed file materialization. A specialized file Skill may
 still require eager bounded materialization under the run workspace `inputs/`
 directory.
 
-Agent Profiles continue to require their exact specialized Skill in this
-change. Making a Profile Skill optional is a separate admission and product
-decision.
+Agent Profiles configure one or more authorized Skills by name. Publication and
+admission resolve the current authorized versions; each accepted Run still owns
+an exact immutable Skill binding.
 
 ## Legacy compatibility
 

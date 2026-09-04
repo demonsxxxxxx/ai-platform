@@ -245,6 +245,7 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         "avatar_ref": "builtin:agent",
         "avatar_seed": "agt_support",
         "category": "general",
+        "market_tag": "",
         "welcome_message": "",
         "starter_prompts": [],
         "capability_summary": "",
@@ -314,7 +315,7 @@ def test_agent_profile_accepts_multiple_executable_skills_and_keeps_primary_shad
         }
     )
 
-    assert [skill.skill_id for skill in definition.skill_set] == [
+    assert [skill["skill_id"] for skill in definition.skill_set] == [
         "document-review",
         "workflow-automation",
     ]
@@ -702,7 +703,7 @@ def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.agent_profiles.list_public_profiles", profiles)
+    monkeypatch.setattr("app.routes.agent_profiles._authority.list_public", profiles)
 
     response = TestClient(create_app()).get("/api/ai/agent-profiles", headers=ordinary_headers())
 
@@ -740,7 +741,7 @@ def test_agent_profile_market_normalizes_unicode_search_before_repository_query(
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.agent_profiles.list_public_profiles", profiles)
+    monkeypatch.setattr("app.routes.agent_profiles._authority.list_public", profiles)
 
     response = TestClient(create_app()).get(
         "/api/ai/agent-profiles",
@@ -763,7 +764,7 @@ def test_agent_profile_market_rejects_query_that_expands_past_limit_after_normal
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.agent_profiles.list_public_profiles", profiles)
+    monkeypatch.setattr("app.routes.agent_profiles._authority.list_public", profiles)
 
     response = TestClient(create_app()).get(
         "/api/ai/agent-profiles",
@@ -785,10 +786,9 @@ def test_agent_profile_admin_wire_never_projects_retired_file_type_field(monkeyp
         name="Support assistant",
         description="Approved support helper.",
         instructions="Keep answers concise.",
-        selected_skill=SelectedSkillRequest(
-            skill_id="general-chat",
-            expected_version="version-a",
-        ),
+        selected_skill={
+            "skill_id": "general-chat",
+        },
         content_hash="a" * 64,
     )
 
@@ -815,12 +815,11 @@ def test_agent_profile_admin_wire_never_projects_retired_file_type_field(monkeyp
     assert "supported_file_types" not in legacy_response.json()["agent_profiles"][0]
     assert current_response.status_code == 200
     assert "supported_file_types" not in current_response.json()["agent_profiles"][0]
-    schema = client.get("/openapi.json").json()
-    admin_projection = schema["components"]["schemas"]["AgentProfileAdminProjection"]
-    draft_request = schema["components"]["schemas"]["AgentProfileDraftRequest"]
-    assert "supported_file_types" not in admin_projection["properties"]
-    assert "model_id" not in admin_projection["properties"]
-    assert "model_id" not in draft_request["properties"]
+    admin_projection = AgentProfileAdminProjection.model_fields
+    draft_request = AgentProfileDraftRequest.model_fields
+    assert "supported_file_types" not in admin_projection
+    assert "model_id" not in admin_projection
+    assert "model_id" not in draft_request
     assert "model_id" not in current_response.json()["agent_profiles"][0]
     assert current_response.json()["agent_profiles"][0]["published_revision"] == 4
 
@@ -892,8 +891,8 @@ def test_agent_profile_admin_write_accepts_and_discards_legacy_model_field(monke
 
     assert response.status_code == 200
     assert unknown_field_response.status_code == 422
-    assert "model_id" not in response.json()
-    assert response.json()["market_tag"] == "客户服务"
+    assert "model_id" not in response.json()["agent_profile"]
+    assert response.json()["agent_profile"]["market_tag"] == "客户服务"
     assert len(saved_definitions) == 1
     assert not hasattr(saved_definitions[0], "model_id")
     assert saved_definitions[0]._legacy_model_id == "platform-selected"
@@ -1739,7 +1738,7 @@ def _draft(*, expected_draft_revision: int) -> AgentProfileDraftRequest:
         name="Support assistant",
         description="Approved support helper.",
         instructions="Private instruction",
-        selected_skill=SelectedSkillRequest(skill_id="general-chat", expected_version="version-a"),
+        selected_skill={"skill_id": "general-chat"},
         mcp_tool_ids=[],
         expected_draft_revision=expected_draft_revision,
     )
