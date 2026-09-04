@@ -1,5 +1,13 @@
-import { useEffect, useState } from "react";
-import { Building2, MessageSquareText, ShieldCheck } from "lucide-react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type FocusEvent,
+  type KeyboardEvent,
+} from "react";
+import { Building2, ChevronDown, MessageSquareText, ShieldCheck } from "lucide-react";
 
 import { DepartmentDirectorySelector } from "../../components/panels/DepartmentDirectorySelector";
 import {
@@ -21,6 +29,201 @@ function lines(value: string): string[] {
 
 function lineValue(value: readonly string[]): string {
   return value.join("\n");
+}
+
+function normalizeTag(value: string): string {
+  return value.trim().normalize("NFKC").toLocaleLowerCase();
+}
+
+function filterMarketTagSuggestions(
+  suggestions: readonly string[],
+  query: string,
+): string[] {
+  const normalizedQuery = normalizeTag(query);
+  return suggestions.filter(
+    (tag) => !normalizedQuery || normalizeTag(tag).includes(normalizedQuery),
+  );
+}
+
+function MarketTagCombobox({
+  disabled,
+  id,
+  onChange,
+  suggestions,
+  value,
+}: {
+  disabled: boolean;
+  id: string;
+  onChange: (value: string) => void;
+  suggestions: readonly string[];
+  value: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const listboxId = useId();
+  const filteredSuggestions = useMemo(
+    () => filterMarketTagSuggestions(suggestions, query),
+    [query, suggestions],
+  );
+  const safeActiveIndex =
+    activeIndex >= 0 && activeIndex < filteredSuggestions.length
+      ? activeIndex
+      : -1;
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
+        setOpen(false);
+        setActiveIndex(-1);
+      }
+    };
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
+  }, [open]);
+
+  const openSuggestions = () => {
+    setQuery("");
+    setOpen(true);
+    setActiveIndex(-1);
+  };
+
+  const chooseSuggestion = (tag: string) => {
+    onChange(tag);
+    setQuery(tag);
+    setOpen(false);
+    setActiveIndex(-1);
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setOpen(false);
+      setActiveIndex(-1);
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      if (!open) {
+        openSuggestions();
+        return;
+      }
+      if (filteredSuggestions.length > 0) {
+        setActiveIndex((current) =>
+          current < filteredSuggestions.length - 1 ? current + 1 : 0,
+        );
+      }
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!open) {
+        openSuggestions();
+        return;
+      }
+      if (filteredSuggestions.length > 0) {
+        setActiveIndex((current) =>
+          current > 0 ? current - 1 : filteredSuggestions.length - 1,
+        );
+      }
+      return;
+    }
+    if (event.key === "Enter" && open) {
+      event.preventDefault();
+      if (safeActiveIndex >= 0) {
+        chooseSuggestion(filteredSuggestions[safeActiveIndex]);
+      } else {
+        setOpen(false);
+      }
+      return;
+    }
+    if (event.key === "Home" && open && filteredSuggestions.length > 0) {
+      event.preventDefault();
+      setActiveIndex(0);
+    } else if (event.key === "End" && open && filteredSuggestions.length > 0) {
+      event.preventDefault();
+      setActiveIndex(filteredSuggestions.length - 1);
+    }
+  };
+
+  return (
+    <div
+      className="relative"
+      onBlur={(event: FocusEvent<HTMLDivElement>) => {
+        const nextTarget = event.relatedTarget as Node | null;
+        if (!rootRef.current?.contains(nextTarget)) {
+          setOpen(false);
+          setActiveIndex(-1);
+        }
+      }}
+      ref={rootRef}
+    >
+      <input
+        aria-activedescendant={
+          safeActiveIndex >= 0
+            ? `${listboxId}-option-${safeActiveIndex}`
+            : undefined
+        }
+        aria-autocomplete="list"
+        aria-controls={listboxId}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-label="市场标签"
+        className={`${INPUT_CLASS} pr-9`}
+        disabled={disabled}
+        id={id}
+        maxLength={80}
+        onChange={(event) => {
+          onChange(event.target.value);
+          setQuery(event.target.value);
+          setOpen(true);
+          setActiveIndex(-1);
+        }}
+        onFocus={openSuggestions}
+        onKeyDown={handleKeyDown}
+        placeholder="例如：人力资源"
+        role="combobox"
+        value={value}
+      />
+      <ChevronDown
+        aria-hidden="true"
+        className={`pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)] transition-transform ${open ? "rotate-180" : ""}`}
+        size={16}
+      />
+      {open ? (
+        <div
+          aria-label="已有市场标签"
+          className="absolute left-0 right-0 top-full z-20 mt-1 max-h-52 overflow-y-auto rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] py-1 shadow-lg"
+          id={listboxId}
+          role="listbox"
+        >
+          {filteredSuggestions.length > 0 ? (
+            filteredSuggestions.map((tag, index) => (
+              <button
+                aria-selected={safeActiveIndex === index}
+                className={`flex min-h-9 w-full items-center px-3 text-left text-sm transition-colors ${safeActiveIndex === index ? "bg-[var(--theme-primary-light)] text-[var(--theme-primary)]" : "text-[var(--theme-text)] hover:bg-[var(--theme-bg-sidebar)]"}`}
+                id={`${listboxId}-option-${index}`}
+                key={tag}
+                onClick={() => chooseSuggestion(tag)}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => setActiveIndex(index)}
+                role="option"
+                type="button"
+              >
+                <span className="min-w-0 flex-1 truncate">{tag}</span>
+              </button>
+            ))
+          ) : (
+            <p className="px-3 py-2 text-xs text-[var(--theme-text-secondary)]">
+              暂无匹配标签，可直接使用当前输入
+            </p>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function ListField({
@@ -160,22 +363,18 @@ export function AgentBuilderEnterpriseFields({
               name={editor.name || "未命名专家"}
               onChange={(update) => onChange(update)}
             />
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium">市场标签</span>
-              <input
-                aria-label="市场标签"
-                className={INPUT_CLASS}
+            <div className="flex flex-col gap-2">
+              <label className="text-sm font-medium" htmlFor="agent-market-tag-input">
+                市场标签
+              </label>
+              <MarketTagCombobox
                 disabled={disabled}
-                list="agent-market-tag-suggestions"
-                maxLength={80}
-                onChange={(event) => onChange({ marketTag: event.target.value })}
-                placeholder="例如：人力资源"
+                id="agent-market-tag-input"
+                onChange={(marketTag) => onChange({ marketTag })}
+                suggestions={marketTagSuggestions}
                 value={editor.marketTag}
               />
-              <datalist id="agent-market-tag-suggestions">
-                {marketTagSuggestions.map((tag) => <option key={tag} value={tag} />)}
-              </datalist>
-            </label>
+            </div>
           </div>
         </div>
 

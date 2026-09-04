@@ -817,9 +817,11 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     const marketCardClassName = container.querySelector("[data-agent-market-card]")?.getAttribute("class") ?? "";
     assert.match(marketCardClassName, /flex-col/);
     assert.match(marketCardClassName, /sm:flex-row/);
-    const taskSort = container
-      .querySelector('[data-agent-market-sort]')
-      ?.querySelectorAll("button")
+    const sortGroup = container.querySelector('[data-agent-market-sort]');
+    assert.ok(sortGroup);
+    assert.equal(sortGroup.querySelectorAll("button")[0].textContent, "我的收藏");
+    const taskSort = sortGroup
+      .querySelectorAll("button")
       .find((button) => button.textContent === "完成任务最多");
     assert.ok(taskSort);
     await React.act(async () => {

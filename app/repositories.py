@@ -2253,8 +2253,9 @@ async def authorize_selected_run_capabilities(
     principal_roles: list[str] | None,
     is_admin: bool,
     permissions: list[str] | None,
+    allow_current_version: bool = False,
 ) -> dict[str, Any]:
-    """Authorize an ordinary selected Skill and validate its optimistic hash lock."""
+    """Authorize a selected Skill and optionally resolve its current profile version."""
 
     skill = await _authorize_run_capabilities(
         conn,
@@ -2290,7 +2291,10 @@ async def authorize_selected_run_capabilities(
         content_hash = str(skill.get("skill_content_hash") or materialized_version)
     if not materialized_version or materialized_version != selected_version or content_hash != materialized_version:
         raise _capability_not_authorized()
-    if expected_version != selected_version:
+    if expected_version:
+        if expected_version != selected_version:
+            raise RepositoryConflictError("skill_selection_stale")
+    elif not allow_current_version:
         raise RepositoryConflictError("skill_selection_stale")
     return {**skill, "skill_version": selected_version, "skill_content_hash": content_hash}
 

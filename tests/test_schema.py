@@ -44,7 +44,8 @@ def test_schema_enforces_agent_skill_set_shape_and_legacy_shadow_identity():
 
     assert "raise exception 'agent_profile_skill_set_invalid'" in schema
     assert "new.skill_set->0->>'skill_id' is distinct from new.skill_id" in schema
-    assert "new.skill_set->0->>'expected_version' is distinct from new.skill_version" in schema
+    assert "coalesce(new.skill_set->0->>'expected_version', '') is distinct from coalesce(new.skill_version, '')" in schema
+    assert "item ? 'expected_version'" in schema
     assert "having count(*) > 1" in schema
     assert "published_hash text" in schema
     assert "published_status text" in schema

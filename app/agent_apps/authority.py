@@ -15,6 +15,7 @@ from app import repositories
 from app.agent_apps.api import (
     AGENT_PROFILE_AVATAR_REFS,
     AgentProfilePublicProjection,
+    AgentProfileSkillReference,
     safe_agent_avatar_ref,
     safe_agent_avatar_seed,
 )
@@ -30,7 +31,6 @@ from app.models import (
     ChatSessionResponse,
     ChatStreamRequest,
     SelectedAgentProfileRequest,
-    SelectedSkillRequest,
 )
 
 _CATEGORIES = {"general", "support", "writing", "research", "operations"}
@@ -178,7 +178,7 @@ def _effective_mcp_tool_ids(
     return configured, tuple(effective)
 
 
-def _skill_set(row: dict[str, Any]) -> list[SelectedSkillRequest]:
+def _skill_set(row: dict[str, Any]) -> list[AgentProfileSkillReference]:
     raw = row.get("skill_set")
     if not isinstance(raw, list) or not raw:
         raw = [
@@ -188,7 +188,7 @@ def _skill_set(row: dict[str, Any]) -> list[SelectedSkillRequest]:
             }
         ]
     try:
-        skills = [SelectedSkillRequest.model_validate(item) for item in raw]
+        skills = [AgentProfileSkillReference.model_validate(item) for item in raw]
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_invalid") from exc
     if len({skill.skill_id for skill in skills}) != len(skills):
@@ -295,13 +295,20 @@ def _revision_hash(
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,
         "model_id": definition._legacy_model_id,
-        "skill_set": [skill.model_dump(mode="json") for skill in definition.skill_set],
+        "skill_set": [
+            skill.model_dump(mode="json", exclude_none=True)
+            for skill in definition.skill_set
+        ],
         "mcp_tool_ids": definition.mcp_tool_ids,
         "avatar_ref": definition.avatar_ref,
         "avatar_asset_id": definition.avatar_asset_id,
         "avatar_seed": definition.avatar_seed,
         "category": definition.category,
-        **({"market_tag": _market_tag(definition)} if include_market_tag else {}),
+        **(
+            {"market_tag": _market_tag(definition)}
+            if include_market_tag and _market_tag(definition)
+            else {}
+        ),
         "visibility": definition.visibility,
         "allowed_department_ids": definition.allowed_department_ids,
         "allowed_roles": definition.allowed_roles,
@@ -371,7 +378,10 @@ def _omitted_file_type_skill_set_revision_hash(
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,
         "model_id": definition._legacy_model_id,
-        "skill_set": [skill.model_dump(mode="json") for skill in definition.skill_set],
+        "skill_set": [
+            skill.model_dump(mode="json", exclude_none=True)
+            for skill in definition.skill_set
+        ],
         "mcp_tool_ids": definition.mcp_tool_ids,
         "avatar_ref": definition.avatar_ref,
         "avatar_asset_id": definition.avatar_asset_id,
@@ -539,8 +549,8 @@ def _strict_hash_skill_set_shape(row: dict[str, Any]) -> bool:
         return False
     if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
         raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
-    skills = [SelectedSkillRequest.model_validate(item) for item in raw]
-    canonical = [skill.model_dump(mode="json") for skill in skills]
+    skills = [AgentProfileSkillReference.model_validate(item) for item in raw]
+    canonical = [skill.model_dump(mode="json", exclude_none=True) for skill in skills]
     if raw != canonical or len({skill.skill_id for skill in skills}) != len(skills):
         raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
     return True
@@ -755,6 +765,21 @@ def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
     return definition
 
 
+def _name_only_skill_set(
+    definition: AgentProfileDraftRequest,
+) -> AgentProfileDraftRequest:
+    skill_set = [
+        AgentProfileSkillReference(skill_id=skill.skill_id)
+        for skill in definition.skill_set
+    ]
+    return definition.model_copy(
+        update={
+            "selected_skill": skill_set[0],
+            "skill_set": skill_set,
+        }
+    )
+
+
 def _merge_omitted_profile_fields(
     definition: AgentProfileDraftRequest,
     *,
@@ -940,13 +965,14 @@ class AgentProfileAuthority:
                         tenant_id=principal.tenant_id,
                         agent_id=agent_id,
                         skill_id=selected_skill.skill_id,
-                        expected_version=selected_skill.expected_version,
+                        expected_version="",
                         rollout_key=principal.user_id,
                         normalized_input={},
                         principal_department_id=principal.department_id,
                         principal_roles=principal.roles,
                         is_admin=is_ai_admin(principal),
                         permissions=principal.permissions,
+                        allow_current_version=True,
                     )
                     for selected_skill in definition.skill_set
                 ]
@@ -1002,6 +1028,7 @@ class AgentProfileAuthority:
             definition = _merge_omitted_profile_fields(definition, prior_row=prior_row)
         if not definition.avatar_seed:
             definition = definition.model_copy(update={"avatar_seed": resolved_agent_id})
+        definition = _name_only_skill_set(definition)
         await self._validate_profile_department_authorities(definition)
         await repositories.ensure_agent_profile_identity(
             conn,
@@ -1020,8 +1047,11 @@ class AgentProfileAuthority:
             instructions=definition.instructions,
             legacy_model_id=_PROFILE_MODEL_COMPATIBILITY_SENTINEL,
             skill_id=definition.skill_set[0].skill_id,
-            skill_version=definition.skill_set[0].expected_version,
-            skill_set=[skill.model_dump(mode="json") for skill in definition.skill_set],
+            skill_version=definition.skill_set[0].expected_version or "",
+            skill_set=[
+                skill.model_dump(mode="json", exclude_none=True)
+                for skill in definition.skill_set
+            ],
             mcp_tool_ids=definition.mcp_tool_ids,
             welcome_message=definition.welcome_message,
             starter_prompts=definition.starter_prompts,
@@ -1100,6 +1130,7 @@ class AgentProfileAuthority:
         definition = _draft_from_row(draft_row)
         await self._validate_profile_department_authorities(definition)
         await self._validate_definition(conn, principal=principal, agent_id=agent_id, definition=definition)
+        definition = _name_only_skill_set(definition)
         definition._legacy_model_id = _PROFILE_MODEL_COMPATIBILITY_SENTINEL
         row = await repositories.create_agent_profile_revision(
             conn,
@@ -1111,8 +1142,11 @@ class AgentProfileAuthority:
             instructions=definition.instructions,
             legacy_model_id=_PROFILE_MODEL_COMPATIBILITY_SENTINEL,
             skill_id=definition.skill_set[0].skill_id,
-            skill_version=definition.skill_set[0].expected_version,
-            skill_set=[skill.model_dump(mode="json") for skill in definition.skill_set],
+            skill_version=definition.skill_set[0].expected_version or "",
+            skill_set=[
+                skill.model_dump(mode="json", exclude_none=True)
+                for skill in definition.skill_set
+            ],
             mcp_tool_ids=definition.mcp_tool_ids,
             welcome_message=definition.welcome_message,
             starter_prompts=definition.starter_prompts,
@@ -1224,8 +1258,11 @@ class AgentProfileAuthority:
             instructions=definition.instructions,
             legacy_model_id=str(authoring_row["model_id"]),
             skill_id=definition.skill_set[0].skill_id,
-            skill_version=definition.skill_set[0].expected_version,
-            skill_set=[skill.model_dump(mode="json") for skill in definition.skill_set],
+            skill_version=definition.skill_set[0].expected_version or "",
+            skill_set=[
+                skill.model_dump(mode="json", exclude_none=True)
+                for skill in definition.skill_set
+            ],
             mcp_tool_ids=definition.mcp_tool_ids,
             welcome_message=definition.welcome_message,
             starter_prompts=definition.starter_prompts,
@@ -1625,7 +1662,13 @@ class AgentProfileAuthority:
                 "revision": revision,
                 "content_hash": content_hash,
                 "instructions": str(row["instructions"]),
-                "skill_set": [skill.model_dump(mode="json") for skill in _skill_set(row)],
+                "skill_set": [
+                    {
+                        "skill_id": str(skill["skill_id"]),
+                        "expected_version": str(skill.get("skill_version") or ""),
+                    }
+                    for skill in skills
+                ],
             },
             public_identity=conversation_identity_projection(row),
             configured_mcp_tool_ids=configured_mcp_tool_ids,

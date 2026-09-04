@@ -104,6 +104,10 @@ test("expert management follows the directory and first-class configuration layo
   assert.match(workbenchSource, /Agent SDK 根据任务上下文自主决定/);
   assert.match(workbenchSource, /title="配置 Skill Set"/);
   assert.match(enterpriseFieldsSource, /AgentAvatarPicker/);
+  assert.match(enterpriseFieldsSource, /role="combobox"/);
+  assert.match(enterpriseFieldsSource, /role="listbox"/);
+  assert.match(enterpriseFieldsSource, /filterMarketTagSuggestions/);
+  assert.doesNotMatch(enterpriseFieldsSource, /<datalist/);
   assert.match(avatarPickerSource, /头像风格/);
   assert.match(avatarPickerSource, /<select/);
   assert.match(avatarPickerSource, /aria-label="选择头像风格"/);

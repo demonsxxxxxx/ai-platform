@@ -1,5 +1,7 @@
 from typing import Any, Literal, NotRequired, TypedDict
 
+from pydantic import BaseModel, ConfigDict, field_validator
+
 from app.agent_apps.application.skill_set_pinning import pin_agent_skill_set
 from app.agent_apps.domain.profile_definition import (
     discard_legacy_agent_profile_model_id,
@@ -9,6 +11,7 @@ from app.agent_apps.domain.profile_definition import (
     safe_agent_avatar_seed,
 )
 from app.skills.api import is_internal_dependency_skill
+from app.validation import assert_safe_id
 
 
 AgentProfileAvatarRef = Literal[
@@ -26,6 +29,25 @@ AgentProfileAvatarRef = Literal[
     "builtin:icon",
 ]
 AGENT_PROFILE_AVATAR_REFS = frozenset(AgentProfileAvatarRef.__args__)
+
+
+class AgentProfileSkillReference(BaseModel):
+    """A profile Skill name, with an optional legacy version for old revisions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill_id: str
+    expected_version: str | None = None
+
+    @field_validator("skill_id")
+    @classmethod
+    def validate_skill_name(cls, value: str) -> str:
+        return assert_safe_id(value, "skill_id")
+
+    @field_validator("expected_version")
+    @classmethod
+    def validate_legacy_version(cls, value: str | None) -> str | None:
+        return assert_safe_id(value, "expected_version") if value is not None else None
 
 
 class AgentProfilePublicProjection(TypedDict):
@@ -76,6 +98,7 @@ __all__ = [
     "AGENT_PROFILE_AVATAR_REFS",
     "AgentProfileAvatarRef",
     "AgentProfilePublicProjection",
+    "AgentProfileSkillReference",
     "discard_legacy_agent_profile_model_id",
     "normalize_agent_avatar_seed",
     "normalize_agent_profile_display_items",

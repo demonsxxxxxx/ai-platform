@@ -1639,6 +1639,23 @@ async def test_authorize_selected_run_capabilities_returns_stable_stale_conflict
     assert str(exc_info.value) == "skill_selection_stale"
     assert "hash-v2" not in str(exc_info.value)
 
+    resolved = await repositories.authorize_selected_run_capabilities(
+        object(),
+        tenant_id="tenant-a",
+        agent_id="general-agent",
+        skill_id="department-review",
+        expected_version="",
+        rollout_key="user-a",
+        normalized_input={},
+        principal_department_id="qa",
+        principal_roles=["reviewer"],
+        is_admin=False,
+        permissions=[],
+        allow_current_version=True,
+    )
+    assert resolved["skill_version"] == "hash-v2"
+    assert resolved["skill_content_hash"] == "hash-v2"
+
 
 @pytest.mark.asyncio
 async def test_authorize_selected_run_capabilities_rejects_version_content_hash_invariant(
