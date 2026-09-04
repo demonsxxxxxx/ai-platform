@@ -44,7 +44,7 @@ def test_schema_enforces_agent_skill_set_shape_and_legacy_shadow_identity():
 
     assert "raise exception 'agent_profile_skill_set_invalid'" in schema
     assert "new.skill_set->0->>'skill_id' is distinct from new.skill_id" in schema
-    assert "or coalesce(new.skill_set->0->>'expected_version', '') is distinct from coalesce(new.skill_version, '')" in schema
+    assert "new.skill_set->0->>'expected_version' is distinct from new.skill_version" in schema
     assert "create or replace function agent_profile_name_only_skill_set_prepare()" in schema
     assert "create or replace function agent_profile_name_only_skill_set_finalize()" in schema
     assert "create trigger trg_agent_profile_aa_name_only_skill_set_prepare" in schema

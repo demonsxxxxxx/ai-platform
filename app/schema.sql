@@ -1054,10 +1054,7 @@ where legacy_compatibility_write
     from jsonb_array_elements(skill_set) item
     where jsonb_typeof(item) <> 'object'
        or coalesce(item->>'skill_id', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
-       or (
-         item ? 'expected_version'
-         and coalesce(item->>'expected_version', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
-       )
+       or coalesce(item->>'expected_version', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
   )
    or exists (
     select 1
@@ -1066,7 +1063,7 @@ where legacy_compatibility_write
     having count(*) > 1
   )
    or skill_set->0->>'skill_id' is distinct from skill_id
-   or coalesce(skill_set->0->>'expected_version', '') is distinct from coalesce(skill_version, '')
+   or skill_set->0->>'expected_version' is distinct from skill_version
   );
 
 -- No metadata defaults: omission is how the compatibility trigger recognizes
@@ -1392,10 +1389,7 @@ begin
       from jsonb_array_elements(new.skill_set) item
       where jsonb_typeof(item) <> 'object'
          or coalesce(item->>'skill_id', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
-         or (
-           item ? 'expected_version'
-           and coalesce(item->>'expected_version', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
-         )
+         or coalesce(item->>'expected_version', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
     )
      or exists (
       select 1
@@ -1404,7 +1398,7 @@ begin
       having count(*) > 1
     )
      or new.skill_set->0->>'skill_id' is distinct from new.skill_id
-     or coalesce(new.skill_set->0->>'expected_version', '') is distinct from coalesce(new.skill_version, '') then
+     or new.skill_set->0->>'expected_version' is distinct from new.skill_version then
     raise exception 'agent_profile_skill_set_invalid' using errcode = '23514';
   end if;
   if new.revision_status is not null then
