@@ -12,6 +12,7 @@ from typing import Protocol
 
 from app.streaming.domain.protocol_v4 import (
     INTERNAL_STREAM_EVENT_SCHEMA,
+    PUBLIC_PROJECTION_FAILURE_REASONS,
     PUBLIC_RUN_STREAM_SCHEMA,
     PUBLIC_STREAM_EVENT_TYPES,
     STREAM_PROJECTION_VERSION,
@@ -36,6 +37,16 @@ class V4ProjectionError(ValueError):
 class V4StreamEntry:
     cursor: StreamCursor
     envelope: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class _PersistedHistoryAuthority:
+    tenant_id: str
+    run_id: str
+    attempt_id: str
+    stream_incarnation: int
+    authorization_epoch: int
+    tenant_scope: str = "history"
 
 
 class StreamAuthorityView(Protocol):
@@ -90,36 +101,85 @@ _REQUIRED_PAYLOAD_KEYS: dict[str, frozenset[str]] = {
     ),
     "model.completed": frozenset({"duration_ms", "turn_count", "stop_category"}),
     "tool.started": frozenset({"operation_id", "category", "display_name"}),
-    "tool.completed": frozenset({"operation_id", "category", "display_name", "duration_ms"}),
-    "tool.failed": frozenset({"operation_id", "category", "display_name", "duration_ms", "failure_category"}),
-    "tool.denied": frozenset({"operation_id", "category", "display_name", "denial_code"}),
+    "tool.completed": frozenset(
+        {"operation_id", "category", "display_name", "duration_ms"}
+    ),
+    "tool.failed": frozenset(
+        {"operation_id", "category", "display_name", "duration_ms", "failure_category"}
+    ),
+    "tool.denied": frozenset(
+        {"operation_id", "category", "display_name", "denial_code"}
+    ),
     "subagent.started": frozenset({"subagent_id", "display_name"}),
-    "subagent.progress": frozenset({"subagent_id", "display_name", "duration_ms", "current_category"}),
+    "subagent.progress": frozenset(
+        {"subagent_id", "display_name", "duration_ms", "current_category"}
+    ),
     "subagent.completed": frozenset({"subagent_id", "display_name", "duration_ms"}),
-    "subagent.failed": frozenset({"subagent_id", "display_name", "duration_ms", "failure_category"}),
-    "subagent.cancelled": frozenset({"subagent_id", "display_name", "duration_ms", "reason_code"}),
-    "artifact.created": frozenset({"artifact_id", "filename", "media_type", "size_bytes", "status"}),
-    "artifact.ready": frozenset({"artifact_id", "filename", "media_type", "size_bytes", "status"}),
+    "subagent.failed": frozenset(
+        {"subagent_id", "display_name", "duration_ms", "failure_category"}
+    ),
+    "subagent.cancelled": frozenset(
+        {"subagent_id", "display_name", "duration_ms", "reason_code"}
+    ),
+    "artifact.created": frozenset(
+        {"artifact_id", "filename", "media_type", "size_bytes", "status"}
+    ),
+    "artifact.ready": frozenset(
+        {"artifact_id", "filename", "media_type", "size_bytes", "status"}
+    ),
     "artifact.failed": frozenset({"artifact_id", "status", "failure_category"}),
     "policy.checking": frozenset({"decision_id", "category", "display_name"}),
-    "policy.allowed": frozenset({"decision_id", "category", "display_name", "decision_code"}),
-    "policy.denied": frozenset({"decision_id", "category", "display_name", "decision_code"}),
+    "policy.allowed": frozenset(
+        {"decision_id", "category", "display_name", "decision_code"}
+    ),
+    "policy.denied": frozenset(
+        {"decision_id", "category", "display_name", "decision_code"}
+    ),
     "run.cancel_requested": frozenset({"source"}),
     "run.succeeded": frozenset({"terminal_event_id", "hydrate_required"}),
-    "run.cancelled": frozenset({"terminal_event_id", "hydrate_required", "reason_code"}),
-    "run.failed": frozenset({"terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail"}),
+    "run.cancelled": frozenset(
+        {"terminal_event_id", "hydrate_required", "reason_code"}
+    ),
+    "run.failed": frozenset(
+        {
+            "terminal_event_id",
+            "hydrate_required",
+            "projection_version",
+            "code",
+            "default_message",
+            "detail",
+        }
+    ),
 }
 _EVENT_FIELD_VALUES: dict[tuple[str, str], frozenset[object]] = {
     ("tool.failed", "failure_category"): frozenset(
-        {"invalid_input", "not_found", "permission_denied", "timeout", "unavailable", "execution_failed"}
+        {
+            "invalid_input",
+            "not_found",
+            "permission_denied",
+            "timeout",
+            "unavailable",
+            "execution_failed",
+        }
     ),
-    ("tool.denied", "denial_code"): frozenset({"capability_not_authorized", "policy_denied"}),
+    ("tool.denied", "denial_code"): frozenset(
+        {"capability_not_authorized", "policy_denied"}
+    ),
     ("subagent.failed", "failure_category"): frozenset({"subagent_failed"}),
-    ("subagent.cancelled", "reason_code"): frozenset({"user_cancelled", "run_cancelled", "timeout"}),
-    ("artifact.failed", "failure_category"): frozenset({"artifact_failed", "unavailable"}),
+    ("subagent.cancelled", "reason_code"): frozenset(
+        {"user_cancelled", "run_cancelled", "timeout"}
+    ),
+    ("artifact.failed", "failure_category"): frozenset(
+        {"artifact_failed", "unavailable"}
+    ),
     ("policy.allowed", "decision_code"): frozenset({"allowed"}),
-    ("policy.denied", "decision_code"): frozenset({"capability_not_authorized", "policy_denied"}),
-    ("run.cancelled", "reason_code"): frozenset({"user_cancelled", "policy_cancelled", "timeout"}),
+    ("policy.denied", "decision_code"): frozenset(
+        {"capability_not_authorized", "policy_denied"}
+    ),
+    ("run.cancelled", "reason_code"): frozenset(
+        {"user_cancelled", "policy_cancelled", "timeout"}
+    ),
+    ("run.failed", "projection_failure_reason"): PUBLIC_PROJECTION_FAILURE_REASONS,
 }
 
 
@@ -138,7 +198,9 @@ def opaque_message_id(tenant_id: str, run_id: str) -> str:
     return f"msg4_{digest}"
 
 
-def _publication_state(row: Mapping[str, object], metadata: Mapping[str, object] | None) -> str | None:
+def _publication_state(
+    row: Mapping[str, object], metadata: Mapping[str, object] | None
+) -> str | None:
     state = row.get("stream_publication_state")
     if isinstance(state, str):
         return state
@@ -163,7 +225,9 @@ def _stable_event_id(
         callback_index,
         batch_index,
     ]
-    digest = hashlib.sha256(json.dumps(material, separators=(",", ":")).encode()).hexdigest()
+    digest = hashlib.sha256(
+        json.dumps(material, separators=(",", ":")).encode()
+    ).hexdigest()
     return f"evt4_{digest}"
 
 
@@ -198,14 +262,23 @@ _APPLICATION_EVENT_TYPES = PUBLIC_STREAM_EVENT_TYPES - {
 _RUN_DOMAIN_EVENT_TYPES = frozenset(
     {"run.cancel_requested", "run.succeeded", "run.failed", "run.cancelled"}
 )
-_CONTROL_EVENT_TYPES = frozenset({"stream.open", "stream.heartbeat", "stream.gap", "stream.end"})
+_CONTROL_EVENT_TYPES = frozenset(
+    {"stream.open", "stream.heartbeat", "stream.gap", "stream.end"}
+)
 _CONTROL_SCHEMA = "ai-platform.public-run-stream-control.v4"
-_CONTROL_REPLAYABLE = {"stream.open": True, "stream.heartbeat": False, "stream.gap": False, "stream.end": True}
+_CONTROL_REPLAYABLE = {
+    "stream.open": True,
+    "stream.heartbeat": False,
+    "stream.gap": False,
+    "stream.end": True,
+}
 _SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$")
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _TRACE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _FILENAME_RE = re.compile(r"^[^/\\\\\x00-\x1f\x7f]+$")
-_TOOL_CATEGORIES = frozenset({"skill", "mcp", "read", "write", "edit", "search", "execute"})
+_TOOL_CATEGORIES = frozenset(
+    {"skill", "mcp", "read", "write", "edit", "search", "execute"}
+)
 _AGENT_PROGRESS_SCHEMA = "ai-platform.public-agent-progress.v1"
 _AGENT_PROGRESS_MESSAGES = {
     "attachment_materialization": {
@@ -277,24 +350,70 @@ _PAYLOAD_FIELDS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     ),
     "tool.started": (
         frozenset({"operation_id", "category", "display_name"}),
-        frozenset({"operation_id", "category", "display_name", "input_summary", "evidence_refs"}),
+        frozenset(
+            {
+                "operation_id",
+                "category",
+                "display_name",
+                "input_summary",
+                "evidence_refs",
+            }
+        ),
     ),
     "tool.completed": (
         frozenset({"operation_id", "category", "display_name", "duration_ms"}),
-        frozenset({"operation_id", "category", "display_name", "duration_ms", "result_summary", "evidence_refs", "artifact_refs"}),
+        frozenset(
+            {
+                "operation_id",
+                "category",
+                "display_name",
+                "duration_ms",
+                "result_summary",
+                "evidence_refs",
+                "artifact_refs",
+            }
+        ),
     ),
     "tool.failed": (
-        frozenset({"operation_id", "category", "display_name", "duration_ms", "failure_category"}),
-        frozenset({"operation_id", "category", "display_name", "duration_ms", "failure_category", "evidence_refs"}),
+        frozenset(
+            {
+                "operation_id",
+                "category",
+                "display_name",
+                "duration_ms",
+                "failure_category",
+            }
+        ),
+        frozenset(
+            {
+                "operation_id",
+                "category",
+                "display_name",
+                "duration_ms",
+                "failure_category",
+                "evidence_refs",
+            }
+        ),
     ),
     "tool.denied": (
         frozenset({"operation_id", "category", "display_name", "denial_code"}),
         frozenset({"operation_id", "category", "display_name", "denial_code"}),
     ),
-    "subagent.started": (frozenset({"subagent_id", "display_name"}), frozenset({"subagent_id", "display_name"})),
+    "subagent.started": (
+        frozenset({"subagent_id", "display_name"}),
+        frozenset({"subagent_id", "display_name"}),
+    ),
     "subagent.progress": (
         frozenset({"subagent_id", "display_name", "duration_ms", "current_category"}),
-        frozenset({"subagent_id", "display_name", "duration_ms", "current_category", "progress_percent"}),
+        frozenset(
+            {
+                "subagent_id",
+                "display_name",
+                "duration_ms",
+                "current_category",
+                "progress_percent",
+            }
+        ),
     ),
     "subagent.completed": (
         frozenset({"subagent_id", "display_name", "duration_ms"}),
@@ -310,15 +429,35 @@ _PAYLOAD_FIELDS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     ),
     "artifact.created": (
         frozenset({"artifact_id", "filename", "media_type", "size_bytes", "status"}),
-        frozenset({"artifact_id", "filename", "media_type", "size_bytes", "status", "evidence_ref"}),
+        frozenset(
+            {
+                "artifact_id",
+                "filename",
+                "media_type",
+                "size_bytes",
+                "status",
+                "evidence_ref",
+            }
+        ),
     ),
     "artifact.ready": (
         frozenset({"artifact_id", "filename", "media_type", "size_bytes", "status"}),
-        frozenset({"artifact_id", "filename", "media_type", "size_bytes", "status", "evidence_ref"}),
+        frozenset(
+            {
+                "artifact_id",
+                "filename",
+                "media_type",
+                "size_bytes",
+                "status",
+                "evidence_ref",
+            }
+        ),
     ),
     "artifact.failed": (
         frozenset({"artifact_id", "status", "failure_category"}),
-        frozenset({"artifact_id", "status", "failure_category", "filename", "media_type"}),
+        frozenset(
+            {"artifact_id", "status", "failure_category", "filename", "media_type"}
+        ),
     ),
     "policy.checking": (
         frozenset({"decision_id", "category", "display_name"}),
@@ -342,8 +481,27 @@ _PAYLOAD_FIELDS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
         frozenset({"terminal_event_id", "hydrate_required", "reason_code"}),
     ),
     "run.failed": (
-        frozenset({"terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail"}),
-        frozenset({"terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail"}),
+        frozenset(
+            {
+                "terminal_event_id",
+                "hydrate_required",
+                "projection_version",
+                "code",
+                "default_message",
+                "detail",
+            }
+        ),
+        frozenset(
+            {
+                "terminal_event_id",
+                "hydrate_required",
+                "projection_version",
+                "code",
+                "default_message",
+                "detail",
+                "projection_failure_reason",
+            }
+        ),
     ),
 }
 _MESSAGE_EVENT_TYPES = frozenset(_MESSAGE_EVENT_TYPES)
@@ -361,7 +519,10 @@ def _validate_control_payload(event_type: str, payload: object) -> dict[str, obj
         if result != {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"}:
             raise V4ProjectionError("v4_stream_open_payload_invalid")
     elif event_type == "stream.heartbeat":
-        if set(result) != {"status"} or result.get("status") not in {"queued", "running"}:
+        if set(result) != {"status"} or result.get("status") not in {
+            "queued",
+            "running",
+        }:
             raise V4ProjectionError("v4_stream_heartbeat_payload_invalid")
     elif event_type == "stream.gap":
         required = {
@@ -388,9 +549,16 @@ def _validate_control_payload(event_type: str, payload: object) -> dict[str, obj
         requested_incarnation = result.get("requested_stream_incarnation")
         if requested_incarnation is not None:
             _positive_int(requested_incarnation, name="requested_stream_incarnation")
-        _positive_int(result.get("current_stream_incarnation"), name="current_stream_incarnation")
-        _nullable_safe_ref(result.get("earliest_available_event_id"), name="earliest_available_event_id")
-        _nullable_safe_ref(result.get("latest_available_event_id"), name="latest_available_event_id")
+        _positive_int(
+            result.get("current_stream_incarnation"), name="current_stream_incarnation"
+        )
+        _nullable_safe_ref(
+            result.get("earliest_available_event_id"),
+            name="earliest_available_event_id",
+        )
+        _nullable_safe_ref(
+            result.get("latest_available_event_id"), name="latest_available_event_id"
+        )
     elif event_type == "stream.end":
         if set(result) != {"terminal_event_id"}:
             raise V4ProjectionError("v4_stream_end_payload_invalid")
@@ -474,9 +642,12 @@ def stream_end_event_id(terminal_event_id: str) -> str:
     """Return the deterministic semantic identity for a terminal stream end."""
 
     _safe_ref(terminal_event_id, name="terminal_event_id")
-    return "evt4_end_" + hashlib.sha256(
-        canonical_json_bytes(["ai-platform-stream-end-v4", terminal_event_id])
-    ).hexdigest()
+    return (
+        "evt4_end_"
+        + hashlib.sha256(
+            canonical_json_bytes(["ai-platform-stream-end-v4", terminal_event_id])
+        ).hexdigest()
+    )
 
 
 def _bounded_string(value: object, *, name: str, maximum: int, minimum: int = 0) -> str:
@@ -498,7 +669,11 @@ def _nullable_safe_ref(value: object, *, name: str = "ref") -> str | None:
 
 
 def _nonnegative_int(value: object, *, name: str, maximum: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= maximum:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 <= value <= maximum
+    ):
         raise V4ProjectionError(f"v4_{name}_invalid")
     return value
 
@@ -562,7 +737,14 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
         if not isinstance(key, str) or key.startswith("__"):
             raise V4ProjectionError("v4_payload_unknown_key")
     for key, value in result.items():
-        if key in {"thinking_id", "operation_id", "subagent_id", "artifact_id", "decision_id", "terminal_event_id"}:
+        if key in {
+            "thinking_id",
+            "operation_id",
+            "subagent_id",
+            "artifact_id",
+            "decision_id",
+            "terminal_event_id",
+        }:
             _safe_ref(value, name=key)
         elif key in {"evidence_ref"}:
             _nullable_safe_ref(value, name=key)
@@ -603,6 +785,10 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
         elif key == "detail":
             if value is not None:
                 _bounded_string(value, name=key, maximum=2048)
+        elif key == "projection_failure_reason":
+            allowed_reasons = _EVENT_FIELD_VALUES.get((event_type, key), frozenset())
+            if value not in allowed_reasons:
+                raise V4ProjectionError("v4_projection_failure_reason_invalid")
         elif key == "category" or key == "current_category":
             if value not in _TOOL_CATEGORIES:
                 raise V4ProjectionError(f"v4_{key}_invalid")
@@ -618,7 +804,13 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
             if value is not True:
                 raise V4ProjectionError("v4_hydrate_required_invalid")
         elif key == "stop_category":
-            if value not in {"completed", "max_turns", "cancelled", "failed", "unknown"}:
+            if value not in {
+                "completed",
+                "max_turns",
+                "cancelled",
+                "failed",
+                "unknown",
+            }:
                 raise V4ProjectionError("v4_stop_category_invalid")
         elif key == "failure_category":
             allowed_failure = _EVENT_FIELD_VALUES.get((event_type, key), frozenset())
@@ -638,7 +830,9 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
                 raise V4ProjectionError("v4_decision_code_invalid")
         elif key == "status":
             expected_status = {
-                "artifact.created": "created", "artifact.ready": "ready", "artifact.failed": "failed",
+                "artifact.created": "created",
+                "artifact.ready": "ready",
+                "artifact.failed": "failed",
             }.get(event_type)
             if value != expected_status:
                 raise V4ProjectionError("v4_status_invalid")
@@ -650,6 +844,12 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
                 raise V4ProjectionError("v4_projection_version_invalid")
         else:
             raise V4ProjectionError("v4_payload_key_unimplemented")
+    if (
+        event_type == "run.failed"
+        and "projection_failure_reason" in result
+        and result.get("code") != "claude_agent_sdk_public_projection_failed"
+    ):
+        raise V4ProjectionError("v4_projection_failure_code_invalid")
     display_name = result.get("display_name")
     if event_type == "tool.started" and "input_summary" in result:
         if result["input_summary"] != f"Starting {display_name}":
@@ -675,35 +875,75 @@ def _validate_source(source: object) -> dict[str, object]:
     if kind == "run_event":
         if set(source) != {"kind", "run_event_id", "sequence"}:
             raise V4ProjectionError("v4_source_invalid")
-        return {"kind": kind, "run_event_id": _safe_ref(source.get("run_event_id"), name="run_event_id"), "sequence": _positive_int(source.get("sequence"), name="source_sequence")}
+        return {
+            "kind": kind,
+            "run_event_id": _safe_ref(source.get("run_event_id"), name="run_event_id"),
+            "sequence": _positive_int(source.get("sequence"), name="source_sequence"),
+        }
     if kind == "stream_authority":
         if set(source) != {"kind", "authority_id"}:
             raise V4ProjectionError("v4_source_invalid")
-        return {"kind": kind, "authority_id": _safe_ref(source.get("authority_id"), name="authority_id")}
+        return {
+            "kind": kind,
+            "authority_id": _safe_ref(source.get("authority_id"), name="authority_id"),
+        }
     if kind == "terminal_intent":
         if set(source) != {"kind", "terminal_event_id"}:
             raise V4ProjectionError("v4_source_invalid")
-        return {"kind": kind, "terminal_event_id": _safe_ref(source.get("terminal_event_id"), name="terminal_event_id")}
+        return {
+            "kind": kind,
+            "terminal_event_id": _safe_ref(
+                source.get("terminal_event_id"), name="terminal_event_id"
+            ),
+        }
     raise V4ProjectionError("v4_source_invalid")
 
 
 def validate_internal_envelope_v4(envelope: Mapping[str, object]) -> dict[str, object]:
     if not isinstance(envelope, Mapping):
         raise V4ProjectionError("v4_internal_envelope_invalid")
-    required = {"schema", "event_id", "tenant_scope", "run_id", "attempt_id", "message_id", "seq", "event_type", "stream_incarnation", "replayable", "trace_ref", "causation_event_id", "emitted_at", "projection_version", "payload", "source"}
-    if set(envelope) != required or envelope.get("schema") != INTERNAL_STREAM_EVENT_SCHEMA:
+    required = {
+        "schema",
+        "event_id",
+        "tenant_scope",
+        "run_id",
+        "attempt_id",
+        "message_id",
+        "seq",
+        "event_type",
+        "stream_incarnation",
+        "replayable",
+        "trace_ref",
+        "causation_event_id",
+        "emitted_at",
+        "projection_version",
+        "payload",
+        "source",
+    }
+    if (
+        set(envelope) != required
+        or envelope.get("schema") != INTERNAL_STREAM_EVENT_SCHEMA
+    ):
         raise V4ProjectionError("v4_internal_envelope_invalid")
     event_type = envelope.get("event_type")
     if event_type not in PUBLIC_STREAM_EVENT_TYPES:
         raise V4ProjectionError("v4_event_type_invalid")
-    event_id = _bounded_string(envelope.get("event_id"), name="event_id", maximum=256, minimum=1)
-    tenant_scope = _bounded_string(envelope.get("tenant_scope"), name="tenant_scope", maximum=128, minimum=1)
+    event_id = _bounded_string(
+        envelope.get("event_id"), name="event_id", maximum=256, minimum=1
+    )
+    tenant_scope = _bounded_string(
+        envelope.get("tenant_scope"), name="tenant_scope", maximum=128, minimum=1
+    )
     if not re.fullmatch(r"^[A-Za-z0-9_-]{1,128}$", tenant_scope):
         raise V4ProjectionError("v4_tenant_scope_invalid")
-    run_id = _bounded_string(envelope.get("run_id"), name="run_id", maximum=128, minimum=1)
+    run_id = _bounded_string(
+        envelope.get("run_id"), name="run_id", maximum=128, minimum=1
+    )
     if not _RUN_ID_RE.fullmatch(run_id):
         raise V4ProjectionError("v4_run_id_invalid")
-    attempt_id = _bounded_string(envelope.get("attempt_id"), name="attempt_id", maximum=256, minimum=1)
+    attempt_id = _bounded_string(
+        envelope.get("attempt_id"), name="attempt_id", maximum=256, minimum=1
+    )
     message_id = envelope.get("message_id")
     seq = envelope.get("seq")
     trace_ref = envelope.get("trace_ref")
@@ -722,11 +962,17 @@ def validate_internal_envelope_v4(envelope: Mapping[str, object]) -> dict[str, o
         seq = _positive_int(seq, name="seq")
         if replayable is not True:
             raise V4ProjectionError("v4_replayable_invalid")
-        if trace_ref is not None and (not isinstance(trace_ref, str) or not _TRACE_REF_RE.fullmatch(trace_ref)):
+        if trace_ref is not None and (
+            not isinstance(trace_ref, str) or not _TRACE_REF_RE.fullmatch(trace_ref)
+        ):
             raise V4ProjectionError("v4_trace_ref_invalid")
         payload = _validate_payload(event_type, envelope.get("payload"))
-    stream_incarnation = _positive_int(envelope.get("stream_incarnation"), name="stream_incarnation")
-    causation_event_id = _nullable_safe_ref(envelope.get("causation_event_id"), name="causation_event_id")
+    stream_incarnation = _positive_int(
+        envelope.get("stream_incarnation"), name="stream_incarnation"
+    )
+    causation_event_id = _nullable_safe_ref(
+        envelope.get("causation_event_id"), name="causation_event_id"
+    )
     emitted_at = _as_utc(envelope.get("emitted_at"))
     if envelope.get("projection_version") != STREAM_PROJECTION_VERSION:
         raise V4ProjectionError("v4_projection_version_invalid")
@@ -777,7 +1023,10 @@ def project_public_v4(
         if row.get("visible_to_user") is not True:
             return None
         metadata = _metadata(row)
-        if metadata is None or _publication_state(row, metadata) not in {"pending", "published"}:
+        if metadata is None or _publication_state(row, metadata) not in {
+            "pending",
+            "published",
+        }:
             return None
         row_id = row.get("id")
         run_id = row.get("run_id")
@@ -830,7 +1079,11 @@ def project_public_v4(
             "emitted_at": _as_utc(row.get("created_at")),
             "projection_version": STREAM_PROJECTION_VERSION,
             "payload": _public_payload(row),
-            "source": {"kind": "run_event", "run_event_id": row_id, "sequence": sequence},
+            "source": {
+                "kind": "run_event",
+                "run_event_id": row_id,
+                "sequence": sequence,
+            },
         }
         return validate_internal_envelope_v4(envelope)
     except V4ProjectionError:
@@ -863,7 +1116,9 @@ def project_public_v4_successor(
     return validate_internal_envelope_v4(successor)
 
 
-def project_public_envelope_v4(envelope: Mapping[str, object]) -> dict[str, object] | None:
+def project_public_envelope_v4(
+    envelope: Mapping[str, object],
+) -> dict[str, object] | None:
     """Strip internal authority fields only at the public gateway boundary."""
 
     try:
@@ -871,7 +1126,9 @@ def project_public_envelope_v4(envelope: Mapping[str, object]) -> dict[str, obje
     except V4ProjectionError:
         return None
     return {
-        "schema": _CONTROL_SCHEMA if internal["event_type"] in _CONTROL_EVENT_TYPES else PUBLIC_RUN_STREAM_SCHEMA,
+        "schema": _CONTROL_SCHEMA
+        if internal["event_type"] in _CONTROL_EVENT_TYPES
+        else PUBLIC_RUN_STREAM_SCHEMA,
         "event_id": internal["event_id"],
         "run_id": internal["run_id"],
         "message_id": internal["message_id"],
@@ -884,6 +1141,53 @@ def project_public_envelope_v4(envelope: Mapping[str, object]) -> dict[str, obje
         "emitted_at": internal["emitted_at"],
         "payload": internal["payload"],
     }
+
+
+def project_persisted_message_delta_v4(
+    row: Mapping[str, object],
+    *,
+    tenant_id: str,
+    run_id: str,
+) -> dict[str, object] | None:
+    """Authorize one managed historical row and return its public delta envelope."""
+
+    try:
+        if (
+            row.get("tenant_id") != tenant_id
+            or row.get("run_id") != run_id
+            or row.get("v4_attempt_authorized") is not True
+            or row.get("stream_publication_state") not in {"pending", "published"}
+            or row.get("event_type") != "message.delta"
+        ):
+            return None
+        metadata = _metadata(row)
+        if metadata is None:
+            return None
+        attempt_id = _safe_ref(metadata.get("attempt_id"), name="attempt_id")
+        stream_incarnation = _positive_int(
+            metadata.get("stream_incarnation"), name="stream_incarnation"
+        )
+        authorization_epoch = _positive_int(
+            metadata.get("authorization_epoch"), name="authorization_epoch"
+        )
+        authority = _PersistedHistoryAuthority(
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            stream_incarnation=stream_incarnation,
+            authorization_epoch=authorization_epoch,
+        )
+        projected = project_public_v4(row, authority=authority)
+        public = (
+            project_public_envelope_v4(projected) if projected is not None else None
+        )
+        return (
+            public
+            if public is not None and public.get("event_type") == "message.delta"
+            else None
+        )
+    except V4ProjectionError:
+        return None
 
 
 def strip_internal_envelope(envelope: Mapping[str, object]) -> dict[str, object]:
@@ -912,6 +1216,7 @@ __all__ = [
     "build_public_v4_control",
     "build_v4_control",
     "opaque_message_id",
+    "project_persisted_message_delta_v4",
     "project_public_envelope_v4",
     "project_public_v4",
     "stream_end_event_id",

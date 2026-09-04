@@ -81,6 +81,7 @@ elseif ARGV[5] == 'terminal' then
     redis.call('PEXPIRE',KEYS[1],ARGV[4]);redis.call('PEXPIRE',KEYS[2],ARGV[4])
     return redis.call('HGET',KEYS[2],'terminal_redis_id')
   end
+  if not phase and redis.call('XLEN',KEYS[1]) == 0 then return redis.error_reply('stream_missing') end
   if phase ~= 'open' then return redis.error_reply('stream_terminal_conflict') end
 elseif ARGV[5] == 'end' then
   if phase == 'ended'
@@ -129,6 +130,7 @@ _SCRIPT_CONTRACT_ERRORS = frozenset(
     {
         "stream_end_without_terminal",
         "stream_event_receipt_conflict",
+        "stream_missing",
         "stream_open_conflict",
         "stream_protocol_conflict",
         "stream_terminal_closed",

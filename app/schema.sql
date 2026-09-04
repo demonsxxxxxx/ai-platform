@@ -41,8 +41,30 @@ create table if not exists users (
   email text,
   external_id text,
   status text not null default 'active',
-  created_at timestamptz not null default now()
+  metadata_json jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  constraint chk_users_metadata_json_object check (jsonb_typeof(metadata_json) = 'object')
 );
+
+alter table users
+  add column if not exists metadata_json jsonb not null default '{}'::jsonb;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'chk_users_metadata_json_object'
+      and conrelid = 'users'::regclass
+  ) then
+    alter table users
+      add constraint chk_users_metadata_json_object
+      check (jsonb_typeof(metadata_json) = 'object') not valid;
+  end if;
+end
+$$;
+
+alter table users validate constraint chk_users_metadata_json_object;
 
 create table if not exists skills (
   id text primary key,
@@ -136,60 +158,31 @@ create table if not exists mcp_servers (
   credential_state text not null default 'not_configured',
   credential_metadata_json jsonb not null default '{}'::jsonb,
   credential_fingerprint text not null default '',
-  catalog_generation bigint not null default 0,
-  catalog_sync_attempt bigint not null default 0,
-  catalog_sync_lease_expires_at timestamptz,
-  catalog_revision bigint not null default 0,
-  catalog_status text not null default 'legacy',
-  catalog_unavailable_reason text not null default '',
-  catalog_discovered_count integer not null default 0,
-  catalog_selectable_count integer not null default 0,
-  catalog_last_synced_at timestamptz,
   updated_by text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique(tenant_id, name),
   check (transport in ('sse', 'streamable_http', 'sandbox')),
   check (status in ('active', 'disabled', 'deleted')),
-  check (credential_state in ('not_configured', 'configured', 'platform_managed')),
-  check (catalog_generation >= 0),
-  check (catalog_sync_attempt >= 0),
-  check (catalog_revision >= 0),
-  check (catalog_status in ('legacy', 'refresh_required', 'syncing', 'available', 'no_tools', 'unavailable', 'disabled', 'deleted')),
-  check (catalog_discovered_count >= 0),
-  check (catalog_selectable_count >= 0)
+  check (credential_state in ('not_configured', 'configured', 'platform_managed'))
 );
 
 create index if not exists idx_mcp_servers_tenant_status
   on mcp_servers(tenant_id, status, name);
 
-alter table mcp_servers
-  add column if not exists catalog_generation bigint not null default 0,
-  add column if not exists catalog_sync_attempt bigint not null default 0,
-  add column if not exists catalog_sync_lease_expires_at timestamptz,
-  add column if not exists catalog_revision bigint not null default 0,
-  add column if not exists catalog_status text not null default 'legacy',
-  add column if not exists catalog_unavailable_reason text not null default '',
-  add column if not exists catalog_discovered_count integer not null default 0,
-  add column if not exists catalog_selectable_count integer not null default 0,
-  add column if not exists catalog_last_synced_at timestamptz;
-
 do $$
 begin
   if not exists (
-    select 1 from pg_constraint
-    where conname = 'mcp_servers_catalog_status_valid'
-      and conrelid = 'mcp_servers'::regclass
+    select 1 from pg_constraint where conname = 'mcp_servers_endpoint_not_persisted'
   ) then
     alter table mcp_servers
-      add constraint mcp_servers_catalog_status_valid
-      check (catalog_status in ('legacy', 'refresh_required', 'syncing', 'available', 'no_tools', 'unavailable', 'disabled', 'deleted')) not valid;
+      add constraint mcp_servers_endpoint_not_persisted
+      check (endpoint_redacted = '') not valid;
   end if;
-end
-$$;
+end $$;
 
 alter table mcp_servers
-  validate constraint mcp_servers_catalog_status_valid;
+  validate constraint mcp_servers_endpoint_not_persisted;
 
 create or replace function ai_platform_text_array_all_nonblank(input_values text[])
 returns boolean
@@ -316,12 +309,16 @@ create table if not exists mcp_server_credentials (
   server_name text not null,
   credential_fingerprint text not null default '',
   metadata_json jsonb not null default '{}'::jsonb,
+  credential_envelope text not null default '',
   updated_by text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   primary key (tenant_id, server_name),
   foreign key (tenant_id, server_name) references mcp_servers(tenant_id, name)
 );
+
+alter table mcp_server_credentials
+  add column if not exists credential_envelope text not null default '';
 
 create table if not exists mcp_tools (
   id text primary key,
@@ -339,6 +336,20 @@ create table if not exists mcp_tools (
   created_at timestamptz not null default now()
 );
 
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'mcp_tools_endpoint_not_persisted'
+  ) then
+    alter table mcp_tools
+      add constraint mcp_tools_endpoint_not_persisted
+      check (endpoint = '') not valid;
+  end if;
+end $$;
+
+alter table mcp_tools
+  validate constraint mcp_tools_endpoint_not_persisted;
+
 create table if not exists tool_policies (
   tenant_id text not null references tenants(id),
   tool_id text not null references mcp_tools(id),
@@ -354,25 +365,6 @@ create table if not exists tool_policies (
 );
 
 create index if not exists idx_tool_policies_tool on tool_policies(tool_id, tenant_id);
-
-create table if not exists mcp_tool_catalog_entries (
-  tool_id text primary key references mcp_tools(id),
-  tenant_id text not null references tenants(id),
-  server_name text not null,
-  remote_tool_name text not null,
-  catalog_generation bigint not null,
-  schema_hash text not null,
-  status text not null default 'disabled',
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (tenant_id, server_name, remote_tool_name),
-  foreign key (tenant_id, server_name) references mcp_servers(tenant_id, name),
-  check (catalog_generation >= 0),
-  check (status in ('active', 'disabled', 'stale', 'deleted'))
-);
-
-create index if not exists idx_mcp_tool_catalog_entries_server
-  on mcp_tool_catalog_entries(tenant_id, server_name, status, remote_tool_name);
 
 create table if not exists agents (
   id text primary key,
@@ -428,10 +420,17 @@ create table if not exists agent_profile_revisions (
   content_hash text not null,
   avatar_ref text not null
     check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research')),
+  avatar_style_ref text not null default ''
+    check (avatar_style_ref = '' or avatar_style_ref in (
+      'builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research',
+      'builtin:cartoon', 'builtin:emoji', 'builtin:pixel', 'builtin:portrait',
+      'builtin:abstract', 'builtin:planet', 'builtin:clay', 'builtin:icon'
+    )),
   avatar_asset_id text,
   avatar_seed text not null default '',
   category text not null
     check (category in ('general', 'support', 'writing', 'research', 'operations')),
+  market_tag text not null default '',
   visibility text not null,
   allowed_department_ids jsonb not null,
   allowed_roles jsonb not null,
@@ -488,6 +487,18 @@ create table if not exists agent_profiles (
 create index if not exists idx_agent_profiles_published
   on agent_profiles(tenant_id, published_revision desc)
   where lifecycle_status = 'published';
+
+create table if not exists agent_profile_favorites (
+  tenant_id text not null references tenants(id),
+  user_id text not null references users(id),
+  agent_id text not null,
+  created_at timestamptz not null default now(),
+  primary key (tenant_id, user_id, agent_id),
+  foreign key (tenant_id, agent_id) references agents(tenant_id, id)
+);
+
+create index if not exists idx_agent_profile_favorites_user
+  on agent_profile_favorites(tenant_id, user_id, created_at desc);
 
 create table if not exists sessions (
   id text primary key,
@@ -932,10 +943,12 @@ alter table agent_profile_revisions add column if not exists published_from_revi
 alter table agent_profile_revisions add column if not exists withdrawn_from_revision bigint;
 alter table agent_profile_revisions add column if not exists revision_status text;
 alter table agent_profile_revisions add column if not exists avatar_ref text;
+alter table agent_profile_revisions add column if not exists avatar_style_ref text not null default '';
 alter table agent_profile_revisions add column if not exists avatar_asset_id text;
 alter table agent_profile_revisions add column if not exists avatar_seed text not null default '';
 alter table agent_profile_revisions add column if not exists skill_set jsonb not null default '[]'::jsonb;
 alter table agent_profile_revisions add column if not exists category text;
+alter table agent_profile_revisions add column if not exists market_tag text not null default '';
 alter table agent_profile_revisions add column if not exists visibility text;
 alter table agent_profile_revisions add column if not exists allowed_department_ids jsonb;
 alter table agent_profile_revisions add column if not exists allowed_roles jsonb;
@@ -960,6 +973,7 @@ alter table agent_profiles drop constraint if exists chk_agent_profiles_lifecycl
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_status_check;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_revision_status_check;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_avatar_ref_check;
+alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_avatar_style_ref_check;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_category_check;
 alter table agent_profile_revisions drop constraint if exists chk_agent_profile_revisions_visibility;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_visibility_check;
@@ -995,6 +1009,14 @@ update agent_profile_revisions
 set avatar_ref = 'builtin:agent'
 where avatar_ref is null
    or avatar_ref not in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research');
+update agent_profile_revisions
+set avatar_style_ref = ''
+where avatar_style_ref is null
+   or avatar_style_ref not in (
+     '', 'builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research',
+     'builtin:cartoon', 'builtin:emoji', 'builtin:pixel', 'builtin:portrait',
+     'builtin:abstract', 'builtin:planet', 'builtin:clay', 'builtin:icon'
+   );
 update agent_profile_revisions
 set category = 'general'
 where category is null
@@ -1066,6 +1088,12 @@ alter table agent_profile_revisions add constraint agent_profile_revisions_revis
   check (revision_status in ('draft', 'published', 'withdrawn'));
 alter table agent_profile_revisions add constraint agent_profile_revisions_avatar_ref_check
   check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research'));
+alter table agent_profile_revisions add constraint agent_profile_revisions_avatar_style_ref_check
+  check (avatar_style_ref = '' or avatar_style_ref in (
+    'builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research',
+    'builtin:cartoon', 'builtin:emoji', 'builtin:pixel', 'builtin:portrait',
+    'builtin:abstract', 'builtin:planet', 'builtin:clay', 'builtin:icon'
+  ));
 alter table agent_profile_revisions add constraint agent_profile_revisions_category_check
   check (category in ('general', 'support', 'writing', 'research', 'operations'));
 alter table agent_profile_revisions add constraint chk_agent_profile_revisions_visibility
@@ -2811,6 +2839,30 @@ create index if not exists idx_sandbox_leases_attempt
 -- alter table sandbox_leases drop column if exists runtime_container_name;
 -- alter table sandbox_leases drop column if exists runtime_container_id;
 
+create table if not exists file_upload_sessions (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  workspace_id text not null references workspaces(id),
+  user_id text not null references users(id),
+  session_id text,
+  file_id text not null unique,
+  original_name text not null,
+  content_type text not null,
+  expected_size_bytes bigint not null check (expected_size_bytes > 0),
+  part_size_bytes bigint not null check (part_size_bytes > 0),
+  part_count integer not null check (part_count > 0),
+  storage_key text not null unique,
+  upload_id text not null unique,
+  state text not null default 'pending',
+  expires_at timestamptz not null,
+  completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  check (state in ('pending', 'completing', 'completed', 'aborted', 'expired'))
+);
+
+create index if not exists idx_file_upload_sessions_scope
+  on file_upload_sessions(tenant_id, workspace_id, user_id, state, expires_at);
+
 create table if not exists files (
   id text primary key,
   tenant_id text not null references tenants(id),
@@ -2964,9 +3016,9 @@ on conflict (id) do nothing;
 
 insert into skills(id, name, version, description, input_modes, output_modes, executor_type)
 values
-  ('qa-file-reviewer', 'QA Word Review', '0.1.0', 'Review Word documents and return commented Word artifacts.', '["docx"]'::jsonb, '["reviewed_docx", "findings_json"]'::jsonb, 'claude-agent-worker'),
+  ('qa-file-reviewer', 'QA Word Review', '0.1.0', 'Review Word documents and return commented Word artifacts.', '["docx"]'::jsonb, '["result_docx", "result_json"]'::jsonb, 'claude-agent-worker'),
   ('minimax-docx', 'Minimax DOCX', '0.1.0', 'Internal Word document composition dependency used by first-party document Skills.', '["docx"]'::jsonb, '["docx"]'::jsonb, 'claude-agent-worker'),
-  ('baoyu-translate', 'Baoyu Translate', '0.1.0', 'Translate Word documents and return translated Word artifacts.', '["docx"]'::jsonb, '["translated_docx"]'::jsonb, 'claude-agent-worker'),
+  ('baoyu-translate', 'Baoyu Translate', '0.1.0', 'Translate Word documents and return translated Word artifacts.', '["docx"]'::jsonb, '["result_docx"]'::jsonb, 'claude-agent-worker'),
   ('ragflow-knowledge-search', 'RAGFlow Knowledge Search', '0.1.0', 'Query company knowledge base with scoped citations through the platform-managed MCP tool.', '["chat"]'::jsonb, '["answer", "citations"]'::jsonb, 'claude-agent-worker')
 on conflict (id) do update set
   name = excluded.name,
@@ -3013,13 +3065,13 @@ on conflict (id) do update set
   name = excluded.name,
   description = excluded.description,
   transport_type = excluded.transport_type,
-  endpoint = excluded.endpoint,
   auth_mode = excluded.auth_mode,
   allowed_tools = excluded.allowed_tools,
   status = excluded.status,
   write_capable = excluded.write_capable,
   risk_level = excluded.risk_level,
-  visible_to_user = excluded.visible_to_user;
+  visible_to_user = excluded.visible_to_user
+where mcp_tools.endpoint = '';
 
 insert into tool_policies(tenant_id, tool_id, status, write_capable, risk_level, visible_to_user, reason)
 values

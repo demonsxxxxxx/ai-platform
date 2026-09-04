@@ -14,10 +14,12 @@ function response(overrides: Record<string, unknown> = {}) {
   return {
     tools: [
       {
-        tool_id: "tenant-search",
-        label: "受管 MCP 工具",
+        tool_id: "gateway::tenant-search",
+        label: "tenant-search",
         description: "由平台治理的工具。",
         category: "mcp",
+        server: "gateway",
+        cached: false,
       },
     ],
     unavailable: [],
@@ -29,18 +31,18 @@ function response(overrides: Record<string, unknown> = {}) {
 test("validates ready, empty, and degraded Chat MCP catalogs without retaining private fields", () => {
   const ready = parseChatMcpCatalogResponse(
     response({
-      selected_mcp_tool_ids: ["tenant-search"],
+      selected_mcp_tool_ids: ["gateway::tenant-search"],
       private_server: "must-not-reach-tools",
     }),
   );
   assert.equal(classifyChatMcpCatalog(ready), "ready");
   assert.deepEqual(ready.tools, [
     {
-      name: "tenant-search",
-      label: "受管 MCP 工具",
+      name: "gateway::tenant-search",
+      label: "tenant-search",
       description: "由平台治理的工具。",
       category: "mcp",
-      server: undefined,
+      server: "gateway",
       parameters: [],
       system_disabled: false,
       user_disabled: false,
@@ -85,10 +87,12 @@ test("a stale response cannot overwrite a retry and only the latest catalog auth
   const retryCatalog = parseChatMcpCatalogResponse({
     tools: [
       {
-        tool_id: "current-tool",
+        tool_id: "gateway::current-tool",
         label: "当前 MCP 工具",
         description: "当前目录中的工具。",
         category: "mcp",
+        server: "gateway",
+        cached: false,
       },
     ],
     unavailable: [],
@@ -103,20 +107,20 @@ test("a stale response cannot overwrite a retry and only the latest catalog auth
 
   state = publishChatMcpCatalogSuccess(state, 2, retryCatalog);
   assert.equal(state.status, "ready");
-  assert.deepEqual(state.tools.map((tool) => tool.name), ["current-tool"]);
+  assert.deepEqual(state.tools.map((tool) => tool.name), ["gateway::current-tool"]);
   assert.deepEqual(
-    reconcileChatMcpToolSelection(["current-tool", "stale-tool"], state.tools, state.status),
-    ["current-tool"],
+    reconcileChatMcpToolSelection(["gateway::current-tool", "gateway::stale-tool"], state.tools, state.status),
+    ["gateway::current-tool"],
   );
   assert.deepEqual(
-    reconcileChatMcpToolSelection(["current-tool"], state.tools, "loading"),
+    reconcileChatMcpToolSelection(["gateway::current-tool"], state.tools, "loading"),
     [],
   );
 
   state = publishChatMcpCatalogFailure(state, 2);
   assert.equal(state.status, "error");
   assert.deepEqual(
-    reconcileChatMcpToolSelection(["current-tool"], state.tools, state.status),
+    reconcileChatMcpToolSelection(["gateway::current-tool"], state.tools, state.status),
     [],
   );
 });

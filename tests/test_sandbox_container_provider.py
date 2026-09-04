@@ -915,6 +915,7 @@ class FakeOpenSandbox:
         self.kill_calls = 0
         self.closed = False
         self.info_calls = 0
+        self.renew_calls: list[object] = []
         self.kill_error: Exception | None = None
         self.close_error: Exception | None = None
 
@@ -953,6 +954,9 @@ class FakeOpenSandbox:
             "metadata": dict(self.metadata),
             "status": {"state": self.status.state},
         }
+
+    async def renew(self, timeout: timedelta) -> None:
+        self.renew_calls.append(timeout)
 
     def kill(self) -> None:
         self.kill_calls += 1
@@ -1098,6 +1102,133 @@ def opensandbox_provider(
         identity_probe=identity_probe
         or (lambda executor_url, timeout_seconds, executor_headers: {"uid": 10001, "gid": 10001}),
     )
+
+
+def persisted_opensandbox_row(lease):
+    proof = json.loads(lease.labels["ai-platform.governed_egress.proof"])
+    return {
+        "id": "lease-a",
+        "tenant_id": lease.tenant_id,
+        "workspace_id": lease.workspace_id,
+        "user_id": lease.user_id,
+        "session_id": lease.session_id,
+        "run_id": lease.run_id,
+        "attempt_id": lease.labels["ai-platform.attempt_id"],
+        "sandbox_mode": lease.sandbox_mode,
+        "provider": "opensandbox",
+        "browser_enabled": lease.browser_enabled,
+        "runtime_container_id": lease.container_id,
+        "runtime_container_name": lease.container_name,
+        "runtime_executor_url": lease.executor_url,
+        "runtime_workspace_container_path": lease.workspace_container_path,
+        "runtime_handle_verified_at": datetime.now(timezone.utc),
+        "lease_payload_json": {
+            "security_profile": "governed",
+            "attempt_id": lease.labels["ai-platform.attempt_id"],
+            "governed_egress_proof": proof,
+            "labels": {
+                key: value
+                for key, value in lease.labels.items()
+                if not key.startswith(
+                    (
+                        "ai-platform.executor.",
+                        "ai-platform.external_egress.",
+                        "ai-platform.governed_egress.",
+                    )
+                )
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_renew_reconnects_persisted_identity_and_uses_maximum_timeout(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    lifecycle = importlib.import_module("app.runtime.sandbox.providers.opensandbox.startup")
+    FakeOpenSandbox.reset()
+
+    class RenewalSettings(OpenSandboxSettings):
+        sandbox_lease_ttl_seconds = 2401
+        opensandbox_timeout_seconds = 2402
+
+    cleanup = importlib.import_module("app.routes.sandbox_runtime_cleanup")
+    settings = RenewalSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    monkeypatch.setattr(cleanup, "get_settings", lambda: settings)
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    persisted_lease = cleanup.container_lease_from_persisted_row(persisted_opensandbox_row(lease))
+    assert persisted_lease is not None
+    assert "ai-platform.executor.user" not in persisted_lease.labels
+    assert FakeOpenSandbox.created[-1]["timeout"] == timedelta(seconds=2402)
+
+    restarted_provider = opensandbox_provider()
+    await lifecycle.renew_opensandbox_lifetime(
+        restarted_provider, persisted_lease, settings, ttl_seconds=2401
+    )
+    await lifecycle.renew_opensandbox_lifetime(
+        restarted_provider, persisted_lease, settings, ttl_seconds=2403
+    )
+
+    sandbox = FakeOpenSandbox.instances[lease.container_id]
+    assert FakeOpenSandbox.connect_calls[-1]["sandbox_id"] == lease.container_id
+    assert sandbox.renew_calls == [timedelta(seconds=2402), timedelta(seconds=2403)]
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_renew_rejects_previous_key_identity(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    cleanup = importlib.import_module("app.routes.sandbox_runtime_cleanup")
+    lifecycle = importlib.import_module("app.runtime.sandbox.providers.opensandbox.startup")
+    FakeOpenSandbox.reset()
+
+    class PreviousSettings(OpenSandboxSettings):
+        sandbox_egress_proof_signing_key = "provider-previous-proof-key-with-enough-entropy-2026"
+        sandbox_egress_proof_key_id = "previous"
+
+    class CurrentSettings(OpenSandboxSettings):
+        sandbox_egress_proof_previous_keys_json = json.dumps(
+            {"previous": PreviousSettings.sandbox_egress_proof_signing_key}
+        )
+
+    previous_settings = PreviousSettings()
+    current_settings = CurrentSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: previous_settings)
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    monkeypatch.setattr(cleanup, "get_settings", lambda: current_settings)
+    persisted_lease = cleanup.container_lease_from_persisted_row(persisted_opensandbox_row(lease))
+    assert persisted_lease is not None
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="identity mismatch"):
+        await lifecycle.renew_opensandbox_lifetime(
+            provider,
+            persisted_lease,
+            current_settings,
+            ttl_seconds=1801,
+        )
+
+    assert FakeOpenSandbox.instances[lease.container_id].renew_calls == []
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_renew_rejects_identity_drift_before_remote_renewal(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    lifecycle = importlib.import_module("app.runtime.sandbox.providers.opensandbox.startup")
+    FakeOpenSandbox.reset()
+    settings = OpenSandboxSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    sandbox = FakeOpenSandbox.instances[lease.container_id]
+    sandbox.metadata["ai-platform.run_id"] = "foreign-run"
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="identity mismatch"):
+        await lifecycle.renew_opensandbox_lifetime(
+            provider, lease, settings, ttl_seconds=1801
+        )
+
+    assert sandbox.renew_calls == []
 
 
 @pytest.mark.asyncio

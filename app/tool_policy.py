@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.validation import SAFE_ID_PATTERN
+from app.mcp.api import is_safe_mcp_id, is_valid_mcp_public_tool_name
 
 RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
 
@@ -70,7 +70,7 @@ def _canonical_identity(value: object) -> str:
     if len(parts) != 2:
         return ""
     server, tool = parts
-    if not SAFE_ID_PATTERN.fullmatch(server) or not SAFE_ID_PATTERN.fullmatch(tool):
+    if not is_safe_mcp_id(server) or not is_valid_mcp_public_tool_name(tool):
         return ""
     return value
 

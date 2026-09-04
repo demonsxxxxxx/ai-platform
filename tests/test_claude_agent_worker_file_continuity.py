@@ -1,18 +1,23 @@
 import hashlib
 import io
 from contextlib import asynccontextmanager
-from zipfile import ZIP_DEFLATED, ZipFile
+from pathlib import Path
 
 import pytest
 from docx import Document
 from pypdf import PdfWriter
 
 from app.context.api import ContextFileContentError
-from app.context.file_content import DOCX_CONTENT_TYPE, PDF_CONTENT_TYPE
+from app.context.file_continuity import select_run_file_snapshot
 from app.executors.base import RunPayload
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.file_parser_contracts import XLSX_CONTENT_TYPE
 from app.storage import ObjectStorageSizeLimitError
+
+
+DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+PDF_CONTENT_TYPE = "application/pdf"
+FIXTURES = Path(__file__).parent / "fixtures" / "sandbox-documents"
 
 
 def _docx_bytes() -> bytes:
@@ -29,35 +34,6 @@ def _unsafe_pdf_bytes() -> bytes:
     writer.add_blank_page(width=200, height=200)
     writer.add_js("app.alert('no')")
     writer.write(stream)
-    return stream.getvalue()
-
-
-def _docx_with_opaque_content_bytes() -> bytes:
-    source = ZipFile(io.BytesIO(_docx_bytes()))
-    stream = io.BytesIO()
-    with source, ZipFile(stream, "w", compression=ZIP_DEFLATED) as archive:
-        for entry in source.infolist():
-            payload = source.read(entry)
-            if entry.filename == "[Content_Types].xml":
-                payload = payload.replace(
-                    b"</Types>",
-                    b'<Default Extension="bin" ContentType="application/octet-stream" /></Types>',
-                )
-            elif entry.filename == "word/_rels/document.xml.rels":
-                payload = payload.replace(
-                    b"</Relationships>",
-                    (
-                        b'<Relationship Id="rId900" '
-                        b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/package" '
-                        b'Target="embeddings/opaque-package.bin" />'
-                        b'<Relationship Id="rId901" '
-                        b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate" '
-                        b'Target="https://example.invalid/template.dotx" TargetMode="External" />'
-                        b"</Relationships>"
-                    ),
-                )
-            archive.writestr(entry, payload)
-        archive.writestr("word/embeddings/opaque-package.bin", b"opaque package bytes")
     return stream.getvalue()
 
 
@@ -88,15 +64,33 @@ def payload(*, file_ids: list[str]) -> RunPayload:
     )
 
 
+def test_agent_history_snapshot_reauthorizes_prior_legacy_office_file():
+    selection = select_run_file_snapshot(
+        requested_file_ids=[],
+        reusable_rows=[
+            {
+                "id": "file-prior",
+                "original_name": "prior-run-source.doc",
+                "content_type": "application/msword",
+            }
+        ],
+        input_modes=[],
+        preserve_agent_history=True,
+    )
+
+    assert selection.primary_file_ids == ("file-prior",)
+    assert selection.reusable_primary_file_ids == ("file-prior",)
+
+
 @pytest.mark.asyncio
-async def test_materialize_files_accepts_prior_run_file_authorized_by_current_snapshot(
+async def test_materialize_files_restages_prior_run_legacy_office_file_byte_for_byte(
     monkeypatch,
     tmp_path,
 ):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    raw = _docx_with_opaque_content_bytes()
-    display_name = "参考文件1-IP248A项目基本信息收集表.docx"
+    raw = (FIXTURES / "legacy.doc").read_bytes()
+    display_name = "prior-run-source.doc"
 
     class FakeStorage:
         def get_bytes_bounded(self, *, storage_key, max_bytes):
@@ -120,7 +114,7 @@ async def test_materialize_files_accepts_prior_run_file_authorized_by_current_sn
         return {
             "run_id": "run-prior",
             "original_name": display_name,
-            "content_type": DOCX_CONTENT_TYPE,
+            "content_type": "application/msword",
             "size_bytes": len(raw),
             "sha256": hashlib.sha256(raw).hexdigest(),
             "storage_key": "files/file-prior/content",
@@ -296,14 +290,9 @@ async def test_materialize_files_rejects_declared_total_before_object_reads(
 
 
 @pytest.mark.asyncio
-async def test_materialize_files_rejects_unsafe_content_before_workspace_write(
-    monkeypatch,
-    tmp_path,
-):
-    name = "unsafe.pdf"
-    content_type = PDF_CONTENT_TYPE
+async def test_materialize_files_stages_pdf_active_content(monkeypatch, tmp_path):
+    name = "active.pdf"
     raw = _unsafe_pdf_bytes()
-    error_code = "context_file_pdf_active_content_unsupported"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
@@ -319,7 +308,7 @@ async def test_materialize_files_rejects_unsafe_content_before_workspace_write(
     async def fake_get_scoped_context_file(_conn, **_kwargs):
         return {
             "original_name": name,
-            "content_type": content_type,
+            "content_type": PDF_CONTENT_TYPE,
             "size_bytes": len(raw),
             "sha256": hashlib.sha256(raw).hexdigest(),
             "storage_key": f"files/{name}",
@@ -333,13 +322,10 @@ async def test_materialize_files_rejects_unsafe_content_before_workspace_write(
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
-    with pytest.raises(ValueError, match=error_code) as captured:
-        await adapter._materialize_files(payload(file_ids=["file-unsafe"]), workspace)
+    materialized = await adapter._materialize_files(payload(file_ids=["file-active"]), workspace)
 
-    assert captured.value.attachment_index == 1
-    assert captured.value.file_kind == "pdf"
-
-    assert list(workspace.iterdir()) == []
+    assert list(materialized) == [name]
+    assert (workspace / "inputs" / name).read_bytes() == raw
 
 
 @pytest.mark.asyncio
@@ -371,7 +357,9 @@ async def test_materialize_files_reports_original_attachment_ordinal(monkeypatch
             "original_name": f"{file_id}.{suffix}",
             "content_type": content_type,
             "size_bytes": len(raw),
-            "sha256": hashlib.sha256(raw).hexdigest(),
+            "sha256": (
+                "0" * 64 if file_id == "file-unsafe" else hashlib.sha256(raw).hexdigest()
+            ),
             "storage_key": f"files/{file_id}",
         }
 
@@ -383,10 +371,7 @@ async def test_materialize_files_reports_original_attachment_ordinal(monkeypatch
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
-    with pytest.raises(
-        ValueError,
-        match="context_file_pdf_active_content_unsupported",
-    ) as captured:
+    with pytest.raises(ValueError, match="context_file_identity_mismatch") as captured:
         await adapter._materialize_files(
             payload(file_ids=["file-safe", "file-unsafe"]),
             workspace,

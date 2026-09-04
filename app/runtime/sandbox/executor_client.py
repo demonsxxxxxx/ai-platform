@@ -5,6 +5,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from app.execution.api import projected_public_answer_failure_reason
 from app.runtime.sandbox.contracts import ExecutorTaskDispatchReceipt, ExecutorTaskRequest
 from app.settings import get_settings
 
@@ -56,6 +57,7 @@ _EXECUTOR_REPORTED_FAILURE_CODES = frozenset(
         "claude_agent_sdk_selected_skill_not_authorized",
         "claude_agent_sdk_selected_skill_not_invoked",
         "claude_agent_sdk_timeout",
+        "claude_agent_sdk_public_projection_failed",
         "claude_agent_sdk_tool_admission_failed",
         "claude_agent_sdk_turn_limit_exceeded",
         "claude_agent_sdk_unavailable",
@@ -138,6 +140,15 @@ def normalize_executor_reported_failure(
         normalized["message"] = safe_message
     if "sdk_error" in response:
         normalized["sdk_error"] = safe_code
+    raw_diagnostics = response.get("sdk_turn_diagnostics")
+    projection_failure_reason = projected_public_answer_failure_reason(
+        safe_code,
+        raw_diagnostics,
+    )
+    if projection_failure_reason is not None:
+        normalized["sdk_turn_diagnostics"] = {
+            "projection_failure_reason": projection_failure_reason
+        }
     if "detail" in response:
         safe_detail = _allowlisted_executor_http_error(response.get("detail"))
         if safe_detail is not None:

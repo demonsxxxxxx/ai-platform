@@ -11,6 +11,7 @@ import pytest
 from app.runs.api import RunTerminalEventFact
 from app.streaming.application.durable_v4 import (
     V4PublicationClaim,
+    V4PublicationStreamExpired,
     V4PublicationTransportUnavailable,
     V4PendingAdmission,
     V4PublicationScope,
@@ -39,6 +40,7 @@ from app.streaming.api import (
     V4ProjectionError,
     build_v4_control,
     opaque_message_id,
+    project_persisted_message_delta_v4,
     project_public_envelope_v4,
     project_public_v4,
     project_public_v4_successor,
@@ -72,7 +74,51 @@ def test_callback_v4_values_have_one_application_owner():
     assert v4.V4CallbackItem is callback_events_v4.V4CallbackItem
     assert api.callback_item_to_v4 is callback_events_v4.callback_item_to_v4
     assert v4.callback_item_to_v4 is callback_events_v4.callback_item_to_v4
-    assert runtime_callbacks.callback_item_to_v4 is callback_events_v4.callback_item_to_v4
+    assert (
+        runtime_callbacks.callback_item_to_v4 is callback_events_v4.callback_item_to_v4
+    )
+
+
+@pytest.mark.asyncio
+async def test_projection_failure_terminal_v4_keeps_specific_public_code(monkeypatch):
+    from app.streaming.infrastructure import v4
+
+    captured: dict[str, object] = {}
+
+    async def append_run_v4_row(_conn, **kwargs):
+        captured.update(kwargs)
+        return kwargs
+
+    monkeypatch.setattr(v4, "append_run_v4_row", append_run_v4_row)
+
+    await v4.append_run_terminal_v4_row(
+        object(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        status="failed",
+        terminal_event_id=f"sev_{'a' * 64}",
+        error_code="claude_agent_sdk_public_projection_failed",
+        projection_failure_reason="answer_too_large",
+    )
+
+    payload = captured["payload"]
+    assert payload["code"] == "claude_agent_sdk_public_projection_failed"
+    assert "公开答案未通过安全投影" in payload["default_message"]
+    assert payload["projection_failure_reason"] == "answer_too_large"
+
+    captured.clear()
+    await v4.append_run_terminal_v4_row(
+        object(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        status="failed",
+        terminal_event_id=f"sev_{'b' * 64}",
+        error_code="claude_agent_sdk_tool_admission_failed",
+        projection_failure_reason="answer_too_large",
+    )
+    assert "projection_failure_reason" not in captured["payload"]
 
 
 @pytest.mark.asyncio
@@ -217,19 +263,27 @@ def _callback_conn():
             if "set stream_publication_attempts" in normalized:
                 if row is not None:
                     metadata = row["payload_json"]["__stream_v4"]
-                    metadata["publication_attempts"] = int(metadata.get("publication_attempts", 0)) + 1
+                    metadata["publication_attempts"] = (
+                        int(metadata.get("publication_attempts", 0)) + 1
+                    )
                 return Cursor({"id": event_id})
             if "set stream_publication_state = 'published'" in normalized:
                 if row is not None and row["stream_publication_state"] == "pending":
                     row["stream_publication_state"] = "published"
-                    row["payload_json"]["__stream_v4"]["publication_state"] = "published"
+                    row["payload_json"]["__stream_v4"]["publication_state"] = (
+                        "published"
+                    )
                     return Cursor({"id": event_id})
                 return Cursor(None)
             if "set stream_publication_state = 'suppressed'" in normalized:
                 if row is not None and row["stream_publication_state"] == "pending":
                     row["stream_publication_state"] = "suppressed"
-                    row["payload_json"]["__stream_v4"]["publication_state"] = "suppressed"
-                    row["payload_json"]["__stream_v4"]["suppression_reason"] = params[-2]
+                    row["payload_json"]["__stream_v4"]["publication_state"] = (
+                        "suppressed"
+                    )
+                    row["payload_json"]["__stream_v4"]["suppression_reason"] = params[
+                        -2
+                    ]
                     return Cursor({"id": event_id})
                 return Cursor(None)
             if normalized.startswith("update run_events"):
@@ -299,11 +353,19 @@ async def test_callback_v4_rows_are_atomic_and_idempotent_per_batch_item(monkeyp
     first, second = await exercise()
     assert first[0]["id"] == second[0]["id"]
     assert len(append_calls) == 1
-    assert sum("update run_events" in statement.lower() for statement, _ in conn.statements) == 1
+    assert (
+        sum(
+            "update run_events" in statement.lower() for statement, _ in conn.statements
+        )
+        == 1
+    )
     await v4.mark_v4_attempt(conn, event_id=first[0]["id"])
     third = await exercise()
     assert third[0][0]["id"] == first[0]["id"]
-    assert conn.rows[first[0]["id"]]["payload_json"]["__stream_v4"]["publication_attempts"] == 1
+    assert (
+        conn.rows[first[0]["id"]]["payload_json"]["__stream_v4"]["publication_attempts"]
+        == 1
+    )
     assert len(append_calls) == 1
 
     assert await v4.mark_v4_published(
@@ -375,7 +437,9 @@ async def test_callback_v4_rows_are_atomic_and_idempotent_per_batch_item(monkeyp
         ("causation_event_id", "cause-tampered"),
     ],
 )
-async def test_callback_v4_existing_row_rejects_each_immutable_callback_fact(field, value, monkeypatch):
+async def test_callback_v4_existing_row_rejects_each_immutable_callback_fact(
+    field, value, monkeypatch
+):
     from app.streaming.infrastructure import v4
 
     conn = _callback_conn()
@@ -475,7 +539,9 @@ async def test_callback_v4_rows_keep_batch_attempt_lease_and_authority_fences(
         )
 
 
-def _publication_claim(*, event_id: str = "evt4_a", sequence: int = 7) -> V4PublicationClaim:
+def _publication_claim(
+    *, event_id: str = "evt4_a", sequence: int = 7
+) -> V4PublicationClaim:
     envelope = project_public_v4(
         _row({"delta": "hello"}, id=event_id, sequence=sequence),
         authority=_authority(),
@@ -490,6 +556,52 @@ def _publication_claim(*, event_id: str = "evt4_a", sequence: int = 7) -> V4Publ
         stream_incarnation=2,
         authorization_epoch=4,
         sequence=sequence,
+        canonical_envelope_bytes=canonical_json_bytes(envelope),
+        claim_token=f"claim-{event_id}",
+        claim_expires_at=datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc),
+    )
+
+
+def _terminal_payload(event_id: str, event_type: str) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "terminal_event_id": event_id,
+        "hydrate_required": True,
+    }
+    if event_type == "run.failed":
+        payload.update(
+            {
+                "projection_version": "ai-platform.chat-public-projection.v1",
+                "code": "failed",
+                "default_message": "Run failed",
+                "detail": None,
+            }
+        )
+    elif event_type == "run.cancelled":
+        payload["reason_code"] = "user_cancelled"
+    return payload
+
+
+def _terminal_publication_claim(
+    *, event_id: str = "evt4_terminal", event_type: str = "run.failed"
+) -> V4PublicationClaim:
+    envelope = project_public_v4(
+        _row(
+            _terminal_payload(event_id, event_type),
+            id=event_id,
+            event_type=event_type,
+        ),
+        authority=replace(_authority(), state="terminal"),
+    )
+    assert envelope is not None
+    return V4PublicationClaim(
+        event_id=event_id,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        tenant_scope="tenant-a",
+        stream_incarnation=2,
+        authorization_epoch=4,
+        sequence=7,
         canonical_envelope_bytes=canonical_json_bytes(envelope),
         claim_token=f"claim-{event_id}",
         claim_expires_at=datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc),
@@ -515,6 +627,10 @@ class _RecordingPublicationClaims:
         self.calls.append(f"published:{claim.event_id}:{redis_id}")
         return self.mark_published_result
 
+    async def suppress_expired_terminal_without_attempt(self, claim):
+        self.calls.append(f"suppressed:{claim.event_id}:terminal_stream_expired")
+        return True
+
     async def schedule_retry(self, claim, *, error, delay):
         self.calls.append(f"retry:{claim.event_id}:{error}:{delay.total_seconds():g}")
         return True
@@ -525,7 +641,9 @@ class _RecordingPublicationClaims:
 
 
 @pytest.mark.asyncio
-async def test_v4_application_publishes_only_after_claim_commit_and_fences_disposition() -> None:
+async def test_v4_application_publishes_only_after_claim_commit_and_fences_disposition() -> (
+    None
+):
     claims = _RecordingPublicationClaims([_publication_claim()])
 
     class Transport:
@@ -567,17 +685,20 @@ async def test_v4_application_lost_disposition_is_not_counted_as_published() -> 
         async def publish(self, _canonical_envelope_bytes):
             return "12-0"
 
-    assert await publish_claimed_v4_events(
-        claims,
-        Transport(),
-        tenant_id="tenant-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        stream_incarnation=2,
-        limit=1,
-        claim_ttl=timedelta(seconds=30),
-        retry_delay=timedelta(seconds=5),
-    ) == 0
+    assert (
+        await publish_claimed_v4_events(
+            claims,
+            Transport(),
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            stream_incarnation=2,
+            limit=1,
+            claim_ttl=timedelta(seconds=30),
+            retry_delay=timedelta(seconds=5),
+        )
+        == 0
+    )
     assert claims.calls == ["claim:committed", "published:evt4_a:12-0"]
 
 
@@ -626,20 +747,51 @@ async def test_v4_application_retries_transport_outage_without_release() -> None
         async def publish(self, _canonical_envelope_bytes):
             raise V4PublicationTransportUnavailable("StreamTransportUnavailable")
 
-    assert await publish_claimed_v4_events(
-        claims,
-        Transport(),
-        tenant_id="tenant-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        stream_incarnation=2,
-        limit=1,
-        claim_ttl=timedelta(seconds=30),
-        retry_delay=timedelta(seconds=5),
-    ) == 0
+    assert (
+        await publish_claimed_v4_events(
+            claims,
+            Transport(),
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            stream_incarnation=2,
+            limit=1,
+            claim_ttl=timedelta(seconds=30),
+            retry_delay=timedelta(seconds=5),
+        )
+        == 0
+    )
     assert claims.calls == [
         "claim:committed",
         "retry:evt4_a:StreamTransportUnavailable:5",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_v4_application_suppresses_authorized_terminal_with_expired_stream() -> None:
+    claims = _RecordingPublicationClaims([_terminal_publication_claim()])
+
+    class Transport:
+        async def publish(self, _canonical_envelope_bytes):
+            raise V4PublicationStreamExpired
+
+    assert (
+        await publish_claimed_v4_events(
+            claims,
+            Transport(),
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            stream_incarnation=2,
+            limit=1,
+            claim_ttl=timedelta(seconds=30),
+            retry_delay=timedelta(seconds=5),
+        )
+        == 0
+    )
+    assert claims.calls == [
+        "claim:committed",
+        "suppressed:evt4_terminal:terminal_stream_expired",
     ]
 
 
@@ -669,7 +821,7 @@ async def test_v4_application_releases_claim_on_unexpected_transport_error() -> 
 @pytest.mark.asyncio
 async def test_v4_redis_publication_transport_decodes_claimed_canonical_bytes() -> None:
     from app.streaming.infrastructure.worker_v4 import RedisV4PublicationTransport
-    from app.streaming.redis import StreamTransportUnavailable
+    from app.streaming.redis import StreamContractError, StreamTransportUnavailable
 
     claim = _publication_claim()
     calls = []
@@ -692,6 +844,19 @@ async def test_v4_redis_publication_transport_decodes_claimed_canonical_bytes() 
             claim.canonical_envelope_bytes
         )
     assert exc_info.value.error_code == "StreamTransportUnavailable"
+    class MissingTerminalBridge:
+        async def append(self, _envelope):
+            raise StreamContractError("stream_missing")
+
+    with pytest.raises(V4PublicationStreamExpired):
+        await RedisV4PublicationTransport(MissingTerminalBridge()).publish(
+            _terminal_publication_claim().canonical_envelope_bytes
+        )
+
+    with pytest.raises(StreamContractError, match="stream_missing"):
+        await RedisV4PublicationTransport(MissingTerminalBridge()).publish(
+            claim.canonical_envelope_bytes
+        )
 
 
 @pytest.mark.parametrize("message_id", [None, "safe-message"])
@@ -797,6 +962,43 @@ def _row(payload: dict[str, object], **overrides: object) -> dict[str, object]:
     return row
 
 
+def test_persisted_message_delta_projection_requires_managed_attempt_authority() -> (
+    None
+):
+    row = _row({"delta": "hello"}, v4_attempt_authorized=True)
+
+    projected = project_persisted_message_delta_v4(
+        row, tenant_id="tenant-a", run_id="run-a"
+    )
+
+    assert projected is not None
+    assert projected["payload"] == {"delta": "hello"}
+    assert "__stream_v4" not in projected["payload"]
+    assert "attempt_id" not in projected
+    assert "authorization_epoch" not in projected
+    assert "tenant_scope" not in projected
+    assert (
+        project_persisted_message_delta_v4(
+            {**row, "v4_attempt_authorized": False},
+            tenant_id="tenant-a",
+            run_id="run-a",
+        )
+        is None
+    )
+    assert (
+        project_persisted_message_delta_v4(
+            {**row, "stream_publication_state": None},
+            tenant_id="tenant-a",
+            run_id="run-a",
+        )
+        is None
+    )
+    assert (
+        project_persisted_message_delta_v4(row, tenant_id="tenant-b", run_id="run-a")
+        is None
+    )
+
+
 def _successor_claim_with_terminal() -> V4SuccessorRebuildClaim:
     authority = _authority()
     rows = (
@@ -880,7 +1082,10 @@ def _successor_end_bytes(claim: V4SuccessorRebuildClaim) -> bytes:
             stream_incarnation=claim.successor_incarnation,
             event_type="stream.end",
             payload={"terminal_event_id": claim.items[-1].event_id},
-            source={"kind": "terminal_intent", "terminal_event_id": claim.items[-1].event_id},
+            source={
+                "kind": "terminal_intent",
+                "terminal_event_id": claim.items[-1].event_id,
+            },
             causation_event_id=claim.items[-1].event_id,
             emitted_at=terminal["emitted_at"],
         )
@@ -949,9 +1154,9 @@ def test_successor_rebuild_claim_binds_exact_canonical_snapshot() -> None:
         claim_expires_at=datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc),
     )
 
-    assert json.loads(claim.items[0].canonical_envelope_bytes)[
-        "stream_incarnation"
-    ] == 3
+    assert (
+        json.loads(claim.items[0].canonical_envelope_bytes)["stream_incarnation"] == 3
+    )
     assert "claim-a" not in repr(claim)
     with pytest.raises(ValueError, match="successor_incarnation_invalid"):
         replace(claim, successor_incarnation=2)
@@ -1017,7 +1222,9 @@ def test_successor_rebuild_claim_binds_exact_canonical_snapshot() -> None:
 
 
 @pytest.mark.asyncio
-async def test_successor_rebuild_application_orders_commit_transport_and_ready_cas() -> None:
+async def test_successor_rebuild_application_orders_commit_transport_and_ready_cas() -> (
+    None
+):
     claim = _successor_claim_with_terminal()
     calls: list[str] = []
 
@@ -1052,6 +1259,7 @@ async def test_successor_rebuild_application_orders_commit_transport_and_ready_c
                 item_redis_ids=_successor_item_redis_ids(claim),
                 last_envelope_bytes=_successor_end_bytes(claim),
             )
+
     ready = await build_v4_successor_rebuild(
         Rebuilds(),
         Transport(),
@@ -1166,7 +1374,9 @@ async def test_successor_activation_application_passes_only_valid_ready_receipt(
         "last_envelope_bytes",
     ),
 )
-async def test_successor_rebuild_application_binds_every_receipt_field(field: str) -> None:
+async def test_successor_rebuild_application_binds_every_receipt_field(
+    field: str,
+) -> None:
     claim = _successor_claim_with_terminal()
     terminal_id = claim.items[-1].event_id
     receipt = V4SuccessorRebuildReceipt(
@@ -1221,6 +1431,7 @@ async def test_successor_rebuild_application_binds_every_receipt_field(field: st
             source_incarnation=claim.source_incarnation,
             claim_ttl=timedelta(seconds=30),
         )
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ("transport", "receipt", "cas"))
@@ -1368,6 +1579,9 @@ class _PublicationClaimConnection:
         self.statements: list[tuple[str, object]] = []
         self.commits = 0
         self.rollbacks = 0
+        self.run_status = "running"
+        self.attempt_exists = False
+        self.active_lease_exists = False
         self.authority = {
             "tenant_id": "tenant-a",
             "tenant_scope": "tenant-a",
@@ -1392,9 +1606,20 @@ class _PublicationClaimConnection:
             return _PublicationClaimCursor({"id": "run-a", "tenant_id": "tenant-a"})
         if normalized.startswith("select tenant_id, tenant_scope"):
             return _PublicationClaimCursor(dict(self.authority))
+        if normalized.startswith("select run.status as run_status"):
+            return _PublicationClaimCursor(
+                {
+                    "run_status": self.run_status,
+                    "authority_state": self.authority["state"],
+                    "attempt_exists": self.attempt_exists,
+                    "active_lease_exists": self.active_lease_exists,
+                }
+            )
         if normalized.startswith("select event.id from run_events"):
             return _PublicationClaimCursor({"id": "evt4_a"})
-        if normalized.startswith("update run_events as event set stream_publication_claim_token = %s"):
+        if normalized.startswith(
+            "update run_events as event set stream_publication_claim_token = %s"
+        ):
             return _PublicationClaimCursor(dict(self.event))
         if normalized.startswith("update run_events as event"):
             return _PublicationClaimCursor({"id": "evt4_a"})
@@ -1416,7 +1641,9 @@ def _publication_claim_transaction_factory(conn: _PublicationClaimConnection):
 
 
 @pytest.mark.asyncio
-async def test_publication_claim_locks_run_then_authority_and_validates_before_commit() -> None:
+async def test_publication_claim_locks_run_then_authority_and_validates_before_commit() -> (
+    None
+):
     conn = _PublicationClaimConnection()
     adapter = PostgresV4PublicationClaims(
         _publication_claim_transaction_factory(conn),
@@ -1446,7 +1673,9 @@ async def test_publication_claim_locks_run_then_authority_and_validates_before_c
 
 
 @pytest.mark.asyncio
-async def test_publication_claim_rolls_back_malformed_row_and_rejects_stale_authority() -> None:
+async def test_publication_claim_rolls_back_malformed_row_and_rejects_stale_authority() -> (
+    None
+):
     malformed = _PublicationClaimConnection(malformed_event=True)
     malformed_adapter = PostgresV4PublicationClaims(
         _publication_claim_transaction_factory(malformed),
@@ -1475,11 +1704,15 @@ async def test_publication_claim_rolls_back_malformed_row_and_rejects_stale_auth
             attempt_id="attempt-a",
             stream_incarnation=2,
         )
-    assert not any(statement.startswith("select event.id") for statement, _ in stale.statements)
+    assert not any(
+        statement.startswith("select event.id") for statement, _ in stale.statements
+    )
 
 
 @pytest.mark.asyncio
-async def test_publication_disposition_sql_locks_authority_and_counts_only_transport_attempts() -> None:
+async def test_publication_disposition_sql_locks_authority_and_counts_only_transport_attempts() -> (
+    None
+):
     published_conn = _PublicationClaimConnection()
     published_adapter = PostgresV4PublicationClaims(
         _publication_claim_transaction_factory(published_conn),
@@ -1493,7 +1726,9 @@ async def test_publication_disposition_sql_locks_authority_and_counts_only_trans
     )
     assert published_claim is not None
     published_conn.statements.clear()
-    assert await published_adapter.mark_published(published_claim, redis_id="1-0") is True
+    assert (
+        await published_adapter.mark_published(published_claim, redis_id="1-0") is True
+    )
     published_sql = published_conn.statements[-1][0]
     assert [statement.split()[0:3] for statement, _ in published_conn.statements] == [
         ["select", "id,", "tenant_id"],
@@ -1517,11 +1752,14 @@ async def test_publication_disposition_sql_locks_authority_and_counts_only_trans
     )
     assert retry_claim is not None
     retry_conn.statements.clear()
-    assert await retry_adapter.schedule_retry(
-        retry_claim,
-        error="redis_unavailable",
-        delay=timedelta(seconds=5),
-    ) is True
+    assert (
+        await retry_adapter.schedule_retry(
+            retry_claim,
+            error="redis_unavailable",
+            delay=timedelta(seconds=5),
+        )
+        is True
+    )
     assert "stream_publication_attempts = coalesce" in retry_conn.statements[-1][0]
 
     release_conn = _PublicationClaimConnection()
@@ -1541,7 +1779,101 @@ async def test_publication_disposition_sql_locks_authority_and_counts_only_trans
     assert "stream_publication_attempts" not in release_conn.statements[-1][0]
 
 
-def test_v4_projection_is_internal_and_public_projection_strips_authority_fields() -> None:
+@pytest.mark.asyncio
+async def test_expired_terminal_disposition_requires_historical_terminal_authority() -> None:
+    conn = _PublicationClaimConnection()
+    conn.run_status = "failed"
+    conn.authority["state"] = "terminal"
+    conn.event = _row(_terminal_payload("evt4_a", "run.failed"), event_type="run.failed")
+    conn.event["stream_publication_claim_expires_at"] = datetime(
+        2026, 1, 1, 0, 1, tzinfo=timezone.utc
+    )
+    adapter = PostgresV4PublicationClaims(
+        _publication_claim_transaction_factory(conn),
+        claim_token_factory=lambda: "claim-terminal",
+    )
+    claim = await adapter.claim_next(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        stream_incarnation=2,
+    )
+    assert claim is not None
+
+    conn.statements.clear()
+    assert await adapter.suppress_expired_terminal_without_attempt(claim) is True
+    statements = [statement for statement, _params in conn.statements]
+    assert statements[0].startswith("select id, tenant_id from runs")
+    assert statements[1].startswith("select tenant_id, tenant_scope")
+    assert statements[2].startswith("select run.status as run_status")
+    assert "set stream_publication_state = 'suppressed'" in statements[3]
+    assert "stream_publication_attempts = coalesce" in statements[3]
+    assert "terminal_stream_expired" in statements[3]
+    assert "event.event_type = %s" in statements[3]
+    assert "event.stream_publication_claim_token = %s" in statements[3]
+    assert "not exists" in statements[3]
+    assert "from run_attempts as attempt" in statements[3]
+    assert "from sandbox_leases as lease" in statements[3]
+    assert "coalesce( lease.attempt_id, lease.lease_payload_json ->> 'attempt_id' ) = %s" in statements[3]
+
+    stale = _PublicationClaimConnection()
+    stale.run_status = "failed"
+    stale.attempt_exists = True
+    stale.authority["state"] = "terminal"
+    stale.event = dict(conn.event)
+    stale_adapter = PostgresV4PublicationClaims(
+        _publication_claim_transaction_factory(stale),
+        claim_token_factory=lambda: "claim-stale-terminal",
+    )
+    stale_claim = await stale_adapter.claim_next(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        stream_incarnation=2,
+    )
+    assert stale_claim is not None
+    stale.statements.clear()
+    with pytest.raises(
+        V4PublicationAuthorityError,
+        match="v4_expired_terminal_authority_unavailable",
+    ):
+        await stale_adapter.suppress_expired_terminal_without_attempt(stale_claim)
+    assert not any(
+        statement.startswith("update run_events as event")
+        for statement, _params in stale.statements
+    )
+
+    active = _PublicationClaimConnection()
+    active.run_status = "failed"
+    active.active_lease_exists = True
+    active.authority["state"] = "terminal"
+    active.event = dict(conn.event)
+    active_adapter = PostgresV4PublicationClaims(
+        _publication_claim_transaction_factory(active),
+        claim_token_factory=lambda: "claim-active-terminal",
+    )
+    active_claim = await active_adapter.claim_next(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        stream_incarnation=2,
+    )
+    assert active_claim is not None
+    active.statements.clear()
+    with pytest.raises(
+        V4PublicationAuthorityError,
+        match="v4_expired_terminal_authority_unavailable",
+    ):
+        await active_adapter.suppress_expired_terminal_without_attempt(active_claim)
+    assert not any(
+        statement.startswith("update run_events as event")
+        for statement, _params in active.statements
+    )
+
+
+def test_v4_projection_is_internal_and_public_projection_strips_authority_fields() -> (
+    None
+):
     internal = project_public_v4(_row({"delta": "hello"}), authority=_authority())
 
     assert internal is not None
@@ -1574,7 +1906,9 @@ def test_v4_projection_preserves_legacy_empty_thinking_payloads() -> None:
     assert current["payload"] == {"public_summary": "Analyzing the request"}
 
 
-def test_v4_projection_preserves_model_reasoning_delta_and_rejects_sdk_signature() -> None:
+def test_v4_projection_preserves_model_reasoning_delta_and_rejects_sdk_signature() -> (
+    None
+):
     thinking_id = "thinking_public_1"
     projected = [
         project_public_v4(
@@ -1606,17 +1940,20 @@ def test_v4_projection_preserves_model_reasoning_delta_and_rejects_sdk_signature
     assert projected[1]["payload"]["delta"] == (
         "Compare the public evidence before answering."
     )
-    assert project_public_v4(
-        _row(
-            {
-                "thinking_id": thinking_id,
-                "delta": "Compare the public evidence before answering.",
-                "signature": "private-sdk-signature",
-            },
-            event_type="thinking.delta",
-        ),
-        authority=_authority(),
-    ) is None
+    assert (
+        project_public_v4(
+            _row(
+                {
+                    "thinking_id": thinking_id,
+                    "delta": "Compare the public evidence before answering.",
+                    "signature": "private-sdk-signature",
+                },
+                event_type="thinking.delta",
+            ),
+            authority=_authority(),
+        )
+        is None
+    )
     with pytest.raises(V4ProjectionError):
         validate_public_application_payload_v4(
             "thinking.delta", {"thinking_id": thinking_id, "delta": ""}
@@ -1648,9 +1985,12 @@ def test_v4_agent_progress_rejects_forged_authority_fields(
 
 
 def test_v4_projection_rejects_unknown_payload_keys() -> None:
-    assert project_public_v4(
-        _row({"delta": "hello", "raw_output": "secret"}), authority=_authority()
-    ) is None
+    assert (
+        project_public_v4(
+            _row({"delta": "hello", "raw_output": "secret"}), authority=_authority()
+        )
+        is None
+    )
 
 
 def test_v4_projection_accepts_adapter_message_ids() -> None:
@@ -1682,7 +2022,9 @@ async def test_v4_pending_query_is_exact_visible_due_ordered_skip_locked() -> No
         statement = ""
         params: tuple[object, ...] | None = None
 
-        async def execute(self, statement: str, params: tuple[object, ...]) -> FakeCursor:
+        async def execute(
+            self, statement: str, params: tuple[object, ...]
+        ) -> FakeCursor:
             self.statement = statement
             self.params = params
             return FakeCursor()
@@ -1701,21 +2043,65 @@ async def test_v4_pending_query_is_exact_visible_due_ordered_skip_locked() -> No
 
 def test_v4_projection_rejects_event_specific_code_combinations() -> None:
     invalid = (
-        ("tool.failed", {"operation_id": "op", "category": "read", "display_name": "Read", "duration_ms": 1, "failure_category": "subagent_failed"}),
-        ("policy.allowed", {"decision_id": "decision", "category": "read", "display_name": "Read", "decision_code": "policy_denied"}),
-        ("subagent.cancelled", {"subagent_id": "subagent", "display_name": "Worker", "duration_ms": 1, "reason_code": "policy_cancelled"}),
+        (
+            "tool.failed",
+            {
+                "operation_id": "op",
+                "category": "read",
+                "display_name": "Read",
+                "duration_ms": 1,
+                "failure_category": "subagent_failed",
+            },
+        ),
+        (
+            "policy.allowed",
+            {
+                "decision_id": "decision",
+                "category": "read",
+                "display_name": "Read",
+                "decision_code": "policy_denied",
+            },
+        ),
+        (
+            "subagent.cancelled",
+            {
+                "subagent_id": "subagent",
+                "display_name": "Worker",
+                "duration_ms": 1,
+                "reason_code": "policy_cancelled",
+            },
+        ),
     )
     for event_type, payload in invalid:
         row = _row(payload, event_type=event_type)
-        row["payload_json"]["__stream_v4"]["message_id"] = opaque_message_id("tenant-a", "run-a")
+        row["payload_json"]["__stream_v4"]["message_id"] = opaque_message_id(
+            "tenant-a", "run-a"
+        )
         assert project_public_v4(row, authority=_authority()) is None
+
+    with pytest.raises(V4ProjectionError, match="v4_projection_failure_code_invalid"):
+        validate_public_application_payload_v4(
+            "run.failed",
+            {
+                "terminal_event_id": "terminal-1",
+                "hydrate_required": True,
+                "projection_version": "ai-platform.chat-public-projection.v1",
+                "code": "failed",
+                "default_message": "Run failed",
+                "detail": None,
+                "projection_failure_reason": "answer_too_large",
+            },
+        )
 
 
 def test_v4_projection_rejects_authority_mismatch() -> None:
-    assert project_public_v4(
-        _row({"delta": "hello"}, stream_publication_state="published"),
-        authority=replace(_authority(), authorization_epoch=5),
-    ) is None
+    assert (
+        project_public_v4(
+            _row({"delta": "hello"}, stream_publication_state="published"),
+            authority=replace(_authority(), authorization_epoch=5),
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -1740,7 +2126,9 @@ async def test_v4_bridge_uses_existing_atomic_append_boundary() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_v4_terminal_row_reuses_terminal_intent_and_has_no_live_lease(monkeypatch):
+async def test_run_v4_terminal_row_reuses_terminal_intent_and_has_no_live_lease(
+    monkeypatch,
+):
     from dataclasses import replace
     from app.streaming.infrastructure import v4
 
@@ -1791,7 +2179,10 @@ async def test_run_v4_terminal_row_reuses_terminal_intent_and_has_no_live_lease(
     assert metadata["terminal_intent_id"] == terminal_id
     assert metadata["execution_lease_id"] is None
     assert metadata["lease_fence"] == "not_required"
-    assert project_public_v4(row, authority=terminal_authority)["event_type"] == "run.failed"
+    assert (
+        project_public_v4(row, authority=terminal_authority)["event_type"]
+        == "run.failed"
+    )
 
 
 @pytest.mark.asyncio
@@ -1890,7 +2281,9 @@ async def test_parent_finalization_publishes_child_and_distinct_parent(monkeypat
     calls: list[object] = []
 
     async def finalize(transaction_factory, payload, reconciled_parent):
-        calls.append(("finalize", transaction_factory, payload.run_id, reconciled_parent))
+        calls.append(
+            ("finalize", transaction_factory, payload.run_id, reconciled_parent)
+        )
         return {"parent_run_id": "run-parent"}
 
     async def publish(_capabilities, *, tenant_id, run_id):
@@ -1898,6 +2291,7 @@ async def test_parent_finalization_publishes_child_and_distinct_parent(monkeypat
         return True
 
     monkeypatch.setattr(worker_publication_v4, "publish_pending_run_terminal", publish)
+
     @asynccontextmanager
     async def transaction_factory():
         yield object()
@@ -1987,7 +2381,10 @@ async def test_pending_admission_transport_outage_leaves_authority_retryable():
 
 @pytest.mark.asyncio
 async def test_due_publication_bounds_scopes_and_drains_delayed_remainder():
-    claims = [_publication_claim(event_id=f"evt4_{index}", sequence=7 + index) for index in range(3)]
+    claims = [
+        _publication_claim(event_id=f"evt4_{index}", sequence=7 + index)
+        for index in range(3)
+    ]
 
     class ClaimStore:
         def __init__(self):
@@ -2021,7 +2418,43 @@ async def test_due_publication_bounds_scopes_and_drains_delayed_remainder():
             return f"redis-{len(canonical_envelope_bytes)}"
 
     store = ClaimStore()
-    assert await publish_due_v4_events(store, Transport(), scope_limit=1, event_limit=2) == 2
+    assert (
+        await publish_due_v4_events(store, Transport(), scope_limit=1, event_limit=2)
+        == 2
+    )
     assert len(store.remaining) == 1
-    assert await publish_due_v4_events(store, Transport(), scope_limit=1, event_limit=2) == 1
+    assert (
+        await publish_due_v4_events(store, Transport(), scope_limit=1, event_limit=2)
+        == 1
+    )
     assert store.remaining == []
+
+
+@pytest.mark.asyncio
+async def test_due_publication_isolates_scopes_before_reporting_failure() -> None:
+    scopes = (
+        V4PublicationScope("tenant-a", "run-bad", "attempt-a", 2),
+        V4PublicationScope("tenant-a", "run-good", "attempt-b", 3),
+    )
+    attempted: list[str] = []
+
+    class ClaimStore:
+        async def list_due_scopes(self, *, limit):
+            assert limit == 2
+            return scopes
+
+        async def claim_next(self, *, run_id, **_kwargs):
+            attempted.append(run_id)
+            if run_id == "run-bad":
+                raise RuntimeError("bad publication scope")
+            return None
+
+    class Transport:
+        async def publish(self, _canonical_envelope_bytes):
+            raise AssertionError("no event was claimed")
+
+    with pytest.raises(RuntimeError, match="bad publication scope"):
+        await publish_due_v4_events(
+            ClaimStore(), Transport(), scope_limit=2, event_limit=1
+        )
+    assert attempted == ["run-bad", "run-good"]

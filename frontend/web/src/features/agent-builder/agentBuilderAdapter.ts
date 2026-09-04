@@ -41,11 +41,26 @@ export interface AgentBuilderEditor {
   avatarSeed: string;
   avatarAssetId: string | null;
   category: AgentProfileDraftRequest["category"];
+  marketTag: string;
   visibility: AgentProfileDraftRequest["visibility"];
   allowedDepartmentIds: string[];
   allowedRoles: string[];
   allowedUserIds: string[];
   materializedProfile: AgentProfileAdminProjection | null;
+}
+
+/** Number only snapshots that were actually published; draft saves are not releases. */
+export function listPublishedAgentProfileVersions(
+  profiles: readonly AgentProfileAdminProjection[],
+) {
+  return [...profiles]
+    .filter((profile) => Boolean(profile.published_at) || profile.status === "published")
+    .sort((left, right) => {
+      const leftPublishedAt = Date.parse(String(left.published_at ?? left.created_at ?? "")) || 0;
+      const rightPublishedAt = Date.parse(String(right.published_at ?? right.created_at ?? "")) || 0;
+      return leftPublishedAt - rightPublishedAt || left.revision - right.revision;
+    })
+    .map((profile, index) => ({ profile, version: index + 1 }));
 }
 
 export type AgentBuilderBlockCode =
@@ -131,6 +146,7 @@ export function createUnsavedAgentEditor(): AgentBuilderEditor {
     avatarSeed: "",
     avatarAssetId: null,
     category: "general",
+    marketTag: "",
     visibility: "tenant",
     allowedDepartmentIds: [],
     allowedRoles: [],
@@ -169,12 +185,14 @@ export function hydrateAgentProfileEditor(
     avatarSeed: profile.avatar_seed?.trim() || profile.agent_id,
     avatarAssetId: profile.avatar_asset_id,
     category: profile.category,
+    marketTag: profile.market_tag ?? "",
     visibility: profile.visibility,
     allowedDepartmentIds: [...profile.allowed_department_ids],
     allowedRoles: [...profile.allowed_roles],
     allowedUserIds: [...profile.allowed_user_ids],
     materializedProfile: {
       ...profile,
+      market_tag: profile.market_tag ?? "",
       selected_skill: { ...profile.selected_skill },
       skill_set: (profile.skill_set?.length
         ? profile.skill_set
@@ -211,6 +229,7 @@ function editorDefinition(editor: AgentBuilderEditor) {
     avatar_seed: editor.avatarSeed.trim(),
     avatar_asset_id: editor.avatarAssetId,
     category: editor.category,
+    market_tag: editor.marketTag.trim(),
     visibility: editor.visibility,
     allowed_department_ids: editor.allowedDepartmentIds,
     allowed_roles: editor.allowedRoles,
@@ -237,6 +256,7 @@ function profileDefinition(profile: AgentProfileAdminProjection) {
     avatar_seed: profile.avatar_seed?.trim() || profile.agent_id,
     avatar_asset_id: profile.avatar_asset_id,
     category: profile.category,
+    market_tag: profile.market_tag ?? "",
     visibility: profile.visibility,
     allowed_department_ids: profile.allowed_department_ids,
     allowed_roles: profile.allowed_roles,
@@ -275,6 +295,7 @@ export function hasUnsavedAgentProfileEdits(editor: AgentBuilderEditor): boolean
     editor.avatarSeed !== "" ||
     editor.avatarAssetId !== null ||
     editor.category !== "general" ||
+    editor.marketTag.trim() ||
     editor.visibility !== "tenant" ||
     editor.allowedDepartmentIds.length > 0 ||
     editor.allowedRoles.length > 0 ||
@@ -375,6 +396,7 @@ export function buildAgentProfileDraftRequest(
     avatar_seed: editor.avatarSeed.trim() || editor.name.trim(),
     avatar_asset_id: editor.avatarAssetId,
     category: editor.category,
+    market_tag: editor.marketTag.trim(),
     visibility: editor.visibility,
     allowed_department_ids: [...editor.allowedDepartmentIds],
     allowed_roles: [...editor.allowedRoles],

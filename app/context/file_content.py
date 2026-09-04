@@ -6,24 +6,16 @@ import io
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 from xml.etree import ElementTree
-from zipfile import BadZipFile, ZipFile, ZipInfo, is_zipfile
-
-from pypdf import PdfReader
-from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject
+from zipfile import BadZipFile, ZipFile, ZipInfo
 
 from app.context.api import ContextFileContentError
 
 
-MAX_CONTEXT_FILE_STAGE_BYTES = 32 * 1024 * 1024
+MAX_CONTEXT_FILE_STAGE_BYTES = 128 * 1024 * 1024
 MAX_OPC_ARCHIVE_ENTRIES = 2_000
-MAX_DOCX_ARCHIVE_ENTRY_BYTES = 32 * 1024 * 1024
-MAX_DOCX_ARCHIVE_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_XLSX_ARCHIVE_ENTRY_BYTES = 8 * 1024 * 1024
 MAX_XLSX_ARCHIVE_TOTAL_BYTES = 32 * 1024 * 1024
 MAX_OPC_ARCHIVE_COMPRESSION_RATIO = 100
-MAX_EMBEDDED_ARCHIVE_DEPTH = 4
-MAX_PDF_PAGES = 200
-MAX_PDF_OBJECTS_INSPECTED = 20_000
 _FORBIDDEN_XML_DECLARATIONS = (b"<!DOCTYPE", b"<!ENTITY")
 _FORBIDDEN_XML_DECLARATION_TEXT = tuple(
     token.decode("ascii") for token in _FORBIDDEN_XML_DECLARATIONS
@@ -32,18 +24,7 @@ _CFB_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 _ACTIVE_CONTENT_MARKERS = ("macroenabled", "vbaproject", "activex", "oleobject")
 _ACTIVE_RELATIONSHIP_TYPES = frozenset({"control", "oleobject", "vbaproject"})
 
-DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-PDF_CONTENT_TYPE = "application/pdf"
 XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-TEXT_CONTENT_TYPES = frozenset(
-    {
-        "application/json",
-        "text/csv",
-        "text/markdown",
-        "text/plain",
-    }
-)
-TEXT_EXTENSIONS = frozenset({".csv", ".json", ".markdown", ".md", ".txt"})
 
 
 def _content_type(value: object) -> str:
@@ -69,19 +50,12 @@ def _validate_identity(row: dict[str, Any], raw: bytes) -> None:
         raise ContextFileContentError("context_file_identity_mismatch")
 
 
-def _classify(row: dict[str, Any], raw: bytes) -> str:
+def _declared_as_xlsx(row: dict[str, Any]) -> bool:
     name = row.get("original_name") or row.get("name")
-    extension = _extension(name)
-    declared_type = _content_type(row.get("content_type"))
-    if extension in TEXT_EXTENSIONS and declared_type in TEXT_CONTENT_TYPES:
-        return "text"
-    if extension == ".docx" and declared_type == DOCX_CONTENT_TYPE and raw.startswith(b"PK"):
-        return "docx"
-    if extension == ".pdf" and declared_type == PDF_CONTENT_TYPE and raw.startswith(b"%PDF-"):
-        return "pdf"
-    if extension == ".xlsx" and declared_type == XLSX_CONTENT_TYPE and raw.startswith(b"PK"):
-        return "xlsx"
-    raise ContextFileContentError("context_file_type_unsupported")
+    return (
+        _extension(name) == ".xlsx"
+        or _content_type(row.get("content_type")) == XLSX_CONTENT_TYPE
+    )
 
 
 def _xml_multibyte_encoding(prefix: bytes) -> str | None:
@@ -198,130 +172,6 @@ def _validate_content_types_xml(
             raise ContextFileContentError(active_code)
 
 
-def _validate_embedded_zip_package(
-    raw: bytes,
-    *,
-    remaining_bytes: int,
-    remaining_entries: int,
-    depth: int = 1,
-) -> tuple[int, int]:
-    if depth > MAX_EMBEDDED_ARCHIVE_DEPTH:
-        raise ContextFileContentError("context_file_docx_archive_structure_invalid")
-    try:
-        archive = ZipFile(io.BytesIO(raw))
-    except (BadZipFile, ValueError) as exc:
-        raise ContextFileContentError("context_file_docx_archive_structure_invalid") from exc
-    try:
-        entries, expanded_bytes = _validated_archive_entries(
-            archive,
-            invalid_code="context_file_docx_archive_structure_invalid",
-            entry_limit_code="context_file_docx_archive_entry_limit_exceeded",
-            encrypted_code="context_file_docx_encrypted",
-            size_code="context_file_docx_archive_too_large",
-            max_entries=remaining_entries,
-            max_entry_bytes=MAX_DOCX_ARCHIVE_ENTRY_BYTES,
-            max_total_bytes=remaining_bytes,
-        )
-        remaining_entries -= len(entries)
-        remaining_bytes -= expanded_bytes
-        for entry in entries:
-            path = PurePosixPath(entry.filename.replace("\\", "/"))
-            normalized = str(path).casefold()
-            if "vbaproject" in normalized or any(
-                part.casefold() == "activex" for part in path.parts
-            ):
-                raise ContextFileContentError("context_file_docx_macros_unsupported")
-            payload = archive.read(entry)
-            if payload.startswith(_CFB_MAGIC):
-                raise ContextFileContentError("context_file_docx_macros_unsupported")
-            if is_zipfile(io.BytesIO(payload)):
-                remaining_bytes, remaining_entries = _validate_embedded_zip_package(
-                    payload,
-                    remaining_bytes=remaining_bytes,
-                    remaining_entries=remaining_entries,
-                    depth=depth + 1,
-                )
-            if normalized == "[content_types].xml":
-                _validate_content_types_xml(
-                    payload,
-                    invalid_code="context_file_docx_archive_structure_invalid",
-                    active_code="context_file_docx_macros_unsupported",
-                )
-            if normalized.endswith(".rels"):
-                _validate_office_relationship_xml(
-                    payload,
-                    invalid_code="context_file_docx_relationship_invalid",
-                    active_code="context_file_docx_macros_unsupported",
-                )
-        return remaining_bytes, remaining_entries
-    except ContextFileContentError:
-        raise
-    except (BadZipFile, OSError, RuntimeError, ValueError) as exc:
-        raise ContextFileContentError("context_file_docx_archive_structure_invalid") from exc
-    finally:
-        archive.close()
-
-
-def _validate_docx_archive(raw: bytes) -> None:
-    try:
-        archive = ZipFile(io.BytesIO(raw))
-    except (BadZipFile, ValueError) as exc:
-        raise ContextFileContentError("context_file_docx_archive_invalid") from exc
-    try:
-        entries, expanded_bytes = _validated_archive_entries(
-            archive,
-            invalid_code="context_file_docx_archive_structure_invalid",
-            entry_limit_code="context_file_docx_archive_entry_limit_exceeded",
-            encrypted_code="context_file_docx_encrypted",
-            size_code="context_file_docx_archive_too_large",
-            max_entries=MAX_OPC_ARCHIVE_ENTRIES,
-            max_entry_bytes=MAX_DOCX_ARCHIVE_ENTRY_BYTES,
-            max_total_bytes=MAX_DOCX_ARCHIVE_TOTAL_BYTES,
-        )
-        remaining_entries = MAX_OPC_ARCHIVE_ENTRIES - len(entries)
-        remaining_bytes = MAX_DOCX_ARCHIVE_TOTAL_BYTES - expanded_bytes
-        seen = {entry.filename.replace("\\", "/").casefold() for entry in entries}
-        for entry in entries:
-            normalized = entry.filename.replace("\\", "/").casefold()
-            if "vbaproject" in normalized or normalized.startswith("word/activex/"):
-                raise ContextFileContentError("context_file_docx_macros_unsupported")
-            payload = archive.read(entry)
-            if payload.startswith(_CFB_MAGIC):
-                raise ContextFileContentError("context_file_docx_macros_unsupported")
-            if is_zipfile(io.BytesIO(payload)):
-                remaining_bytes, remaining_entries = _validate_embedded_zip_package(
-                    payload,
-                    remaining_bytes=remaining_bytes,
-                    remaining_entries=remaining_entries,
-                )
-        if "[content_types].xml" not in seen or "word/document.xml" not in seen:
-            raise ContextFileContentError("context_file_docx_required_part_missing")
-        _validate_content_types_xml(
-            archive.read("[Content_Types].xml"),
-            invalid_code="context_file_docx_archive_structure_invalid",
-            active_code="context_file_docx_macros_unsupported",
-        )
-        for entry in entries:
-            if not entry.filename.casefold().endswith(".rels"):
-                continue
-            try:
-                _validate_office_relationship_xml(
-                    archive.read(entry),
-                    invalid_code="context_file_docx_relationship_invalid",
-                    active_code="context_file_docx_macros_unsupported",
-                )
-            except ContextFileContentError:
-                raise
-            except (BadZipFile, OSError, RuntimeError, ValueError) as exc:
-                raise ContextFileContentError("context_file_docx_relationship_invalid") from exc
-    except ContextFileContentError:
-        raise
-    except (BadZipFile, KeyError, OSError, RuntimeError, ValueError) as exc:
-        raise ContextFileContentError("context_file_docx_archive_structure_invalid") from exc
-    finally:
-        archive.close()
-
-
 def _validate_xlsx_xml_entry(archive: ZipFile, entry: Any) -> None:
     normalized_name = str(entry.filename).replace("\\", "/").casefold()
     if not normalized_name.endswith((".xml", ".rels")):
@@ -382,72 +232,9 @@ def _validate_xlsx_archive_security(raw: bytes) -> None:
         archive.close()
 
 
-def _pdf_has_active_content(reader: PdfReader) -> bool:
-    try:
-        root = reader.trailer["/Root"].get_object()
-        pending: list[object] = [root, *reader.pages]
-        visited_indirect: set[tuple[int, int]] = set()
-        visited_direct: set[int] = set()
-        inspected = 0
-        while pending:
-            current = pending.pop()
-            inspected += 1
-            if inspected > MAX_PDF_OBJECTS_INSPECTED:
-                return True
-            if isinstance(current, IndirectObject):
-                identity = (int(current.idnum), int(current.generation))
-                if identity in visited_indirect:
-                    continue
-                visited_indirect.add(identity)
-                pending.append(current.get_object())
-                continue
-            if isinstance(current, DictionaryObject):
-                direct_identity = id(current)
-                if direct_identity in visited_direct:
-                    continue
-                visited_direct.add(direct_identity)
-                keys = {str(key) for key in current.keys()}
-                if keys & {"/AA", "/EF", "/EmbeddedFiles", "/JavaScript", "/JS", "/OpenAction"}:
-                    return True
-                if str(current.get("/S") or "") in {
-                    "/ImportData",
-                    "/JavaScript",
-                    "/Launch",
-                    "/SubmitForm",
-                }:
-                    return True
-                pending.extend(current.values())
-                continue
-            if isinstance(current, ArrayObject):
-                pending.extend(current)
-    except Exception:
-        return True
-    return False
-
-
-def _validate_pdf_file(raw: bytes) -> None:
-    try:
-        reader = PdfReader(io.BytesIO(raw), strict=True)
-        if reader.is_encrypted:
-            raise ContextFileContentError("context_file_pdf_password_required")
-        if len(reader.pages) > MAX_PDF_PAGES:
-            raise ContextFileContentError("context_file_pdf_page_limit_exceeded")
-        if _pdf_has_active_content(reader):
-            raise ContextFileContentError("context_file_pdf_active_content_unsupported")
-    except ContextFileContentError:
-        raise
-    except Exception as exc:
-        raise ContextFileContentError("context_file_pdf_parse_failed") from exc
-
-
 def validate_context_file_for_stage(row: dict[str, Any], raw: bytes) -> None:
     if len(raw) > MAX_CONTEXT_FILE_STAGE_BYTES:
         raise ContextFileContentError("context_file_too_large")
     _validate_identity(row, raw)
-    kind = _classify(row, raw)
-    if kind == "docx":
-        _validate_docx_archive(raw)
-    elif kind == "xlsx":
+    if _declared_as_xlsx(row):
         _validate_xlsx_archive_security(raw)
-    elif kind == "pdf":
-        _validate_pdf_file(raw)

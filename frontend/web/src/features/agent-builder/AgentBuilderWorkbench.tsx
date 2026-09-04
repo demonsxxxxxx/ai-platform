@@ -19,6 +19,7 @@ import type { PublicSkillResponse } from "../../types";
 import { AgentBuilderEnterpriseFields } from "./AgentBuilderEnterpriseFields";
 import { AgentBuilderLifecycle } from "./AgentBuilderLifecycle";
 import { AgentIdentityAvatar } from "../../components/agent/AgentIdentityAvatar";
+import { Pagination } from "../../components/common/Pagination";
 import {
   agentBuilderBlockReason,
   getAgentProfilePublishBlock,
@@ -52,6 +53,8 @@ type PendingEditorAction =
   | { kind: "profile"; agentId: string }
   | { kind: "refresh" };
 
+const AGENT_DIRECTORY_PAGE_SIZE = 20;
+
 function profileStatusLabel(status: "draft" | "published" | "withdrawn") {
   if (status === "published") return "已发布";
   if (status === "withdrawn") return "已下架";
@@ -74,7 +77,7 @@ function editorStatusTone(editor: AgentBuilderEditor) {
   return "border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] text-[var(--theme-warning)]";
 }
 
-/** Server-backed Chinese admin list/editor for immutable Agent Profile revisions. */
+/** Server-backed Chinese admin list/editor for immutable Agent Profile snapshots. */
 export function AgentBuilderWorkbench({
   catalog,
   canManageProfiles = false,
@@ -84,6 +87,7 @@ export function AgentBuilderWorkbench({
   const [dialog, setDialog] = useState<"skills" | "tools" | null>(null);
   const [pendingEditorAction, setPendingEditorAction] = useState<PendingEditorAction | null>(null);
   const [profileQuery, setProfileQuery] = useState("");
+  const [profilePage, setProfilePage] = useState(1);
   const retryCatalog = catalog.retry;
 
   useEffect(() => controller.subscribe(setWorkbench), [controller]);
@@ -147,11 +151,11 @@ export function AgentBuilderWorkbench({
       ? {
           tone: "success" as const,
           message: workbench.mutation.action === "save"
-            ? `草稿已保存为服务端 revision ${workbench.mutation.revision}。`
+            ? "草稿已保存，当前发布版本未改变。"
             : workbench.mutation.action === "publish"
-              ? `发布成功，当前服务端 revision 为 ${workbench.mutation.revision}。`
+              ? "发布成功，发布版本已更新。"
               : workbench.mutation.action === "unpublish"
-                ? `已下架，当前服务端 revision 为 ${workbench.mutation.revision}。`
+                ? "已下架，发布版本未新增。"
                 : "受控测试运行已创建。",
         }
       : null;
@@ -166,6 +170,32 @@ export function AgentBuilderWorkbench({
       ),
     );
   }, [profileQuery, workbench.profiles]);
+
+  const profilePageCount = Math.max(
+    1,
+    Math.ceil(visibleProfiles.length / AGENT_DIRECTORY_PAGE_SIZE),
+  );
+  const currentProfilePage = Math.min(profilePage, profilePageCount);
+  const paginatedProfiles = useMemo(
+    () => visibleProfiles.slice(
+      (currentProfilePage - 1) * AGENT_DIRECTORY_PAGE_SIZE,
+      currentProfilePage * AGENT_DIRECTORY_PAGE_SIZE,
+    ),
+    [currentProfilePage, visibleProfiles],
+  );
+
+  useEffect(() => {
+    if (profilePage !== currentProfilePage) setProfilePage(currentProfilePage);
+  }, [currentProfilePage, profilePage]);
+
+  const marketTagSuggestions = useMemo(
+    () => [...new Set(
+      workbench.profiles
+        .map((profile) => profile.market_tag?.trim())
+        .filter((tag): tag is string => Boolean(tag)),
+    )].sort((left, right) => left.localeCompare(right, "zh-CN")),
+    [workbench.profiles],
+  );
 
   const closeDialog = useCallback(() => setDialog(null), []);
   const performRefresh = useCallback((discardUnsavedChanges = false) => {
@@ -340,7 +370,10 @@ export function AgentBuilderWorkbench({
               <input
                 aria-label="搜索专家"
                 className="h-9 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] pl-9 pr-3 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)]"
-                onChange={(event) => setProfileQuery(event.target.value)}
+                onChange={(event) => {
+                  setProfileQuery(event.target.value);
+                  setProfilePage(1);
+                }}
                 placeholder="名称或编号"
                 type="search"
                 value={profileQuery}
@@ -384,12 +417,12 @@ export function AgentBuilderWorkbench({
               </button>
             ) : null}
 
-            {visibleProfiles.map((profile) => {
+            {paginatedProfiles.map((profile) => {
               const selected = activeEditor?.agentId === profile.agent_id;
               return (
                 <button
                   key={profile.agent_id}
-                  aria-label={`编辑专家 ${profile.name}，${profileStatusLabel(profile.status)}，revision ${profile.revision}`}
+                  aria-label={`编辑专家 ${profile.name}，${profileStatusLabel(profile.status)}`}
                   aria-pressed={selected}
                   className={`flex w-full items-start gap-3 border-b border-l-2 border-b-[var(--theme-border)] px-4 py-3 text-left disabled:cursor-not-allowed disabled:opacity-60 ${profile.status === "published" ? "border-l-[var(--theme-success)]" : "border-l-[var(--theme-warning)]"} ${selected ? "bg-[var(--theme-hover)]" : "hover:bg-[var(--theme-hover)]"}`}
                   disabled={interactionBusy}
@@ -404,15 +437,25 @@ export function AgentBuilderWorkbench({
                   />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-medium">{profile.name}</span>
-                    <span className="mt-1 flex items-center justify-between gap-2 text-xs text-[var(--theme-text-secondary)]">
-                      <span>{profileStatusLabel(profile.status)}</span>
-                      <span className="tabular-nums">revision {profile.revision}</span>
+                    <span className="mt-1 block text-xs text-[var(--theme-text-secondary)]">
+                      {profileStatusLabel(profile.status)}
                     </span>
                   </span>
                 </button>
               );
             })}
           </div>
+
+          {visibleProfiles.length > 0 ? (
+            <div className="border-t border-[var(--theme-border)] px-3 py-2">
+              <Pagination
+                page={currentProfilePage}
+                pageSize={AGENT_DIRECTORY_PAGE_SIZE}
+                total={visibleProfiles.length}
+                onChange={setProfilePage}
+              />
+            </div>
+          ) : null}
 
           {workbench.listPhase === "ready" && workbench.profiles.length === 0 && !workbench.localEditor ? (
             <div className="px-4 py-6 text-sm text-[var(--theme-text-secondary)]">
@@ -598,6 +641,7 @@ export function AgentBuilderWorkbench({
               <AgentBuilderEnterpriseFields
                 disabled={interactionBusy}
                 editor={activeEditor}
+                marketTagSuggestions={marketTagSuggestions}
                 onChange={(patch) =>
                   updateEditor((editor) => ({
                     ...editor,
@@ -681,8 +725,16 @@ export function AgentBuilderWorkbench({
                     <dd className="mt-1 font-medium">{editorStatusLabel(activeEditor)}</dd>
                   </div>
                   <div>
-                    <dt className="text-[var(--theme-text-secondary)]">revision</dt>
-                    <dd className="mt-1 font-medium tabular-nums">{activeEditor.revision ?? "未分配"}</dd>
+                    <dt className="text-[var(--theme-text-secondary)]">草稿</dt>
+                    <dd className="mt-1 font-medium">
+                      {!activeEditor.agentId
+                        ? "未创建"
+                        : isAgentProfileEditorDirty(activeEditor)
+                          ? "有未保存更改"
+                          : activeEditor.status === "draft"
+                            ? "待发布"
+                            : "无待发布草稿"}
+                    </dd>
                   </div>
                   <div>
                     <dt className="text-[var(--theme-text-secondary)]">MCP 工具</dt>

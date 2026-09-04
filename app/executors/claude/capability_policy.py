@@ -248,6 +248,26 @@ def _authorized_parameter_keys(
     return set(_BUILTIN_PARAMETER_KEYS.get(tool_name, ()))
 
 
+def _delegates_external_mcp_parameters(
+    subject: dict[str, Any],
+    tool_name: str,
+) -> bool:
+    identity = subject.get("identity")
+    server_id = subject.get("mcp_server")
+    mcp_tool = subject.get("mcp_tool")
+    return (
+        subject.get("parameter_delegation") == "external_mcp"
+        and isinstance(identity, str)
+        and isinstance(server_id, str)
+        and bool(server_id)
+        and server_id != "ai-platform-context"
+        and isinstance(mcp_tool, str)
+        and bool(mcp_tool)
+        and identity == f"mcp__{server_id}__{mcp_tool}"
+        and tool_name == identity
+    )
+
+
 def _skill_input_is_bounded_json(tool_input: object) -> bool:
     if not isinstance(tool_input, dict) or any(
         not isinstance(key, str) for key in tool_input
@@ -324,14 +344,32 @@ def _parameters_match_subject(
         return _skill_parameters_match_subject(subject, tool_input)
     if not isinstance(tool_input, dict):
         return False
-    allowed_keys = _authorized_parameter_keys(subject, tool_name)
-    if not allowed_keys or not set(tool_input).issubset(allowed_keys):
+    schema = subject.get("mcp_tool_schema")
+    delegates_external_mcp = _delegates_external_mcp_parameters(subject, tool_name)
+    schema_properties = schema.get("properties") if isinstance(schema, dict) else None
+    if isinstance(schema_properties, dict):
+        allowed_keys = (
+            {str(key) for key in schema_properties if isinstance(key, str) and key}
+            if schema.get("additionalProperties") is False
+            else set(tool_input)
+        )
+    elif isinstance(schema, dict) and schema.get("additionalProperties") is False:
+        allowed_keys = set()
+    elif isinstance(schema, dict) or delegates_external_mcp:
+        allowed_keys = set(tool_input)
+    else:
+        allowed_keys = _authorized_parameter_keys(subject, tool_name)
+    if (
+        not allowed_keys
+        and not isinstance(schema, dict)
+        and not delegates_external_mcp
+    ) or not set(tool_input).issubset(allowed_keys):
         return False
-    required = (
-        subject["required_parameter_keys"]
-        if "required_parameter_keys" in subject
-        else list(_BUILTIN_REQUIRED_PARAMETER_KEYS.get(tool_name, ()))
-    )
+    required = subject.get("required_parameter_keys")
+    if required is None and isinstance(schema, dict):
+        required = schema.get("required", [])
+    if required is None:
+        required = list(_BUILTIN_REQUIRED_PARAMETER_KEYS.get(tool_name, ()))
     if not isinstance(required, list) or not all(
         isinstance(key, str) and key for key in required
     ):
@@ -353,8 +391,8 @@ def _parameters_match_subject(
 
 def _mcp_server_options(
     subjects: dict[str, dict[str, Any]],
-) -> dict[str, dict[str, str]]:
-    servers: dict[str, dict[str, str]] = {}
+) -> dict[str, dict[str, Any]]:
+    servers: dict[str, dict[str, Any]] = {}
     for identity, subject in subjects.items():
         config = subject.get("mcp_server_config")
         if not identity.startswith("mcp__") or not isinstance(config, dict):
@@ -371,7 +409,17 @@ def _mcp_server_options(
             or any((parsed.username, parsed.password, parsed.query, parsed.fragment))
         ):
             continue
-        candidate = {"type": transport, "url": endpoint}
+        raw_headers = config.get("headers", {})
+        if not isinstance(raw_headers, dict) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in raw_headers.items()
+        ):
+            continue
+        candidate = {
+            "type": transport,
+            "url": endpoint,
+            "headers": dict(raw_headers),
+        }
         existing = servers.get(server_id)
         if existing is not None and existing != candidate:
             raise ValueError("conflicting MCP server registration")

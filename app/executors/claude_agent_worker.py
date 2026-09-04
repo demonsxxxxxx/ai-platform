@@ -1,13 +1,10 @@
 import base64
 import binascii
 import inspect
-import posixpath
 import shutil
-import zipfile
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar
-from xml.etree import ElementTree
 
 from app import control_plane_contracts as run_controls, repositories
 from app.capabilities import required_artifact_types_for_skill
@@ -54,6 +51,8 @@ from app.executors.claude_agent_sdk_runner import (
 from app.executors.claude.prompts import build_harness_chat_prompt
 from app.execution.api import (
     SkillInvocationEvidenceBinder,
+    claude_sdk_failure_code,
+    claude_sdk_failure_message,
     sandbox_reconciliation_payload,
 )
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
@@ -98,34 +97,7 @@ _MAX_WORKSPACE_ARTIFACT_FILE_BYTES = 64 * 1024 * 1024
 _MAX_WORKSPACE_ARTIFACT_TOTAL_BYTES = 256 * 1024 * 1024
 
 _SANDBOX_SUCCESS_TERMINAL_STATUSES = {"completed", "succeeded"}
-_SELECTED_SKILL_INVOCATION_ERRORS = {
-    "claude_agent_sdk_selected_skill_not_invoked",
-    "claude_agent_sdk_selected_skill_hook_failed",
-    "claude_agent_sdk_selected_skill_not_authorized",
-}
-_SDK_ACTIONABLE_FAILURE_CODES = {
-    *_SELECTED_SKILL_INVOCATION_ERRORS,
-    "claude_agent_sdk_cancelled",
-    "claude_agent_sdk_missing_structured_terminal",
-    "claude_agent_sdk_turn_limit_exceeded",
-    "claude_agent_sdk_timeout",
-    "claude_agent_sdk_tool_admission_failed",
-    "claude_agent_sdk_upstream_error",
-}
 _TOOL_PERMISSION_POLL_INTERVAL_SECONDS = 0.25
-_REQUIRED_DOCX_MAX_ENTRY_COUNT = 128
-_REQUIRED_DOCX_MAX_COMPRESSED_BYTES = 32 * 1024 * 1024
-_REQUIRED_DOCX_MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
-_REQUIRED_DOCX_MAX_COMPRESSION_RATIO = 100
-_OPC_CONTENT_TYPES_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/content-types"
-_OPC_RELATIONSHIPS_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/relationships"
-_OPC_OFFICE_DOCUMENT_RELATIONSHIP = (
-    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
-)
-_WORDPROCESSINGML_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-_WORD_MAIN_DOCUMENT_CONTENT_TYPE = (
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
-)
 
 
 async def _emit_public_progress_event(
@@ -660,7 +632,7 @@ class ClaudeAgentWorkerAdapter:
                     "sdk_turn_diagnostics": turn_diagnostics,
                 },
             )
-        error_code = self._sdk_failure_code(sdk_result)
+        error_code = claude_sdk_failure_code(sdk_result)
         sdk_used = bool(sdk_result and sdk_result.used_sdk)
         sdk_error = sdk_result.error if sdk_result else "claude_agent_sdk_disabled"
         turn_diagnostics = _public_sdk_turn_diagnostics(
@@ -677,7 +649,7 @@ class ClaudeAgentWorkerAdapter:
             executor_version=self.executor_version,
             capabilities=self._run_capabilities(payload),
             result={
-                "message": self._sdk_failure_message(sdk_result),
+                "message": claude_sdk_failure_message(sdk_result),
                 "error_code": error_code,
                 "sdk_used": sdk_used,
                 "sdk_error": sdk_error,
@@ -694,45 +666,6 @@ class ClaudeAgentWorkerAdapter:
             },
         )
 
-    def _sdk_failure_code(self, sdk_result) -> str:
-        if sdk_result is None:
-            return "claude_agent_sdk_disabled"
-        error_text = str(getattr(sdk_result, "error", "") or "")
-        if error_text in _SDK_ACTIONABLE_FAILURE_CODES:
-            return error_text
-        if error_text.startswith("claude_agent_sdk_unavailable"):
-            return "claude_agent_sdk_unavailable"
-        if getattr(sdk_result, "used_sdk", False):
-            return "claude_agent_sdk_runtime_error"
-        if error_text == "claude_agent_sdk_disabled":
-            return "claude_agent_sdk_disabled"
-        return "claude_agent_sdk_required"
-
-    def _sdk_failure_message(self, sdk_result) -> str:
-        error_code = self._sdk_failure_code(sdk_result)
-        if error_code in _SELECTED_SKILL_INVOCATION_ERRORS:
-            return "The selected capability did not complete its required Skill execution. Please retry."
-        messages = {
-            "claude_agent_sdk_cancelled": "This run was cancelled before completion.",
-            "claude_agent_sdk_turn_limit_exceeded": (
-                "This run reached its turn limit. Continue in the same session or narrow the request."
-            ),
-            "claude_agent_sdk_timeout": "This run timed out. Retry or split the request.",
-            "claude_agent_sdk_missing_structured_terminal": (
-                "The executor ended without an authoritative terminal result. Please retry."
-            ),
-            "claude_agent_sdk_tool_admission_failed": (
-                "The selected capability or tool was not admitted by platform policy."
-            ),
-            "claude_agent_sdk_upstream_error": (
-                "The execution service failed. Please retry later."
-            ),
-            "claude_agent_sdk_disabled": "Claude Agent SDK is required for this run.",
-            "claude_agent_sdk_required": "Claude Agent SDK is required for this run.",
-            "claude_agent_sdk_unavailable": "Claude Agent SDK is required for this run.",
-        }
-        return messages.get(error_code, "Claude Agent SDK execution failed")
-
     def _sdk_completed_normally(self, sdk_result) -> bool:
         return bool(
             sdk_result
@@ -746,7 +679,7 @@ class ClaudeAgentWorkerAdapter:
         return terminal_reason if isinstance(terminal_reason, str) and terminal_reason else None
 
     def _sdk_required_result(self, payload: RunPayload, sdk_result) -> ExecutorResult:
-        error_code = self._sdk_failure_code(sdk_result)
+        error_code = claude_sdk_failure_code(sdk_result)
         sdk_used = bool(sdk_result and sdk_result.used_sdk)
         sdk_error = sdk_result.error if sdk_result else "claude_agent_sdk_disabled"
         turn_diagnostics = _public_sdk_turn_diagnostics(
@@ -1743,7 +1676,7 @@ class ClaudeAgentWorkerAdapter:
             message = (
                 "任务已取消"
                 if runtime_status in {"cancelled", "canceled"}
-                else self._sdk_failure_message(
+                else claude_sdk_failure_message(
                     type("SdkFailure", (), {"error": error_code})()
                 )
             )
@@ -1985,7 +1918,7 @@ class ClaudeAgentWorkerAdapter:
             used_skill_names=used_skill_names,
             pins=prepared.pinned_manifests,
         )
-        failure_code = self._sdk_failure_code(sdk_result)
+        failure_code = claude_sdk_failure_code(sdk_result)
         turn_diagnostics = _public_sdk_turn_diagnostics(
             payload,
             getattr(sdk_result, "turn_diagnostics", {}) if sdk_result else {},
@@ -2000,7 +1933,11 @@ class ClaudeAgentWorkerAdapter:
             executor_version=self.executor_version,
             capabilities=self._run_capabilities(payload),
             result={
-                "message": self._sdk_failure_message(sdk_result) if sdk_result else "Claude Agent SDK execution failed",
+                "message": (
+                    claude_sdk_failure_message(sdk_result)
+                    if sdk_result
+                    else "Claude Agent SDK execution failed"
+                ),
                 "error_code": failure_code,
                 "sdk_used": bool(sdk_result and sdk_result.used_sdk),
                 "sdk_error": sdk_result.error if sdk_result else "claude_agent_sdk_required",
@@ -2330,9 +2267,7 @@ class ClaudeAgentWorkerAdapter:
                 candidates.append(item)
         for index, path in enumerate(candidates, start=1):
             content_type = _artifact_content_type(path.name)
-            artifact_type = _artifact_type(path.name, payload.skill_id)
-            if artifact_type in {"reviewed_docx", "translated_docx"} and not _is_usable_docx(path):
-                continue
+            artifact_type = _artifact_type(path.name)
             storage_key = (
                 f"tenants/{payload.tenant_id}/workspaces/{payload.workspace_id}/"
                 f"sessions/{payload.session_id}/runs/{payload.run_id}/artifacts/{index}/{path.name}"
@@ -2759,12 +2694,8 @@ def _artifact_content_type(filename: str) -> str:
     return "application/octet-stream"
 
 
-def _artifact_type(filename: str, skill_id: str | None = None) -> str:
+def _artifact_type(filename: str) -> str:
     lower = filename.lower()
-    if skill_id == "qa-file-reviewer" and lower.endswith(".docx"):
-        return "reviewed_docx"
-    if skill_id == "baoyu-translate" and lower.endswith(".docx"):
-        return "translated_docx"
     if lower.endswith(".docx"):
         return "result_docx"
     if lower.endswith(".json"):
@@ -2774,170 +2705,7 @@ def _artifact_type(filename: str, skill_id: str | None = None) -> str:
     return "runtime_file"
 
 
-def _is_usable_docx(path: Path) -> bool:
-    """Accept a required DOCX only when its bounded OPC package is usable."""
-
-    try:
-        if not 0 < path.stat().st_size <= _REQUIRED_DOCX_MAX_COMPRESSED_BYTES:
-            return False
-        with zipfile.ZipFile(path) as archive:
-            entries = archive.infolist()
-            if not _docx_archive_entries_are_bounded(entries):
-                return False
-            content_types = archive.read("[Content_Types].xml")
-            relationships = archive.read("_rels/.rels")
-            document = archive.read("word/document.xml")
-    except (KeyError, OSError, ValueError, zipfile.BadZipFile):
-        return False
-    try:
-        content_types_root = ElementTree.fromstring(content_types)
-        relationships_root = ElementTree.fromstring(relationships)
-        document_root = ElementTree.fromstring(document)
-    except ElementTree.ParseError:
-        return False
-    if (
-        content_types_root.tag != f"{{{_OPC_CONTENT_TYPES_NAMESPACE}}}Types"
-        or relationships_root.tag != f"{{{_OPC_RELATIONSHIPS_NAMESPACE}}}Relationships"
-        or document_root.tag != f"{{{_WORDPROCESSINGML_NAMESPACE}}}document"
-    ):
-        return False
-    has_document_override = any(
-        item.tag == f"{{{_OPC_CONTENT_TYPES_NAMESPACE}}}Override"
-        and item.attrib.get("PartName") == "/word/document.xml"
-        and item.attrib.get("ContentType") == _WORD_MAIN_DOCUMENT_CONTENT_TYPE
-        for item in content_types_root
-    )
-    relationship_ids: set[str] = set()
-    root_office_document_relationships = []
-    for item in relationships_root:
-        if item.tag != f"{{{_OPC_RELATIONSHIPS_NAMESPACE}}}Relationship":
-            return False
-        relationship_id = str(item.attrib.get("Id") or "")
-        if not _is_valid_opc_relationship_id(relationship_id) or relationship_id in relationship_ids:
-            return False
-        relationship_ids.add(relationship_id)
-        if str(item.attrib.get("Type") or "") == _OPC_OFFICE_DOCUMENT_RELATIONSHIP:
-            root_office_document_relationships.append(item)
-    has_main_document_relationship = (
-        len(root_office_document_relationships) == 1
-        and str(root_office_document_relationships[0].attrib.get("TargetMode") or "").lower() != "external"
-        and _resolve_root_relationship_target(str(root_office_document_relationships[0].attrib.get("Target") or ""))
-        == "word/document.xml"
-    )
-    body = next((item for item in document_root if item.tag == f"{{{_WORDPROCESSINGML_NAMESPACE}}}body"), None)
-    return has_document_override and has_main_document_relationship and body is not None and any(True for _ in body)
-
-
-def _is_valid_opc_relationship_id(value: str) -> bool:
-    """Return whether an OPC relationship Id is a non-colon XML NCName.
-
-    OPC relationship identifiers are XML ``xsd:ID`` values.  XML allows
-    Unicode letters and combining marks, but a colon would make the value a
-    QName rather than the required NCName.  This small predicate keeps the
-    package parser dependency-free while accepting the XML name classes that
-    legitimate non-ASCII producers use.
-    """
-
-    if not value or ":" in value or not _is_xml_ncname_start(value[0]):
-        return False
-    return all(_is_xml_ncname_char(character) for character in value[1:])
-
-
-def _is_xml_ncname_start(character: str) -> bool:
-    """Implement XML 1.0 ``NameStartChar`` ranges excluding the QName colon."""
-
-    codepoint = ord(character)
-    return (
-        character == "_"
-        or "A" <= character <= "Z"
-        or "a" <= character <= "z"
-        or 0xC0 <= codepoint <= 0xD6
-        or 0xD8 <= codepoint <= 0xF6
-        or 0xF8 <= codepoint <= 0x2FF
-        or 0x370 <= codepoint <= 0x37D
-        or 0x37F <= codepoint <= 0x1FFF
-        or 0x200C <= codepoint <= 0x200D
-        or 0x2070 <= codepoint <= 0x218F
-        or 0x2C00 <= codepoint <= 0x2FEF
-        or 0x3001 <= codepoint <= 0xD7FF
-        or 0xF900 <= codepoint <= 0xFDCF
-        or 0xFDF0 <= codepoint <= 0xFFFD
-        or 0x10000 <= codepoint <= 0xEFFFF
-    )
-
-
-def _is_xml_ncname_char(character: str) -> bool:
-    """Implement XML 1.0 ``NameChar`` ranges for a non-colon NCName."""
-
-    codepoint = ord(character)
-    return (
-        _is_xml_ncname_start(character)
-        or character in {"-", "."}
-        or "0" <= character <= "9"
-        or codepoint == 0xB7
-        or 0x300 <= codepoint <= 0x36F
-        or 0x203F <= codepoint <= 0x2040
-    )
-
-
-def _docx_archive_entries_are_bounded(entries: list[zipfile.ZipInfo]) -> bool:
-    """Reject malformed, path-traversing, or expansion-prone OPC archive metadata before reads."""
-
-    if not entries or len(entries) > _REQUIRED_DOCX_MAX_ENTRY_COUNT:
-        return False
-    compressed_total = 0
-    uncompressed_total = 0
-    seen_package_parts: set[str] = set()
-    for entry in entries:
-        filename = str(entry.filename or "")
-        package_path = filename[:-1] if entry.is_dir() and filename.endswith("/") else filename
-        if (
-            not package_path
-            or "\x00" in filename
-            or "\\" in filename
-            or filename.startswith("/")
-            or any(part in {"", ".", ".."} for part in package_path.split("/"))
-            or bool(entry.flag_bits & 0x1)
-        ):
-            return False
-        normalized_part = package_path.casefold()
-        if normalized_part in seen_package_parts:
-            return False
-        seen_package_parts.add(normalized_part)
-        compressed_size = int(entry.compress_size)
-        uncompressed_size = int(entry.file_size)
-        if compressed_size < 0 or uncompressed_size < 0:
-            return False
-        compressed_total += compressed_size
-        uncompressed_total += uncompressed_size
-        if (
-            compressed_total > _REQUIRED_DOCX_MAX_COMPRESSED_BYTES
-            or uncompressed_total > _REQUIRED_DOCX_MAX_UNCOMPRESSED_BYTES
-            or (
-                compressed_size > 0
-                and uncompressed_size > compressed_size * _REQUIRED_DOCX_MAX_COMPRESSION_RATIO
-            )
-        ):
-            return False
-    return True
-
-
-def _resolve_root_relationship_target(target: str) -> str | None:
-    """Resolve a root OPC relationship only when it stays within the package root."""
-
-    if not target or "\\" in target or target.startswith("/"):
-        return None
-    normalized = posixpath.normpath(target)
-    if normalized.startswith("../") or normalized in {".", ".."}:
-        return None
-    return normalized
-
-
 def _artifact_label(filename: str, artifact_type: str) -> str:
-    if artifact_type == "reviewed_docx":
-        return "审核 Word"
-    if artifact_type == "translated_docx":
-        return "翻译 Word"
     if artifact_type == "result_docx":
         return "Word 文件"
     if artifact_type == "result_json":

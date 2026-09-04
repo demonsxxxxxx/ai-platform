@@ -21,168 +21,28 @@ POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
 REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM = (
     "d474b751d6fb6bff75cbbb8f3c482cb42f38ac462c116313baeccfc2c247fef7"
 )
-REMOTE_DUE_INDEX_SQL = """create index if not exists idx_run_events_v4_due_scope
-  on run_events(tenant_id, run_id, sequence)
-  where visible_to_user = true
-    and payload_json ? '__stream_v4'
-    and stream_publication_state = 'pending';
-
-
-"""
+REMOTE_SUCCESSOR_ACTIVATION_COMMIT = "829acfcd087365c0cf48726cbab35e1c79b5230f"
 REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM = (
     "14941c07a273f8924fb289876ac887879f8a8d5cc2a5a8d95bb9252e1ea40d90"
 )
 REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_COMMIT = (
     "33f3ab0163cd05c412e2a3d25d5859a935a359a6"
 )
-MODEL_CONTROL_PLANE_SCHEMA_FRAGMENTS = (
-    """create table if not exists model_gateway_revisions (
-  revision bigint primary key,
-  base_url text not null,
-  api_key_ciphertext bytea not null,
-  key_fingerprint text not null,
-  active boolean not null default false,
-  created_by text not null,
-  created_at timestamptz not null default now(),
-  constraint chk_model_gateway_revision_positive check (revision > 0),
-  constraint chk_model_gateway_base_url check (length(base_url) between 1 and 2048),
-  constraint chk_model_gateway_key_fingerprint check (key_fingerprint ~ '^[0-9a-f]{16}$')
-);
-create unique index if not exists uq_model_gateway_active
-  on model_gateway_revisions(active) where active = true;
 
-create table if not exists model_catalog_entries (
-  model_id text primary key,
-  upstream_model_id text not null unique,
-  display_name text not null,
-  provider text not null default 'custom',
-  enabled boolean not null default false,
-  upstream_available boolean not null default true,
-  is_default boolean not null default false,
-  display_order integer not null default 0,
-  first_seen_revision bigint not null references model_gateway_revisions(revision),
-  last_seen_revision bigint not null references model_gateway_revisions(revision),
-  first_seen_at timestamptz not null default now(),
-  last_seen_at timestamptz not null default now(),
-  constraint chk_model_catalog_id check (model_id ~ '^[A-Za-z0-9_.:-]{1,128}$'),
-  constraint chk_model_catalog_upstream_id check (
-    length(upstream_model_id) between 1 and 512
-    and upstream_model_id = btrim(upstream_model_id)
-  ),
-  constraint chk_model_catalog_display_name check (length(display_name) between 1 and 160),
-  constraint chk_model_catalog_default_enabled check (not is_default or enabled)
-);
-create unique index if not exists uq_model_catalog_default
-  on model_catalog_entries(is_default) where is_default = true;
 
-""",
-    """  model_id text,
-  model_value text,
-  model_gateway_revision bigint,
-""",
-    """alter table runs add column if not exists model_id text;
-alter table runs add column if not exists model_value text;
-alter table runs add column if not exists model_gateway_revision bigint;
-""",
-    """  if not exists (select 1 from pg_constraint where conrelid = 'runs'::regclass and conname = 'fk_runs_model_gateway_revision') then
-    alter table runs add constraint fk_runs_model_gateway_revision
-      foreign key (model_gateway_revision) references model_gateway_revisions(revision);
-  end if;
-""",
-)
-CURRENT_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SQL = """create or replace function ai_platform_guard_run_attempt_heartbeat_monotonicity()
-returns trigger
-language plpgsql
-as $$
-begin
-  if old.last_heartbeat_at is not null
-     and (
-       new.last_heartbeat_at is null
-       or new.last_heartbeat_at < old.last_heartbeat_at
-     ) then
-    raise exception 'run_attempt_heartbeat_regression' using errcode = '23514';
-  end if;
-  if old.lease_expires_at is not null
-     and (
-       new.lease_expires_at is null
-       or new.lease_expires_at < old.lease_expires_at
-     ) then
-    raise exception 'run_attempt_lease_expiry_regression' using errcode = '23514';
-  end if;
-  return new;
-end $$;
-
-drop trigger if exists trg_run_attempt_heartbeat_monotonicity_guard on run_attempts;
-create trigger trg_run_attempt_heartbeat_monotonicity_guard
-before update on run_attempts
-for each row execute function ai_platform_guard_run_attempt_heartbeat_monotonicity();
-
-"""
-CURRENT_RUN_ATTEMPT_OWNER_GUARD_SQL = """    if new.owner_generation is not distinct from old.owner_generation
-       and new.owner_kind is not distinct from old.owner_kind
-       and new.owner_id is not distinct from old.owner_id then
-      return new;
-    end if;
-    if old.status = 'cancel_requested'
-       and new.owner_kind = 'reconciler'
-       and new.owner_generation = old.owner_generation + 1
-       and (
-         new.owner_kind is distinct from old.owner_kind
-         or new.owner_id is distinct from old.owner_id
-       ) then
-      return new;
-    end if;
-    raise exception 'run_attempt_owner_transition_invalid' using errcode = '23514';
-"""
-REMOTE_RUN_ATTEMPT_OWNER_GUARD_SQL = """    if new.owner_generation is distinct from old.owner_generation
-       or new.owner_kind is distinct from old.owner_kind
-       or new.owner_id is distinct from old.owner_id then
-      raise exception 'run_attempt_owner_transition_invalid' using errcode = '23514';
-    end if;
-    return new;
-"""
-CONFIRMATION_HISTORY_REPAIR_SQL = """update sse_stream_authorities
-set admission_confirmed_at = coalesce(
-  admission_confirmed_at,
-  admission_created_at,
-  updated_at,
-  clock_timestamp()
-)
-where state <> 'admission_pending'
-  and admission_confirmed_at is null;
-
-update sse_stream_authorities
-set admission_confirmed_at = null
-where state = 'admission_pending'
-  and admission_confirmed_at is not null;
-
-"""
+def _schema_source_at_commit(commit: str) -> str:
+    root = Path(__file__).resolve().parents[1]
+    return subprocess.run(
+        ["git", "show", f"{commit}:app/schema.sql"],
+        cwd=root,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout
 
 
 def _remote_successor_activation_schema_sql() -> str:
-    current_sql = Path("app/schema.sql").read_text(encoding="utf-8")
-    assert current_sql.count(CURRENT_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SQL) == 1
-    current_sql = current_sql.replace(
-        CURRENT_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SQL,
-        "",
-    )
-    for fragment in MODEL_CONTROL_PLANE_SCHEMA_FRAGMENTS:
-        assert current_sql.count(fragment) == 1
-        current_sql = current_sql.replace(fragment, "")
-    assert current_sql.count(CURRENT_RUN_ATTEMPT_OWNER_GUARD_SQL) == 1
-    current_sql = current_sql.replace(
-        CURRENT_RUN_ATTEMPT_OWNER_GUARD_SQL,
-        REMOTE_RUN_ATTEMPT_OWNER_GUARD_SQL,
-    )
-    trace_column_sql = (
-        "alter table run_events add column if not exists trace_id text not null default '';"
-    )
-    assert current_sql.count(trace_column_sql) == 1
-    assert current_sql.count(CONFIRMATION_HISTORY_REPAIR_SQL) == 1
-    remote_sql = current_sql.replace(
-        trace_column_sql,
-        REMOTE_DUE_INDEX_SQL + trace_column_sql,
-    ).replace(CONFIRMATION_HISTORY_REPAIR_SQL, "")
+    remote_sql = _schema_source_at_commit(REMOTE_SUCCESSOR_ACTIVATION_COMMIT)
     remote_index_contract = "\n".join(
         f"{migration.name}:{migration.checksum_sha256}"
         for migration in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
@@ -196,11 +56,8 @@ def _remote_successor_activation_schema_sql() -> str:
 
 
 def _remote_run_attempt_reconciler_takeover_schema_sql() -> str:
-    current_sql = Path("app/schema.sql").read_text(encoding="utf-8")
-    assert current_sql.count(CURRENT_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SQL) == 1
-    remote_sql = current_sql.replace(
-        CURRENT_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SQL,
-        "",
+    remote_sql = _schema_source_at_commit(
+        REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_COMMIT
     )
     assert (
         schema_migrations.schema_checksum(remote_sql)
@@ -266,17 +123,9 @@ def _load_exact_base_schema_migrations(tmp_path: Path):
         stdout=subprocess.PIPE,
         text=True,
     ).stdout
-    schema_source = subprocess.run(
-        [
-            "git",
-            "show",
-            f"{REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_COMMIT}:app/schema.sql",
-        ],
-        cwd=root,
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout
+    schema_source = _schema_source_at_commit(
+        REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_COMMIT
+    )
     module_path = tmp_path / "exact_base_schema_migrations.py"
     schema_path = tmp_path / "exact_base_schema.sql"
     module_path.write_text(module_source, encoding="utf-8")

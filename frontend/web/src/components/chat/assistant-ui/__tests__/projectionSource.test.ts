@@ -252,7 +252,9 @@ test("mounted production fence owner accepts its matching end once and rejects a
   function ProductionFinalizationOwner() {
     const [accepted, setAccepted] = useState(0);
     useEffect(() => {
-      acceptV4TerminalFence(terminalEvent!, ctx, "terminal-1", () => setAccepted((value) => value + 1))();
+      acceptV4TerminalFence(terminalEvent!, ctx, "terminal-1", 3, () =>
+        setAccepted((value) => value + 1),
+      )();
     }, []);
     return createElement("div", { "data-terminal-state": String(accepted) }, "terminal");
   }

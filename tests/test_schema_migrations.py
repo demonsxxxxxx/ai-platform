@@ -449,29 +449,49 @@ async def test_successor_activation_schema_advances_to_concurrent_due_index_sche
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.30.3"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.03.1"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.RUN_ATTEMPT_HEARTBEAT_CLOCK_SAFETY_SCHEMA_VERSION
+        == schema_migrations.FILE_UPLOAD_SESSION_SCHEMA_VERSION
+    )
+    assert (
+        schema_migrations.USER_PROFILE_METADATA_SCHEMA_VERSION
+        == "2026.09.02.1"
     )
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
+        "users",
         "runs",
         "model_gateway_revisions",
         "model_catalog_entries",
         "run_attempts",
         "run_skill_materializations",
         "run_events",
+        "agent_profile_favorites",
         "sse_stream_authorities",
         "sse_stream_rebuild_items",
         "messages",
         "files",
+        "file_upload_sessions",
         "artifacts",
         "object_deletion_outbox",
         "audit_logs",
         "sandbox_leases",
+        "mcp_servers",
+        "mcp_server_credentials",
+        "mcp_tools",
     )
+    assert (
+        "users",
+        "metadata_json",
+        "jsonb",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "users",
+        "chk_users_metadata_json_object",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert (
         "sessions",
         "title_source",
@@ -487,6 +507,18 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert (
         "agent_profile_revisions",
         "avatar_seed",
+        "text",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "agent_profile_revisions",
+        "avatar_style_ref",
+        "text",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "agent_profile_revisions",
+        "market_tag",
         "text",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
@@ -678,6 +710,24 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert all(item[4].endswith("end ") for item in trigger_contract)
     assert all("\n" in item[4] for item in trigger_contract)
     assert schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS == (
+        (
+            "users",
+            "chk_users_metadata_json_object",
+            "c",
+            "CHECK ((jsonb_typeof(metadata_json) = 'object'::text))",
+        ),
+        (
+            "mcp_servers",
+            "mcp_servers_endpoint_not_persisted",
+            "c",
+            "CHECK (endpoint_redacted = ''::text)",
+        ),
+        (
+            "mcp_tools",
+            "mcp_tools_endpoint_not_persisted",
+            "c",
+            "CHECK (endpoint = ''::text)",
+        ),
         (
             "run_attempts",
             "fk_run_attempts_run",
@@ -1046,11 +1096,22 @@ def test_every_critical_run_attempt_constraint_has_an_exact_definition():
     assert defined == critical
 
 
+def test_profile_avatar_style_keeps_legacy_avatar_ref_rollback_compatible():
+    schema = " ".join(schema_migrations.schema_sql().split()).lower()
+
+    assert (
+        "alter table agent_profile_revisions add column if not exists "
+        "avatar_style_ref text not null default ''"
+    ) in schema
+    assert "check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research'))" in schema
+    assert "avatar_style_ref = '' or avatar_style_ref in" in schema
+
+
 def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "71a56fcac63635e51a2372a1de30f4c7cd0b3d3db7d3d8bacaec2bcbcba6e4ce"
+        "d2b8beeb629cb61d96534b36de062b39291cf8b120a6f277bb50abb2e8eb925c"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

@@ -11,6 +11,32 @@ current Run/Attempt/sandbox authority, durable public-event publication,
 authorization leases and revocation, retry maintenance, missing-stream
 successor recovery, and terminal convergence.
 
+## Change Contract: Agent first-send stream ownership
+
+- **Owner:** Agent Workspace composer coordination and the existing frontend
+  session-route synchronizer.
+- **Bounded paths:** `ChatAppContent.tsx`, its source-ownership test, the existing
+  mounted routed-session/SSE harness, and this contract.
+- **Invariants:** one first-send POST owns one SSE connection; Agent identity,
+  Thinking, Skill, MCP, model, authorization, cursor, and wire contracts remain
+  unchanged; the shared session synchronizer remains the only URL writer after
+  binding.
+- **Acceptance:** a first send binds before submission and performs no route
+  mutation while the submission/SSE owner is active; the existing route
+  synchronizer still derives the Agent conversation URL from the bound session.
+- **Regression proof:** the source-ownership test rejects a first-send
+  coordinator that mutates the route; a mounted Agent-route test holds the SSE
+  open while canonicalizing the bound URL and proves no exact-history load or
+  abort displaces that owner before terminal state.
+- **Evidence ceiling:** local frontend tests cannot establish deployed browser
+  behavior; runtime acceptance requires the exact packaged image on s72.
+- **Rollback:** restore the removed navigation only if the shared route
+  synchronizer no longer canonicalizes bound Agent sessions, together with an
+  owning replacement test.
+- **Stop conditions:** any need to change SSE v4 bytes, cursor semantics,
+  authorization leases, backend publication, or generic-chat routing requires a
+  revised contract.
+
 ## Authority reuse and admission
 
 The implementation begins from current durable authority rather than introducing

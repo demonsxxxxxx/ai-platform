@@ -22,6 +22,9 @@ from app.runs.domain.attempt_lifecycle import (
 )
 from app.runs.domain.execution_spec import ExecutionSpec
 from app.runs.domain.model_snapshot import legacy_queue_model_snapshot
+from app.runs.domain.public_terminal import (
+    public_projection_failure_reason_from_result,
+)
 from app.runs.domain.terminalization import (
     RunTerminalEventFact,
     RunTerminalizationProgress,
@@ -79,7 +82,7 @@ async def load_current_terminal_event_fact(
 
     cursor = await conn.execute(
         """
-        select status, error_code, trace_id
+        select status, error_code, trace_id, result_json
         from runs
         where tenant_id = %s
           and id = %s
@@ -98,6 +101,10 @@ async def load_current_terminal_event_fact(
         terminal_reason=error_code or ("run_cancelled" if status == "cancelled" else status),
         error_code=error_code,
         trace_ref=str(row.get("trace_id") or "") or None,
+        projection_failure_reason=public_projection_failure_reason_from_result(
+            error_code or "",
+            row.get("result_json"),
+        ),
     )
 
 

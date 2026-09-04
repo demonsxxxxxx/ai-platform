@@ -10,11 +10,11 @@ import subprocess
 import time
 from urllib.error import HTTPError
 from urllib.request import Request
-import zipfile
 
 import pytest
 
 from tools import latest_main_quickstart as latest
+from tools import release_image_manifest
 from tools import sandbox_quickstart
 
 
@@ -24,50 +24,99 @@ BACKEND = sandbox_quickstart.BACKEND_REPOSITORY + "@sha256:" + "3" * 64
 FRONTEND = sandbox_quickstart.FRONTEND_REPOSITORY + "@sha256:" + "4" * 64
 OLD_BACKEND = sandbox_quickstart.BACKEND_REPOSITORY + "@sha256:" + "5" * 64
 OLD_FRONTEND = sandbox_quickstart.FRONTEND_REPOSITORY + "@sha256:" + "6" * 64
-RUN_IDS = {
-    latest.BACKEND_WORKFLOW.file_name: 101,
-    latest.FRONTEND_WORKFLOW.file_name: 102,
-    latest.PACKAGING_WORKFLOW.file_name: 103,
-}
-
-
-class StepClock:
-    def __init__(self, advance_after: int) -> None:
-        self.calls = 0
-        self.advance_after = advance_after
-
-    def __call__(self) -> float:
-        self.calls += 1
-        return 0.0 if self.calls <= self.advance_after else 1.0
+ASSET_URL = latest._release_asset_url(f"deployment-{COMMIT}-103-1")
 
 
 def _manifest(*, run_id: int = 103, run_attempt: int = 1) -> dict[str, object]:
+    def subject(role: str, repository: str, immutable_ref: str) -> dict[str, object]:
+        digest = immutable_ref.rsplit("@", 1)[1]
+        artifact = (
+            f"release-image-subject-{COMMIT}-{run_id}-{run_attempt}-{role}"
+        )
+        ready_artifact = f"release-image-evidence-{COMMIT}-{run_id}-{run_attempt}"
+        dockerfile = "Dockerfile" if role == "backend" else "frontend/web/Dockerfile"
+        return {
+            "role": role,
+            "platform": "linux/amd64",
+            "build": {
+                "context": {"path": ".", "source_commit": COMMIT},
+                "dockerfile": {"path": dockerfile, "sha256": "7" * 64},
+            },
+            "image": {
+                "subject": repository,
+                "source_tag": f"{repository}:{COMMIT}",
+                "manifest_digest": digest,
+                "immutable_ref": immutable_ref,
+            },
+            "evidence": {
+                "sbom": {
+                    "format": "spdx-json",
+                    "ref": f"oci://{repository}@{digest}#sbom-spdx-attestation",
+                    "sha256": "8" * 64,
+                    "unbound_content_sha256": "9" * 64,
+                },
+                "provenance": {
+                    "predicate_type": "https://slsa.dev/provenance/v1",
+                    "attestation_id": f"attestation-{role}",
+                    "ref": (
+                        f"https://github.com/{latest.REPOSITORY}/attestations/"
+                        f"attestation-{role}"
+                    ),
+                    "bundle_ref": (
+                        f"github-artifact://{artifact}/provenance-{role}.bundle.json"
+                    ),
+                    "bundle_sha256": "a" * 64,
+                    "verification_ref": (
+                        f"github-artifact://{artifact}/provenance-{role}.verified.json"
+                    ),
+                    "verification_sha256": "b" * 64,
+                    "reverification_ref": (
+                        f"github-artifact://{ready_artifact}/"
+                        f"provenance-{role}.assembly-verified.json"
+                    ),
+                    "reverification_sha256": "c" * 64,
+                },
+                "signature": {
+                    "identity": (
+                        f"https://github.com/{release_image_manifest.WORKFLOW_REPOSITORY}/"
+                        ".github/workflows/ai-platform-packaging-publish.yml@refs/heads/main"
+                    ),
+                    "issuer": "https://token.actions.githubusercontent.com",
+                    "ref": f"oci://{repository}@{digest}#cosign-keyless-signature",
+                },
+                "scan": {
+                    "blocking_severities": ["HIGH", "CRITICAL"],
+                    "ref": f"github-artifact://{artifact}/trivy-{role}.json",
+                    "result": "passed",
+                    "scanner": "trivy@0.70.0",
+                    "sha256": "d" * 64,
+                },
+            },
+        }
+
     return {
-        "schema_version": "ai-platform.release-image-manifest.v1",
+        "schema_version": release_image_manifest.SCHEMA_VERSION,
         "source_commit": COMMIT,
         "repository": latest.REPOSITORY_URL,
         "workflow": {
             "repository": latest.REPOSITORY,
-            "workflow_ref": latest.MANIFEST_WORKFLOW_REF,
+            "workflow_ref": (
+                f"{release_image_manifest.WORKFLOW_REPOSITORY}/.github/workflows/"
+                "ai-platform-packaging-publish.yml@refs/heads/main"
+            ),
             "run_id": str(run_id),
             "run_attempt": run_attempt,
             "head_sha": COMMIT,
         },
         "subjects": [
-            {"role": "backend", "image": {"immutable_ref": BACKEND}},
-            {"role": "frontend", "image": {"immutable_ref": FRONTEND}},
+            subject("backend", sandbox_quickstart.BACKEND_REPOSITORY, BACKEND),
+            subject("frontend", sandbox_quickstart.FRONTEND_REPOSITORY, FRONTEND),
         ],
     }
 
 
-def _archive_bytes(manifest: dict[str, object] | None = None) -> bytes:
-    target = io.BytesIO()
-    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as bundle:
-        bundle.writestr(
-            latest.MANIFEST_NAME,
-            json.dumps(manifest or _manifest()),
-        )
-    return target.getvalue()
+def _manifest_bytes(manifest: dict[str, object] | None = None) -> bytes:
+    return json.dumps(manifest or _manifest()).encode("utf-8")
 
 
 def _managed_root(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -96,14 +145,14 @@ def _managed_root(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 
 class ApprovedClient:
-    def __init__(self, *, archive: bytes | None = None) -> None:
-        self.archive = archive or _archive_bytes()
+    def __init__(self, *, manifest: dict[str, object] | None = None) -> None:
+        self.manifest = _manifest_bytes(manifest)
         self.calls: list[tuple[str, dict[str, str]]] = []
-        self.downloads: list[int] = []
-        self.job_changes: dict[str, object] = {}
-        self.run_changes: dict[str, object] = {}
-        self.artifact_changes: dict[str, object] = {}
-        self.main_commits = [COMMIT]
+        self.downloads: list[str] = []
+        self.release_changes: dict[str, object] = {}
+        self.asset_changes: dict[str, object] = {}
+        self.leading_releases: list[dict[str, object]] = []
+        self.downloaded_digest: str | None = None
 
     def get_json(
         self,
@@ -114,238 +163,175 @@ class ApprovedClient:
     ) -> object:
         assert timeout_seconds is None or timeout_seconds > 0
         self.calls.append((path, query or {}))
-        if path.endswith("/git/ref/heads/main"):
-            commit = (
-                self.main_commits.pop(0)
-                if len(self.main_commits) > 1
-                else self.main_commits[0]
-            )
-            return {"ref": latest.MAIN_REF, "object": {"type": "commit", "sha": commit}}
-        if "/actions/workflows/" in path:
-            file_name = path.split("/actions/workflows/", 1)[1].split("/runs", 1)[0]
-            spec = next(
-                item for item in latest.WORKFLOWS if item.file_name == file_name
-            )
-            run = {
-                "id": RUN_IDS[file_name],
-                "run_attempt": 1,
-                "head_sha": COMMIT,
-                "head_branch": "main",
-                "event": "push",
-                "path": spec.path,
-                "status": "completed",
-                "conclusion": "success",
-                **self.run_changes,
-            }
-            return {"workflow_runs": [run]}
-        if path.endswith("/jobs"):
-            run_id = int(path.split("/actions/runs/", 1)[1].split("/jobs", 1)[0])
-            spec = next(
-                item for item in latest.WORKFLOWS if RUN_IDS[item.file_name] == run_id
-            )
-            job = {
-                "name": spec.required_job,
-                "head_sha": COMMIT,
-                "run_attempt": 1,
-                "status": "completed",
-                "conclusion": "success",
-                **self.job_changes,
-            }
-            return {"total_count": 1, "jobs": [job]}
-        if path.endswith("/artifacts"):
-            name = f"release-image-evidence-{COMMIT}-103-1"
-            return {
-                "artifacts": [
+        assert path == f"/repos/{latest.REPOSITORY}/releases"
+        assert query == {"per_page": "100"}
+        tag = f"deployment-{COMMIT}-103-1"
+        return [
+            *self.leading_releases,
+            {
+                "tag_name": tag,
+                "target_commitish": COMMIT,
+                "draft": False,
+                "prerelease": False,
+                "immutable": True,
+                "published_at": "2026-09-02T00:00:00Z",
+                "author": {"login": latest.DEPLOYMENT_RELEASE_UPLOADER},
+                "assets": [
                     {
-                        "id": 9001,
-                        "name": name,
-                        "size_in_bytes": len(self.archive),
-                        "expired": False,
-                        "digest": "sha256:" + hashlib.sha256(self.archive).hexdigest(),
-                        "workflow_run": {
-                            "id": 103,
-                            "head_sha": COMMIT,
-                            "head_branch": "main",
+                        "name": latest.DEPLOYMENT_RELEASE_ASSET_NAME,
+                        "label": latest._release_asset_label(COMMIT, 103, 1),
+                        "size": len(self.manifest),
+                        "state": "uploaded",
+                        "digest": "sha256:"
+                        + hashlib.sha256(self.manifest).hexdigest(),
+                        "browser_download_url": latest._release_asset_url(tag),
+                        "uploader": {
+                            "login": latest.DEPLOYMENT_RELEASE_UPLOADER
                         },
-                        **self.artifact_changes,
+                        **self.asset_changes,
                     }
-                ]
-            }
-        raise AssertionError(path)
+                ],
+                **self.release_changes,
+            },
+        ]
 
-    def download_artifact(self, artifact_id: int, destination: Path) -> str:
-        self.downloads.append(artifact_id)
-        destination.write_bytes(self.archive)
+    def download_public_asset(self, url: str, destination: Path) -> str:
+        self.downloads.append(url)
+        destination.write_bytes(self.manifest)
         destination.chmod(0o600)
-        return hashlib.sha256(self.archive).hexdigest()
+        return self.downloaded_digest or hashlib.sha256(self.manifest).hexdigest()
 
 
-def _candidate() -> latest.ReleaseCandidate:
-    runs = {
-        spec.file_name: latest.WorkflowRun(spec, RUN_IDS[spec.file_name], 1, COMMIT)
-        for spec in latest.WORKFLOWS
-    }
-    return latest.ReleaseCandidate(COMMIT, runs)
+def _release() -> latest.DeploymentRelease:
+    return latest.resolve_deployment_release(ApprovedClient())
 
 
-def test_wait_requires_three_exact_sha_workflows_and_final_jobs() -> None:
+def test_resolve_deployment_release_uses_one_release_list_request() -> None:
     client = ApprovedClient()
 
-    candidate = latest.wait_for_release_candidate(client, timeout_seconds=1)
+    release = latest.resolve_deployment_release(client)
 
-    assert candidate.source_commit == COMMIT
-    assert set(candidate.runs) == {spec.file_name for spec in latest.WORKFLOWS}
-    workflow_calls = [call for call in client.calls if "/actions/workflows/" in call[0]]
-    assert len(workflow_calls) == 3
-    assert all(call[1]["head_sha"] == COMMIT for call in workflow_calls)
-    assert all(call[1]["event"] == "push" for call in workflow_calls)
-    assert len([call for call in client.calls if call[0].endswith("/jobs")]) == 3
-
-
-@pytest.mark.parametrize("conclusion", ["failure", "cancelled", "skipped"])
-def test_failed_workflow_blocks_release(conclusion: str) -> None:
-    client = ApprovedClient()
-    client.run_changes = {"conclusion": conclusion}
-
-    with pytest.raises(latest.LatestMainError, match="failed for current main"):
-        latest.wait_for_release_candidate(client, timeout_seconds=1)
-
-
-def test_missing_exact_sha_workflow_times_out_without_final_job_admission() -> None:
-    client = ApprovedClient()
-    client.run_changes = {"head_sha": OLD_COMMIT}
-    clock = StepClock(advance_after=5)
-
-    with pytest.raises(latest.LatestMainError, match="did not finish successfully"):
-        latest.wait_for_release_candidate(
-            client,
-            timeout_seconds=1,
-            monotonic=clock,
-            sleep=lambda _seconds: None,
-        )
-
-    assert not any(path.endswith("/jobs") for path, _query in client.calls)
-
-
-def test_required_final_job_must_match_run_attempt_and_succeed() -> None:
-    client = ApprovedClient()
-    client.job_changes = {"run_attempt": 2}
-
-    with pytest.raises(
-        latest.LatestMainError, match="required final job did not succeed"
-    ):
-        latest.wait_for_release_candidate(client, timeout_seconds=1)
-
-
-def test_main_advance_restarts_exact_sha_admission() -> None:
-    client = ApprovedClient()
-    client.main_commits = [COMMIT, OLD_COMMIT]
-
-    with pytest.raises(latest.LatestMainError, match="did not finish successfully"):
-        latest.wait_for_release_candidate(
-            client,
-            timeout_seconds=1,
-            monotonic=StepClock(advance_after=12),
-            sleep=lambda _seconds: None,
-        )
-
-    queried_shas = [
-        query["head_sha"]
-        for path, query in client.calls
-        if "/actions/workflows/" in path
+    assert release == latest.DeploymentRelease(
+        f"deployment-{COMMIT}-103-1",
+        COMMIT,
+        103,
+        1,
+        latest.ReleaseAsset(
+            latest.DEPLOYMENT_RELEASE_ASSET_NAME,
+            latest._release_asset_label(COMMIT, 103, 1),
+            len(client.manifest),
+            "sha256:" + hashlib.sha256(client.manifest).hexdigest(),
+            latest._release_asset_url(f"deployment-{COMMIT}-103-1"),
+        ),
+    )
+    assert client.calls == [
+        (f"/repos/{latest.REPOSITORY}/releases", {"per_page": "100"})
     ]
-    assert COMMIT in queried_shas and OLD_COMMIT in queried_shas
 
 
-def test_ready_artifact_is_bound_to_packaging_run_attempt() -> None:
+def test_resolve_deployment_release_skips_newer_mutable_release() -> None:
     client = ApprovedClient()
-    artifact = latest.find_ready_artifact(client, _candidate())
+    client.leading_releases = [
+        {
+            "tag_name": f"deployment-{OLD_COMMIT}-102-1",
+            "draft": False,
+            "prerelease": False,
+            "immutable": False,
+        },
+        {"tag_name": "latest-main-evidence", "immutable": False},
+    ]
 
-    assert artifact is not None
-    assert artifact.artifact_id == 9001
-    assert artifact.name == f"release-image-evidence-{COMMIT}-103-1"
-
-
-def test_ready_artifact_requires_github_archive_digest() -> None:
-    client = ApprovedClient()
-    client.artifact_changes = {"digest": None}
-
-    with pytest.raises(latest.LatestMainError, match="artifact digest is invalid"):
-        latest.find_ready_artifact(client, _candidate())
+    assert latest.resolve_deployment_release(client).source_commit == COMMIT
 
 
-def test_safe_archive_extraction_rejects_path_escape_and_symlink(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"tag_name": "latest-main-evidence"},
+        {"target_commitish": OLD_COMMIT},
+        {"draft": True},
+        {"prerelease": True},
+        {"immutable": False},
+        {"author": {"login": "maintainer"}},
+    ],
+)
+def test_deployment_release_requires_exact_published_bot_metadata(
+    change: dict[str, object],
 ) -> None:
-    escaping = tmp_path / "escaping.zip"
-    with zipfile.ZipFile(escaping, "w") as bundle:
-        bundle.writestr("../outside.json", "{}")
-    with pytest.raises(latest.LatestMainError, match="unsafe archive path"):
-        latest.extract_ready_artifact(escaping, tmp_path / "escaping")
+    client = ApprovedClient()
+    client.release_changes = change
 
-    linked = tmp_path / "linked.zip"
-    info = zipfile.ZipInfo("release-image-manifest.json")
-    info.create_system = 3
-    info.external_attr = (stat.S_IFLNK | 0o777) << 16
-    with zipfile.ZipFile(linked, "w") as bundle:
-        bundle.writestr(info, "target")
-    with pytest.raises(latest.LatestMainError, match="link or special file"):
-        latest.extract_ready_artifact(linked, tmp_path / "linked")
+    with pytest.raises(latest.LatestMainError):
+        latest.resolve_deployment_release(client)
 
 
-def test_safe_archive_extraction_rejects_casefold_duplicate(tmp_path: Path) -> None:
-    archive = tmp_path / "duplicate.zip"
-    with zipfile.ZipFile(archive, "w") as bundle:
-        bundle.writestr("subject-backend.json", "{}")
-        bundle.writestr("SUBJECT-BACKEND.JSON", "{}")
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"label": "stale"},
+        {"digest": None},
+        {"uploader": {"login": "maintainer"}},
+        {"browser_download_url": "https://example.invalid/manifest.json"},
+    ],
+)
+def test_deployment_release_requires_exact_manifest_asset(
+    change: dict[str, object],
+) -> None:
+    client = ApprovedClient()
+    client.asset_changes = change
 
-    with pytest.raises(latest.LatestMainError, match="duplicate paths"):
-        latest.extract_ready_artifact(archive, tmp_path / "evidence")
+    with pytest.raises(latest.LatestMainError):
+        latest.resolve_deployment_release(client)
 
 
-def test_manifest_is_semantically_verified_and_externally_bound(tmp_path: Path) -> None:
-    evidence = tmp_path / "evidence"
-    evidence.mkdir()
-    (evidence / latest.MANIFEST_NAME).write_text(
-        json.dumps(_manifest()), encoding="utf-8"
-    )
-    verification: list[tuple[Path, Path]] = []
+def test_anonymous_api_404_is_fail_closed() -> None:
+    class MissingOpener:
+        def open(self, request: Request, **_kwargs: object) -> object:
+            raise HTTPError(request.full_url, 404, "not found", {}, io.BytesIO())
 
-    images = latest.validate_release_manifest(
-        tmp_path,
-        evidence,
-        _candidate(),
-        verify=lambda checkout, root: verification.append((checkout, root)),
+    client = latest.GitHubClient(
+        opener=MissingOpener(),
+        sleep=lambda _seconds: None,
     )
 
-    assert images == (BACKEND, FRONTEND)
-    assert verification == [(tmp_path, evidence)]
+    with pytest.raises(latest._GitHubNotFoundError):
+        client.get_json(f"/repos/{latest.REPOSITORY}/releases")
+
+
+def test_manifest_is_strict_and_bound_to_release_and_images(tmp_path: Path) -> None:
+    manifest_path = tmp_path / latest.MANIFEST_NAME
+    manifest_path.write_bytes(_manifest_bytes())
+
+    assert latest.validate_release_manifest(manifest_path, _release()) == (
+        BACKEND,
+        FRONTEND,
+    )
 
     mutated = _manifest(run_attempt=2)
-    (evidence / latest.MANIFEST_NAME).write_text(json.dumps(mutated), encoding="utf-8")
-    with pytest.raises(latest.LatestMainError, match="not bound to the selected run"):
-        latest.validate_release_manifest(
-            tmp_path,
-            evidence,
-            _candidate(),
-            verify=lambda _checkout, _root: None,
-        )
+    manifest_path.write_bytes(_manifest_bytes(mutated))
+    with pytest.raises(latest.LatestMainError, match="binding is invalid"):
+        latest.validate_release_manifest(manifest_path, _release())
 
-    wrong_role = _manifest()
-    wrong_role["subjects"][0]["image"]["immutable_ref"] = FRONTEND
-    (evidence / latest.MANIFEST_NAME).write_text(
-        json.dumps(wrong_role), encoding="utf-8"
-    )
-    with pytest.raises(latest.LatestMainError, match="role-bound immutable digests"):
-        latest.validate_release_manifest(
-            tmp_path,
-            evidence,
-            _candidate(),
-            verify=lambda _checkout, _root: None,
-        )
+    wrong_image = _manifest()
+    wrong_image["subjects"][0]["image"]["immutable_ref"] = FRONTEND
+    manifest_path.write_bytes(_manifest_bytes(wrong_image))
+    with pytest.raises(latest.LatestMainError, match="manifest is invalid"):
+        latest.validate_release_manifest(manifest_path, _release())
+
+    failed_scan = _manifest()
+    failed_scan["subjects"][0]["evidence"]["scan"]["result"] = "failed"
+    manifest_path.write_bytes(_manifest_bytes(failed_scan))
+    with pytest.raises(latest.LatestMainError, match="manifest is invalid"):
+        latest.validate_release_manifest(manifest_path, _release())
+
+    unknown_key = _manifest()
+    unknown_key["unexpected"] = True
+    manifest_path.write_bytes(_manifest_bytes(unknown_key))
+    with pytest.raises(latest.LatestMainError, match="manifest is invalid"):
+        latest.validate_release_manifest(manifest_path, _release())
 
 
-def test_deploy_latest_materializes_verifies_atomically_writes_and_hands_off(
+def test_deploy_latest_release_materializes_writes_and_hands_off(
     tmp_path: Path,
 ) -> None:
     root, env_file, subject_path = _managed_root(tmp_path)
@@ -353,40 +339,39 @@ def test_deploy_latest_materializes_verifies_atomically_writes_and_hands_off(
     checkout = root / "releases" / COMMIT
     calls: list[tuple[str, object]] = []
 
-    subject = latest.deploy_latest_main(
+    subject = latest.deploy_latest_release(
         root=root,
         client=client,
         materialize=lambda release_root, commit: (
             calls.append(("materialize", (release_root, commit))) or checkout
         ),
-        verify_manifest=lambda target, evidence: calls.append(
-            ("verify", (target, evidence))
-        ),
         deploy=lambda target: calls.append(("deploy", target)),
     )
 
     assert subject == sandbox_quickstart.Subject(COMMIT, BACKEND, FRONTEND, env_file)
-    assert calls[0] == ("materialize", (root / "releases", COMMIT))
-    assert calls[1][0] == "verify"
-    assert calls[2] == ("deploy", checkout)
-    persisted = sandbox_quickstart._load_subject(subject_path, root)
-    assert persisted == subject
+    assert calls == [
+        ("materialize", (root / "releases", COMMIT)),
+        ("deploy", checkout),
+    ]
+    assert sandbox_quickstart._load_subject(subject_path, root) == subject
     assert stat.S_IMODE(subject_path.stat().st_mode) == 0o600
-    assert client.downloads == [9001]
+    assert client.downloads == [
+        latest._release_asset_url(f"deployment-{COMMIT}-103-1")
+    ]
 
 
 def test_pre_admission_failure_preserves_previous_subject_bytes(tmp_path: Path) -> None:
     root, _env_file, subject_path = _managed_root(tmp_path)
     previous = subject_path.read_bytes()
     client = ApprovedClient()
+    client.downloaded_digest = "0" * 64
 
-    with pytest.raises(latest.LatestMainError, match="semantic rejection"):
-        latest.deploy_latest_main(
+    with pytest.raises(latest.LatestMainError, match="digest does not match"):
+        latest.deploy_latest_release(
             root=root,
             client=client,
-            materialize=lambda _root, _commit: root / "releases" / COMMIT,
-            verify_manifest=lambda _target, _evidence: (_ for _ in ()).throw(
-                latest.LatestMainError("semantic rejection")
+            materialize=lambda _root, _commit: pytest.fail(
+                "materialization must not start"
             ),
             deploy=lambda _target: pytest.fail("deployment must not start"),
         )
@@ -400,11 +385,10 @@ def test_post_admission_deploy_failure_keeps_approved_retry_subject(
     root, _env_file, subject_path = _managed_root(tmp_path)
 
     with pytest.raises(latest.LatestMainError, match="deployment failed"):
-        latest.deploy_latest_main(
+        latest.deploy_latest_release(
             root=root,
             client=ApprovedClient(),
             materialize=lambda _root, _commit: root / "releases" / COMMIT,
-            verify_manifest=lambda _target, _evidence: None,
             deploy=lambda _target: (_ for _ in ()).throw(
                 latest.LatestMainError("deployment failed")
             ),
@@ -467,16 +451,20 @@ def test_deployment_lock_rejects_overlap(tmp_path: Path) -> None:
         pass
 
 
-def test_github_token_is_claimed_and_removed_from_environment() -> None:
+def test_github_tokens_are_removed_before_anonymous_access() -> None:
     environment = {
         "GH_TOKEN": "secret-one",
         "GITHUB_TOKEN": "secret-two",
         "PATH": "/bin",
     }
 
-    assert latest._claim_github_token(environment) == "secret-one"
-    assert "GH_TOKEN" not in environment
-    assert "GITHUB_TOKEN" not in environment
+    latest._drop_github_tokens(environment)
+
+    assert environment == {"PATH": "/bin"}
+    request = latest.GitHubClient()._github_request(
+        f"{latest.API_ROOT}/repos/{latest.REPOSITORY}/releases"
+    )
+    assert request.get_header("Authorization") is None
 
 
 def test_target_quickstart_child_environment_excludes_github_credentials(
@@ -504,33 +492,11 @@ def test_target_quickstart_child_environment_excludes_github_credentials(
     assert not forbidden & set(observed[0])
 
 
-def test_github_cli_token_fallback_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(latest.shutil, "which", lambda _name: "/usr/bin/gh")
-    observed: list[list[str]] = []
-    observed_environments: list[dict[str, str]] = []
-
-    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        observed.append(command)
-        observed_environments.append(kwargs["env"])
-        assert kwargs["stderr"] is subprocess.DEVNULL
-        return subprocess.CompletedProcess(command, 0, stdout="cli-token\n", stderr="")
-
-    assert (
-        latest._claim_github_token(
-            {"PATH": "/bin", "HOME": "/managed/home", "DEPLOY_SECRET": "hidden"},
-            run=run,
-        )
-        == "cli-token"
-    )
-    assert observed == [["/usr/bin/gh", "auth", "token"]]
-    assert observed_environments == [{"PATH": "/bin", "HOME": "/managed/home"}]
-
-
-def test_artifact_redirect_strips_authorization_and_rejects_http() -> None:
-    handler = latest._ArtifactRedirectHandler()
+def test_release_redirect_accepts_only_github_https() -> None:
+    handler = latest._ReleaseRedirectHandler()
     request = Request(
-        "https://api.github.com/repos/demonsxxxxxx/ai-platform/actions/artifacts/1/zip",
-        headers={"Authorization": "Bearer secret", "User-Agent": "test"},
+        ASSET_URL,
+        headers={"User-Agent": "test"},
     )
     redirected = handler.redirect_request(
         request,
@@ -538,23 +504,27 @@ def test_artifact_redirect_strips_authorization_and_rejects_http() -> None:
         302,
         "Found",
         {},
-        "https://example.blob.core.windows.net/actions-results/release.zip",
+        "https://release-assets.githubusercontent.com/release.zip",
     )
     assert redirected is not None
-    assert redirected.get_header("Authorization") is None
 
-    with pytest.raises(HTTPError):
-        handler.redirect_request(
-            request,
-            None,
-            302,
-            "Found",
-            {},
-            "http://example.blob.core.windows.net/release.zip",
-        )
+    for rejected in (
+        "http://release-assets.githubusercontent.com/release.zip",
+        "https://results.actions.githubusercontent.com/release.zip",
+        "https://example.blob.core.windows.net/release.zip",
+    ):
+        with pytest.raises(HTTPError):
+            handler.redirect_request(
+                request,
+                None,
+                302,
+                "Found",
+                {},
+                rejected,
+            )
 
 
-def test_artifact_download_retries_from_api_and_removes_partial_file(
+def test_release_manifest_download_retries_and_removes_partial_file(
     tmp_path: Path,
 ) -> None:
     class Response:
@@ -569,7 +539,7 @@ def test_artifact_download_retries_from_api_and_removes_partial_file(
             return None
 
         def geturl(self) -> str:
-            return "https://results.actions.githubusercontent.com/release.zip"
+            return "https://release-assets.githubusercontent.com/release.zip"
 
         def read(self, _size: int) -> bytes:
             value = next(self.chunks, b"")
@@ -592,48 +562,48 @@ def test_artifact_download_retries_from_api_and_removes_partial_file(
             return next(self.responses)
 
     opener = Opener()
-    client = latest.GitHubClient("token", opener=opener, sleep=lambda _seconds: None)
+    client = latest.GitHubClient(opener=opener, sleep=lambda _seconds: None)
     client._curl_path = None
-    destination = tmp_path / "artifact.zip"
+    destination = tmp_path / "manifest.json"
 
-    digest = client.download_artifact(42, destination)
+    digest = client.download_public_asset(
+        ASSET_URL, destination
+    )
 
     assert destination.read_bytes() == b"complete"
     assert digest == hashlib.sha256(b"complete").hexdigest()
     assert len(opener.requests) == 2
-    assert all(
-        request.full_url.endswith("/actions/artifacts/42/zip")
-        for request in opener.requests
-    )
+    assert all(request.full_url == ASSET_URL for request in opener.requests)
 
 
 def test_curl_download_receives_only_short_lived_url_through_stdin(
     tmp_path: Path,
 ) -> None:
-    client = latest.GitHubClient("long-lived-token", sleep=lambda _seconds: None)
+    client = latest.GitHubClient(sleep=lambda _seconds: None)
     client._curl_path = "/usr/bin/curl"
     signed_url = (
-        "https://results.actions.githubusercontent.com/release.zip?sig=short-lived"
+        "https://release-assets.githubusercontent.com/release.zip?sig=short-lived"
     )
-    client._resolve_artifact_download_url = lambda _artifact_id: signed_url
-    destination = tmp_path / "artifact.zip"
+    client._resolve_public_asset_download_url = lambda _url: signed_url
+    destination = tmp_path / "manifest.json"
     observed: list[tuple[list[str], str, dict[str, str]]] = []
 
     def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         observed.append((command, kwargs["input"], kwargs["env"]))
-        destination.write_bytes(b"verified archive")
+        destination.write_bytes(b"verified manifest")
         return subprocess.CompletedProcess(command, 0)
 
     client._curl_run = run
 
-    digest = client.download_artifact(42, destination)
+    digest = client.download_public_asset(
+        ASSET_URL, destination
+    )
 
-    assert digest == hashlib.sha256(b"verified archive").hexdigest()
+    assert digest == hashlib.sha256(b"verified manifest").hexdigest()
     assert len(observed) == 1
     command, config, environment = observed[0]
     assert command == ["/usr/bin/curl", "-q", "--config", "-"]
     assert signed_url not in command
-    assert "long-lived-token" not in config
     assert "Authorization" not in config
     assert signed_url in config
     assert "\nlocation\n" not in config
@@ -644,22 +614,22 @@ def test_curl_download_receives_only_short_lived_url_through_stdin(
 def test_curl_download_reacquires_url_and_resumes_temporary_partial(
     tmp_path: Path,
 ) -> None:
-    client = latest.GitHubClient("long-lived-token", sleep=lambda _seconds: None)
+    client = latest.GitHubClient(sleep=lambda _seconds: None)
     client._curl_path = "/usr/bin/curl"
     urls = iter(
         [
-            "https://results.actions.githubusercontent.com/release.zip?sig=one",
-            "https://results.actions.githubusercontent.com/release.zip?sig=two",
+            "https://release-assets.githubusercontent.com/release.zip?sig=one",
+            "https://release-assets.githubusercontent.com/release.zip?sig=two",
         ]
     )
-    resolved: list[int] = []
+    resolved: list[str] = []
 
-    def resolve(artifact_id: int) -> str:
-        resolved.append(artifact_id)
+    def resolve(url: str) -> str:
+        resolved.append(url)
         return next(urls)
 
-    client._resolve_artifact_download_url = resolve
-    destination = tmp_path / "artifact.zip"
+    client._resolve_public_asset_download_url = resolve
+    destination = tmp_path / "manifest.json"
     attempts = 0
 
     def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -675,9 +645,11 @@ def test_curl_download_reacquires_url_and_resumes_temporary_partial(
 
     client._curl_run = run
 
-    digest = client.download_artifact(42, destination)
+    digest = client.download_public_asset(
+        ASSET_URL, destination
+    )
 
-    assert resolved == [42, 42]
+    assert resolved == [ASSET_URL, ASSET_URL]
     assert destination.read_bytes() == b"partial-complete"
     assert digest == hashlib.sha256(b"partial-complete").hexdigest()
 
@@ -690,29 +662,10 @@ def test_wall_timeout_interrupts_a_stalled_read() -> None:
     assert time.monotonic() - started < 0.5
 
 
-def test_actions_wait_budget_bounds_blocked_api_request() -> None:
-    class BlockingOpener:
-        def open(self, _request: Request, **_kwargs: object) -> object:
-            time.sleep(5)
-            raise AssertionError("wall timeout did not interrupt the request")
-
-    client = latest.GitHubClient(
-        "token",
-        opener=BlockingOpener(),
-        sleep=lambda _seconds: None,
-    )
-    started = time.monotonic()
-
-    with pytest.raises(latest.LatestMainError, match="wait budget"):
-        latest.wait_for_release_candidate(client, timeout_seconds=1)
-
-    assert time.monotonic() - started < 1.5
-
-
 def test_first_deployment_requires_explicit_managed_env(tmp_path: Path) -> None:
     root = tmp_path / "managed"
     root.mkdir(mode=0o700)
     (root / "incoming").mkdir(mode=0o700)
 
-    with pytest.raises(latest.LatestMainError, match="first latest-main deployment"):
+    with pytest.raises(latest.LatestMainError, match="first deployment"):
         latest.resolve_managed_env(root, None)

@@ -18,6 +18,7 @@ from fastapi.routing import APIRoute
 from starlette.responses import JSONResponse
 
 from app import repositories
+from app.mcp.api import authorize_selected_chat_mcp_tools
 from app.agent_profiles import (
     reauthorize_pinned_run_for_replay,
     resolve_bound_profile_for_submission,
@@ -113,7 +114,6 @@ from app.skills.release_policy import (
 from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
-
 
 logger = logging.getLogger(__name__)
 _MISSING = object()
@@ -1529,7 +1529,7 @@ async def chat_stream(
         run_input["mcp_tool_ids"] = list(selected_mcp_tool_ids_for_execution)
         try:
             async with transaction() as conn:
-                await repositories.authorize_selected_chat_mcp_tools(
+                await authorize_selected_chat_mcp_tools(
                     conn,
                     tenant_id=principal.tenant_id,
                     tool_ids=list(selected_mcp_tool_ids_for_execution),
@@ -1736,7 +1736,7 @@ async def chat_stream(
                     inherited_mcp_selection = True
 
             if inherited_mcp_selection:
-                await repositories.authorize_selected_chat_mcp_tools(
+                await authorize_selected_chat_mcp_tools(
                     conn,
                     tenant_id=principal.tenant_id,
                     tool_ids=list(run_input.get("mcp_tool_ids") or []),

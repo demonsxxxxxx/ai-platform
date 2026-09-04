@@ -1,4 +1,3 @@
-import type { Dispatch, SetStateAction } from "react";
 import type { FeaturePanel } from "../selectors/FeatureMenu";
 import type { ModelOption } from "../../services/api/modelPublic";
 import type {
@@ -18,9 +17,25 @@ import type {
   SelectedSkillTaskState,
 } from "../../hooks/useSelectedSkillTask";
 
+export interface ChatInputDraftSnapshot {
+  value: string;
+  appliedInitialDraftKey: string | null;
+  scopeKey: string | null | undefined;
+  revision: number;
+  selectedSkillState: SelectedSkillTaskState | undefined;
+  selectedSkillRevision: number;
+  pendingScopeHandoff: boolean;
+  apply?: (value: string) => void;
+}
+
 export interface ChatInputProps {
-  draft?: string;
-  onDraftChange?: Dispatch<SetStateAction<string>>;
+  /** One-time draft for a route/session identity; does not replace typed text. */
+  initialDraft?: string;
+  initialDraftKey?: string;
+  /** INTERNAL: preserves local draft across existing layout remounts. */
+  draftSnapshotRef?: { current: ChatInputDraftSnapshot };
+  draftScopeKey?: string | null;
+  draftScopeHandoffKey?: string | null;
   onSend: (
     message: string,
     options?: Record<string, boolean | string | number>,

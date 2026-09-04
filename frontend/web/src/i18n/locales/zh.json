@@ -287,7 +287,7 @@
     "fileNotFound": "文件不存在",
     "fileReadFailed": "读取文件失败",
     "fileTooLarge": "文件大小超过 {{max}}MB 限制",
-    "contextFileTooLarge": "文件超过 32 MB 处理上限，请选择更小的文件后重试。",
+    "contextFileTooLarge": "文件超过 128 MB，或文件总量超过 256 MB。请选择更小的文件或减少文件数量后重试。",
     "queuePayloadInvalid": "任务参数校验失败，任务尚未提交。请刷新后重试；如仍失败，请联系管理员。",
     "chatSubmissionInternalError": "任务因内部服务错误未能提交。请刷新后重试；如仍失败，请向管理员提供诊断编号。",
     "fileUploadNoPermission": "没有上传 {{category}} 文件的权限",
@@ -608,6 +608,7 @@
         "intentConfirmed": "请求已确认",
         "intentDetected": "请求已识别",
         "modelServiceUnavailable": "模型服务不可用",
+        "publicProjectionFailed": "公开答案投影失败",
         "queued": "执行已排队",
         "requiredCapabilityUnavailable": "所需执行能力不可用",
         "resultUnavailable": "未生成可展示的回复",
@@ -652,7 +653,7 @@
       "contextFileProcessingLimitExceeded": "文件结构或内容数量超过处理上限。请拆分或精简文件后重试。",
       "contextFileStagingUnavailable": "文件暂存失败。请稍后重试；如问题持续，请联系管理员。",
       "contextFileStorageUnavailable": "文件存储服务暂时不可用。请稍后重试。",
-      "contextFileTooLarge": "文件超过 32 MB 处理上限。请选择更小的文件后重试。",
+      "contextFileTooLarge": "文件超过 128 MB，或文件总量超过 256 MB。请选择更小的文件或减少文件数量后重试。",
       "contextFileTypeUnsupported": "文件实际格式与声明类型不一致，或该格式暂不支持。",
       "contextFileUnavailable": "文件当前不可用或已失去访问权限。请重新上传后重试。",
       "contextFileUnsafeContent": "文件包含不允许的活动内容、宏或外部引用。请导出安全副本后重试。",
@@ -660,6 +661,8 @@
       "executionServiceUnavailable": "AI 执行服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
       "failed": "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
       "modelServiceUnavailable": "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
+      "publicProjectionFailed": "模型执行已结束，但公开答案未通过安全投影。请重试；如问题持续，请联系管理员并提供任务编号。",
+      "publicProjectionFailedWithReason": "模型执行已结束，但公开答案未通过安全投影（{{reason}}）。请重试；如问题持续，请联系管理员并提供任务编号。",
       "requiredCapabilityUnavailable": "任务所需执行能力当前不可用。请调整请求或联系管理员。",
       "resultUnavailable": "本次执行未能生成可展示的回复内容。",
       "runBudgetExhausted": "任务已达到执行轮次上限。请缩小或拆分任务后重试。",
@@ -1249,6 +1252,8 @@
       "urlPlaceholder": "https://example.com/mcp",
       "validation": {
         "commandRequired": "沙箱传输需要填写命令",
+        "duplicateHeader": "请求头名称不能重复",
+        "jwtHeaderConflict": "JWT-Authorization 保留用于当前用户的 MCP 令牌",
         "nameRequired": "请输入服务器名称",
         "urlRequired": "HTTP 传输需要 URL"
       },
@@ -1377,30 +1382,29 @@
     "showCode": "查看代码"
   },
   "launchpad": {
+    "addFavorite": "收藏 {{name}}",
+    "favoriteLoadFailed": "收藏加载失败，请稍后重试",
+    "favoriteSaveFailed": "收藏保存失败，请稍后重试",
+    "aiAssistants": "AI 助手",
+    "allWebsites": "网页入口",
+    "catalogSummary": "共 {{count}} 个网页入口，点击卡片在新标签页打开。",
     "clearSearch": "清除搜索",
-    "currentCategory": "当前分类",
-    "boundary": "这些入口会在新标签页打开现有公司系统。AI Platform 不替代目标系统的登录、权限、流程或审计规则。",
-    "entriesCount": "{{count}} 个入口",
-    "groupNavigation": "应用分类导航",
-    "noResults": "没有找到匹配的入口",
-    "open": "打开",
-    "openEntry": "打开 {{name}}",
-    "searchPlaceholder": "搜索全部应用...",
-    "searchResults": "搜索结果",
-    "subtitle": "AI Platform 作为首页入口，点击卡片跳转到现有系统。",
-    "tabs": {
-      "ai": "AI应用",
-      "common": "网页导航",
-      "lingxi": "灵犀平台"
-    },
-    "title": "公司导航",
-    "unavailable": "待接入"
+    "commonServices": "常用服务",
+    "jumpToFavorites": "查看我的收藏",
+    "myFavorites": "我的收藏",
+    "noResults": "没有找到匹配的网站",
+    "noResultsHint": "试试网站名称、用途或分类关键词。",
+    "removeFavorite": "取消收藏 {{name}}",
+    "resourceCategories": "资源分类",
+    "searchLabel": "搜索网页导航",
+    "searchPlaceholder": "搜索系统、资源、文档或工具...",
+    "searchSummary": "找到 {{count}} 个入口",
+    "userFallback": "同事",
+    "visitWebsite": "点击进入网站",
+    "welcome": "欢迎回来，{{name}}",
+    "welcomeSubtitle": "快速访问公司系统与资源，高效协同，助力业务发展。"
   },
   "companyNavigation": {
-    "directory": {
-      "description": "选择公司系统或常用网站后在新窗口打开，保留两套系统边界，避免跨系统登录态在嵌入页面中卡住。",
-      "title": "公司应用导航"
-    },
     "openEntry": "打开 {{name}}"
   },
   "nav": {
@@ -1571,14 +1575,21 @@
       "roleDirectory": {
         "description": "当前工作区返回 {{count}} 个可见角色。普通用户只能申请可申请角色。",
         "empty": "当前账号没有可见角色。",
+        "enterpriseAdmin": "企业管理员",
+        "enterpriseAdminDescription": "企业管理角色；分配前需要平台管理员审核。",
         "noCapabilities": "暂无能力标签",
         "noDescription": "未提供描述",
         "title": "角色目录"
       },
       "scope": {
-        "description": "租户 {{tenant}} · 工作区 {{workspace}} 的部门、工作区和 Skill 继承范围。",
+        "description": "工作区 {{workspace}} 的部门、工作区和 Skill 继承范围。",
         "emptyDepartments": "当前账号没有可见部门范围。",
         "emptySkills": "暂无 Skill 继承范围。",
+        "levels": {
+          "company": "全公司",
+          "department": "部门",
+          "workspace": "工作区"
+        },
         "skillsTitle": "Skill 可用范围",
         "title": "部门与工作区范围"
       },
@@ -1652,7 +1663,7 @@
       "title": "模型管理"
     },
     "runs": {
-      "description": "查看当前租户最近的 Chat、Run 和 Worker 生命周期状态。",
+      "description": "查看最近的 Chat、Run 和 Worker 生命周期状态。",
       "title": "运行监控"
     },
     "notifications": {
@@ -1672,7 +1683,7 @@
       "title": "技能管理"
     },
     "users": {
-      "description": "管理用户账户、角色和访问权限。管理多租户用户生命周期和安全设置。",
+      "description": "管理用户账户、角色和访问权限。",
       "title": "用户管理"
     }
   },
@@ -2463,7 +2474,7 @@
     "noModels": "暂无可用模型",
     "provider": "供应商",
     "publicProjection": "公开模型投影",
-    "publicProjectionDescription": "聊天和选择器只读取公开可用模型，不暴露密钥、网关配置或租户外信息。",
+    "publicProjectionDescription": "聊天和选择器只读取公开可用模型，不暴露密钥、网关配置或内部部署信息。",
     "searchPlaceholder": "搜索模型、供应商或能力",
     "pinModel": "置顶",
     "setDefault": "设为默认",
@@ -2548,7 +2559,7 @@
           }
         },
         "details": {
-          "adminProjection": "管理员控制：系统运行配置、租户开关和平台参数按设置权限分层展示。",
+          "adminProjection": "管理员控制：系统运行配置、功能开关和平台参数按设置权限分层展示。",
           "auditProjection": "审计边界：配置变更需要作者、时间、来源和回滚线索，普通页面只读。",
           "nextContract": "已接入合同：个人偏好和系统配置读取分层；密钥网关保持脱敏与权限约束。",
           "publicProjection": "当前状态：个人偏好和系统设置读取安全投影，写操作继续由管理员治理。"
@@ -2627,7 +2638,7 @@
         "description": "后端返回了安全投影，但治理元数据要求该页面保持受限模式。"
       },
       "governance": {
-        "projection": "投影：{{projection}} · 租户 {{tenant}} · 工作区 {{workspace}}",
+        "projection": "投影：{{projection}} · 工作区 {{workspace}}",
         "secretProjected": "后端报告存在密钥材料，当前投影已按安全策略脱敏展示。",
         "summaryTitle": "读写治理摘要",
         "scope": "作用范围",
@@ -2645,9 +2656,9 @@
         "title": "用户",
         "subtitle": "安全公司用户目录投影；生命周期变更继续受治理。",
         "taskTitle": "核对公司用户目录",
-        "taskDescription": "读取后端安全目录投影，展示账号、租户、部门和角色范围；启停、授权和删除继续由管理员流程处理。",
+        "taskDescription": "读取后端安全目录投影，展示账号、部门和角色范围；启停、授权和删除继续由管理员流程处理。",
         "directoryTitle": "公司目录",
-        "directoryDescription": "按当前工作区权限返回的可见账号，不暴露未授权租户数据。",
+        "directoryDescription": "按当前工作区权限返回可见账号，不暴露无权查看的用户数据。",
         "search": "搜索用户",
         "empty": "当前投影中没有可见用户。",
         "total": "目录总数",
@@ -2657,7 +2668,6 @@
         "activeState": "启用",
         "inactiveState": "停用",
         "account": "账号",
-        "tenant": "租户",
         "department": "部门",
         "roles": "角色覆盖",
         "rolesDetail": "来自安全角色投影",
@@ -2669,6 +2679,7 @@
           "developer": "开发者",
           "manager": "经理",
           "superuser": "超级用户",
+          "tenant_admin": "企业管理员",
           "user": "普通用户"
         }
       },

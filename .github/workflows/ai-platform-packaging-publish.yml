@@ -380,9 +380,13 @@ jobs:
   release-manifest:
     name: release image ready manifest
     needs: [publish]
+    concurrency:
+      group: ai-platform-packaging-deployment-release
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
+    environment: packaging-publish
     permissions:
-      contents: read
+      contents: write
       packages: read
     steps:
       - name: Checkout exact verifier source
@@ -505,3 +509,34 @@ jobs:
             trivy-*.json
             cosign-*.json
             provenance-*.json
+
+      - name: Publish immutable deployment Release
+        if: github.event_name == 'push'
+        env:
+          ASSET_LABEL: release-image-manifest-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          ASSET_PATH: release-image-manifest.json
+          GH_CLI_BIN: ${{ env.GH_CLI_BIN }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: deployment-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          test -x "$GH_CLI_BIN"
+          current_main="$(
+            "$GH_CLI_BIN" api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" \
+              --jq '.object.sha'
+          )"
+          test "$current_main" = "$GITHUB_SHA"
+          "$GH_CLI_BIN" release create "$RELEASE_TAG" \
+            "$ASSET_PATH#$ASSET_LABEL" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Deployment ${GITHUB_SHA::12}" \
+            --notes "Qualified by Packaging run $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT." \
+            --latest=false
+          immutable="$(
+            "$GH_CLI_BIN" release view "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json isImmutable \
+              --jq '.isImmutable'
+          )"
+          test "$immutable" = "true"

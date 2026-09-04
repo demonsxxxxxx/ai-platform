@@ -316,7 +316,6 @@ function ProjectionShell({
     governance?.projection
       ? t("workbench.projections.governance.projection", {
           projection: governance.projection,
-          tenant: governance.tenant_id,
           workspace: governance.workspace_id,
         })
       : null,
@@ -713,18 +712,12 @@ export function WorkbenchUsersProjectionPanel() {
                         : t("workbench.projections.users.inactiveState")}
                     </ProjectionStatusChip>
                   </div>
-                  <dl className="mt-2 grid gap-1 text-xs text-[var(--theme-text-secondary)] sm:grid-cols-3">
+                  <dl className="mt-2 grid gap-1 text-xs text-[var(--theme-text-secondary)] sm:grid-cols-2">
                     <div>
                       <dt className={workbenchSurface.label}>
                         {t("workbench.projections.users.account")}
                       </dt>
                       <dd className="truncate">{user.username}</dd>
-                    </div>
-                    <div>
-                      <dt className={workbenchSurface.label}>
-                        {t("workbench.projections.users.tenant")}
-                      </dt>
-                      <dd className="truncate">{user.tenant_id}</dd>
                     </div>
                     <div>
                       <dt className={workbenchSurface.label}>

@@ -5,6 +5,7 @@ from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
 from app.context.api import CONTEXT_FILE_ERROR_CODES
+from app.execution.domain.public_projection import PUBLIC_ANSWER_FAILURE_REASONS
 from app.projection_redaction import required_tool_public_detail
 from app.run_projection import (
     CHAT_PUBLIC_PROJECTION_VERSION,
@@ -31,6 +32,7 @@ from app.runs.api import (
 )
 from app.runs.domain.public_terminal import (
     CHAT_PUBLIC_PROJECTION_VERSION as DOMAIN_CHAT_PUBLIC_PROJECTION_VERSION,
+    PUBLIC_PROJECTION_FAILURE_REASONS as DOMAIN_PUBLIC_PROJECTION_FAILURE_REASONS,
     PUBLIC_TERMINAL_DETAIL_MESSAGES as DOMAIN_PUBLIC_TERMINAL_DETAIL_MESSAGES,
     PUBLIC_TERMINAL_ERROR_CODE_ALIASES as DOMAIN_PUBLIC_TERMINAL_ERROR_CODE_ALIASES,
     normalize_run_status as DOMAIN_NORMALIZE_RUN_STATUS,
@@ -39,6 +41,9 @@ from app.runs.domain.public_terminal import (
 )
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.kernel_contracts import AgentEvent
+from app.streaming.domain.protocol_v4 import (
+    PUBLIC_PROJECTION_FAILURE_REASONS as V4_PUBLIC_PROJECTION_FAILURE_REASONS,
+)
 
 
 def principal(**overrides):
@@ -296,6 +301,11 @@ def test_terminal_projection_has_one_runs_owner_and_preserves_fences():
     )
     assert public_terminal_projection is API_PUBLIC_TERMINAL_PROJECTION is DOMAIN_PUBLIC_TERMINAL_PROJECTION
     assert public_terminal_detail is API_PUBLIC_TERMINAL_DETAIL is DOMAIN_PUBLIC_TERMINAL_DETAIL
+    assert (
+        PUBLIC_ANSWER_FAILURE_REASONS
+        == DOMAIN_PUBLIC_PROJECTION_FAILURE_REASONS
+        == V4_PUBLIC_PROJECTION_FAILURE_REASONS
+    )
 
     required = public_terminal_projection("failed", "required_tool_unavailable")
     assert required["message"] == "任务所需执行能力当前不可用。请调整请求或联系管理员。"
@@ -306,7 +316,15 @@ def test_terminal_projection_has_one_runs_owner_and_preserves_fences():
     assert unknown["error_code"] == "run_failed"
     assert "executor_private_exception" not in str(unknown)
 
-    cancelled = public_terminal_projection("canceled", "executor_private_exception")
+    cancelled = public_terminal_projection(
+        "canceled",
+        "claude_agent_sdk_public_projection_failed",
+        {
+            "sdk_turn_diagnostics": {
+                "projection_failure_reason": "terminal_text_mismatch"
+            }
+        },
+    )
     assert cancelled == {
         "detail_kind": "cancelled",
         "detail_code": "run_cancelled",
@@ -316,6 +334,59 @@ def test_terminal_projection_has_one_runs_owner_and_preserves_fences():
         "event_payload": {},
     }
     assert public_terminal_projection("running") is None
+
+
+def test_public_projection_failure_reason_requires_matching_code_and_allowlist():
+    result = {
+        "sdk_turn_diagnostics": {
+            "projection_failure_reason": "terminal_text_mismatch",
+            "private": "C:/tenant/private/answer.txt",
+        }
+    }
+
+    projection = public_terminal_projection(
+        "failed",
+        "claude_agent_sdk_public_projection_failed",
+        result,
+    )
+    assert projection["detail_code"] == "claude_agent_sdk_public_projection_failed"
+    assert projection["result"]["projection_failure_reason"] == "terminal_text_mismatch"
+    assert "terminal_text_mismatch" in projection["message"]
+    assert projection["event_payload"] == {
+        "projection_failure_reason": "terminal_text_mismatch"
+    }
+    assert "C:/tenant" not in str(projection)
+
+    unrelated = public_terminal_projection(
+        "failed",
+        "claude_agent_sdk_tool_admission_failed",
+        result,
+    )
+    unknown = public_terminal_projection(
+        "failed",
+        "claude_agent_sdk_public_projection_failed",
+        {
+            "sdk_turn_diagnostics": {
+                "projection_failure_reason": "C:/tenant/private/answer.txt"
+            }
+        },
+    )
+    assert "projection_failure_reason" not in unrelated["result"]
+    assert "projection_failure_reason" not in unknown["result"]
+    assert "C:/tenant" not in str(unknown)
+
+    chat = public_chat_terminal_projection(
+        {
+            "status": "failed",
+            "error_code": "claude_agent_sdk_public_projection_failed",
+            "result_json": result,
+        }
+    )
+    assert chat["payload"]["detail_code"] == "claude_agent_sdk_public_projection_failed"
+    assert chat["payload"]["projection_failure_reason"] == "terminal_text_mismatch"
+    assert chat["event_payload"]["projection_failure_reason"] == "terminal_text_mismatch"
+    assert "terminal_text_mismatch" in chat["payload"]["message"]
+    assert "C:/tenant" not in str(chat)
 
 
 def test_terminal_reconciliation_failure_uses_fixed_public_projection():
@@ -345,7 +416,7 @@ def test_context_file_size_terminal_projection_is_specific_and_safe():
 
     assert projection["detail_code"] == "context_file_too_large"
     assert projection["error_code"] == "context_file_too_large"
-    assert projection["message"] == "文件超过 32 MB 处理上限。请选择更小的文件后重试。"
+    assert projection["message"] == "文件超过 128 MB，或文件总量超过 256 MB。请选择更小的文件或减少文件数量后重试。"
     assert projection["event_payload"] == {}
 
 

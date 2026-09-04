@@ -142,6 +142,8 @@ export function useSkills(options?: {
   // Only the newest catalog request may update visible state. Search, filters,
   // and pagination can otherwise resolve out of order and restore stale rows.
   const catalogRequestSequenceRef = useRef(0);
+  const listParamsRef = useRef(listParams);
+  listParamsRef.current = listParams;
   // Archive mutations own the catalog while they are pending. Reads that
   // started before or during an archive must not restore retained history to
   // the active catalog; the final mutation refresh supplies one authoritative
@@ -179,7 +181,7 @@ export function useSkills(options?: {
       try {
         const response = allAuthorizedCatalog
           ? await skillApi.listAllAuthorized()
-          : await skillApi.list(params ?? listParams ?? {});
+          : await skillApi.list(params ?? listParamsRef.current ?? {});
         const userSkills: UserSkill[] = response.skills;
         if (
           requestSequence !== catalogRequestSequenceRef.current ||
@@ -242,7 +244,7 @@ export function useSkills(options?: {
         }
       }
     },
-    [allAuthorizedCatalog, enabled, listParams],
+    [allAuthorizedCatalog, enabled],
   );
 
   // Fetch single skill — metadata + file paths only (lazy: content loaded on demand)
@@ -889,9 +891,11 @@ export function useSkills(options?: {
   });
 
   // Initial load
+  const catalogLoadParams = allAuthorizedCatalog ? undefined : listParams;
+
   useEffect(() => {
-    fetchSkills(listParams);
-  }, [fetchSkills, listParams]);
+    void fetchSkills(catalogLoadParams);
+  }, [catalogLoadParams, fetchSkills]);
 
   return {
     skills,

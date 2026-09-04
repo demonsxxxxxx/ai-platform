@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 import pytest
 
 from app.storage import ObjectStorage, ObjectStorageSizeLimitError
@@ -33,6 +36,31 @@ def _storage(payload: bytes) -> tuple[ObjectStorage, _Body]:
     storage.bucket = "bucket"
     storage.client = _Client(body)
     return storage, body
+
+
+def test_download_to_tempfile_writes_payload_and_closes_body(tmp_path, monkeypatch):
+    storage, body = _storage(b"downloaded")
+    monkeypatch.setattr("app.storage.tempfile.gettempdir", lambda: str(tmp_path))
+
+    downloaded = storage.download_to_tempfile(storage_key="private/file.xlsx", max_bytes=9)
+    try:
+        assert Path(downloaded.path).read_bytes() == b"downloaded"
+        assert downloaded.size_bytes == 9
+        assert downloaded.sha256
+        assert body.closed is True
+    finally:
+        os.unlink(downloaded.path)
+
+
+def test_download_to_tempfile_removes_partial_file_on_limit_error(tmp_path, monkeypatch):
+    storage, body = _storage(b"oversize")
+    monkeypatch.setattr("app.storage.tempfile.gettempdir", lambda: str(tmp_path))
+
+    with pytest.raises(ObjectStorageSizeLimitError):
+        storage.download_to_tempfile(storage_key="private/file.xlsx", max_bytes=7)
+
+    assert body.closed is True
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_get_bytes_bounded_returns_streamed_payload_and_closes_body():

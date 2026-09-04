@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
 from typing import Any
 
 from app.context.api import ContextFileContentError
@@ -17,7 +18,7 @@ from app.storage import ObjectStorageSizeLimitError
 
 _FILE_INPUT_MODES = frozenset({"csv", "docx", "json", "markdown", "md", "pdf", "text", "txt", "xlsx"})
 MAX_PRIMARY_FILE_IDS = 8
-_MAX_CONTEXT_FILE_STAGE_TOTAL_BYTES = 128 * 1024 * 1024
+_MAX_CONTEXT_FILE_STAGE_TOTAL_BYTES = 256 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -343,81 +344,126 @@ async def materialize_run_context_files(
         raise ContextFileContentError("context_file_too_large")
 
     inputs_dir = workspace / "inputs"
-    targets: list[Path] = []
-    validated_contents: list[bytes] = []
-    for attachment_index, _file_id, row, filename, size_bytes in authorized_files:
-        file_kind = Path(filename).suffix.casefold().lstrip(".")
-        target = inputs_dir / filename
-        ensure_creatable_inside(
-            inputs_dir,
-            target,
-            "uploaded file target must stay inside the run inputs directory",
-        )
-        if target.exists() or target.is_symlink():
-            raise ContextFileContentError(
-                "context_file_name_conflict",
-                file_kind=file_kind,
-                attachment_index=attachment_index,
-            )
-        if size_bytes > MAX_CONTEXT_FILE_STAGE_BYTES:
-            raise ContextFileContentError(
-                "context_file_too_large",
-                file_kind=file_kind,
-                attachment_index=attachment_index,
-            )
-        storage_key = str(row.get("storage_key") or "")
-        if not storage_key:
-            raise ContextFileContentError(
-                "context_file_identity_mismatch",
-                file_kind=file_kind,
-                attachment_index=attachment_index,
-            )
-        try:
-            content = storage.get_bytes_bounded(
-                storage_key=storage_key,
-                max_bytes=size_bytes,
-            )
-        except ObjectStorageSizeLimitError as exc:
-            raise ContextFileContentError(
-                "context_file_identity_mismatch",
-                file_kind=file_kind,
-                attachment_index=attachment_index,
-            ) from exc
-        except Exception as exc:
-            raise ContextFileContentError(
-                "context_file_storage_unavailable",
-                file_kind=file_kind,
-                attachment_index=attachment_index,
-            ) from exc
-        try:
-            validate_context_file_for_stage(row, content)
-        except ContextFileContentError as exc:
-            raise exc.bind_attachment(
-                attachment_index=attachment_index,
-                file_kind=file_kind,
-            )
-        targets.append(target)
-        validated_contents.append(content)
-
     materialized_file_names: list[str] = []
     written_paths: list[Path] = []
+    created_inputs_dir = False
     try:
-        if targets:
+        if authorized_files:
+            created_inputs_dir = not inputs_dir.exists()
             inputs_dir.mkdir(parents=True, exist_ok=True)
-        for target, content in zip(targets, validated_contents, strict=True):
+        for attachment_index, _file_id, row, filename, size_bytes in authorized_files:
+            file_kind = Path(filename).suffix.casefold().lstrip(".")
+            target = inputs_dir / filename
+            ensure_creatable_inside(
+                inputs_dir,
+                target,
+                "uploaded file target must stay inside the run inputs directory",
+            )
+            if target.exists() or target.is_symlink():
+                raise ContextFileContentError(
+                    "context_file_name_conflict",
+                    file_kind=file_kind,
+                    attachment_index=attachment_index,
+                )
+            if size_bytes > MAX_CONTEXT_FILE_STAGE_BYTES:
+                raise ContextFileContentError(
+                    "context_file_too_large",
+                    file_kind=file_kind,
+                    attachment_index=attachment_index,
+                )
+            storage_key = str(row.get("storage_key") or "")
+            if not storage_key:
+                raise ContextFileContentError(
+                    "context_file_identity_mismatch",
+                    file_kind=file_kind,
+                    attachment_index=attachment_index,
+                )
             written_paths.append(target)
-            target.write_bytes(content)
+            temporary_path: Path | None = None
+            try:
+                if hasattr(storage, "download_to_tempfile"):
+                    try:
+                        downloaded = storage.download_to_tempfile(
+                            storage_key=storage_key,
+                            max_bytes=size_bytes,
+                        )
+                    except ObjectStorageSizeLimitError as exc:
+                        raise ContextFileContentError(
+                            "context_file_identity_mismatch",
+                            file_kind=file_kind,
+                            attachment_index=attachment_index,
+                        ) from exc
+                    except Exception as exc:
+                        raise ContextFileContentError(
+                            "context_file_storage_unavailable",
+                            file_kind=file_kind,
+                            attachment_index=attachment_index,
+                        ) from exc
+                    temporary_path = Path(downloaded.path)
+                    if downloaded.size_bytes != size_bytes or (
+                        row.get("sha256")
+                        and downloaded.sha256.casefold() != str(row["sha256"]).casefold()
+                    ):
+                        raise ContextFileContentError(
+                            "context_file_identity_mismatch",
+                            file_kind=file_kind,
+                            attachment_index=attachment_index,
+                        )
+                    shutil.copyfile(temporary_path, target)
+                    if filename.casefold().endswith(".xlsx") or str(row.get("content_type") or "").split(";", 1)[0].casefold() == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+                        validate_context_file_for_stage(row, target.read_bytes())
+                else:
+                    try:
+                        content = storage.get_bytes_bounded(
+                            storage_key=storage_key,
+                            max_bytes=size_bytes,
+                        )
+                    except ObjectStorageSizeLimitError as exc:
+                        raise ContextFileContentError(
+                            "context_file_identity_mismatch",
+                            file_kind=file_kind,
+                            attachment_index=attachment_index,
+                        ) from exc
+                    except Exception as exc:
+                        raise ContextFileContentError(
+                            "context_file_storage_unavailable",
+                            file_kind=file_kind,
+                            attachment_index=attachment_index,
+                        ) from exc
+                    validate_context_file_for_stage(row, content)
+                    target.write_bytes(content)
+            except ContextFileContentError as exc:
+                raise exc.bind_attachment(
+                    attachment_index=attachment_index,
+                    file_kind=file_kind,
+                )
+            finally:
+                if temporary_path is not None:
+                    temporary_path.unlink(missing_ok=True)
             materialized_file_names.append(target.name)
+    except ContextFileContentError:
+        for written_path in reversed(written_paths):
+            try:
+                written_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if created_inputs_dir:
+            try:
+                inputs_dir.rmdir()
+            except OSError:
+                pass
+        raise
     except BaseException as exc:
         for written_path in reversed(written_paths):
             try:
                 written_path.unlink(missing_ok=True)
             except OSError:
                 pass
-        try:
-            inputs_dir.rmdir()
-        except OSError:
-            pass
+        if created_inputs_dir:
+            try:
+                inputs_dir.rmdir()
+            except OSError:
+                pass
         if isinstance(exc, Exception):
             raise ContextFileContentError(
                 "context_file_staging_write_failed",

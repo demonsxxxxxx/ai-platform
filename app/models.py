@@ -20,7 +20,7 @@ from app.control_plane_contracts import (
     SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS, ThinkingEffort, validate_thinking_agent_options,
 )
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
-from app.agent_apps.api import discard_legacy_agent_profile_model_id
+from app.agent_apps.api import AgentProfileAvatarRef, discard_legacy_agent_profile_model_id
 from app.agent_apps.api import (
     normalize_agent_avatar_seed, normalize_agent_profile_display_items, normalize_agent_skill_set,
 )
@@ -29,7 +29,7 @@ from app.skills.release_policy import (
     validate_release_decision_payload,
 )
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
-
+from app.mcp.api import assert_mcp_tool_reference
 from app.validation import (
     MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS, assert_safe_department_authority_id,
     assert_safe_id,
@@ -222,8 +222,6 @@ class SelectedAgentProfileRequest(BaseModel):
 
 
 class AgentProfileDraftRequest(BaseModel):
-    """Admin definition whose field presence governs create-versus-update defaults."""
-
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=160)
@@ -244,10 +242,11 @@ class AgentProfileDraftRequest(BaseModel):
     skill_set: list[SelectedSkillRequest] = Field(default_factory=list, max_length=32)
     selected_skill: SelectedSkillRequest | None = None
     mcp_tool_ids: list[str] = Field(default_factory=list)
-    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    avatar_ref: AgentProfileAvatarRef = "builtin:agent"
     avatar_asset_id: str | None = None
     avatar_seed: str = Field(default="", max_length=128)
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    market_tag: str = Field(default="", max_length=80)
     visibility: Literal["tenant", "restricted"] = "tenant"
     allowed_department_ids: list[str] = Field(default_factory=list)
     allowed_roles: list[str] = Field(default_factory=list)
@@ -302,7 +301,7 @@ class AgentProfileDraftRequest(BaseModel):
     def validate_mcp_tool_ids(cls, value: list[str]):
         normalized: list[str] = []
         for item in value:
-            tool_id = assert_safe_id(item.strip(), "mcp_tool_ids")
+            tool_id = assert_mcp_tool_reference(item.strip(), "mcp_tool_ids")
             if tool_id in normalized:
                 raise ValueError("mcp_tool_ids contains duplicates")
             normalized.append(tool_id)
@@ -414,7 +413,7 @@ class AgentProfilePublicProjection(BaseModel):
     supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text", "file"])
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
-    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    avatar_ref: AgentProfileAvatarRef = "builtin:agent"
     avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
     published_at: Any | None = None
@@ -433,8 +432,6 @@ class AgentProfileCatalogResponse(BaseModel):
 
 
 class AgentProfileAdminProjection(BaseModel):
-    """Admin-only revision projection, including server-owned instructions."""
-
     model_config = ConfigDict(extra="forbid")
 
     agent_id: str
@@ -454,10 +451,11 @@ class AgentProfileAdminProjection(BaseModel):
     skill_set: list[SelectedSkillRequest] = Field(default_factory=list)
     selected_skill: SelectedSkillRequest
     mcp_tool_ids: list[str] = Field(default_factory=list)
-    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    avatar_ref: AgentProfileAvatarRef = "builtin:agent"
     avatar_asset_id: str | None = None
     avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    market_tag: str = ""
     visibility: Literal["tenant", "restricted"] = "tenant"
     allowed_department_ids: list[str] = Field(default_factory=list)
     allowed_roles: list[str] = Field(default_factory=list)
@@ -544,7 +542,7 @@ class AgentConversationIdentity(BaseModel):
     supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text", "file"])
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
-    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    avatar_ref: AgentProfileAvatarRef = "builtin:agent"
     avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
     published_at: Any | None = None
@@ -1380,7 +1378,7 @@ class ChatStreamRequest(BaseModel):
             return None
         normalized: list[str] = []
         for item in value:
-            tool_id = assert_safe_id(item.strip(), "selected_mcp_tool_ids")
+            tool_id = assert_mcp_tool_reference(item.strip(), "selected_mcp_tool_ids")
             if tool_id in normalized:
                 raise ValueError("selected_mcp_tool_ids contains duplicates")
             normalized.append(tool_id)

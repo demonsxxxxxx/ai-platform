@@ -290,12 +290,12 @@ def test_chat_mcp_selection_model_preserves_omitted_clear_and_explicit_contract(
     assert ChatStreamRequest(message="hello", selected_mcp_tool_ids=[]).selected_mcp_tool_ids == []
     assert ChatStreamRequest(
         message="hello",
-        selected_mcp_tool_ids=[" tenant-search ", "tenant-write"],
-    ).selected_mcp_tool_ids == ["tenant-search", "tenant-write"]
+        selected_mcp_tool_ids=[" gateway::tenant-search ", "gateway::tenant-write"],
+    ).selected_mcp_tool_ids == ["gateway::tenant-search", "gateway::tenant-write"]
     with pytest.raises(ValueError):
         ChatStreamRequest(
             message="hello",
-            selected_mcp_tool_ids=["tenant-search", "tenant-search"],
+            selected_mcp_tool_ids=["gateway::tenant-search", "gateway::tenant-search"],
         )
     with pytest.raises(ValueError):
         ChatStreamRequest(message="hello", selected_mcp_tool_ids=["not safe!"])
@@ -563,8 +563,8 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
 @pytest.mark.parametrize(
     ("message", "selected_tools", "expected_authorizations"),
     [
-        ("不要调用 MCP，只解释它是什么", ["qa-search"], 0),
-        ("请调用 MCP 搜索员工手册", ["qa-search"], 1),
+        ("不要调用 MCP，只解释它是什么", ["gateway::qa-search"], 0),
+        ("请调用 MCP 搜索员工手册", ["gateway::qa-search"], 1),
     ],
     ids=["negative-veto", "affirmative"],
 )
@@ -583,7 +583,7 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
 
     async def authorize_tools(*_args, **_kwargs):
         calls["authorization"] += 1
-        return [{"tool_id": "qa-search"}]
+        return [{"tool_id": "gateway::qa-search"}]
 
     async def create_session(*_args, **_kwargs):
         return "ses-polarity"
@@ -607,7 +607,10 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "authorize_run_capabilities", authorize_run)
-    monkeypatch.setattr(repository_module, "authorize_selected_chat_mcp_tools", authorize_tools)
+    monkeypatch.setattr(
+        "app.routes.chat.authorize_selected_chat_mcp_tools",
+        authorize_tools,
+    )
     monkeypatch.setattr(repository_module, "ensure_user", noop)
     monkeypatch.setattr(repository_module, "create_session", create_session)
     monkeypatch.setattr(repository_module, "create_run", create_run)
@@ -872,8 +875,7 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
         raising=False,
     )
     monkeypatch.setattr(
-        repository_module,
-        "authorize_selected_chat_mcp_tools",
+        "app.routes.chat.authorize_selected_chat_mcp_tools",
         authorize_tools,
     )
     monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission)
@@ -2676,8 +2678,7 @@ async def test_chat_stream_unauthorized_structured_mcp_selection_fails_before_cr
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(
-        repository_module,
-        "authorize_selected_chat_mcp_tools",
+        "app.routes.chat.authorize_selected_chat_mcp_tools",
         deny_selection,
     )
     monkeypatch.setattr(repository_module, "create_run", fail_create_run)
@@ -2686,14 +2687,14 @@ async def test_chat_stream_unauthorized_structured_mcp_selection_fails_before_cr
         await chat_stream(
             ChatStreamRequest(
                 message="run",
-                selected_mcp_tool_ids=["tenant-search"],
+                selected_mcp_tool_ids=["gateway::tenant-search"],
             ),
             principal=principal(),
         )
 
     assert exc_info.value.status_code == 403
     assert exc_info.value.detail == "mcp_tool_not_available"
-    assert calls == [("authorize", ["tenant-search"])]
+    assert calls == [("authorize", ["gateway::tenant-search"])]
 
 
 @pytest.mark.asyncio
@@ -2728,7 +2729,10 @@ async def test_keyed_unauthorized_structured_mcp_rejection_persists_only_safe_le
         )
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "authorize_selected_chat_mcp_tools", deny_selection)
+    monkeypatch.setattr(
+        "app.routes.chat.authorize_selected_chat_mcp_tools",
+        deny_selection,
+    )
     monkeypatch.setattr(repository_module, "ensure_submission_principal", provision_principal)
     monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission)
     monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize_submission)
@@ -2746,19 +2750,25 @@ async def test_keyed_unauthorized_structured_mcp_rejection_persists_only_safe_le
 
     with pytest.raises(HTTPException) as first_info:
         await chat_stream(
-            rejected_request([" unauthorized-private-tool ", "second-private-tool"]),
+            rejected_request(
+                [" gateway::unauthorized-private-tool ", "gateway::second-private-tool"]
+            ),
             principal=principal(),
         )
 
     with pytest.raises(HTTPException) as replay_info:
         await chat_stream(
-            rejected_request(["unauthorized-private-tool", "second-private-tool"]),
+            rejected_request(
+                ["gateway::unauthorized-private-tool", "gateway::second-private-tool"]
+            ),
             principal=principal(),
         )
 
     with pytest.raises(HTTPException) as mismatch_info:
         await chat_stream(
-            rejected_request(["unauthorized-private-tool", "different-private-tool"]),
+            rejected_request(
+                ["gateway::unauthorized-private-tool", "gateway::different-private-tool"]
+            ),
             principal=principal(),
         )
 
@@ -5090,7 +5100,7 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
     )
     monkeypatch.setattr("app.routes.chat.resolve_bound_profile_for_submission", bound_profile)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.authorize_selected_chat_mcp_tools",
+        "app.routes.chat.authorize_selected_chat_mcp_tools",
         authorize_transport_mcp_defaults,
     )
     monkeypatch.setattr(

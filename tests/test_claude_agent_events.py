@@ -706,6 +706,11 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         "public_tool_label": "Read file",
     }
     candidates = []
+    tool_lifecycle = []
+
+    async def acknowledge_tool_lifecycle(fact):
+        tool_lifecycle.append((fact["tool_name"], fact["lifecycle"]))
+        return True
 
     async def query_fn(*, prompt, options):
         del prompt
@@ -784,6 +789,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         query_fn=query_fn,
         thinking_effort="high",
         on_text=lambda value: asyncio.sleep(0),
+        on_tool_lifecycle=acknowledge_tool_lifecycle,
         on_agent_event=lambda batch: candidates.extend(batch) or True,
         run_id="run-1187",
         attempt_id="attempt-1",
@@ -821,6 +827,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
     ]
     assert deltas == ["safe ", "answer"]
     assert "".join(deltas) == result.message
+    assert tool_lifecycle == [("Read", "started"), ("Read", "completed")]
     summaries = [
         candidate.summary
         for candidate in candidates
@@ -838,7 +845,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
 
 
 @pytest.mark.asyncio
-async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(monkeypatch):
+async def test_runner_stops_ordinary_stream_at_cumulative_publication_bound(monkeypatch):
     import claude_agent_sdk as sdk
 
     monkeypatch.setattr(
@@ -860,7 +867,7 @@ async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(
     )
     published: list[str] = []
     candidates = []
-    answer = "a" * 262_145
+    answer = "a " * 131_073
 
     async def query_fn(*, prompt, options):
         del prompt, options
@@ -873,14 +880,17 @@ async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(
                 "content_block": {"type": "text"},
             },
         )
-        for index in range(65):
+        for index, offset in enumerate(range(0, len(answer), 4_096)):
             yield sdk.StreamEvent(
                 uuid=f"stream-delta-{index}",
                 session_id="sdk-session",
                 event={
                     "type": "content_block_delta",
                     "index": 0,
-                    "delta": {"type": "text_delta", "text": "a" * 4_096},
+                    "delta": {
+                        "type": "text_delta",
+                        "text": answer[offset : offset + 4_096],
+                    },
                 },
             )
         yield sdk.StreamEvent(
@@ -915,10 +925,16 @@ async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(
         require_selected_skill_invocation=False,
     )
 
-    assert result.error == "claude_agent_sdk_tool_admission_failed"
+    assert result.error == "claude_agent_sdk_public_projection_failed"
+    assert result.turn_diagnostics["projection_failure_reason"] == "answer_too_large"
     assert result.message == ""
-    assert published == []
-    assert candidates == []
+    assert published
+    assert answer.startswith("".join(published))
+    assert len("".join(published).encode("utf-8")) == 262_144
+    assert [candidate.event_type for candidate in candidates] == [
+        "message.started",
+        *["message.delta"] * 64,
+    ]
 
 
 @pytest.mark.asyncio
@@ -1058,7 +1074,7 @@ async def test_outer_cancellation_propagates_while_agent_callback_waits(monkeypa
     [
         ("a" * 262_144, None),
         ("é" * 262_144, None),
-        ("a" * 262_145, "claude_agent_sdk_tool_admission_failed"),
+        ("a" * 262_145, "claude_agent_sdk_public_projection_failed"),
     ],
     ids=["ascii", "multibyte", "max-plus-one"],
 )
@@ -1144,6 +1160,7 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
     deltas = [candidate.payload["delta"] for candidate in candidates if candidate.event_type == "message.delta"]
     if expected_error is not None:
         assert result.error == expected_error
+        assert result.turn_diagnostics["projection_failure_reason"] == "answer_too_large"
         assert result.message == ""
         assert candidates == []
         assert callback_batches == []

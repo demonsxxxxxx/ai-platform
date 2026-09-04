@@ -71,11 +71,38 @@ test("v4 adapter enforces generated run, date-time, nullable, and exact payload 
     terminal_event_id: "terminal-1",
     hydrate_required: true,
     projection_version: "ai-platform.chat-public-projection.v1",
-    code: "failed",
+    code: "claude_agent_sdk_public_projection_failed",
     default_message: "Run failed",
     detail: null,
+    projection_failure_reason: "answer_too_large",
   });
-  assert.ok(adaptPublicRunStreamEventV4(valid, { runId: "run-1" }));
+  const adapted = adaptPublicRunStreamEventV4(valid, { runId: "run-1" });
+  assert.ok(adapted);
+  const projected = projectV4EventToLegacyHandler(adapted, "message-1");
+  assert.ok(projected);
+  assert.match(projected.streamEvent.data, /answer_too_large/);
+  const wrongCode = {
+    ...valid,
+    value: {
+      ...(valid.value as Record<string, unknown>),
+      payload: {
+        ...((valid.value as Record<string, unknown>).payload as Record<string, unknown>),
+        code: "failed",
+      },
+    },
+  };
+  assert.equal(adaptPublicRunStreamEventV4(wrongCode, { runId: "run-1" }), null);
+  const unknownReason = {
+    ...valid,
+    value: {
+      ...(valid.value as Record<string, unknown>),
+      payload: {
+        ...((valid.value as Record<string, unknown>).payload as Record<string, unknown>),
+        projection_failure_reason: "C:/private/secret.txt",
+      },
+    },
+  };
+  assert.equal(adaptPublicRunStreamEventV4(unknownReason, { runId: "run-1" }), null);
   const invalidRun = { ...valid, value: { ...(valid.value as Record<string, unknown>), run_id: `x${"a".repeat(128)}` } };
   assert.equal(adaptPublicRunStreamEventV4(invalidRun, { runId: `x${"a".repeat(128)}` }), null);
   const invalidDate = { ...valid, value: { ...(valid.value as Record<string, unknown>), emitted_at: "2026-02-30T00:00:00Z" } };

@@ -402,9 +402,10 @@ def is_governed_egress_proof(
 ) -> bool:
     """Verify a sealed proof, optionally requiring it remains admissible now.
 
-    ``require_fresh=False`` is for signed terminal audit evidence only. Runtime
-    acquisition, reuse, dispatch, and active-lease admission must retain the
-    default fresh mode and therefore reject an expired proof.
+    Runtime acquisition, reuse, dispatch, and active-lease admission must retain
+    the default fresh mode. Callers that only need immutable current-key identity
+    after an independent active-authority fence use
+    :func:`is_governed_egress_identity_proof` instead.
     """
     current_key = _valid_signing_key(signing_key)
     current_key_id = _valid_governed_egress_key_id(signing_key_id)
@@ -450,6 +451,33 @@ def is_governed_egress_proof(
     if verification_key is None or not hmac.compare_digest(signature, _proof_signature(proof, verification_key)):
         return False
     return expected_binding is None or _proof_matches_expected_binding(proof, expected_binding)
+
+
+def is_governed_egress_identity_proof(
+    proof: object,
+    *,
+    provider: str,
+    signing_key: object,
+    signing_key_id: object = GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID,
+    expected_binding: Mapping[str, object] | None = None,
+    now: datetime | None = None,
+) -> bool:
+    """Verify immutable current-key identity after a separate active fence.
+
+    This is not runtime admission: callers must first establish current active
+    authority independently. Expiry does not erase identity, while key rotation
+    still revokes it because previous keys are never accepted here.
+    """
+
+    return is_governed_egress_proof(
+        proof,
+        provider=provider,
+        signing_key=signing_key,
+        signing_key_id=signing_key_id,
+        expected_binding=expected_binding,
+        now=now,
+        require_fresh=False,
+    )
 
 
 def governed_egress_proof_label(proof: object) -> str:

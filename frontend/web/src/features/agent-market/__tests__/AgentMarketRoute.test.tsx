@@ -9,18 +9,34 @@ test("market keeps one, two, and three cards responsive while resolving durable 
     "utf8",
   );
 
-  assert.match(source, /agentProfileApi\s*\.\s*listPublished\(\{\s*query,\s*category\s*\}\)/);
+  assert.match(source, /agentProfileApi\s*\.\s*listPublished\(\)/);
+  assert.doesNotMatch(source, /listPublished\(\{\s*query\s*,\s*category\s*\}\)/);
+  assert.match(source, /activeTab === "favorites"/);
+  assert.match(source, /我的收藏/);
   assert.match(source, /agentProfileApi\s*\.\s*getPublished\(agentId\)/);
   assert.doesNotMatch(source, /agentProfileApi\s*\.\s*createConversation\(/);
   assert.match(source, /navigate\(buildAgentMarketWorkspacePath\(profile\)\)/);
   assert.match(source, /navigate\(catalogReturnPath, \{ replace: true \}\)/);
   assert.match(source, /AppShell/);
   assert.match(source, /SessionSidebar/);
+  assert.match(source, /min-h-0 flex-1 overflow-y-auto/);
+  assert.match(source, /lg:grid-cols-\[15rem_minmax\(0,1fr\)\]/);
+  assert.doesNotMatch(source, /<Check/);
+  assert.doesNotMatch(source, /BadgeCheck/);
   assert.match(source, /mobileSidebarOpen/);
   assert.match(source, /useParams/);
   assert.match(source, /data-agent-market-search/);
   assert.match(source, /data-agent-market-filter/);
   assert.match(source, /data-agent-market-card/);
+  assert.match(source, /MARKET_PAGE_SIZE = 9/);
+  assert.match(source, /paginatedProfiles\.map/);
+  assert.match(source, /<Pagination/);
+  assert.match(source, /rounded-full p-1 transition-colors/);
+  assert.match(source, /text-amber-600/);
+  assert.doesNotMatch(source, /bg-amber-/);
+  assert.doesNotMatch(source, /企业专家目录/);
+  assert.doesNotMatch(source, /选择一位企业专家/);
+  assert.doesNotMatch(source, /找到 \{visibleProfiles\.length\} 位专家/);
   assert.match(source, /data-agent-market-detail/);
   assert.match(source, /data-agent-market-start-chat/);
   assert.match(source, /企业已发布/);
@@ -29,7 +45,7 @@ test("market keeps one, two, and three cards responsive while resolving durable 
   assert.match(source, /selectPublishedMarketProfile/);
   assert.match(source, /buildAgentMarketDetailPath/);
   assert.match(source, /buildAgentMarketWorkspacePath/);
-  assert.match(source, /grid-cols-\[repeat\(auto-fill,minmax\(min\(100%,22rem\),1fr\)\)\]/);
+  assert.match(source, /grid-cols-\[repeat\(auto-fill,minmax\(min\(100%,18rem\),1fr\)\)\]/);
   assert.doesNotMatch(source, /xl:grid-cols-3/);
   assert.doesNotMatch(source, /grid-cols-1[\s\S]*md:grid-cols-2[\s\S]*xl:grid-cols-3/);
   assert.match(source, /MARKET_CATALOG_LOAD_ERROR/);

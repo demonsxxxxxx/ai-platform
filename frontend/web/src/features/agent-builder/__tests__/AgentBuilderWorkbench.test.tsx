@@ -84,6 +84,9 @@ test("expert management follows the directory and first-class configuration layo
   assert.match(workbenchSource, /专家管理/);
   assert.match(workbenchSource, /专家目录/);
   assert.match(workbenchSource, /aria-label="搜索专家"/);
+  assert.match(workbenchSource, /AGENT_DIRECTORY_PAGE_SIZE/);
+  assert.match(workbenchSource, /paginatedProfiles\.map/);
+  assert.match(workbenchSource, /<Pagination/);
   assert.match(workbenchSource, /AgentIdentityAvatar/);
   assert.match(workbenchSource, /完成下面 3 项即可保存/);
   assert.match(workbenchSource, /Agent\.md 初始指令/);
@@ -102,6 +105,9 @@ test("expert management follows the directory and first-class configuration layo
   assert.match(workbenchSource, /title="配置 Skill Set"/);
   assert.match(enterpriseFieldsSource, /AgentAvatarPicker/);
   assert.match(avatarPickerSource, /头像风格/);
+  assert.match(avatarPickerSource, /<select/);
+  assert.match(avatarPickerSource, /aria-label="选择头像风格"/);
+  assert.match(avatarPickerSource, /AGENT_AVATAR_STYLE_OPTIONS\.map/);
   assert.match(avatarPickerSource, /换一批/);
   assert.doesNotMatch(enterpriseFieldsSource, /头像种子/);
   assert.doesNotMatch(enterpriseFieldsSource, /支持输入|支持文件类型|文件格式/);

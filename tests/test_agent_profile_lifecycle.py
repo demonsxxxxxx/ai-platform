@@ -100,7 +100,10 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "avatar_ref": "builtin:assistant",
         "avatar_seed": "agt_support",
         "category": "support",
+        "market_tag": "",
     }
+    assert profile_public_projection({**row, "completed_tasks": 12})["completed_tasks"] == 12
+    assert "completed_tasks" not in profile_public_projection(row)
 
 
 @pytest.mark.asyncio
@@ -235,11 +238,85 @@ def _profile_row(
     return _seal_profile_row(row) if content_hash is None else row
 
 
+def test_admin_profile_revision_projection_preserves_market_tag():
+    from app.agent_apps.authority import _admin_projection, _draft_from_row
+
+    row = _profile_row()
+    row["market_tag"] = "客户服务"
+
+    assert _draft_from_row(row).market_tag == "客户服务"
+    assert _admin_projection(row).market_tag == "客户服务"
+
+
 def _seal_profile_row(row: dict[str, object]) -> dict[str, object]:
     from app.agent_apps.authority import _draft_from_row, _revision_hash
 
     row["content_hash"] = _revision_hash(_draft_from_row(row))
     return row
+
+
+@pytest.mark.asyncio
+async def test_profile_definition_validates_stable_mcp_reference_and_server_existence(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+    from app.agent_apps.authority import _draft_from_row
+
+    row = _profile_row()
+    row["mcp_tool_ids"] = ["gateway::search"]
+    observed: list[tuple[str, str]] = []
+
+    async def authorize_skill(*_args, **_kwargs):
+        return {"skill_id": "general-chat", "skill_version": "version-a"}
+
+    async def get_server(*_args, **kwargs):
+        observed.append((kwargs["tenant_id"], kwargs["name"]))
+        return {"name": kwargs["name"], "status": "active"}
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.authorize_selected_run_capabilities",
+        authorize_skill,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.mcp_api.get_mcp_server_registry_entry",
+        get_server,
+    )
+
+    skills = await AgentProfileAuthority()._validate_definition(
+        object(),
+        principal=_principal(),
+        agent_id="agt_support",
+        definition=_draft_from_row(row),
+    )
+
+    assert skills[0]["skill_id"] == "general-chat"
+    assert observed == [("tenant-a", "gateway")]
+
+
+@pytest.mark.asyncio
+async def test_profile_definition_preserves_repository_authorization_status(monkeypatch):
+    from app import repositories
+    from app.agent_apps import AgentProfileAuthority
+    from app.agent_apps.authority import _draft_from_row
+
+    async def deny_skill(*_args, **_kwargs):
+        raise repositories.RepositoryAuthorizationError("denied")
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.authorize_selected_run_capabilities",
+        deny_skill,
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        await AgentProfileAuthority()._validate_definition(
+            object(),
+            principal=_principal(),
+            agent_id="agt_support",
+            definition=_draft_from_row(_profile_row()),
+        )
+
+    assert (caught.value.status_code, caught.value.detail) == (
+        403,
+        "agent_profile_capability_not_available",
+    )
 
 
 @pytest.mark.asyncio
@@ -847,9 +924,12 @@ async def test_public_detail_uses_the_same_acl_as_catalog(monkeypatch):
     async def list_current(*_args, **_kwargs):
         return [restricted]
 
+    async def list_favorite_ids(*_args, **_kwargs):
+        return set()
+
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_current_published_agent_profile", get_current)
     monkeypatch.setattr("app.agent_apps.authority.repositories.list_current_published_agent_profiles", list_current)
-    authority = AgentProfileAuthority()
+    authority = AgentProfileAuthority(favorite_ids_loader=list_favorite_ids)
 
     async def validate(*_args, **_kwargs):
         return ({"skill_id": "general-chat", "skill_version": "version-a"},)
@@ -873,6 +953,44 @@ async def test_public_detail_uses_the_same_acl_as_catalog(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_favorite_does_not_bypass_public_profile_acl(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+
+    restricted = _profile_row()
+    restricted.update({"visibility": "restricted", "allowed_department_ids": ["药品注册"]})
+    _seal_profile_row(restricted)
+    writes: list[dict[str, object]] = []
+
+    async def ensure_user(*_args, **_kwargs):
+        return None
+
+    async def get_current(*_args, **_kwargs):
+        return restricted
+
+    async def set_favorite(*_args, **kwargs):
+        writes.append(kwargs)
+
+    async def validate(*_args, **_kwargs):
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
+
+    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", ensure_user)
+    monkeypatch.setattr("app.agent_apps.authority.repositories.get_current_published_agent_profile", get_current)
+    authority = AgentProfileAuthority(favorite_setter=set_favorite)
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+
+    with pytest.raises(HTTPException) as caught:
+        await authority.set_favorite(
+            object(),
+            principal=_principal(department_id="药品注冊"),
+            agent_id="agt_support",
+            favorite=True,
+        )
+
+    assert (caught.value.status_code, caught.value.detail) == (404, "agent_profile_not_found")
+    assert writes == []
+
+
+@pytest.mark.asyncio
 async def test_public_catalog_and_admission_reject_a_tampered_publication(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
     from app.models import SelectedAgentProfileRequest
@@ -886,6 +1004,9 @@ async def test_public_catalog_and_admission_reject_a_tampered_publication(monkey
     async def list_current(*_args, **_kwargs):
         return [tampered]
 
+    async def list_favorite_ids(*_args, **_kwargs):
+        return set()
+
     async def forbidden_validation(*_args, **_kwargs):
         raise AssertionError("integrity rejection must happen before capability validation")
 
@@ -897,7 +1018,7 @@ async def test_public_catalog_and_admission_reject_a_tampered_publication(monkey
         "app.agent_apps.authority.repositories.list_current_published_agent_profiles",
         list_current,
     )
-    authority = AgentProfileAuthority()
+    authority = AgentProfileAuthority(favorite_ids_loader=list_favorite_ids)
     monkeypatch.setattr(authority, "_validate_definition", forbidden_validation)
 
     assert await authority.list_public(object(), principal=_principal()) == []
@@ -1927,7 +2048,7 @@ async def test_profile_authority_accepts_the_exact_canonical_frontend_transport_
     observed: list[tuple[str, bool | None]] = []
     profile_row = _profile_row()
     if bound:
-        profile_row["mcp_tool_ids"] = ["profile-tool"]
+        profile_row["mcp_tool_ids"] = ["gateway::profile-tool"]
         _seal_profile_row(profile_row)
 
     async def get_current(*_args, **kwargs):
@@ -2013,7 +2134,7 @@ async def test_profile_authority_rejects_nonempty_client_mcp_selector_even_when_
     from app.models import ChatStreamRequest, SelectedAgentProfileRequest
 
     profile_row = _profile_row()
-    profile_row["mcp_tool_ids"] = ["profile-tool"]
+    profile_row["mcp_tool_ids"] = ["gateway::profile-tool"]
     _seal_profile_row(profile_row)
 
     async def get_current(*_args, **_kwargs):
@@ -2035,7 +2156,7 @@ async def test_profile_authority_rejects_nonempty_client_mcp_selector_even_when_
                 "agent_id": "agt_support",
                 "expected_revision": 7,
             },
-            "selected_mcp_tool_ids": ["profile-tool"],
+            "selected_mcp_tool_ids": ["gateway::profile-tool"],
             "submission_id": "8eb026d4-2839-44db-83dd-5196ed80d9e8",
         }
     )
@@ -2135,7 +2256,7 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
         ({"disabled_skills": ["other-skill"]}, None),
         ({"enabled_skills": ["other-skill"]}, None),
         ({"disabled_mcp_tools": ["other-tool"]}, None),
-        ({"selected_mcp_tool_ids": ["other-tool"]}, None),
+        ({"selected_mcp_tool_ids": ["gateway::other-tool"]}, None),
         ({"agent_options": {"temperature": 0.2}}, None),
         (
             {

@@ -59,6 +59,54 @@ def test_projector_disables_at_max_pending_bound():
     assert projector.disabled is True
 
 
+def test_projector_accepts_large_fragment_with_stable_boundary_near_end():
+    projector = _projector(max_pending_chars=8)
+    safe_text = "safe " * 4
+
+    projector.accept(_start())
+    assert projector.accept(_text_delta(safe_text)) == (safe_text,)
+    assert projector.accept(_stop()) == ()
+    assert projector.disabled is False
+
+
+def test_projector_accepts_full_size_whitespace_fragment_in_constant_sanitizer_calls():
+    sanitizer_calls = 0
+
+    def counting_sanitizer(value):
+        nonlocal sanitizer_calls
+        sanitizer_calls += 1
+        return sanitize_public_payload(value)
+
+    projector = ClaudeStreamProjector(
+        sanitizer=counting_sanitizer,
+        max_pending_chars=4_096,
+    )
+    safe_text = "a " * 131_072
+
+    projector.accept(_start())
+    assert projector.accept(_text_delta(safe_text)) == (safe_text,)
+    assert sanitizer_calls <= 4
+
+
+def test_projector_rejects_oversized_unbroken_suffix_before_publication():
+    projector = _projector(max_pending_chars=8)
+
+    projector.accept(_start())
+    assert projector.accept(_text_delta("ok " + "x" * 16)) == ()
+    assert projector.disabled is True
+    assert projector.partial_emitted is False
+
+
+def test_projector_rejects_email_continuation_without_partial_publication():
+    projector = _projector(max_pending_chars=64)
+
+    projector.accept(_start())
+    assert projector.accept(_text_delta("x" * 20)) == ()
+    assert projector.accept(_text_delta("@example.com ")) == ()
+    assert projector.disabled is True
+    assert projector.partial_emitted is False
+
+
 @pytest.mark.parametrize(
     "conflict",
     [

@@ -158,11 +158,15 @@ export async function ensureAgentConversationForFirstSend({
   coordinator,
   profile,
   createConversation,
+  isCurrent,
+  onConversationCreated,
   bindConversation,
 }: {
   coordinator: AgentFirstSendCoordinator;
   profile: Pick<AgentProfilePublicProjection, "agent_id" | "expected_revision">;
   createConversation: () => ReturnType<typeof agentProfileApi.createConversation>;
+  isCurrent?: () => boolean;
+  onConversationCreated?: (sessionId: string) => void;
   bindConversation: (sessionId: string) => Promise<boolean>;
 }): Promise<string> {
   if (!coordinator.current) {
@@ -178,16 +182,24 @@ export async function ensureAgentConversationForFirstSend({
       ) {
         throw new Error("agent_workspace_identity_mismatch");
       }
+      if (isCurrent && !isCurrent()) {
+        throw new Error("agent_workspace_creation_cancelled");
+      }
+      onConversationCreated?.(created.session_id);
       if (!(await bindConversation(created.session_id))) {
         throw new Error("agent_conversation_history_unavailable");
+      }
+      if (isCurrent && !isCurrent()) {
+        throw new Error("agent_workspace_creation_cancelled");
       }
       return created.session_id;
     })();
   }
+  const flight = coordinator.current;
   try {
-    return await coordinator.current;
+    return await flight;
   } catch (error) {
-    coordinator.current = null;
+    if (coordinator.current === flight) coordinator.current = null;
     throw error;
   }
 }
@@ -197,12 +209,14 @@ export async function submitAgentFirstMessageSingleFlight({
   coordinator,
   submissionKey,
   ensureConversation,
+  isCurrent,
   agentOptions,
   submitMessage,
 }: {
   coordinator: AgentFirstSubmissionCoordinator;
   submissionKey: string;
   ensureConversation: () => Promise<string>;
+  isCurrent?: () => boolean;
   agentOptions?: Record<string, boolean | string | number>;
   submitMessage: (
     sessionId: string,
@@ -216,7 +230,14 @@ export async function submitAgentFirstMessageSingleFlight({
   let flight = active?.promise;
   if (!active) {
     flight = (async () => {
-      const createdSessionId = await ensureConversation();
+      let createdSessionId: string;
+      try {
+        createdSessionId = await ensureConversation();
+      } catch (error) {
+        if (isCurrent && !isCurrent()) return { status: "failed" };
+        throw error;
+      }
+      if (isCurrent && !isCurrent()) return { status: "failed" };
       return submitMessage(createdSessionId, agentOptions);
     })();
     coordinator.current = { submissionKey, promise: flight };
@@ -391,6 +412,23 @@ export function ChatAppContent({
   const agentWorkspaceCreationRef = useRef<Promise<string> | null>(null);
   const agentWorkspaceFirstSubmissionRef =
     useRef<AgentFirstSubmissionCoordinator["current"]>(null);
+  const agentWorkspaceFirstSendGenerationRef = useRef(0);
+  const agentWorkspaceDraftHandoffIdentityRef = useRef<string | null>(null);
+  const [agentWorkspaceDraftHandoffKey, setAgentWorkspaceDraftHandoffKey] =
+    useState<string | null>(null);
+  const invalidateAgentWorkspaceFirstSend = useCallback(() => {
+    agentWorkspaceFirstSendGenerationRef.current += 1;
+    agentWorkspaceCreationRef.current = null;
+    agentWorkspaceFirstSubmissionRef.current = null;
+    agentWorkspaceDraftHandoffIdentityRef.current = null;
+    setAgentWorkspaceDraftHandoffKey(null);
+  }, []);
+  useEffect(
+    () => () => {
+      agentWorkspaceFirstSendGenerationRef.current += 1;
+    },
+    [],
+  );
   const [agentWorkspaceError, setAgentWorkspaceError] = useState<string | null>(null);
   const agentWorkspaceRouteBasePath = agentWorkspace
     ? buildAgentMarketWorkspacePath(agentWorkspace)
@@ -550,6 +588,11 @@ export function ChatAppContent({
     sessionId,
     onIdentityChange: () => {
       agentWorkspaceSelectionRequestIdRef.current += 1;
+      if (
+        agentWorkspaceDraftHandoffIdentityRef.current !== conversationIdentityKey
+      ) {
+        invalidateAgentWorkspaceFirstSend();
+      }
       setAgentWorkspaceError(null);
       clearMessages();
       // A task Skill is scoped to the composer that selected it. A route or
@@ -673,11 +716,7 @@ export function ChatAppContent({
 
     const serverSelection =
       sessionId && serverSelectedToolIds !== undefined
-        ? reconcileChatMcpToolSelection(
-            serverSelectedToolIds,
-            tools,
-            mcpCatalogState.status,
-          )
+        ? serverSelectedToolIds
         : undefined;
     const restoreKey =
       serverSelection === undefined ? null : `${sessionId}:${JSON.stringify(serverSelection)}`;
@@ -687,13 +726,7 @@ export function ChatAppContent({
       restoredMcpSelectionRef.current = restoreKey;
     }
 
-    const reconciled = shouldRestoreServerSelection
-      ? serverSelection
-      : reconcileChatMcpToolSelection(
-          sessionConfig.selectedMcpToolIds,
-          tools,
-          mcpCatalogState.status,
-        );
+    const reconciled = shouldRestoreServerSelection ? serverSelection : undefined;
     if (
       reconciled === undefined ||
       (sessionConfig.selectedMcpToolIds !== undefined &&
@@ -811,7 +844,7 @@ export function ChatAppContent({
       }
       : {
         ...sessionConfig,
-        selectedMcpToolIds: authoritativeMcpSelection,
+        selectedMcpToolIds: sessionConfig.selectedMcpToolIds,
         agentOptions: {
           ...agentOptionValues,
           ...(currentModelValue ? { model: currentModelValue } : {}),
@@ -1037,8 +1070,7 @@ export function ChatAppContent({
 
   const handleNewSessionWithReset = useCallback(() => {
     if (agentWorkspace) {
-      agentWorkspaceCreationRef.current = null;
-      agentWorkspaceFirstSubmissionRef.current = null;
+      invalidateAgentWorkspaceFirstSend();
       setAgentWorkspaceError(null);
       clearMessages();
       setAgentConversationState(conversationState("generic", null));
@@ -1071,6 +1103,7 @@ export function ChatAppContent({
     agentWorkspace,
     agentWorkspaceRouteBasePath,
     clearMessages,
+    invalidateAgentWorkspaceFirstSend,
     navigate,
   ]);
 
@@ -1101,6 +1134,9 @@ export function ChatAppContent({
         return { status: "failed" };
       }
 
+      const firstSendGeneration = agentWorkspaceFirstSendGenerationRef.current;
+      const isCurrentFirstSend = () =>
+        agentWorkspaceFirstSendGenerationRef.current === firstSendGeneration;
       try {
         const outcome = await submitAgentFirstMessageSingleFlight({
           coordinator: agentWorkspaceFirstSubmissionRef,
@@ -1108,6 +1144,7 @@ export function ChatAppContent({
             content,
             fileIds: (attachments ?? []).map((attachment) => attachment.key),
           }),
+          isCurrent: isCurrentFirstSend,
           ensureConversation: () =>
             ensureAgentConversationForFirstSend({
               coordinator: agentWorkspaceCreationRef,
@@ -1132,6 +1169,12 @@ export function ChatAppContent({
                   operationId,
                 );
               },
+              isCurrent: isCurrentFirstSend,
+              onConversationCreated: (createdSessionId) => {
+                agentWorkspaceDraftHandoffIdentityRef.current =
+                  `${startProfile.agent_id}:${startProfile.expected_revision}:${createdSessionId}`;
+                setAgentWorkspaceDraftHandoffKey(createdSessionId);
+              },
               bindConversation: async (createdSessionId) =>
                 Boolean(await loadHistory(createdSessionId)),
             }),
@@ -1139,14 +1182,11 @@ export function ChatAppContent({
           submitMessage: async (createdSessionId, firstSendOptions) => {
             setAgentWorkspaceError(null);
             const submission = sendMessage(content, firstSendOptions, attachments, null);
-            navigate(
-              buildAgentMarketWorkspacePath(startProfile, createdSessionId),
-              { replace: true },
-            );
             onAgentWorkspaceSessionCreated?.(createdSessionId);
             return submission;
           },
         });
+        if (!isCurrentFirstSend()) return { status: "failed" };
         if (outcome.status === "accepted") {
           clearAgentConversationOperationId({
             agentId: startProfile.agent_id,
@@ -1156,7 +1196,10 @@ export function ChatAppContent({
         }
         return outcome;
       } catch (error) {
-        agentWorkspaceFirstSubmissionRef.current = null;
+        if (!isCurrentFirstSend()) {
+          return { status: "failed" };
+        }
+        invalidateAgentWorkspaceFirstSend();
         const status =
           error !== null && typeof error === "object"
             ? (error as { status?: number }).status
@@ -1179,6 +1222,7 @@ export function ChatAppContent({
       agentWorkspaceReadOnly,
       agentWorkspaceStartProfile,
       loadHistory,
+      invalidateAgentWorkspaceFirstSend,
       navigate,
       onAgentWorkspaceSessionCreated,
       sendMessage,
@@ -1193,6 +1237,7 @@ export function ChatAppContent({
   const handleSelectSessionAndClose = useCallback(
     async (id: string) => {
       const selectionRequestId = ++agentWorkspaceSelectionRequestIdRef.current;
+      invalidateAgentWorkspaceFirstSend();
       setAgentConversationState(conversationState("loading", id));
       clearMessages();
       clearSelectedSkill();
@@ -1232,6 +1277,7 @@ export function ChatAppContent({
       clearMessages,
       clearSelectedSkill,
       handleSelectSession,
+      invalidateAgentWorkspaceFirstSend,
       navigate,
       setMobileSidebarOpen,
     ],
@@ -1360,6 +1406,11 @@ export function ChatAppContent({
             canSendMessage={canSendMessage}
             initialComposerDraft={agentWorkspaceStarterDraft}
             initialComposerDraftKey={location.key}
+            composerDraftHandoffKey={
+              agentWorkspace
+                ? agentWorkspaceDraftHandoffKey
+                : newlyCreatedSession?.id ?? null
+            }
             agentEmptyProfile={agentWorkspace}
             composerPlaceholder={
               agentWorkspaceReadOnly

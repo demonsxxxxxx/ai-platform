@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import UUID4
 
 from app import repositories
+from app.mcp.api import authorize_selected_chat_mcp_tools
 from app.agent_profiles import reauthorize_pinned_run_for_replay
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capabilities import get_capability
@@ -676,7 +677,7 @@ async def prepare_copied_run_for_queue(
     if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
         if copied_skill_id is not None:
             raise RepositoryConflictError("run_execution_skill_identity_mismatch")
-        await repositories.authorize_selected_chat_mcp_tools(
+        await authorize_selected_chat_mcp_tools(
             conn,
             tenant_id=effective_principal.tenant_id,
             tool_ids=repositories.extract_run_mcp_tool_ids(copied_input),
@@ -877,7 +878,7 @@ async def create_run(
                     or str(harness_agent.get("agent_type") or "") != "chat"
                 ):
                     raise RepositoryConflictError("harness_chat_agent_unavailable")
-                await repositories.authorize_selected_chat_mcp_tools(
+                await authorize_selected_chat_mcp_tools(
                     conn,
                     tenant_id=tenant_id,
                     tool_ids=repositories.extract_run_mcp_tool_ids(run_input),
@@ -1893,6 +1894,7 @@ async def get_run(
         public_terminal_projection(
             run_status,
             run.get("error_code"),
+            result,
         )
         if not show_raw_skill
         else None

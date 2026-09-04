@@ -15,6 +15,7 @@ import {
   hasUnsavedAgentProfileEdits,
   hydrateAgentProfileEditor,
   isAgentProfileEditorDirty,
+  listPublishedAgentProfileVersions,
   mapAuthorizedBuilderSkills,
   mapSafeBuilderMcpTools,
   validateAgentProfileEditor,
@@ -25,8 +26,22 @@ test("a pristine unsaved editor does not trigger a discard warning", () => {
   const editor = createUnsavedAgentEditor();
   assert.equal(editor.avatarSeed, "");
   assert.equal(hasUnsavedAgentProfileEdits(editor), false);
+  assert.equal(hasUnsavedAgentProfileEdits({ ...editor, marketTag: "客户服务" }), true);
 });
 
+test("counts published snapshots as release versions and ignores draft saves", () => {
+  const versions = listPublishedAgentProfileVersions([
+    profile({ revision: 4, status: "draft", created_at: "2026-08-01T00:00:00Z" }),
+    profile({ revision: 5, status: "published", published_at: "2026-08-02T00:00:00Z" }),
+    profile({ revision: 6, status: "draft", created_at: "2026-08-03T00:00:00Z" }),
+    profile({ revision: 7, status: "draft", published_at: "2026-08-04T00:00:00Z" }),
+  ]);
+
+  assert.deepEqual(
+    versions.map(({ profile: publishedProfile, version }) => [publishedProfile.revision, version]),
+    [[5, 1], [7, 2]],
+  );
+});
 function skill(overrides: Partial<PublicSkillResponse> = {}): PublicSkillResponse {
   return {
     name: "document-review",
@@ -171,6 +186,7 @@ test("materializes create and update requests with the exact optimistic revision
       expected_version: "2026.07.28",
     }],
     selectedMcpToolIds: ["mcp:knowledge:search"],
+    marketTag: " 客户服务 ",
     allowedDepartmentIds: ["药品注册"],
   };
   assert.deepEqual(buildAgentProfileDraftRequest(created), {
@@ -197,6 +213,7 @@ test("materializes create and update requests with the exact optimistic revision
     avatar_seed: "新智能体",
     avatar_asset_id: null,
     category: "general",
+    market_tag: "客户服务",
     visibility: "tenant",
     allowed_department_ids: ["药品注册"],
     allowed_roles: [],

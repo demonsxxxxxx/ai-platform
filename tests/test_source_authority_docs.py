@@ -247,6 +247,7 @@ def test_release_runbook_remains_the_only_executable_release_authority():
     assert '--docker-cmd "sudo -n docker"' in runbook
     assert "final source/runtime parity" in runbook
     assert "same release authority" in runbook
+    assert "task ownership, readiness, and release leases live in" in runbook
     assert "s72 gateway runbook" not in runbook
 
 

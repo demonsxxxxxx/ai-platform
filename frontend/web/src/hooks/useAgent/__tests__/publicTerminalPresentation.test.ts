@@ -97,6 +97,75 @@ test("live and replay projection use every fixed safe public terminal presentati
   assert.doesNotMatch(JSON.stringify(fallback), /private|runtime|secret\.log/i);
 });
 
+test("projection failure reason is rendered only from the fixed allowlist", () => {
+  const definition =
+    PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS.claude_agent_sdk_public_projection_failed;
+  const live = processMessageEvent(
+    "final_detail",
+    {
+      run_id: "run-projection",
+      projection_version: "ai-platform.chat-public-projection.v1",
+      detail_kind: "failed",
+      detail_code: "claude_agent_sdk_public_projection_failed",
+      projection_failure_reason: "terminal_text_mismatch",
+      message: "private SDK error at C:\\runtime\\secret.log",
+    },
+    [],
+    "",
+    [],
+    0,
+    [],
+    false,
+    "run-projection",
+  );
+  assert.match(live.content, /terminal_text_mismatch/);
+  assert.doesNotMatch(JSON.stringify(live), /private SDK|runtime|secret\.log/i);
+
+  const unknown = processMessageEvent(
+    "final_detail",
+    {
+      run_id: "run-projection-unknown",
+      projection_version: "ai-platform.chat-public-projection.v1",
+      detail_kind: "failed",
+      detail_code: "claude_agent_sdk_public_projection_failed",
+      projection_failure_reason: "C:/runtime/private/secret.log",
+    },
+    [],
+    "",
+    [],
+    0,
+    [],
+    false,
+    "run-projection-unknown",
+  );
+  assert.equal(unknown.content, definition.defaultMessage);
+  assert.doesNotMatch(JSON.stringify(unknown), /runtime|private|secret\.log/i);
+
+  const replay = reconstructMessagesFromEvents(
+    [
+      {
+        id: "evt-projection",
+        event_type: "final_detail",
+        run_id: "run-projection-replay",
+        timestamp: "2026-08-20T01:00:00.000Z",
+        data: {
+          run_id: "run-projection-replay",
+          projection_version: "ai-platform.chat-public-projection.v1",
+          detail_kind: "failed",
+          detail_code: "claude_agent_sdk_public_projection_failed",
+          projection_failure_reason: "answer_too_large",
+        },
+      } satisfies HistoryEvent,
+    ],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+  assert.match(
+    replay.find((message) => message.role === "assistant")?.content ?? "",
+    /answer_too_large/,
+  );
+});
+
 test("historical reconstruction preserves the actionable PDF-password cause", () => {
   const messages = reconstructMessagesFromEvents(
     [

@@ -68,8 +68,14 @@ async def _temporary_ledger_schema() -> AsyncIterator[tuple[str, str]]:
               total_token_count integer not null,
               estimated_cost_minor integer not null,
               payload_json jsonb not null,
+              stream_publication_state text not null default 'not_applicable',
               created_at timestamptz not null default now(),
               unique (tenant_id, run_id, sequence)
+            );
+            create table run_attempts (
+              id text primary key,
+              tenant_id text not null,
+              run_id text not null
             );
             create table run_event_cursors (
               tenant_id text not null,

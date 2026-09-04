@@ -107,7 +107,15 @@ controls do not consume application ordering. Committed public `run_events`
 are published through claim-token-fenced, transaction-external Redis I/O.
 Missing terminal streams recover by building an inactive successor incarnation,
 verifying its persisted receipt and source fingerprint, and atomically
-activating it under the current Run and Attempt authority.
+activating it under the current Run and Attempt authority. A historical pending
+terminal event whose exact Redis stream and state have both expired, and whose
+Attempt authority and active sandbox lease no longer exist, cannot use that
+recovery path. Maintenance may instead suppress only that exact claimed
+terminal event after revalidating the matching terminal Run and stream
+authority. This disposition retains the durable row and an audit reason,
+creates no Redis receipt, and never applies to an active, mismatched, or merely
+unavailable stream. One failing publication scope does not prevent other bounded
+scopes from draining before the failure is reported.
 
 The hard cutover coordinates producer admission, durable draining, successor
 activation, gateway replay/live delivery, frontend reduction, packaging, and

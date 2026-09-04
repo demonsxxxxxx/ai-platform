@@ -42,6 +42,14 @@ from app.main import create_app
 from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
 
+def test_agent_profile_draft_accepts_extended_builtin_avatar_style():
+    definition = AgentProfileDraftRequest.model_validate(
+        {**profile_draft_payload("Private instruction"), "avatar_ref": "builtin:planet"}
+    )
+
+    assert definition.avatar_ref == "builtin:planet"
+
+
 def test_agent_profile_draft_rejects_retired_supported_file_types():
     with pytest.raises(ValueError):
         AgentProfileDraftRequest.model_validate(
@@ -92,6 +100,13 @@ def test_agent_profile_projections_require_universal_text_and_file_input(model, 
     assert model.model_validate(payload).supported_input_types == ["text", "file"]
     with pytest.raises(ValueError, match="universal text/file"):
         model.model_validate({**payload, "supported_input_types": ["text"]})
+
+
+def test_agent_profile_authority_keeps_extended_builtin_avatar_style():
+    from app.agent_apps.authority import _safe_avatar_ref
+
+    assert _safe_avatar_ref("builtin:pixel") == "builtin:pixel"
+    assert _safe_avatar_ref("not-a-style") == "builtin:agent"
 
 
 def test_agent_profile_avatar_seed_uses_unicode_code_points_and_rejects_c0_controls():
@@ -796,6 +811,7 @@ def test_agent_profile_admin_wire_never_projects_retired_file_type_field(monkeyp
     )
 
     assert legacy_response.status_code == 200
+    assert legacy_response.json()["agent_profiles"][0]["agent_id"] == "agt_support"
     assert "supported_file_types" not in legacy_response.json()["agent_profiles"][0]
     assert current_response.status_code == 200
     assert "supported_file_types" not in current_response.json()["agent_profiles"][0]
@@ -841,6 +857,7 @@ def test_agent_profile_admin_write_accepts_and_discards_legacy_model_field(monke
                 name=definition.name,
                 instructions=definition.instructions,
                 selected_skill=definition.selected_skill,
+                market_tag=definition.market_tag,
                 content_hash="a" * 64,
             ),
             "audit_profile_save",
@@ -856,6 +873,7 @@ def test_agent_profile_admin_write_accepts_and_discards_legacy_model_field(monke
             "name": "Support assistant",
             "instructions": "Keep answers concise.",
             "model_id": "legacy-model",
+            "market_tag": " 客户服务 ",
             "selected_skill": {"skill_id": "general-chat", "expected_version": "version-a"},
             "expected_draft_revision": 0,
         },
@@ -875,9 +893,11 @@ def test_agent_profile_admin_write_accepts_and_discards_legacy_model_field(monke
     assert response.status_code == 200
     assert unknown_field_response.status_code == 422
     assert "model_id" not in response.json()
+    assert response.json()["market_tag"] == "客户服务"
     assert len(saved_definitions) == 1
     assert not hasattr(saved_definitions[0], "model_id")
     assert saved_definitions[0]._legacy_model_id == "platform-selected"
+    assert saved_definitions[0].market_tag == "客户服务"
 
 
 def test_agent_profile_admin_publish_requires_admin(monkeypatch):

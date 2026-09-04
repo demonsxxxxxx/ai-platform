@@ -273,7 +273,7 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
     }
 
 
-def test_agent_conversation_projection_exposes_universal_attachment_access_and_no_private_fields():
+def test_agent_conversation_projection_preserves_extended_builtin_avatar_style():
     projection = session_response(
         {
             "id": "ses_legacy",
@@ -283,6 +283,7 @@ def test_agent_conversation_projection_exposes_universal_attachment_access_and_n
             "admitted_agent_profile_revision": 2,
             "agent_profile_name": "Support assistant",
             "agent_profile_description": "Approved support help.",
+            "agent_profile_avatar_ref": "builtin:planet",
             "agent_profile_avatar_seed": 12345,
             "created_at": None,
             "updated_at": None,
@@ -296,6 +297,7 @@ def test_agent_conversation_projection_exposes_universal_attachment_access_and_n
     identity = projection.agent_conversation
     assert identity is not None
     assert identity.avatar_seed == "agt_support"
+    assert identity.avatar_ref == "builtin:planet"
     assert identity.supported_input_types == ["text", "file"]
     assert not {
         "instructions",

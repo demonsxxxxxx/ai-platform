@@ -25,24 +25,27 @@ physical host assignment remains in the deployment inventory.
 
 ### Internal test
 
-After the one-time host configuration is in place, deploy the newest fully
-approved `main` release with one command:
+After the one-time host configuration is in place, deploy the newest qualified
+immutable Deployment Release with one command:
 
 ```bash
 ./scripts/deploy-latest.sh --profile internal-test --latest
 ```
 
-The command waits up to 30 minutes for the same exact `main` SHA to pass the
-backend, frontend, and packaging workflows, including each workflow's final
-required job. It then downloads the digest-bound release evidence, verifies it
-with the target commit's manifest verifier, pulls the exact backend and frontend
-GHCR digests, starts the existing Compose project, and runs API, container, and
-OpenSandbox health checks. Startup or health failure makes one image rollback
-attempt while preserving the existing data volumes.
+The command anonymously resolves the repository's latest immutable
+`deployment-<commit>-<run>-<attempt>` Release, verifies its GitHub SHA-256 and
+strict image manifest, materializes the exact qualified commit, pulls the exact
+Backend and Frontend GHCR digests, starts the existing Compose project, and runs
+API, container, and OpenSandbox health checks. Startup or health failure makes
+one image rollback attempt while preserving the existing data volumes.
 
-The private repository requires either `GH_TOKEN`/`GITHUB_TOKEN` with repository
-Contents and Actions read access, or an authenticated `gh` CLI session. The
-Docker host must already be logged in to `ghcr.io`. Existing deployments reuse
+Repository source, Release metadata, and the small manifest asset are public.
+The quickstart removes inherited `GH_TOKEN` and `GITHUB_TOKEN`, sends no
+Authorization header, and does not replay Actions, SBOM, Trivy, signature, or
+provenance checks on the host. Packaging retains that complete evidence as its
+30-day Actions artifact and publishes only after GitHub immutable releases are
+enabled. The Docker host must already be logged in to `ghcr.io`. Existing
+deployments reuse
 the managed `.env` path from `incoming/latest-main.json`; the first deployment
 supplies it once:
 
@@ -84,11 +87,11 @@ incompatible SDK `networkPolicy`.
 
 Docker with Compose v2, systemd, the Docker `runsc` runtime, and the exact
 active `ai-platform-opensandbox-network-guard.service` from the target checkout
-must already be installed. The root Docker account must be logged in to GHCR,
-and GitHub Contents/Actions read credentials must be available to the command.
+must already be installed. The root Docker account must be logged in to GHCR;
+GitHub source and immutable Deployment Release metadata are read anonymously.
 
 Then rebuild the OpenSandbox host service and production application from the
-newest fully approved exact-main images:
+newest qualified Deployment Release:
 
 ```bash
 sudo -n ./scripts/deploy-latest.sh --profile production --latest \

@@ -8,7 +8,16 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import StreamingResponse
 
 from app import repositories, session_actions
@@ -58,6 +67,7 @@ from app.streaming.api import (
     V4ProjectionError,
     V4StreamEntry,
     live_redis_id_is_after,
+    project_persisted_message_delta_v4,
     project_public_envelope_v4,
     recover_v4_missing_terminal_stream,
     stream_live_channel,
@@ -178,10 +188,12 @@ class _CompatibilityFoldState:
 
     has_strict_public_execution: bool
     seen_public_lifecycle_singletons: frozenset[str]
+    answer_source: str
     answer_projection_state: tuple[str, str, bool] = ("", "", False)
 
 
 CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
+
 
 @dataclass(frozen=True)
 class _ChatPublicRunEventProjection:
@@ -226,7 +238,7 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
         "public_tool_activity", "tool", "Tool execution failed", "failed"
     ),
     "tool.denied": _ChatPublicRunEventProjection(
-        "public_tool_activity", "tool", "Tool execution denied", "failed"
+        "public_tool_activity", "tool", "Tool execution denied", "blocked", "permission"
     ),
     "run_queued": _ChatPublicRunEventProjection(
         "queued", "queue", "任务正在排队", "waiting", "queue_capacity"
@@ -271,19 +283,35 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
         "capability_failed", "capability", "所需能力未完成", "failed"
     ),
     "agent_step_started": _ChatPublicRunEventProjection(
-        "agent_step_started", "activity", "正在执行当前计划步骤，完成后将汇总结果", "active"
+        "agent_step_started",
+        "activity",
+        "正在执行当前计划步骤，完成后将汇总结果",
+        "active",
     ),
     "agent_step_reused": _ChatPublicRunEventProjection(
-        "agent_step_reused", "activity", "已复用可信阶段结果，正在继续后续步骤", "active"
+        "agent_step_reused",
+        "activity",
+        "已复用可信阶段结果，正在继续后续步骤",
+        "active",
     ),
     "agent_step_completed": _ChatPublicRunEventProjection(
-        "agent_step_completed", "activity", "当前计划步骤已完成，正在继续后续处理", "completed"
+        "agent_step_completed",
+        "activity",
+        "当前计划步骤已完成，正在继续后续处理",
+        "completed",
     ),
     "agent_step_blocked": _ChatPublicRunEventProjection(
-        "agent_step_blocked", "wait", "当前计划步骤正在等待前置条件", "waiting", "dependencies"
+        "agent_step_blocked",
+        "wait",
+        "当前计划步骤正在等待前置条件",
+        "waiting",
+        "dependencies",
     ),
     "agent_step_failed": _ChatPublicRunEventProjection(
-        "agent_step_failed", "activity", "当前计划步骤未完成，正在整理可操作错误", "failed"
+        "agent_step_failed",
+        "activity",
+        "当前计划步骤未完成，正在整理可操作错误",
+        "failed",
     ),
     "subagent_started": _ChatPublicRunEventProjection(
         "subagent_started", "agent", "正在协同处理", "active"
@@ -298,31 +326,52 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
         "run_child_created", "agent", "已安排协同任务", "active"
     ),
     "skill_selected": _ChatPublicRunEventProjection(
-        "capability_selected", "planning", "已加载授权处理能力，下一步将按所选流程分析请求", "completed"
+        "capability_selected",
+        "planning",
+        "已加载授权处理能力，下一步将按所选流程分析请求",
+        "completed",
     ),
     "capability_selected": _ChatPublicRunEventProjection(
-        "capability_selected", "planning", "已加载授权处理能力，下一步将按所选流程分析请求", "completed"
+        "capability_selected",
+        "planning",
+        "已加载授权处理能力，下一步将按所选流程分析请求",
+        "completed",
     ),
     "capability_staged": _ChatPublicRunEventProjection(
         "capability_staged", "capability", "所需能力已加载到受控环境", "completed"
     ),
     "capability_sdk_registered": _ChatPublicRunEventProjection(
-        "capability_sdk_registered", "capability", "所需能力已注册到执行引擎", "completed"
+        "capability_sdk_registered",
+        "capability",
+        "所需能力已注册到执行引擎",
+        "completed",
     ),
     "capability_actually_invoked": _ChatPublicRunEventProjection(
-        "capability_actually_invoked", "capability", "所需能力已由执行引擎实际调用", "completed"
+        "capability_actually_invoked",
+        "capability",
+        "所需能力已由执行引擎实际调用",
+        "completed",
     ),
     "capability_optional_not_invoked": _ChatPublicRunEventProjection(
-        "capability_optional_not_invoked", "capability", "可选能力本次未调用", "completed"
+        "capability_optional_not_invoked",
+        "capability",
+        "可选能力本次未调用",
+        "completed",
     ),
     "intent_detected": _ChatPublicRunEventProjection(
         "intent_detected", "preparation", "正在准备受控运行请求。", "active"
     ),
     "intent_confirmed": _ChatPublicRunEventProjection(
-        "intent_confirmed", "planning", "已确认处理方式，下一步将准备授权上下文", "completed"
+        "intent_confirmed",
+        "planning",
+        "已确认处理方式，下一步将准备授权上下文",
+        "completed",
     ),
     "context_snapshot_created": _ChatPublicRunEventProjection(
-        "context_snapshot_created", "context", "已准备运行上下文，下一步将处理授权输入", "completed"
+        "context_snapshot_created",
+        "context",
+        "已准备运行上下文，下一步将处理授权输入",
+        "completed",
     ),
     "checkpoint_created": _ChatPublicRunEventProjection(
         "context_snapshot_created", "context", "已保存阶段性进度", "completed"
@@ -337,16 +386,28 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
         "artifact_ready", "artifact", "结果文件已可安全下载", "completed"
     ),
     "mcp_tool_denied": _ChatPublicRunEventProjection(
-        "agent_step_blocked", "wait", "当前处理步骤未获授权，正在等待权限调整", "blocked", "permission"
+        "agent_step_blocked",
+        "wait",
+        "当前处理步骤未获授权，正在等待权限调整",
+        "blocked",
+        "permission",
     ),
     "tool_denied": _ChatPublicRunEventProjection(
-        "agent_step_blocked", "wait", "当前处理步骤未获授权，正在等待权限调整", "blocked", "permission"
+        "agent_step_blocked",
+        "wait",
+        "当前处理步骤未获授权，正在等待权限调整",
+        "blocked",
+        "permission",
     ),
     "tool_permission_authorized": _ChatPublicRunEventProjection(
         "agent_step_started", "activity", "处理步骤已获授权，正在继续执行", "active"
     ),
     "tool_permission_denied": _ChatPublicRunEventProjection(
-        "agent_step_blocked", "wait", "当前处理步骤未获授权，正在等待权限调整", "blocked", "permission"
+        "agent_step_blocked",
+        "wait",
+        "当前处理步骤未获授权，正在等待权限调整",
+        "blocked",
+        "permission",
     ),
     "tool_permission_requested": _ChatPublicRunEventProjection(
         "tool_permission_card", "policy", "正在等待权限决策", "waiting", "permission"
@@ -363,9 +424,7 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
     "cancel_requested_but_completed": _ChatPublicRunEventProjection(
         "cancel_requested_but_completed", "status", "任务已在取消前完成", "completed"
     ),
-    "error": _ChatPublicRunEventProjection(
-        "error", "status", "run_failed", "failed"
-    ),
+    "error": _ChatPublicRunEventProjection("error", "status", "run_failed", "failed"),
 }
 
 
@@ -415,7 +474,9 @@ def _strict_typed_chat_event_product(
         "tool_permission_terminalized",
     }:
         return None
-    if not _chat_event_marked_visible(event) or not event_visible_to_principal(event, principal):
+    if not _chat_event_marked_visible(event) or not event_visible_to_principal(
+        event, principal
+    ):
         return None
     run_id = str(run["id"])
     raw_payload = event.get("payload_json")
@@ -425,7 +486,9 @@ def _strict_typed_chat_event_product(
         sequence = event.get("sequence")
         if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
             return None
-        page = event_page(cursor=RunCursor(run_id=run_id, sequence=sequence - 1), rows=(event,))
+        page = event_page(
+            cursor=RunCursor(run_id=run_id, sequence=sequence - 1), rows=(event,)
+        )
         if len(page.events) != 1:
             return None
         delta = page.events[0]
@@ -438,7 +501,10 @@ def _strict_typed_chat_event_product(
             return None
         return _StrictChatEventProduct(
             kind="assistant_delta",
-            generic_envelope={"event_id": delta.event_id, "sequence": delta.cursor.sequence},
+            generic_envelope={
+                "event_id": delta.event_id,
+                "sequence": delta.cursor.sequence,
+            },
             payload={
                 "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
                 "projection_kind": "assistant_delta",
@@ -483,7 +549,9 @@ def _strict_capability_chat_product(
         "capability_failed",
     }:
         return None
-    if not _chat_event_marked_visible(event) or not event_visible_to_principal(event, principal):
+    if not _chat_event_marked_visible(event) or not event_visible_to_principal(
+        event, principal
+    ):
         return None
     payload = event.get("payload_json")
     if not isinstance(payload, dict):
@@ -500,7 +568,10 @@ def _strict_capability_chat_product(
         kind = "skill"
         name = public_skill_display_label(payload.get("public_capability_label")) or ""
         status = "selected" if raw_event_type == "skill_selected" else "completed"
-    elif raw_event_type == "tool_call_completed" and payload.get("tool_category") == "mcp":
+    elif (
+        raw_event_type == "tool_call_completed"
+        and payload.get("tool_category") == "mcp"
+    ):
         kind = "mcp"
         name = public_skill_display_label(payload.get("tool_label")) or ""
         status = "completed"
@@ -539,7 +610,9 @@ def _chat_projection_payload(envelope: dict[str, Any]) -> dict[str, object]:
         {"category", "status", "meaningful"},
     ):
         return {}
-    if not isinstance(activity.get("category"), str) or not isinstance(activity.get("status"), str):
+    if not isinstance(activity.get("category"), str) or not isinstance(
+        activity.get("status"), str
+    ):
         return {}
     if activity_fields == {"category", "status", "meaningful"} and activity != {
         "category": "liveness",
@@ -608,16 +681,20 @@ def _public_run_event_envelope(
     strict_v4_payload = _strict_v4_execution_history_payload(
         raw_event_type, event.get("payload_json")
     )
-    if raw_event_type in {
-        "agent.progress",
-        "thinking.started",
-        "thinking.delta",
-        "thinking.completed",
-        "tool.started",
-        "tool.completed",
-        "tool.failed",
-        "tool.denied",
-    } and strict_v4_payload is None:
+    if (
+        raw_event_type
+        in {
+            "agent.progress",
+            "thinking.started",
+            "thinking.delta",
+            "thinking.completed",
+            "tool.started",
+            "tool.completed",
+            "tool.failed",
+            "tool.denied",
+        }
+        and strict_v4_payload is None
+    ):
         return None
     if raw_event_type == "agent.progress":
         public_progress = strict_v4_payload
@@ -627,15 +704,21 @@ def _public_run_event_envelope(
         )
     else:
         public_progress = None
-    if raw_event_type in {
-        "agent.progress",
-        PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
-    } and public_progress is None:
+    if (
+        raw_event_type
+        in {
+            "agent.progress",
+            PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
+        }
+        and public_progress is None
+    ):
         return None
     typed_product = _strict_typed_chat_event_product(run, event, principal)
     if typed_product is not None and typed_product.kind == "capability":
         capability_status = str(typed_product.payload["capability"]["status"])
-        presentation = CHAT_PUBLIC_RUN_EVENT_PROJECTIONS[f"capability_{capability_status}"]
+        presentation = CHAT_PUBLIC_RUN_EVENT_PROJECTIONS[
+            f"capability_{capability_status}"
+        ]
     projected = (
         typed_product.generic_envelope
         if typed_product is not None
@@ -672,7 +755,9 @@ def _public_run_event_envelope(
             PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
             stage,
             message,
-            "failed" if public_progress["lifecycle"] == "failed" else "completed"
+            "failed"
+            if public_progress["lifecycle"] == "failed"
+            else "completed"
             if public_progress["lifecycle"] == "completed"
             else "active",
         )
@@ -689,7 +774,9 @@ def _public_run_event_envelope(
         if terminal is not None:
             message = str(terminal["message"])
             terminal_payload = terminal["event_payload"]
-            payload = dict(terminal_payload) if isinstance(terminal_payload, dict) else {}
+            payload = (
+                dict(terminal_payload) if isinstance(terminal_payload, dict) else {}
+            )
     return {
         "id": str(projected["id"]),
         "schema_version": str(projected["schema_version"]),
@@ -707,6 +794,43 @@ def _public_run_event_envelope(
         "wait_reason": presentation.wait_reason,
         "payload": payload,
         "created_at": projected.get("created_at"),
+    }
+
+
+def _persisted_v4_assistant_delta(
+    run: dict[str, Any], event: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Return the legacy-shaped body input only after strict persisted-v4 admission."""
+
+    projected = project_persisted_message_delta_v4(
+        event,
+        tenant_id=str(run.get("tenant_id") or ""),
+        run_id=str(run["id"]),
+    )
+    if projected is None:
+        return None
+    payload = projected.get("payload")
+    delta = payload.get("delta") if isinstance(payload, dict) else None
+    if not isinstance(delta, str) or not delta:
+        return None
+    return {
+        "id": projected["event_id"],
+        "tenant_id": run.get("tenant_id"),
+        "run_id": run["id"],
+        "sequence": projected["seq"],
+        "event_type": "assistant_delta",
+        "stage": "answer",
+        "message": "",
+        "severity": "info",
+        "visible_to_user": True,
+        "payload_json": {
+            "delta": delta,
+            "source": "worker_answer_delta_v1",
+            "visible_to_user": True,
+            "severity": "info",
+        },
+        "trace_id": event.get("trace_id"),
+        "created_at": event.get("created_at"),
     }
 
 
@@ -739,6 +863,23 @@ def _event_sequence_sort_key(event: dict[str, Any], position: int) -> tuple[int,
         return (2**63 - 1, position)
 
 
+def _answer_source_for_run(
+    run: dict[str, Any],
+    run_events: list[dict[str, Any]],
+    principal: AuthPrincipal,
+) -> str:
+    return (
+        "v4"
+        if any(
+            _chat_event_marked_visible(event)
+            and event_visible_to_principal(event, principal)
+            and _persisted_v4_assistant_delta(run, event) is not None
+            for event in run_events
+        )
+        else "legacy"
+    )
+
+
 def _compatibility_events_for_run(
     run: dict[str, Any],
     run_events: list[dict[str, Any]],
@@ -754,7 +895,11 @@ def _compatibility_events_for_run(
         run_events,
         artifacts,
         principal,
-        fold_state=_CompatibilityFoldState(False, frozenset()),
+        fold_state=_CompatibilityFoldState(
+            False,
+            frozenset(),
+            _answer_source_for_run(run, run_events, principal),
+        ),
         user_messages=user_messages,
         include_terminal=include_terminal,
     )
@@ -817,25 +962,34 @@ def _compatibility_events_for_run_page(
         run,
         fold_state.answer_projection_state,
     )
-    final_answer_event = next(
+    v4_answer_events = {
+        position: projected
+        for position, event in ordered_events
+        if _chat_event_marked_visible(event)
+        and event_visible_to_principal(event, principal)
+        and (projected := _persisted_v4_assistant_delta(run, event)) is not None
+    }
+    prefer_v4_answer = fold_state.answer_source == "v4"
+    final_answer_position = next(
         (
-            event
-            for _, event in reversed(ordered_events)
+            position
+            for position, event in reversed(ordered_events)
             if include_terminal
             and status in {"succeeded", "failed", "cancelled"}
-            and str(event.get("event_type") or "") == "assistant_delta"
-            and _chat_event_marked_visible(event)
-            and event_visible_to_principal(event, principal)
+            and (
+                position in v4_answer_events
+                if prefer_v4_answer
+                else str(event.get("event_type") or "") == "assistant_delta"
+                and _chat_event_marked_visible(event)
+                and event_visible_to_principal(event, principal)
+            )
         ),
         None,
     )
 
     for message in user_messages or []:
         message_id = str(message.get("id") or "")
-        if (
-            not message_id
-            or str(message.get("run_id") or "") != run_id
-        ):
+        if not message_id or str(message.get("run_id") or "") != run_id:
             continue
         message_data = {
             "message_id": message_id,
@@ -843,7 +997,9 @@ def _compatibility_events_for_run_page(
             "content": str(message.get("content") or ""),
         }
         metadata = message.get("metadata_json")
-        locked_skill = metadata.get("locked_skill") if isinstance(metadata, dict) else None
+        locked_skill = (
+            metadata.get("locked_skill") if isinstance(metadata, dict) else None
+        )
         locked_skill_label = public_skill_display_label(
             locked_skill.get("label") if isinstance(locked_skill, dict) else None
         )
@@ -869,11 +1025,13 @@ def _compatibility_events_for_run_page(
         raw_event_type = str(event.get("event_type") or "")
         if raw_event_type in CHAT_STREAM_TERMINAL_EVENT_TYPES:
             continue
-        if has_strict_public_execution and raw_event_type in legacy_capability_event_types:
-            continue
         if (
-            not _chat_event_marked_visible(event)
-            or not event_visible_to_principal(event, principal)
+            has_strict_public_execution
+            and raw_event_type in legacy_capability_event_types
+        ):
+            continue
+        if not _chat_event_marked_visible(event) or not event_visible_to_principal(
+            event, principal
         ):
             continue
         if (
@@ -898,10 +1056,12 @@ def _compatibility_events_for_run_page(
                         "id": execution_event["event_id"],
                         "schema_version": execution_event["schema_version"],
                         "trace_id": str(event.get("trace_id") or trace_id),
-                    "type": event_type,
-                    "event_type": event_type,
+                        "type": event_type,
+                        "event_type": event_type,
                         "stage": execution_event["stage"],
-                        "severity": "error" if execution_event["status"] == "failed" else "info",
+                        "severity": "error"
+                        if execution_event["status"] == "failed"
+                        else "info",
                         "visible_to_user": True,
                         "payload": execution_event,
                         "sequence": execution_event["sequence"],
@@ -913,37 +1073,50 @@ def _compatibility_events_for_run_page(
             )
             continue
         raw_payload = event.get("payload_json")
-        if raw_event_type.startswith("tool_call") and isinstance(raw_payload, dict) and {
-            "command",
-            "args",
-            "arguments",
-            "result",
-            "output",
-            "tool_input",
-            "tool_output",
-            "private_payload",
-            "executor_private_payload",
-        } & set(raw_payload):
+        if (
+            raw_event_type.startswith("tool_call")
+            and isinstance(raw_payload, dict)
+            and {
+                "command",
+                "args",
+                "arguments",
+                "result",
+                "output",
+                "tool_input",
+                "tool_output",
+                "private_payload",
+                "executor_private_payload",
+            }
+            & set(raw_payload)
+        ):
             continue
-        if raw_event_type == "assistant_delta":
+        if raw_event_type in {"assistant_delta", "message.delta"}:
+            if prefer_v4_answer:
+                answer_event = v4_answer_events.get(position)
+                if answer_event is None:
+                    continue
+            else:
+                if raw_event_type != "assistant_delta":
+                    continue
+                answer_event = event
             delta = _assistant_delta_projection(
                 run,
-                event,
+                answer_event,
                 principal,
                 answer_projector=answer_projector,
-                final_answer_delta=event is final_answer_event,
+                final_answer_delta=position == final_answer_position,
             )
             if delta is None:
                 continue
             compatibility_events.append(
                 _CompatibilityWireEvent(
-                    id=str(event["id"]),
+                    id=str(answer_event["id"]),
                     stream_event_type="message:chunk",
                     stream_data=delta,
                     history_event={
-                        "id": event["id"],
+                        "id": answer_event["id"],
                         "schema_version": EVENT_ENVELOPE_SCHEMA_VERSION,
-                        "trace_id": str(event.get("trace_id") or trace_id),
+                        "trace_id": str(answer_event.get("trace_id") or trace_id),
                         "type": "message:chunk",
                         "event_type": "message:chunk",
                         "stage": "answer",
@@ -952,7 +1125,7 @@ def _compatibility_events_for_run_page(
                         "payload": delta,
                         "sequence": delta["sequence"],
                         "data": delta,
-                        "timestamp": event.get("created_at"),
+                        "timestamp": answer_event.get("created_at"),
                         "run_id": run_id,
                     },
                 )
@@ -966,7 +1139,9 @@ def _compatibility_events_for_run_page(
             if public_event_type in seen_public_lifecycle_singletons:
                 continue
             seen_public_lifecycle_singletons.add(public_event_type)
-        payload = envelope["payload"] if isinstance(envelope.get("payload"), dict) else {}
+        payload = (
+            envelope["payload"] if isinstance(envelope.get("payload"), dict) else {}
+        )
         history_data = {
             **payload,
             "projection_version": envelope["projection_version"],
@@ -1094,6 +1269,7 @@ def _compatibility_events_for_run_page(
     return compatibility_events, _CompatibilityFoldState(
         has_strict_public_execution=has_strict_public_execution,
         seen_public_lifecycle_singletons=frozenset(seen_public_lifecycle_singletons),
+        answer_source=fold_state.answer_source,
         answer_projection_state=answer_projector.state,
     )
 
@@ -1133,7 +1309,9 @@ async def login(request: LoginRequest) -> dict[str, object]:
 
 
 @router.get("/auth/me")
-async def me(principal: AuthPrincipal = Depends(require_principal)) -> dict[str, object]:
+async def me(
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
     return {
         "id": principal.user_id,
         "username": principal.user_id,
@@ -1142,7 +1320,10 @@ async def me(principal: AuthPrincipal = Depends(require_principal)) -> dict[str,
         "roles": principal.roles,
         "permissions": principal.permissions,
         "is_active": True,
-        "metadata": {"display_name": principal.display_name, "source": principal.source},
+        "metadata": {
+            "display_name": principal.display_name,
+            "source": principal.source,
+        },
         "created_at": "",
         "updated_at": "",
     }
@@ -1204,51 +1385,22 @@ UI_PERMISSIONS = [
     "notification:admin",
 ]
 
-CHAT_STREAM_TERMINAL_EVENT_TYPES = {"run_succeeded", "run_failed", "run_cancelled", "run_canceled"}
-
-
-def _profile_payload(principal: AuthPrincipal, metadata: dict[str, Any] | None = None) -> dict[str, object]:
-    merged_metadata = {"display_name": principal.display_name, "source": principal.source}
-    if metadata:
-        merged_metadata.update(metadata)
-    return {
-        "id": principal.user_id,
-        "username": principal.user_id,
-        "email": "",
-        "avatar_url": None,
-        "roles": principal.roles,
-        "permissions": principal.permissions,
-        "is_active": True,
-        "metadata": merged_metadata,
-        "created_at": "",
-        "updated_at": "",
-    }
-
+CHAT_STREAM_TERMINAL_EVENT_TYPES = {
+    "run_succeeded",
+    "run_failed",
+    "run_cancelled",
+    "run_canceled",
+}
 
 @router.get("/auth/permissions")
 async def permissions() -> dict[str, object]:
     permission_infos = [
-        {"value": item, "label": item, "description": item}
-        for item in UI_PERMISSIONS
+        {"value": item, "label": item, "description": item} for item in UI_PERMISSIONS
     ]
     return {
         "groups": [{"name": "AI Platform POC", "permissions": permission_infos}],
         "all_permissions": permission_infos,
     }
-
-
-@router.get("/auth/profile")
-async def profile(principal: AuthPrincipal = Depends(require_principal)) -> dict[str, object]:
-    return _profile_payload(principal)
-
-
-@router.put("/auth/profile/metadata")
-async def update_profile_metadata(
-    payload: dict[str, Any], principal: AuthPrincipal = Depends(require_principal)
-) -> dict[str, object]:
-    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-    return _profile_payload(principal, metadata=metadata)
-
 
 @router.get("/agent/models/available")
 async def available_models(
@@ -1288,7 +1440,7 @@ async def upload_config() -> dict[str, object]:
         "audio": MAX_UPLOAD_BYTES,
         "document": MAX_UPLOAD_BYTES,
     }
-    max_files = 10
+    max_files = 32
     return {
         "enabled": True,
         "provider": "ai-platform",
@@ -1342,14 +1494,18 @@ async def tools() -> dict[str, object]:
 
 @router.get("/roles")
 @router.get("/roles/")
-async def roles(skip: int = 0, limit: int = 100, q: str | None = None) -> dict[str, object]:
+async def roles(
+    skip: int = 0, limit: int = 100, q: str | None = None
+) -> dict[str, object]:
     limit = max(1, min(limit, 200))
     skip = max(0, skip)
     return {"roles": [], "total": 0, "skip": skip, "limit": limit, "q": q or ""}
 
 
 @router.get("/sessions")
-async def sessions(principal: AuthPrincipal = Depends(require_principal)) -> dict[str, object]:
+async def sessions(
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
     async with transaction() as conn:
         rows = await repositories.list_authorized_sessions(
             conn,
@@ -1357,11 +1513,19 @@ async def sessions(principal: AuthPrincipal = Depends(require_principal)) -> dic
             user_id=principal.user_id,
         )
     items = [_session_payload(row) for row in rows]
-    return {"sessions": items, "total": len(items), "skip": 0, "limit": 100, "has_more": False}
+    return {
+        "sessions": items,
+        "total": len(items),
+        "skip": 0,
+        "limit": 100,
+        "has_more": False,
+    }
 
 
 @router.get("/sessions/{session_id}")
-async def get_session(session_id: str, principal: AuthPrincipal = Depends(require_principal)) -> dict[str, object]:
+async def get_session(
+    session_id: str, principal: AuthPrincipal = Depends(require_principal)
+) -> dict[str, object]:
     async with transaction() as conn:
         row = await repositories.get_authorized_lambchat_session(
             conn,
@@ -1402,7 +1566,9 @@ async def delete_session(
 ) -> dict[str, object]:
     try:
         async with transaction() as conn:
-            result = await session_actions.delete_session(conn, principal=principal, session_id=session_id)
+            result = await session_actions.delete_session(
+                conn, principal=principal, session_id=session_id
+            )
     except session_actions.SessionActionNotFoundError as exc:
         raise HTTPException(status_code=404, detail="session_not_found") from exc
     return {
@@ -1475,13 +1641,17 @@ async def session_runs(
             "trace_id": row.get("trace_id") or standard_trace_id(str(row["id"])),
             "agent_id": row["agent_id"]
             if is_ai_admin(principal)
-            else public_agent_id_for_projection(row.get("agent_id"), row.get("skill_id")),
+            else public_agent_id_for_projection(
+                row.get("agent_id"), row.get("skill_id")
+            ),
             "capability_id": capability_id_from_skill(row["skill_id"], row["agent_id"]),
             "status": status,
             "error": _public_error_text(row, principal),
             "error_code": (terminal_detail or {}).get("detail_code"),
             "created_at": row.get("created_at"),
-            "started_at": row.get("started_at") or row.get("queued_at") or row.get("created_at"),
+            "started_at": row.get("started_at")
+            or row.get("queued_at")
+            or row.get("created_at"),
             "completed_at": row.get("finished_at"),
             "finished_at": row.get("finished_at"),
         }
@@ -1532,17 +1702,23 @@ async def session_events(
                 limit=50,
             )
             current = next(
-                (row for row in target_runs if row.get("session_generation") is not None),
+                (
+                    row
+                    for row in target_runs
+                    if row.get("session_generation") is not None
+                ),
                 None,
             )
             current_run_id = str(current["id"]) if current is not None else None
         target_run_ids = [str(run["id"]) for run in target_runs]
-        authorized_user_messages = await repositories.list_authorized_user_messages_for_runs(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            session_id=session_id,
-            run_ids=target_run_ids,
+        authorized_user_messages = (
+            await repositories.list_authorized_user_messages_for_runs(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                session_id=session_id,
+                run_ids=target_run_ids,
+            )
         )
         user_messages_by_run: dict[str, list[dict[str, Any]]] = {
             target_run_id: [] for target_run_id in target_run_ids
@@ -1553,7 +1729,9 @@ async def session_events(
                 user_messages_by_run[message_run_id].append(message)
         events = []
         for run in reversed(target_runs):
-            run_events = await repositories.list_run_events(conn, tenant_id=principal.tenant_id, run_id=run["id"])
+            run_events = await repositories.list_run_events(
+                conn, tenant_id=principal.tenant_id, run_id=run["id"]
+            )
             artifacts = await repositories.list_run_artifacts(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -1615,7 +1793,9 @@ async def mark_read(session_id: str) -> dict[str, bool]:
 
 @router.post("/chat/sessions/{session_id}/cancel")
 async def cancel_session(session_id: str) -> dict[str, object]:
-    raise HTTPException(status_code=410, detail="session_cancel_unsupported_use_run_cancel")
+    raise HTTPException(
+        status_code=410, detail="session_cancel_unsupported_use_run_cancel"
+    )
 
 
 @router.get("/chat/sessions/{session_id}/status")
@@ -1655,9 +1835,16 @@ async def chat_status(
                 session_id=session_id,
                 limit=10,
             )
-            target = next((row for row in rows if row.get("session_generation") is not None), None)
+            target = next(
+                (row for row in rows if row.get("session_generation") is not None), None
+            )
     raw_status = _platform_status(str(target["status"])) if target else "idle"
-    return {"session_id": session_id, "run_id": run_id, "status": _lambchat_status(raw_status), "raw_status": raw_status}
+    return {
+        "session_id": session_id,
+        "run_id": run_id,
+        "status": _lambchat_status(raw_status),
+        "raw_status": raw_status,
+    }
 
 
 async def _restore_chat_stream_projection(
@@ -1974,9 +2161,11 @@ async def chat_session_stream(
             if event_type in {"run.succeeded", "run.failed", "run.cancelled"}:
                 restored_terminal_event_id = str(envelope["event_id"])
             ended = event_type == "stream.end"
-            if ended and envelope["payload"].get(
-                "terminal_event_id"
-            ) != restored_terminal_event_id:
+            if (
+                ended
+                and envelope["payload"].get("terminal_event_id")
+                != restored_terminal_event_id
+            ):
                 raise StreamContractError("stream_end_without_observed_terminal")
             return _sse(event_type, envelope, entry.cursor.event_id), ended
 

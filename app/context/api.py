@@ -139,7 +139,7 @@ def context_file_executor_failure(
     diagnostic["diagnostic_id"] = secrets.token_hex(8)
     error_code = str(diagnostic["reason_code"])
     message = {
-        "context_file_too_large": "The input file exceeds the 32 MiB processing limit.",
+        "context_file_too_large": "Input file exceeds 128 MiB or the input set exceeds 256 MiB.",
         "context_file_pdf_password_required": "The PDF requires a password before it can be processed.",
     }.get(error_code, "The input file could not be prepared for execution.")
     return error_code, message, diagnostic

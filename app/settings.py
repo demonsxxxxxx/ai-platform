@@ -97,6 +97,8 @@ class Settings(BaseSettings):
     stale_run_reconciliation_fence_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     sandbox_lease_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
     worker_concurrency: int = Field(default=10)
+    file_storage_quota_bytes: int = Field(default=10 * 1024 * 1024 * 1024, ge=1)
+    file_upload_max_active_sessions: int = Field(default=3, ge=1, le=100)
     memory_retention_worker_cleanup_enabled: bool = Field(default=True)
     memory_retention_worker_cleanup_interval_seconds: float = Field(default=300.0)
     memory_retention_worker_cleanup_limit: int = Field(default=200)
@@ -180,6 +182,10 @@ class Settings(BaseSettings):
     )
     auth_context_lease_seconds: int = Field(default=90)
     artifact_default_retention_days: int = Field(default=90)
+
+    # MCP-only server-side custody. JWT lifetime remains authoritative from exp.
+    mcp_encryption_keys_json: str = Field(default="", repr=False)
+    mcp_encryption_current_key_id: str = Field(default="current")
 
     llm_gateway_provider: str = Field(default="openai_compatible")
     model_gateway_request_concurrency_limit: int = Field(default=0)

@@ -1,4 +1,4 @@
-"""Resolve and deploy the latest fully approved main image subject."""
+"""Resolve and deploy the latest qualified deployment Release."""
 
 from __future__ import annotations
 
@@ -21,9 +21,8 @@ import tempfile
 import time
 from typing import Any, Callable, Iterator, Mapping, MutableMapping, Protocol, Sequence
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
-import zipfile
 
 
 if __name__ == "__main__" and not sys.flags.isolated:
@@ -34,6 +33,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import release_authority  # noqa: E402
+from tools import release_image_manifest  # noqa: E402
 from tools import sandbox_quickstart  # noqa: E402
 
 
@@ -41,21 +41,23 @@ REPOSITORY = "demonsxxxxxx/ai-platform"
 REPOSITORY_URL = f"https://github.com/{REPOSITORY}.git"
 API_ROOT = "https://api.github.com"
 API_VERSION = "2022-11-28"
-MAIN_REF = "refs/heads/main"
 MANIFEST_NAME = "release-image-manifest.json"
-MANIFEST_WORKFLOW_REF = (
-    f"{REPOSITORY}/.github/workflows/ai-platform-packaging-publish.yml@refs/heads/main"
-)
 TOKEN_VARIABLES = ("GH_TOKEN", "GITHUB_TOKEN")
 ENV_PATH_VARIABLE = "AI_PLATFORM_QUICKSTART_ENV_FILE"
-DEFAULT_CI_TIMEOUT_SECONDS = 30 * 60
-POLL_INTERVAL_SECONDS = 15
-ARTIFACT_APPEARANCE_TIMEOUT_SECONDS = 120
+DEPLOYMENT_RELEASE_TAG_RE = re.compile(
+    r"deployment-(?P<commit>[0-9a-f]{40})-(?P<run_id>[1-9][0-9]*)-"
+    r"(?P<run_attempt>[1-9][0-9]*)\Z"
+)
+DEPLOYMENT_RELEASE_ASSET_NAME = MANIFEST_NAME
+DEPLOYMENT_RELEASE_ASSET_LABEL_PREFIX = "release-image-manifest"
+DEPLOYMENT_RELEASE_UPLOADER = "github-actions[bot]"
+DEPLOYMENT_RELEASE_ASSET_URL_RE = re.compile(
+    rf"https://github\.com/{re.escape(REPOSITORY)}/releases/download/"
+    rf"deployment-[0-9a-f]{{40}}-[1-9][0-9]*-[1-9][0-9]*/"
+    rf"{re.escape(DEPLOYMENT_RELEASE_ASSET_NAME)}\Z"
+)
 API_RESPONSE_MAX_BYTES = 4 * 1024 * 1024
-ARCHIVE_MAX_BYTES = 128 * 1024 * 1024
-ARCHIVE_MAX_FILES = 64
-ARCHIVE_MAX_FILE_BYTES = 64 * 1024 * 1024
-ARCHIVE_MAX_EXTRACTED_BYTES = 512 * 1024 * 1024
+MANIFEST_MAX_BYTES = 4 * 1024 * 1024
 HTTP_TIMEOUT_SECONDS = 30
 HTTP_ATTEMPTS = 3
 DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS = 125
@@ -68,59 +70,41 @@ class LatestMainError(RuntimeError):
     """A bounded latest-main admission or deployment failure."""
 
 
+class _GitHubNotFoundError(LatestMainError):
+    pass
+
+
 class _DuplicateJsonKey(ValueError):
     pass
 
 
 @dataclass(frozen=True)
-class WorkflowSpec:
-    file_name: str
-    path: str
-    required_job: str
-
-
-@dataclass(frozen=True)
-class WorkflowRun:
-    spec: WorkflowSpec
-    run_id: int
-    run_attempt: int
-    source_commit: str
-
-
-@dataclass(frozen=True)
-class ReadyArtifact:
-    artifact_id: int
+class ReleaseAsset:
     name: str
+    label: str
     size_bytes: int
     digest: str
+    download_url: str
 
 
 @dataclass(frozen=True)
-class ReleaseCandidate:
+class DeploymentRelease:
+    tag: str
     source_commit: str
-    runs: Mapping[str, WorkflowRun]
-
-    @property
-    def packaging_run(self) -> WorkflowRun:
-        return self.runs[PACKAGING_WORKFLOW.file_name]
+    run_id: int
+    run_attempt: int
+    asset: ReleaseAsset
 
 
-BACKEND_WORKFLOW = WorkflowSpec(
-    "ai-platform-backend.yml",
-    ".github/workflows/ai-platform-backend.yml",
-    "backend required",
-)
-FRONTEND_WORKFLOW = WorkflowSpec(
-    "ai-platform-frontend.yml",
-    ".github/workflows/ai-platform-frontend.yml",
-    "frontend required",
-)
-PACKAGING_WORKFLOW = WorkflowSpec(
-    "ai-platform-packaging-publish.yml",
-    ".github/workflows/ai-platform-packaging-publish.yml",
-    "release image ready manifest",
-)
-WORKFLOWS = (BACKEND_WORKFLOW, FRONTEND_WORKFLOW, PACKAGING_WORKFLOW)
+def _release_asset_url(tag: str) -> str:
+    return (
+        f"https://github.com/{REPOSITORY}/releases/download/"
+        f"{tag}/{DEPLOYMENT_RELEASE_ASSET_NAME}"
+    )
+
+
+def _release_asset_label(commit: str, run_id: int, run_attempt: int) -> str:
+    return f"{DEPLOYMENT_RELEASE_ASSET_LABEL_PREFIX}-{commit}-{run_id}-{run_attempt}"
 
 
 class GitHubAPI(Protocol):
@@ -132,7 +116,7 @@ class GitHubAPI(Protocol):
         timeout_seconds: float | None = None,
     ) -> Any: ...
 
-    def download_artifact(self, artifact_id: int, destination: Path) -> str: ...
+    def download_public_asset(self, url: str, destination: Path) -> str: ...
 
 
 def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -174,16 +158,15 @@ def _trusted_download_host(host: str | None) -> bool:
     if not host:
         return False
     lowered = host.lower().rstrip(".")
-    return (
-        lowered in {"api.github.com", "github.com", "objects.githubusercontent.com"}
-        or lowered.endswith(".githubusercontent.com")
-        or lowered.endswith(".actions.githubusercontent.com")
-        or lowered.endswith(".blob.core.windows.net")
-    )
+    return lowered in {
+        "api.github.com",
+        "github.com",
+        "release-assets.githubusercontent.com",
+    }
 
 
-class _ArtifactRedirectHandler(HTTPRedirectHandler):
-    """Permit GitHub artifact redirects without forwarding the API token."""
+class _ReleaseRedirectHandler(HTTPRedirectHandler):
+    """Permit only trusted GitHub Release asset redirects."""
 
     def redirect_request(
         self,
@@ -222,34 +205,24 @@ class _NoRedirectHandler(HTTPRedirectHandler):
 class GitHubClient:
     def __init__(
         self,
-        token: str,
         *,
         opener: Any | None = None,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
-        normalized = token.strip()
-        if (
-            not normalized
-            or len(normalized) > 4096
-            or any(character in normalized for character in "\r\n")
-        ):
-            raise LatestMainError("GitHub Actions token is missing or invalid")
-        self._token = normalized
-        self._opener = opener or build_opener(_ArtifactRedirectHandler())
+        self._opener = opener or build_opener(_ReleaseRedirectHandler())
         self._redirect_opener = build_opener(_NoRedirectHandler())
         self._curl_path = shutil.which("curl")
         self._curl_run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run
         self._sleep = sleep
         self._monotonic = monotonic
 
-    def _api_request(self, url: str) -> Request:
+    def _github_request(self, url: str) -> Request:
         return Request(
             url,
             headers={
                 "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {self._token}",
-                "User-Agent": "ai-platform-latest-main-quickstart",
+                "User-Agent": "ai-platform-deployment-release-quickstart",
                 "X-GitHub-Api-Version": API_VERSION,
             },
             method="GET",
@@ -280,18 +253,23 @@ class GitHubClient:
                 if remaining is None
                 else min(HTTP_TIMEOUT_SECONDS, remaining)
             )
-            request = self._api_request(url)
+            request = self._github_request(url)
             try:
                 with _wall_timeout(wall_timeout):
                     with self._opener.open(request, timeout=socket_timeout) as response:
                         return _read_bounded_response(response, max_bytes)
             except HTTPError as exc:
+                if exc.code == 404:
+                    exc.close()
+                    raise _GitHubNotFoundError(
+                        "GitHub API resource was not found"
+                    ) from None
                 if exc.code in retryable_statuses and attempt + 1 < HTTP_ATTEMPTS:
                     self._bounded_retry_sleep(attempt + 1, deadline)
                     continue
                 if exc.code in {401, 403}:
                     raise LatestMainError(
-                        "GitHub Actions API rejected the configured credentials"
+                        "anonymous GitHub API access was rejected or rate-limited"
                     ) from None
                 raise LatestMainError(
                     f"GitHub API request failed with status {exc.code}"
@@ -334,25 +312,25 @@ class GitHubClient:
             "GitHub API response",
         )
 
-    def download_artifact(self, artifact_id: int, destination: Path) -> str:
-        _positive_int(artifact_id, "artifact id")
+    def download_public_asset(self, url: str, destination: Path) -> str:
+        if DEPLOYMENT_RELEASE_ASSET_URL_RE.fullmatch(url) is None:
+            raise LatestMainError("deployment Release asset URL is invalid")
         if destination.exists() or destination.is_symlink():
-            raise LatestMainError("artifact destination is not empty")
+            raise LatestMainError("manifest destination is not empty")
         if self._curl_path is not None:
-            return self._download_artifact_with_curl(artifact_id, destination)
-        return self._download_artifact_with_urllib(artifact_id, destination)
+            return self._download_public_asset_with_curl(url, destination)
+        return self._download_public_asset_with_urllib(url, destination)
 
-    def _resolve_artifact_download_url(self, artifact_id: int) -> str:
-        url = f"{API_ROOT}/repos/{REPOSITORY}/actions/artifacts/{artifact_id}/zip"
+    def _resolve_public_asset_download_url(self, url: str) -> str:
         retryable_statuses = {408, 429, 500, 502, 503, 504}
         for attempt in range(HTTP_ATTEMPTS):
             try:
                 with _wall_timeout(HTTP_TIMEOUT_SECONDS + 5):
                     response = self._redirect_opener.open(
-                        self._api_request(url), timeout=HTTP_TIMEOUT_SECONDS
+                        self._github_request(url), timeout=HTTP_TIMEOUT_SECONDS
                     )
                 response.close()
-                raise LatestMainError("GitHub artifact download did not redirect")
+                raise LatestMainError("GitHub release asset download did not redirect")
             except HTTPError as exc:
                 if exc.code in {301, 302, 303, 307, 308}:
                     location = exc.headers.get("Location")
@@ -362,22 +340,17 @@ class GitHubClient:
                         target.hostname
                     ):
                         raise LatestMainError(
-                            "GitHub artifact download redirect is invalid"
+                            "GitHub release asset redirect is invalid"
                         )
                     return location
                 if exc.code in retryable_statuses and attempt + 1 < HTTP_ATTEMPTS:
                     exc.close()
                     self._sleep(float(attempt + 1))
                     continue
-                if exc.code in {401, 403}:
-                    exc.close()
-                    raise LatestMainError(
-                        "GitHub Actions API rejected the configured credentials"
-                    ) from None
                 code = exc.code
                 exc.close()
                 raise LatestMainError(
-                    f"GitHub artifact URL request failed with status {code}"
+                    f"GitHub release asset URL request failed with status {code}"
                 ) from None
             except LatestMainError:
                 raise
@@ -385,15 +358,19 @@ class GitHubClient:
                 if attempt + 1 < HTTP_ATTEMPTS:
                     self._sleep(float(attempt + 1))
                     continue
-                raise LatestMainError("GitHub artifact URL request failed") from None
-        raise LatestMainError("GitHub artifact URL request failed")
+                raise LatestMainError(
+                    "GitHub release asset URL request failed"
+                ) from None
+        raise LatestMainError("GitHub release asset URL request failed")
 
-    def _download_artifact_with_curl(self, artifact_id: int, destination: Path) -> str:
+    def _download_public_asset_with_curl(
+        self, url: str, destination: Path
+    ) -> str:
         if self._curl_path is None:
-            raise LatestMainError("curl artifact downloader is unavailable")
+            raise LatestMainError("curl manifest downloader is unavailable")
         destination.parent.mkdir(parents=True, exist_ok=True)
         for attempt in range(HTTP_ATTEMPTS):
-            signed_url = self._resolve_artifact_download_url(artifact_id)
+            signed_url = self._resolve_public_asset_download_url(url)
             config = _curl_download_config(signed_url, destination)
             environment = {
                 key: os.environ[key]
@@ -425,25 +402,24 @@ class GitHubClient:
                         not stat.S_ISREG(metadata.st_mode)
                         or destination.is_symlink()
                         or metadata.st_size < 1
-                        or metadata.st_size > ARCHIVE_MAX_BYTES
+                        or metadata.st_size > MANIFEST_MAX_BYTES
                     ):
                         raise LatestMainError(
-                            "downloaded release artifact is missing or unsafe"
+                            "downloaded deployment manifest is missing or unsafe"
                         )
                     destination.chmod(0o600)
-                    return _sha256_file(destination, ARCHIVE_MAX_BYTES)
+                    return _sha256_file(destination, MANIFEST_MAX_BYTES)
                 except OSError:
                     pass
             if attempt + 1 < HTTP_ATTEMPTS:
                 self._sleep(float(attempt + 1))
             else:
                 destination.unlink(missing_ok=True)
-        raise LatestMainError("GitHub artifact download failed")
+        raise LatestMainError("GitHub Release manifest download failed")
 
-    def _download_artifact_with_urllib(
-        self, artifact_id: int, destination: Path
+    def _download_public_asset_with_urllib(
+        self, url: str, destination: Path
     ) -> str:
-        url = f"{API_ROOT}/repos/{REPOSITORY}/actions/artifacts/{artifact_id}/zip"
         destination.parent.mkdir(parents=True, exist_ok=True)
         retryable_statuses = {408, 429, 500, 502, 503, 504}
         for attempt in range(HTTP_ATTEMPTS):
@@ -452,9 +428,9 @@ class GitHubClient:
             try:
                 with _wall_timeout(DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS):
                     with self._opener.open(
-                        self._api_request(url), timeout=HTTP_TIMEOUT_SECONDS
+                        self._github_request(url), timeout=HTTP_TIMEOUT_SECONDS
                     ) as response:
-                        _validate_response(response, ARCHIVE_MAX_BYTES)
+                        _validate_response(response, MANIFEST_MAX_BYTES)
                         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
                         if hasattr(os, "O_NOFOLLOW"):
                             flags |= os.O_NOFOLLOW
@@ -466,14 +442,14 @@ class GitHubClient:
                             if not chunk:
                                 break
                             total += len(chunk)
-                            if total > ARCHIVE_MAX_BYTES:
+                            if total > MANIFEST_MAX_BYTES:
                                 raise LatestMainError("GitHub response is too large")
                             digest.update(chunk)
                             view = memoryview(chunk)
                             while view:
                                 written = os.write(descriptor, view)
                                 if written <= 0:
-                                    raise OSError("short artifact write")
+                                    raise OSError("short evidence write")
                                 view = view[written:]
                         os.fsync(descriptor)
                         complete = True
@@ -482,12 +458,8 @@ class GitHubClient:
                 if exc.code in retryable_statuses and attempt + 1 < HTTP_ATTEMPTS:
                     self._sleep(float(attempt + 1))
                     continue
-                if exc.code in {401, 403}:
-                    raise LatestMainError(
-                        "GitHub Actions API rejected the configured credentials"
-                    ) from None
                 raise LatestMainError(
-                    f"GitHub artifact download failed with status {exc.code}"
+                    f"GitHub Release manifest download failed with status {exc.code}"
                 ) from None
             except LatestMainError:
                 raise
@@ -495,13 +467,15 @@ class GitHubClient:
                 if attempt + 1 < HTTP_ATTEMPTS:
                     self._sleep(float(attempt + 1))
                     continue
-                raise LatestMainError("GitHub artifact download failed") from None
+                raise LatestMainError(
+                    "GitHub Release manifest download failed"
+                ) from None
             finally:
                 if descriptor is not None:
                     os.close(descriptor)
                 if descriptor is not None and not complete:
                     destination.unlink(missing_ok=True)
-        raise LatestMainError("GitHub artifact download failed")
+        raise LatestMainError("GitHub Release manifest download failed")
 
 
 def _curl_escape(value: str) -> str:
@@ -513,7 +487,7 @@ def _curl_escape(value: str) -> str:
 def _curl_download_config(signed_url: str, destination: Path) -> str:
     target = urlsplit(signed_url)
     if target.scheme != "https" or not _trusted_download_host(target.hostname):
-        raise LatestMainError("GitHub artifact download URL is invalid")
+        raise LatestMainError("GitHub manifest download URL is invalid")
     return "\n".join(
         (
             "silent",
@@ -525,7 +499,7 @@ def _curl_download_config(signed_url: str, destination: Path) -> str:
             "speed-time = 45",
             "speed-limit = 1024",
             'continue-at = "-"',
-            f"max-filesize = {ARCHIVE_MAX_BYTES}",
+            f"max-filesize = {MANIFEST_MAX_BYTES}",
             f'output = "{_curl_escape(str(destination))}"',
             f'url = "{_curl_escape(signed_url)}"',
             "",
@@ -607,496 +581,123 @@ def _validate_response(response: Any, max_bytes: int) -> None:
             raise LatestMainError("GitHub response is too large")
 
 
-def _claim_github_token(
-    environment: MutableMapping[str, str],
-    *,
-    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-) -> str:
-    token = ""
+def _drop_github_tokens(environment: MutableMapping[str, str]) -> None:
     for key in TOKEN_VARIABLES:
-        candidate = environment.pop(key, "")
-        if candidate and not token:
-            token = candidate
-    if token:
-        return token
-    gh = shutil.which("gh")
-    if gh is None:
-        raise LatestMainError(
-            "GitHub Actions credentials are required in GH_TOKEN, GITHUB_TOKEN, or gh auth"
-        )
-    try:
-        credential_environment = {
-            key: environment[key]
-            for key in (
-                "PATH",
-                "HOME",
-                "XDG_CONFIG_HOME",
-                "GH_CONFIG_DIR",
-                "GH_HOST",
-                "LANG",
-                "LC_ALL",
-                *sandbox_quickstart.PROXY_ENVIRONMENT,
-            )
-            if key in environment
-        }
-        result = run(
-            [gh, "auth", "token"],
-            env=credential_environment,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        raise LatestMainError(
-            "authenticated GitHub CLI credentials are unavailable"
-        ) from None
-    if result.returncode != 0 or not result.stdout.strip():
-        raise LatestMainError("authenticated GitHub CLI credentials are unavailable")
-    return result.stdout.strip()
+        environment.pop(key, None)
 
 
-def resolve_main_commit(
-    client: GitHubAPI, *, timeout_seconds: float | None = None
-) -> str:
-    payload = _mapping(
-        client.get_json(
-            f"/repos/{REPOSITORY}/git/ref/heads/main",
-            timeout_seconds=timeout_seconds,
-        ),
-        "main ref response",
-    )
-    target = _mapping(payload.get("object"), "main ref object")
-    commit = target.get("sha")
+def _deployment_release(payload: Mapping[str, Any]) -> DeploymentRelease:
+    tag = payload.get("tag_name")
+    match = DEPLOYMENT_RELEASE_TAG_RE.fullmatch(tag) if isinstance(tag, str) else None
+    if match is None:
+        raise LatestMainError("GitHub Release is not a deployment Release")
+    commit = match.group("commit")
+    run_id = int(match.group("run_id"))
+    run_attempt = int(match.group("run_attempt"))
+    author = _mapping(payload.get("author"), "deployment Release author")
     if (
-        payload.get("ref") != MAIN_REF
-        or target.get("type") != "commit"
-        or not isinstance(commit, str)
-        or COMMIT_RE.fullmatch(commit) is None
+        payload.get("target_commitish") != commit
+        or payload.get("draft") is not False
+        or payload.get("prerelease") is not False
+        or payload.get("immutable") is not True
+        or not isinstance(payload.get("published_at"), str)
+        or author.get("login") != DEPLOYMENT_RELEASE_UPLOADER
     ):
-        raise LatestMainError("authoritative main ref response is invalid")
-    return commit
-
-
-def _workflow_run(
-    client: GitHubAPI,
-    spec: WorkflowSpec,
-    commit: str,
-    *,
-    timeout_seconds: float | None = None,
-) -> WorkflowRun | None:
-    encoded = quote(spec.file_name, safe="")
-    payload = _mapping(
-        client.get_json(
-            f"/repos/{REPOSITORY}/actions/workflows/{encoded}/runs",
-            query={
-                "branch": "main",
-                "event": "push",
-                "head_sha": commit,
-                "per_page": "10",
-            },
-            timeout_seconds=timeout_seconds,
-        ),
-        f"{spec.file_name} runs response",
-    )
-    runs = _array(payload.get("workflow_runs"), f"{spec.file_name} runs")
+        raise LatestMainError("deployment Release metadata is invalid")
+    assets = _array(payload.get("assets"), "deployment Release assets")
     exact = [
-        run
-        for run in runs
-        if isinstance(run, dict)
-        and run.get("head_sha") == commit
-        and run.get("head_branch") == "main"
-        and run.get("event") == "push"
-        and run.get("path") == spec.path
+        asset
+        for asset in assets
+        if isinstance(asset, dict)
+        and asset.get("name") == DEPLOYMENT_RELEASE_ASSET_NAME
     ]
-    if not exact:
-        return None
-    selected = max(
-        exact,
-        key=lambda run: int(run.get("id", 0)) if isinstance(run.get("id"), int) else 0,
-    )
-    run_id = _positive_int(selected.get("id"), f"{spec.file_name} run id")
-    run_attempt = _positive_int(
-        selected.get("run_attempt"), f"{spec.file_name} run attempt"
-    )
-    status = selected.get("status")
-    conclusion = selected.get("conclusion")
-    if status == "completed" and conclusion != "success":
-        raise LatestMainError(
-            f"{spec.file_name} failed for current main ({conclusion or 'unknown'})"
-        )
-    if status != "completed" or conclusion != "success":
-        return None
-    return WorkflowRun(spec, run_id, run_attempt, commit)
-
-
-def _require_final_job(
-    client: GitHubAPI, run: WorkflowRun, *, timeout_seconds: float | None = None
-) -> None:
-    payload = _mapping(
-        client.get_json(
-            f"/repos/{REPOSITORY}/actions/runs/{run.run_id}/jobs",
-            query={"filter": "latest", "per_page": "100"},
-            timeout_seconds=timeout_seconds,
-        ),
-        f"{run.spec.file_name} jobs response",
-    )
-    jobs = _array(payload.get("jobs"), f"{run.spec.file_name} jobs")
-    total = payload.get("total_count")
-    if not isinstance(total, int) or isinstance(total, bool) or total != len(jobs):
-        raise LatestMainError(f"{run.spec.file_name} jobs response is incomplete")
-    matching = [
-        job
-        for job in jobs
-        if isinstance(job, dict) and job.get("name") == run.spec.required_job
-    ]
-    if len(matching) != 1:
-        raise LatestMainError(
-            f"{run.spec.file_name} required final job is missing or ambiguous"
-        )
-    job = matching[0]
-    if (
-        job.get("head_sha") != run.source_commit
-        or job.get("run_attempt") != run.run_attempt
-        or job.get("status") != "completed"
-        or job.get("conclusion") != "success"
-    ):
-        raise LatestMainError(
-            f"{run.spec.file_name} required final job did not succeed"
-        )
-
-
-def wait_for_release_candidate(
-    client: GitHubAPI,
-    *,
-    timeout_seconds: int = DEFAULT_CI_TIMEOUT_SECONDS,
-    monotonic: Callable[[], float] = time.monotonic,
-    sleep: Callable[[float], None] = time.sleep,
-) -> ReleaseCandidate:
-    if timeout_seconds < 1 or timeout_seconds > 2 * 60 * 60:
-        raise LatestMainError("Actions wait timeout is outside the supported range")
-    deadline = monotonic() + timeout_seconds
-
-    def remaining_budget() -> float:
-        value = deadline - monotonic()
-        if value <= 0:
-            raise LatestMainError(
-                "GitHub Actions did not finish within the configured wait budget"
-            )
-        return value
-
-    commit = resolve_main_commit(client, timeout_seconds=remaining_budget())
-    while True:
-        runs: dict[str, WorkflowRun] = {}
-        for spec in WORKFLOWS:
-            run = _workflow_run(
-                client,
-                spec,
-                commit,
-                timeout_seconds=remaining_budget(),
-            )
-            if run is not None:
-                runs[spec.file_name] = run
-        if len(runs) == len(WORKFLOWS):
-            for spec in WORKFLOWS:
-                _require_final_job(
-                    client,
-                    runs[spec.file_name],
-                    timeout_seconds=remaining_budget(),
-                )
-            latest = resolve_main_commit(client, timeout_seconds=remaining_budget())
-            if latest == commit:
-                return ReleaseCandidate(commit, runs)
-            commit = latest
-            continue
-        wait_remaining = deadline - monotonic()
-        if wait_remaining <= 0:
-            pending = sorted(
-                spec.file_name for spec in WORKFLOWS if spec.file_name not in runs
-            )
-            raise LatestMainError(
-                "GitHub Actions did not finish successfully for current main: "
-                + ", ".join(pending)
-            )
-        sleep(min(POLL_INTERVAL_SECONDS, wait_remaining))
-
-
-def _ready_artifact_name(candidate: ReleaseCandidate) -> str:
-    run = candidate.packaging_run
-    return (
-        f"release-image-evidence-{candidate.source_commit}-"
-        f"{run.run_id}-{run.run_attempt}"
-    )
-
-
-def find_ready_artifact(
-    client: GitHubAPI,
-    candidate: ReleaseCandidate,
-    *,
-    timeout_seconds: float | None = None,
-) -> ReadyArtifact | None:
-    run = candidate.packaging_run
-    expected_name = _ready_artifact_name(candidate)
-    payload = _mapping(
-        client.get_json(
-            f"/repos/{REPOSITORY}/actions/runs/{run.run_id}/artifacts",
-            query={"name": expected_name, "per_page": "10"},
-            timeout_seconds=timeout_seconds,
-        ),
-        "ready artifact response",
-    )
-    artifacts = _array(payload.get("artifacts"), "ready artifacts")
-    exact = [
-        artifact
-        for artifact in artifacts
-        if isinstance(artifact, dict) and artifact.get("name") == expected_name
-    ]
-    if not exact:
-        return None
     if len(exact) != 1:
-        raise LatestMainError("ready release artifact is ambiguous")
-    artifact = exact[0]
-    workflow = _mapping(artifact.get("workflow_run"), "ready artifact workflow")
-    size = _positive_int(artifact.get("size_in_bytes"), "ready artifact size")
+        raise LatestMainError("deployment Release manifest is missing or ambiguous")
+    asset = exact[0]
+    size = _positive_int(asset.get("size"), "deployment Release manifest size")
+    uploader = _mapping(asset.get("uploader"), "deployment Release asset uploader")
+    expected_url = _release_asset_url(tag)
     if (
-        artifact.get("expired") is not False
-        or workflow.get("id") != run.run_id
-        or workflow.get("head_sha") != candidate.source_commit
-        or workflow.get("head_branch") != "main"
-        or size > ARCHIVE_MAX_BYTES
+        asset.get("label") != _release_asset_label(commit, run_id, run_attempt)
+        or asset.get("state") != "uploaded"
+        or uploader.get("login") != DEPLOYMENT_RELEASE_UPLOADER
+        or size > MANIFEST_MAX_BYTES
+        or asset.get("browser_download_url") != expected_url
     ):
-        raise LatestMainError("ready release artifact is invalid or expired")
-    digest = artifact.get("digest")
+        raise LatestMainError("deployment Release manifest asset is invalid")
+    digest = asset.get("digest")
     if not isinstance(digest, str) or DIGEST_RE.fullmatch(digest) is None:
-        raise LatestMainError("ready release artifact digest is invalid")
-    return ReadyArtifact(
-        _positive_int(artifact.get("id"), "ready artifact id"),
-        expected_name,
-        size,
-        digest,
+        raise LatestMainError("deployment Release manifest digest is invalid")
+    return DeploymentRelease(
+        tag,
+        commit,
+        run_id,
+        run_attempt,
+        ReleaseAsset(
+            DEPLOYMENT_RELEASE_ASSET_NAME,
+            _release_asset_label(commit, run_id, run_attempt),
+            size,
+            digest,
+            expected_url,
+        ),
     )
 
 
-def wait_for_ready_artifact(
-    client: GitHubAPI,
-    candidate: ReleaseCandidate,
-    *,
-    timeout_seconds: int = ARTIFACT_APPEARANCE_TIMEOUT_SECONDS,
-    monotonic: Callable[[], float] = time.monotonic,
-    sleep: Callable[[float], None] = time.sleep,
-) -> ReadyArtifact:
-    deadline = monotonic() + timeout_seconds
-    while True:
-        remaining = deadline - monotonic()
-        if remaining <= 0:
-            raise LatestMainError("ready release artifact did not appear")
-        artifact = find_ready_artifact(
-            client,
-            candidate,
-            timeout_seconds=remaining,
-        )
-        if artifact is not None:
-            return artifact
-        remaining = deadline - monotonic()
-        if remaining <= 0:
-            raise LatestMainError("ready release artifact did not appear")
-        sleep(min(POLL_INTERVAL_SECONDS, remaining))
-
-
-def _safe_archive_member(info: zipfile.ZipInfo) -> PurePosixPath:
-    name = info.filename
-    if (
-        not name
-        or "\x00" in name
-        or "\\" in name
-        or info.flag_bits & 0x1
-        or info.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
-    ):
-        raise LatestMainError("release artifact contains an unsafe archive member")
-    pure = PurePosixPath(name.rstrip("/"))
-    if (
-        pure.is_absolute()
-        or not pure.parts
-        or len(pure.parts) != 1
-        or any(part in {"", ".", ".."} or ":" in part for part in pure.parts)
-    ):
-        raise LatestMainError("release artifact contains an unsafe archive path")
-    mode = info.external_attr >> 16
-    kind = stat.S_IFMT(mode)
-    if kind not in {0, stat.S_IFREG, stat.S_IFDIR}:
-        raise LatestMainError("release artifact contains a link or special file")
-    if info.file_size < 0 or info.file_size > ARCHIVE_MAX_FILE_BYTES:
-        raise LatestMainError("release artifact member is too large")
-    return pure
-
-
-def extract_ready_artifact(archive: Path, destination: Path) -> None:
-    try:
-        metadata = archive.stat(follow_symlinks=False)
-        if not stat.S_ISREG(metadata.st_mode) or archive.is_symlink():
-            raise LatestMainError("release artifact archive is unsafe")
-        with zipfile.ZipFile(archive) as bundle:
-            entries = bundle.infolist()
-            if not entries or len(entries) > ARCHIVE_MAX_FILES:
-                raise LatestMainError("release artifact file count is invalid")
-            normalized: set[str] = set()
-            total = 0
-            for info in entries:
-                relative = _safe_archive_member(info)
-                folded = relative.as_posix().casefold()
-                if folded in normalized:
-                    raise LatestMainError("release artifact contains duplicate paths")
-                normalized.add(folded)
-                total += info.file_size
-                if total > ARCHIVE_MAX_EXTRACTED_BYTES:
-                    raise LatestMainError(
-                        "release artifact expands beyond its size limit"
-                    )
-            destination.mkdir(mode=0o700, parents=False, exist_ok=False)
-            for info in entries:
-                relative = _safe_archive_member(info)
-                target = destination / relative.as_posix()
-                if info.is_dir():
-                    target.mkdir(mode=0o700, exist_ok=False)
-                    continue
-                descriptor = os.open(
-                    target,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-                    0o600,
-                )
-                actual = 0
-                try:
-                    with bundle.open(info, "r") as source:
-                        while True:
-                            chunk = source.read(64 * 1024)
-                            if not chunk:
-                                break
-                            actual += len(chunk)
-                            if actual > info.file_size:
-                                raise LatestMainError(
-                                    "release artifact member size changed"
-                                )
-                            view = memoryview(chunk)
-                            while view:
-                                written = os.write(descriptor, view)
-                                if written <= 0:
-                                    raise OSError("short artifact member write")
-                                view = view[written:]
-                    if actual != info.file_size:
-                        raise LatestMainError("release artifact member size changed")
-                    os.fsync(descriptor)
-                finally:
-                    os.close(descriptor)
-    except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
-        raise LatestMainError("release artifact archive is invalid") from exc
-
-
-def _verify_manifest_command(checkout: Path, evidence_root: Path) -> None:
-    bootstrap = (
-        "import runpy,sys; "
-        "sys.path.insert(0,sys.argv.pop(1)); "
-        "runpy.run_module('tools.release_image_manifest',run_name='__main__')"
+def resolve_deployment_release(client: GitHubAPI) -> DeploymentRelease:
+    releases = _array(
+        client.get_json(
+            f"/repos/{REPOSITORY}/releases",
+            query={"per_page": "100"},
+        ),
+        "deployment Releases response",
     )
-    command = [
-        sys.executable,
-        "-I",
-        "-c",
-        bootstrap,
-        str(checkout),
-        "verify",
-        "--manifest",
-        str(evidence_root / MANIFEST_NAME),
-        "--evidence-root",
-        str(evidence_root),
-        "--expected-role",
-        "backend",
-        "--expected-role",
-        "frontend",
-    ]
-    environment = {
-        key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL") if key in os.environ
-    }
-    try:
-        result = subprocess.run(
-            command,
-            cwd=checkout,
-            env=environment,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=120,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        raise LatestMainError("release image manifest verifier could not run") from None
-    if result.returncode != 0:
-        raise LatestMainError("release image manifest verification failed")
+    for release in releases:
+        if (
+            isinstance(release, dict)
+            and isinstance(release.get("tag_name"), str)
+            and DEPLOYMENT_RELEASE_TAG_RE.fullmatch(release["tag_name"]) is not None
+            and release.get("draft") is False
+            and release.get("prerelease") is False
+            and release.get("immutable") is True
+        ):
+            return _deployment_release(release)
+    raise LatestMainError("no qualified immutable deployment Release is available")
 
 
 def validate_release_manifest(
-    checkout: Path,
-    evidence_root: Path,
-    candidate: ReleaseCandidate,
-    *,
-    verify: Callable[[Path, Path], None] = _verify_manifest_command,
+    manifest_path: Path,
+    release: DeploymentRelease,
 ) -> tuple[str, str]:
-    manifest_path = evidence_root / MANIFEST_NAME
     try:
         metadata = manifest_path.stat(follow_symlinks=False)
-        if not stat.S_ISREG(metadata.st_mode) or manifest_path.is_symlink():
-            raise LatestMainError("ready release manifest is missing or unsafe")
-        manifest = _mapping(
-            _loads_json(manifest_path.read_bytes(), "ready release manifest"),
-            "ready release manifest",
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or manifest_path.is_symlink()
+            or metadata.st_size < 1
+            or metadata.st_size > MANIFEST_MAX_BYTES
+        ):
+            raise LatestMainError("deployment Release manifest is missing or unsafe")
+        raw_manifest = _loads_json(
+            manifest_path.read_bytes(), "deployment Release manifest"
         )
     except OSError as exc:
-        raise LatestMainError("ready release manifest is missing or unsafe") from exc
-    verify(checkout, evidence_root)
-    run = candidate.packaging_run
-    workflow = _mapping(manifest.get("workflow"), "ready release workflow")
+        raise LatestMainError("deployment Release manifest is missing or unsafe") from exc
+    try:
+        manifest = release_image_manifest.validate_manifest(raw_manifest)
+    except ValueError as exc:
+        raise LatestMainError("deployment Release manifest is invalid") from exc
+    workflow = _mapping(manifest["workflow"], "deployment Release workflow")
     if (
-        manifest.get("source_commit") != candidate.source_commit
-        or manifest.get("repository") != REPOSITORY_URL
-        or workflow.get("repository") != REPOSITORY
-        or workflow.get("workflow_ref") != MANIFEST_WORKFLOW_REF
-        or workflow.get("run_id") != str(run.run_id)
-        or workflow.get("run_attempt") != run.run_attempt
-        or workflow.get("head_sha") != candidate.source_commit
+        manifest["source_commit"] != release.source_commit
+        or workflow["run_id"] != str(release.run_id)
+        or workflow["run_attempt"] != release.run_attempt
     ):
-        raise LatestMainError("ready release manifest is not bound to the selected run")
-    subjects = _array(manifest.get("subjects"), "ready release subjects")
-    by_role: dict[str, str] = {}
-    for subject in subjects:
-        value = _mapping(subject, "ready release subject")
-        role = value.get("role")
-        image = _mapping(value.get("image"), "ready release image")
-        immutable_ref = image.get("immutable_ref")
-        if (
-            not isinstance(role, str)
-            or not isinstance(immutable_ref, str)
-            or role in by_role
-        ):
-            raise LatestMainError("ready release subjects are invalid")
-        by_role[role] = immutable_ref
-    if set(by_role) != {"backend", "frontend"}:
-        raise LatestMainError("ready release subjects are incomplete")
-    subject = sandbox_quickstart.Subject(
-        candidate.source_commit,
-        by_role["backend"],
-        by_role["frontend"],
-    )
-    for image, repository in (
-        (subject.backend_image, sandbox_quickstart.BACKEND_REPOSITORY),
-        (subject.frontend_image, sandbox_quickstart.FRONTEND_REPOSITORY),
-    ):
-        match = sandbox_quickstart.DIGEST_REF.fullmatch(image)
-        if match is None or match.group("repository") != repository:
-            raise LatestMainError(
-                "ready release images are not role-bound immutable digests"
-            )
-    return subject.backend_image, subject.frontend_image
+        raise LatestMainError("deployment Release manifest binding is invalid")
+    images = {
+        subject["role"]: subject["image"]["immutable_ref"]
+        for subject in manifest["subjects"]
+    }
+    return images["backend"], images["frontend"]
 
 
 def _validate_managed_root(root: Path) -> tuple[Path, os.stat_result]:
@@ -1178,7 +779,7 @@ def resolve_managed_env(root: Path, explicit: Path | None) -> Path:
         selected = None
     if selected is None:
         raise LatestMainError(
-            "first latest-main deployment requires --env-file or AI_PLATFORM_QUICKSTART_ENV_FILE"
+            "first deployment requires --env-file or AI_PLATFORM_QUICKSTART_ENV_FILE"
         )
     try:
         return sandbox_quickstart.Quickstart(root, root)._validate_env(Path(selected))
@@ -1250,8 +851,8 @@ def _run_target_quickstart(checkout: Path) -> None:
     if not stat.S_ISREG(metadata.st_mode) or script.is_symlink():
         raise LatestMainError("target quickstart is unsafe")
     environment = dict(os.environ)
-    for key in (*TOKEN_VARIABLES, ENV_PATH_VARIABLE):
-        environment.pop(key, None)
+    _drop_github_tokens(environment)
+    environment.pop(ENV_PATH_VARIABLE, None)
     try:
         result = subprocess.run(
             [sys.executable, "-I", str(script)],
@@ -1267,56 +868,46 @@ def _run_target_quickstart(checkout: Path) -> None:
         raise LatestMainError("target quickstart did not complete successfully")
 
 
-def deploy_latest_main(
+def deploy_latest_release(
     *,
     root: Path,
     client: GitHubAPI,
     env_file: Path | None = None,
-    ci_timeout_seconds: int = DEFAULT_CI_TIMEOUT_SECONDS,
     materialize: Callable[
         [Path, str], Path
     ] = release_authority.materialize_main_checkout,
-    verify_manifest: Callable[[Path, Path], None] = _verify_manifest_command,
     deploy: Callable[[Path], None] = _run_target_quickstart,
 ) -> sandbox_quickstart.Subject:
     normalized, root_metadata = _validate_managed_root(root)
     incoming = _ensure_incoming(normalized, root_metadata.st_uid)
     selected_env = resolve_managed_env(normalized, env_file)
-    candidate = wait_for_release_candidate(client, timeout_seconds=ci_timeout_seconds)
-    artifact = wait_for_ready_artifact(client, candidate)
+    release = resolve_deployment_release(client)
     with tempfile.TemporaryDirectory(
-        prefix=".latest-main-", dir=incoming
+        prefix=".deployment-release-", dir=incoming
     ) as temporary_name:
-        temporary = Path(temporary_name)
-        archive = temporary / "release-evidence.zip"
-        downloaded_digest = client.download_artifact(artifact.artifact_id, archive)
-        if artifact.digest != f"sha256:{downloaded_digest}":
+        manifest_path = Path(temporary_name) / MANIFEST_NAME
+        downloaded_digest = client.download_public_asset(
+            release.asset.download_url, manifest_path
+        )
+        if release.asset.digest != f"sha256:{downloaded_digest}":
             raise LatestMainError(
-                "downloaded release artifact digest does not match GitHub"
+                "downloaded deployment manifest digest does not match GitHub"
             )
-        evidence_root = temporary / "evidence"
-        extract_ready_artifact(archive, evidence_root)
-        checkout = materialize(normalized / "releases", candidate.source_commit)
         backend_image, frontend_image = validate_release_manifest(
-            checkout,
-            evidence_root,
-            candidate,
-            verify=verify_manifest,
+            manifest_path,
+            release,
         )
-    if resolve_main_commit(client) != candidate.source_commit:
-        raise LatestMainError(
-            "main advanced while the release candidate was being prepared"
-        )
+        checkout = materialize(normalized / "releases", release.source_commit)
     _atomic_write_subject(
         normalized,
-        commit=candidate.source_commit,
+        commit=release.source_commit,
         backend_image=backend_image,
         frontend_image=frontend_image,
         env_file=selected_env,
     )
     deploy(checkout)
     return sandbox_quickstart.Subject(
-        candidate.source_commit,
+        release.source_commit,
         backend_image,
         frontend_image,
         selected_env,
@@ -1338,34 +929,25 @@ def _retry_approved_subject(root: Path) -> sandbox_quickstart.Subject:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Deploy a controller-prepared or latest fully approved main image subject."
+        description="Deploy a controller-prepared or latest qualified deployment Release."
     )
     parser.add_argument(
         "--latest",
         action="store_true",
-        help="wait for exact-main Actions evidence, resolve image digests, and deploy",
+        help="resolve the latest qualified deployment Release and deploy exact image digests",
     )
     parser.add_argument(
         "--env-file",
         type=Path,
         help="first-deployment managed env path; later deployments reuse the approved subject path",
     )
-    parser.add_argument(
-        "--ci-timeout-seconds",
-        type=int,
-        default=DEFAULT_CI_TIMEOUT_SECONDS,
-        help=argparse.SUPPRESS,
-    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    if not args.latest and (
-        args.env_file is not None
-        or args.ci_timeout_seconds != DEFAULT_CI_TIMEOUT_SECONDS
-    ):
-        print("quickstart: failed: --env-file and CI timeout require --latest")
+    if not args.latest and args.env_file is not None:
+        print("quickstart: failed: --env-file requires --latest")
         return 2
     root = sandbox_quickstart.MANAGED_ROOT
     previous_handlers = {
@@ -1378,13 +960,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 selected_env = args.env_file
                 if selected_env is None and os.environ.get(ENV_PATH_VARIABLE):
                     selected_env = Path(os.environ.pop(ENV_PATH_VARIABLE))
-                token = _claim_github_token(os.environ)
-                client = GitHubClient(token)
-                deploy_latest_main(
+                _drop_github_tokens(os.environ)
+                client = GitHubClient()
+                deploy_latest_release(
                     root=root,
                     client=client,
                     env_file=selected_env,
-                    ci_timeout_seconds=args.ci_timeout_seconds,
                 )
             else:
                 _retry_approved_subject(root)

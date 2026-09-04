@@ -344,7 +344,7 @@ function mockBootstrapSource() {
         });
       }
       if (url.pathname === "/api/upload/config") return json({ uploadLimits: {
-        image: 10, video: 50, audio: 50, document: 20, maxFiles: 10,
+        image: 512, video: 512, audio: 512, document: 512, maxFiles: 32,
       }});
       if (url.pathname === "/api/chat/stream" && method === "POST") {
         if (state.submitMode === "stale") {

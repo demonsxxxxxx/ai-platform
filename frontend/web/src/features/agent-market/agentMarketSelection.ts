@@ -53,6 +53,7 @@ export function filterPublishedMarketProfiles(
       profile.name,
       profile.description,
       profile.capability_summary,
+      profile.market_tag ?? "",
       ...profile.recommended_tasks,
     ].join("\n");
     return searchableProjection

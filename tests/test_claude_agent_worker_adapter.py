@@ -5,7 +5,6 @@ import io
 import json
 import sys
 import types
-import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -118,14 +117,19 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             "Write",
             {"file_path": "outputs/delivery/report.txt", "content": "safe"},
         )
-        hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
-        await hook(
-            {
-                "hook_event_name": "PostToolUse",
-                "tool_name": "Skill",
-                "tool_input": {"skill": "qa-file-reviewer"},
-                "tool_use_id": "tool-1",
-            },
+        skill_input = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Skill",
+            "tool_input": {"skill": "qa-file-reviewer"},
+            "tool_use_id": "tool-1",
+        }
+        await options.kwargs["hooks"]["PreToolUse"][0].hooks[0](
+            skill_input,
+            "tool-1",
+            {},
+        )
+        await options.kwargs["hooks"]["PostToolUse"][0].hooks[0](
+            {**skill_input, "hook_event_name": "PostToolUse"},
             "tool-1",
             {},
         )
@@ -175,7 +179,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     )
     external_subject = worker_module._mcp_capability_subject(
         {
-            "tool_id": "corp-search",
+            "tool_id": "corp-search::query",
             "server_id": "corp-search",
             "allowed_tools": ["query"],
             "registry_status": "active",
@@ -184,17 +188,28 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             "risk_level": "high",
             "write_capable": True,
             "transport_type": "http",
-            "endpoint": "https://mcp.example.test/v1",
+            "endpoint": "",
             "auth_mode": "none",
         },
         types.SimpleNamespace(usable=True),
     )
     assert external_subject is not None
+    external_subject["mcp_server_config"] = {
+        "type": "http",
+        "url": "https://mcp.example.test/v1",
+        "headers": {
+            "X-Static-Header": "configured",
+            "JWT-Authorization": "Bearer runtime-jwt",
+        },
+    }
     subjects_by_identity = {subject["identity"]: subject for subject in builtin_subjects}
     subjects = [subjects_by_identity[identity] for identity in ("Bash", "Write", "Skill")] + [external_subject]
 
     async def acknowledge_tool_lifecycle(fact):
         lifecycle_facts.append((fact["invocation_id"], fact["lifecycle"]))
+        return True
+
+    async def acknowledge_capability_evidence(_evidence):
         return True
 
     result = await run_claude_agent_sdk(
@@ -204,7 +219,9 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         skills=["qa-file-reviewer"],
         tool_policy_subjects=subjects,
         execution_policy="sandbox_brokered",
+        require_selected_skill_invocation=False,
         on_tool_lifecycle=acknowledge_tool_lifecycle,
+        on_capability_evidence=acknowledge_capability_evidence,
     )
 
     assert result.error is None
@@ -219,7 +236,14 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         "mcp__corp-search__query",
     ]
     assert captured["mcp_servers"] == {
-        "corp-search": {"type": "http", "url": "https://mcp.example.test/v1"}
+        "corp-search": {
+            "type": "http",
+            "url": "https://mcp.example.test/v1",
+            "headers": {
+                "X-Static-Header": "configured",
+                "JWT-Authorization": "Bearer runtime-jwt",
+            },
+        }
     }
     assert "on_tool_permission" not in captured
     assert captured["pre_invocation_skill_write"].behavior == "deny"
@@ -235,7 +259,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     assert (await can_use("Skill", {"skill": "unknown-skill"})).behavior == "deny"
     assert (await can_use("mcp__corp-search__query", {"query": "safe"})).behavior == "allow"
     assert (await can_use("mcp__corp-search__query_extra", {"query": "safe"})).behavior == "deny"
-    assert (await can_use("mcp__corp-search__query", {"query": "safe", "scope": "other"})).behavior == "deny"
+    assert (await can_use("mcp__corp-search__query", {"query": "safe", "scope": "other"})).behavior == "allow"
     for endpoint in (
         "https://mcp.example.test/v1?api_key=redacted",
         "https://mcp.example.test/v1?token=redacted",
@@ -738,7 +762,7 @@ async def test_submit_run_classifies_context_file_size_failure_without_starting_
 
     assert result.status == "failed"
     assert result.result["error_code"] == "context_file_too_large"
-    assert result.result["message"] == "The input file exceeds the 32 MiB processing limit."
+    assert result.result["message"] == "Input file exceeds 128 MiB or the input set exceeds 256 MiB."
     assert runtime_requests == []
     diagnostic = result.executor_payload["context_file_failure"]
     assert diagnostic["reason_code"] == "context_file_too_large"
@@ -753,8 +777,6 @@ async def test_submit_run_classifies_context_file_size_failure_without_starting_
     "error_code",
     [
         "context_file_pdf_password_required",
-        "context_file_pdf_active_content_unsupported",
-        "context_file_docx_macros_unsupported",
         "xlsx_encrypted_unsupported",
     ],
 )
@@ -861,69 +883,6 @@ def symlink_or_skip(target, link):
         link.symlink_to(target, target_is_directory=target.is_dir())
     except (NotImplementedError, OSError) as exc:
         pytest.skip(f"symlink creation not available: {exc}")
-
-
-def usable_docx_bytes(
-    *,
-    document: bytes | None = None,
-    content_types: bytes | None = None,
-    relationships: bytes | None = None,
-    include_relationships: bool = True,
-    extra_entries: dict[str, bytes] | None = None,
-) -> bytes:
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        content_types_entry = zipfile.ZipInfo("[Content_Types].xml", date_time=(2024, 1, 1, 0, 0, 0))
-        content_types_entry.compress_type = zipfile.ZIP_DEFLATED
-        archive.writestr(
-            content_types_entry,
-            content_types
-            if content_types is not None
-            else (
-                b'<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-                b'<Override PartName="/word/document.xml" '
-                b'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
-                b"</Types>"
-            ),
-        )
-        if include_relationships:
-            relationship_entry = zipfile.ZipInfo("_rels/.rels", date_time=(2024, 1, 1, 0, 0, 0))
-            relationship_entry.compress_type = zipfile.ZIP_DEFLATED
-            archive.writestr(
-                relationship_entry,
-                relationships
-                if relationships is not None
-                else (
-                    b'<?xml version="1.0"?><Relationships '
-                    b'xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                    b'<Relationship Id="rId1" '
-                    b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                    b'Target="word/document.xml"/>'
-                    b"</Relationships>"
-                ),
-            )
-        if document is not None:
-            document_entry = zipfile.ZipInfo("word/document.xml", date_time=(2024, 1, 1, 0, 0, 0))
-            document_entry.compress_type = zipfile.ZIP_DEFLATED
-            archive.writestr(
-                document_entry,
-                document,
-            )
-        for name, content in (extra_entries or {}).items():
-            extra_entry = zipfile.ZipInfo(name, date_time=(2024, 1, 1, 0, 0, 0))
-            extra_entry.compress_type = zipfile.ZIP_DEFLATED
-            archive.writestr(extra_entry, content)
-    return buffer.getvalue()
-
-
-def valid_docx_bytes() -> bytes:
-    return usable_docx_bytes(
-        document=(
-            b'<?xml version="1.0"?><w:document '
-            b'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-            b"<w:body><w:p/></w:body></w:document>"
-        )
-    )
 
 
 def test_registry_exposes_claude_agent_worker():
@@ -1063,75 +1022,13 @@ def test_collect_workspace_artifacts_enforces_delivery_limits_before_storage(
         ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(payload(), workspace)
 
 
-@pytest.mark.parametrize(
-    "content",
-    [
-        b"",
-        b"not-a-zip",
-        usable_docx_bytes(document=None),
-        usable_docx_bytes(document=b""),
-        usable_docx_bytes(document=b"<document/>"),
-        usable_docx_bytes(document=b"<w:document>not valid XML</w:document>"),
-        usable_docx_bytes(document=b"<document><body><p/></body></document>", content_types=b"not XML"),
-        usable_docx_bytes(document=b"<document><body><p/></body></document>", include_relationships=False),
-        usable_docx_bytes(
-            document=b"<document><body><p/></body></document>",
-            relationships=(
-                b'<Relationships><Relationship '
-                b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                b'Target="../word/document.xml"/></Relationships>'
-            ),
-        ),
-        usable_docx_bytes(
-            document=(
-                b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-                b"<w:body><w:p/></w:body></w:document>"
-            ),
-            relationships=(
-                b'<Relationships><Relationship Id="rId1" '
-                b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                b'Target="word/document.xml"/></Relationships>'
-            ),
-        ),
-        usable_docx_bytes(
-            document=(
-                b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-                b"<w:body><w:p/></w:body></w:document>"
-            ),
-            relationships=(
-                b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                b'<Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                b'Target="word/document.xml"/></Relationships>'
-            ),
-        ),
-        usable_docx_bytes(
-            document=(
-                b'<w:document xmlns:w="urn:wrong-wordprocessingml">'
-                b"<w:body><w:p/></w:body></w:document>"
-            ),
-        ),
-    ],
-    ids=[
-        "zero-byte",
-        "corrupt-zip",
-        "missing-document",
-        "empty-document",
-        "document-without-body",
-        "invalid-document-xml",
-        "invalid-content-types",
-        "missing-root-relationship",
-        "path-traversing-root-relationship",
-        "namespace-less-root-relationship",
-        "wrong-wordprocessingml-namespace",
-        "missing-root-relationship-id",
-    ],
-)
 @pytest.mark.parametrize("skill_id", ["qa-file-reviewer", "baoyu-translate"])
-def test_collect_workspace_artifacts_rejects_unusable_required_docx(monkeypatch, tmp_path, content, skill_id):
+def test_collect_workspace_artifacts_stores_docx_opaque(monkeypatch, tmp_path, skill_id):
     workspace = tmp_path / "workspace"
     output = workspace / "output"
     output.mkdir(parents=True)
-    (output / "review.docx").write_bytes(content)
+    content = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1opaque-docx-artifact"
+    (output / "document.docx").write_bytes(content)
     stored = []
 
     class FakeStorage:
@@ -1146,190 +1043,9 @@ def test_collect_workspace_artifacts_rejects_unusable_required_docx(monkeypatch,
         workspace,
     )
 
-    assert artifacts == []
-    assert stored == []
-
-
-@pytest.mark.parametrize("skill_id", ["qa-file-reviewer", "baoyu-translate"])
-@pytest.mark.parametrize(
-    ("limit_name", "limit_value", "content"),
-    [
-        ("_REQUIRED_DOCX_MAX_ENTRY_COUNT", 3, usable_docx_bytes(document=valid_docx_bytes(), extra_entries={"extra.txt": b"x"})),
-        ("_REQUIRED_DOCX_MAX_COMPRESSED_BYTES", 1, valid_docx_bytes()),
-        ("_REQUIRED_DOCX_MAX_UNCOMPRESSED_BYTES", 1, valid_docx_bytes()),
-    ],
-)
-def test_collect_workspace_artifacts_rejects_required_docx_zip_bounds_before_read(
-    monkeypatch,
-    tmp_path,
-    skill_id,
-    limit_name,
-    limit_value,
-    content,
-):
-    workspace = tmp_path / "workspace"
-    output = workspace / "output"
-    output.mkdir(parents=True)
-    (output / "review.docx").write_bytes(content)
-
-    def fail_read(*_args, **_kwargs):
-        raise AssertionError("bounded metadata rejection must happen before archive.read")
-
-    monkeypatch.setattr(claude_agent_worker, limit_name, limit_value)
-    monkeypatch.setattr(zipfile.ZipFile, "read", fail_read)
-
-    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-        payload(skill_id=skill_id),
-        workspace,
-    )
-
-    assert artifacts == []
-
-
-def test_required_docx_rejects_duplicate_case_colliding_or_encrypted_part_before_read(monkeypatch, tmp_path):
-    workspace = tmp_path / "workspace"
-    output = workspace / "output"
-    output.mkdir(parents=True)
-    path = output / "review.docx"
-    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for name, content in {
-            "[Content_Types].xml": (
-                b'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-                b'<Override PartName="/word/document.xml" '
-                b'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
-                b"</Types>"
-            ),
-            "_rels/.rels": (
-                b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                b'<Relationship Id="rId1" '
-                b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                b'Target="word/document.xml"/></Relationships>'
-            ),
-            "word/document.xml": (
-                b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-                b"<w:body><w:p/></w:body></w:document>"
-            ),
-        }.items():
-            archive.writestr(name, content)
-        archive.writestr("WORD/DOCUMENT.XML", b"duplicate")
-
-    def fail_read(*_args, **_kwargs):
-        raise AssertionError("unsafe archive metadata must fail before archive.read")
-
-    monkeypatch.setattr(zipfile.ZipFile, "read", fail_read)
-    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-        payload(skill_id="qa-file-reviewer"), workspace
-    )
-
-    assert artifacts == []
-
-
-@pytest.mark.parametrize(
-    ("skill_id", "expected_type"),
-    [("qa-file-reviewer", "reviewed_docx"), ("baoyu-translate", "translated_docx")],
-)
-def test_collect_workspace_artifacts_accepts_usable_required_docx(monkeypatch, tmp_path, skill_id, expected_type):
-    workspace = tmp_path / "workspace"
-    output = workspace / "output"
-    output.mkdir(parents=True)
-    content = valid_docx_bytes()
-    (output / "review.docx").write_bytes(content)
-    stored = []
-
-    class FakeStorage:
-        def put_bytes(self, *, storage_key, content, content_type):
-            stored.append((storage_key, content, content_type))
-            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
-
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-
-    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-        payload(skill_id=skill_id),
-        workspace,
-    )
-
-    assert [artifact.artifact_type for artifact in artifacts] == [expected_type]
+    assert [artifact.artifact_type for artifact in artifacts] == ["result_docx"]
+    assert artifacts[0].label == "Word 文件"
     assert stored[0][1] == content
-
-
-@pytest.mark.parametrize(
-    ("relationship_id", "accepted"),
-    [
-        ("关系\u0301", True),
-        ("Ångström", True),
-        ("", False),
-        ("1relationship", False),
-        ("relationship:id", False),
-        ("relationship id", False),
-    ],
-    ids=["unicode-letter-mark", "unicode-letter", "missing", "numeric-start", "colon", "whitespace"],
-)
-def test_required_docx_validates_xml_ncname_relationship_ids(monkeypatch, tmp_path, relationship_id, accepted):
-    workspace = tmp_path / "workspace"
-    output = workspace / "output"
-    output.mkdir(parents=True)
-    relationships = (
-        b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        + f'<Relationship Id="{relationship_id}" '.encode()
-        + b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-        + b'Target="word/document.xml"/></Relationships>'
-    )
-    (output / "review.docx").write_bytes(usable_docx_bytes(document=(
-        b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        b"<w:body><w:p/></w:body></w:document>"
-    ), relationships=relationships))
-    stored = []
-
-    class FakeStorage:
-        def put_bytes(self, *, storage_key, content, content_type):
-            stored.append(content)
-            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
-
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-        payload(skill_id="qa-file-reviewer"), workspace
-    )
-
-    assert bool(artifacts) is accepted
-    assert bool(stored) is accepted
-
-
-@pytest.mark.parametrize(
-    "relationships",
-    [
-        (
-            b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-            b'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
-            b'<Relationship Id="rId1" Type="urn:example:other" Target="custom.xml"/>'
-            b"</Relationships>"
-        ),
-        (
-            b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-            b'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
-            b'<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
-            b"</Relationships>"
-        ),
-    ],
-    ids=["duplicate-relationship-id", "multiple-office-document-relationships"],
-)
-def test_required_docx_rejects_non_unique_or_ambiguous_root_relationships(monkeypatch, tmp_path, relationships):
-    workspace = tmp_path / "workspace"
-    output = workspace / "output"
-    output.mkdir(parents=True)
-    (output / "review.docx").write_bytes(usable_docx_bytes(document=(
-        b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        b"<w:body><w:p/></w:body></w:document>"
-    ), relationships=relationships))
-
-    class FakeStorage:
-        def put_bytes(self, **_kwargs):
-            raise AssertionError("invalid relationship packages must not be stored")
-
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-        payload(skill_id="qa-file-reviewer"), workspace
-    )
-    assert artifacts == []
 
 
 @pytest.mark.asyncio
@@ -1342,6 +1058,41 @@ async def test_materialize_files_rejects_symlinked_workspace(monkeypatch, tmp_pa
     adapter = ClaudeAgentWorkerAdapter()
 
     with pytest.raises(ValueError, match="run workspace"):
+        await adapter._materialize_files(payload(file_ids=["file_1"]), workspace)
+
+
+@pytest.mark.asyncio
+async def test_materialize_files_rejects_symlinked_inputs_directory(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    symlink_or_skip(outside, workspace / "inputs")
+
+    class FailIfRead:
+        def get_bytes_bounded(self, **_kwargs):
+            raise AssertionError("symlinked inputs must fail before object storage")
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def fake_get_scoped_context_file(_conn, **_kwargs):
+        return {
+            "original_name": "input.doc",
+            "size_bytes": 3,
+            "storage_key": "files/input.doc",
+        }
+
+    adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FailIfRead)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.get_scoped_context_file",
+        fake_get_scoped_context_file,
+    )
+    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+
+    with pytest.raises(ContextFileContentError, match="context_file_staging_write_failed"):
         await adapter._materialize_files(payload(file_ids=["file_1"]), workspace)
 
 
@@ -1374,7 +1125,7 @@ async def test_materialize_files_rejects_existing_symlinked_target(monkeypatch, 
     monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_scoped_context_file", fake_get_scoped_context_file)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
-    with pytest.raises(ValueError, match="inputs directory"):
+    with pytest.raises(ContextFileContentError, match="context_file_staging_write_failed"):
         await adapter._materialize_files(payload(file_ids=["file_1"]), workspace)
 
 
@@ -1583,7 +1334,7 @@ async def test_agent_run_records_pinned_manifest_dependency_graph(monkeypatch, t
     assert runtime_requests[0].attempt_id == "qat-test-attempt"
     assert runtime_requests[0].context_manifest["queue_attempt_id"] == "qat-test-attempt"
     assert result.executor_payload["skill_manifests"][0]["dependency_ids"] == ["legacy-helper"]
-    assert result.executor_payload["required_artifact_types"] == ["reviewed_docx"]
+    assert result.executor_payload["required_artifact_types"] == ["result_docx"]
 
 
 def test_general_chat_does_not_stage_all_platform_skills_by_default():
@@ -1596,8 +1347,8 @@ def test_general_chat_does_not_stage_all_platform_skills_by_default():
 
 
 def test_file_skill_artifact_contract_is_owned_by_the_selected_capability():
-    assert _required_artifact_types(payload(skill_id="qa-file-reviewer")) == ("reviewed_docx",)
-    assert _required_artifact_types(payload(skill_id="baoyu-translate")) == ("translated_docx",)
+    assert _required_artifact_types(payload(skill_id="qa-file-reviewer")) == ("result_docx",)
+    assert _required_artifact_types(payload(skill_id="baoyu-translate")) == ("result_docx",)
     assert _required_artifact_types(payload(skill_id="general-chat", file_ids=[])) == ()
 
 
@@ -2027,6 +1778,7 @@ async def test_sandbox_selected_skill_validates_only_reported_invocation(
 @pytest.mark.asyncio
 async def test_agent_run_threads_materialized_file_names_in_payload_order(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
+    document_body_marker = "server-must-not-extract-this-document-body"
     write_skill(tmp_path / "skills", name="baoyu-translate", description="Translate Word documents.")
     pins = _registry_pins(
         tmp_path / "skills",
@@ -2035,7 +1787,7 @@ async def test_agent_run_threads_materialized_file_names_in_payload_order(monkey
     )
 
     async def materialize_files(payload, workspace):
-        (workspace / "z.docx").write_bytes(b"z")
+        (workspace / "z.docx").write_text(document_body_marker, encoding="utf-8")
         (workspace / "a.docx").write_bytes(b"a")
         return ["z.docx", "a.docx"]
 
@@ -2055,6 +1807,8 @@ async def test_agent_run_threads_materialized_file_names_in_payload_order(monkey
 
     assert result.status == "succeeded"
     assert runtime_requests[0].materialized_file_names == ["z.docx", "a.docx"]
+    assert "z.docx" in runtime_requests[0].input_message
+    assert document_body_marker not in runtime_requests[0].input_message
 
 
 
@@ -3775,7 +3529,27 @@ async def test_sandbox_required_general_chat_bridges_agent_event_to_keyword_work
 
 
 @pytest.mark.asyncio
-async def test_sdk_runtime_error_is_reported_without_delegate(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("error_code", "diagnostics", "expected_projection_reason"),
+    [
+        ("claude_agent_sdk_runtime_error", {}, None),
+        (
+            "claude_agent_sdk_public_projection_failed",
+            {
+                "projection_failure_reason": "sanitizer_rejected",
+                "private": "C:/tenant/private/answer.txt",
+            },
+            "sanitizer_rejected",
+        ),
+    ],
+)
+async def test_sdk_runtime_error_is_reported_without_delegate(
+    monkeypatch,
+    tmp_path,
+    error_code,
+    diagnostics,
+    expected_projection_reason,
+):
     current_settings = settings(tmp_path, sdk_enabled=True)
 
     async def no_files(payload, workspace):
@@ -3790,9 +3564,10 @@ async def test_sdk_runtime_error_is_reported_without_delegate(monkeypatch, tmp_p
         executor_response={
             "status": "failed",
             "message": "model gateway timeout",
-            "error_code": "claude_agent_sdk_runtime_error",
+            "error_code": error_code,
             "error_message": "model gateway timeout",
             "sdk_used": True,
+            "sdk_turn_diagnostics": diagnostics,
         },
     )
 
@@ -3803,9 +3578,16 @@ async def test_sdk_runtime_error_is_reported_without_delegate(monkeypatch, tmp_p
     )
 
     assert result.status == "failed"
-    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
+    assert result.result["error_code"] == error_code
     assert result.result["sdk_used"] is True
     assert result.result["delegate_used"] is False
+    if expected_projection_reason is None:
+        assert "projection_failure_reason" not in result.result["sdk_turn_diagnostics"]
+    else:
+        assert result.result["sdk_turn_diagnostics"]["projection_failure_reason"] == (
+            expected_projection_reason
+        )
+    assert "C:/tenant" not in str(result.result)
 
 
 @pytest.mark.asyncio
@@ -5455,14 +5237,19 @@ async def test_sdk_runner_preserves_skill_use_when_query_raises_after_hook(monke
             captured.update(kwargs)
 
     async def query(prompt, options):
-        hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
-        await hook(
-            {
-                "hook_event_name": "PostToolUse",
-                "tool_name": "Skill",
-                "tool_input": {"skill": "qa-file-reviewer"},
-                "tool_use_id": "tool-1",
-            },
+        skill_input = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Skill",
+            "tool_input": {"skill": "qa-file-reviewer"},
+            "tool_use_id": "tool-1",
+        }
+        await options.kwargs["hooks"]["PreToolUse"][0].hooks[0](
+            skill_input,
+            "tool-1",
+            {},
+        )
+        await options.kwargs["hooks"]["PostToolUse"][0].hooks[0](
+            {**skill_input, "hook_event_name": "PostToolUse"},
             "tool-1",
             {},
         )
@@ -5495,11 +5282,16 @@ async def test_sdk_runner_preserves_skill_use_when_query_raises_after_hook(monke
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
 
+    async def acknowledge_capability_evidence(_evidence):
+        return True
+
     result = await run_claude_agent_sdk(
         prompt="hello",
         cwd=tmp_path,
         skill_id="general-chat",
         skills=["qa-file-reviewer"],
+        require_selected_skill_invocation=False,
+        on_capability_evidence=acknowledge_capability_evidence,
     )
 
     assert result.used_sdk is True
@@ -5539,14 +5331,19 @@ async def test_sdk_runner_preserves_skill_use_when_timeout_fires_after_hook(monk
             self.kwargs = kwargs
 
     async def query(prompt, options):
-        hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
-        await hook(
-            {
-                "hook_event_name": "PostToolUse",
-                "tool_name": "Skill",
-                "tool_input": {"skill": "qa-file-reviewer"},
-                "tool_use_id": "tool-1",
-            },
+        skill_input = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Skill",
+            "tool_input": {"skill": "qa-file-reviewer"},
+            "tool_use_id": "tool-1",
+        }
+        await options.kwargs["hooks"]["PreToolUse"][0].hooks[0](
+            skill_input,
+            "tool-1",
+            {},
+        )
+        await options.kwargs["hooks"]["PostToolUse"][0].hooks[0](
+            {**skill_input, "hook_event_name": "PostToolUse"},
             "tool-1",
             {},
         )
@@ -5579,11 +5376,16 @@ async def test_sdk_runner_preserves_skill_use_when_timeout_fires_after_hook(monk
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
 
+    async def acknowledge_capability_evidence(_evidence):
+        return True
+
     result = await run_claude_agent_sdk(
         prompt="hello",
         cwd=tmp_path,
         skill_id="general-chat",
         skills=["qa-file-reviewer"],
+        require_selected_skill_invocation=False,
+        on_capability_evidence=acknowledge_capability_evidence,
     )
 
     assert result.used_sdk is True
@@ -5627,7 +5429,7 @@ async def test_sdk_runner_propagates_cancelled_error_from_stream_callback(monkey
         session_id = "sdk-session"
         usage = {}
         model_usage = {}
-        result = "done"
+        result = "partial"
         is_error = False
         errors = []
         stop_reason = None
