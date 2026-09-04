@@ -49,6 +49,20 @@ export interface AgentBuilderEditor {
   materializedProfile: AgentProfileAdminProjection | null;
 }
 
+/** Number only snapshots that were actually published; draft saves are not releases. */
+export function listPublishedAgentProfileVersions(
+  profiles: readonly AgentProfileAdminProjection[],
+) {
+  return [...profiles]
+    .filter((profile) => Boolean(profile.published_at) || profile.status === "published")
+    .sort((left, right) => {
+      const leftPublishedAt = Date.parse(String(left.published_at ?? left.created_at ?? "")) || 0;
+      const rightPublishedAt = Date.parse(String(right.published_at ?? right.created_at ?? "")) || 0;
+      return leftPublishedAt - rightPublishedAt || left.revision - right.revision;
+    })
+    .map((profile, index) => ({ profile, version: index + 1 }));
+}
+
 export type AgentBuilderBlockCode =
   | "no_selection"
   | "name_required"

@@ -77,7 +77,7 @@ function editorStatusTone(editor: AgentBuilderEditor) {
   return "border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] text-[var(--theme-warning)]";
 }
 
-/** Server-backed Chinese admin list/editor for immutable Agent Profile revisions. */
+/** Server-backed Chinese admin list/editor for immutable Agent Profile snapshots. */
 export function AgentBuilderWorkbench({
   catalog,
   canManageProfiles = false,
@@ -151,11 +151,11 @@ export function AgentBuilderWorkbench({
       ? {
           tone: "success" as const,
           message: workbench.mutation.action === "save"
-            ? `草稿已保存为服务端 revision ${workbench.mutation.revision}。`
+            ? "草稿已保存，当前发布版本未改变。"
             : workbench.mutation.action === "publish"
-              ? `发布成功，当前服务端 revision 为 ${workbench.mutation.revision}。`
+              ? "发布成功，发布版本已更新。"
               : workbench.mutation.action === "unpublish"
-                ? `已下架，当前服务端 revision 为 ${workbench.mutation.revision}。`
+                ? "已下架，发布版本未新增。"
                 : "受控测试运行已创建。",
         }
       : null;
@@ -422,7 +422,7 @@ export function AgentBuilderWorkbench({
               return (
                 <button
                   key={profile.agent_id}
-                  aria-label={`编辑专家 ${profile.name}，${profileStatusLabel(profile.status)}，revision ${profile.revision}`}
+                  aria-label={`编辑专家 ${profile.name}，${profileStatusLabel(profile.status)}`}
                   aria-pressed={selected}
                   className={`flex w-full items-start gap-3 border-b border-l-2 border-b-[var(--theme-border)] px-4 py-3 text-left disabled:cursor-not-allowed disabled:opacity-60 ${profile.status === "published" ? "border-l-[var(--theme-success)]" : "border-l-[var(--theme-warning)]"} ${selected ? "bg-[var(--theme-hover)]" : "hover:bg-[var(--theme-hover)]"}`}
                   disabled={interactionBusy}
@@ -437,9 +437,8 @@ export function AgentBuilderWorkbench({
                   />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-medium">{profile.name}</span>
-                    <span className="mt-1 flex items-center justify-between gap-2 text-xs text-[var(--theme-text-secondary)]">
-                      <span>{profileStatusLabel(profile.status)}</span>
-                      <span className="tabular-nums">revision {profile.revision}</span>
+                    <span className="mt-1 block text-xs text-[var(--theme-text-secondary)]">
+                      {profileStatusLabel(profile.status)}
                     </span>
                   </span>
                 </button>
@@ -726,8 +725,16 @@ export function AgentBuilderWorkbench({
                     <dd className="mt-1 font-medium">{editorStatusLabel(activeEditor)}</dd>
                   </div>
                   <div>
-                    <dt className="text-[var(--theme-text-secondary)]">revision</dt>
-                    <dd className="mt-1 font-medium tabular-nums">{activeEditor.revision ?? "未分配"}</dd>
+                    <dt className="text-[var(--theme-text-secondary)]">草稿</dt>
+                    <dd className="mt-1 font-medium">
+                      {!activeEditor.agentId
+                        ? "未创建"
+                        : isAgentProfileEditorDirty(activeEditor)
+                          ? "有未保存更改"
+                          : activeEditor.status === "draft"
+                            ? "待发布"
+                            : "无待发布草稿"}
+                    </dd>
                   </div>
                   <div>
                     <dt className="text-[var(--theme-text-secondary)]">MCP 工具</dt>

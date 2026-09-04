@@ -3,14 +3,8 @@ import { Archive, FlaskConical, History, RefreshCw } from "lucide-react";
 
 import { agentProfileApi } from "../../services/api/agentProfile";
 import type { AgentProfileAdminProjection } from "../../types";
-import { isAgentProfileEditorDirty, type AgentBuilderEditor } from "./agentBuilderAdapter";
+import { isAgentProfileEditorDirty, listPublishedAgentProfileVersions, type AgentBuilderEditor } from "./agentBuilderAdapter";
 import type { AgentBuilderMutationState } from "./agentBuilderController";
-
-function statusLabel(status: AgentProfileAdminProjection["status"]): string {
-  if (status === "published") return "已发布";
-  if (status === "withdrawn") return "已下架";
-  return "草稿";
-}
 
 export function AgentBuilderLifecycle({
   disabled,
@@ -57,11 +51,12 @@ export function AgentBuilderLifecycle({
     };
   }, [editor.agentId, editor.revision]);
 
+  const publishedVersions = listPublishedAgentProfileVersions(history);
   const cleanPublished =
     Boolean(editor.agentId) && editor.status === "published" && !isAgentProfileEditorDirty(editor);
   const historyPublishedRevision = editor.status === "withdrawn"
     ? null
-    : history.find((profile) => profile.status === "published")?.revision ?? null;
+    : publishedVersions.find(({ profile }) => profile.status === "published")?.profile.revision ?? null;
   const publishedRevision = editor.publishedRevision ?? historyPublishedRevision;
   const canUnpublish = Boolean(
     editor.agentId && publishedRevision && !isAgentProfileEditorDirty(editor),
@@ -82,7 +77,7 @@ export function AgentBuilderLifecycle({
           size={17}
         />
         <h3 className="text-sm font-semibold" id="agent-lifecycle-heading">
-          版本历史与试运行
+          发布历史与试运行
         </h3>
       </div>
 
@@ -91,27 +86,35 @@ export function AgentBuilderLifecycle({
           <table className="w-full min-w-[34rem] text-left text-sm">
             <thead className="bg-[var(--theme-workbench-panel)] text-xs text-[var(--theme-text-secondary)]">
               <tr>
-                <th className="px-3 py-2 font-medium" scope="col">revision</th>
+                <th className="px-3 py-2 font-medium" scope="col">发布版本</th>
                 <th className="px-3 py-2 font-medium" scope="col">状态</th>
                 <th className="px-3 py-2 font-medium" scope="col">content hash</th>
-                <th className="px-3 py-2 font-medium" scope="col">创建时间</th>
+                <th className="px-3 py-2 font-medium" scope="col">发布时间</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--theme-border)]">
-              {history.map((profile) => (
-                <tr key={`${profile.agent_id}:${profile.revision}`}>
-                  <td className="px-3 py-2 font-medium tabular-nums">{profile.revision}</td>
-                  <td className="px-3 py-2">{statusLabel(profile.status)}</td>
-                  <td className="px-3 py-2 font-mono text-xs">
-                    {profile.content_hash.slice(0, 12)}
-                  </td>
-                  <td className="px-3 py-2 text-[var(--theme-text-secondary)]">
-                    {profile.created_at
-                      ? new Date(profile.created_at).toLocaleString("zh-CN")
-                      : "-"}
-                  </td>
-                </tr>
-              ))}
+              {publishedVersions.map(({ profile, version }) => {
+                const isCurrent = profile.revision === publishedRevision;
+                const status = editor.status === "withdrawn"
+                  ? "已下架"
+                  : isCurrent
+                    ? "当前发布"
+                    : "历史版本";
+                return (
+                  <tr key={`${profile.agent_id}:${profile.revision}`}>
+                    <td className="px-3 py-2 font-medium tabular-nums">v{version}</td>
+                    <td className="px-3 py-2">{status}</td>
+                    <td className="px-3 py-2 font-mono text-xs">
+                      {profile.content_hash.slice(0, 12)}
+                    </td>
+                    <td className="px-3 py-2 text-[var(--theme-text-secondary)]">
+                      {profile.published_at
+                        ? new Date(profile.published_at).toLocaleString("zh-CN")
+                        : "-"}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           {historyState === "loading" ? (
@@ -120,8 +123,10 @@ export function AgentBuilderLifecycle({
             <p className="px-3 py-3 text-sm text-[var(--theme-danger)]" role="alert">
               版本历史暂不可用
             </p>
-          ) : historyState === "ready" && history.length === 0 ? (
-            <p className="px-3 py-3 text-sm text-[var(--theme-text-secondary)]">暂无服务端版本</p>
+          ) : historyState === "ready" && publishedVersions.length === 0 ? (
+            <p className="px-3 py-3 text-sm text-[var(--theme-text-secondary)]">
+              暂无已发布版本，草稿保存不会增加发布版本号。
+            </p>
           ) : null}
         </div>
       ) : (
