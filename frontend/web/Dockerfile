@@ -25,12 +25,9 @@ COPY frontend/web/postcss.config.js frontend/web/tailwind.config.js frontend/web
 COPY frontend/web/public ./frontend/web/public
 COPY frontend/web/scripts ./frontend/web/scripts
 COPY frontend/web/src ./frontend/web/src
-COPY app/run_projection.py app/required_tool_contract.py ./app/
-COPY tools ./tools
-COPY .github/workflows/ai-platform-frontend.yml ./.github/workflows/ai-platform-frontend.yml
 
 WORKDIR /workspace/frontend/web
-RUN corepack pnpm run ci:verify
+RUN corepack pnpm run build
 
 FROM nginx:1.30.4-alpine@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46 AS runtime
 

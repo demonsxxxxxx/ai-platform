@@ -4582,8 +4582,12 @@ def test_dockerfiles_install_dependencies_before_source_and_provenance_layers():
     assert backend.index("COPY pyproject.toml uv.lock") < backend.index("uv sync --locked")
     assert backend.index("uv sync --locked") < backend.index("COPY app /app/app")
     assert backend.index("COPY app /app/app") < backend.index("LABEL ai-platform.source-commit")
-    assert frontend.index("pnpm install --frozen-lockfile") < frontend.index("COPY frontend/web/src")
-    assert frontend.index("COPY frontend/web/src") < frontend.index("corepack pnpm run ci:verify")
+    assert frontend.index("pnpm install --frozen-lockfile") < frontend.index(
+        "COPY frontend/web/src"
+    )
+    assert frontend.index("COPY frontend/web/src") < frontend.index(
+        "corepack pnpm run build"
+    )
 
 
 def test_auto_release_plan_uses_exact_git_pyproject_blobs_and_fails_closed(tmp_path):
