@@ -462,7 +462,7 @@ function AgentMarketCatalog({
 
   return (
     <main data-agent-market className="min-h-0 flex-1 overflow-y-auto bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]">
-      <div className="mx-auto flex w-full max-w-[86rem] flex-col px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+      <div className="flex w-full flex-col px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
         <header className="flex flex-col gap-4 lg:flex-row lg:items-center lg:gap-7">
           <div className="min-w-0 lg:w-60 lg:shrink-0">
             <div className="flex items-center gap-2">
@@ -733,7 +733,7 @@ function AgentMarketCatalog({
             <section
               aria-label="已发布专家"
               data-agent-market-catalog
-              className={view === "grid" ? "grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-4" : "flex flex-col gap-4"}
+              className={view === "grid" ? "mt-4 grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-4" : "mt-4 flex flex-col gap-4"}
             >
               {paginatedProfiles.map((profile) => (
                 <ExpertMarketCard
