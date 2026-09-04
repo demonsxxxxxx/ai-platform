@@ -31,6 +31,21 @@ test("AppShell and Chat keep one scroll owner for each transcript state", () => 
   assert.doesNotMatch(list, /workbenchSurface\.catalog\.content/);
 });
 
+test("skills, market, detail, workspace, and builder share responsive outer gutters", () => {
+  const skills = read("src/components/panels/SkillsHubPanel.tsx");
+  const market = read("src/features/agent-market/AgentMarketRoute.tsx");
+  const workspace = read("src/features/agent-market/AgentWorkspaceRoute.tsx");
+  const builder = read("src/features/agent-builder/AgentBuilderWorkbench.tsx");
+
+  assert.match(skills, /px-4[^"]*sm:px-6/);
+  assert.match(market, /flex w-full flex-col[^\n"]*px-4[^\n"]*sm:px-6/);
+  assert.match(market, /max-w-4xl[^\n"]*px-4[^\n"]*sm:px-6/);
+  assert.match(workspace, /px-4[^\n"]*sm:px-6/);
+  assert.match(builder, /px-4[^\n"]*sm:px-6/);
+  assert.match(builder, /max-w-6xl[^\n"]*px-4[^\n"]*sm:px-6/);
+  assert.match(builder, /lg:grid-cols-\[20rem_minmax\(0,1fr\)\]/);
+});
+
 test("all protected routes keep a bounded shell entry", () => {
   const manifest = read("src/appRouteManifest.ts");
   const app = read("src/App.tsx");
