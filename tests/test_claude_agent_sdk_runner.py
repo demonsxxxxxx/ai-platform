@@ -303,6 +303,10 @@ def _scripted_sdk(
             kind, value = step
             if kind == "assistant":
                 yield AssistantMessage(value)
+            elif kind == "assistant_blocks":
+                message = AssistantMessage("")
+                message.content = value
+                yield message
             elif kind == "stream":
                 yield StreamEvent(value)
             elif kind in {"hook", "cancel_hook"}:
@@ -956,6 +960,88 @@ async def test_sandbox_read_only_tool_streams_only_outside_verified_lifecycle(
     assert "".join(deltas) == "Before read. After read."
     assert result.error is None
     assert result.message == "Before read. After read."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("terminal_hook", "terminal_lifecycle", "terminal_event"),
+    [
+        ("PostToolUse", "completed", "tool.completed"),
+        ("PostToolUseFailure", "failed", "tool.failed"),
+    ],
+)
+async def test_failed_answer_projection_does_not_hide_verified_tool_terminal(
+    monkeypatch,
+    tmp_path,
+    terminal_hook,
+    terminal_lifecycle,
+    terminal_event,
+):
+    captured, deltas, lifecycle_facts, public_events = {}, [], [], []
+    call_id = "read-only-call-1"
+    hook_input = {
+        "tool_name": "Read",
+        "tool_use_id": call_id,
+        "tool_input": {"file_path": str(tmp_path / "output.txt")},
+    }
+
+    class ToolUseBlock:
+        id = call_id
+        name = "Read"
+        input = hook_input["tool_input"]
+
+    oversized_text = "x " * 131_073
+    steps = [
+        *_stream_steps(oversized_text),
+        ("assistant_blocks", [ToolUseBlock()]),
+        ("hook", ("PreToolUse", hook_input, call_id)),
+        ("hook", (terminal_hook, hook_input, call_id)),
+    ]
+
+    async def acknowledge_lifecycle(fact):
+        lifecycle_facts.append(dict(fact))
+        return True
+
+    async def acknowledge_public_events(events):
+        public_events.extend(events)
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, steps, result_text=oversized_text),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="read one file",
+        cwd=tmp_path,
+        skill_id=None,
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [], sandbox_provider="opensandbox"
+        ),
+        on_tool_lifecycle=acknowledge_lifecycle,
+        on_text=deltas.append,
+        on_agent_event=acknowledge_public_events,
+        run_id="run-projection-failed",
+        attempt_id="attempt-1",
+    )
+
+    assert [fact["lifecycle"] for fact in lifecycle_facts] == [
+        "started",
+        terminal_lifecycle,
+    ]
+    assert [
+        event.event_type
+        for event in public_events
+        if event.event_type in {"tool.started", "tool.completed", "tool.failed"}
+    ] == ["tool.started", terminal_event]
+    assert result.error == "claude_agent_sdk_public_projection_failed"
+    assert result.turn_diagnostics["counters"]["tool_lifecycle_denials"] == 0
 
 
 @pytest.mark.asyncio
@@ -2207,10 +2293,10 @@ async def test_sdk_reconciles_complete_assistant_suffix_once(
     assert published_before_hook
     assert "Before ".startswith("".join(published_before_hook))
     assert len(published_before_terminal) > len(published_before_hook)
-    assert "".join(deltas) == "Before \ufffd. After \ufffd."
-    assert "".join(deltas).count("\ufffd.") == 2
+    assert "".join(deltas) == "Before \u2588. After \u2588."
+    assert "".join(deltas).count("\u2588.") == 2
     assert result.error is None
-    assert result.message == "Before \ufffd. After \ufffd."
+    assert result.message == "Before \u2588. After \u2588."
     for private_value in (
         subject["identity"],
         subject["mcp_server_config"]["url"],
@@ -2737,6 +2823,13 @@ async def test_sdk_redacts_optional_skill_identity_before_failed_receipt(
         tool_policy_subjects=tool_policy_subjects,
         on_text=deltas.append,
         on_capability_evidence=_acknowledge_capability_evidence,
+        public_skill_metadata={
+            optional_skill: {
+                "name": "Reference Search",
+                "version": "1.0.0",
+                "availability": "available",
+            }
+        },
         require_selected_skill_invocation=False,
     )
 
@@ -2749,6 +2842,7 @@ async def test_sdk_redacts_optional_skill_identity_before_failed_receipt(
     ]
     assert public_text.startswith("Using ")
     assert public_text.endswith(". ")
+    assert "【技能：Ｒｅｆｅｒｅｎｃｅ　Ｓｅａｒｃｈ】" in public_text
     assert optional_skill not in public_text
 
 
@@ -3498,7 +3592,7 @@ async def test_sandbox_stream_ignores_complete_tool_use_block_before_safe_text(
     captured = {}
     deltas = []
     raw_streamed_text = "Safe answer after tool-1 use."
-    public_streamed_text = "Safe answer after \ufffd use."
+    public_streamed_text = "Safe answer after \u2588 use."
     events = [
         {
             "type": "content_block_start",

@@ -414,6 +414,36 @@ def test_overlapping_capability_invocations_keep_disclosure_closed_until_all_com
     )
 
 
+def test_failed_projection_still_releases_exact_tool_ownership():
+    gate = _gate()
+    invocation_key = ("builtin", "Read", "call-one")
+
+    gate.fail_closed()
+    gate.seal(
+        {"call-one": "tool invocation"},
+        invocation_key=invocation_key,
+    )
+
+    assert gate.release_after_verified_capability(invocation_key) is True
+    assert gate.release_after_verified_capability(invocation_key) is False
+    assert gate.failed is True
+    assert gate.accept("must remain private") == ()
+    assert gate.finish(final_text="must remain private", release=True).final_text == ""
+
+
+def test_finished_gate_cannot_acquire_new_tool_ownership():
+    gate = _gate()
+    invocation_key = ("builtin", "Read", "call-one")
+
+    gate.finish(final_text="done", release=True)
+    gate.seal(
+        {"call-one": "tool invocation"},
+        invocation_key=invocation_key,
+    )
+
+    assert gate.release_after_verified_capability(invocation_key) is False
+
+
 def test_unmatched_completion_cannot_reopen_an_active_invocation():
     gate = _gate()
     active_key = ("builtin", "Read", "call-one")

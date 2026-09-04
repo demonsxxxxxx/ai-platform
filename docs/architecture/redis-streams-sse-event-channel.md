@@ -212,19 +212,24 @@ listed in the cutover and acceptance document.
   authorization does not disable the SDK stream projector. The exact
   `PreToolUse` to acknowledged terminal-hook interval remains closed for every
   admitted read-only or effectful Tool so anomalous in-flight SDK text cannot
-  expose raw Tool output. A terminal receipt reopens only the exact matching
+  expose raw Tool output. A terminal receipt releases only the exact matching
   capability kind, canonical identity, and invocation ID; unrelated or duplicate
-  terminal receipts fail closed. An exact producer-attributed policy rejection
-  commits `tool.denied` and projects as a denied Tool with blocked/permission
-  semantics; aggregate admission failures never synthesize Tool identity.
-  `message.delta` is provisional user-visible narration; it is never evidence
-  that a capability ran or that a Run succeeded.
+  terminal receipts fail closed. A failed Assistant-body projection remains
+  permanently closed, but does not invalidate that exact receipt or suppress the
+  corresponding public Tool terminal event. An exact producer-attributed policy
+  rejection commits `tool.denied` and projects as a denied Tool with
+  blocked/permission semantics; aggregate admission failures never synthesize
+  Tool identity. `message.delta` is provisional user-visible narration; it is
+  never evidence that a capability ran or that a Run succeeded.
 - **Safety invariant:** hidden reasoning, raw tool input or output, commands,
   paths, credentials, storage keys, private Tool, Skill, MCP, task, Attempt, and
-  stream identities remain prohibited. Exact invocation-interval text is not a
-  public Assistant source. Stateful cross-chunk sanitization, cumulative bounds,
-  strict callback validation, tool admission, capability receipts, and
-  platform-owned terminalization remain fail closed.
+  stream identities remain prohibited. A private Skill identity may project only
+  to its catalog-authorized public name, with ASCII characters converted to
+  non-colliding full-width forms; opaque and dynamic identities use a generic
+  non-ASCII marker. Exact invocation-interval text is not a public Assistant
+  source. Stateful cross-chunk sanitization, cumulative bounds, strict callback
+  validation, tool admission, capability receipts, and platform-owned
+  terminalization remain fail closed.
 - **Ordering invariant:** public Tool lifecycle events bracket the actual
   invocation. A start commits before execution; a completion or failure commits
   only after its verified receipt. Subsequent Assistant text commits later in

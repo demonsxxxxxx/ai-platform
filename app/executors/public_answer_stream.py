@@ -133,6 +133,8 @@ class PublicAnswerStreamGate:
         """Register private identities and close disclosure for one invocation."""
 
         del capability_boundary
+        if self._finished:
+            return
         if private_replacements is not None:
             self.register_private_replacements(private_replacements)
         if (
@@ -147,9 +149,8 @@ class PublicAnswerStreamGate:
         if held_chars:
             self._pending = self._pending[:-held_chars]
             self._logical_view = self._logical_view[:-held_chars]
-        if not self._failed:
-            self._active_capability_invocations.add(invocation_key)
-            self._capability_boundary_seen = True
+        self._active_capability_invocations.add(invocation_key)
+        self._capability_boundary_seen = True
 
     def register_private_replacements(
         self,
@@ -178,9 +179,9 @@ class PublicAnswerStreamGate:
         self,
         invocation_key: tuple[str, str, str],
     ) -> bool:
-        """Re-open disclosure only for a matching verified completion receipt."""
+        """Release exact receipt ownership without reopening a failed projection."""
 
-        if self._failed or invocation_key not in self._active_capability_invocations:
+        if invocation_key not in self._active_capability_invocations:
             return False
         self._active_capability_invocations.remove(invocation_key)
         return True
