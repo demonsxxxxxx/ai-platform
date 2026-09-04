@@ -155,6 +155,30 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert isinstance(jobs, dict)
     assert jobs["frontend"]["runs-on"] == "windows-latest"
     assert jobs["frontend"]["timeout-minutes"] == "15"
+    frontend_steps = jobs["frontend"]["steps"]
+    store_step = next(
+        step for step in frontend_steps if step.get("name") == "Resolve pnpm store"
+    )
+    cache_step = next(
+        step for step in frontend_steps if step.get("name") == "Cache pnpm store"
+    )
+    install_step = next(
+        step
+        for step in frontend_steps
+        if step.get("name") == "Install frontend dependencies"
+    )
+    assert store_step["id"] == "pnpm-store"
+    assert "corepack pnpm store path --silent" in store_step["run"]
+    assert frontend_steps.index(store_step) < frontend_steps.index(cache_step)
+    assert frontend_steps.index(cache_step) < frontend_steps.index(install_step)
+    assert cache_step["uses"] == (
+        "actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809"
+    )
+    assert cache_step["with"]["path"] == "${{ steps.pnpm-store.outputs.path }}"
+    assert cache_step["with"]["key"] == (
+        "frontend-pnpm-${{ runner.os }}-${{ hashFiles('frontend/web/pnpm-lock.yaml') }}"
+    )
+    assert cache_step["with"]["restore-keys"] == "frontend-pnpm-${{ runner.os }}-\n"
     assert jobs["frontend-image"]["runs-on"] == "ubuntu-latest"
     assert jobs["frontend-image"]["timeout-minutes"] == "30"
     assert "needs" not in jobs["frontend-image"]

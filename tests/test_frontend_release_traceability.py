@@ -602,8 +602,9 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "ENV AI_PLATFORM_BUILD_COMMIT=${AI_PLATFORM_BUILD_COMMIT}" in dockerfile
     assert "org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT" in dockerfile
     assert "ai-platform.source-revision=$AI_PLATFORM_BUILD_COMMIT" in dockerfile
-    assert "corepack pnpm run ci:verify" in dockerfile
-    assert "COPY tools ./tools" in dockerfile
+    assert "corepack pnpm run build" in dockerfile
+    assert "corepack pnpm run ci:verify" not in dockerfile
+    assert "COPY tools ./tools" not in dockerfile
     copy_dist = "COPY --from=build /workspace/frontend/web/dist /usr/share/nginx/html"
     assert copy_dist in dockerfile
     assert runtime_dockerfile.index(security_upgrade) < runtime_dockerfile.index(copy_dist)
@@ -698,7 +699,7 @@ def test_frontend_release_traceability_flags_packaged_delivery_missing_required_
     deploy_root.mkdir(parents=True)
     write_frontend_package(frontend_root)
     (frontend_root / "Dockerfile").write_text(
-        "FROM node:22-alpine AS build\nRUN corepack pnpm run ci:verify\nFROM nginx:1.27-alpine\n",
+        "FROM node:22-alpine AS build\nRUN corepack pnpm run build\nFROM nginx:1.27-alpine\n",
         encoding="utf-8",
     )
     (frontend_root / "nginx.conf.template").write_text(
@@ -747,7 +748,7 @@ def test_frontend_release_traceability_rejects_commented_debian_build_stage(tmp_
                 "ENV AI_PLATFORM_BUILD_COMMIT=${AI_PLATFORM_BUILD_COMMIT}",
                 "ENV AI_PLATFORM_BUILD_DIRTY=${AI_PLATFORM_BUILD_DIRTY}",
                 "COPY tools ./tools",
-                "RUN corepack pnpm run ci:verify",
+                "RUN corepack pnpm run build",
                 "FROM nginx:1.27-alpine",
                 "LABEL org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT",
                 "LABEL ai-platform.source-revision=$AI_PLATFORM_BUILD_COMMIT",

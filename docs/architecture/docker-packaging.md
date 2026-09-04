@@ -39,11 +39,13 @@ platforms, then update the Dockerfile, version declaration, lock when applicable
 and focused tests in one review.
 
 Pull requests and `main` run the stable `backend required` and `frontend required`
-checks. Those checks include real Docker builds. Backend acceptance verifies
-imports, HTTP startup, non-root identity, executable entrypoint, source markers,
-and existing OCI/release labels. Frontend acceptance verifies the built artifact,
-the same commit/label contract, and an HTTP health response from the temporary CI
-container. That standalone frontend container overrides its upstream with the
+checks. Those checks include real Docker builds. The frontend workflow owns the full
+`ci:verify` audit, test, lint, type-check, and build command; the frontend Dockerfile
+runs only the production `build` command so image packaging does not repeat the full
+suite. Backend acceptance verifies imports, HTTP startup, non-root identity, executable
+entrypoint, source markers, and existing OCI/release labels. Frontend acceptance verifies
+the built artifact, the same commit/label contract, and an HTTP health response from
+the temporary CI container. That standalone frontend container overrides its upstream with the
 numeric loopback address only for the health probe: the production image keeps
 its Compose-network `api:8020` default, while an isolated CI runner has no `api`
 DNS subject. On failure, both image jobs report only a bounded log-tail line count,
