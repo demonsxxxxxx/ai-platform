@@ -8,9 +8,11 @@ from app.context.domain.conversation import (
     build_executor_conversation_context,
     empty_executor_conversation_context,
 )
+from app.context.domain.provider_sessions import PROVIDER_SESSION_RESUME_CONTEXT_KEY
 
 SnapshotLoader = Callable[..., Awaitable[dict[str, Any] | None]]
 MessageLoader = Callable[..., Awaitable[list[dict[str, Any]]]]
+ProviderTranscriptLoader = Callable[..., Awaitable[bool | dict[str, Any] | None]]
 ContextProjector = Callable[[dict[str, Any]], dict[str, Any]]
 
 
@@ -22,6 +24,7 @@ async def materialize_worker_context_snapshot(
     snapshot_loader: SnapshotLoader,
     message_loader: MessageLoader,
     context_projector: ContextProjector,
+    provider_transcript_loader: ProviderTranscriptLoader | None = None,
 ) -> dict[str, Any] | None:
     scoped_snapshot = await snapshot_loader(
         conn,
@@ -39,7 +42,31 @@ async def materialize_worker_context_snapshot(
     if not isinstance(raw_message_ids, list):
         return None
     selected_message_ids = [str(message_id or "").strip() for message_id in raw_message_ids]
-    if selected_message_ids:
+
+    has_provider_transcript = False
+    if provider_transcript_loader is not None and identity.get("engine") == "claude":
+        provider_state = await provider_transcript_loader(
+            conn,
+            tenant_id=identity["tenant_id"],
+            workspace_id=identity["workspace_id"],
+            user_id=identity["user_id"],
+            session_id=identity["session_id"],
+            run_id=identity["run_id"],
+            agent_id=identity.get("agent_id", ""),
+            engine=identity["engine"],
+        )
+        has_provider_transcript = (
+            bool(provider_state)
+            if not isinstance(provider_state, dict)
+            else bool(
+                provider_state.get("has_main_transcript")
+                or provider_state.get("main_transcript_exists")
+            )
+        )
+
+    if has_provider_transcript:
+        conversation_context = empty_executor_conversation_context()
+    elif selected_message_ids:
         materialized_messages = await message_loader(
             conn,
             tenant_id=identity["tenant_id"],
@@ -64,5 +91,8 @@ async def materialize_worker_context_snapshot(
     return {
         "context_snapshot_id": str(context_ref["context_snapshot_id"]),
         "context_snapshot": context_ref,
-        "conversation_context": conversation_context,
+        "conversation_context": {
+            **conversation_context,
+            PROVIDER_SESSION_RESUME_CONTEXT_KEY: has_provider_transcript,
+        },
     }

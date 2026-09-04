@@ -404,6 +404,23 @@ async def test_prior_schema_ledgers_advance_to_current_schema(
 
 
 @pytest.mark.asyncio
+async def test_agent_avatar_schema_ledger_is_upgraded_to_claude_provider_schema():
+    state = SharedMigrationState()
+    state.ledger[schema_migrations.AGENT_AVATAR_STYLE_SCHEMA_VERSION] = "legacy-checksum"
+
+    result = await schema_migrations.apply_migrations(
+        transaction_factory=transaction_factory(state),
+        index_connection_factory=index_connection_factory(state),
+    )
+
+    assert result["status"] == "applied"
+    assert state.ledger[schema_migrations.AGENT_AVATAR_STYLE_SCHEMA_VERSION] == "legacy-checksum"
+    assert state.ledger[schema_migrations.CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION] == (
+        schema_migrations.schema_checksum()
+    )
+
+
+@pytest.mark.asyncio
 async def test_pending_admission_schema_advances_to_current_schema():
     state = SharedMigrationState()
     predecessor_checksum = "9f80933b643ad71c23f416e8ad2a52b3890efba83ec16e990a66979662b93d20"
@@ -449,10 +466,14 @@ async def test_successor_activation_schema_advances_to_concurrent_due_index_sche
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.03.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.04.1"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.FILE_UPLOAD_SESSION_SCHEMA_VERSION
+        == schema_migrations.CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION
+    )
+    assert (
+        schema_migrations.FILE_UPLOAD_SESSION_SCHEMA_VERSION
+        == "2026.09.03.1"
     )
     assert (
         schema_migrations.USER_PROFILE_METADATA_SCHEMA_VERSION
@@ -481,6 +502,8 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "mcp_servers",
         "mcp_server_credentials",
         "mcp_tools",
+        "provider_session_bindings",
+        "provider_session_entries",
     )
     assert (
         "users",
@@ -498,6 +521,59 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "text",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
+    for column in (
+        ("tenant_id", "text", True),
+        ("workspace_id", "text", True),
+        ("user_id", "text", True),
+        ("session_id", "text", True),
+        ("agent_id", "text", True),
+        ("engine", "text", True),
+        ("provider_session_id", "uuid", True),
+        ("context_epoch", "int8", True),
+        ("next_sequence", "int8", True),
+        ("writer_run_id", "text", False),
+        ("writer_attempt_id", "text", False),
+        ("created_at", "timestamptz", True),
+        ("updated_at", "timestamptz", True),
+    ):
+        assert ("provider_session_bindings", *column) in schema_migrations.CRITICAL_COLUMNS
+    for column in (
+        ("id", "text", True),
+        ("tenant_id", "text", True),
+        ("workspace_id", "text", True),
+        ("user_id", "text", True),
+        ("session_id", "text", True),
+        ("agent_id", "text", True),
+        ("engine", "text", True),
+        ("provider_session_id", "uuid", True),
+        ("subpath", "text", True),
+        ("sequence", "int8", True),
+        ("sdk_entry_uuid", "text", False),
+        ("entry_json", "jsonb", True),
+        ("created_at", "timestamptz", True),
+    ):
+        assert ("provider_session_entries", *column) in schema_migrations.CRITICAL_COLUMNS
+    for constraint in (
+        ("provider_session_bindings", "chk_provider_session_bindings_engine"),
+        ("provider_session_bindings", "chk_provider_session_bindings_context_epoch"),
+        ("provider_session_bindings", "chk_provider_session_bindings_next_sequence"),
+        ("provider_session_bindings", "pk_provider_session_bindings"),
+        ("provider_session_bindings", "uq_provider_session_bindings_provider_session_id"),
+        ("provider_session_bindings", "uq_provider_session_bindings_scope"),
+        ("provider_session_bindings", "fk_provider_session_bindings_session"),
+        ("provider_session_entries", "provider_session_entries_pkey"),
+        ("provider_session_entries", "chk_provider_session_entries_engine"),
+        ("provider_session_entries", "chk_provider_session_entries_sequence"),
+        ("provider_session_entries", "uq_provider_session_entries_sequence"),
+        ("provider_session_entries", "fk_provider_session_entries_binding"),
+    ):
+        assert constraint in schema_migrations.CRITICAL_CONSTRAINTS
+    for index in (
+        ("idx_sessions_provider_scope", True),
+        ("uq_provider_session_entries_sdk_uuid", True),
+        ("idx_provider_session_entries_order", False),
+    ):
+        assert index in schema_migrations.CRITICAL_INDEXES
     assert (
         "agent_profile_revisions",
         "skill_set",
@@ -1111,7 +1187,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "d2b8beeb629cb61d96534b36de062b39291cf8b120a6f277bb50abb2e8eb925c"
+        "71d0efd35d88a4711c7037baa6c0e19f541192f791c495df7e798059853fc061"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

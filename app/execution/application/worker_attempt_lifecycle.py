@@ -8,7 +8,11 @@ from datetime import datetime
 import re
 from typing import Any, Protocol
 
-from app.runs.api import RunTerminalizationProgress, run_attempt_id_for_queue_attempt
+from app.runs.api import (
+    ExecutionSpec,
+    RunTerminalizationProgress,
+    run_attempt_id_for_queue_attempt,
+)
 
 
 AsyncPort = Callable[..., Awaitable[Any]]
@@ -163,6 +167,39 @@ class WorkerAttemptLifecycle:
             queue_attempt_id=queue_attempt_id,
             worker_owner_id=worker_owner_id,
         )
+
+    async def restore_reconciliation_execution_spec(
+        self,
+        conn: Any,
+    ) -> ExecutionSpec:
+        """Restore the immutable execution spec bound to this attempt."""
+
+        if not self.is_reconciliation:
+            raise ValueError("executor_reconciliation_claim_missing")
+        attempt = await self.ports.get_attempt_for_queue_attempt(
+            conn,
+            tenant_id=self.tenant_id,
+            run_id=self.run_id,
+            queue_attempt_id=self.queue_attempt_id,
+            for_update=True,
+        )
+        if attempt is None:
+            raise self.ports.conflict_error(
+                "run_attempt_reconciliation_attempt_missing"
+            )
+        canonical_json = attempt.get("execution_spec_canonical_json")
+        spec_sha256 = attempt.get("execution_spec_sha256")
+        if not isinstance(canonical_json, str) or not isinstance(spec_sha256, str):
+            raise self.ports.conflict_error("run_attempt_execution_spec_missing")
+        try:
+            return ExecutionSpec.from_canonical_json(
+                canonical_json.encode("utf-8"),
+                expected_sha256=spec_sha256,
+            )
+        except ValueError as exc:
+            raise self.ports.conflict_error(
+                "run_attempt_execution_spec_invalid"
+            ) from exc
 
     async def bind_execution_spec(
         self,
