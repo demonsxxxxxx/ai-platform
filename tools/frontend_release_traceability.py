@@ -170,8 +170,7 @@ PACKAGED_DELIVERY_REQUIRED_TERMS = {
         "dockerfile_build_dirty_env_required": "ENV AI_PLATFORM_BUILD_DIRTY=${AI_PLATFORM_BUILD_DIRTY}",
         "dockerfile_revision_label_required": "org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT",
         "dockerfile_source_revision_label_required": "ai-platform.source-revision=$AI_PLATFORM_BUILD_COMMIT",
-        "dockerfile_ci_verify_required": "corepack pnpm run ci:verify",
-        "dockerfile_tools_context_required": "COPY tools ./tools",
+        "dockerfile_build_command_required": "corepack pnpm run build",
         "dockerfile_dist_copy_required": "COPY --from=build /workspace/frontend/web/dist",
     },
     FRONTEND_NGINX_TEMPLATE_PATH: {
