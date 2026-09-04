@@ -2719,6 +2719,12 @@ async def test_get_run_allowlists_terminal_failure_and_preserves_admin_diagnosti
                 "message": raw_terms[0],
                 "sdk_error": raw_terms[1],
                 "error": {"message": raw_terms[2]},
+                "runtime_diagnostics": {
+                    "sdk": {"errors": [raw_terms[0]]},
+                    "tool_calls": [
+                        {"tool_input": {"command": raw_terms[0]}}
+                    ],
+                },
             },
             "error_code": "claude_agent_sdk_runtime_error",
             "error_message": raw_terms[3],
@@ -2742,11 +2748,12 @@ async def test_get_run_allowlists_terminal_failure_and_preserves_admin_diagnosti
     ordinary = await get_run("run-a", principal=principal())
     admin = await get_run("run-a", principal=principal(roles=["admin"]))
 
-    fixed_message = "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。"
+    fixed_message = "AI 执行服务暂时不可用。请稍后重试；如问题持续，请联系管理员。"
     assert ordinary.result == {"message": fixed_message}
-    assert ordinary.error_code == "model_service_unavailable"
+    assert ordinary.error_code == "execution_service_unavailable"
     assert ordinary.error_message == fixed_message
     assert all(term not in ordinary.model_dump_json() for term in raw_terms)
+    assert "runtime_diagnostics" not in ordinary.model_dump_json()
     assert admin.result["message"] == raw_terms[0]
     assert admin.result["sdk_error"] == raw_terms[1]
     assert admin.result["error"] == {"message": raw_terms[2]}

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 import sys
 import types
@@ -6,7 +7,112 @@ from typing import Any
 
 import pytest
 
-from app.executors.claude_agent_sdk_runner import run_claude_agent_sdk
+from app.executors.claude_agent_sdk_runner import (
+    project_sdk_turn_diagnostics,
+    run_claude_agent_sdk,
+)
+from app.runtime.sandbox.runtime_diagnostics import (
+    SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES,
+    SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    normalize_sdk_runtime_diagnostics,
+)
+
+
+def test_runtime_diagnostics_fit_keeps_latest_evidence_within_result_budget():
+    payload = {
+        "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        "error_code": "claude_agent_sdk_runtime_error",
+        "failure_source": "sdk_exception",
+        "failure_stage": "model_wait",
+        "sdk": {
+            "errors": "s" * 4000,
+            "exception_message": "m" * 8192,
+            "exception_traceback": "t" * 8192,
+        },
+        "tool_lifecycles": [
+            {
+                "tool_name": "t" * 128,
+                "invocation_id": f"lifecycle-{index}-" + "i" * 110,
+                "state": "failed",
+            }
+            for index in range(128)
+        ],
+        "tool_calls": [
+            {
+                "tool_name": "Bash",
+                "invocation_id": f"call-{index}",
+                "tool_input": "i" * 4000,
+                "failure": "f" * 4000,
+            }
+            for index in range(8)
+        ],
+        "tool_policy_denials": [
+            {
+                "tool_name": "Bash",
+                "invocation_id": f"denial-{index}",
+                "reason": "r" * 1024,
+                "tool_input": "i" * 4000,
+            }
+            for index in range(8)
+        ],
+    }
+
+    fitted = normalize_sdk_runtime_diagnostics(payload)
+
+    assert len(json.dumps(fitted, separators=(",", ":")).encode()) <= (
+        SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES
+    )
+    assert fitted["tool_lifecycles"][-1]["invocation_id"].startswith(
+        "lifecycle-127-"
+    )
+    assert fitted["tool_calls"][-1]["invocation_id"] == "call-7"
+    assert fitted["tool_policy_denials"][-1]["invocation_id"] == "denial-7"
+    assert fitted["truncated"]["tool_lifecycles"]["original"] == 128
+
+
+def test_runtime_diagnostics_fit_handles_json_escaping_and_invalid_unicode():
+    fitted = normalize_sdk_runtime_diagnostics(
+        {
+            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+            "error_code": "claude_agent_sdk_runtime_error",
+            "failure_source": "sdk_exception",
+            "failure_stage": "model_wait",
+            "sdk": {
+                "errors": "\0" * 4000,
+                "exception_message": "\ud800" + "\0" * 8192,
+                "exception_traceback": "\0" * 8192,
+            },
+            "tool_lifecycles": [
+                {
+                    "tool_name": "Bash",
+                    "invocation_id": "call-1",
+                    "state": "failed",
+                }
+            ],
+            "tool_calls": [
+                {
+                    "tool_name": "Bash",
+                    "invocation_id": "call-1",
+                    "tool_input": {"command": "\ud800"},
+                    "failure": "\0" * 4000,
+                }
+            ],
+            "tool_policy_denials": [
+                {
+                    "tool_name": "Bash",
+                    "invocation_id": "call-1",
+                    "reason": "\0" * 1024,
+                    "tool_input": "\0" * 4000,
+                }
+            ],
+        }
+    )
+
+    encoded = json.dumps(fitted, ensure_ascii=False, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    assert len(encoded) <= SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES
+    assert fitted["tool_calls"][0]["tool_input"] == {"command": "?"}
 
 
 def _settings(*, timeout_seconds: float = 5.0):
@@ -269,6 +375,11 @@ async def test_sdk_error_terminal_preserves_selected_skill_not_invoked_classific
     assert result.error == "claude_agent_sdk_selected_skill_not_invoked"
     assert result.turn_diagnostics["terminal_class"] == "selected_skill_not_invoked"
     assert "private upstream detail" not in str(result.turn_diagnostics)
+    assert result.runtime_diagnostics["error_code"] == result.error
+    assert result.runtime_diagnostics["failure_source"] == "sdk_result_error"
+    assert result.runtime_diagnostics["sdk"]["errors"] == [
+        "private upstream detail"
+    ]
 
 
 @pytest.mark.asyncio
@@ -328,6 +439,22 @@ async def test_dependency_hook_failure_after_selected_success_is_safe_upstream_e
     assert result.turn_diagnostics["used_skills"] == [metadata["review-skill"]]
     assert "minimax-docx" not in str(result.turn_diagnostics)
     assert "private dependency command failed" not in str(result.turn_diagnostics)
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    [
+        "required_tool_completion_evidence_missing",
+        "required_tool_completion_evidence_mismatch",
+    ],
+)
+def test_required_tool_completion_errors_are_not_classified_as_upstream(error_code):
+    diagnostics = project_sdk_turn_diagnostics({}, error_code=error_code)
+
+    assert diagnostics["terminal_class"] == "tool_policy_or_admission_failure"
+    assert diagnostics["error_code"] == "claude_agent_sdk_tool_admission_failed"
+    assert diagnostics["action"] == "review_skill_or_tool_admission"
+    assert diagnostics["retryable"] is False
 
 
 @pytest.mark.asyncio

@@ -1391,7 +1391,7 @@ def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
             "claude_agent_sdk_runtime_error",
             {},
             "failed",
-            "model_service_unavailable",
+            "execution_service_unavailable",
             None,
         ),
         (

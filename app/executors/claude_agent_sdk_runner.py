@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import sys
+import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from inspect import isawaitable
@@ -60,6 +61,15 @@ from app.required_tool_contract import (
     declaration_from_input,
     declaration_from_payload,
     with_sandbox_local_tool_capability_subjects,
+)
+from app.runtime.sandbox.runtime_diagnostics import (
+    SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT as _MAX_RUNTIME_DIAGNOSTIC_DETAIL_ENTRIES,
+    SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES as _MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES,
+    SDK_RUNTIME_DIAGNOSTIC_LIFECYCLE_LIMIT as _MAX_RUNTIME_DIAGNOSTIC_LIFECYCLES,
+    SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    normalize_sdk_runtime_diagnostics,
+    runtime_diagnostic_text as _runtime_diagnostic_text,
+    runtime_diagnostic_value as _runtime_diagnostic_value,
 )
 from app.settings import get_settings
 from app.skills.execution_profiles import (
@@ -213,6 +223,7 @@ class ClaudeAgentSdkRunResult:
     used_skills: list[str] = field(default_factory=list)
     used_skills_source: str = ""
     turn_diagnostics: dict[str, Any] = field(default_factory=dict)
+    runtime_diagnostics: dict[str, Any] = field(default_factory=dict)
     capability_evidence: list[dict[str, str]] = field(default_factory=list)
 
 
@@ -270,6 +281,8 @@ def _diagnostic_terminal_class(
         _SDK_SELECTED_SKILL_HOOK_FAILED,
         _SDK_SELECTED_SKILL_NOT_AUTHORIZED,
         _SDK_TOOL_ADMISSION_FAILED,
+        "required_tool_completion_evidence_missing",
+        "required_tool_completion_evidence_mismatch",
         "claude_agent_sdk_disabled",
         "attachment_context_invalid",
         "context_retrieval_registration_failed",
@@ -984,7 +997,9 @@ async def run_claude_agent_sdk(
     capability_evidence_rejected = False
     actual_mcp_invocation_observed = False
     capability_invocation_states: dict[tuple[str, str, str], str] = {}
+    governed_builtin_invocation_states: dict[tuple[str, str], str] = {}
     observed_read_only_invocation_states: dict[tuple[str, str], str] = {}
+    runtime_tool_calls: dict[tuple[str, str], dict[str, Any]] = {}
     read_only_lifecycle_denials_finalized = False
 
     def finalize_read_only_lifecycle_denials() -> None:
@@ -1018,12 +1033,141 @@ async def run_claude_agent_sdk(
             public_skill_metadata=public_skill_metadata,
         )
 
+    def runtime_diagnostics(
+        error_code: str,
+        *,
+        failure_source: str,
+        sdk_errors: object = None,
+        result_subtype: object = None,
+        stop_reason: object = None,
+        terminal_reason: object = None,
+        permission_denials: object = None,
+        exception: BaseException | None = None,
+    ) -> dict[str, Any]:
+        finalize_read_only_lifecycle_denials()
+        sdk: dict[str, Any] = {}
+        for key, value in (
+            ("errors", sdk_errors),
+            ("result_subtype", result_subtype),
+            ("stop_reason", stop_reason),
+            ("terminal_reason", terminal_reason),
+            ("permission_denials", permission_denials),
+        ):
+            if value not in (None, "", []):
+                sdk[key] = _runtime_diagnostic_value(value)
+        if exception is not None:
+            sdk.update(
+                {
+                    "exception_type": type(exception).__name__,
+                    "exception_message": _runtime_diagnostic_text(exception),
+                    "exception_traceback": _runtime_diagnostic_text(
+                        "".join(
+                            traceback.format_exception(
+                                type(exception), exception, exception.__traceback__
+                            )
+                        )
+                    ),
+                }
+            )
+        tool_states: dict[tuple[str, str], dict[str, str]] = {}
+        for states in (
+            governed_builtin_invocation_states,
+            observed_read_only_invocation_states,
+        ):
+            for (tool_name, invocation_id), state in states.items():
+                tool_states[(tool_name, invocation_id)] = {
+                    "capability_kind": "builtin",
+                    "tool_name": _runtime_diagnostic_text(
+                        tool_name, max_bytes=_MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES
+                    ),
+                    "invocation_id": _runtime_diagnostic_text(
+                        invocation_id,
+                        max_bytes=_MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES,
+                    ),
+                    "state": state,
+                }
+        for (
+            capability_kind,
+            canonical_identity,
+            invocation_id,
+        ), state in capability_invocation_states.items():
+            tool_states[(canonical_identity, invocation_id)] = {
+                "capability_kind": capability_kind,
+                "tool_name": _runtime_diagnostic_text(
+                    canonical_identity,
+                    max_bytes=_MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES,
+                ),
+                "invocation_id": _runtime_diagnostic_text(
+                    invocation_id,
+                    max_bytes=_MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES,
+                ),
+                "state": state,
+            }
+        tool_calls = {
+            key: dict(value) for key, value in runtime_tool_calls.items()
+        }
+        for key, lifecycle in tool_states.items():
+            if key in tool_calls:
+                tool_calls[key]["state"] = lifecycle["state"]
+        return normalize_sdk_runtime_diagnostics(
+            {
+                "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+                "error_code": error_code,
+                "failure_source": failure_source,
+                "failure_stage": last_public_stage,
+                "sdk": sdk,
+                "tool_policy_denials": list(
+                    diagnostic_counters.get("tool_policy_denials_detail", [])[
+                        -_MAX_RUNTIME_DIAGNOSTIC_DETAIL_ENTRIES:
+                    ]
+                ),
+                "tool_lifecycles": list(tool_states.values())[
+                    -_MAX_RUNTIME_DIAGNOSTIC_LIFECYCLES:
+                ],
+                "tool_calls": list(tool_calls.values())[
+                    -_MAX_RUNTIME_DIAGNOSTIC_DETAIL_ENTRIES:
+                ],
+            }
+        )
+
+    def record_runtime_tool_stage(
+        *,
+        tool_name: object,
+        invocation_id: object,
+        stage: str,
+        tool_input: object = None,
+        failure: object = None,
+    ) -> None:
+        name = str(tool_name or "").strip()
+        call_id = canonical_tool_call_id(invocation_id) or ""
+        if not name or not call_id:
+            return
+        entry = runtime_tool_calls.setdefault(
+            (name, call_id),
+            {
+                "tool_name": _runtime_diagnostic_text(
+                    name, max_bytes=_MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES
+                ),
+                "invocation_id": _runtime_diagnostic_text(
+                    call_id, max_bytes=_MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES
+                ),
+            },
+        )
+        entry["last_stage"] = stage
+        if tool_input is not None:
+            entry["tool_input"] = _runtime_diagnostic_value(tool_input)
+        if failure is not None:
+            entry["failure"] = _runtime_diagnostic_value(failure)
+
     if not settings.claude_agent_sdk_enabled:
         error_code = "claude_agent_sdk_disabled"
         return ClaudeAgentSdkRunResult(
             used_sdk=False,
             error=error_code,
             turn_diagnostics=turn_diagnostics(error_code),
+            runtime_diagnostics=runtime_diagnostics(
+                error_code, failure_source="sdk_disabled"
+            ),
         )
     try:
         import claude_agent_sdk as sdk
@@ -1066,6 +1210,11 @@ async def run_claude_agent_sdk(
             used_sdk=True,
             error=error_code,
             turn_diagnostics=turn_diagnostics(error_code),
+            runtime_diagnostics=runtime_diagnostics(
+                error_code,
+                failure_source="sdk_configuration",
+                sdk_errors="invalid_configured_skill_name",
+            ),
         )
     selected_sdk_skill = (
         skill_id
@@ -1089,6 +1238,11 @@ async def run_claude_agent_sdk(
             used_sdk=True,
             error=error_code,
             turn_diagnostics=turn_diagnostics(error_code),
+            runtime_diagnostics=runtime_diagnostics(
+                error_code,
+                failure_source="sdk_configuration",
+                sdk_errors="tool_lifecycle_hooks_unavailable",
+            ),
         )
     requested_internal_context_tools = [
         identity.removeprefix(_SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX)
@@ -1148,8 +1302,14 @@ async def run_claude_agent_sdk(
             used_sdk=True,
             error=_SDK_SELECTED_SKILL_NOT_AUTHORIZED,
             turn_diagnostics=turn_diagnostics(_SDK_SELECTED_SKILL_NOT_AUTHORIZED),
+            runtime_diagnostics=runtime_diagnostics(
+                _SDK_SELECTED_SKILL_NOT_AUTHORIZED,
+                failure_source="sdk_configuration",
+                sdk_errors="selected_skill_not_authorized",
+            ),
         )
     context_retrieval_registration_error: str | None = None
+    context_retrieval_registration_exception: BaseException | None = None
     try:
         context_retrieval_server = _build_context_retrieval_mcp_server(
             sdk,
@@ -1165,15 +1325,21 @@ async def run_claude_agent_sdk(
             context_retrieval_registration_error = (
                 "context_retrieval_registration_unavailable"
             )
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         context_retrieval_server = None
         context_retrieval_registration_error = "context_retrieval_registration_failed"
+        context_retrieval_registration_exception = exc
     if requested_internal_context_tools and context_retrieval_server is None:
         error_code = context_retrieval_registration_error or _SDK_TOOL_ADMISSION_FAILED
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
             error=error_code,
             turn_diagnostics=turn_diagnostics(error_code),
+            runtime_diagnostics=runtime_diagnostics(
+                error_code,
+                failure_source="context_retrieval_registration",
+                exception=context_retrieval_registration_exception,
+            ),
         )
     if context_retrieval_server is None:
         internal_context_tools: set[str] = set()
@@ -1211,11 +1377,16 @@ async def run_claude_agent_sdk(
         mcp_servers = (
             _mcp_server_options(authorized_subjects) if sandbox_brokered else {}
         )
-    except ValueError:
+    except ValueError as exc:
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
             error=_SDK_TOOL_ADMISSION_FAILED,
             turn_diagnostics=turn_diagnostics(_SDK_TOOL_ADMISSION_FAILED),
+            runtime_diagnostics=runtime_diagnostics(
+                _SDK_TOOL_ADMISSION_FAILED,
+                failure_source="mcp_server_configuration",
+                exception=exc,
+            ),
         )
     if context_retrieval_server is not None and (
         not sandbox_brokered or internal_context_subjects
@@ -1249,11 +1420,16 @@ async def run_claude_agent_sdk(
             ):
                 raise RequiredToolContractError("required_tool_declaration_mismatch")
             required_builtin_declarations[("builtin", identity)] = declaration
-    except RequiredToolContractError:
+    except RequiredToolContractError as exc:
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
             error=_SDK_TOOL_ADMISSION_FAILED,
             turn_diagnostics=turn_diagnostics(_SDK_TOOL_ADMISSION_FAILED),
+            runtime_diagnostics=runtime_diagnostics(
+                _SDK_TOOL_ADMISSION_FAILED,
+                failure_source="required_tool_contract",
+                exception=exc,
+            ),
         )
     sandbox_local_lifecycle_names = {
         identity
@@ -1269,7 +1445,6 @@ async def run_claude_agent_sdk(
     if sandbox_brokered and internal_context_subjects:
         strict_tool_lifecycle_names.add("MCP")
     sandbox_bash_lifecycle_governed = "Bash" in strict_tool_lifecycle_names
-    governed_builtin_invocation_states: dict[tuple[str, str], str] = {}
     governed_builtin_lifecycle_rejected = False
     read_only_lifecycle_rejected = False
     actual_sandbox_bash_invocation_observed = False
@@ -1392,6 +1567,11 @@ async def run_claude_agent_sdk(
             return False
         declaration_key = (capability_kind, canonical_identity)
         invocation_key = (capability_kind, canonical_identity, tool_call_id)
+        record_runtime_tool_stage(
+            tool_name=canonical_identity,
+            invocation_id=tool_call_id,
+            stage=lifecycle_phase,
+        )
         governed = declaration_key in capability_plan.available
         if capability_kind == "mcp" and lifecycle_phase == "invocation_requested":
             actual_mcp_invocation_observed = True
@@ -1490,6 +1670,11 @@ async def run_claude_agent_sdk(
 
         name = str(tool_name or "").strip()
         call_id = canonical_tool_call_id(tool_call_id) or ""
+        record_runtime_tool_stage(
+            tool_name=name,
+            invocation_id=call_id,
+            stage=lifecycle,
+        )
         required_key = ("builtin", name)
         is_required_builtin = required_key in required_builtin_declarations
         is_read_only_tool = name in read_only_tool_lifecycle_names
@@ -1707,15 +1892,49 @@ async def run_claude_agent_sdk(
             return context.get("tool_use_id")
         return None
 
+    def record_tool_policy_denial(
+        *,
+        tool_name: object,
+        tool_input: object,
+        reason: object,
+        invocation_id: object,
+    ) -> None:
+        diagnostic_counters["tool_admission_denials"] += 1
+        diagnostic_counters["tool_policy_denials"] += 1
+        details = diagnostic_counters.setdefault("tool_policy_denials_detail", [])
+        if len(details) >= _MAX_RUNTIME_DIAGNOSTIC_DETAIL_ENTRIES:
+            del details[0]
+        details.append(
+            {
+                "tool_name": _runtime_diagnostic_text(
+                    tool_name, max_bytes=_MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES
+                ),
+                "invocation_id": _runtime_diagnostic_text(
+                    canonical_tool_call_id(invocation_id) or "",
+                    max_bytes=_MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES,
+                ),
+                "reason": _runtime_diagnostic_text(reason, max_bytes=1024),
+                "tool_input": _runtime_diagnostic_value(tool_input),
+            }
+        )
+
     async def can_use_tool(tool_name: str, tool_input: dict[str, Any], _context=None):
         decision = policy_for_tool(tool_name, tool_input)
+        context_tool_use_id = permission_context_tool_use_id(_context)
+        record_runtime_tool_stage(
+            tool_name=tool_name,
+            invocation_id=context_tool_use_id,
+            stage="admission_allowed" if decision.allowed else "admission_denied",
+            tool_input=tool_input,
+            failure=None if decision.allowed else decision.reason,
+        )
         if not decision.allowed:
-            diagnostic_counters["tool_admission_denials"] += 1
-            diagnostic_counters["tool_policy_denials"] += 1
-            diagnostic_counters.setdefault("tool_policy_denials_detail", []).append(
-                {"tool_name": tool_name, "reason": decision.reason}
+            record_tool_policy_denial(
+                tool_name=tool_name,
+                tool_input=tool_input,
+                reason=decision.reason,
+                invocation_id=context_tool_use_id,
             )
-            context_tool_use_id = permission_context_tool_use_id(_context)
             if agent_event_adapter is not None:
                 await publish_agent_candidates(
                     agent_event_adapter.accept_policy_decision(
@@ -1740,11 +1959,13 @@ async def run_claude_agent_sdk(
             tool_name = str(hook_input.get("tool_name") or "")
             tool_input = hook_input.get("tool_input")
             decision = policy_for_tool(tool_name, tool_input)
+        resolved_tool_call_id = exact_hook_tool_call_id(hook_input, tool_use_id)
         if not decision.allowed:
-            diagnostic_counters["tool_admission_denials"] += 1
-            diagnostic_counters["tool_policy_denials"] += 1
-            diagnostic_counters.setdefault("tool_policy_denials_detail", []).append(
-                {"tool_name": tool_name, "reason": decision.reason}
+            record_tool_policy_denial(
+                tool_name=tool_name,
+                tool_input=hook_input.get("tool_input"),
+                reason=decision.reason,
+                invocation_id=resolved_tool_call_id,
             )
         output: dict[str, object] = {
             "hookEventName": "PreToolUse",
@@ -1771,7 +1992,21 @@ async def run_claude_agent_sdk(
                     )
                 else:
                     output["updatedInput"] = updated_input
-        resolved_tool_call_id = exact_hook_tool_call_id(hook_input, tool_use_id)
+        record_runtime_tool_stage(
+            tool_name=tool_name,
+            invocation_id=resolved_tool_call_id,
+            stage=(
+                "admission_allowed"
+                if output["permissionDecision"] == "allow"
+                else "admission_denied"
+            ),
+            tool_input=hook_input.get("tool_input"),
+            failure=(
+                None
+                if output["permissionDecision"] == "allow"
+                else output["permissionDecisionReason"]
+            ),
+        )
         public_policy_acknowledged = True
         if agent_event_adapter is not None:
             public_policy_acknowledged = await publish_agent_candidates(
@@ -1856,6 +2091,12 @@ async def run_claude_agent_sdk(
             if str(hook_input.get("tool_name") or "").lower() != "skill":
                 return {}
             call_id = exact_hook_tool_call_id(hook_input, tool_use_id)
+            record_runtime_tool_stage(
+                tool_name="Skill",
+                invocation_id=call_id,
+                stage=lifecycle_phase,
+                failure=hook_input if lifecycle_phase == "failed" else None,
+            )
             skill_names = _extract_skill_names_from_tool_input(
                 hook_input.get("tool_input"), allowed_skill_names
             )
@@ -1900,6 +2141,12 @@ async def run_claude_agent_sdk(
             hook_input = hook_input if isinstance(hook_input, dict) else {}
             identity = adapter_identity(hook_input.get("tool_name"))
             call_id = exact_hook_tool_call_id(hook_input, tool_use_id)
+            record_runtime_tool_stage(
+                tool_name=identity,
+                invocation_id=call_id,
+                stage=lifecycle_phase,
+                failure=hook_input if lifecycle_phase == "failed" else None,
+            )
             evidence_acknowledged = False
             if identity in internal_context_subjects:
                 evidence_acknowledged = await record_tool_lifecycle(
@@ -1937,9 +2184,16 @@ async def run_claude_agent_sdk(
             identity = adapter_identity(tool_name)
             if tool_name.lower() == "skill" or identity.startswith("mcp__"):
                 return {}
+            call_id = exact_hook_tool_call_id(hook_input, tool_use_id)
+            record_runtime_tool_stage(
+                tool_name=tool_name,
+                invocation_id=call_id,
+                stage=lifecycle,
+                failure=hook_input if lifecycle == "failed" else None,
+            )
             lifecycle_acknowledged = await record_tool_lifecycle(
                 tool_name=tool_name,
-                tool_call_id=exact_hook_tool_call_id(hook_input, tool_use_id),
+                tool_call_id=call_id,
                 lifecycle=lifecycle,
             )
             if agent_event_adapter is not None and lifecycle_acknowledged is True:
@@ -1958,12 +2212,17 @@ async def run_claude_agent_sdk(
 
     try:
         _scrub_project_setting_files(cwd)
-    except OSError:
+    except OSError as exc:
         error_code = _SDK_TOOL_ADMISSION_FAILED
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
             error=error_code,
             turn_diagnostics=turn_diagnostics(error_code),
+            runtime_diagnostics=runtime_diagnostics(
+                error_code,
+                failure_source="project_setting_scrub",
+                exception=exc,
+            ),
         )
 
     hooks = None
@@ -2055,6 +2314,7 @@ async def run_claude_agent_sdk(
     result_session_id: str | None = None
     usage: dict[str, Any] = {}
     terminal_reason: str | None = None
+    terminal_result_message: object | None = None
     received_structured_terminal = False
     stream_projector = (
         ClaudeStreamProjector(sanitizer=sanitize_public_payload)
@@ -2149,7 +2409,7 @@ async def run_claude_agent_sdk(
 
     async def consume() -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
-        nonlocal last_public_stage, structured_result_text
+        nonlocal last_public_stage, structured_result_text, terminal_result_message
         projected_message_text = ""
         last_assistant_text: str | None = None
         async for message in query(
@@ -2251,6 +2511,7 @@ async def run_claude_agent_sdk(
                     last_assistant_text = projected_message_text
                 projected_message_text = ""
             elif isinstance(message, ResultMessage):
+                terminal_result_message = message
                 diagnostic_counters["result_messages"] += 1
                 diagnostic_counters["turns_observed"] = _bounded_diagnostic_counter(
                     getattr(message, "num_turns", 0)
@@ -2298,6 +2559,15 @@ async def run_claude_agent_sdk(
                         used_skills=list(used_skill_names),
                         used_skills_source="executor_hook" if used_skill_names else "",
                         turn_diagnostics=turn_diagnostics(error_code),
+                        runtime_diagnostics=runtime_diagnostics(
+                            error_code,
+                            failure_source="sdk_result_error",
+                            sdk_errors=message.errors,
+                            result_subtype=getattr(message, "subtype", None),
+                            stop_reason=getattr(message, "stop_reason", None),
+                            terminal_reason=resolved_terminal_reason,
+                            permission_denials=permission_denials,
+                        ),
                         capability_evidence=list(capability_evidence),
                     )
                 abnormal_terminal_error = (
@@ -2330,6 +2600,14 @@ async def run_claude_agent_sdk(
                         used_skills=list(used_skill_names),
                         used_skills_source="executor_hook" if used_skill_names else "",
                         turn_diagnostics=turn_diagnostics(abnormal_terminal_error),
+                        runtime_diagnostics=runtime_diagnostics(
+                            abnormal_terminal_error,
+                            failure_source="sdk_abnormal_terminal",
+                            result_subtype=getattr(message, "subtype", None),
+                            stop_reason=getattr(message, "stop_reason", None),
+                            terminal_reason=resolved_terminal_reason,
+                            permission_denials=permission_denials,
+                        ),
                         capability_evidence=list(capability_evidence),
                     )
                 received_structured_terminal = True
@@ -2436,6 +2714,24 @@ async def run_claude_agent_sdk(
                 ),
             ),
             capability_evidence=list(capability_evidence),
+            runtime_diagnostics=(
+                runtime_diagnostics(
+                    terminal_error,
+                    failure_source="terminal_validation",
+                    result_subtype=getattr(
+                        terminal_result_message, "subtype", None
+                    ),
+                    stop_reason=getattr(
+                        terminal_result_message, "stop_reason", None
+                    ),
+                    terminal_reason=terminal_reason,
+                    permission_denials=getattr(
+                        terminal_result_message, "permission_denials", None
+                    ),
+                )
+                if terminal_error is not None
+                else {}
+            ),
         )
 
     consume_cancellation: asyncio.CancelledError | None = None
@@ -2487,6 +2783,11 @@ async def run_claude_agent_sdk(
             used_skills=list(used_skill_names),
             used_skills_source="executor_hook" if used_skill_names else "",
             turn_diagnostics=turn_diagnostics(error_code),
+            runtime_diagnostics=runtime_diagnostics(
+                error_code,
+                failure_source="sdk_timeout",
+                terminal_reason=terminal_reason,
+            ),
             capability_evidence=list(capability_evidence),
         )
     except Exception as exc:  # noqa: BLE001
@@ -2505,5 +2806,11 @@ async def run_claude_agent_sdk(
             used_skills=list(used_skill_names),
             used_skills_source="executor_hook" if used_skill_names else "",
             turn_diagnostics=turn_diagnostics(error_code),
+            runtime_diagnostics=runtime_diagnostics(
+                error_code,
+                failure_source="sdk_exception",
+                terminal_reason=terminal_reason,
+                exception=exc,
+            ),
             capability_evidence=list(capability_evidence),
         )

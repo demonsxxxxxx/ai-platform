@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -7,6 +8,10 @@ import app.runtime.sandbox.executor_client as executor_client_module
 from app.runtime.sandbox.contracts import ContainerLease, ExecutorCallbackEvent, ExecutorTaskRequest
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events, container_started_event
 from app.runtime.sandbox.executor_client import SandboxExecutorClient, SandboxExecutorHttpError
+from app.runtime.sandbox.runtime_diagnostics import (
+    SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES,
+    SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+)
 
 
 def callback_event(**kwargs) -> ExecutorCallbackEvent:
@@ -483,6 +488,15 @@ async def test_executor_client_posts_task_request(monkeypatch):
         ),
         (
             {
+                "error_code": "required_tool_completion_evidence_missing",
+                "detail": "required_tool_completion_evidence_missing",
+            },
+            b"bounded-json",
+            "required_tool_completion_evidence_missing",
+            "required_tool_completion_evidence_missing",
+        ),
+        (
+            {
                 "error_code": "token_private-value",
                 "detail": "<html>prompt=private-prompt</html>",
                 "url": "https://executor.test/run?token=private-token",
@@ -606,6 +620,110 @@ def test_executor_failure_normalizer_preserves_tool_evidence_code_without_privat
     assert normalized["error_message"] == "Tool invocation evidence was incomplete"
     assert "/workspace/" not in str(normalized)
     assert "private-token" not in str(normalized)
+
+
+def test_executor_failure_normalizer_preserves_required_tool_completion_error():
+    normalized = executor_client_module.normalize_executor_reported_failure(
+        {
+            "status": "failed",
+            "run_id": "run-a",
+            "error_code": "required_tool_completion_evidence_missing",
+            "message": "/workspace/private-command --token private-token",
+        },
+        expected_run_id="run-a",
+    )
+
+    assert normalized["error_code"] == "required_tool_completion_evidence_missing"
+    assert normalized["error_message"] == (
+        "Required capability completion evidence was missing"
+    )
+    assert "/workspace/" not in str(normalized)
+    assert "private-token" not in str(normalized)
+
+
+def test_executor_failure_normalizer_preserves_private_runtime_diagnostics():
+    runtime_diagnostics = {
+        "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        "error_code": "claude_agent_sdk_tool_admission_failed",
+        "failure_source": "sdk_result_error",
+        "failure_stage": "model_wait",
+        "sdk": {"errors": ["actual SDK failure"]},
+        "tool_lifecycles": [],
+        "tool_calls": [],
+        "tool_policy_denials": [
+            {
+                "tool_name": "Bash",
+                "invocation_id": "tool-call-1",
+                "reason": "tool_parameters_not_authorized",
+                "tool_input": {"command": "printf diagnostic"},
+            }
+        ],
+    }
+
+    normalized = executor_client_module.normalize_executor_reported_failure(
+        {
+            "status": "failed",
+            "run_id": "run-a",
+            "error_code": "claude_agent_sdk_tool_admission_failed",
+            "runtime_diagnostics": runtime_diagnostics,
+        },
+        expected_run_id="run-a",
+    )
+
+    assert normalized["runtime_diagnostics"] == runtime_diagnostics
+
+
+def test_executor_failure_normalizer_bounds_and_validates_runtime_diagnostics():
+    diagnostics = {
+        "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        "error_code": "claude_agent_sdk_tool_admission_failed",
+        "failure_source": "sdk_result_error",
+        "failure_stage": "model_wait",
+        "sdk": {"errors": ["actual SDK failure"]},
+        "tool_lifecycles": [],
+        "tool_policy_denials": [],
+        "tool_calls": [
+            {
+                "tool_name": "Bash",
+                "invocation_id": f"call-{index}",
+                "last_stage": "failed",
+                "tool_input": {"command": "x" * 300_000},
+            }
+            for index in range(20)
+        ],
+    }
+
+    normalized = executor_client_module.normalize_executor_reported_failure(
+        {
+            "status": "failed",
+            "error_code": "claude_agent_sdk_tool_admission_failed",
+            "runtime_diagnostics": diagnostics,
+        }
+    )
+    bounded = normalized["runtime_diagnostics"]
+
+    assert len(json.dumps(bounded, separators=(",", ":")).encode()) <= (
+        SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES
+    )
+    assert len(bounded["tool_calls"]) == 8
+    assert bounded["tool_calls"][-1]["invocation_id"] == "call-19"
+    assert bounded["tool_calls"][-1]["tool_input"]["truncated"] is True
+    assert bounded["truncated"]["tool_calls"] == {
+        "original": 20,
+        "retained": 8,
+    }
+
+    malformed = executor_client_module.normalize_executor_reported_failure(
+        {
+            "status": "failed",
+            "error_code": "executor_failed",
+            "runtime_diagnostics": {
+                "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+                "error_code": {"not": "structured"},
+            },
+        }
+    )
+    assert "runtime_diagnostics" not in malformed
 
 
 def test_executor_failure_normalizer_keeps_only_safe_projection_reason():

@@ -40,6 +40,11 @@ PUBLIC_TERMINAL_DETAIL_MESSAGES = {
 
 PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "terminal_reconciliation_failed": "terminal_reconciliation_failed",
+    "capability_callback_not_acknowledged": "required_capability_unavailable",
+    "capability_lifecycle_sequence_invalid": "required_capability_unavailable",
+    "claude_agent_sdk_missing_structured_terminal": "execution_service_unavailable",
+    "claude_agent_sdk_tool_admission_failed": "required_capability_unavailable",
+    "claude_agent_sdk_upstream_error": "model_service_unavailable",
     "native_tool_admission_failed": "skill_sandbox_admission_failed",
     "attachment_materialized_fact_invalid": "context_file_identity_mismatch",
     "attachment_parser_file_mapping_invalid": "context_file_identity_mismatch",
@@ -90,7 +95,8 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "executor_deadline_exceeded": "run_timeout",
     "executor_cleanup_timeout": "run_timeout",
     "claude_agent_sdk_turn_limit_exceeded": "run_budget_exhausted",
-    "claude_agent_sdk_runtime_error": "model_service_unavailable",
+    "claude_agent_sdk_runtime_error": "execution_service_unavailable",
+    "claude_agent_sdk_timeout": "run_timeout",
     "claude_agent_sdk_disabled": "execution_service_unavailable",
     "claude_agent_sdk_import_failed": "execution_service_unavailable",
     "claude_agent_sdk_unavailable": "execution_service_unavailable",

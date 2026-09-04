@@ -87,9 +87,30 @@ The following are not legacy and were retained:
 `app/run_projection.py` remains the sole ordinary-user terminal classification
 authority. It defines the public detail-code allowlist, raw-to-public aliases,
 and fixed messages. Producers may retain richer internal diagnostics, but
-routes, SSE, history, hydration, and the browser must not render raw
-`error_message`, exception text, parser output, storage paths, commands, tool or
-server names, credentials, tenant scope, or principal data.
+ordinary-user routes, SSE, history, hydration, and the ordinary-user browser
+must not render raw `error_message`, exception text, parser output, storage
+paths, commands, tool or server names, credentials, tenant scope, or principal
+data. Generic `claude_agent_sdk_runtime_error` failures project as execution-service
+unavailability; only explicit `claude_agent_sdk_upstream_error` failures project
+as model-service unavailability. Previously unknown structured kernel codes remain
+available to administrators and converge to `run_failed` for ordinary users.
+
+Failed Sandbox executions retain a bounded `runtime_diagnostics` block in the
+existing Run result JSON before the ephemeral sandbox is released. It contains
+the original structured error code, SDK error and exception details, Tool call
+identity, last lifecycle stage, policy reason, and bounded Tool input or failure
+payload needed for administrator debugging and audit. The authenticated admin
+Run-detail route restores this block after applying the normal result sanitizer;
+the Run Monitor displays it verbatim. Structured SDK and Tool values are limited
+to 4 KiB and exception text to 8 KiB; up to 128 lightweight lifecycle facts and
+the latest eight detailed calls and policy denials are retained first. Every
+producer and the Sandbox Client/Worker trust boundaries apply the same schema,
+field, count, and 128 KiB aggregate limits. Sandbox capability validation merges
+its final classification and lifecycle state with the Runner evidence rather
+than replacing the underlying SDK failure. If the private block exceeds that
+limit, oldest entries are removed while the newest evidence is retained, keeping
+it within the Run result's 256 KiB authority. This private block is not a public
+terminal projection and must not be copied into ordinary-user APIs or events.
 
 Known safe details pass through Chat public projection as `final_detail`.
 Unknown, malformed, kind-mismatched, or private details fail closed to the fixed

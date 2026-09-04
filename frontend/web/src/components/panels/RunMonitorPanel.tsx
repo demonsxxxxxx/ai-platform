@@ -378,6 +378,17 @@ function RunDetail({
             ) : null}
           </section>
 
+          {detail.run.result?.runtime_diagnostics ? (
+            <section className="p-4" data-run-runtime-diagnostics>
+              <h3 className="text-xs font-semibold text-[var(--theme-text)]">
+                执行诊断
+              </h3>
+              <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--theme-bg-sidebar)] p-3 font-mono text-[11px] leading-5 text-[var(--theme-text-secondary)]">
+                {JSON.stringify(detail.run.result.runtime_diagnostics, null, 2)}
+              </pre>
+            </section>
+          ) : null}
+
           <section className="p-4">
             <h3 className="text-xs font-semibold text-[var(--theme-text)]">
               阶段事件 <span className="font-normal text-[var(--theme-text-tertiary)]">({detail.events.length})</span>
