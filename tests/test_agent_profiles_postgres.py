@@ -1268,7 +1268,7 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
         async def validate_definition(_self, _conn, *, principal, agent_id, definition):
             assert principal.tenant_id == "tenant-profile"
             assert agent_id == "agt_profile"
-            assert definition.selected_skill.skill_id == "profile-skill"
+            assert definition.selected_skill["skill_id"] == "profile-skill"
             return ({
                 "skill_id": "profile-skill",
                 "skill_version": locked_skill_version,
