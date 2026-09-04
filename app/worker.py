@@ -49,6 +49,7 @@ from app.execution.api import (
     fail_run_and_reconcile_worker_child as _fail_run_and_reconcile_worker_child,
     finalize_worker_child_parent as _finalize_worker_child_parent,
     locked_run_payload_candidate as _locked_run_payload_candidate,
+    prepare_worker_execution_spec,
     restored_executor_reconciliation_queue_payload as _restored_executor_reconciliation_queue_payload,
     submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
     time,
@@ -74,10 +75,7 @@ from app.principal_authority import (
     resolve_current_principal,
 )
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
-from app.runs.api import (
-    compile_execution_spec_for_dispatch,
-    load_run_model_snapshot as _load_run_model_snapshot,
-)
+from app.runs.api import load_run_model_snapshot as _load_run_model_snapshot
 from app.runs import api as run_attempts
 from app.required_tool_contract import (
     RequiredCapabilityDecision,
@@ -2385,39 +2383,25 @@ async def process_run_payload(
                     reconciled_parent,
                 )
                 return terminal_after_transaction.outcome
-            context_ref = await _ensure_worker_context_snapshot(conn, payload, trace_id=trace_id, run_identity=run_identity)
-            if context_ref is None:
-                terminal_after_transaction = await _fail_worker_pre_dispatch_error(
+            try:
+                execution_spec, run_payload, context_ref = await prepare_worker_execution_spec(
                     conn,
                     payload=payload,
                     run_identity=run_identity,
-                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
-                    error_code="context_snapshot_unavailable",
-                    error_message="Run context snapshot is unavailable",
-                    event_stage="context",
-                    event_payload={
-                        "visible_to_user": False,
-                        "error_code": "context_snapshot_unavailable",
-                    },
-                )
-                return terminal_after_transaction.outcome
-            try:
-                execution_spec = compile_execution_spec_for_dispatch(
-                    run_identity=run_identity,
-                    queue_payload=payload,
                     trace_id=trace_id,
-                    context_snapshot_id=str(context_ref["context_snapshot_id"]),
-                    context_snapshot=context_ref["context_snapshot"],
-                    context_pack={
-                        **executor_context_pack_from_snapshot(context_ref["context_snapshot"]),
-                        "conversation_context": context_ref["conversation_context"],
-                    },
-                )
-                run_payload = project_execution_spec_to_run_payload(
-                    execution_spec,
                     attempt_id=attempt_id,
+                    attempt_lifecycle=attempt_lifecycle,
+                    context_loader=_partial(
+                        _ensure_worker_context_snapshot,
+                        conn,
+                        payload,
+                        trace_id=trace_id, run_identity=run_identity,
+                    ),
+                    context_pack_builder=executor_context_pack_from_snapshot,
+                    project_run_payload=project_execution_spec_to_run_payload,
+                    mcp_attacher=mcp_api.attach_mcp_server_configs,
+                    principal=capability_authorization.principal,
                 )
-                run_payload = await mcp_api.attach_mcp_server_configs(conn, principal=capability_authorization.principal, run_payload=run_payload)
             except ValueError as exc:
                 mcp_error = exc if isinstance(exc, mcp_api.McpRuntimeContextError) else None
                 error_code = mcp_error.code if mcp_error else "execution_spec_invalid"
@@ -2435,6 +2419,22 @@ async def process_run_payload(
                         "error_code": error_code,
                     },
                     is_multi_agent_child=_locked_run_is_multi_agent_child(locked),
+                )
+                return terminal_after_transaction.outcome
+            if execution_spec is None:
+                terminal_after_transaction = await _fail_worker_pre_dispatch_error(
+                    conn,
+                    payload=payload,
+                    run_identity=run_identity,
+                    v4_capabilities=v4_capabilities,
+                    attempt_lifecycle=attempt_lifecycle,
+                    error_code="context_snapshot_unavailable",
+                    error_message="Run context snapshot is unavailable",
+                    event_stage="context",
+                    event_payload={
+                        "visible_to_user": False,
+                        "error_code": "context_snapshot_unavailable",
+                    },
                 )
                 return terminal_after_transaction.outcome
             await attempt_lifecycle.bind_execution_spec(conn, execution_spec)

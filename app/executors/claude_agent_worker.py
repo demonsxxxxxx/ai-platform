@@ -72,7 +72,6 @@ from app.runtime.sandbox.container_provider import (
 from app.runtime.sandbox.contracts import ContextRetrievalScope, SandboxRuntimeRequest
 from app.runtime.sandbox.runtime import SandboxRuntime
 from app.sandbox.api import normalize_sdk_runtime_diagnostics
-from app.session_continuity import sdk_session_id_for_run
 from app.settings import get_settings
 from app.skills.catalog import (
     AuthorizedSkillCatalogBinding,

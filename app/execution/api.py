@@ -29,6 +29,9 @@ from app.execution.application.worker_attempt_lifecycle import (
     finalize_worker_child_parent,
     worker_child_terminal_progress,
 )
+from app.execution.application.worker_execution_spec import (
+    prepare_worker_execution_spec,
+)
 from app.execution.application.claude_agent_events import (
     ClaudeAgentEventCandidate,
     ClaudeSdkAgentEventAdapter,
@@ -100,6 +103,7 @@ __all__ = [
     "time",
     "validated_context_file_diagnostic",
     "worker_child_terminal_progress",
+    "prepare_worker_execution_spec",
     "with_locked_run_model_snapshot",
     "WorkerAttemptLifecycle",
     "WorkerAttemptLifecyclePorts",
