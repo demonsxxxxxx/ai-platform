@@ -1,5 +1,6 @@
 import ipaddress
 import math
+import re
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit, urlunsplit
 
@@ -7,6 +8,7 @@ import httpx
 
 from app.execution.api import projected_public_answer_failure_reason
 from app.runtime.sandbox.contracts import ExecutorTaskDispatchReceipt, ExecutorTaskRequest
+from app.sandbox.api import normalize_sdk_runtime_diagnostics
 from app.settings import get_settings
 
 
@@ -36,77 +38,17 @@ _EXECUTOR_HTTP_ERROR_MESSAGES = {
     "executor_request_replayed": "Executor request was already claimed",
     "executor_protocol_invalid": "Executor returned an invalid protocol response",
 }
-_EXECUTOR_REPORTED_FAILURE_CODES = frozenset(
-    {
-        *_EXECUTOR_HTTP_ERROR_MESSAGES,
-        "attachment_parser_context_retrieval_unavailable",
-        "attachment_parser_file_too_large",
-        "attachment_parser_manifest_file_mismatch",
-        "attachment_parser_staged_file_invalid",
-        "attachment_parser_staging_denied",
-        "attachment_parser_staging_failed",
-        "attachment_parser_staging_not_authorized",
-        "attachment_parser_unsupported",
-        "capability_callback_not_acknowledged",
-        "claude_agent_sdk_cancelled",
-        "claude_agent_sdk_disabled",
-        "claude_agent_sdk_missing_structured_terminal",
-        "claude_agent_sdk_required",
-        "claude_agent_sdk_runtime_error",
-        "claude_agent_sdk_selected_skill_hook_failed",
-        "claude_agent_sdk_selected_skill_not_authorized",
-        "claude_agent_sdk_selected_skill_not_invoked",
-        "claude_agent_sdk_timeout",
-        "claude_agent_sdk_public_projection_failed",
-        "claude_agent_sdk_tool_admission_failed",
-        "claude_agent_sdk_turn_limit_exceeded",
-        "claude_agent_sdk_unavailable",
-        "claude_agent_sdk_upstream_error",
-        "context_retrieval_invalid",
-        "context_retrieval_registration_failed",
-        "context_retrieval_registration_unavailable",
-        "context_retrieval_scope_invalid",
-        "controlled_skill_authorization_incomplete",
-        "controlled_skill_execution_failed",
-        "controlled_skill_execution_timeout",
-        "controlled_skill_identity_invalid",
-        "controlled_skill_input_docx_missing",
-        "controlled_skill_input_file_invalid",
-        "controlled_skill_input_name_invalid",
-        "controlled_skill_input_order_missing",
-        "controlled_skill_output_path_invalid",
-        "controlled_skill_process_group_unavailable",
-        "controlled_skill_runner_missing",
-        "controlled_skill_runner_start_failed",
-        "controlled_skill_runner_unavailable",
-        "executor_cancelled",
-        "executor_cleanup_failed",
-        "executor_cleanup_timeout",
-        "executor_deadline_exceeded",
-        "executor_deadline_requires_async_runner",
-        "executor_failed",
-        "executor_health_timeout",
-        "executor_invalid_max_seconds",
-        "executor_missing_structured_terminal",
-        "executor_reported_failure",
-        "executor_runner_failed",
-        "executor_system_prompt_invalid",
-        "executor_system_prompt_too_large",
-        "tool_invocation_evidence_mismatch",
-    }
-)
+_STRUCTURED_EXECUTOR_ERROR_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 
-def _allowlisted_executor_http_error(value: object) -> str | None:
-    if not isinstance(value, str) or len(value) > 64:
+def _structured_executor_error_code(value: object) -> str | None:
+    if not isinstance(value, str):
         return None
-    return value if value in _EXECUTOR_REPORTED_FAILURE_CODES else None
+    return value if _STRUCTURED_EXECUTOR_ERROR_CODE.fullmatch(value) else None
 
 
 def canonical_executor_reported_failure_code(value: object) -> str:
-    if not isinstance(value, str) or len(value) > 64:
-        return "executor_reported_failure"
-    return value if value in _EXECUTOR_REPORTED_FAILURE_CODES else "executor_reported_failure"
+    return _structured_executor_error_code(value) or "executor_reported_failure"
 
 
 def executor_reported_failure_message(error_code: str) -> str:
@@ -116,6 +58,15 @@ def executor_reported_failure_message(error_code: str) -> str:
         "executor_cancelled": "Executor cancelled",
         "executor_deadline_exceeded": "Executor deadline exceeded",
         "executor_health_timeout": "Executor health timeout",
+        "capability_callback_not_acknowledged": "Capability lifecycle callback was not acknowledged",
+        "capability_lifecycle_sequence_invalid": "Capability lifecycle sequence was invalid",
+        "required_tool_admin_bypass_forbidden": "Required capability cannot bypass authorization",
+        "required_tool_completion_evidence_missing": "Required capability completion evidence was missing",
+        "required_tool_completion_evidence_mismatch": "Required capability completion evidence was invalid",
+        "required_tool_declaration_mismatch": "Required capability declaration was invalid",
+        "required_tool_not_currently_authorized": "Required capability was not authorized",
+        "required_tool_scope_mismatch": "Required capability scope was invalid",
+        "required_tool_unavailable": "Required capability was unavailable",
         "tool_invocation_evidence_mismatch": "Tool invocation evidence was incomplete",
     }.get(error_code, "Executor reported failure")
 
@@ -149,9 +100,14 @@ def normalize_executor_reported_failure(
         normalized["sdk_turn_diagnostics"] = {
             "projection_failure_reason": projection_failure_reason
         }
+    runtime_diagnostics = normalize_sdk_runtime_diagnostics(
+        response.get("runtime_diagnostics")
+    )
+    if runtime_diagnostics:
+        normalized["runtime_diagnostics"] = runtime_diagnostics
     if "detail" in response:
-        safe_detail = _allowlisted_executor_http_error(response.get("detail"))
-        if safe_detail is not None:
+        safe_detail = _structured_executor_error_code(response.get("detail"))
+        if safe_detail == safe_code:
             normalized["detail"] = safe_detail
     if type(response.get("sdk_used")) is bool:
         normalized["sdk_used"] = response["sdk_used"]
@@ -180,10 +136,14 @@ class SandboxExecutorHttpError(RuntimeError):
         detail: object = None,
     ) -> None:
         self.status_code = int(status_code)
-        safe_error_code = _allowlisted_executor_http_error(error_code)
-        safe_detail = _allowlisted_executor_http_error(detail)
-        self.error_code = safe_error_code or safe_detail or _GENERIC_EXECUTOR_HTTP_ERROR_CODE
-        self.detail = safe_detail
+        safe_error_code = _structured_executor_error_code(error_code)
+        safe_detail = _structured_executor_error_code(detail)
+        self.error_code = (
+            safe_error_code
+            or (safe_detail if safe_detail in _EXECUTOR_HTTP_ERROR_MESSAGES else None)
+            or _GENERIC_EXECUTOR_HTTP_ERROR_CODE
+        )
+        self.detail = safe_detail if safe_detail == self.error_code else None
         public_message = (
             "Executor request failed"
             if self.error_code == _GENERIC_EXECUTOR_HTTP_ERROR_CODE

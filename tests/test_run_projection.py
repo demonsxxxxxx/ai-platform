@@ -280,6 +280,18 @@ def test_required_capability_terminal_projection_is_stable_for_users_and_admins(
     assert admin["detail_code"] == "required_capability_unavailable"
     assert ordinary["message"] == admin["message"]
     assert "Bash" not in str(ordinary)
+    assert public_terminal_projection("failed", "claude_agent_sdk_timeout")[
+        "detail_code"
+    ] == "run_timeout"
+    assert public_terminal_projection("failed", "claude_agent_sdk_upstream_error")[
+        "detail_code"
+    ] == "model_service_unavailable"
+    assert public_terminal_projection(
+        "failed", "required_tool_completion_evidence_mismatch"
+    )["detail_code"] == "required_capability_unavailable"
+    assert public_terminal_projection(
+        "failed", "capability_lifecycle_sequence_invalid"
+    )["detail_code"] == "required_capability_unavailable"
 
 
 def test_terminal_projection_has_one_runs_owner_and_preserves_fences():
@@ -512,6 +524,14 @@ def test_public_chat_terminal_projection_owns_versioned_terminal_payloads():
             "id": "run-b",
             "status": "failed",
             "error_code": "required_tool_unavailable",
+            "result_json": {
+                "runtime_diagnostics": {
+                    "sdk": {"errors": ["actual private SDK failure"]},
+                    "tool_policy_denials": [
+                        {"tool_input": {"command": "printf private"}}
+                    ],
+                }
+            },
         }
     )
 
@@ -536,6 +556,8 @@ def test_public_chat_terminal_projection_owns_versioned_terminal_payloads():
     }
     assert failed["event_payload"] == {"detail_code": "required_capability_unavailable"}
     assert failed["severity"] == "error"
+    assert "actual private SDK failure" not in str(failed)
+    assert "printf private" not in str(failed)
 
 
 @pytest.mark.parametrize(

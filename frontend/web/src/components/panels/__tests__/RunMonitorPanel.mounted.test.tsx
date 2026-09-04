@@ -66,7 +66,7 @@ test("Run Monitor filters only the explicitly projected Run identities", () => {
   assert.deepEqual(summarizeAdminRuns(runs), { queued: 0, running: 1, failed: 1 });
 });
 
-test("Run Monitor mounts recent Worker state and never renders private payload fields", async () => {
+test("Run Monitor mounts recent Worker state and renders only authorized diagnostics", async () => {
   const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", {
     url: "http://localhost/runs",
     pretendToBeVisual: true,
@@ -109,7 +109,22 @@ test("Run Monitor mounts recent Worker state and never renders private payload f
     run: {
       ...runs[0],
       input: { prompt: "PRIVATE_PROMPT_MARKER" },
-      result: { text: "PRIVATE_RESULT_MARKER" },
+      result: {
+        text: "PRIVATE_RESULT_MARKER",
+        runtime_diagnostics: {
+          error_code: "claude_agent_sdk_tool_admission_failed",
+          failure_source: "sdk_result_error",
+          sdk: { errors: ["ACTUAL_SDK_FAILURE_MARKER"] },
+          tool_policy_denials: [
+            {
+              tool_name: "Bash",
+              invocation_id: "tool-call-7",
+              reason: "tool_parameters_not_authorized",
+              tool_input: { command: "printf ACTUAL_TOOL_INPUT_MARKER" },
+            },
+          ],
+        },
+      },
     },
     events: [
       {
@@ -182,6 +197,9 @@ test("Run Monitor mounts recent Worker state and never renders private payload f
     assert.match(container.textContent ?? "", /trace-a/);
     assert.match(container.textContent ?? "", /worker_setup/);
     assert.match(container.textContent ?? "", /lease-a/);
+    assert.match(container.textContent ?? "", /执行诊断/);
+    assert.match(container.textContent ?? "", /ACTUAL_SDK_FAILURE_MARKER/);
+    assert.match(container.textContent ?? "", /ACTUAL_TOOL_INPUT_MARKER/);
     assert.doesNotMatch(container.textContent ?? "", /PRIVATE_PROMPT_MARKER/);
     assert.doesNotMatch(container.textContent ?? "", /PRIVATE_RESULT_MARKER/);
     assert.doesNotMatch(container.textContent ?? "", /PRIVATE_EVENT_PAYLOAD_MARKER/);

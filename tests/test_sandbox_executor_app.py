@@ -3,6 +3,7 @@ import functools
 import gc
 import hashlib
 import json
+import logging
 import os
 import shutil
 import threading
@@ -16,7 +17,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.execution.api import ClaudeAgentEventCandidate
-from app.executors.claude_agent_sdk_runner import build_skill_prompt
+from app.executors.claude_agent_sdk_runner import (
+    ClaudeAgentSdkNotAvailable,
+    build_skill_prompt,
+)
 from app.public_execution import PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
 from app.platform.public_payload import sanitize_public_payload
 from app.required_tool_contract import (
@@ -43,6 +47,9 @@ from app.runtime.sandbox.executor_app import (
     _default_callback_sender,
     _default_executor_runner,
     create_executor_app,
+)
+from app.sandbox.domain.runtime_diagnostics import (
+    SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
 )
 from app.tool_permission_lifecycle import tool_permission_budget
 from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
@@ -189,7 +196,8 @@ def callback_retry_policy(
     )
 
 
-def test_executor_lifespan_shutdown_cancels_active_task_and_delivers_terminal(tmp_path):
+def test_executor_lifespan_shutdown_cancels_active_task_and_delivers_terminal(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger=executor_app.__name__)
     started = threading.Event()
     cancelled = threading.Event()
     callbacks = []
@@ -226,6 +234,19 @@ def test_executor_lifespan_shutdown_cancels_active_task_and_delivers_terminal(tm
     assert len(terminal_callbacks) == 1
     assert terminal_callbacks[0]["status"] == "cancelled"
     assert terminal_callbacks[0]["terminal_result"]["status"] == "cancelled"
+    cancellation_diagnostics = terminal_callbacks[0]["terminal_result"][
+        "runtime_diagnostics"
+    ]
+    assert cancellation_diagnostics["error_code"] == "executor_cancelled"
+    assert cancellation_diagnostics["sdk"]["exception_type"] == "CancelledError"
+    terminal_records = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "sandbox_execution_terminal"
+    ]
+    assert len(terminal_records) == 1
+    assert terminal_records[0].sandbox_execution_status == "cancelled"
+    assert terminal_records[0].sandbox_error_code == "executor_cancelled"
 
 
 def test_removed_v1_execute_route_returns_404(tmp_path):
@@ -663,7 +684,33 @@ async def test_executor_rejects_conflicting_required_bash_lifecycle(
                     "lifecycle": phase,
                 }
             )
-        return sdk_result()
+        return sdk_result(
+            error="claude_agent_sdk_tool_admission_failed",
+            runtime_diagnostics={
+                "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+                "error_code": "claude_agent_sdk_tool_admission_failed",
+                "failure_source": "sdk_result_error",
+                "failure_stage": "model_wait",
+                "sdk": {"errors": ["actual SDK admission failure"]},
+                "tool_policy_denials": [
+                    {
+                        "tool_name": "Bash",
+                        "invocation_id": "bash-call-1",
+                        "reason": "tool_parameters_not_authorized",
+                        "tool_input": {"command": "printf diagnostic"},
+                    }
+                ],
+                "tool_calls": [
+                    {
+                        "tool_name": "Bash",
+                        "invocation_id": "bash-call-1",
+                        "last_stage": "failed",
+                        "tool_input": {"command": "printf diagnostic"},
+                    }
+                ],
+                "tool_lifecycles": [],
+            },
+        )
 
     monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
     monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
@@ -684,6 +731,15 @@ async def test_executor_rejects_conflicting_required_bash_lifecycle(
     assert result["status"] == "failed"
     assert result["error_code"] == "required_tool_completion_evidence_mismatch"
     assert REQUIRED_CAPABILITY_EVIDENCE_KEY not in result
+    diagnostics = result["runtime_diagnostics"]
+    assert diagnostics["runner_error_code"] == "claude_agent_sdk_tool_admission_failed"
+    assert diagnostics["sdk"]["errors"] == ["actual SDK admission failure"]
+    assert diagnostics["tool_calls"][0]["tool_input"] == {
+        "command": "printf diagnostic"
+    }
+    assert diagnostics["tool_policy_denials"][0]["reason"] == (
+        "tool_parameters_not_authorized"
+    )
 
 
 @pytest.mark.asyncio
@@ -1034,6 +1090,7 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
 async def test_sdk_timeout_preserved_over_pending_tool_invocation_state(
     monkeypatch,
     tmp_path,
+    caplog,
 ):
     """A real SDK failure (timeout) must not be masked by pending evidence.
 
@@ -1043,6 +1100,7 @@ async def test_sdk_timeout_preserved_over_pending_tool_invocation_state(
     """
 
     callbacks = []
+    caplog.set_level(logging.INFO, logger=executor_app.__name__)
 
     class StubSettings:
         claude_agent_sdk_enabled = True
@@ -1059,7 +1117,7 @@ async def test_sdk_timeout_preserved_over_pending_tool_invocation_state(
             "timed out",
             error="claude_agent_sdk_timeout",
             received_structured_terminal=False,
-            terminal_reason=None,
+            terminal_reason="private_token_secret",
             turn_diagnostics={
                 "terminal_class": "timeout",
                 "error_code": "claude_agent_sdk_timeout",
@@ -1095,6 +1153,31 @@ async def test_sdk_timeout_preserved_over_pending_tool_invocation_state(
     assert "assistant_messages=85" in message
     assert "tool_policy_denials=4" in message
     assert "denied_tools=Bash(parameter_not_authorized)" in message
+    lifecycle_records = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "sandbox_tool_lifecycle"
+    ]
+    assert [record.sandbox_tool_lifecycle for record in lifecycle_records] == [
+        "started",
+        "incomplete",
+    ]
+    assert lifecycle_records[1].sandbox_tool_lifecycle_reason == "sdk_terminal"
+    assert lifecycle_records[0].sandbox_tool_call_digest == hashlib.sha256(
+        b"skill-call-1"
+    ).hexdigest()[:16]
+    assert "skill-call-1" not in caplog.text
+    assert "private-command" not in caplog.text
+    assert "private_token_secret" not in caplog.text
+    terminal_records = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "sandbox_execution_terminal"
+    ]
+    assert len(terminal_records) == 1
+    assert terminal_records[0].sandbox_execution_status == "failed"
+    assert terminal_records[0].sandbox_error_code == "claude_agent_sdk_timeout"
+    assert not hasattr(terminal_records[0], "sandbox_terminal_reason")
 
 
 @pytest.mark.parametrize(
@@ -1604,6 +1687,71 @@ def test_executor_capability_rejection_seals_public_events_without_local_claim(
     assert capability_attempts == 1
 
 
+@pytest.mark.asyncio
+async def test_executor_tool_lifecycle_cancellation_logs_one_terminal_fact(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    caplog.set_level(logging.INFO, logger=executor_app.__name__)
+    callback_started = asyncio.Event()
+    release_callback = asyncio.Event()
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def emit_event(event):
+        if getattr(event, "type", "") == "capability_invoking":
+            callback_started.set()
+            await release_callback.wait()
+        return True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        capability_task = asyncio.create_task(
+            kwargs["on_capability_evidence"](
+                sdk_mcp_evidence(
+                    "mcp__tenant-server__search",
+                    "capability-call-1",
+                    "invocation_requested",
+                )
+            )
+        )
+        await asyncio.wait_for(callback_started.wait(), timeout=2.0)
+        lifecycle_task = asyncio.create_task(
+            kwargs["on_tool_lifecycle"](
+                {
+                    "tool_name": "Bash",
+                    "invocation_id": "bash-call-1",
+                    "lifecycle": "started",
+                }
+            )
+        )
+        await asyncio.sleep(0)
+        lifecycle_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(lifecycle_task, timeout=2.0)
+        release_callback.set()
+        assert await asyncio.wait_for(capability_task, timeout=2.0) is False
+        return sdk_result()
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    request = ExecutorTaskRequest.model_validate(selected_mcp_task_payload())
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "failed"
+    tool_records = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "sandbox_tool_lifecycle"
+        and record.sandbox_tool_name == "Bash"
+    ]
+    assert len(tool_records) == 1
+    assert tool_records[0].sandbox_tool_lifecycle == "cancelled"
+    assert tool_records[0].sandbox_tool_lifecycle_reason == "callback_cancelled"
+
+
 @pytest.mark.parametrize("cancel_target", ["lock_owner", "lock_waiter"])
 def test_executor_capability_callback_cancellation_poison_seals_run(
     tmp_path,
@@ -1885,16 +2033,20 @@ def test_executor_execute_fails_closed_after_final_delta_without_structured_term
         ("claude_agent_sdk_selected_skill_not_authorized", True, "claude_agent_sdk_selected_skill_not_authorized"),
         ("claude_agent_sdk_turn_limit_exceeded", True, "claude_agent_sdk_turn_limit_exceeded"),
         ("claude_agent_sdk_timeout", True, "claude_agent_sdk_timeout"),
+        ("claude_agent_sdk_cancelled", True, "claude_agent_sdk_cancelled"),
+        ("internal_kernel_failure", True, "internal_kernel_failure"),
         (
             "claude_agent_sdk_public_projection_failed",
             True,
             "claude_agent_sdk_public_projection_failed",
         ),
         ("claude_agent_sdk_tool_admission_failed", True, "claude_agent_sdk_tool_admission_failed"),
+        ("required_tool_completion_evidence_missing", True, "required_tool_completion_evidence_missing"),
+        ("required_tool_completion_evidence_mismatch", True, "required_tool_completion_evidence_mismatch"),
         ("claude_agent_sdk_upstream_error", True, "claude_agent_sdk_upstream_error"),
     ],
 )
-def test_executor_execute_canonicalizes_sdk_failures_without_rewriting_specific_codes(
+def test_executor_execute_preserves_bounded_sdk_error_codes(
     tmp_path, monkeypatch, sdk_error, used_sdk, expected_error_code
 ):
     callbacks = []
@@ -1911,6 +2063,11 @@ def test_executor_execute_canonicalizes_sdk_failures_without_rewriting_specific_
             turn_diagnostics={
                 "schema_version": "ai-platform.sdk-turn-diagnostics.v1",
                 "terminal_class": "upstream_error",
+            },
+            runtime_diagnostics={
+                "error_code": sdk_error,
+                "failure_source": "sdk_result_error",
+                "sdk": {"errors": ["actual SDK failure"]},
             },
         )
 
@@ -1936,6 +2093,11 @@ def test_executor_execute_canonicalizes_sdk_failures_without_rewriting_specific_
         "schema_version": "ai-platform.sdk-turn-diagnostics.v1",
         "terminal_class": "upstream_error",
     }
+    diagnostics = body["runtime_diagnostics"]
+    assert diagnostics["error_code"] == expected_error_code
+    assert diagnostics["failure_source"] == "sandbox_terminal_normalization"
+    assert diagnostics["runner_failure_source"] == "sdk_result_error"
+    assert diagnostics["sdk"] == {"errors": ["actual SDK failure"]}
     assert callbacks[-1]["state_patch"] == {
         "stage": "executor_finished",
         "error_code": expected_error_code,
@@ -2678,6 +2840,31 @@ def test_executor_execute_fails_when_claude_sdk_disabled(tmp_path, monkeypatch):
     assert body["status"] == "failed"
     assert body["error_code"] == "claude_agent_sdk_disabled"
     assert body["executor_mode"] == "claude_agent_sdk_disabled"
+    assert body["runtime_diagnostics"]["error_code"] == "claude_agent_sdk_disabled"
+
+
+def test_executor_execute_preserves_sdk_unavailable_exception(tmp_path, monkeypatch):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def unavailable_sdk(**_kwargs):
+        raise ClaudeAgentSdkNotAvailable("private import failure")
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.run_claude_agent_sdk",
+        unavailable_sdk,
+    )
+    client = create_test_client(tmp_path)
+
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["error_code"] == "claude_agent_sdk_unavailable"
+    diagnostics = body["runtime_diagnostics"]
+    assert diagnostics["sdk"]["exception_type"] == "ClaudeAgentSdkNotAvailable"
+    assert diagnostics["sdk"]["exception_message"] == "private import failure"
 
 
 def test_executor_execute_rehydrates_context_retrieval_for_manifest(tmp_path, monkeypatch):
@@ -3198,7 +3385,8 @@ async def test_default_executor_runner_seals_when_agent_event_emit_is_rejected(t
     assert [event.type for event in callback_batches[0].events] == ["message.delta"]
 
 
-def test_executor_execute_does_not_rewrite_runner_timeout_error_as_deadline(tmp_path):
+def test_executor_execute_does_not_rewrite_runner_timeout_error_as_deadline(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger=executor_app.__name__)
     async def executor_runner(request, workspace_root, emit_event):
         raise TimeoutError("runner dependency timed out")
 
@@ -3214,8 +3402,20 @@ def test_executor_execute_does_not_rewrite_runner_timeout_error_as_deadline(tmp_
     assert response.json()["status"] == "failed"
     assert response.json()["error_code"] == "executor_runner_failed"
     assert response.json()["error_message"] == "runner dependency timed out"
+    diagnostics = response.json()["runtime_diagnostics"]
+    assert diagnostics["error_code"] == "executor_runner_failed"
+    assert diagnostics["sdk"]["exception_type"] == "TimeoutError"
+    assert diagnostics["sdk"]["exception_message"] == "runner dependency timed out"
     assert "requested_max_seconds" not in response.json()
     assert "timeout_elapsed_ms" not in response.json()
+    terminal_records = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "sandbox_execution_terminal"
+    ]
+    assert len(terminal_records) == 1
+    assert terminal_records[0].sandbox_execution_status == "failed"
+    assert terminal_records[0].sandbox_error_code == "executor_runner_failed"
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,7 @@ import signal
 import subprocess
 import sys
 import time
+import traceback
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -57,6 +58,11 @@ from app.required_tool_contract import (
 )
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.context_retrieval_client import PlatformContextRetrievalClient
+from app.sandbox.api import (
+    SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    normalize_sdk_runtime_diagnostics,
+    runtime_diagnostic_text,
+)
 from app.runtime.sandbox.contracts import (
     EXECUTOR_AUTH_HEADER,
     CallbackTargetValidationError,
@@ -288,6 +294,162 @@ _PUBLIC_TOOL_LIFECYCLE_NAMES = frozenset(
         "Adjust",
     }
 )
+_STRUCTURED_ERROR_CODE_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_SAFE_SDK_TERMINAL_REASONS = frozenset(
+    {
+        "aborted_streaming",
+        "aborted_tools",
+        "canceled",
+        "cancelled",
+        "completed",
+        "end_turn",
+        "max_turns",
+        "max_turns_exceeded",
+        "stop_sequence",
+    }
+)
+
+
+def _merge_runtime_diagnostics(
+    existing: object,
+    *,
+    error_code: str,
+    failure_source: str,
+    failure_stage: str,
+    exception: BaseException | None = None,
+    tool_lifecycles: list[dict[str, object]] | None = None,
+) -> dict[str, Any]:
+    merged = dict(existing) if isinstance(existing, dict) else {}
+    previous_error_code = merged.get("error_code")
+    if previous_error_code and previous_error_code != error_code:
+        merged.setdefault("runner_error_code", previous_error_code)
+    previous_failure_source = merged.get("failure_source")
+    if previous_failure_source and previous_failure_source != failure_source:
+        merged.setdefault("runner_failure_source", previous_failure_source)
+    merged.update(
+        {
+            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+            "error_code": error_code,
+            "failure_source": failure_source,
+            "failure_stage": failure_stage,
+        }
+    )
+    sdk = dict(merged.get("sdk")) if isinstance(merged.get("sdk"), dict) else {}
+    if exception is not None:
+        sdk.update(
+            {
+                "exception_type": type(exception).__name__,
+                "exception_message": runtime_diagnostic_text(exception),
+                "exception_traceback": runtime_diagnostic_text(
+                    "".join(
+                        traceback.format_exception(
+                            type(exception), exception, exception.__traceback__
+                        )
+                    )
+                ),
+            }
+        )
+    merged["sdk"] = sdk
+    merged.setdefault("tool_calls", [])
+    merged.setdefault("tool_policy_denials", [])
+    existing_lifecycles = (
+        merged.get("tool_lifecycles")
+        if isinstance(merged.get("tool_lifecycles"), list)
+        else []
+    )
+    if tool_lifecycles is not None:
+        lifecycle_by_key: dict[tuple[object, object, object], dict[str, object]] = {}
+        for item in [*existing_lifecycles, *tool_lifecycles]:
+            if not isinstance(item, dict):
+                continue
+            lifecycle_by_key[
+                (
+                    item.get("capability_kind"),
+                    item.get("tool_name"),
+                    item.get("invocation_id"),
+                )
+            ] = item
+        merged["tool_lifecycles"] = list(lifecycle_by_key.values())
+    else:
+        merged["tool_lifecycles"] = existing_lifecycles
+    return normalize_sdk_runtime_diagnostics(merged)
+
+
+def _log_sandbox_tool_lifecycle(
+    request: ExecutorTaskRequest,
+    *,
+    tool_name: str,
+    invocation_id: str,
+    lifecycle: str,
+    accepted: bool,
+    started_at: float | None = None,
+    reason: str | None = None,
+) -> None:
+    """Record tool lifecycle facts without retaining tool inputs or outputs."""
+
+    safe_tool_name = (
+        tool_name if tool_name in _PUBLIC_TOOL_LIFECYCLE_NAMES else "unknown"
+    )
+    extra: dict[str, object] = {
+        "sandbox_run_id": request.run_id,
+        "sandbox_attempt_id": request.attempt_id,
+        "sandbox_tool_name": safe_tool_name,
+        "sandbox_tool_call_digest": (
+            hashlib.sha256(invocation_id.encode("utf-8")).hexdigest()[:16]
+            if invocation_id
+            else None
+        ),
+        "sandbox_tool_lifecycle": lifecycle[:32],
+        "sandbox_tool_lifecycle_accepted": accepted,
+    }
+    if started_at is not None:
+        extra["sandbox_tool_duration_ms"] = max(
+            int((time.monotonic() - started_at) * 1000),
+            0,
+        )
+    if reason:
+        extra["sandbox_tool_lifecycle_reason"] = reason[:64]
+    _logger.log(
+        logging.INFO if accepted else logging.WARNING,
+        "sandbox_tool_lifecycle",
+        extra=extra,
+    )
+
+
+def _log_sandbox_execution_terminal(
+    request: ExecutorTaskRequest,
+    result: dict[str, Any],
+) -> None:
+    """Record the terminal classification without retaining exception text."""
+
+    status_value = str(result.get("status") or "failed").strip().lower()
+    raw_error_code = str(result.get("error_code") or "").strip()
+    error_code = (
+        raw_error_code
+        if _STRUCTURED_ERROR_CODE_PATTERN.fullmatch(raw_error_code)
+        else "unclassified"
+    )
+    raw_terminal_reason = str(result.get("sdk_terminal_reason") or "").strip()
+    terminal_reason = (
+        raw_terminal_reason
+        if raw_terminal_reason in _SAFE_SDK_TERMINAL_REASONS
+        else None
+    )
+    extra: dict[str, object] = {
+        "sandbox_run_id": request.run_id,
+        "sandbox_attempt_id": request.attempt_id,
+        "sandbox_execution_status": status_value,
+        "sandbox_error_code": error_code,
+    }
+    if terminal_reason:
+        extra["sandbox_terminal_reason"] = terminal_reason
+    _logger.log(
+        logging.INFO
+        if status_value in {"completed", "succeeded"}
+        else logging.WARNING,
+        "sandbox_execution_terminal",
+        extra=extra,
+    )
 
 
 def _callback_acknowledges_exact_batch(
@@ -354,21 +516,6 @@ _CONTROLLED_RUNNER_TIMEOUT_SECONDS = 900.0
 _CONTROLLED_RUNNER_TERMINATION_GRACE_SECONDS = 5.0
 _EXECUTOR_CLEANUP_TIMEOUT_SECONDS = 5.0
 _ACTIVE_PROGRESS_INTERVAL_SECONDS = 12.0
-_SDK_PRESERVED_FAILURE_CODES = frozenset(
-    {
-        "claude_agent_sdk_disabled",
-        "claude_agent_sdk_unavailable",
-        "claude_agent_sdk_missing_structured_terminal",
-        "claude_agent_sdk_selected_skill_not_invoked",
-        "claude_agent_sdk_selected_skill_hook_failed",
-        "claude_agent_sdk_selected_skill_not_authorized",
-        "claude_agent_sdk_turn_limit_exceeded",
-        "claude_agent_sdk_timeout",
-        "claude_agent_sdk_public_projection_failed",
-        "claude_agent_sdk_tool_admission_failed",
-        "claude_agent_sdk_upstream_error",
-    }
-)
 _SDK_TURN_LIMIT_ERROR_PATTERN = re.compile(r"Reached maximum number of turns \(\d+\)")
 
 
@@ -506,17 +653,15 @@ def _expand_sdk_error_message(raw_error: str, sdk_result: object) -> str:
 
 
 def _canonical_sdk_failure_code(raw_error: str, *, used_sdk: bool) -> str:
-    """Keep known SDK terminal codes while classifying post-start SDK failures."""
+    """Preserve bounded structured codes while classifying free-form SDK failures."""
 
-    if raw_error in _SDK_PRESERVED_FAILURE_CODES:
-        return raw_error
     if raw_error.startswith("claude_agent_sdk_unavailable"):
         return "claude_agent_sdk_unavailable"
     if used_sdk and _SDK_TURN_LIMIT_ERROR_PATTERN.fullmatch(raw_error):
         return "claude_agent_sdk_turn_limit_exceeded"
-    if used_sdk:
-        return "claude_agent_sdk_runtime_error"
-    return raw_error
+    if _STRUCTURED_ERROR_CODE_PATTERN.fullmatch(raw_error):
+        return raw_error
+    return "claude_agent_sdk_runtime_error" if used_sdk else "executor_reported_failure"
 
 
 async def _default_callback_sender(url: str, payload: CallbackPayload, token: str) -> CallbackResult:
@@ -1419,13 +1564,20 @@ async def _default_executor_runner(
     if controlled_result is not None:
         return controlled_result
     if getattr(get_settings(), "claude_agent_sdk_enabled", False) is not True:
+        error_code = "claude_agent_sdk_disabled"
         return {
             "status": "failed",
             "message": "Claude Agent SDK is disabled",
-            "error_code": "claude_agent_sdk_disabled",
+            "error_code": error_code,
             "error_message": "Claude Agent SDK is disabled",
             "sdk_used": False,
             "executor_mode": "claude_agent_sdk_disabled",
+            "runtime_diagnostics": _merge_runtime_diagnostics(
+                None,
+                error_code=error_code,
+                failure_source="sandbox_sdk_disabled",
+                failure_stage="model_wait",
+            ),
         }
 
     skill_ids = _task_skill_ids(request)
@@ -1455,6 +1607,7 @@ async def _default_executor_runner(
             "executor_mode": "required_capability_declaration_invalid",
         }
     required_tool_invocation_states: dict[tuple[str, str], str] = {}
+    tool_lifecycle_started_at: dict[tuple[str, str], float] = {}
     required_capability_evidence: dict[str, Any] | None = None
     tool_invocation_evidence: list[dict[str, Any]] = []
     bound_capability_evidence: list[dict[str, Any]] = []
@@ -1628,12 +1781,61 @@ async def _default_executor_runner(
     async def on_tool_lifecycle(fact: dict[str, str]) -> bool:
         """Bind and forward a mapped lifecycle fact under the shared call-id fence."""
 
+        tool_name = str(fact.get("tool_name") or "")
+        invocation_id = canonical_tool_call_id(fact.get("invocation_id")) or ""
+        lifecycle = str(fact.get("lifecycle") or "")
+        lifecycle_key = (tool_name, invocation_id)
+        started_at = tool_lifecycle_started_at.get(lifecycle_key)
+        if (
+            lifecycle == "started"
+            and tool_name in _PUBLIC_TOOL_LIFECYCLE_NAMES
+            and invocation_id
+        ):
+            started_at = time.monotonic()
+            tool_lifecycle_started_at.setdefault(lifecycle_key, started_at)
+        accepted = False
+        cancelled = False
         try:
             async with capability_evidence_lock:
-                return await bind_tool_lifecycle(fact)
+                accepted = await bind_tool_lifecycle(fact)
+            return accepted
         except asyncio.CancelledError:
             poison_capability_evidence()
+            cancelled = True
             raise
+        finally:
+            if lifecycle in {"completed", "failed"} or cancelled:
+                tool_lifecycle_started_at.pop(lifecycle_key, None)
+            logged_lifecycle = "cancelled" if cancelled else (lifecycle or "unknown")
+            _log_sandbox_tool_lifecycle(
+                request,
+                tool_name=tool_name,
+                invocation_id=invocation_id,
+                lifecycle=logged_lifecycle,
+                accepted=accepted,
+                started_at=started_at
+                if logged_lifecycle in {"completed", "failed", "cancelled"}
+                else None,
+                reason=(
+                    "callback_cancelled"
+                    if cancelled
+                    else None if accepted else "lifecycle_rejected"
+                ),
+            )
+
+    def log_open_tool_lifecycles(reason: str) -> None:
+        for (tool_name, invocation_id), started_at in tuple(
+            tool_lifecycle_started_at.items()
+        ):
+            _log_sandbox_tool_lifecycle(
+                request,
+                tool_name=tool_name,
+                invocation_id=invocation_id,
+                lifecycle="incomplete",
+                accepted=False,
+                started_at=started_at,
+                reason=reason,
+            )
 
     def poison_capability_evidence() -> None:
         # No await: one event-loop turn invalidates a suspended lock owner before it can commit.
@@ -1752,14 +1954,31 @@ async def _default_executor_runner(
         sdk_result = await run_claude_agent_sdk(
             **sdk_kwargs,
         )
-    except ClaudeAgentSdkNotAvailable:
+    except ClaudeAgentSdkNotAvailable as exc:
+        error_code = "claude_agent_sdk_unavailable"
+        log_open_tool_lifecycles("sdk_unavailable")
         await emit_event(_PlatformExecutionPhaseFact("model_wait", "failed"))
         return {
             "status": "failed",
-            "error_code": "claude_agent_sdk_unavailable",
+            "error_code": error_code,
             "error_message": "Claude Agent SDK is unavailable",
             "sdk_used": False,
+            "runtime_diagnostics": _merge_runtime_diagnostics(
+                None,
+                error_code=error_code,
+                failure_source="sandbox_sdk_unavailable",
+                failure_stage="model_wait",
+                exception=exc,
+            ),
         }
+    except asyncio.CancelledError:
+        log_open_tool_lifecycles("cancelled")
+        raise
+    except Exception:
+        log_open_tool_lifecycles("runner_exception")
+        raise
+
+    log_open_tool_lifecycles("sdk_terminal")
 
     used_sdk = bool(getattr(sdk_result, "used_sdk", False))
     error = getattr(sdk_result, "error", None)
@@ -1798,6 +2017,9 @@ async def _default_executor_runner(
         "used_skills": list(getattr(sdk_result, "used_skills", []) or []),
         "used_skills_source": str(getattr(sdk_result, "used_skills_source", "") or ""),
         "sdk_turn_diagnostics": dict(getattr(sdk_result, "turn_diagnostics", {}) or {}),
+        "runtime_diagnostics": dict(
+            getattr(sdk_result, "runtime_diagnostics", {}) or {}
+        ),
         "capability_evidence": bound_capability_evidence,
         TOOL_INVOCATION_EVIDENCE_KEY: tool_invocation_evidence,
     }
@@ -1820,6 +2042,34 @@ async def _default_executor_runner(
             response["error_message"] = "Required capability completion evidence is invalid"
         else:
             response["error_message"] = "Capability lifecycle sequence is invalid"
+        capability_lifecycles = [
+            {
+                "capability_kind": "builtin",
+                "tool_name": tool_name,
+                "invocation_id": invocation_id,
+                "state": state,
+            }
+            for (tool_name, invocation_id), state in required_tool_invocation_states.items()
+        ] + [
+            {
+                "capability_kind": capability_kind,
+                "tool_name": canonical_identity,
+                "invocation_id": invocation_id,
+                "state": state,
+            }
+            for (
+                capability_kind,
+                canonical_identity,
+                invocation_id,
+            ), state in invocation_states.items()
+        ]
+        response["runtime_diagnostics"] = _merge_runtime_diagnostics(
+            response.get("runtime_diagnostics"),
+            error_code=capability_evidence_error["code"],
+            failure_source="sandbox_capability_validation",
+            failure_stage="model_wait",
+            tool_lifecycles=capability_lifecycles,
+        )
         response["capability_evidence"] = []
         response[TOOL_INVOCATION_EVIDENCE_KEY] = []
         response.pop(REQUIRED_CAPABILITY_EVIDENCE_KEY, None)
@@ -2253,20 +2503,42 @@ def create_executor_app(
                             "status": "failed",
                             "error_code": exc.error_code,
                             "error_message": exc.error_message,
+                            "runtime_diagnostics": _merge_runtime_diagnostics(
+                                None,
+                                error_code=exc.error_code,
+                                failure_source="executor_cleanup",
+                                failure_stage="sandbox_submission",
+                                exception=exc,
+                            ),
                         }
                     except Exception as exc:
+                        error_code = "executor_runner_failed"
                         runner_result = {
                             "status": "failed",
-                            "error_code": "executor_runner_failed",
+                            "error_code": error_code,
                             "error_message": str(exc),
+                            "runtime_diagnostics": _merge_runtime_diagnostics(
+                                None,
+                                error_code=error_code,
+                                failure_source="executor_runner_exception",
+                                failure_stage="sandbox_submission",
+                                exception=exc,
+                            ),
                         }
         finally:
             await drain_active_progress()
 
         if capability_callback_failed["value"]:
+            error_code = "capability_callback_not_acknowledged"
+            runner_result["runtime_diagnostics"] = _merge_runtime_diagnostics(
+                runner_result.get("runtime_diagnostics"),
+                error_code=error_code,
+                failure_source="sandbox_capability_callback",
+                failure_stage="sandbox_submission",
+            )
             runner_result["status"] = "failed"
             runner_result["message"] = ""
-            runner_result["error_code"] = "capability_callback_not_acknowledged"
+            runner_result["error_code"] = error_code
             runner_result["error_message"] = "Capability lifecycle callback was not acknowledged"
             runner_result["capability_evidence"] = []
         else:
@@ -2306,6 +2578,19 @@ def create_executor_app(
             if failed
             else None
         )
+        if failed:
+            existing_runtime_diagnostics = normalize_sdk_runtime_diagnostics(
+                runner_result.get("runtime_diagnostics")
+            )
+            if existing_runtime_diagnostics.get("error_code") == error_code:
+                runner_result["runtime_diagnostics"] = existing_runtime_diagnostics
+            else:
+                runner_result["runtime_diagnostics"] = _merge_runtime_diagnostics(
+                    runner_result.get("runtime_diagnostics"),
+                    error_code=error_code or "executor_failed",
+                    failure_source="sandbox_terminal_normalization",
+                    failure_stage="sandbox_submission",
+                )
         timeout_observation = (
             {
                 "requested_max_seconds": max_seconds,
@@ -2368,6 +2653,7 @@ def create_executor_app(
             "used_skills",
             "used_skills_source",
             "sdk_turn_diagnostics",
+            "runtime_diagnostics",
             "capability_evidence",
             REQUIRED_CAPABILITY_EVIDENCE_KEY,
             TOOL_INVOCATION_EVIDENCE_KEY,
@@ -2467,25 +2753,42 @@ def create_executor_app(
         heartbeat_task = asyncio.create_task(send_supervisor_heartbeats(request))
         try:
             result = await execute_claimed_task(request)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
+            error_code = "executor_cancelled"
             result = {
                 "status": "cancelled",
                 "run_id": request.run_id,
                 "message": "Task cancelled",
-                "error_code": "executor_cancelled",
+                "error_code": error_code,
                 "error_message": "Task cancelled",
+                "runtime_diagnostics": _merge_runtime_diagnostics(
+                    None,
+                    error_code=error_code,
+                    failure_source="sandbox_supervisor_cancelled",
+                    failure_stage="sandbox_submission",
+                    exception=exc,
+                ),
             }
-        except Exception:
+        except Exception as exc:
+            error_code = "executor_runner_failed"
             result = {
                 "status": "failed",
                 "run_id": request.run_id,
                 "message": "Executor failed",
-                "error_code": "executor_runner_failed",
+                "error_code": error_code,
                 "error_message": "Executor failed",
+                "runtime_diagnostics": _merge_runtime_diagnostics(
+                    None,
+                    error_code=error_code,
+                    failure_source="sandbox_supervisor_exception",
+                    failure_stage="sandbox_submission",
+                    exception=exc,
+                ),
             }
         finally:
             heartbeat_task.cancel()
             await asyncio.gather(heartbeat_task, return_exceptions=True)
+        _log_sandbox_execution_terminal(request, result)
         task_state["result"] = result
         task_state["status"] = str(result.get("status") or "failed")
         try:
@@ -2528,6 +2831,7 @@ def create_executor_app(
         task_state["attempt_id"] = request.attempt_id
         if not app.state.dispatch_in_background:
             result = await execute_claimed_task(request)
+            _log_sandbox_execution_terminal(request, result)
             task_state["result"] = result
             task_state["status"] = str(result.get("status") or "failed")
             return result

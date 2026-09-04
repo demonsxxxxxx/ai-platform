@@ -1612,6 +1612,7 @@ async def test_required_sandbox_bash_failure_after_success_preserves_published_p
         "tool_name": "Bash",
         "tool_use_id": "bash-call-2",
         "tool_input": {"command": "false"},
+        "error": "process exited with code 1",
     }
 
     async def acknowledge(fact):
@@ -1662,6 +1663,15 @@ async def test_required_sandbox_bash_failure_after_success_preserves_published_p
     assert "must not be published".startswith("".join(deltas))
     assert result.error == "required_tool_completion_evidence_mismatch"
     assert result.message == ""
+    failed_call = next(
+        item
+        for item in result.runtime_diagnostics["tool_calls"]
+        if item["invocation_id"] == "bash-call-2"
+    )
+    assert failed_call["tool_input"] == {"command": "false"}
+    assert failed_call["last_stage"] == "failed"
+    assert failed_call["state"] == "failed"
+    assert failed_call["failure"]["error"] == "process exited with code 1"
 
 
 @pytest.mark.asyncio
@@ -1899,9 +1909,10 @@ async def test_sdk_records_public_tool_policy_denial_detail(monkeypatch, tmp_pat
     monkeypatch.setitem(
         sys.modules,
         "claude_agent_sdk",
-        _fake_sdk(
+        _scripted_sdk(
             captured,
-            hook_invocations=[("PreToolUse", hook_input, hook_input["tool_use_id"])],
+            [("hook", ("PreToolUse", hook_input, hook_input["tool_use_id"]))],
+            result_error="tool rejected by policy",
         ),
     )
     monkeypatch.setattr(
@@ -1928,6 +1939,10 @@ async def test_sdk_records_public_tool_policy_denial_detail(monkeypatch, tmp_pat
     assert len(detail) == 1
     assert detail[0]["tool_name"] == "Grep"
     assert detail[0]["reason"]
+    private_detail = result.runtime_diagnostics["tool_policy_denials"][0]
+    assert private_detail["tool_name"] == "Grep"
+    assert private_detail["invocation_id"] == "grep-call-1"
+    assert private_detail["tool_input"] == hook_input["tool_input"]
 
 
 @pytest.mark.asyncio

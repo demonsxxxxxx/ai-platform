@@ -47,6 +47,9 @@ export interface AdminRunSummary {
   error_message?: string | null;
   queue_position?: number | null;
   queue_insight?: AdminQueueInsight | null;
+  result?: {
+    runtime_diagnostics?: Record<string, unknown> | null;
+  } | null;
 }
 
 export interface AdminRunEvent {

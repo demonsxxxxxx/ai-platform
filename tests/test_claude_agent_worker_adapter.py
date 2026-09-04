@@ -50,6 +50,9 @@ from app.runtime.sandbox.container_provider import (
     OpenSandboxContainerProvider,
     _prepare_trusted_skill_mount,
 )
+from app.sandbox.domain.runtime_diagnostics import (
+    SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+)
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.skills.pinning import build_skill_manifest_pins
 from app.skills.registry import BuiltinSkillRegistry
@@ -2804,6 +2807,48 @@ def test_sandbox_runtime_unknown_or_error_terminal_status_fails_closed(runtime_s
         else "executor_reported_failure"
     )
     assert result.executor_payload["runtime_terminal_status"] == runtime_status
+
+
+def test_sandbox_runtime_preserves_private_runtime_diagnostics(tmp_path):
+    adapter = ClaudeAgentWorkerAdapter()
+    prepared = PreparedSdkRun(
+        workspace=tmp_path,
+        file_names=[],
+        selected_skills=[],
+        pinned_manifests={},
+        allowed_skill_names=["general-chat"],
+        staged_skill_names=["general-chat"],
+        prompt="write the requested result",
+    )
+    runtime_diagnostics = {
+        "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        "error_code": "claude_agent_sdk_tool_admission_failed",
+        "failure_source": "sdk_result_error",
+        "failure_stage": "model_wait",
+        "sdk": {"errors": ["actual SDK failure"]},
+        "tool_lifecycles": [],
+        "tool_calls": [],
+        "tool_policy_denials": [{"tool_name": "Bash", "invocation_id": "call-1"}],
+    }
+
+    result = adapter._executor_result_from_sandbox_runtime(
+        sandbox_writing_payload(agent_id="general-agent", skill_id="general-chat"),
+        prepared,
+        types.SimpleNamespace(
+            status="failed",
+            provider="docker",
+            executor_response={
+                "status": "failed",
+                "error_code": "claude_agent_sdk_tool_admission_failed",
+                "runtime_diagnostics": runtime_diagnostics,
+            },
+            timings={},
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.result["runtime_diagnostics"] == runtime_diagnostics
+    assert result.executor_payload["runtime_diagnostics"] == runtime_diagnostics
 
 
 @pytest.mark.asyncio
