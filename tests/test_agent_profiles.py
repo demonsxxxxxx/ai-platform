@@ -315,7 +315,7 @@ def test_agent_profile_accepts_multiple_executable_skills_and_keeps_primary_shad
         }
     )
 
-    assert [skill.skill_id for skill in definition.skill_set] == [
+    assert [skill["skill_id"] for skill in definition.skill_set] == [
         "document-review",
         "workflow-automation",
     ]
@@ -718,7 +718,6 @@ def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
                     "avatar_ref": "builtin:agent",
                     "avatar_seed": "",
                     "category": "general",
-                    "market_tag": "",
                     "welcome_message": "",
                     "starter_prompts": [],
                     "capability_summary": "",

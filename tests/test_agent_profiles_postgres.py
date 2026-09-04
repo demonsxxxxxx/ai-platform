@@ -163,8 +163,12 @@ create table agent_profile_favorites (
 
 
 PRE_701_PROFILE_DOWNGRADE_SQL = """
+drop trigger if exists trg_agent_profile_aa_name_only_skill_set_prepare on agent_profile_revisions;
+drop trigger if exists trg_agent_profile_zz_name_only_skill_set_finalize on agent_profile_revisions;
 drop trigger if exists trg_agent_profile_legacy_insert_reconcile on agent_profile_revisions;
 drop trigger if exists trg_agent_profile_legacy_insert_compatibility on agent_profile_revisions;
+drop function if exists agent_profile_name_only_skill_set_prepare();
+drop function if exists agent_profile_name_only_skill_set_finalize();
 drop function if exists agent_profile_legacy_insert_reconcile();
 drop function if exists agent_profile_legacy_insert_compatibility();
 drop table if exists agent_profiles;
@@ -864,6 +868,95 @@ async def test_postgres_agent_history_projects_only_legacy_default_titles():
                 sql.SQL("drop schema if exists {} cascade").format(
                     sql.Identifier(schema_name)
                 )
+            )
+        finally:
+            await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_name_only_profile_trigger_path_preserves_legacy_defaults():
+    dsn = _postgres_dsn()
+    schema_name = f"agent_profile_skill_names_{uuid.uuid4().hex}"
+    conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    try:
+        await conn.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await _set_search_path(conn, schema_name)
+        await conn.execute(Path("app/schema.sql").read_text(encoding="utf-8"))
+        await conn.execute("insert into tenants(id, name) values (%s, %s)", ("tenant-skill", "Skill tenant"))
+        await conn.execute(
+            "insert into users(id, tenant_id, display_name) values (%s, %s, %s)",
+            ("user-skill", "tenant-skill", "Skill user"),
+        )
+        await conn.execute(
+            "insert into skills(id, name, version, executor_type) values (%s, %s, %s, %s)",
+            ("profile-skill", "Profile skill", "version-a", "claude-agent-worker"),
+        )
+        await conn.execute(
+            """
+            insert into agents(id, tenant_id, name, agent_type, default_skill_id)
+            values (%s, %s, %s, 'profile', %s)
+            """,
+            ("agent-skill", "tenant-skill", "Skill profile", "profile-skill"),
+        )
+        await conn.execute(
+            """
+            insert into agent_profile_revisions(
+              tenant_id, agent_id, revision, status, revision_status, name, instructions,
+              model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
+              avatar_ref, category, visibility, allowed_department_ids, allowed_roles,
+              allowed_user_ids, created_by
+            ) values (
+              %s, %s, 1, 'draft', 'draft', 'Skill profile', 'Private instructions',
+              'platform-selected', %s, '', %s::jsonb, '[]'::jsonb, %s,
+              'builtin:agent', 'general', 'tenant', '[]'::jsonb, '[]'::jsonb,
+              '[]'::jsonb, %s
+            )
+            """,
+            (
+                "tenant-skill",
+                "agent-skill",
+                "profile-skill",
+                '[{"skill_id": "profile-skill"}]',
+                "a" * 64,
+                "user-skill",
+            ),
+        )
+        stored = await conn.execute(
+            """
+            select skill_set, skill_version, legacy_compatibility_write
+            from agent_profile_revisions
+            where tenant_id = %s and agent_id = %s and revision = 1
+            """,
+            ("tenant-skill", "agent-skill"),
+        )
+        assert await stored.fetchone() == {
+            "skill_set": [{"skill_id": "profile-skill"}],
+            "skill_version": "",
+            "legacy_compatibility_write": False,
+        }
+        trigger_rows = await conn.execute(
+            """
+            select triggers.tgname
+            from pg_trigger triggers
+            join pg_class relations on relations.oid = triggers.tgrelid
+            where relations.relname = 'agent_profile_revisions'
+              and triggers.tgname in (
+                'trg_agent_profile_aa_name_only_skill_set_prepare',
+                'trg_agent_profile_legacy_insert_compatibility',
+                'trg_agent_profile_zz_name_only_skill_set_finalize'
+              )
+            order by triggers.tgname
+            """
+        )
+        assert [row["tgname"] for row in await trigger_rows.fetchall()] == [
+            "trg_agent_profile_aa_name_only_skill_set_prepare",
+            "trg_agent_profile_legacy_insert_compatibility",
+            "trg_agent_profile_zz_name_only_skill_set_finalize",
+        ]
+    finally:
+        try:
+            await conn.execute(
+                sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name))
             )
         finally:
             await conn.close()

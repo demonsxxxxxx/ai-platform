@@ -266,10 +266,17 @@ async def test_profile_definition_validates_stable_mcp_reference_and_server_exis
         observed_skill.update(kwargs)
         return {"skill_id": "general-chat", "skill_version": "version-b"}
 
+    async def resolve_skill(*_args, **_kwargs):
+        return {"skill_version": "version-b"}
+
     async def get_server(*_args, **kwargs):
         observed.append((kwargs["tenant_id"], kwargs["name"]))
         return {"name": kwargs["name"], "status": "active"}
 
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.resolve_selected_skill",
+        resolve_skill,
+    )
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.authorize_selected_run_capabilities",
         authorize_skill,
@@ -288,8 +295,8 @@ async def test_profile_definition_validates_stable_mcp_reference_and_server_exis
 
     assert skills[0]["skill_id"] == "general-chat"
     assert skills[0]["skill_version"] == "version-b"
-    assert observed_skill["expected_version"] == ""
-    assert observed_skill["allow_current_version"] is True
+    assert observed_skill["expected_version"] == "version-b"
+    assert "allow_current_version" not in observed_skill
     assert observed == [("tenant-a", "gateway")]
 
 
@@ -302,6 +309,13 @@ async def test_profile_definition_preserves_repository_authorization_status(monk
     async def deny_skill(*_args, **_kwargs):
         raise repositories.RepositoryAuthorizationError("denied")
 
+    async def resolve_skill(*_args, **_kwargs):
+        return {"skill_version": "version-a"}
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.resolve_selected_skill",
+        resolve_skill,
+    )
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.authorize_selected_run_capabilities",
         deny_skill,

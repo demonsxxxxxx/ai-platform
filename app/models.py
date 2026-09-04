@@ -20,9 +20,9 @@ from app.control_plane_contracts import (
     SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS, ThinkingEffort, validate_thinking_agent_options,
 )
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
-from app.agent_apps.api import AgentProfileAvatarRef, AgentProfileSkillReference, discard_legacy_agent_profile_model_id
+from app.agent_apps.api import AgentProfileAvatarRef, discard_legacy_agent_profile_model_id
 from app.agent_apps.api import (
-    normalize_agent_avatar_seed, normalize_agent_profile_display_items, normalize_agent_skill_set,
+    AgentProfileSkillReference, normalize_agent_avatar_seed, normalize_agent_profile_display_items, normalize_agent_skill_set,
 )
 from app.skills.release_policy import (
     validate_release_decision_lock,
@@ -416,7 +416,6 @@ class AgentProfilePublicProjection(BaseModel):
     avatar_ref: AgentProfileAvatarRef = "builtin:agent"
     avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
-    market_tag: str = ""
     published_at: Any | None = None
 
     _validate_supported_input_types = field_validator("supported_input_types")(
