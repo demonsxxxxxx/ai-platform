@@ -196,21 +196,75 @@ def callback_retry_policy(
     )
 
 
-def test_executor_lifespan_shutdown_cancels_active_task_and_delivers_terminal(tmp_path, caplog):
+@pytest.mark.parametrize(
+    ("blocking_event", "queued_event"),
+    [
+        pytest.param(
+            AgentEvent(
+                type="message.delta",
+                event_id="evt_in-flight",
+                run_id="run-a",
+                message_id="msg-a",
+                payload={"delta": "first"},
+            ),
+            AgentEvent(
+                type="message.delta",
+                event_id="evt_queued",
+                run_id="run-a",
+                message_id="msg-a",
+                payload={"delta": "second"},
+            ),
+            id="buffered-delta",
+        ),
+        pytest.param(
+            AgentEvent(
+                type="tool.started",
+                event_id="evt_direct-barrier",
+                run_id="run-a",
+                payload={"tool_call_id": "call-a"},
+            ),
+            None,
+            id="direct-barrier",
+        ),
+    ],
+)
+def test_executor_lifespan_shutdown_drains_in_flight_callback_before_terminal(
+    tmp_path,
+    caplog,
+    blocking_event,
+    queued_event,
+):
     caplog.set_level(logging.INFO, logger=executor_app.__name__)
     started = threading.Event()
-    cancelled = threading.Event()
+    queued = threading.Event()
+    release_callback = threading.Event()
+    callback_committed = threading.Event()
+    callback_cancelled = threading.Event()
     callbacks = []
 
-    async def executor_runner(_request, _workspace_root, _emit_event):
-        started.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            cancelled.set()
+    async def executor_runner(_request, _workspace_root, emit_event):
+        await emit_event(blocking_event)
+        while not started.is_set():
+            await asyncio.sleep(0)
+        if queued_event is not None:
+            await emit_event(queued_event)
+            queued.set()
+        await asyncio.Event().wait()
 
     async def callback_sender(_url, payload, _token):
         callbacks.append(payload)
+        if any(
+            event.get("event_id") == blocking_event.event_id
+            for event in payload.get("events", [])
+        ):
+            started.set()
+            try:
+                while not release_callback.is_set():
+                    await asyncio.sleep(0.001)
+                callback_committed.set()
+            except asyncio.CancelledError:
+                callback_cancelled.set()
+                raise
         return callback_ack(payload)
 
     app = create_executor_app(
@@ -228,12 +282,23 @@ def test_executor_lifespan_shutdown_cancels_active_task_and_delivers_terminal(tm
         response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
         assert response.status_code == 202
         assert started.wait(timeout=2)
+        if queued_event is not None:
+            assert queued.wait(timeout=2)
+        threading.Timer(0.05, release_callback.set).start()
 
-    assert cancelled.is_set()
+    assert callback_committed.is_set()
+    assert not callback_cancelled.is_set()
     terminal_callbacks = [callback for callback in callbacks if callback.get("terminal_result")]
     assert len(terminal_callbacks) == 1
     assert terminal_callbacks[0]["status"] == "cancelled"
     assert terminal_callbacks[0]["terminal_result"]["status"] == "cancelled"
+    runner_event_callbacks = [callback for callback in callbacks if callback.get("events")]
+    assert [
+        event["event_id"]
+        for callback in runner_event_callbacks
+        for event in callback["events"]
+    ] == [blocking_event.event_id]
+    assert callbacks.index(runner_event_callbacks[0]) < callbacks.index(terminal_callbacks[0])
     cancellation_diagnostics = terminal_callbacks[0]["terminal_result"][
         "runtime_diagnostics"
     ]
@@ -2182,6 +2247,16 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
         calls["skills"] = kwargs["skills"]
         calls["subjects"] = kwargs["tool_policy_subjects"]
         assert "on_tool_permission" not in kwargs
+        candidate = SimpleNamespace(
+            as_agent_event_fields=lambda: {
+                "type": "message.delta",
+                "payload": {"delta": "sdk partial"},
+                "event_id": "evt_sdk_partial",
+                "run_id": "run-a",
+                "message_id": "msg-a",
+            }
+        )
+        assert await kwargs["on_agent_event"]((candidate,)) is True
         await kwargs["on_text"]("sdk partial")
         return sdk_result("sdk final", usage={"input_tokens": 1, "output_tokens": 1})
 
@@ -2223,6 +2298,11 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
     assert calls["skills"] == []
     assert calls["subjects"][0]["identity"] == "Bash"
     assert any(
+        event["type"] == "message.delta"
+        for callback in callbacks
+        for event in callback.get("events", [])
+    )
+    assert not any(
         event["type"] == "assistant_delta"
         for callback in callbacks
         for event in callback.get("events", [])
@@ -3843,6 +3923,324 @@ def test_callback_batch_factory_allocates_distinct_adjacent_identities():
     assert first != second
 
 
+def message_delta_callback(index: object, delta: str) -> ExecutorCallbackEvent:
+    return ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="qat-attempt-a",
+        callback_token_id="cbt_run-a",
+        batch_id=f"batch-{index}",
+        status="running",
+        progress=20,
+        state_patch={"stage": "agent_event"},
+        events=[
+            AgentEvent(
+                type="message.delta",
+                payload={"delta": delta},
+                event_id=f"evt_{index}",
+                run_id="run-a",
+                message_id="msg-a",
+            )
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_message_delta_buffer_does_not_batch_past_utf8_bound(monkeypatch):
+    delivered: list[ExecutorCallbackEvent] = []
+
+    async def deliver(callback):
+        delivered.append(callback)
+        return True
+
+    monkeypatch.setattr(executor_app, "_MESSAGE_DELTA_FLUSH_SECONDS", 0)
+    monkeypatch.setattr(executor_app, "_MESSAGE_DELTA_MAX_BATCH_BYTES", 5)
+    buffer = executor_app._MessageDeltaCallbackBuffer(deliver)
+    await buffer.enqueue(message_delta_callback(1, "1234"))
+    await buffer.enqueue(message_delta_callback(2, "56"))
+    assert executor_app._message_delta_size(message_delta_callback(3, "ééé")) is None
+
+    assert await buffer.close() is True
+    assert [item.events[0].payload["delta"] for item in delivered] == ["1234", "56"]
+
+
+@pytest.mark.asyncio
+async def test_message_delta_waits_for_cancelled_direct_barrier(monkeypatch):
+    direct_started = asyncio.Event()
+    release_direct = asyncio.Event()
+    direct_cancelled = False
+    delivered: list[str] = []
+
+    async def deliver(callback):
+        nonlocal direct_cancelled
+        if not callback.events:
+            direct_started.set()
+            try:
+                await release_direct.wait()
+            except asyncio.CancelledError:
+                direct_cancelled = True
+                raise
+            delivered.append("direct")
+        else:
+            delivered.append("delta")
+        return True
+
+    monkeypatch.setattr(executor_app, "_MESSAGE_DELTA_FLUSH_SECONDS", 0)
+    buffer = executor_app._MessageDeltaCallbackBuffer(deliver)
+    direct = message_delta_callback(1, "unused").model_copy(update={"events": []})
+    direct_send = asyncio.create_task(buffer.send(direct))
+    await direct_started.wait()
+    direct_send.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await direct_send
+
+    delta_enqueue = asyncio.create_task(buffer.enqueue(message_delta_callback(2, "next")))
+    await asyncio.sleep(0.01)
+    assert not delta_enqueue.done()
+
+    release_direct.set()
+    assert await delta_enqueue is True
+    assert await buffer.close() is True
+    assert direct_cancelled is False
+    assert delivered == ["direct", "delta"]
+
+
+@pytest.mark.asyncio
+async def test_message_delta_buffer_batches_without_rewriting_event_identity(monkeypatch):
+    delivered: list[ExecutorCallbackEvent] = []
+
+    async def deliver(callback):
+        delivered.append(callback)
+        return True
+
+    monkeypatch.setattr(executor_app, "_MESSAGE_DELTA_FLUSH_SECONDS", 0)
+    buffer = executor_app._MessageDeltaCallbackBuffer(deliver)
+    for index in range(101):
+        await buffer.enqueue(message_delta_callback(index, "x"))
+
+    assert await buffer.close() is True
+    assert [len(callback.events) for callback in delivered] == [100, 1]
+    assert [
+        event.event_id for callback in delivered for event in callback.events
+    ] == [f"evt_{index}" for index in range(101)]
+
+
+@pytest.mark.asyncio
+async def test_message_delta_buffer_backpressures_when_queue_is_full(monkeypatch):
+    delivery_started = asyncio.Event()
+    release_delivery = asyncio.Event()
+
+    async def deliver(_callback):
+        delivery_started.set()
+        await release_delivery.wait()
+        return True
+
+    monkeypatch.setattr(executor_app, "_MESSAGE_DELTA_FLUSH_SECONDS", 0)
+    buffer = executor_app._MessageDeltaCallbackBuffer(deliver)
+    await buffer.enqueue(message_delta_callback("in-flight", "in-flight"))
+    await delivery_started.wait()
+    for index in range(executor_app._MESSAGE_DELTA_QUEUE_SIZE):
+        await buffer.enqueue(message_delta_callback(index, f"{index} "))
+
+    blocked = asyncio.create_task(
+        buffer.enqueue(message_delta_callback("blocked", "blocked"))
+    )
+    await asyncio.sleep(0)
+    assert not blocked.done()
+
+    release_delivery.set()
+    assert await asyncio.wait_for(blocked, timeout=1)
+    assert await buffer.close()
+
+
+@pytest.mark.asyncio
+async def test_message_delta_buffer_propagates_worker_failure_without_hanging():
+    async def fail(_callback):
+        raise RuntimeError("delivery bug")
+
+    buffer = executor_app._MessageDeltaCallbackBuffer(fail)
+    await buffer.enqueue(message_delta_callback("failure", "text"))
+
+    with pytest.raises(RuntimeError, match="delivery bug"):
+        await asyncio.wait_for(buffer.close(), timeout=1)
+
+
+def test_executor_batches_adjacent_message_deltas_before_tool_boundary(tmp_path):
+    callbacks: list[dict[str, object]] = []
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        await emit_event(message_delta_callback(1, "one ").events[0])
+        await emit_event(message_delta_callback(2, "two").events[0])
+        await emit_event(AgentEvent(type="tool_call_started", message="tool"))
+        return {"status": "completed", "message": "done"}
+
+    def callback_sender(_url, payload, _token):
+        callbacks.append(payload)
+        return callback_ack(payload)
+
+    client = create_test_client(tmp_path, callback_sender=callback_sender, executor_runner=executor_runner)
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    delta_callbacks = [
+        callback
+        for callback in callbacks
+        if any(event.get("type") == "message.delta" for event in callback.get("events", []))
+    ]
+    assert len(delta_callbacks) == 1
+    assert [event["event_id"] for event in delta_callbacks[0]["events"]] == [
+        "evt_1",
+        "evt_2",
+    ]
+    assert [event["payload"]["delta"] for event in delta_callbacks[0]["events"]] == [
+        "one ",
+        "two",
+    ]
+    assert callbacks.index(delta_callbacks[0]) < next(
+        index
+        for index, callback in enumerate(callbacks)
+        if any(event.get("type") == "tool_call_started" for event in callback.get("events", []))
+    )
+
+
+@pytest.mark.asyncio
+async def test_executor_consumes_next_delta_while_callback_is_in_flight(tmp_path):
+    callback_started = asyncio.Event()
+    next_delta_consumed = asyncio.Event()
+    release_callback = asyncio.Event()
+    message_deltas: list[str] = []
+    callbacks: list[dict[str, object]] = []
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        await emit_event(message_delta_callback(1, "first").events[0])
+        await callback_started.wait()
+        await emit_event(message_delta_callback(2, "second").events[0])
+        next_delta_consumed.set()
+        return {"status": "completed", "message": "done"}
+
+    async def callback_sender(_url, payload, _token):
+        callbacks.append(payload)
+        deltas = [
+            event["payload"]["delta"]
+            for event in payload.get("events", [])
+            if event.get("type") == "message.delta"
+        ]
+        if deltas:
+            message_deltas.extend(deltas)
+            if len(message_deltas) == 1:
+                callback_started.set()
+                await release_callback.wait()
+        return callback_ack(payload)
+
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        callback_sender=callback_sender,
+        executor_runner=executor_runner,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        dispatch_in_background=False,
+    )
+    execution = asyncio.create_task(
+        _synchronous_executor_endpoint(app)(
+            ExecutorTaskRequest.model_validate(task_payload()),
+            executor_credential=EXECUTOR_AUTH_TOKEN,
+        )
+    )
+
+    await asyncio.wait_for(callback_started.wait(), timeout=1)
+    await asyncio.wait_for(next_delta_consumed.wait(), timeout=1)
+    assert not execution.done()
+    release_callback.set()
+    result = await asyncio.wait_for(execution, timeout=1)
+
+    assert result["status"] == "completed"
+    assert message_deltas == ["first", "second"]
+    last_delta = max(
+        index
+        for index, callback in enumerate(callbacks)
+        if any(event.get("type") == "message.delta" for event in callback.get("events", []))
+    )
+    finished = next(
+        index
+        for index, callback in enumerate(callbacks)
+        if callback.get("state_patch", {}).get("stage") == "executor_finished"
+    )
+    assert last_delta < finished
+
+
+def test_executor_reuses_default_callback_client_for_app_lifespan(tmp_path, monkeypatch):
+    clients = []
+    callbacks: list[dict[str, object]] = []
+    runner_started = threading.Event()
+    runner_cancelled = threading.Event()
+    terminal_started = threading.Event()
+    terminal_cancelled = threading.Event()
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return callback_ack(self.payload)
+
+    class FakeClient:
+        def __init__(self, *, timeout):
+            clients.append(self)
+            self.closed = False
+
+        async def post(self, _url, *, json, headers):
+            callbacks.append(json)
+            if json.get("terminal_result"):
+                terminal_started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    terminal_cancelled.set()
+            return FakeResponse(json)
+
+        async def aclose(self):
+            assert terminal_started.is_set()
+            assert terminal_cancelled.is_set()
+            self.closed = True
+
+    async def executor_runner(_request, _workspace_root, _emit_event):
+        runner_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            runner_cancelled.set()
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.httpx.AsyncClient", FakeClient)
+    monkeypatch.setattr(executor_app, "_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS", 0.01)
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+        assert response.status_code == 202
+        assert runner_started.wait(timeout=2)
+
+    assert runner_cancelled.is_set()
+    assert terminal_started.is_set()
+    assert terminal_cancelled.is_set()
+    assert len(clients) == 1
+    assert len(callbacks) > 1
+    assert clients[0].closed is True
+
+
 def test_executor_retries_assistant_delta_with_immutable_batch(tmp_path, caplog):
     assistant_attempts: list[dict[str, object]] = []
     caplog.set_level("WARNING", logger=executor_app.__name__)
@@ -3898,7 +4296,7 @@ def test_executor_retries_assistant_delta_with_immutable_batch(tmp_path, caplog)
 
 
 def test_executor_does_not_overtake_retrying_callback_batch(tmp_path):
-    assistant_attempts: list[tuple[str, str]] = []
+    delta_attempts: list[tuple[str, str]] = []
     first_attempt_started = asyncio.Event()
     release_first_attempt = asyncio.Event()
     in_flight = 0
@@ -3906,11 +4304,11 @@ def test_executor_does_not_overtake_retrying_callback_batch(tmp_path):
 
     async def executor_runner(_request, _workspace_root, emit_event):
         first = asyncio.create_task(
-            emit_event(AgentEvent(type="assistant_delta", message="first", payload={"delta": "first"}))
+            emit_event(message_delta_callback(1, "first").events[0])
         )
         await first_attempt_started.wait()
         second = asyncio.create_task(
-            emit_event(AgentEvent(type="assistant_delta", message="second", payload={"delta": "second"}))
+            emit_event(message_delta_callback(2, "second").events[0])
         )
         release_first_attempt.set()
         await asyncio.gather(first, second)
@@ -3918,16 +4316,16 @@ def test_executor_does_not_overtake_retrying_callback_batch(tmp_path):
 
     async def callback_sender(url, payload, token):
         nonlocal in_flight, max_in_flight
-        assistant_events = [
-            event for event in payload.get("events", []) if event.get("type") == "assistant_delta"
+        delta_events = [
+            event for event in payload.get("events", []) if event.get("type") == "message.delta"
         ]
-        if assistant_events:
+        if delta_events:
             in_flight += 1
             max_in_flight = max(max_in_flight, in_flight)
             try:
-                delta = assistant_events[0]["payload"]["delta"]
-                assistant_attempts.append((payload["batch_id"], delta))
-                if delta == "first" and len(assistant_attempts) == 1:
+                delta = delta_events[0]["payload"]["delta"]
+                delta_attempts.append((payload["batch_id"], delta))
+                if delta == "first" and len(delta_attempts) == 1:
                     first_attempt_started.set()
                     await release_first_attempt.wait()
                     raise httpx.ConnectError(
@@ -3950,9 +4348,9 @@ def test_executor_does_not_overtake_retrying_callback_batch(tmp_path):
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
-    first_batch_id = assistant_attempts[0][0]
-    second_batch_id = assistant_attempts[2][0]
-    assert assistant_attempts == [
+    first_batch_id = delta_attempts[0][0]
+    second_batch_id = delta_attempts[2][0]
+    assert delta_attempts == [
         (first_batch_id, "first"),
         (first_batch_id, "first"),
         (second_batch_id, "second"),

@@ -35,6 +35,24 @@ plus the receipt atomically. Exact retries reuse the same rows and identities;
 a conflicting receipt fails closed. Callback transport fields and engine SDK
 objects are never browser wire fields.
 
+The Sandbox may enqueue only single-item callbacks containing one adjacent,
+already-projected `message.delta` event before this boundary. The worker batches
+those callback items without concatenating or rewriting their events: each
+keeps its event identity and becomes its own durable row and SSE sequence. It
+waits at most 50 milliseconds, stops adding before a batch would exceed 100
+events or 8 KiB of aggregate delta text, and holds at most 100 queued callback
+items. A larger pre-projected item and every multi-item callback remain
+synchronous barriers. Once v4 answer projection is accepted, the redundant
+legacy `assistant_delta` callback is suppressed. One ordered runner-event
+callback is in flight at a time; queue saturation backpressures the SDK. Every
+non-delta runner event, Tool lifecycle transition, error, cancellation, or
+terminal transition is a receipt barrier, so no later fact can overtake
+uncommitted public answer text. Cancellation discards only callbacks that have
+not started and waits for an in-flight delivery to reach its bounded receipt or
+rejection before terminal delivery. The callback HTTP client is reused for the
+application lifetime; reconnect behavior does not change callback identity or
+retry bytes.
+
 ## Internal Redis envelope
 
 Every Redis entry contains one canonical JSON value shaped by
