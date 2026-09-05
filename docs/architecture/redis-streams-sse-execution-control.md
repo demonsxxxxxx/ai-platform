@@ -106,7 +106,9 @@ accepted cursor.
 Safety-critical interaction does not depend on Pub/Sub. A missed notification
 is repaired by Stream replay; missing terminal history is repaired only by the
 successor protocol below. No unbounded in-memory queue or PostgreSQL-to-browser
-polling fallback is permitted.
+polling fallback is permitted. Canonical v4 `message.delta` rows still commit
+in PostgreSQL before publication; this restriction forbids an alternate
+browser delivery plane, not the canonical durable event ledger.
 
 ## Authorization lease
 
@@ -160,7 +162,7 @@ The guarantee is intentionally bounded: after `effective`, the application and
 owned SSE gateway produce/accept no new payload under the old epoch. An ASGI send
 return means bytes reached the protocol server boundary, not that the browser
 received them. Bytes already handed to a protocol server, kernel, Nginx, load
-balancer, or client buffer may still arrive. V3 therefore makes no browser-byte
+balancer, or client buffer may still arrive. V4 therefore makes no browser-byte
 or commit-time-zero-frame promise.
 
 The owned gateway must support cancellation and connection close; Nginx must
@@ -189,7 +191,7 @@ After dispatch, a Redis append or shared live-feed failure:
 5. preserves cancellation, resource, egress, and safety control.
 
 Eligible non-interactive work may continue only while those control authorities
-remain reliable. V3 does not expose runtime approval over this stream. Any
+remain reliable. V4 does not expose runtime approval over this stream. Any
 future safety-critical interaction must first define its own durable authority
 and fail-closed behavior; Pub/Sub delivery alone can never authorize a side
 effect.
@@ -290,3 +292,14 @@ Pending Redis publication does not leave a terminal run permanently `running`.
   hash retry, exclusive terminal successor preparation, expired-claim takeover
   without incarnation reuse, candidate completeness, stale-token/source-fingerprint
   rejection, duplicate event, late delta, and final hydrate replacement.
+
+## Convergence proposals and evidence
+
+The [runtime convergence proposal](runtime-convergence.md) separates durable
+callback acknowledgement from publication latency and critical retry scheduling
+from bulk cleanup. It does not alter this contract until the relevant owners
+approve and implement the slice. Every publisher still uses the existing
+committed claim, frozen bytes and fenced receipt. Proposed backlog, wake-up,
+callback and shutdown tests are in the [system matrix](../acceptance/system-architecture-matrix.md).
+An accepted document or a local scheduler probe does not establish deployed
+latency, provider isolation or completed RunAttempt migration.

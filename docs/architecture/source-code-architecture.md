@@ -6,7 +6,11 @@ project status report and does not establish deployed runtime state.
 
 The keywords **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 Existing paths that predate this contract are migration exceptions, not
-precedent for new code.
+precedent for new code. Target paths and decision-baseline inventories below
+are not claims that migration or deployment has completed. The
+[system overview](system-architecture.md) owns the concise process map, and
+[runtime convergence](runtime-convergence.md) proposes cross-component delivery
+slices. Exact progress and exception dispositions remain in issue/PR.
 
 CI, test classification, runtime readiness, historical evidence, and external
 acceptance are governed by
@@ -230,6 +234,13 @@ with the business operation whose race they protect.
 Moving code MUST preserve lock acquisition order, transaction scope, identity
 binding, and side-effect ordering. A source move that changes one of those is a
 behavior change and requires a separate design and concurrency evidence.
+
+For an external-I/O transaction migration, record the current lock-based
+mechanism and its replacement claim, remote-operation identity and fenced
+receipt before moving the call. Database CAS alone is not proof that an
+already-issued remote effect stopped. See [runtime convergence](runtime-convergence.md)
+and its TX/Sandbox acceptance cases; current temporary exceptions remain until
+the replacement passes the owning contract and integration gates.
 
 ## 4. Runtime and data ownership
 
