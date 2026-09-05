@@ -377,6 +377,24 @@ test("legacy upload 401 cannot refresh or replay through the compatibility firew
   }
 });
 
+test("file deletion uses the protected Files route", async () => {
+  const stubs = installAuthApiBrowserStubs({
+    file_id: "file-a",
+    lifecycle_state: "delete_pending",
+    deletion_state: "file_pending",
+    reconcile_required: false,
+  });
+
+  try {
+    await uploadApi.deleteFile("file/a");
+    assert.deepEqual(stubs.fetchCalls, ["/api/ai/files/file%2Fa"]);
+    assert.equal(stubs.fetchInit[0].method, "DELETE");
+    assert.equal(stubs.fetchInit[0].credentials, "include");
+  } finally {
+    stubs.restore();
+  }
+});
+
 test("logout transport does not clear owner-managed browser auth state", async () => {
   const stubs = installAuthApiBrowserStubs({ status: "logged_out" });
   stubs.stored.set("ai_platform_session_present", "session-marker");

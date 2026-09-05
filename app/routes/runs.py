@@ -762,6 +762,7 @@ async def prepare_copied_run_for_queue(
         file_ids=list(copied_snapshot["file_ids"]),
         source=source,
         source_run_id=source_run_id,
+        include_session_history=True,
     )
     for event in initial_run_event_specs(
         agent_id=str(copied["agent_id"]),

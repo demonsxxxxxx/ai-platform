@@ -5946,6 +5946,7 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
     assert calls["context"]["skill_id"] == "qa-file-reviewer"
     assert calls["context"]["input_payload"] == {"message": "继续审核", "copied_from_run_id": "run_source"}
     assert calls["context"]["message_ids"] == []
+    assert calls["context"]["include_session_history"] is True
     assert calls["context"]["file_ids"] == ["file_1"]
     assert calls["queue"]["context_snapshot_id"] == "ctx_copy"
     assert calls["queue"]["context_snapshot"]["source"] == "copy_run"

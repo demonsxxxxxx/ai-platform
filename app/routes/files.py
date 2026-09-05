@@ -552,6 +552,7 @@ async def initiate_multipart_upload(
     request: object = Body(...),
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
+    _require_upload_permissions(principal)
     try:
         request = parse_multipart_upload_create_request(request)
     except ValueError as exc:
