@@ -192,6 +192,181 @@ class _CallbackBatchDelivery:
         self.error_code = "executor_cancelled"
 
 
+_MESSAGE_DELTA_FLUSH_SECONDS = 0.05
+_MESSAGE_DELTA_MAX_BATCH_BYTES = 8 * 1024
+_MESSAGE_DELTA_MAX_BATCH_EVENTS = 100
+_MESSAGE_DELTA_QUEUE_SIZE = 100
+_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS = 30.0
+
+
+def _message_delta_size(callback: ExecutorCallbackEvent) -> int | None:
+    if (
+        callback.status != "running"
+        or callback.new_message is not None
+        or callback.terminal_result is not None
+        or not callback.events
+        or len(callback.events) > _MESSAGE_DELTA_MAX_BATCH_EVENTS
+    ):
+        return None
+    size = 0
+    for event in callback.events:
+        delta = event.payload.get("delta")
+        if (
+            event.type != "message.delta"
+            or not event.event_id
+            or not event.run_id
+            or not event.message_id
+            or event.message
+            or not isinstance(delta, str)
+            or not delta
+        ):
+            return None
+        size += len(delta.encode("utf-8"))
+    return size if size <= _MESSAGE_DELTA_MAX_BATCH_BYTES else None
+
+
+def _merge_message_delta_callbacks(
+    current: ExecutorCallbackEvent,
+    incoming: ExecutorCallbackEvent,
+) -> ExecutorCallbackEvent | None:
+    current_size = _message_delta_size(current)
+    incoming_size = _message_delta_size(incoming)
+    if (
+        current_size is None
+        or incoming_size is None
+        or len(current.events) + len(incoming.events) > _MESSAGE_DELTA_MAX_BATCH_EVENTS
+        or current_size + incoming_size > _MESSAGE_DELTA_MAX_BATCH_BYTES
+        or current.model_dump(exclude={"batch_id", "events"})
+        != incoming.model_dump(exclude={"batch_id", "events"})
+    ):
+        return None
+    return current.model_copy(update={"events": [*current.events, *incoming.events]})
+
+
+class _MessageDeltaCallbackBuffer:
+    """Batch adjacent public message deltas behind the runner-event lock."""
+
+    def __init__(
+        self,
+        deliver: Callable[[ExecutorCallbackEvent], Awaitable[bool]],
+    ) -> None:
+        self._deliver = deliver
+        self._queue: asyncio.Queue[ExecutorCallbackEvent] = asyncio.Queue(
+            maxsize=_MESSAGE_DELTA_QUEUE_SIZE
+        )
+        self._failed = False
+        self._error: Exception | None = None
+        self._closed = False
+        self._direct_deliveries: set[asyncio.Task[bool]] = set()
+        self._worker = asyncio.create_task(self._run())
+
+    async def _run(self) -> None:
+        carried: ExecutorCallbackEvent | None = None
+        try:
+            while True:
+                callback = carried or await self._queue.get()
+                carried = None
+                consumed = 1
+                try:
+                    if self._queue.empty():
+                        await asyncio.sleep(_MESSAGE_DELTA_FLUSH_SECONDS)
+                    while consumed < _MESSAGE_DELTA_QUEUE_SIZE:
+                        try:
+                            candidate = self._queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                        merged = _merge_message_delta_callbacks(callback, candidate)
+                        if merged is None:
+                            carried = candidate
+                            break
+                        callback = merged
+                        consumed += 1
+                    accepted = False if self._failed else await self._deliver(callback)
+                    self._failed = self._failed or not accepted
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._failed = True
+                    self._error = exc
+                finally:
+                    for _ in range(consumed):
+                        self._queue.task_done()
+        finally:
+            if carried is not None:
+                self._queue.task_done()
+
+    async def enqueue(self, callback: ExecutorCallbackEvent) -> bool:
+        if self._closed or self._failed:
+            return False
+        if self._direct_deliveries and not await self.flush():
+            return False
+        try:
+            await self._queue.put(callback)
+        except asyncio.CancelledError:
+            await asyncio.shield(self.cancel())
+            raise
+        return not self._failed
+
+    async def _drain_direct_deliveries(self) -> None:
+        if not self._direct_deliveries:
+            return
+        deliveries = tuple(self._direct_deliveries)
+        results = await asyncio.shield(
+            asyncio.gather(*deliveries, return_exceptions=True)
+        )
+        self._direct_deliveries.difference_update(deliveries)
+        for result in results:
+            if isinstance(result, Exception):
+                self._error = self._error or result
+                self._failed = True
+            elif isinstance(result, BaseException) or result is not True:
+                self._failed = True
+
+    async def flush(self) -> bool:
+        await self._queue.join()
+        await self._drain_direct_deliveries()
+        if self._error is not None:
+            raise self._error
+        return not self._failed
+
+    async def send(self, callback: ExecutorCallbackEvent) -> bool:
+        if self._closed or not await self.flush():
+            return False
+        delivery = asyncio.create_task(self._deliver(callback))
+        try:
+            accepted = await asyncio.shield(delivery)
+        except asyncio.CancelledError:
+            self._direct_deliveries.add(delivery)
+            raise
+        self._failed = not accepted
+        return accepted
+
+    async def close(self) -> bool:
+        try:
+            accepted = await self.flush()
+        except asyncio.CancelledError:
+            await asyncio.shield(self.cancel())
+            raise
+        except Exception:
+            await self.cancel()
+            raise
+        self._closed = True
+        self._worker.cancel()
+        await asyncio.gather(self._worker, return_exceptions=True)
+        return accepted
+
+    async def cancel(self) -> None:
+        self._closed = True
+        self._failed = True
+        while not self._queue.empty():
+            self._queue.get_nowait()
+            self._queue.task_done()
+        await self._queue.join()
+        await self._drain_direct_deliveries()
+        self._worker.cancel()
+        await asyncio.gather(self._worker, return_exceptions=True)
+
+
 class _PrivateExecutionFact(NamedTuple):
     """Private runner fact paired with an optional public capability event."""
 
@@ -664,13 +839,33 @@ def _canonical_sdk_failure_code(raw_error: str, *, used_sdk: bool) -> str:
     return "claude_agent_sdk_runtime_error" if used_sdk else "executor_reported_failure"
 
 
-async def _default_callback_sender(url: str, payload: CallbackPayload, token: str) -> CallbackResult:
+async def _post_callback(
+    client: httpx.AsyncClient,
+    url: str,
+    payload: CallbackPayload,
+    token: str,
+) -> CallbackResult:
     headers = {"X-AI-Platform-Callback-Token": token}
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
+    response = await client.post(url, json=payload, headers=headers)
+    response.raise_for_status()
+    data = response.json()
     return data if isinstance(data, dict) else {"accepted": True}
+
+
+class _SharedCallbackSender:
+    def __init__(self) -> None:
+        self._client = httpx.AsyncClient(timeout=10.0)
+
+    async def __call__(self, url: str, payload: CallbackPayload, token: str) -> CallbackResult:
+        return await _post_callback(self._client, url, payload, token)
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+
+async def _default_callback_sender(url: str, payload: CallbackPayload, token: str) -> CallbackResult:
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        return await _post_callback(client, url, payload, token)
 
 
 async def _dispatch_callback(
@@ -1615,6 +1810,7 @@ async def _default_executor_runner(
     invocation_owners: dict[str, str] = {}
     capability_evidence_error = {"code": ""}
     capability_evidence_lock = asyncio.Lock()
+    v4_answer_stream_active = False
 
     def reject_capability_evidence(error_code: str) -> bool:
         capability_evidence_error["code"] = capability_evidence_error["code"] or error_code
@@ -1628,11 +1824,12 @@ async def _default_executor_runner(
         return True
 
     async def on_text(delta: str) -> None:
-        if not delta or capability_evidence_error["code"]:
+        if not delta or capability_evidence_error["code"] or v4_answer_stream_active:
             return
         await emit_event(AgentEvent(type="assistant_delta", message=delta, payload={"delta": delta}))
 
     async def on_agent_event(candidates: tuple[Any, ...]) -> bool:
+        nonlocal v4_answer_stream_active
         if capability_evidence_error["code"] or not candidates:
             return False
         try:
@@ -1663,6 +1860,8 @@ async def _default_executor_runner(
             if isinstance(emit_event, _SealableExecutorEventEmitter):
                 emit_event.seal_capability_failure()
             return False
+        if any(event.type == "message.delta" for event in events):
+            v4_answer_stream_active = True
         return True
 
     async def on_skill_use(skill_name: str, metadata: dict[str, Any]) -> None:
@@ -2091,6 +2290,7 @@ def create_executor_app(
     nonterminal_callback_retry_policy: _CallbackRetryPolicy | None = None,
     callback_retry_sleep: CallbackRetrySleep | None = None,
 ) -> FastAPI:
+    resolved_callback_sender: CallbackSender = callback_sender or _default_callback_sender
     task_state: dict[str, Any] = {
         "status": "idle",
         "result": None,
@@ -2102,17 +2302,30 @@ def create_executor_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        yield
-        task = task_state.get("task")
-        if not isinstance(task, asyncio.Task) or task.done():
-            return
-        task.cancel()
+        nonlocal resolved_callback_sender
+        shared_callback_sender = _SharedCallbackSender() if callback_sender is None else None
+        if shared_callback_sender is not None:
+            resolved_callback_sender = shared_callback_sender
         try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=30.0)
-        except asyncio.CancelledError:
-            pass
-        except TimeoutError:
-            task.cancel()
+            yield
+        finally:
+            try:
+                task = task_state.get("task")
+                if isinstance(task, asyncio.Task) and not task.done():
+                    task.cancel()
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(task),
+                            timeout=_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.CancelledError:
+                        pass
+                    except TimeoutError:
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+            finally:
+                if shared_callback_sender is not None:
+                    await shared_callback_sender.close()
 
     app = FastAPI(
         title="AI Platform Sandbox Executor",
@@ -2121,7 +2334,6 @@ def create_executor_app(
     )
     app.state.dispatch_in_background = dispatch_in_background
     resolved_workspace_root = Path(workspace_root)
-    resolved_callback_sender = callback_sender or _default_callback_sender
     resolved_nonterminal_callback_retry_policy = nonterminal_callback_retry_policy or _CallbackRetryPolicy()
     resolved_callback_retry_sleep = callback_retry_sleep or asyncio.sleep
     configured_executor_auth_token = _configured_executor_auth_token(executor_auth_token)
@@ -2285,7 +2497,7 @@ def create_executor_app(
             runner_events_open["value"] = False
             stop_all_active_progress()
 
-        async def dispatch_callback_event(event: ExecutorCallbackEvent) -> bool:
+        async def deliver_callback_event(event: ExecutorCallbackEvent) -> bool:
             if stream_delivery_failure["error_code"] is not None:
                 return False
             batch = _CallbackBatchDelivery(
@@ -2308,6 +2520,34 @@ def create_executor_app(
                 seal_runner_events_after_delivery_failure(exc.error_code)
                 return False
             return True
+
+        message_delta_callbacks = _MessageDeltaCallbackBuffer(deliver_callback_event)
+
+        async def cancel_message_delta_callbacks() -> None:
+            cleanup = asyncio.create_task(message_delta_callbacks.cancel())
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    continue
+            await cleanup
+
+        async def await_with_callback_buffer_cleanup(
+            awaitable: Awaitable[Any],
+        ) -> Any:
+            try:
+                return await awaitable
+            except asyncio.CancelledError:
+                await cancel_message_delta_callbacks()
+                raise
+            except Exception:
+                await cancel_message_delta_callbacks()
+                raise
+
+        async def dispatch_callback_event(event: ExecutorCallbackEvent) -> bool:
+            if len(event.events) != 1 or _message_delta_size(event) is None:
+                return await message_delta_callbacks.send(event)
+            return await message_delta_callbacks.enqueue(event)
 
         def apply_stream_delivery_failure(result: dict[str, Any]) -> bool:
             error_code = stream_delivery_failure["error_code"]
@@ -2455,15 +2695,21 @@ def create_executor_app(
             seal_capability_failure=seal_runner_events_after_capability_failure,
         )
 
-        await emit_runner_event(
-            _PlatformExecutionPhaseFact("sandbox_preparation", "started")
+        await await_with_callback_buffer_cleanup(
+            emit_runner_event(
+                _PlatformExecutionPhaseFact("sandbox_preparation", "started")
+            )
         )
-        await dispatch_callback_event(running_event)
-        await emit_runner_event(
-            _PlatformExecutionPhaseFact("sandbox_preparation", "completed")
+        await await_with_callback_buffer_cleanup(dispatch_callback_event(running_event))
+        await await_with_callback_buffer_cleanup(
+            emit_runner_event(
+                _PlatformExecutionPhaseFact("sandbox_preparation", "completed")
+            )
         )
-        await emit_runner_event(
-            _PlatformExecutionPhaseFact("sandbox_submission", "started")
+        await await_with_callback_buffer_cleanup(
+            emit_runner_event(
+                _PlatformExecutionPhaseFact("sandbox_submission", "started")
+            )
         )
         runner_result: dict[str, Any] = {}
         try:
@@ -2525,8 +2771,11 @@ def create_executor_app(
                                 exception=exc,
                             ),
                         }
+        except asyncio.CancelledError:
+            await cancel_message_delta_callbacks()
+            raise
         finally:
-            await drain_active_progress()
+            await await_with_callback_buffer_cleanup(drain_active_progress())
 
         if capability_callback_failed["value"]:
             error_code = "capability_callback_not_acknowledged"
@@ -2548,14 +2797,20 @@ def create_executor_app(
         failed = timed_out or runner_status not in {"completed", "succeeded"}
         if runner_events_open["value"]:
             phase_lifecycle = "failed" if failed else "completed"
-            await emit_runner_event(
-                _PlatformExecutionPhaseFact("sandbox_submission", phase_lifecycle)
+            await await_with_callback_buffer_cleanup(
+                emit_runner_event(
+                    _PlatformExecutionPhaseFact("sandbox_submission", phase_lifecycle)
+                )
             )
-            await emit_runner_event(
-                _PlatformExecutionPhaseFact("artifact_validation", "started")
+            await await_with_callback_buffer_cleanup(
+                emit_runner_event(
+                    _PlatformExecutionPhaseFact("artifact_validation", "started")
+                )
             )
-            await emit_runner_event(
-                _PlatformExecutionPhaseFact("artifact_validation", phase_lifecycle)
+            await await_with_callback_buffer_cleanup(
+                emit_runner_event(
+                    _PlatformExecutionPhaseFact("artifact_validation", phase_lifecycle)
+                )
             )
         if apply_stream_delivery_failure(runner_result):
             runner_status = "failed"
@@ -2619,7 +2874,10 @@ def create_executor_app(
             error_message=error_message,
         )
 
-        await dispatch_callback_event(execution_observation)
+        await await_with_callback_buffer_cleanup(
+            dispatch_callback_event(execution_observation)
+        )
+        await await_with_callback_buffer_cleanup(message_delta_callbacks.close())
         if apply_stream_delivery_failure(runner_result):
             runner_status = "failed"
             failed = True
