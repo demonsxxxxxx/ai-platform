@@ -138,6 +138,7 @@ const ASSISTANT_UI_MESSAGE_COMPONENTS = {
 interface ChatViewProps {
   messages: Message[];
   sessionId: string | null;
+  conversationIdentityKey: string;
   currentRunId: string | null;
   isLoading: boolean;
   isLoadingHistory: boolean;
@@ -213,6 +214,7 @@ interface ChatViewProps {
 export function ChatView({
   messages,
   sessionId,
+  conversationIdentityKey,
   currentRunId,
   isLoading,
   isLoadingHistory,
@@ -814,6 +816,7 @@ export function ChatView({
     initialDraftKey: initialComposerDraftKey,
     draftSnapshotRef: composerDraftSnapshotRef,
     draftScopeKey: sessionId,
+    attachmentScopeKey: conversationIdentityKey,
     draftScopeHandoffKey: composerDraftHandoffKey,
     onSend: onSendMessage,
     onStop: onStopGeneration,

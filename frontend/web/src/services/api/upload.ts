@@ -370,7 +370,7 @@ export const uploadApi = {
    */
   async deleteFile(key: string): Promise<{ deleted: boolean; key: string }> {
     const response = await authenticatedRequest(
-      `${API_BASE}/api/upload/${encodeURIComponent(key)}`,
+      `${API_BASE}/api/ai/files/${encodeURIComponent(key)}`,
       {
         method: "DELETE",
         credentials: "include",

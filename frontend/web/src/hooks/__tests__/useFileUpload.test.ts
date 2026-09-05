@@ -9,6 +9,7 @@ import type {
 } from "../../types";
 import {
   cancelTemporaryUpload,
+  clearAttachmentResources,
   settleUploadFailure,
   startFileUploadTask,
 } from "../useFileUpload.ts";
@@ -190,6 +191,42 @@ function createHarness() {
     onAttachmentsChange,
   };
 }
+
+test("clearing attachment resources cancels uploads and deletes completed unbound files", () => {
+  const cancelled: string[] = [];
+  const deleted: string[] = [];
+  const attachments: MessageAttachment[] = [
+    {
+      id: "temp-upload",
+      key: "",
+      name: "pending.txt",
+      type: "document",
+      mimeType: "text/plain",
+      size: 1,
+      isUploading: true,
+    },
+    {
+      id: "ready-upload",
+      key: "file-ready",
+      name: "ready.txt",
+      type: "document",
+      mimeType: "text/plain",
+      size: 1,
+    },
+  ];
+
+  clearAttachmentResources(
+    attachments,
+    (id) => cancelled.push(id),
+    (key) => {
+      deleted.push(key);
+      return Promise.resolve();
+    },
+  );
+
+  assert.deepEqual(cancelled, ["temp-upload"]);
+  assert.deepEqual(deleted, ["file-ready"]);
+});
 
 test("upload failures use bounded copy and remove only the matching temporary attachment", () => {
   const cases = [
