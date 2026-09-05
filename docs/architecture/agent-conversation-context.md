@@ -15,11 +15,13 @@ admission.
 
 ## Problem
 
-The current path stores immutable context snapshots but projects recent
-conversation messages through a public-safe manifest before execution. A prior
+The motivating pre-cutover path stored immutable context snapshots but
+projected recent conversation messages through a public-safe manifest before
+execution. This paragraph records the original failure mode, not a fresh
+implementation or deployment assessment. A prior
 message that exceeds a per-message inline limit is reduced to an identifier and
-`requires_retrieval`. The Claude Agent SDK then receives no message body unless
-the model elects to call `read_session_messages`.
+`requires_retrieval`. The Claude Agent SDK then received no message body unless
+the model elected to call `read_session_messages`.
 
 That behavior breaks ordinary follow-ups such as `A`, `continue`, or `use the
 second option`: the current request may depend on choices in the latest
