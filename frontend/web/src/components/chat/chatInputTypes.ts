@@ -35,6 +35,8 @@ export interface ChatInputProps {
   /** INTERNAL: preserves local draft across existing layout remounts. */
   draftSnapshotRef?: { current: ChatInputDraftSnapshot };
   draftScopeKey?: string | null;
+  /** Identity scope for clearing unsent attachments during route transitions. */
+  attachmentScopeKey?: string;
   draftScopeHandoffKey?: string | null;
   onSend: (
     message: string,

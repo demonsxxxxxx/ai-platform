@@ -248,6 +248,20 @@ export function startFileUploadTask({
   return { tempId, done };
 }
 
+export function clearAttachmentResources(
+  attachments: readonly MessageAttachment[],
+  cancelUpload: (id: string) => void,
+  deleteFile: (key: string) => Promise<unknown> = uploadApi.deleteFile,
+): void {
+  for (const attachment of attachments) {
+    if (attachment.isUploading) {
+      cancelUpload(attachment.id);
+    } else if (attachment.key) {
+      void deleteFile(attachment.key).catch(() => undefined);
+    }
+  }
+}
+
 export function useFileUpload({
   attachments,
   onAttachmentsChange,
@@ -328,6 +342,12 @@ export function useFileUpload({
     [onAttachmentsChange],
   );
 
+  /** Cancel in-flight uploads and queue completed unbound files for deletion. */
+  const clearUploads = useCallback(() => {
+    clearAttachmentResources(attachments, cancelUpload);
+    onAttachmentsChange([]);
+  }, [attachments, cancelUpload, onAttachmentsChange]);
+
   /** Upload a single file with progress tracking */
   const uploadFile = useCallback(
     (file: File, category?: FileCategory) => {
@@ -388,6 +408,7 @@ export function useFileUpload({
     validateSize,
     validateCount,
     cancelUpload,
+    clearUploads,
   };
 }
 

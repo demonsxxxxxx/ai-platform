@@ -78,6 +78,7 @@ export const ChatInput = memo(function ChatInput({
   initialDraftKey,
   draftSnapshotRef,
   draftScopeKey,
+  attachmentScopeKey,
   draftScopeHandoffKey,
   onSend,
   onStop,
@@ -239,12 +240,24 @@ export const ChatInput = memo(function ChatInput({
   const attachments = externalAttachments ?? internalAttachments;
   const setAttachments = externalOnAttachmentsChange ?? setInternalAttachments;
 
-  const { uploadFiles, uploadLimitsBytes, validateCount, cancelUpload } =
-    useFileUpload({
-      attachments,
-      onAttachmentsChange: setAttachments,
-      acceptedFileTypes,
-    });
+  const {
+    uploadFiles,
+    uploadLimitsBytes,
+    validateCount,
+    cancelUpload,
+    clearUploads,
+  } = useFileUpload({
+    attachments,
+    onAttachmentsChange: setAttachments,
+    acceptedFileTypes,
+  });
+
+  const previousAttachmentScopeKeyRef = useRef(attachmentScopeKey);
+  useLayoutEffect(() => {
+    if (previousAttachmentScopeKeyRef.current === attachmentScopeKey) return;
+    previousAttachmentScopeKeyRef.current = attachmentScopeKey;
+    clearUploads();
+  }, [attachmentScopeKey, clearUploads]);
 
   const { history, pushHistory, navigateUp, navigateDown } = useInputHistory();
 

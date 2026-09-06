@@ -9,7 +9,7 @@ export function useDragAndDrop(acceptedFileTypes?: readonly string[]) {
     MessageAttachment[]
   >([]);
 
-  const { uploadFiles, validateCount } = useFileUpload({
+  const { uploadFiles, validateCount, clearUploads } = useFileUpload({
     attachments: pageDragAttachments,
     onAttachmentsChange: setPageDragAttachments,
     acceptedFileTypes,
@@ -99,5 +99,6 @@ export function useDragAndDrop(acceptedFileTypes?: readonly string[]) {
     isPageDragging,
     pageDragAttachments,
     setPageDragAttachments,
+    clearPageDragAttachments: clearUploads,
   };
 }
