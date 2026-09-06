@@ -467,8 +467,12 @@ export function ChatAppContent({
     enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
   });
 
-  const { isPageDragging, pageDragAttachments, setPageDragAttachments } =
-    useDragAndDrop();
+  const {
+    isPageDragging,
+    pageDragAttachments,
+    setPageDragAttachments,
+    clearPageDragAttachments,
+  } = useDragAndDrop();
 
   const {
     approvals,
@@ -595,6 +599,7 @@ export function ChatAppContent({
       }
       setAgentWorkspaceError(null);
       clearMessages();
+      clearPageDragAttachments();
       // A task Skill is scoped to the composer that selected it. A route or
       // workspace identity change clears the session, so it must also clear the
       // local selector before a later submit can create an unbound conversation.
@@ -1399,6 +1404,7 @@ export function ChatAppContent({
             <ChatView
             messages={visibleMessages}
             sessionId={visibleSessionId}
+            conversationIdentityKey={conversationIdentityKey}
             currentRunId={visibleCurrentRunId}
             isLoading={isLoading}
             isLoadingHistory={isLoadingHistory}

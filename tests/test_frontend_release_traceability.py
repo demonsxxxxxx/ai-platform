@@ -581,7 +581,7 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     )
     nginx_base = (
         "nginx:1.30.4-alpine@"
-        "sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46"
+        "sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c"
     )
     runtime_dockerfile = dockerfile.split(f"FROM {nginx_base} AS runtime", 1)[1]
     npmrc = Path("frontend/web/.npmrc").read_text(encoding="utf-8")
@@ -592,7 +592,7 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
 
     assert f"FROM {node_base} AS build" in dockerfile
     assert "apk add" not in dockerfile
-    security_upgrade = "RUN apk upgrade --no-cache libcrypto3 libexpat libssl3"
+    security_upgrade = "RUN apk upgrade --no-cache libcrypto3 libexpat libssl3 libuuid"
     assert [
         line
         for line in runtime_dockerfile.splitlines()

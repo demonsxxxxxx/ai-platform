@@ -5,6 +5,17 @@ remain in `../architecture/ci-test-readiness-governance.md`; product and
 deployment invariants remain in their architecture documents and the release
 runbook.
 
+## Issue and Pull Request Language
+
+- Issue and pull-request titles, descriptions, acceptance criteria, status
+  updates, review comments, and closure evidence use Chinese by default.
+- Preserve code symbols, commands, file paths, log or error text, protocol
+  names, and other fixed upstream terms in their original form when precision
+  requires it; provide the surrounding explanation in Chinese.
+- If an external template or required upstream field must remain in another
+  language, keep that fixed text and provide the substantive project context in
+  Chinese.
+
 ## Ordinary changes
 
 A focused ordinary change may use its pull request as the complete durable
