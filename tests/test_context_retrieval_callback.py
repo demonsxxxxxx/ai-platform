@@ -10,6 +10,7 @@ from app.context.retrieval import (
     ContextRetrievalDenied,
     ContextRetrievalInputError,
 )
+from tests.support.context_retrieval import InMemoryContextRetrievalRepository
 from app.main import create_app
 from app.runtime.sandbox.context_retrieval_client import PlatformContextRetrievalClient
 from app.runtime.sandbox.contracts import ContextRetrievalScope
@@ -431,9 +432,9 @@ async def test_platform_context_client_rejects_forged_scope_before_callback(monk
 
 @pytest.mark.asyncio
 async def test_callback_dispatcher_exports_only_bounded_broker_payload():
-    retrieval = ContextRetrievalAuthority.in_memory_for_broker(
-        {
-            "artifacts": [
+    retrieval = ContextRetrievalAuthority(
+        InMemoryContextRetrievalRepository(
+            artifacts=[
                 {
                     "tenant_id": "tenant-a",
                     "workspace_id": "workspace-a",
@@ -443,9 +444,11 @@ async def test_callback_dispatcher_exports_only_bounded_broker_payload():
                     "artifact_id": "artifact-a",
                     "label": "translated.docx",
                     "content": "artifact-bytes",
+                    "size_bytes": len("artifact-bytes".encode("utf-8")),
                 }
             ]
-        }
+        ),
+        _stage_delivery="broker_export",
     )
     identity = {
         "tenant_id": "tenant-a",
