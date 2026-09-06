@@ -218,6 +218,27 @@ async def test_multipart_initiation_persists_bounded_part_contract(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_multipart_initiation_rejects_missing_permission_before_storage(monkeypatch):
+    class ForbiddenStorage:
+        def __init__(self):
+            raise AssertionError("unauthorized multipart initiation must not reach storage")
+
+    monkeypatch.setattr(files_routes, "ObjectStorage", ForbiddenStorage)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files_routes.initiate_multipart_upload(
+            request=MultipartUploadCreateRequest(
+                name="large.txt",
+                size_bytes=files_routes.MULTIPART_THRESHOLD_BYTES,
+            ),
+            principal=upload_principal(permissions=[]),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "missing_permission:file:upload"
+
+
+@pytest.mark.asyncio
 async def test_multipart_initiation_rejects_below_threshold(monkeypatch):
     class ForbiddenStorage:
         def __init__(self):
