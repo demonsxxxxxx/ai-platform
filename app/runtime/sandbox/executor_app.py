@@ -243,105 +243,144 @@ def _merge_message_delta_callbacks(
     return current.model_copy(update={"events": [*current.events, *incoming.events]})
 
 
+class _QueuedCallback(NamedTuple):
+    callback: ExecutorCallbackEvent
+    enqueued_at: float
+    receipt: asyncio.Future[bool] | None = None
+
+
 class _MessageDeltaCallbackBuffer:
-    """Batch adjacent public message deltas behind the runner-event lock."""
+    """Serialize runner callbacks in one worker; only adjacent deltas batch."""
 
     def __init__(
         self,
         deliver: Callable[[ExecutorCallbackEvent], Awaitable[bool]],
     ) -> None:
         self._deliver = deliver
-        self._queue: asyncio.Queue[ExecutorCallbackEvent] = asyncio.Queue(
+        self._queue: asyncio.Queue[_QueuedCallback] = asyncio.Queue(
             maxsize=_MESSAGE_DELTA_QUEUE_SIZE
         )
         self._failed = False
         self._error: Exception | None = None
         self._closed = False
-        self._direct_deliveries: set[asyncio.Task[bool]] = set()
+        self._wake = asyncio.Event()
+        self._flush_waiters = 0
+        self._barrier_receipt: asyncio.Future[bool] | None = None
         self._worker = asyncio.create_task(self._run())
 
+    def _complete(self, item: _QueuedCallback, accepted: bool) -> None:
+        if item.receipt is not None and not item.receipt.done():
+            item.receipt.set_result(accepted)
+        self._queue.task_done()
+
+    def _discard_queued(self) -> None:
+        while not self._queue.empty():
+            self._complete(self._queue.get_nowait(), False)
+
     async def _run(self) -> None:
-        carried: ExecutorCallbackEvent | None = None
+        carried: _QueuedCallback | None = None
         try:
             while True:
-                callback = carried or await self._queue.get()
+                item = carried or await self._queue.get()
                 carried = None
-                consumed = 1
+                callback = item.callback
+                consumed = [item]
+                accepted = False
                 try:
-                    if self._queue.empty():
-                        await asyncio.sleep(_MESSAGE_DELTA_FLUSH_SECONDS)
-                    while consumed < _MESSAGE_DELTA_QUEUE_SIZE:
-                        try:
-                            candidate = self._queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
-                        merged = _merge_message_delta_callbacks(callback, candidate)
-                        if merged is None:
-                            carried = candidate
-                            break
-                        callback = merged
-                        consumed += 1
+                    if item.receipt is None and not self._failed:
+                        deadline = item.enqueued_at + _MESSAGE_DELTA_FLUSH_SECONDS
+                        while len(consumed) < _MESSAGE_DELTA_QUEUE_SIZE:
+                            try:
+                                candidate = self._queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                remaining = deadline - asyncio.get_running_loop().time()
+                                if (
+                                    remaining <= 0
+                                    or self._flush_waiters
+                                    or self._closed
+                                    or self._failed
+                                ):
+                                    break
+                                self._wake.clear()
+                                try:
+                                    await asyncio.wait_for(self._wake.wait(), remaining)
+                                except TimeoutError:
+                                    break
+                                continue
+                            merged = (
+                                _merge_message_delta_callbacks(callback, candidate.callback)
+                                if candidate.receipt is None
+                                else None
+                            )
+                            if merged is None:
+                                carried = candidate
+                                break
+                            callback = merged
+                            consumed.append(candidate)
                     accepted = False if self._failed else await self._deliver(callback)
                     self._failed = self._failed or not accepted
                 except asyncio.CancelledError:
+                    self._closed = self._failed = True
                     raise
                 except Exception as exc:
                     self._failed = True
-                    self._error = exc
+                    self._error = self._error or exc
                 finally:
-                    for _ in range(consumed):
-                        self._queue.task_done()
+                    for consumed_item in consumed:
+                        self._complete(consumed_item, accepted)
         finally:
             if carried is not None:
-                self._queue.task_done()
+                self._complete(carried, False)
+            self._discard_queued()
 
     async def enqueue(self, callback: ExecutorCallbackEvent) -> bool:
+        """Return local admission only; flush/send provide the receipt barrier."""
         if self._closed or self._failed:
             return False
-        if self._direct_deliveries and not await self.flush():
+        if self._barrier_receipt is not None:
+            if not await asyncio.shield(self._barrier_receipt):
+                return False
+            self._barrier_receipt = None
+        if self._closed or self._failed:
             return False
         try:
-            await self._queue.put(callback)
+            await self._queue.put(
+                _QueuedCallback(callback, asyncio.get_running_loop().time())
+            )
         except asyncio.CancelledError:
             await asyncio.shield(self.cancel())
             raise
+        self._wake.set()
         return not self._failed
 
-    async def _drain_direct_deliveries(self) -> None:
-        if not self._direct_deliveries:
-            return
-        deliveries = tuple(self._direct_deliveries)
-        results = await asyncio.shield(
-            asyncio.gather(*deliveries, return_exceptions=True)
-        )
-        self._direct_deliveries.difference_update(deliveries)
-        for result in results:
-            if isinstance(result, Exception):
-                self._error = self._error or result
-                self._failed = True
-            elif isinstance(result, BaseException) or result is not True:
-                self._failed = True
-
     async def flush(self) -> bool:
-        await self._queue.join()
-        await self._drain_direct_deliveries()
+        self._flush_waiters += 1
+        self._wake.set()
+        try:
+            await self._queue.join()
+        finally:
+            self._flush_waiters -= 1
         if self._error is not None:
             raise self._error
         return not self._failed
 
     async def send(self, callback: ExecutorCallbackEvent) -> bool:
+        """Wait for a receipt from the same worker that sends queued deltas."""
         if self._closed or not await self.flush():
             return False
-        delivery = asyncio.create_task(self._deliver(callback))
-        try:
-            accepted = await asyncio.shield(delivery)
-        except asyncio.CancelledError:
-            self._direct_deliveries.add(delivery)
-            raise
-        self._failed = not accepted
+        receipt = asyncio.get_running_loop().create_future()
+        self._barrier_receipt = receipt
+        await self._queue.put(
+            _QueuedCallback(callback, asyncio.get_running_loop().time(), receipt)
+        )
+        self._wake.set()
+        accepted = await asyncio.shield(receipt)
+        if self._error is not None:
+            raise self._error
         return accepted
 
     async def close(self) -> bool:
+        self._closed = True
         try:
             accepted = await self.flush()
         except asyncio.CancelledError:
@@ -350,19 +389,16 @@ class _MessageDeltaCallbackBuffer:
         except Exception:
             await self.cancel()
             raise
-        self._closed = True
         self._worker.cancel()
         await asyncio.gather(self._worker, return_exceptions=True)
         return accepted
 
     async def cancel(self) -> None:
-        self._closed = True
-        self._failed = True
-        while not self._queue.empty():
-            self._queue.get_nowait()
-            self._queue.task_done()
+        self._closed = self._failed = True
+        self._wake.set()
+        self._discard_queued()
+        # Preserve an in-flight exact-batch outcome before terminal delivery.
         await self._queue.join()
-        await self._drain_direct_deliveries()
         self._worker.cancel()
         await asyncio.gather(self._worker, return_exceptions=True)
 
@@ -2545,6 +2581,17 @@ def create_executor_app(
                 raise
 
         async def dispatch_callback_event(event: ExecutorCallbackEvent) -> bool:
+            nonlocal executor_first_token_latency_ms
+            if executor_first_token_latency_ms is None and any(
+                item.type == "assistant_delta"
+                or (
+                    item.type == "message.delta"
+                    and isinstance(item.payload.get("delta"), str)
+                    and item.payload["delta"]
+                )
+                for item in event.events
+            ):
+                executor_first_token_latency_ms = _elapsed_ms(executor_started_at)
             if len(event.events) != 1 or _message_delta_size(event) is None:
                 return await message_delta_callbacks.send(event)
             return await message_delta_callbacks.enqueue(event)
@@ -2560,7 +2607,7 @@ def create_executor_app(
             return True
 
         async def emit_runner_event_locked(event: ExecutorEvent) -> bool:
-            nonlocal artifact_upload_latency_ms, executor_first_token_latency_ms, executor_tool_call_latency_ms
+            nonlocal artifact_upload_latency_ms, executor_tool_call_latency_ms
             if capability_callback_failed["value"] or not runner_events_open["value"]:
                 return False
             if isinstance(event, ExecutorCallbackEvent):
@@ -2606,8 +2653,6 @@ def create_executor_app(
                     causation_event_id=agent_event.causation_event_id,
                 )]
                 event_type = agent_event.type
-            if event_type == "assistant_delta" and executor_first_token_latency_ms is None:
-                executor_first_token_latency_ms = _elapsed_ms(executor_started_at)
             if event_type and event_type.startswith("tool_call") and executor_tool_call_latency_ms is None:
                 executor_tool_call_latency_ms = _elapsed_ms(executor_started_at)
 

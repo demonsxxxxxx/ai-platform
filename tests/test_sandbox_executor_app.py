@@ -3923,6 +3923,33 @@ def test_callback_batch_factory_allocates_distinct_adjacent_identities():
     assert first != second
 
 
+@pytest.mark.parametrize("as_batch", [False, True])
+def test_executor_records_v4_first_text_without_legacy_delta(tmp_path, monkeypatch, as_batch):
+    callbacks = []
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        callback = message_delta_callback(1, "first")
+        await emit_event(callback if as_batch else callback.events[0])
+        return {"status": "completed", "message": "done"}
+
+    def callback_sender(_url, payload, _token):
+        callbacks.append(payload)
+        return callback_ack(payload)
+
+    monkeypatch.setattr(executor_app, "_elapsed_ms", lambda _started: 37)
+    client = create_test_client(
+        tmp_path, callback_sender=callback_sender, executor_runner=executor_runner,
+    )
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["executor_first_token_latency_ms"] == 37
+    assert all(
+        event["type"] != "assistant_delta"
+        for callback in callbacks for event in callback.get("events", [])
+    )
+
+
 def message_delta_callback(index: object, delta: str) -> ExecutorCallbackEvent:
     return ExecutorCallbackEvent(
         session_id="session-a",
