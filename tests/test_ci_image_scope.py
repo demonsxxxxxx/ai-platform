@@ -23,7 +23,6 @@ from tools.ci_image_scope import (
         ("backend", ".github/workflows/ai-platform-packaging-publish.yml"),
         ("frontend", "frontend/web/src/main.tsx"),
         ("frontend", "frontend/web/Dockerfile"),
-        ("frontend", "tools/frontend_release_traceability.py"),
         ("frontend", "tests/test_frontend_linux_contracts.py"),
         ("frontend", ".github/workflows/ai-platform-packaging-publish.yml"),
     ],
@@ -40,6 +39,18 @@ def test_policy_only_pull_request_does_not_affect_images(role: str) -> None:
         role=role,
         changed_paths=["architecture-policy.json"],
     ) == (False, "not_affected")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tools/architecture_governance.py",
+        "tools/frontend_release_traceability.py",
+        "tools/ci_image_scope.py",
+    ],
+)
+def test_frontend_workflow_tools_do_not_affect_packaged_frontend_image(path: str) -> None:
+    assert image_inputs_affected("frontend", [path]) is False
 
 
 @pytest.mark.parametrize("event_name", ["push", "workflow_dispatch"])
