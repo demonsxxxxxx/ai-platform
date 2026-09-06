@@ -35,7 +35,9 @@ _EXACT_INPUTS = {
 
 _PREFIX_INPUTS = {
     "backend": ("app/", "docs/release-evidence/", "scripts/", "skills/", "tools/"),
-    "frontend": ("frontend/web/", "tools/"),
+    # The frontend runtime image copies only frontend/web; repository tools are
+    # workflow inputs, not packaged frontend image inputs.
+    "frontend": ("frontend/web/",),
 }
 
 

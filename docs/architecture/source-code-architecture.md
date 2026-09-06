@@ -396,6 +396,21 @@ Zero production registration is strong evidence that an adapter is not a
 supported runtime, but deletion still requires checking configured entrypoints,
 packaging, deploy manifests, scripts, docs, and external imports.
 
+### Legacy root inventory retirement
+
+`approved_root_modules` is a legacy allowance set. Every app-root Python module
+present in the trusted authority must be covered, but a deleted module may leave
+an unused allowance until the next ordinary policy cleanup. Removing an
+unbridged, unused root module must not invalidate the next change's authority.
+An allowance does not authorize adding or restoring a module absent from the
+change's base tree; new code belongs in its owning package.
+
+This rule does not retire a declared migration bridge, compatibility facade,
+registry, public entrypoint, or persisted contract. Their existing removal proof
+still applies. Candidate policy cannot repair an invalid trusted authority or
+self-authorize new production paths. Broken authority requires explicit trusted
+recovery rather than a candidate-policy exception.
+
 ## 7. Compatibility contract
 
 Compatibility is exceptional and evidence-based. It is not created "just in
@@ -661,25 +676,11 @@ inherited inactive exception when they are otherwise performing an authority-onl
 cleanup. The gate itself MUST be introduced in a later PR so the candidate that
 defines it cannot certify its own correctness.
 
-The immutable authority rule has one fail-closed recovery case. If the exact
-base policy cannot validate only because `approved_root_modules` no longer
-matches the exact base Git tree, a candidate MAY restore that inventory without
-an administrator bypass. The trusted base checker accepts the candidate policy
-only when all of the following hold:
-
-- the authority commit equals the base commit;
-- the candidate modifies `architecture-policy.json` in place and optionally deletes
-  the stale `.architecture-governance-exception.json`;
-- every policy field except `approved_root_modules` is semantically unchanged;
-- the approved inventory exactly equals the unchanged base and candidate
-  `app/*.py` root-module inventory;
-- no candidate architecture exception remains; and
-- the candidate policy still validates against the authority schema and all
-  normal policy contracts.
-
-This recovery path cannot change source, workflows, schemas, architecture
-rules, exception scope, or any other policy value. Every broader repair remains
-blocked and requires the normal trusted governance process.
+The trusted authority must validate before candidate evaluation. A stale root
+allowance is permitted when its module has been deleted, but a candidate cannot
+use that allowance to add or restore root code. Any invalid authority remains
+blocked and requires an explicit trusted recovery process; a candidate policy
+cannot repair it.
 
 ## 13. Review checklist for every backend PR
 
