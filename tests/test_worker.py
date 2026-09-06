@@ -12,6 +12,7 @@ import pytest
 import app.bootstrap.model_services as model_services
 import app.execution.application.model_control_plane as model_control_plane_module
 import app.execution.application.worker_attempt_lifecycle as worker_attempt_lifecycle_module
+import app.execution.application.worker_execution_spec as worker_execution_spec_module
 import app.runs.application.model_snapshot as run_model_snapshot_module
 import app.worker as worker_module
 from app import repositories as repository_module
@@ -950,6 +951,13 @@ def default_cancel_not_requested(monkeypatch):
             ),
         )
 
+    async def no_provider_transcript(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(
+        "app.context.api.provider_session_has_main_transcript",
+        no_provider_transcript,
+    )
     monkeypatch.setattr("app.worker.parse_queue_payload", capture_queue_payload)
     monkeypatch.setattr("app.worker._payload_from_locked_run", materialize_legacy_locked_run)
     monkeypatch.setattr(
@@ -2030,6 +2038,44 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         agent_profile=queue_payload.agent_profile or {},
         schema_version=queue_payload.schema_version,
     )
+    durable_attempt = {
+        "id": "attempt-a",
+        "status": "running",
+        "queue_attempt_id": "attempt-a",
+        "owner_kind": "queue_worker",
+        "owner_id": "worker-a",
+        "owner_generation": 4,
+    }
+    stored_execution_spec = worker_execution_spec_module.compile_execution_spec_for_dispatch(
+        run_identity=worker_module._locked_run_identity(queue_payload, locked_run),
+        queue_payload=queue_payload,
+        trace_id="trace-a",
+        context_snapshot_id=queue_payload.context_snapshot_id,
+        context_snapshot=queue_payload.context_snapshot,
+        context_pack={"conversation_context": {"messages": []}},
+    )
+    durable_attempt.update(
+        {
+            "execution_spec_canonical_json": stored_execution_spec.canonical_json.decode(
+                "utf-8"
+            ),
+            "execution_spec_sha256": stored_execution_spec.spec_sha256,
+        }
+    )
+
+    async def get_run_attempt(_conn, **kwargs):
+        assert kwargs["attempt_id"] == "attempt-a"
+        return dict(durable_attempt)
+
+    async def get_run_attempt_for_queue_attempt(_conn, **kwargs):
+        assert kwargs["queue_attempt_id"] == "attempt-a"
+        return dict(durable_attempt)
+
+    monkeypatch.setattr("app.worker.run_attempts.get_run_attempt", get_run_attempt)
+    monkeypatch.setattr(
+        "app.worker.run_attempts.get_run_attempt_for_queue_attempt",
+        get_run_attempt_for_queue_attempt,
+    )
     lease_row = {
         "id": "lease-a",
         "attempt_id": "attempt-a",
@@ -2172,6 +2218,51 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         schema_version=queue_payload.schema_version,
         agent_profile={},
     )
+    stored_execution_spec = worker_execution_spec_module.compile_execution_spec_for_dispatch(
+        run_identity=worker_module._locked_run_identity(queue_payload, locked_run),
+        queue_payload=queue_payload,
+        trace_id="trace-a",
+        context_snapshot_id=queue_payload.context_snapshot_id,
+        context_snapshot=queue_payload.context_snapshot,
+        context_pack={"conversation_context": {"messages": []}},
+    )
+    durable_attempt.update(
+        {
+            "execution_spec_canonical_json": stored_execution_spec.canonical_json.decode(
+                "utf-8"
+            ),
+            "execution_spec_sha256": stored_execution_spec.spec_sha256,
+        }
+    )
+
+    async def get_run_attempt_for_queue_attempt(_conn, **kwargs):
+        assert kwargs["queue_attempt_id"] == "qat-attempt-a"
+        return dict(durable_attempt)
+
+    monkeypatch.setattr(
+        "app.worker.run_attempts.get_run_attempt_for_queue_attempt",
+        get_run_attempt_for_queue_attempt,
+    )
+    monkeypatch.setattr(
+        "app.execution.application.worker_execution_spec.compile_execution_spec_for_dispatch",
+        lambda **_kwargs: pytest.fail(
+            "reconciliation must restore the persisted execution spec"
+        ),
+    )
+    attached_payloads = []
+
+    async def attach_mcp_server_configs(_conn, *, principal, run_payload):
+        attached_payload = replace(
+            run_payload,
+            input={**run_payload.input, "_mcp_attached_for_test": True},
+        )
+        attached_payloads.append((principal, attached_payload))
+        return attached_payload
+
+    monkeypatch.setattr(
+        "app.worker.mcp_api.attach_mcp_server_configs",
+        attach_mcp_server_configs,
+    )
     lease_row = {
         "id": "lease-a",
         "attempt_id": "rat-attempt-a",
@@ -2201,6 +2292,9 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
+    assert len(attached_payloads) == 1
+    assert attached_payloads[0][1].attempt_id == "rat-attempt-a"
+    assert attached_payloads[0][1].input["_mcp_attached_for_test"] is True
     assert messages == ["done"]
     assert ("complete", "run-a") in calls
     assert ("attempt_fence", "worker-original", "qat-attempt-a") in calls

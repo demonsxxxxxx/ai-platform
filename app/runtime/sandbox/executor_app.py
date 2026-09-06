@@ -29,8 +29,10 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.bootstrap.execution import build_claude_session_store
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
 from app.control_plane_contracts import normalize_thinking_effort
+from app.execution.api import sdk_session_id_for_run
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
@@ -516,6 +518,22 @@ _CONTROLLED_RUNNER_TIMEOUT_SECONDS = 900.0
 _CONTROLLED_RUNNER_TERMINATION_GRACE_SECONDS = 5.0
 _EXECUTOR_CLEANUP_TIMEOUT_SECONDS = 5.0
 _ACTIVE_PROGRESS_INTERVAL_SECONDS = 12.0
+_SDK_PRESERVED_FAILURE_CODES = frozenset(
+    {
+        "claude_agent_sdk_disabled",
+        "claude_agent_sdk_unavailable",
+        "claude_agent_sdk_missing_structured_terminal",
+        "claude_agent_sdk_selected_skill_not_invoked",
+        "claude_agent_sdk_selected_skill_hook_failed",
+        "claude_agent_sdk_selected_skill_not_authorized",
+        "claude_agent_sdk_turn_limit_exceeded",
+        "claude_agent_sdk_timeout",
+        "claude_agent_sdk_public_projection_failed",
+        "claude_agent_sdk_tool_admission_failed",
+        "claude_agent_sdk_upstream_error",
+        "claude_agent_sdk_provider_session_failed",
+    }
+)
 _SDK_TURN_LIMIT_ERROR_PATTERN = re.compile(r"Reached maximum number of turns \(\d+\)")
 
 
@@ -1651,7 +1669,7 @@ async def _default_executor_runner(
             status="running",
             progress=20,
             state_patch={"stage": "agent_event"},
-            sdk_session_id=request.sdk_session_id,
+            sdk_session_id=sdk_session_id_for_run(request.run_id),
             events=events,
         )
         try:
@@ -1923,12 +1941,34 @@ async def _default_executor_runner(
             raise
 
     await emit_event(_PlatformExecutionPhaseFact("model_wait", "started"))
+    provider_session_resume_required = request.config.get(
+        "provider_session_resume_required", False
+    )
+    if type(provider_session_resume_required) is not bool:
+        return {
+            "status": "failed",
+            "message": "Provider session continuity state is invalid",
+            "error_code": "claude_agent_sdk_provider_session_failed",
+            "error_message": "Provider session continuity state is invalid",
+            "sdk_used": False,
+            "executor_mode": "provider_session_state_invalid",
+        }
     try:
+        session_store = build_claude_session_store(
+            callback_url=request.callback_target.provider_session_url,
+            callback_token=request.callback_token,
+            callback_token_id=request.callback_token_id,
+            run_id=request.run_id,
+            attempt_id=request.attempt_id,
+            provider_session_id=request.sdk_session_id,
+        )
         sdk_kwargs = {
             "prompt": request.prompt,
             "cwd": workspace_root,
             "skill_id": skill_ids[0] if skill_ids else None,
             "session_id": request.sdk_session_id,
+            "session_store": session_store,
+            "provider_session_resume_required": provider_session_resume_required,
             "model_id": model_id,
             "skills": skill_ids,
             "context_retrieval": context_retrieval,
@@ -2008,7 +2048,7 @@ async def _default_executor_runner(
     response = {
         "status": "completed" if used_sdk and not error else "failed",
         "message": str(getattr(sdk_result, "message", "") or ""),
-        "sdk_session_id": getattr(sdk_result, "session_id", None),
+        "sdk_session_id": sdk_session_id_for_run(request.run_id),
         "sdk_usage": getattr(sdk_result, "usage", {}) or {},
         "sdk_used": used_sdk,
         "sdk_received_structured_terminal": received_structured_terminal,
@@ -2380,7 +2420,7 @@ def create_executor_app(
                 status="running",
                 progress=35 if event_type and event_type.startswith("tool_call") else 60 if event_type == "artifact_created" else 20,
                 state_patch={"stage": event_type or "execution_step"},
-                sdk_session_id=request.sdk_session_id,
+                sdk_session_id=sdk_session_id_for_run(request.run_id),
                 events=agent_events,
             )
             artifact_started_at = time.monotonic() if event_type == "artifact_created" else None
@@ -2615,7 +2655,7 @@ def create_executor_app(
                     "marker_path": f"/workspace/runtime/{marker_path.name}",
                 }
             ),
-            sdk_session_id=str(runner_result.get("sdk_session_id") or request.sdk_session_id or "") or None,
+            sdk_session_id=sdk_session_id_for_run(request.run_id),
             error_message=error_message,
         )
 
@@ -2660,6 +2700,7 @@ def create_executor_app(
         ):
             if key in runner_result and runner_result[key] is not None:
                 response[key] = runner_result[key]
+        response["sdk_session_id"] = sdk_session_id_for_run(request.run_id)
         if failed:
             response["error_code"] = error_code or "executor_failed"
             response["error_message"] = error_message or "Executor failed"
@@ -2692,7 +2733,7 @@ def create_executor_app(
             batch_id=f"terminal-{uuid.uuid4().hex}",
             status=callback_status,
             progress=progress,
-            sdk_session_id=str(result.get("sdk_session_id") or request.sdk_session_id or "") or None,
+            sdk_session_id=sdk_session_id_for_run(request.run_id),
             error_message=str(result.get("error_message") or "") or None,
             terminal_result=result,
         )

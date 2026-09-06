@@ -29,7 +29,8 @@ EXPERT_MARKET_SCHEMA_VERSION = "2026.09.01.1"
 AGENT_AVATAR_STYLE_SCHEMA_VERSION = "2026.09.01.2"
 USER_PROFILE_METADATA_SCHEMA_VERSION = "2026.09.02.1"
 FILE_UPLOAD_SESSION_SCHEMA_VERSION = "2026.09.03.1"
-TARGET_SCHEMA_VERSION = FILE_UPLOAD_SESSION_SCHEMA_VERSION
+CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION = "2026.09.04.1"
+TARGET_SCHEMA_VERSION = CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # Keeping this ledger stable preserves readiness for the saved rollback binary.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION
@@ -59,6 +60,8 @@ CRITICAL_RELATIONS = (
     "mcp_servers",
     "mcp_server_credentials",
     "mcp_tools",
+    "provider_session_bindings",
+    "provider_session_entries",
 )
 CRITICAL_COLUMNS = (
     ("users", "metadata_json", "jsonb", True),
@@ -205,6 +208,32 @@ CRITICAL_COLUMNS = (
     ("sandbox_leases", "executor_reconciliation_error", "text", True),
     ("sandbox_leases", "executor_reconciled_at", "timestamptz", False),
     ("mcp_server_credentials", "credential_envelope", "text", True),
+    ("provider_session_bindings", "tenant_id", "text", True),
+    ("provider_session_bindings", "workspace_id", "text", True),
+    ("provider_session_bindings", "user_id", "text", True),
+    ("provider_session_bindings", "session_id", "text", True),
+    ("provider_session_bindings", "agent_id", "text", True),
+    ("provider_session_bindings", "engine", "text", True),
+    ("provider_session_bindings", "provider_session_id", "uuid", True),
+    ("provider_session_bindings", "context_epoch", "int8", True),
+    ("provider_session_bindings", "next_sequence", "int8", True),
+    ("provider_session_bindings", "writer_run_id", "text", False),
+    ("provider_session_bindings", "writer_attempt_id", "text", False),
+    ("provider_session_bindings", "created_at", "timestamptz", True),
+    ("provider_session_bindings", "updated_at", "timestamptz", True),
+    ("provider_session_entries", "id", "text", True),
+    ("provider_session_entries", "tenant_id", "text", True),
+    ("provider_session_entries", "workspace_id", "text", True),
+    ("provider_session_entries", "user_id", "text", True),
+    ("provider_session_entries", "session_id", "text", True),
+    ("provider_session_entries", "agent_id", "text", True),
+    ("provider_session_entries", "engine", "text", True),
+    ("provider_session_entries", "provider_session_id", "uuid", True),
+    ("provider_session_entries", "subpath", "text", True),
+    ("provider_session_entries", "sequence", "int8", True),
+    ("provider_session_entries", "sdk_entry_uuid", "text", False),
+    ("provider_session_entries", "entry_json", "jsonb", True),
+    ("provider_session_entries", "created_at", "timestamptz", True),
 )
 CRITICAL_CONSTRAINTS = (
     ("users", "chk_users_metadata_json_object"),
@@ -260,6 +289,18 @@ CRITICAL_CONSTRAINTS = (
     ("sandbox_leases", "chk_sandbox_leases_executor_reconciliation_status"),
     ("mcp_servers", "mcp_servers_endpoint_not_persisted"),
     ("mcp_tools", "mcp_tools_endpoint_not_persisted"),
+    ("provider_session_bindings", "chk_provider_session_bindings_engine"),
+    ("provider_session_bindings", "chk_provider_session_bindings_context_epoch"),
+    ("provider_session_bindings", "chk_provider_session_bindings_next_sequence"),
+    ("provider_session_bindings", "pk_provider_session_bindings"),
+    ("provider_session_bindings", "uq_provider_session_bindings_provider_session_id"),
+    ("provider_session_bindings", "uq_provider_session_bindings_scope"),
+    ("provider_session_bindings", "fk_provider_session_bindings_session"),
+    ("provider_session_entries", "provider_session_entries_pkey"),
+    ("provider_session_entries", "chk_provider_session_entries_engine"),
+    ("provider_session_entries", "chk_provider_session_entries_sequence"),
+    ("provider_session_entries", "uq_provider_session_entries_sequence"),
+    ("provider_session_entries", "fk_provider_session_entries_binding"),
 )
 CRITICAL_TRIGGERS = (
     (
@@ -936,6 +977,27 @@ STATIC_INDEX_DEFINITIONS = (
         ("lease_expires_at", "tenant_id", "run_id", "id"),
         (False, False, False, False),
         "status = any array['claimed', 'running', 'cancel_requested', 'expired']",
+    ),
+    StaticIndexDefinition(
+        "idx_provider_session_entries_order",
+        "provider_session_entries",
+        ("tenant_id", "provider_session_id", "subpath", "sequence"),
+        (False, False, False, False),
+    ),
+    StaticIndexDefinition(
+        "uq_provider_session_entries_sdk_uuid",
+        "provider_session_entries",
+        ("tenant_id", "provider_session_id", "subpath", "sdk_entry_uuid"),
+        (False, False, False, False),
+        "sdk_entry_uuid is not null and sdk_entry_uuid <> ''",
+        unique=True,
+    ),
+    StaticIndexDefinition(
+        "idx_sessions_provider_scope",
+        "sessions",
+        ("tenant_id", "workspace_id", "user_id", "id", "agent_id"),
+        (False, False, False, False, False),
+        unique=True,
     ),
 )
 CRITICAL_INDEXES = (

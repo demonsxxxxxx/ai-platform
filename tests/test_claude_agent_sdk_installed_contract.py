@@ -21,7 +21,23 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
         return {}
 
     matcher = sdk.HookMatcher(matcher="Skill", hooks=[hook], timeout=5.0)
-    options = sdk.ClaudeAgentOptions(
+
+    class MinimalSessionStore(sdk.SessionStore):
+        async def load(
+            self, _key: sdk.SessionKey
+        ) -> list[sdk.SessionStoreEntry] | None:
+            return None
+
+        async def append(
+            self, _key: sdk.SessionKey, _entries: list[sdk.SessionStoreEntry]
+        ) -> None:
+            return None
+
+        async def list_subkeys(self, _key: sdk.SessionListSubkeysKey) -> list[str]:
+            return []
+
+    session_store = MinimalSessionStore()
+    bootstrap_options = sdk.ClaudeAgentOptions(
         cwd=str(tmp_path),
         model="model-a",
         system_prompt={"type": "preset", "preset": "claude_code", "append": "profile"},
@@ -32,6 +48,8 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
         env={"PATH": ""},
         skills=["qa-review"],
         session_id="session-a",
+        session_store=session_store,
+        session_store_flush="eager",
         max_turns=12,
         max_thinking_tokens=128,
         effort="high",
@@ -39,6 +57,19 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
         include_partial_messages=True,
         setting_sources=["project"],
     )
+    resume_options = sdk.ClaudeAgentOptions(
+        cwd=str(tmp_path),
+        model="model-a",
+        session_store=session_store,
+        session_store_flush="eager",
+        resume="session-a",
+    )
+
+    assert bootstrap_options.session_id == "session-a"
+    assert bootstrap_options.resume is None
+    assert resume_options.resume == "session-a"
+    assert resume_options.session_id is None
+    options = bootstrap_options
 
     assistant = sdk.AssistantMessage(content=[sdk.TextBlock(text="partial")], model="model-a")
     event = sdk.StreamEvent(uuid="event-a", session_id="session-a", event={"type": "message_start"})
@@ -58,6 +89,8 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
 
     assert options.include_partial_messages is True
     assert options.setting_sources == ["project"]
+    assert options.session_store is session_store
+    assert options.session_store_flush == "eager"
     assert assistant.content[0].text == "partial"
     assert event.event["type"] == "message_start"
     assert result.terminal_reason == "completed"

@@ -23,6 +23,7 @@ from app.executors.claude_agent_sdk_runner import (
 )
 from app.public_execution import PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
 from app.platform.public_payload import sanitize_public_payload
+from app.execution.api import sdk_session_id_for_run
 from app.required_tool_contract import (
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     REQUIRED_CAPABILITY_EVIDENCE_KEY,
@@ -2044,6 +2045,7 @@ def test_executor_execute_fails_closed_after_final_delta_without_structured_term
         ("required_tool_completion_evidence_missing", True, "required_tool_completion_evidence_missing"),
         ("required_tool_completion_evidence_mismatch", True, "required_tool_completion_evidence_mismatch"),
         ("claude_agent_sdk_upstream_error", True, "claude_agent_sdk_upstream_error"),
+        ("claude_agent_sdk_provider_session_failed", True, "claude_agent_sdk_provider_session_failed"),
     ],
 )
 def test_executor_execute_preserves_bounded_sdk_error_codes(
@@ -2150,7 +2152,7 @@ def test_executor_execute_streams_runner_events_and_phase_timings(tmp_path):
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
-    assert body["sdk_session_id"] == "sdk-session-a"
+    assert body["sdk_session_id"] == sdk_session_id_for_run("run-a")
     assert body["sdk_usage"] == {"input_tokens": 2, "output_tokens": 3}
     assert isinstance(body["executor_first_token_latency_ms"], int)
     assert isinstance(body["executor_tool_call_latency_ms"], int)
@@ -2165,7 +2167,7 @@ def test_executor_execute_streams_runner_events_and_phase_timings(tmp_path):
     assert callbacks[1][1]["events"][0]["type"] == "assistant_delta"
     assert callbacks[2][1]["events"][0]["type"] == "tool_call_started"
     assert callbacks[3][1]["events"][0]["type"] == "artifact_created"
-    assert callbacks[-1][1]["sdk_session_id"] == "sdk-session-a"
+    assert callbacks[-1][1]["sdk_session_id"] == sdk_session_id_for_run("run-a")
 
 
 def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypatch):
@@ -2181,6 +2183,8 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
         calls["model_id"] = kwargs["model_id"]
         calls["skills"] = kwargs["skills"]
         calls["subjects"] = kwargs["tool_policy_subjects"]
+        calls["session_store"] = kwargs["session_store"]
+        calls["session_id"] = kwargs["session_id"]
         assert "on_tool_permission" not in kwargs
         await kwargs["on_text"]("sdk partial")
         return sdk_result("sdk final", usage={"input_tokens": 1, "output_tokens": 1})
@@ -2193,6 +2197,7 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
 
     payload = task_payload()
+    payload["sdk_session_id"] = "stable-provider-id"
     payload["config"]["tool_policy_subjects"] = [
         {
             "identity": "Bash",
@@ -2216,12 +2221,22 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
-    assert body["sdk_session_id"] == "sdk-session-a"
+    assert body["sdk_session_id"] == sdk_session_id_for_run("run-a")
+    assert "stable-provider-id" not in json.dumps(body)
+    assert "stable-provider-id" not in json.dumps(callbacks)
     assert calls["cwd"] == Path(tmp_path)
     assert calls["skill_id"] is None
     assert calls["model_id"] == "deepseek-v4-flash"
     assert calls["skills"] == []
     assert calls["subjects"][0]["identity"] == "Bash"
+    assert calls["session_id"] == "stable-provider-id"
+    session_store = calls["session_store"]
+    assert type(session_store).__name__ == "ClaudeSessionStoreAdapter"
+    assert session_store._callback_url == (
+        "http://ai-platform.test/api/ai/runtime/callbacks/provider-session"
+    )
+    assert session_store._callback_token == "secret"
+    assert session_store._provider_session_id == "stable-provider-id"
     assert any(
         event["type"] == "assistant_delta"
         for callback in callbacks

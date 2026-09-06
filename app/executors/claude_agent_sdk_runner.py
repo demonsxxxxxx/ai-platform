@@ -160,6 +160,7 @@ _MAX_PUBLIC_DELTA_CHARS = 8_192
 _SDK_PUBLIC_PROJECTION_FAILED = "claude_agent_sdk_public_projection_failed"
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
+_SDK_PROVIDER_SESSION_FAILED = "claude_agent_sdk_provider_session_failed"
 SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-turn-diagnostics.v1"
 _MAX_TURN_DIAGNOSTIC_COUNTER = 1_000_000
 _MAX_PUBLIC_DIAGNOSTIC_SKILLS = 16
@@ -225,6 +226,24 @@ class ClaudeAgentSdkRunResult:
     turn_diagnostics: dict[str, Any] = field(default_factory=dict)
     runtime_diagnostics: dict[str, Any] = field(default_factory=dict)
     capability_evidence: list[dict[str, str]] = field(default_factory=list)
+
+
+class _SessionStoreAppendTracker:
+    def __init__(self, store: Any) -> None:
+        self._store = store
+        self.main_append_acknowledged = False
+
+    async def load(self, key: Any) -> Any:
+        return await self._store.load(key)
+
+    async def append(self, key: Any, entries: Any) -> None:
+        await self._store.append(key, entries)
+        subpath = key.get("subpath") if isinstance(key, dict) else None
+        if not subpath:
+            self.main_append_acknowledged = True
+
+    async def list_subkeys(self, key: Any = None) -> Any:
+        return await self._store.list_subkeys(key)
 
 
 class ClaudeAgentSdkNotAvailable(RuntimeError):
@@ -982,6 +1001,8 @@ async def run_claude_agent_sdk(
     cwd: Path,
     skill_id: str | None,
     session_id: str | None = None,
+    session_store: Any | None = None,
+    provider_session_resume_required: bool | None = None,
     context_retrieval: ContextRetrievalAuthority | None = None,
     context_retrieval_identity: ScopedContextRetrievalIdentity | None = None,
     model_id: str | None = None,
@@ -1205,6 +1226,7 @@ async def run_claude_agent_sdk(
         TaskProgressMessage = getattr(sdk, "TaskProgressMessage", ())
         TaskNotificationMessage = getattr(sdk, "TaskNotificationMessage", ())
         TaskUpdatedMessage = getattr(sdk, "TaskUpdatedMessage", ())
+        MirrorErrorMessage = getattr(sdk, "MirrorErrorMessage", ())
         ThinkingBlock = getattr(sdk, "ThinkingBlock", ())
         ToolPermissionContext = getattr(sdk, "ToolPermissionContext", ())
         TextBlock = sdk.TextBlock
@@ -1215,6 +1237,57 @@ async def run_claude_agent_sdk(
             query = query_fn
     except Exception as exc:
         raise ClaudeAgentSdkNotAvailable(str(exc)) from exc
+
+    provider_session_store: _SessionStoreAppendTracker | None = None
+    if session_store is not None:
+        provider_session_store = _SessionStoreAppendTracker(session_store)
+        provider_session_options: dict[str, Any] = {
+            "session_store": provider_session_store,
+            "session_store_flush": "eager",
+        }
+        if not session_id:
+            error_code = _SDK_PROVIDER_SESSION_FAILED
+            return ClaudeAgentSdkRunResult(
+                used_sdk=True,
+                error=error_code,
+                turn_diagnostics=turn_diagnostics(error_code),
+            )
+        try:
+            main_transcript = await provider_session_store.load(session_id)
+        except Exception:  # noqa: BLE001 - provider details stay private.
+            main_transcript = None
+            error_code = _SDK_PROVIDER_SESSION_FAILED
+            return ClaudeAgentSdkRunResult(
+                used_sdk=True,
+                error=error_code,
+                turn_diagnostics=turn_diagnostics(error_code),
+            )
+        has_main_transcript = bool(main_transcript)
+        if (
+            provider_session_resume_required is not None
+            and type(provider_session_resume_required) is not bool
+        ):
+            error_code = _SDK_PROVIDER_SESSION_FAILED
+            return ClaudeAgentSdkRunResult(
+                used_sdk=True,
+                error=error_code,
+                turn_diagnostics=turn_diagnostics(error_code),
+            )
+        resume_required = (
+            has_main_transcript
+            if provider_session_resume_required is None
+            else provider_session_resume_required
+        )
+        if resume_required != has_main_transcript:
+            error_code = _SDK_PROVIDER_SESSION_FAILED
+            return ClaudeAgentSdkRunResult(
+                used_sdk=True,
+                error=error_code,
+                turn_diagnostics=turn_diagnostics(error_code),
+            )
+        provider_session_options["resume" if resume_required else "session_id"] = session_id
+    else:
+        provider_session_options = {"session_id": session_id}
 
     PermissionResultAllow = _sdk_permission_type(sdk, "PermissionResultAllow")
     PermissionResultDeny = _sdk_permission_type(sdk, "PermissionResultDeny")
@@ -2344,12 +2417,12 @@ async def run_claude_agent_sdk(
         disallowed_tools=disallowed_tools,
         env=build_sdk_env(cwd=cwd),
         skills=configured_skills,
-        session_id=session_id,
         max_turns=max_turns,
         can_use_tool=can_use_tool,
         hooks=hooks,
         include_partial_messages=sandbox_partial_streaming,
         setting_sources=["project"],
+        **provider_session_options,
         **thinking_options,
     )
 
@@ -2462,6 +2535,23 @@ async def run_claude_agent_sdk(
             ),
             options=options,
         ):
+            if isinstance(message, MirrorErrorMessage):
+                answer_stream_gate.finish(final_text="", release=False)
+                seal_agent_candidates("provider_session_mirror_error")
+                error_code = _SDK_PROVIDER_SESSION_FAILED
+                return ClaudeAgentSdkRunResult(
+                    used_sdk=True,
+                    message="",
+                    session_id=result_session_id,
+                    usage=usage,
+                    error=error_code,
+                    terminal_reason=terminal_reason,
+                    received_structured_terminal=False,
+                    used_skills=list(used_skill_names),
+                    used_skills_source="executor_hook" if used_skill_names else "",
+                    turn_diagnostics=turn_diagnostics(error_code),
+                    capability_evidence=list(capability_evidence),
+                )
             if agent_event_adapter is not None and isinstance(
                 message,
                 (
@@ -2651,6 +2741,23 @@ async def run_claude_agent_sdk(
                             terminal_reason=resolved_terminal_reason,
                             permission_denials=permission_denials,
                         ),
+                        capability_evidence=list(capability_evidence),
+                    )
+                if provider_session_store is not None and not provider_session_store.main_append_acknowledged:
+                    answer_stream_gate.finish(final_text="", release=False)
+                    seal_agent_candidates("provider_session_append_not_acknowledged")
+                    error_code = _SDK_PROVIDER_SESSION_FAILED
+                    return ClaudeAgentSdkRunResult(
+                        used_sdk=True,
+                        message="",
+                        session_id=result_session_id,
+                        usage=usage,
+                        error=error_code,
+                        terminal_reason=resolved_terminal_reason,
+                        received_structured_terminal=False,
+                        used_skills=list(used_skill_names),
+                        used_skills_source="executor_hook" if used_skill_names else "",
+                        turn_diagnostics=turn_diagnostics(error_code),
                         capability_evidence=list(capability_evidence),
                     )
                 received_structured_terminal = True

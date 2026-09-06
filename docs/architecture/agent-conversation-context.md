@@ -15,14 +15,20 @@ admission.
 
 ## Problem
 
-The current path stores immutable context snapshots but projects recent
-conversation messages through a public-safe manifest before execution. A prior
-message that exceeds a per-message inline limit is reduced to an identifier and
-`requires_retrieval`. The Claude Agent SDK then receives no message body unless
-the model elects to call `read_session_messages`.
+Before provider-session continuity, the path stored immutable context snapshots
+but projected recent conversation messages through a public-safe manifest before
+execution. A prior message that exceeds a per-message inline limit is reduced to
+an identifier and `requires_retrieval`. The previous Claude Agent SDK path
+received no message body unless the model elected to call
+`read_session_messages`.
 
-That behavior breaks ordinary follow-ups such as `A`, `continue`, or `use the
-second option`: the current request may depend on choices in the latest
+Claude bootstrap now receives bounded reconstructed recent conversation through
+the executor-private context pack. After a committed provider transcript exists,
+later Claude turns use native `SessionStore` resume. Platform Messages and
+immutable context snapshots remain the audit and fallback authorities.
+
+That previous behavior breaks ordinary follow-ups such as `A`, `continue`, or
+`use the second option`: the current request may depend on choices in the latest
 assistant answer, while only an older user question remains inline. A snapshot
 that proves an omitted message was authorized does not make that message
 available to the model.
@@ -137,8 +143,10 @@ input, not a runtime dependency or implementation authority.
 1. Engine-neutral conversation records terminate at the Engine adapter.
 2. An adapter that accepts native message arrays receives role-preserving
    messages.
-3. The Claude Agent SDK adapter renders a bounded structured transcript because
-   each platform run intentionally uses an isolated SDK session.
+3. The Claude Agent SDK adapter uses bounded reconstructed conversation during
+   bootstrap. After a committed provider transcript exists, later Claude turns
+   use native `SessionStore` resume; platform Messages and immutable context
+   snapshots remain the audit and fallback authorities.
 4. The transcript distinguishes historical data from system instructions and
    the current request.
 5. The model is not instructed to call `read_session_messages` to understand the
@@ -170,7 +178,9 @@ The conversation execution path must stop relying on:
 - `Context pack: N message(s)` as a substitute for the selected text;
 - model-initiated `read_session_messages` as the recovery path for recent
   conversation history;
-- process-local or cross-run SDK session state as conversation authority.
+- process-local SDK session state as cross-run conversation authority; committed
+  Claude provider transcripts are used only for native continuation. Platform
+  Messages and immutable context snapshots remain audit and fallback authorities.
 
 The retrieval API itself remains for explicitly older history and authorized
 inspection. File, artifact, and memory manifest behavior is not removed by this
@@ -204,8 +214,8 @@ materialization seam, complete-turn selection, Claude transcript rendering, and
 focused regression tests.
 
 It excludes schema migrations, UI changes, checkpoint summarization, changes to
-message retention, native cross-run Claude SDK resume, file content inlining,
-and deployment. Runtime claims require a later controlled-host acceptance run
+message retention, file content inlining, and deployment. Runtime claims require
+a later controlled-host acceptance run
 of the exact deployed subject.
 
 ## Rollback
