@@ -1061,12 +1061,19 @@ async def test_failed_answer_projection_keeps_skill_and_bash_receipts(
         "tool_use_id": "bash-call-1",
         "tool_input": {"command": "printf safe"},
     }
+    read_input = {
+        "tool_name": "Read",
+        "tool_use_id": "read-call-1",
+        "tool_input": {"file_path": str(tmp_path / "workspace.txt")},
+    }
     steps = [
         *_stream_steps(oversized_text),
         ("hook", ("PreToolUse", skill_input, "skill-call-1")),
         ("hook", ("PostToolUse", skill_input, "skill-call-1")),
         ("hook", ("PreToolUse", bash_input, "bash-call-1")),
         ("hook", ("PostToolUse", bash_input, "bash-call-1")),
+        ("hook", ("PreToolUse", read_input, "read-call-1")),
+        ("hook", ("PostToolUse", read_input, "read-call-1")),
     ]
 
     async def acknowledge_lifecycle(fact):
@@ -1107,6 +1114,8 @@ async def test_failed_answer_projection_keeps_skill_and_bash_receipts(
     assert [(fact["tool_name"], fact["lifecycle"]) for fact in lifecycle_facts] == [
         ("Bash", "started"),
         ("Bash", "completed"),
+        ("Read", "started"),
+        ("Read", "completed"),
     ]
     assert [
         (fact["canonical_identity"], fact["lifecycle_phase"])

@@ -1558,11 +1558,6 @@ class ClaudeAgentWorkerAdapter:
                 "used_skills_source": executor_response.get("used_skills_source", ""),
             },
         )()
-        reported_used_skill_names = _sdk_used_skill_names(
-            runtime_sdk_result,
-            prepared.staged_skill_names,
-            allow_platform_controlled_runner=True,
-        )
         selected_capability_error = _capability_execution_error(
             payload,
             capability_evidence,
