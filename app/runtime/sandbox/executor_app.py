@@ -2247,7 +2247,7 @@ async def _default_executor_runner(
     )
     if used_sdk and not error and not received_structured_terminal:
         error = "claude_agent_sdk_missing_structured_terminal"
-    if used_sdk and required_capability_declaration is not None:
+    if used_sdk and required_capability_declaration is not None and received_structured_terminal:
         required_tool_states = set(required_tool_invocation_states.values())
         if "started" in required_tool_states or "completed" not in required_tool_states:
             required_capability_evidence = None
