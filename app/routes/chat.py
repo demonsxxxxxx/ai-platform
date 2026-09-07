@@ -69,6 +69,7 @@ from app.models import (
 from app.runs.api import bind_run_model
 from app.product_events import initial_run_event_specs, intent_event_specs
 from app.projection_redaction import (
+    RETIRED_INTERNAL_AGENT_IDS,
     capability_id_from_skill,
     default_skill_id_for_public_agent,
     internal_agent_id_for_request,
@@ -1182,18 +1183,6 @@ def _explicit_intent_payload(agent_id: str, skill_id: str | None) -> dict[str, o
             "confirmed_by_user": True,
             "suggestions": [],
         }
-    if skill_id == "baoyu-translate" or agent_id == "baoyu-translate":
-        return {
-            "status": "selected",
-            "intent": "document_translation",
-            "confidence": 1.0,
-            "reason": "请求指定了文档翻译能力",
-            "selected_capability": "document_translation",
-            "agent_id": agent_id,
-            "skill_id": skill_id or "baoyu-translate",
-            "confirmed_by_user": True,
-            "suggestions": [],
-        }
     if skill_id == "ragflow-knowledge-search" or agent_id == "sop-assistant":
         return {
             "status": "selected",
@@ -1270,10 +1259,19 @@ async def create_chat_session(
     request: ChatSessionRequest,
     principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
 ) -> ChatSessionResponse:
+    resolved_agent_id = internal_agent_id_for_request(request.agent_id) or request.agent_id
+    if resolved_agent_id in RETIRED_INTERNAL_AGENT_IDS:
+        raise HTTPException(status_code=409, detail="agent_inactive")
     async with transaction() as conn:
+        agent = await repositories.get_agent(
+            conn,
+            tenant_id=principal.tenant_id,
+            agent_id=resolved_agent_id,
+        )
+        if agent is None:
+            raise HTTPException(status_code=409, detail="agent_inactive")
         await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
         await repositories.ensure_user(conn, tenant_id=principal.tenant_id, user_id=principal.user_id, display_name=principal.display_name)
-        resolved_agent_id = internal_agent_id_for_request(request.agent_id) or request.agent_id
         session_id = await repositories.create_session(
             conn,
             tenant_id=principal.tenant_id,

@@ -139,6 +139,9 @@ async def list_authorized_sessions(
         select sessions.id, sessions.workspace_id, sessions.agent_id, sessions.title, sessions.purpose,
                sessions.admitted_agent_profile_revision, sessions.admitted_agent_profile_hash,
                sessions.created_at, sessions.updated_at,
+               session_agent.default_skill_id as agent_default_skill_id,
+               profile.skill_id as agent_profile_skill_id,
+               (profile.skill_set @> '[{"skill_id": "baoyu-translate"}]'::jsonb) as agent_profile_has_retired_skill,
                profile.name as agent_profile_name,
                profile.description as agent_profile_description,
                profile.welcome_message as agent_profile_welcome_message,
@@ -153,6 +156,9 @@ async def list_authorized_sessions(
                profile.category as agent_profile_category,
                profile.published_at as agent_profile_published_at
         from sessions
+        left join agents session_agent
+          on session_agent.tenant_id = sessions.tenant_id
+         and session_agent.id = sessions.agent_id
         left join agent_profile_revisions profile
           on profile.tenant_id = sessions.tenant_id
          and profile.agent_id = sessions.agent_id
@@ -161,7 +167,6 @@ async def list_authorized_sessions(
         where sessions.tenant_id = %s
           and sessions.user_id = %s
           and sessions.status = 'active'
-          and sessions.admitted_agent_profile_revision is null
         order by sessions.updated_at desc, sessions.created_at desc
         limit 100
         """,
@@ -184,6 +189,9 @@ async def get_authorized_session_projection(
         select sessions.id, sessions.workspace_id, sessions.agent_id, sessions.title, sessions.purpose,
                sessions.admitted_agent_profile_revision, sessions.admitted_agent_profile_hash,
                sessions.created_at, sessions.updated_at,
+               session_agent.default_skill_id as agent_default_skill_id,
+               profile.skill_id as agent_profile_skill_id,
+               (profile.skill_set @> '[{"skill_id": "baoyu-translate"}]'::jsonb) as agent_profile_has_retired_skill,
                profile.name as agent_profile_name,
                profile.description as agent_profile_description,
                profile.welcome_message as agent_profile_welcome_message,
@@ -198,6 +206,9 @@ async def get_authorized_session_projection(
                profile.category as agent_profile_category,
                profile.published_at as agent_profile_published_at
         from sessions
+        left join agents session_agent
+          on session_agent.tenant_id = sessions.tenant_id
+         and session_agent.id = sessions.agent_id
         left join agent_profile_revisions profile
           on profile.tenant_id = sessions.tenant_id
          and profile.agent_id = sessions.agent_id
@@ -223,12 +234,24 @@ async def get_authorized_lambchat_session(
 ) -> dict[str, Any] | None:
     cursor = await conn.execute(
         """
-        select id, workspace_id, agent_id, title, title_source, status, created_at, updated_at
+        select sessions.id, sessions.workspace_id, sessions.agent_id, sessions.title,
+               sessions.title_source, sessions.status, sessions.created_at, sessions.updated_at,
+               session_agent.default_skill_id as agent_default_skill_id,
+               profile.skill_id as agent_profile_skill_id,
+               (profile.skill_set @> '[{"skill_id": "baoyu-translate"}]'::jsonb) as agent_profile_has_retired_skill
         from sessions
-        where tenant_id = %s
-          and id = %s
-          and user_id = %s
-          and status = 'active'
+        left join agents session_agent
+          on session_agent.tenant_id = sessions.tenant_id
+         and session_agent.id = sessions.agent_id
+        left join agent_profile_revisions profile
+          on profile.tenant_id = sessions.tenant_id
+         and profile.agent_id = sessions.agent_id
+         and profile.revision = sessions.admitted_agent_profile_revision
+         and profile.content_hash = sessions.admitted_agent_profile_hash
+        where sessions.tenant_id = %s
+          and sessions.id = %s
+          and sessions.user_id = %s
+          and sessions.status = 'active'
         """,
         (tenant_id, session_id, user_id),
     )
@@ -474,6 +497,8 @@ async def list_authorized_agent_conversations(
                coalesce(legacy_first_user.title, sessions.title) as title, sessions.purpose,
                sessions.admitted_agent_profile_revision, sessions.admitted_agent_profile_hash,
                sessions.created_at, sessions.updated_at,
+               profile.skill_id as agent_profile_skill_id,
+               (profile.skill_set @> '[{{"skill_id": "baoyu-translate"}}]'::jsonb) as agent_profile_has_retired_skill,
                profile.name as agent_profile_name,
                profile.description as agent_profile_description,
                profile.welcome_message as agent_profile_welcome_message,

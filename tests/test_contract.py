@@ -1132,7 +1132,7 @@ def test_run_payload_carries_skill_manifest_pins():
 
 def test_skill_definition_contract_is_stable():
     skill = SkillDefinition(
-        skill_id="baoyu-translate",
+        skill_id="qa-file-reviewer",
         version="1.0.0",
         executor_type="claude-agent-worker",
         input_schema={"file_ids": ["string"]},

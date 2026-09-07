@@ -46,8 +46,8 @@ def payload(*, file_ids: list[str]) -> RunPayload:
         session_id="ses_1",
         run_id="run_1",
         attempt_id="qat-test-attempt",
-        agent_id="translate",
-        skill_id="baoyu-translate",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
         file_ids=file_ids,
         input={},
         skill_version=skill_version,
@@ -57,7 +57,7 @@ def payload(*, file_ids: list[str]) -> RunPayload:
         },
         skill_manifests=[
             {
-                "skill_id": "baoyu-translate",
+                "skill_id": "qa-file-reviewer",
                 "content_hash": skill_version,
             }
         ],

@@ -865,7 +865,7 @@ test("useAgent preserves accepted authority through URL canonicalization for a s
           run_id: "run-first",
           trace_id: "trace-first",
           status: "queued",
-          intent_decision: { agent_id: "document-translation" },
+          intent_decision: { agent_id: "general-agent" },
         }
       : {
           session_id: "session-routed",
@@ -894,7 +894,7 @@ test("useAgent preserves accepted authority through URL canonicalization for a s
     assert.equal(submissions[0]?.[1], undefined);
     assert.equal(submissions[1]?.[1], "session-routed");
     assert.equal(submissions[0]?.[8], "general-agent");
-    assert.equal(submissions[1]?.[8], "document-translation");
+    assert.equal(submissions[1]?.[8], "general-agent");
     assert.equal(harness.hook.sessionId, "session-routed");
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(sseCalls, 2);
@@ -1081,7 +1081,7 @@ test("useAgent restores a routed session agent before the next submission", asyn
   sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-restored",
-    agent_id: "document-translation",
+    agent_id: "general-agent",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
     is_active: true,
@@ -1090,7 +1090,7 @@ test("useAgent restores a routed session agent before the next submission", asyn
   sessionApi.getAuthoritative = async () => ({
     session_id: "session-restored",
     workspace_id: "workspace-test",
-    agent_id: "document-translation",
+    agent_id: "general-agent",
     title: "Restored session",
     purpose: "conversation",
     agent_conversation: null,
@@ -1115,7 +1115,7 @@ test("useAgent restores a routed session agent before the next submission", asyn
     });
 
     assert.equal(submissions.length, 1);
-    assert.equal(submissions[0]?.[8], "document-translation");
+    assert.equal(submissions[0]?.[8], "general-agent");
   } finally {
     sessionApi.get = originalGet;
     sessionApi.getAuthoritative = originalGetAuthoritative;
@@ -3245,7 +3245,7 @@ async function assertStaleSubmitCannotOverwriteNewSession({
       run_id: "run-old",
       trace_id: "trace-old",
       status: "queued",
-      intent_decision: { agent_id: "document-translation" },
+      intent_decision: { agent_id: "general-agent" },
     });
     await harness.act(async () => {
       await staleSubmit;
@@ -3371,7 +3371,7 @@ test("useAgent clear invalidates delayed history get, events, and status continu
   sessionApi.getAuthoritative = async (sessionId) => ({
     session_id: sessionId,
     workspace_id: "workspace-test",
-    agent_id: "document-translation",
+    agent_id: "general-agent",
     title: "Test session",
     purpose: "conversation",
     agent_conversation: null,
@@ -3399,7 +3399,7 @@ test("useAgent clear invalidates delayed history get, events, and status continu
     });
     resolveSession({
       id: "session-delayed",
-      agent_id: "document-translation",
+      agent_id: "general-agent",
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
       is_active: true,

@@ -6,7 +6,6 @@ INVALID_DEPENDENCY_ID = "[invalid-skill-id]"
 
 PUBLIC_WORKBENCH_SKILL_IDS = {
     "qa-file-reviewer",
-    "baoyu-translate",
     "ragflow-knowledge-search",
     "ctd-32s73-stability-template-fill",
 }

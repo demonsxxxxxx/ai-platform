@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from urllib.parse import quote
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -1572,7 +1573,13 @@ def test_create_memory_record_applies_effective_policy_retention_days(monkeypatc
     assert any(call[0] == "memory" for call in calls)
 
 
-def test_create_memory_record_denies_write_when_memory_policy_disabled_and_audits(monkeypatch):
+@pytest.mark.parametrize(
+    ("session_agent_id", "expected_public_agent_id"),
+    (("general-agent", "general-agent"), ("translate", None)),
+)
+def test_create_memory_record_denies_write_when_memory_policy_disabled_and_audits(
+    monkeypatch, session_agent_id, expected_public_agent_id
+):
     calls = []
 
     async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
@@ -1606,7 +1613,7 @@ def test_create_memory_record_denies_write_when_memory_policy_disabled_and_audit
 
     async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
         calls.append(("session", tenant_id, user_id, session_id))
-        return {"id": session_id, "workspace_id": "workspace-a", "agent_id": "general-agent"}
+        return {"id": session_id, "workspace_id": "workspace-a", "agent_id": session_agent_id}
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
@@ -1623,7 +1630,7 @@ def test_create_memory_record_denies_write_when_memory_policy_disabled_and_audit
         headers=headers(),
         json={
             "workspace_id": "workspace-a",
-            "agent_id": "general-agent",
+            "agent_id": session_agent_id,
             "session_id": "session-a",
             "record_type": "session_summary",
             "content": "Do not store this.",
@@ -1637,13 +1644,15 @@ def test_create_memory_record_denies_write_when_memory_policy_disabled_and_audit
     assert calls[3][0] == "policy"
     assert calls[4][0] == "audit"
     assert calls[4][1]["action"] == "memory.record.create_denied"
-    assert calls[4][1]["payload_json"] == {
+    expected_payload = {
         "workspace_id": "workspace-a",
-        "agent_id": "general-agent",
         "session_id": "session-a",
         "record_type": "session_summary",
         "reason": "memory_policy_disabled",
     }
+    if expected_public_agent_id:
+        expected_payload["agent_id"] = expected_public_agent_id
+    assert calls[4][1]["payload_json"] == expected_payload
     assert "Do not store this" not in str(calls)
     assert "hidden" not in str(calls)
 

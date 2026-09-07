@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 
-CapabilityId = Literal["general_chat", "document_review", "document_translation", "knowledge_answer"]
+CapabilityId = Literal["general_chat", "document_review", "knowledge_answer"]
 
 
 @dataclass(frozen=True)
@@ -37,16 +37,6 @@ CAPABILITIES: dict[str, CapabilityDefinition] = {
         skill_id="qa-file-reviewer",
         input_modes=["docx"],
         output_modes=["result_docx", "result_json"],
-        required_artifact_types=["result_docx"],
-    ),
-    "document_translation": CapabilityDefinition(
-        capability_id="document_translation",
-        label="文档翻译",
-        description="翻译 Word 文档并生成翻译版 Word。",
-        agent_id="baoyu-translate",
-        skill_id="baoyu-translate",
-        input_modes=["docx"],
-        output_modes=["result_docx"],
         required_artifact_types=["result_docx"],
     ),
     "knowledge_answer": CapabilityDefinition(
