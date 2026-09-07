@@ -18,10 +18,12 @@ derive an unlocked requirements file from `pyproject.toml`. Keep index, proxy,
 and credential values out of Git, issue/PR text, and command output. The default
 CI and image build use only public package sources.
 
-The backend build and CI run Python 3.13.14. The frontend build and CI run Node
-22.23.2 with the `package.json` `pnpm@10.32.1` package-manager contract and the
-reviewed `pnpm-lock.yaml`. Focused tests reject version drift among declarations,
-Dockerfiles, and workflows.
+The backend build and CI run Python 3.13.14. The frontend build and CI use pinned
+Node 22.23.2 as their reproducible build baseline. `package.json` declares
+Node `>=22.13.0` as the supported runtime range, alongside the `pnpm@10.32.1`
+package-manager contract and the reviewed `pnpm-lock.yaml`. Focused tests keep
+the CI and Docker pins fixed while checking that the build baseline satisfies the
+runtime range.
 
 All external Dockerfile bases use a readable patch tag plus an immutable OCI
 index digest:
