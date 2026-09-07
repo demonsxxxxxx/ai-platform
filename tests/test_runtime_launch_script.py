@@ -288,7 +288,7 @@ def test_dockerfile_precreates_private_workspace_before_nonroot_executor():
 def test_dockerfile_installs_required_runtime_packages():
     content = Path("Dockerfile").read_text(encoding="utf-8")
 
-    assert "apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk git libexpat1 pandoc passwd" in content
+    assert "apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk git libexpat1 libssh2-1 pandoc passwd" in content
 
 
 def test_dockerfile_uses_independent_optional_debian_mirror_args_without_disabling_apt_security():
