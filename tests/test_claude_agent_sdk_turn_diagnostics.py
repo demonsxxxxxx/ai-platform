@@ -292,13 +292,16 @@ async def test_sdk_timeout_and_missing_terminal_are_distinct(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_selected_skill_not_invoked_and_policy_admission_are_distinct(
+async def test_authorized_skill_is_optional_and_policy_admission_remains_distinct(
     monkeypatch,
     tmp_path: Path,
 ):
     sdk_types: dict[str, Any] = {}
+    captured: dict[str, Any] = {}
 
     async def success_query(prompt, options):
+        captured["prompt_messages"] = [message async for message in prompt]
+        captured["options"] = options.kwargs
         yield sdk_types["ResultMessage"]()
 
     sdk = _install_sdk(monkeypatch, success_query)
@@ -337,15 +340,23 @@ async def test_selected_skill_not_invoked_and_policy_admission_are_distinct(
         public_skill_metadata=metadata,
     )
 
-    assert not_invoked.error == "claude_agent_sdk_selected_skill_not_invoked"
-    assert not_invoked.turn_diagnostics["terminal_class"] == "selected_skill_not_invoked"
+    assert not_invoked.error is None
+    assert not_invoked.turn_diagnostics["terminal_class"] == "completed"
     assert not_invoked.turn_diagnostics["selected_skill"] == metadata["review-skill"]
+    assert not_invoked.used_skills == []
+    assert captured["options"]["skills"] == ["review-skill"]
+    assert "Skill" in captured["options"]["tools"]
+    assert "Skill(review-skill)" in captured["options"]["allowed_tools"]
+    assert captured["prompt_messages"][0]["message"]["content"] == "review"
+    assert "Authoritative platform Skill requirement" not in (
+        captured["prompt_messages"][0]["message"]["content"]
+    )
     assert not_admitted.error == "claude_agent_sdk_selected_skill_not_authorized"
     assert not_admitted.turn_diagnostics["terminal_class"] == "tool_policy_or_admission_failure"
 
 
 @pytest.mark.asyncio
-async def test_sdk_error_terminal_preserves_selected_skill_not_invoked_classification(
+async def test_sdk_error_terminal_preserves_sdk_error_without_skill_invocation(
     monkeypatch,
     tmp_path: Path,
 ):
@@ -372,8 +383,9 @@ async def test_sdk_error_terminal_preserves_selected_skill_not_invoked_classific
         skills=["review-skill"],
     )
 
-    assert result.error == "claude_agent_sdk_selected_skill_not_invoked"
-    assert result.turn_diagnostics["terminal_class"] == "selected_skill_not_invoked"
+    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.turn_diagnostics["terminal_class"] == "upstream_error"
+    assert result.used_skills == []
     assert "private upstream detail" not in str(result.turn_diagnostics)
     assert result.runtime_diagnostics["error_code"] == result.error
     assert result.runtime_diagnostics["failure_source"] == "sdk_result_error"

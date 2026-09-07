@@ -41,7 +41,6 @@ from app.executors.claude.prompts import (
     build_skill_prompt as build_skill_prompt,
     context_pack_prompt_section as _prompt_context_pack_prompt_section,
     translation_target_language as _prompt_translation_target_language,
-    with_selected_skill_invocation_requirement as _with_selected_skill_invocation_requirement,
 )
 from app.execution.api import (
     ClaudeSdkAgentEventAdapter,
@@ -148,7 +147,6 @@ _SDK_BROKERED_BUILTIN_TOOLS = (
     "WebFetch",
     "WebSearch",
 )
-_SDK_SELECTED_SKILL_NOT_INVOKED = "claude_agent_sdk_selected_skill_not_invoked"
 _SDK_SELECTED_SKILL_HOOK_FAILED = "claude_agent_sdk_selected_skill_hook_failed"
 _SDK_SELECTED_SKILL_NOT_AUTHORIZED = "claude_agent_sdk_selected_skill_not_authorized"
 _SDK_TURN_LIMIT_EXCEEDED = "claude_agent_sdk_turn_limit_exceeded"
@@ -261,13 +259,6 @@ def _diagnostic_terminal_class(
             "missing_terminal",
             _SDK_MISSING_STRUCTURED_TERMINAL,
             "retry_request",
-            True,
-        )
-    if error_code == _SDK_SELECTED_SKILL_NOT_INVOKED:
-        return (
-            "selected_skill_not_invoked",
-            _SDK_SELECTED_SKILL_NOT_INVOKED,
-            "retry_selected_skill",
             True,
         )
     if error_code == _SDK_PUBLIC_PROJECTION_FAILED:
@@ -1000,7 +991,6 @@ async def run_claude_agent_sdk(
     execution_policy: str = "worker_local_legacy",
     public_skill_metadata: dict[str, dict[str, str]] | None = None,
     thinking_effort: str = "off",
-    require_selected_skill_invocation: bool = True,
 ) -> ClaudeAgentSdkRunResult:
     thinking_effort = normalize_thinking_effort(thinking_effort)
     settings = get_settings()
@@ -1419,16 +1409,9 @@ async def run_claude_agent_sdk(
         mcp_servers["ai-platform-context"] = context_retrieval_server
     capability_plan = CapabilityExecutionPlan.from_tool_policy_subjects(
         tool_policy_subjects,
-        required_skill_identity=(
-            selected_sdk_skill if require_selected_skill_invocation else None
-        ),
         available_skill_identities=allowed_skill_names,
         registered_mcp_servers=mcp_servers,
     )
-    required_capability_declarations = {
-        (declaration.capability_kind, declaration.canonical_identity): declaration
-        for declaration in capability_plan.required
-    }
     required_builtin_declarations: dict[
         tuple[str, str], RequiredCapabilityDeclaration
     ] = {}
@@ -1516,11 +1499,7 @@ async def run_claude_agent_sdk(
                 {call_id: replacement_for_private_token(call_id)}
             )
 
-    sdk_prompt = (
-        _with_selected_skill_invocation_requirement(prompt, selected_sdk_skill)
-        if require_selected_skill_invocation
-        else prompt
-    )
+    sdk_prompt = prompt
     timeout_seconds = _sdk_run_timeout_seconds(
         settings,
         sandbox_brokered=sandbox_brokered,
@@ -1668,9 +1647,8 @@ async def run_claude_agent_sdk(
         if lifecycle_phase in {
             "completed",
             "failed",
-        } and not answer_stream_gate.release_after_verified_capability(invocation_key):
-            answer_stream_gate.fail_closed()
-            return reject_capability_evidence()
+        }:
+            answer_stream_gate.release_after_verified_capability(invocation_key)
         claimed = skill_metadata is not None and claim_used_skill(canonical_identity)
         if claimed and on_skill_use:
             await on_skill_use(canonical_identity, skill_metadata)
@@ -1797,26 +1775,18 @@ async def run_claude_agent_sdk(
         if lifecycle in {
             "completed",
             "failed",
-        } and not answer_stream_gate.release_after_verified_capability(gate_key):
-            answer_stream_gate.fail_closed()
-            if lifecycle_required:
-                return reject_governed_lifecycle()
-            record_read_only_lifecycle_denial()
-            return False
+        }:
+            answer_stream_gate.release_after_verified_capability(gate_key)
         if lifecycle == "failed" and is_required_builtin:
             governed_builtin_lifecycle_rejected = True
             diagnostic_counters["tool_lifecycle_denials"] += 1
             return False
         return True
 
-    def selected_skill_hook_error() -> str | None:
-        if not require_selected_skill_invocation:
-            return None
-        if selected_sdk_skill is None or selected_sdk_skill in used_skill_names:
-            return None
-        if selected_sdk_skill in failed_skill_names:
+    def skill_hook_error() -> str | None:
+        if selected_sdk_skill is not None and selected_sdk_skill in failed_skill_names:
             return _SDK_SELECTED_SKILL_HOOK_FAILED
-        return _SDK_SELECTED_SKILL_NOT_INVOKED
+        return None
 
     declared_tool_identities = (
         set(authorized_subjects) | set(internal_context_subjects)
@@ -2399,12 +2369,6 @@ async def run_claude_agent_sdk(
                 )
             ):
                 return "required_tool_completion_evidence_mismatch"
-        for key in required_capability_declarations:
-            matches = sum(group[:2] == key for group in groups)
-            if not matches:
-                return "required_tool_completion_evidence_missing"
-            if matches != 1:
-                return "required_tool_completion_evidence_mismatch"
         for key in required_builtin_declarations:
             identity = key[1]
             matching_states = {
@@ -2587,7 +2551,7 @@ async def run_claude_agent_sdk(
                         result_subtype=getattr(message, "subtype", ""),
                         stop_reason=getattr(message, "stop_reason", ""),
                         terminal_reason=resolved_terminal_reason,
-                        selected_skill_error=selected_skill_hook_error(),
+                        selected_skill_error=skill_hook_error(),
                         tool_admission_denials=diagnostic_counters[
                             "tool_admission_denials"
                         ],
@@ -2694,7 +2658,7 @@ async def run_claude_agent_sdk(
         if terminal_error is None and capability_evidence_rejected:
             terminal_error = "required_tool_completion_evidence_mismatch"
         if terminal_error is None:
-            terminal_error = selected_skill_hook_error()
+            terminal_error = skill_hook_error()
         if terminal_error is None:
             terminal_error = capability_completion_error()
         if terminal_error is None and answer_stream_gate.final_text_exceeds_bound(
@@ -2837,7 +2801,7 @@ async def run_claude_agent_sdk(
         seal_agent_candidates("exception")
         error_code = _canonical_sdk_error(
             exc,
-            selected_skill_error=selected_skill_hook_error(),
+            selected_skill_error=skill_hook_error(),
             tool_admission_denials=diagnostic_counters["tool_admission_denials"],
         )
         return ClaudeAgentSdkRunResult(

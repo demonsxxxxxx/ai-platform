@@ -233,7 +233,6 @@ def _reconciliation_request(
         trace_id=run_payload.trace_id,
         callback_url="http://127.0.0.1/internal/runtime/callback",
         callback_token_id="reconciler",
-        require_selected_skill_invocation=False,
     )
 
 

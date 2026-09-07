@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
-from app.required_tool_contract import RequiredCapabilityDeclaration
 from app.tool_policy import evaluate_tool_policy
 
 _SDK_INTERNAL_CONTEXT_TOOLS = (
@@ -139,14 +138,12 @@ class CapabilityExecutionPlan:
     """Separate available capabilities from explicit execution requirements."""
 
     available: frozenset[tuple[str, str]]
-    required: tuple[RequiredCapabilityDeclaration, ...]
 
     @classmethod
     def from_tool_policy_subjects(
         cls,
         value: object,
         *,
-        required_skill_identity: str | None = None,
         available_skill_identities: object = (),
         registered_mcp_servers: dict[str, object] | None = None,
     ) -> "CapabilityExecutionPlan":
@@ -174,15 +171,7 @@ class CapabilityExecutionPlan:
             for identity in available_skill_identities:
                 if isinstance(identity, str) and identity:
                     available.add(("skill", identity))
-        required: tuple[RequiredCapabilityDeclaration, ...] = ()
-        if required_skill_identity:
-            declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-                capability_kind="skill",
-                canonical_identity=required_skill_identity,
-            )
-            required = (declaration,)
-            available.add(("skill", required_skill_identity))
-        return cls(available=frozenset(available), required=required)
+        return cls(available=frozenset(available))
 
 
 def internal_context_tool_policy_subjects(tool_names: object) -> list[dict[str, Any]]:
