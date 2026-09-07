@@ -1,8 +1,9 @@
 # Documentation Authority
 
 This index separates active contracts, migration targets, and historical records.
-It does not establish deployed runtime state. Read code, schemas, and tests at the
-same Git revision; the release procedure binds deployed evidence separately.
+It is not a project status report and does not establish deployed runtime state.
+Read code, schemas, and tests at the same Git revision; the release procedure
+binds deployed evidence separately.
 
 ## Start here
 
@@ -69,13 +70,13 @@ Chat and SSE contracts until explicitly replaced.
 [multi-agent workflow](agent-rules/multi-agent-context-workflow.md) own repository
 work, verification, and handoff. This cleanup does not add another approval system.
 
-[Release operations](operations/release-operations-runbook.md) remains the only
-executable release procedure. [SSE cutover acceptance](operations/redis-streams-sse-cutover-acceptance.md)
+[Release operations](operations/release-operations-runbook.md)
+remains the sole executable release procedure. [SSE cutover acceptance](operations/redis-streams-sse-cutover-acceptance.md)
 and [ordinary-user acceptance](acceptance/agent-app/ordinary-user-matrix.md)
 remain the detailed deployed checks. The system matrix complements them with
 cross-component failure scenarios; it does not replace them.
-[Release evidence](release-evidence/README.md) is historical unless its exact
-subject has been freshly verified.
+Reviewed, redacted evidence remains indexed by [Release evidence](release-evidence/README.md)
+and is historical unless its exact subject has been freshly verified.
 
 ## Document maintenance
 
