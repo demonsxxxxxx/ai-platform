@@ -63,7 +63,12 @@ generation, timestamps, and reconciliation ownership in one migration.
    and marks released in that transaction. Concurrent release waits and then
    observes the terminal row instead of issuing a duplicate stop. Stop failure
    leaves the lease non-terminal and records a cleanup failure for retry or
-   reconciliation.
+   reconciliation. This is the initial stop-under-lock compatibility mechanism,
+   not a target requirement to hold database locks during unbounded provider
+   I/O. Replacing it requires a reviewed operation claim, immutable resource
+   identity, out-of-transaction provider effect, stale-receipt rejection and
+   crash recovery. Until that replacement is activated, do not merely move
+   `stop` out of the lock. See [runtime convergence](runtime-convergence.md).
 5. Tenant/run authorization is resolved before any provider call. Provider
    handles are never returned in public payloads.
 6. Provider-internal recovery state is observed and reconciled; it is never
@@ -133,3 +138,12 @@ index and column only after reverting readers and the real-provider write guard.
 Runtime acceptance remains mandatory. Source tests prove ordering and
 fail-closed contracts but do not prove provider readiness, network enforcement,
 cleanup, or orphan recovery on a deployed host.
+
+## Cross-component acceptance
+
+Use SBX-01, SBX-02, TX-01, RUN-03 and CB-01/CB-02 in the
+[system matrix](../acceptance/system-architecture-matrix.md) for failure and
+handoff coverage. These are proposed test scenarios, not passing evidence.
+The existing resource lifecycle, token scope and compatibility requirements
+remain in force; execution authorization, dispatcher ownership and cleanup
+claims must not be collapsed into a universal generation.

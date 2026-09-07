@@ -314,6 +314,413 @@ def test_executor_lifespan_shutdown_drains_in_flight_callback_before_terminal(
     assert terminal_records[0].sandbox_error_code == "executor_cancelled"
 
 
+@pytest.mark.asyncio
+async def test_shutdown_deadline_never_overtakes_uncertain_body_callback(
+    tmp_path,
+    monkeypatch,
+):
+    callback_started = asyncio.Event()
+    release_callback = asyncio.Event()
+    runner_finished = asyncio.Event()
+    callbacks = []
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        await emit_event(message_delta_callback("shutdown", "body").events[0])
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            while not release_callback.is_set():
+                try:
+                    await release_callback.wait()
+                except asyncio.CancelledError:
+                    continue
+            await emit_event(message_delta_callback("late_after_shutdown", "late").events[0])
+        finally:
+            runner_finished.set()
+        return {"status": "completed", "message": "done"}
+
+    async def callback_sender(_url, payload, _token):
+        callbacks.append(payload)
+        if any(event.get("event_id") == "evt_shutdown" for event in payload.get("events", [])):
+            callback_started.set()
+            while not release_callback.is_set():
+                try:
+                    await release_callback.wait()
+                except asyncio.CancelledError:
+                    continue
+        return callback_ack(payload)
+
+    monkeypatch.setattr(executor_app, "_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS", 0.01)
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        callback_sender=callback_sender,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        heartbeat_interval_seconds=60,
+        nonterminal_callback_retry_policy=callback_retry_policy(
+            attempt_timeout_seconds=60,
+        ),
+    )
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    try:
+        dispatch = next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
+        await dispatch(
+            ExecutorTaskRequest.model_validate(task_payload()),
+            executor_credential=EXECUTOR_AUTH_TOKEN,
+        )
+        await asyncio.wait_for(callback_started.wait(), timeout=1)
+        started_at = asyncio.get_running_loop().time()
+        await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=0.5)
+        assert asyncio.get_running_loop().time() - started_at < 0.5
+        assert not any(callback.get("terminal_result") for callback in callbacks)
+    finally:
+        release_callback.set()
+        await asyncio.wait_for(runner_finished.wait(), timeout=1)
+        await asyncio.sleep(0)
+        assert not any(
+            event.get("event_id") == "evt_late_after_shutdown"
+            for callback in callbacks
+            for event in callback.get("events", [])
+        )
+        assert not any(callback.get("terminal_result") for callback in callbacks)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_deadline_bounds_unconfirmed_terminal_callback(
+    tmp_path,
+    monkeypatch,
+):
+    terminal_started = asyncio.Event()
+    release_terminal = asyncio.Event()
+    callbacks = []
+
+    async def executor_runner(_request, _workspace_root, _emit_event):
+        return {"status": "completed", "message": "done"}
+
+    async def callback_sender(_url, payload, _token):
+        callbacks.append(payload)
+        if payload.get("terminal_result"):
+            terminal_started.set()
+            while not release_terminal.is_set():
+                try:
+                    await release_terminal.wait()
+                except asyncio.CancelledError:
+                    continue
+        return callback_ack(payload)
+
+    monkeypatch.setattr(executor_app, "_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS", 0.01)
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        callback_sender=callback_sender,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        heartbeat_interval_seconds=60,
+    )
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    try:
+        dispatch = next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
+        await dispatch(
+            ExecutorTaskRequest.model_validate(task_payload()),
+            executor_credential=EXECUTOR_AUTH_TOKEN,
+        )
+        await asyncio.wait_for(terminal_started.wait(), timeout=1)
+        started_at = asyncio.get_running_loop().time()
+        await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=0.5)
+        assert asyncio.get_running_loop().time() - started_at < 0.5
+        assert len([callback for callback in callbacks if callback.get("terminal_result")]) == 1
+    finally:
+        release_terminal.set()
+        await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_deadline_does_not_start_terminal_retry_after_expiry(
+    tmp_path,
+    monkeypatch,
+):
+    runner_started = asyncio.Event()
+    terminal_attempts = 0
+    real_sleep = asyncio.sleep
+
+    async def executor_runner(_request, _workspace_root, _emit_event):
+        runner_started.set()
+        await asyncio.Event().wait()
+
+    async def callback_sender(_url, payload, _token):
+        nonlocal terminal_attempts
+        if payload.get("terminal_result"):
+            terminal_attempts += 1
+            return {"accepted": False}
+        return callback_ack(payload)
+
+    async def sleep_past_deadline(delay):
+        await real_sleep(delay + 0.02 if delay > 0 and terminal_attempts else delay)
+
+    monkeypatch.setattr(executor_app, "_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(executor_app.asyncio, "sleep", sleep_past_deadline)
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        callback_sender=callback_sender,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        heartbeat_interval_seconds=60,
+    )
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    dispatch = next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
+    await dispatch(
+        ExecutorTaskRequest.model_validate(task_payload()),
+        executor_credential=EXECUTOR_AUTH_TOKEN,
+    )
+    await asyncio.wait_for(runner_started.wait(), timeout=1)
+
+    await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=0.5)
+
+    assert terminal_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_api_cancel_keeps_started_terminal_owned_until_shutdown_deadline(
+    tmp_path,
+    monkeypatch,
+):
+    runner_started = asyncio.Event()
+    terminal_started = asyncio.Event()
+    terminal_finished = asyncio.Event()
+    release_terminal = asyncio.Event()
+    terminal_cancellations = 0
+
+    async def executor_runner(_request, _workspace_root, _emit_event):
+        runner_started.set()
+        await asyncio.Event().wait()
+
+    async def callback_sender(_url, payload, _token):
+        nonlocal terminal_cancellations
+        if payload.get("terminal_result"):
+            terminal_started.set()
+            try:
+                while not release_terminal.is_set():
+                    try:
+                        await release_terminal.wait()
+                    except asyncio.CancelledError:
+                        terminal_cancellations += 1
+            finally:
+                terminal_finished.set()
+        return callback_ack(payload)
+
+    monkeypatch.setattr(executor_app, "_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS", 0.01)
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        callback_sender=callback_sender,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        heartbeat_interval_seconds=60,
+    )
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    try:
+        dispatch = next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
+        cancel = next(
+            route.endpoint
+            for route in app.routes
+            if route.path == "/v2/tasks/{run_id}/{attempt_id}/cancel"
+        )
+        await dispatch(
+            ExecutorTaskRequest.model_validate(task_payload()),
+            executor_credential=EXECUTOR_AUTH_TOKEN,
+        )
+        await asyncio.wait_for(runner_started.wait(), timeout=1)
+        await cancel("run-a", "qat-attempt-a", executor_credential=EXECUTOR_AUTH_TOKEN)
+        await asyncio.wait_for(terminal_started.wait(), timeout=1)
+        await cancel("run-a", "qat-attempt-a", executor_credential=EXECUTOR_AUTH_TOKEN)
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert terminal_cancellations == 0
+
+        await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=0.5)
+
+        assert terminal_cancellations >= 1
+    finally:
+        release_terminal.set()
+        await asyncio.wait_for(terminal_finished.wait(), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_api_cancel_waits_for_in_flight_heartbeat_before_terminal(
+    tmp_path,
+):
+    runner_started = asyncio.Event()
+    heartbeat_started = asyncio.Event()
+    heartbeat_release = asyncio.Event()
+    heartbeat_cancelled = asyncio.Event()
+    terminal_started = asyncio.Event()
+
+    async def executor_runner(_request, _workspace_root, _emit_event):
+        runner_started.set()
+        await asyncio.Event().wait()
+
+    async def callback_sender(_url, payload, _token):
+        state_patch = payload.get("state_patch")
+        if isinstance(state_patch, dict) and state_patch.get("executor_heartbeat") is True:
+            heartbeat_started.set()
+            try:
+                await heartbeat_release.wait()
+            except asyncio.CancelledError:
+                heartbeat_cancelled.set()
+                raise
+        if payload.get("terminal_result"):
+            terminal_started.set()
+        return callback_ack(payload)
+
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        callback_sender=callback_sender,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        heartbeat_interval_seconds=0.001,
+    )
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    try:
+        dispatch = next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
+        cancel = next(
+            route.endpoint
+            for route in app.routes
+            if route.path == "/v2/tasks/{run_id}/{attempt_id}/cancel"
+        )
+        await dispatch(
+            ExecutorTaskRequest.model_validate(task_payload()),
+            executor_credential=EXECUTOR_AUTH_TOKEN,
+        )
+        await asyncio.wait_for(runner_started.wait(), timeout=1)
+        await asyncio.wait_for(heartbeat_started.wait(), timeout=1)
+
+        await cancel("run-a", "qat-attempt-a", executor_credential=EXECUTOR_AUTH_TOKEN)
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert not heartbeat_cancelled.is_set()
+        assert not terminal_started.is_set()
+
+        heartbeat_release.set()
+        await asyncio.wait_for(terminal_started.wait(), timeout=1)
+        await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=1)
+    finally:
+        heartbeat_release.set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("shutdown_before_failure", "failure_before_cancel"),
+    [(False, False), (True, False), (False, True)],
+)
+async def test_api_cancel_transport_error_in_heartbeat_suppresses_terminal(
+    tmp_path,
+    shutdown_before_failure,
+    failure_before_cancel,
+):
+    runner_started = asyncio.Event()
+    heartbeat_started = asyncio.Event()
+    heartbeat_failure = asyncio.Event()
+    terminal_started = asyncio.Event()
+
+    async def executor_runner(_request, _workspace_root, _emit_event):
+        runner_started.set()
+        await asyncio.Event().wait()
+
+    async def callback_sender(_url, payload, _token):
+        state_patch = payload.get("state_patch")
+        if isinstance(state_patch, dict) and state_patch.get("executor_heartbeat") is True:
+            heartbeat_started.set()
+            await heartbeat_failure.wait()
+            raise httpx.ReadTimeout("heartbeat response lost")
+        if payload.get("terminal_result"):
+            terminal_started.set()
+        return callback_ack(payload)
+
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        callback_sender=callback_sender,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        heartbeat_interval_seconds=0.001,
+    )
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    try:
+        dispatch = next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
+        cancel = next(
+            route.endpoint
+            for route in app.routes
+            if route.path == "/v2/tasks/{run_id}/{attempt_id}/cancel"
+        )
+        get_status = next(
+            route.endpoint
+            for route in app.routes
+            if route.path == "/v2/tasks/{run_id}/{attempt_id}"
+        )
+        await dispatch(
+            ExecutorTaskRequest.model_validate(task_payload()),
+            executor_credential=EXECUTOR_AUTH_TOKEN,
+        )
+        await asyncio.wait_for(runner_started.wait(), timeout=1)
+        await asyncio.wait_for(heartbeat_started.wait(), timeout=1)
+        if failure_before_cancel:
+            heartbeat_failure.set()
+        await cancel("run-a", "qat-attempt-a", executor_credential=EXECUTOR_AUTH_TOKEN)
+        shutdown_task = None
+        if shutdown_before_failure:
+            shutdown_task = asyncio.create_task(lifespan.__aexit__(None, None, None))
+            await asyncio.sleep(0)
+        heartbeat_failure.set()
+
+        async def wait_for_failure():
+            while True:
+                response = await get_status(
+                    "run-a",
+                    "qat-attempt-a",
+                    executor_credential=EXECUTOR_AUTH_TOKEN,
+                )
+                if response["status"] == "callback_failed":
+                    return response
+                await asyncio.sleep(0)
+
+        response = await asyncio.wait_for(wait_for_failure(), timeout=1)
+        assert response["error_message"] == "executor_callback_delivery_uncertain"
+        assert not terminal_started.is_set()
+        if shutdown_task is None:
+            await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=1)
+        else:
+            await asyncio.wait_for(shutdown_task, timeout=1)
+    finally:
+        heartbeat_failure.set()
+
+
 def test_removed_v1_execute_route_returns_404(tmp_path):
     client = create_test_client(tmp_path)
 
@@ -3950,6 +4357,33 @@ def test_executor_records_v4_first_text_without_legacy_delta(tmp_path, monkeypat
     )
 
 
+def test_executor_records_first_text_in_v4_ownership_batch(tmp_path, monkeypatch):
+    async def executor_runner(_request, _workspace_root, emit_event):
+        delta = message_delta_callback(1, "first")
+        await emit_event(delta.model_copy(update={
+            "events": [
+                AgentEvent(
+                    type="message.started",
+                    event_id="evt_started",
+                    run_id="run-a",
+                    message_id="msg-a",
+                    payload={},
+                ),
+                *delta.events,
+            ]
+        }))
+        return {"status": "completed", "message": "done"}
+
+    monkeypatch.setattr(executor_app, "_elapsed_ms", lambda _started: 41)
+    response = create_test_client(
+        tmp_path,
+        executor_runner=executor_runner,
+    ).post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["executor_first_token_latency_ms"] == 41
+
+
 def message_delta_callback(index: object, delta: str) -> ExecutorCallbackEvent:
     return ExecutorCallbackEvent(
         session_id="session-a",
@@ -4257,7 +4691,6 @@ def test_executor_reuses_default_callback_client_for_app_lifespan(tmp_path, monk
     runner_started = threading.Event()
     runner_cancelled = threading.Event()
     terminal_started = threading.Event()
-    terminal_cancelled = threading.Event()
 
     class FakeResponse:
         def __init__(self, payload):
@@ -4278,15 +4711,10 @@ def test_executor_reuses_default_callback_client_for_app_lifespan(tmp_path, monk
             callbacks.append(json)
             if json.get("terminal_result"):
                 terminal_started.set()
-                try:
-                    await asyncio.Event().wait()
-                finally:
-                    terminal_cancelled.set()
             return FakeResponse(json)
 
         async def aclose(self):
             assert terminal_started.is_set()
-            assert terminal_cancelled.is_set()
             self.closed = True
 
     async def executor_runner(_request, _workspace_root, _emit_event):
@@ -4297,7 +4725,7 @@ def test_executor_reuses_default_callback_client_for_app_lifespan(tmp_path, monk
             runner_cancelled.set()
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.httpx.AsyncClient", FakeClient)
-    monkeypatch.setattr(executor_app, "_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(executor_app, "_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS", 0.1)
     app = create_executor_app(
         workspace_root=tmp_path,
         executor_runner=executor_runner,
@@ -4315,18 +4743,15 @@ def test_executor_reuses_default_callback_client_for_app_lifespan(tmp_path, monk
 
     assert runner_cancelled.is_set()
     assert terminal_started.is_set()
-    assert terminal_cancelled.is_set()
     assert len(clients) == 1
     assert len(callbacks) > 1
     assert clients[0].closed is True
 
 
 @pytest.mark.asyncio
-async def test_executor_shutdown_bounds_shared_callback_sender_close(
-    tmp_path, monkeypatch, caplog
-):
+async def test_shutdown_deadline_bounds_shared_callback_client_close(tmp_path, monkeypatch):
     close_started = asyncio.Event()
-    close_cancelled = asyncio.Event()
+    release_close = asyncio.Event()
 
     class FakeClient:
         def __init__(self, *, timeout):
@@ -4334,12 +4759,13 @@ async def test_executor_shutdown_bounds_shared_callback_sender_close(
 
         async def aclose(self):
             close_started.set()
-            try:
-                await asyncio.Event().wait()
-            finally:
-                close_cancelled.set()
+            while not release_close.is_set():
+                try:
+                    await release_close.wait()
+                except asyncio.CancelledError:
+                    continue
 
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.httpx.AsyncClient", FakeClient)
+    monkeypatch.setattr(executor_app.httpx, "AsyncClient", FakeClient)
     monkeypatch.setattr(executor_app, "_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS", 0.01)
     app = create_executor_app(
         workspace_root=tmp_path,
@@ -4349,15 +4775,16 @@ async def test_executor_shutdown_bounds_shared_callback_sender_close(
         expected_attempt_id="qat-attempt-a",
         trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
     )
-
-    with caplog.at_level("WARNING", logger=executor_app.__name__):
-        async with asyncio.timeout(0.5):
-            async with app.router.lifespan_context(app):
-                pass
-
-    assert close_started.is_set()
-    assert close_cancelled.is_set()
-    assert "sandbox_executor_shutdown_sender_timeout" in caplog.messages
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    try:
+        started_at = asyncio.get_running_loop().time()
+        await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=0.5)
+        assert asyncio.get_running_loop().time() - started_at < 0.5
+        assert close_started.is_set()
+    finally:
+        release_close.set()
+        await asyncio.sleep(0.05)
 
 
 def test_executor_retries_assistant_delta_with_immutable_batch(tmp_path, caplog):
@@ -4660,6 +5087,88 @@ def test_executor_exhausts_timed_out_callback_and_seals_late_deltas(tmp_path):
     assert len(assistant_attempts) == 2
     assert assistant_attempts[0] == assistant_attempts[1]
     assert all(event.get("message") != "late" for attempt in assistant_attempts for event in attempt.get("events", []))
+
+
+@pytest.mark.asyncio
+async def test_exhausted_transport_callback_suppresses_terminal(tmp_path):
+    assistant_attempts = 0
+    terminal_callbacks = []
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        await emit_event(
+            AgentEvent(
+                type="assistant_delta",
+                message="partial",
+                payload={"delta": "partial"},
+            )
+        )
+        return {"status": "completed", "message": "done"}
+
+    async def callback_sender(url, payload, _token):
+        nonlocal assistant_attempts
+        if payload.get("terminal_result"):
+            terminal_callbacks.append(payload)
+        if any(
+            event.get("type") == "assistant_delta"
+            for event in payload.get("events", [])
+        ):
+            assistant_attempts += 1
+            raise httpx.ReadTimeout(
+                "response lost after commit",
+                request=httpx.Request("POST", url),
+            )
+        return callback_ack(payload)
+
+    async def skip_retry_delay(_delay):
+        return None
+
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        callback_sender=callback_sender,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        nonterminal_callback_retry_policy=callback_retry_policy(max_attempts=2),
+        callback_retry_sleep=skip_retry_delay,
+    )
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    lifespan_closed = False
+    try:
+        dispatch = next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
+        get_status = next(
+            route.endpoint
+            for route in app.routes
+            if route.path == "/v2/tasks/{run_id}/{attempt_id}"
+        )
+        await dispatch(
+            ExecutorTaskRequest.model_validate(task_payload()),
+            executor_credential=EXECUTOR_AUTH_TOKEN,
+        )
+
+        async def wait_for_failure():
+            while True:
+                response = await get_status(
+                    "run-a",
+                    "qat-attempt-a",
+                    executor_credential=EXECUTOR_AUTH_TOKEN,
+                )
+                if response["status"] == "callback_failed":
+                    return response
+                await asyncio.sleep(0)
+
+        response = await asyncio.wait_for(wait_for_failure(), timeout=1)
+        assert response["error_message"] == "executor_callback_delivery_uncertain"
+        assert assistant_attempts == 2
+        assert terminal_callbacks == []
+        await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=1)
+        lifespan_closed = True
+    finally:
+        if not lifespan_closed:
+            await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=1)
 
 
 def test_executor_finished_observation_marker_path_is_container_path(tmp_path, monkeypatch):

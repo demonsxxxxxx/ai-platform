@@ -134,7 +134,7 @@ the browser.
 | Agent-first routing | `frontend/web/src/App.tsx`, auth and shell navigation | Root/login/bare Chat resolve to Agent Market; generic controls hidden |
 | Market task language | `frontend/web/src/features/agent-market/AgentMarketRoute.tsx` | Task-oriented hierarchy, CTA, examples, and recovery states |
 | Workspace task navigation | `ChatAppContent.tsx`, `SessionSidebar.tsx`, sidebar parts | Agent-scoped “new task” and “task history”; no generic Chat discovery |
-| Builder progressive disclosure | `AgentBuilderWorkbench.tsx`, `AgentBuilderEnterpriseFields.tsx`, `agentBuilderAdapter.ts` | Four-field initial surface; presentation and governance grouped as optional |
+| Builder progressive disclosure | `AgentBuilderWorkbench.tsx`, `AgentBuilderEnterpriseFields.tsx`, `agentBuilderAdapter.ts` | Three-field initial surface; presentation and governance grouped as optional |
 | Skill archive UX | `SkillsPanel/*`, `useSkills.ts`, locale files | Truthful archive semantics, optimistic removal/rollback, partial-result handling |
 
 ### Change Contract: run-scoped Thinking preference

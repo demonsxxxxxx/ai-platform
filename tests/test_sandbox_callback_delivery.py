@@ -82,6 +82,32 @@ class CallbackDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await value.close())
         self.assertEqual(batches, ["batch-1", "batch-2"])
 
+    async def test_aged_delta_does_not_restart_window_after_prior_delivery(self):
+        first_started, release_first, second_started = (
+            asyncio.Event(), asyncio.Event(), asyncio.Event()
+        )
+
+        async def deliver(callback):
+            if callback.batch_id == "batch-1":
+                first_started.set()
+                await release_first.wait()
+            else:
+                second_started.set()
+            return True
+
+        value = self.buffer(deliver, wait=60)
+        first_send = asyncio.create_task(value.send(barrier(1)))
+        self.operations.append(first_send)
+        await first_started.wait()
+        await value._queue.put(source._QueuedCallback(
+            delta(2), asyncio.get_running_loop().time() - 61
+        ))
+        value._wake.set()
+        release_first.set()
+        self.assertTrue(await first_send)
+        await self.completes(second_started.wait())
+        self.assertTrue(await value.close())
+
     async def test_close_interrupts_coalescing_wait(self):
         batches = []
         async def deliver(callback):

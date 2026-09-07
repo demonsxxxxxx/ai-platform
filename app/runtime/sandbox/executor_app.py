@@ -118,6 +118,10 @@ class _CallbackDeliveryError(RuntimeError):
         self.error_code = error_code
 
 
+class _ShutdownDeadlineExceeded(RuntimeError):
+    pass
+
+
 class _CallbackBatchIdFactory:
     """Allocate callback IDs that do not collide after an executor restart."""
 
@@ -348,7 +352,7 @@ class _MessageDeltaCallbackBuffer:
                 _QueuedCallback(callback, asyncio.get_running_loop().time())
             )
         except asyncio.CancelledError:
-            await self.cancel()
+            await asyncio.shield(self.cancel())
             raise
         self._wake.set()
         return not self._failed
@@ -384,7 +388,7 @@ class _MessageDeltaCallbackBuffer:
         try:
             accepted = await self.flush()
         except asyncio.CancelledError:
-            await self.cancel()
+            await asyncio.shield(self.cancel())
             raise
         except Exception:
             await self.cancel()
@@ -393,26 +397,44 @@ class _MessageDeltaCallbackBuffer:
         await asyncio.gather(self._worker, return_exceptions=True)
         return accepted
 
-    async def cancel(self, *, deadline: float | None = None) -> None:
+    async def cancel(self, *, deadline: float | None = None) -> bool:
         self._closed = self._failed = True
         self._wake.set()
         self._discard_queued()
-        deadline = deadline or (
-            asyncio.get_running_loop().time() + _EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS
-        )
+        # Preserve an in-flight exact-batch outcome before terminal delivery.
+        drain = asyncio.create_task(self._queue.join())
+        if deadline is None:
+            deadline = (
+                asyncio.get_running_loop().time()
+                + _EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS
+            )
         try:
-            async with asyncio.timeout_at(deadline):
-                await self._queue.join()
-        except TimeoutError:
-            pass
-        finally:
+            remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+            done, _ = await asyncio.wait({drain}, timeout=remaining)
+            if drain not in done:
+                drain.cancel()
+                _observe_detached_task(drain)
+                self._worker.cancel()
+                await asyncio.sleep(0)
+                if self._worker.done():
+                    await asyncio.gather(self._worker, return_exceptions=True)
+                else:
+                    _observe_detached_task(self._worker)
+                return False
+            await drain
+        except asyncio.CancelledError:
+            drain.cancel()
+            _observe_detached_task(drain)
             self._worker.cancel()
-        remaining = max(
-            deadline - asyncio.get_running_loop().time(),
-            0.0,
-        )
-        if remaining > 0:
-            await asyncio.wait((self._worker,), timeout=remaining)
+            _observe_detached_task(self._worker)
+            raise
+        self._worker.cancel()
+        await asyncio.gather(self._worker, return_exceptions=True)
+        return True
+
+    @property
+    def delivery_task(self) -> asyncio.Task[None]:
+        return self._worker
 
 
 class _PrivateExecutionFact(NamedTuple):
@@ -2347,16 +2369,101 @@ def create_executor_app(
         "attempt_id": None,
         "delivery_error": None,
     }
+    shutdown_state: dict[str, float | bool | None] = {
+        "deadline": None,
+        "delivery_uncertain": False,
+        "publishing_closed": False,
+    }
+    uncertain_delivery_tasks: set[asyncio.Task[Any]] = set()
+    callback_delivery_tasks: set[asyncio.Task[Any]] = set()
+
+    def mark_delivery_uncertain(
+        error_code: str,
+        *,
+        active_task: asyncio.Task[Any] | None = None,
+    ) -> None:
+        shutdown_state["delivery_uncertain"] = True
+        shutdown_state["publishing_closed"] = True
+        if active_task is not None and not active_task.done():
+            uncertain_delivery_tasks.add(active_task)
+            active_task.add_done_callback(uncertain_delivery_tasks.discard)
+        task_state["delivery_error"] = error_code
+        if task_state["status"] != "idle":
+            task_state["status"] = "callback_failed"
+
+    def mark_shutdown_delivery_uncertain(
+        *,
+        active_task: asyncio.Task[Any] | None = None,
+    ) -> None:
+        mark_delivery_uncertain(
+            "executor_shutdown_delivery_uncertain",
+            active_task=active_task,
+        )
+
+    async def dispatch_owned_callback(
+        url: str,
+        payload: CallbackPayload,
+        token: str,
+    ) -> CallbackResult:
+        cancel_requested = False
+        clock = asyncio.get_running_loop().time
+        shutdown_deadline = shutdown_state["deadline"]
+        if isinstance(shutdown_deadline, float) and clock() >= shutdown_deadline:
+            shutdown_state["publishing_closed"] = True
+            raise _ShutdownDeadlineExceeded
+        attempt = asyncio.create_task(
+            _dispatch_callback(resolved_callback_sender, url, payload, token)
+        )
+        callback_delivery_tasks.add(attempt)
+        attempt.add_done_callback(callback_delivery_tasks.discard)
+        while True:
+            shutdown_deadline = shutdown_state["deadline"]
+            if not isinstance(shutdown_deadline, float):
+                try:
+                    result = await asyncio.shield(attempt)
+                except asyncio.CancelledError:
+                    if attempt.done():
+                        if not attempt.cancelled():
+                            exception = attempt.exception()
+                            if exception is not None:
+                                raise exception
+                        raise
+                    cancel_requested = True
+                    continue
+                if cancel_requested:
+                    raise asyncio.CancelledError
+                return result
+            remaining = max(0.0, shutdown_deadline - clock())
+            try:
+                done, _ = await asyncio.wait({attempt}, timeout=remaining)
+            except asyncio.CancelledError:
+                continue
+            if attempt in done:
+                if cancel_requested:
+                    if attempt.cancelled():
+                        raise asyncio.CancelledError
+                    exception = attempt.exception()
+                    if exception is not None:
+                        raise exception
+                    raise asyncio.CancelledError
+                return attempt.result()
+            attempt.cancel()
+            await asyncio.sleep(0)
+            _observe_detached_task(attempt)
+            mark_shutdown_delivery_uncertain(
+                active_task=attempt if not attempt.done() else None
+            )
+            raise _ShutdownDeadlineExceeded
 
     def ensure_shutdown_deadline() -> float:
         deadline = (
             asyncio.get_running_loop().time()
             + _EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS
         )
-        current = task_state.get("shutdown_deadline")
+        current = shutdown_state["deadline"]
         if isinstance(current, float):
             deadline = min(deadline, current)
-        task_state["shutdown_deadline"] = deadline
+        shutdown_state["deadline"] = deadline
         return deadline
 
     @asynccontextmanager
@@ -2372,22 +2479,74 @@ def create_executor_app(
             task = task_state.get("task")
             if isinstance(task, asyncio.Task) and not task.done():
                 task.cancel()
-                done, pending = await asyncio.wait(
-                    (task,),
-                    timeout=max(deadline - asyncio.get_running_loop().time(), 0.0),
-                )
+                remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                done, _ = await asyncio.wait({task}, timeout=remaining)
+                if task in done:
+                    await asyncio.gather(task, return_exceptions=True)
+                else:
+                    task.cancel()
+                    await asyncio.sleep(0)
+                    mark_shutdown_delivery_uncertain(
+                        active_task=task if not task.done() else None
+                    )
+                    if task.done():
+                        await asyncio.gather(task, return_exceptions=True)
+                    else:
+                        _observe_detached_task(task)
+            active_callback_tasks = {
+                callback_task
+                for callback_task in callback_delivery_tasks
+                if not callback_task.done()
+            }
+            if active_callback_tasks:
+                for callback_task in active_callback_tasks:
+                    callback_task.cancel()
+                remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                if remaining:
+                    done, pending = await asyncio.wait(
+                        active_callback_tasks,
+                        timeout=remaining,
+                    )
+                else:
+                    await asyncio.sleep(0)
+                    done = {task for task in active_callback_tasks if task.done()}
+                    pending = active_callback_tasks - done
                 if done:
                     await asyncio.gather(*done, return_exceptions=True)
                 if pending:
-                    task.cancel()
+                    for callback_task in pending:
+                        callback_task.cancel()
                     await asyncio.sleep(0)
-                    _logger.warning("sandbox_executor_shutdown_task_timeout")
-            if shared_callback_sender is not None:
-                try:
-                    async with asyncio.timeout_at(deadline):
-                        await shared_callback_sender.close()
-                except TimeoutError:
-                    _logger.warning("sandbox_executor_shutdown_sender_timeout")
+                    for callback_task in pending:
+                        if callback_task.done():
+                            await asyncio.gather(
+                                callback_task,
+                                return_exceptions=True,
+                            )
+                        else:
+                            _observe_detached_task(callback_task)
+                            mark_shutdown_delivery_uncertain(
+                                active_task=callback_task
+                            )
+            if (
+                shared_callback_sender is not None
+                and not any(
+                    not task.done()
+                    for task in uncertain_delivery_tasks | callback_delivery_tasks
+                )
+            ):
+                close_task = asyncio.create_task(shared_callback_sender.close())
+                remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                if remaining:
+                    done, _ = await asyncio.wait({close_task}, timeout=remaining)
+                else:
+                    await asyncio.sleep(0)
+                    done = {close_task} if close_task.done() else set()
+                if close_task in done:
+                    await close_task
+                else:
+                    close_task.cancel()
+                    _observe_detached_task(close_task)
 
     app = FastAPI(
         title="AI Platform Sandbox Executor",
@@ -2559,8 +2718,18 @@ def create_executor_app(
             runner_events_open["value"] = False
             stop_all_active_progress()
 
+        heartbeat_callback_retry_policy = _CallbackRetryPolicy(
+            max_attempts=1,
+            attempt_timeout_seconds=(
+                resolved_nonterminal_callback_retry_policy.attempt_timeout_seconds
+            ),
+        )
+
         async def deliver_callback_event(event: ExecutorCallbackEvent) -> bool:
-            if stream_delivery_failure["error_code"] is not None:
+            if (
+                shutdown_state["publishing_closed"]
+                or stream_delivery_failure["error_code"] is not None
+            ):
                 return False
             batch = _CallbackBatchDelivery(
                 content=_CallbackBatchContent.freeze(event.model_dump())
@@ -2571,7 +2740,11 @@ def create_executor_app(
                     request.callback_url,
                     batch,
                     request.callback_token,
-                    retry_policy=resolved_nonterminal_callback_retry_policy,
+                    retry_policy=(
+                        heartbeat_callback_retry_policy
+                        if event.state_patch.get("executor_heartbeat") is True
+                        else resolved_nonterminal_callback_retry_policy
+                    ),
                     retry_sleep=resolved_callback_retry_sleep,
                 )
             except asyncio.CancelledError:
@@ -2580,16 +2753,38 @@ def create_executor_app(
             except _CallbackDeliveryError as exc:
                 callback_errors.append(event.status)
                 seal_runner_events_after_delivery_failure(exc.error_code)
+                if exc.error_code == "stream_delivery_exhausted":
+                    mark_delivery_uncertain("executor_callback_delivery_uncertain")
                 return False
             return True
 
         message_delta_callbacks = _MessageDeltaCallbackBuffer(deliver_callback_event)
 
         async def cancel_message_delta_callbacks() -> None:
-            deadline = task_state.get("shutdown_deadline")
-            await message_delta_callbacks.cancel(
-                deadline=deadline if isinstance(deadline, float) else None,
+            cleanup = asyncio.create_task(
+                message_delta_callbacks.cancel(
+                    deadline=shutdown_state["deadline"]
+                    if isinstance(shutdown_state["deadline"], float)
+                    else None
+                )
             )
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    deadline = shutdown_state["deadline"]
+                    if not isinstance(deadline, float) or asyncio.get_running_loop().time() < deadline:
+                        continue
+                    cleanup.cancel()
+                    _observe_detached_task(cleanup)
+                    mark_shutdown_delivery_uncertain(
+                        active_task=message_delta_callbacks.delivery_task
+                    )
+                    return
+            if not await cleanup:
+                mark_shutdown_delivery_uncertain(
+                    active_task=message_delta_callbacks.delivery_task
+                )
 
         async def await_with_callback_buffer_cleanup(
             awaitable: Awaitable[Any],
@@ -2603,19 +2798,34 @@ def create_executor_app(
                 await cancel_message_delta_callbacks()
                 raise
 
-        async def await_shutdown_cleanup(awaitable: Awaitable[Any]) -> None:
-            deadline = task_state.get("shutdown_deadline")
-            try:
-                if isinstance(deadline, float):
-                    async with asyncio.timeout_at(deadline):
-                        await awaitable
-                else:
-                    await awaitable
-            except TimeoutError:
+        async def await_shutdown_task(task: asyncio.Task[Any]) -> None:
+            deadline = shutdown_state["deadline"]
+            if not isinstance(deadline, float):
+                await asyncio.gather(task, return_exceptions=True)
                 return
+            while not task.done():
+                remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                if remaining == 0:
+                    break
+                try:
+                    done, _ = await asyncio.wait({task}, timeout=remaining)
+                except asyncio.CancelledError:
+                    continue
+                if task in done:
+                    await asyncio.gather(task, return_exceptions=True)
+                    return
+            task.cancel()
+            await asyncio.sleep(0)
+            if task.done():
+                await asyncio.gather(task, return_exceptions=True)
+            else:
+                _observe_detached_task(task)
+                mark_shutdown_delivery_uncertain(active_task=task)
 
         async def dispatch_callback_event(event: ExecutorCallbackEvent) -> bool:
             nonlocal executor_first_token_latency_ms
+            if shutdown_state["publishing_closed"]:
+                return False
             if executor_first_token_latency_ms is None and any(
                 item.type == "assistant_delta"
                 or (
@@ -2634,7 +2844,7 @@ def create_executor_app(
             while True:
                 await asyncio.sleep(heartbeat_interval_seconds)
                 try:
-                    await dispatch_callback_event(
+                    accepted = await dispatch_callback_event(
                         ExecutorCallbackEvent(
                             session_id=request.session_id,
                             run_id=request.run_id,
@@ -2646,11 +2856,14 @@ def create_executor_app(
                             state_patch={"executor_heartbeat": True},
                         )
                     )
+                    if not accepted:
+                        return
                 except asyncio.CancelledError:
                     raise
                 except Exception:
                     # Heartbeats are best-effort liveness hints.
                     continue
+
 
         def apply_stream_delivery_failure(result: dict[str, Any]) -> bool:
             error_code = stream_delivery_failure["error_code"]
@@ -2883,12 +3096,9 @@ def create_executor_app(
         finally:
             if heartbeat_task is not None:
                 heartbeat_task.cancel()
-                await await_shutdown_cleanup(
-                    asyncio.gather(heartbeat_task, return_exceptions=True)
-                )
-            await await_shutdown_cleanup(
-                await_with_callback_buffer_cleanup(drain_active_progress())
-            )
+                await await_shutdown_task(heartbeat_task)
+            progress_cleanup = asyncio.create_task(drain_active_progress())
+            await await_shutdown_task(progress_cleanup)
 
         if capability_callback_failed["value"]:
             error_code = "capability_callback_not_acknowledged"
@@ -3067,34 +3277,53 @@ def create_executor_app(
             error_message=str(result.get("error_message") or "") or None,
             terminal_result=result,
         )
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + terminal_callback_retry_seconds
-        shutdown_deadline = task_state.get("shutdown_deadline")
-        if isinstance(shutdown_deadline, float):
-            deadline = min(deadline, shutdown_deadline)
+
+        clock = asyncio.get_running_loop().time
+        retry_deadline = clock() + terminal_callback_retry_seconds
         delay = 0.5
         while True:
             try:
-                async with asyncio.timeout_at(deadline):
-                    acknowledged = resolved_callback_sender(
-                        request.callback_url,
-                        callback.model_dump(exclude_none=True),
-                        request.callback_token,
+                shutdown_deadline = shutdown_state["deadline"]
+                if (
+                    isinstance(shutdown_deadline, float)
+                    and clock() >= shutdown_deadline
+                ):
+                    shutdown_state["publishing_closed"] = True
+                    task_state["delivery_error"] = (
+                        "executor_terminal_callback_not_acknowledged"
                     )
-                    if inspect.isawaitable(acknowledged):
-                        acknowledged = await acknowledged
+                    raise _ShutdownDeadlineExceeded
+                acknowledged = await dispatch_owned_callback(
+                    request.callback_url,
+                    callback.model_dump(exclude_none=True),
+                    request.callback_token,
+                )
                 if isinstance(acknowledged, dict) and acknowledged.get("accepted") is True:
                     return
+            except _ShutdownDeadlineExceeded:
+                raise
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 task_state["delivery_error"] = (
                     f"{type(exc).__name__}: {str(exc)}"[:512]
                 )
-            remaining = deadline - loop.time()
+            shutdown_deadline = shutdown_state["deadline"]
+            deadline = min(
+                retry_deadline,
+                shutdown_deadline,
+            ) if isinstance(shutdown_deadline, float) else retry_deadline
+            remaining = deadline - clock()
             if remaining <= 0:
+                if isinstance(shutdown_deadline, float) and shutdown_deadline <= retry_deadline:
+                    mark_shutdown_delivery_uncertain()
+                    raise _ShutdownDeadlineExceeded
                 raise RuntimeError("executor_terminal_callback_not_acknowledged")
-            await asyncio.sleep(min(delay, remaining))
+            try:
+                await asyncio.sleep(min(delay, remaining))
+            except asyncio.CancelledError:
+                if not isinstance(shutdown_state["deadline"], float):
+                    raise
             delay = min(delay * 2, 10.0)
 
     async def supervise_task(request: ExecutorTaskRequest) -> None:
@@ -3136,8 +3365,13 @@ def create_executor_app(
         _log_sandbox_execution_terminal(request, result)
         task_state["result"] = result
         task_state["status"] = str(result.get("status") or "failed")
+        if shutdown_state["delivery_uncertain"]:
+            task_state["status"] = "callback_failed"
+            return
         try:
             await deliver_terminal_callback(request, result)
+        except _ShutdownDeadlineExceeded:
+            task_state["status"] = "callback_failed"
         except asyncio.CancelledError:
             raise
         except Exception:

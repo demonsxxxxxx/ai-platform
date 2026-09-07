@@ -68,6 +68,39 @@ shutdown deadline used by message buffering, progress cleanup, terminal callback
 retry, and callback-client close. Process shutdown reuses that deadline rather
 than starting consecutive or unbounded waits.
 
+The Sandbox may enqueue only single-item callbacks containing one adjacent,
+already-projected `message.delta` event before this boundary. The worker batches
+those callback items without concatenating or rewriting their events: each
+keeps its event identity and becomes its own durable row and SSE sequence. It
+uses a configured 50-millisecond aggregation delay measured from the first
+queued item, stops adding before a batch would exceed 100 events or 8 KiB of
+aggregate delta text, and holds at most 100 queued callback items. A barrier or
+close wakes the worker immediately; a delta whose deadline expires behind an
+in-flight callback is sent without starting a new delay. The text byte limit
+excludes envelope/JSON metadata. A larger pre-projected item and every
+multi-item callback remain synchronous barriers. Once v4 answer projection is
+accepted, the redundant legacy `assistant_delta` callback is suppressed. One
+ordered runner-event callback is in flight at a time; queue saturation
+backpressures the SDK. Every non-delta runner event, Tool lifecycle transition,
+error, cancellation, or terminal transition is a receipt barrier, so no later
+fact can overtake uncommitted public answer text. Cancellation discards only
+callbacks that have not started and waits for an in-flight delivery to reach
+its bounded receipt or rejection before terminal delivery. Supervisor heartbeat
+requests follow the same rule; a retryable transport failure makes delivery
+uncertain and permanently suppresses later publication. Exhausting retries for
+an ordinary stream callback after a retryable failure has the same disposition;
+only an explicit rejection permits later terminal delivery.
+
+Application shutdown gives callback drain, in-flight delivery, terminal
+notification, supervised-task cleanup, and shared HTTP-client close one
+30-second absolute budget. If a started callback has no receipt or explicit
+rejection by that deadline, its delivery remains uncertain and terminal
+notification is suppressed; the existing Run, Attempt, lease, and Worker
+recovery authorities own convergence. Shutdown never fabricates a callback
+receipt or terminal Run state. The callback HTTP client is reused for the
+application lifetime; reconnect behavior does not change callback identity or
+retry bytes.
+
 ## Internal Redis envelope
 
 Every Redis entry contains one canonical JSON value shaped by
