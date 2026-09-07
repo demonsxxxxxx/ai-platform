@@ -57,6 +57,7 @@ class RedisLiveFanoutSource:
         self._invalidation_tasks: dict[str, asyncio.Task[None]] = {}
         self._channels: set[str] = set()
         self._command_lock = asyncio.Lock()
+        self._transport_generation = 0
         self._transport_failed = False
         self._closing = False
 
@@ -93,6 +94,7 @@ class RedisLiveFanoutSource:
                 await asyncio.gather(*invalidations, return_exceptions=True)
             if self._pubsub is not None:
                 await self._pubsub.aclose()
+            self._transport_generation += 1
             self._pubsub = self._client.pubsub(ignore_subscribe_messages=False)
             self._channels.clear()
             self._pending.clear()
@@ -100,63 +102,86 @@ class RedisLiveFanoutSource:
             self._transport_failed = False
 
     async def subscribe(self, channel: str) -> None:
-        async with self._command_lock:
-            invalidation = self._invalidation_tasks.get(channel)
-            if invalidation is not None:
-                await asyncio.shield(invalidation)
-            if self._transport_failed:
-                raise RuntimeError("live_transport_unavailable")
-            if channel in self._channels:
-                return
-            pubsub = self._require_pubsub()
-            acknowledgement = self._register_control_acknowledgement(
-                "subscribe", channel
+        acknowledgement: _ControlAcknowledgement | None = None
+        pubsub: Any | None = None
+        transport_generation: int | None = None
+        try:
+            while acknowledgement is None:
+                invalidation: asyncio.Task[None] | None = None
+                async with self._command_lock:
+                    invalidation = self._invalidation_tasks.get(channel)
+                    if invalidation is None:
+                        if self._transport_failed:
+                            raise RuntimeError("live_transport_unavailable")
+                        if channel in self._channels:
+                            return
+                        pubsub = self._require_pubsub()
+                        transport_generation = self._transport_generation
+                        acknowledgement = self._register_control_acknowledgement(
+                            "subscribe", channel
+                        )
+                        await asyncio.wait_for(
+                            pubsub.subscribe(channel),
+                            timeout=LIVE_SUBSCRIBE_TIMEOUT_SECONDS,
+                        )
+                        if self._reader_task is None or self._reader_task.done():
+                            self._reader_task = asyncio.create_task(self._read_messages())
+                if invalidation is not None:
+                    await asyncio.shield(invalidation)
+            await asyncio.wait_for(
+                asyncio.shield(acknowledgement.future),
+                timeout=LIVE_SUBSCRIBE_TIMEOUT_SECONDS,
             )
+        except BaseException:
+            if acknowledgement is None or pubsub is None:
+                raise
+            self._retire_control_acknowledgement(
+                "subscribe", channel, acknowledgement
+            )
+            cleanup: _ControlAcknowledgement | None = None
+            cleanup_current = False
+            cleanup_failed = False
+            cleanup_confirmed = False
             try:
-                await asyncio.wait_for(
-                    pubsub.subscribe(channel),
-                    timeout=LIVE_SUBSCRIBE_TIMEOUT_SECONDS,
-                )
-                if self._reader_task is None or self._reader_task.done():
-                    self._reader_task = asyncio.create_task(self._read_messages())
-                await asyncio.wait_for(
-                    asyncio.shield(acknowledgement.future),
-                    timeout=LIVE_SUBSCRIBE_TIMEOUT_SECONDS,
-                )
-            except BaseException:
-                self._retire_control_acknowledgement(
-                    "subscribe", channel, acknowledgement
-                )
-                cleanup = self._register_control_acknowledgement(
-                    "unsubscribe", channel
-                )
-                cleanup_failed = False
-                cleanup_confirmed = False
-                try:
-                    await asyncio.wait_for(
-                        pubsub.unsubscribe(channel),
-                        timeout=LIVE_SUBSCRIBE_TIMEOUT_SECONDS,
-                    )
-                    await asyncio.wait_for(
-                        asyncio.shield(cleanup.future),
-                        timeout=LIVE_SUBSCRIBE_TIMEOUT_SECONDS,
-                    )
-                    cleanup_confirmed = True
-                except Exception:
-                    cleanup_failed = True
-                finally:
+                async with self._command_lock:
+                    if (
+                        self._pubsub is pubsub
+                        and self._transport_generation == transport_generation
+                    ):
+                        cleanup_current = True
+                        cleanup = self._register_control_acknowledgement(
+                            "unsubscribe", channel
+                        )
+                        await asyncio.wait_for(
+                            pubsub.unsubscribe(channel),
+                            timeout=LIVE_SUBSCRIBE_TIMEOUT_SECONDS,
+                        )
+                        await asyncio.wait_for(
+                            asyncio.shield(cleanup.future),
+                            timeout=LIVE_SUBSCRIBE_TIMEOUT_SECONDS,
+                        )
+                        cleanup_confirmed = True
+            except Exception:
+                cleanup_failed = cleanup_current
+            finally:
+                if cleanup is not None:
                     self._retire_control_acknowledgement(
                         "unsubscribe", channel, cleanup
                     )
-                    if cleanup_confirmed:
-                        self._discard_retired_acknowledgements(
-                            "subscribe", channel
-                        )
+                if cleanup_confirmed:
+                    self._discard_retired_acknowledgements(
+                        "subscribe", channel
+                    )
+                if cleanup_current:
                     self._channels.discard(channel)
-                if cleanup_failed:
-                    await self._fail_transport()
-                raise
-            self._channels.add(channel)
+            if cleanup_failed:
+                async with self._command_lock:
+                    if (
+                        self._pubsub is pubsub
+                        and self._transport_generation == transport_generation
+                    ):
+                        await self._fail_transport()
+            raise
 
     async def unsubscribe(self, channel: str) -> None:
         async with self._command_lock:
@@ -223,6 +248,8 @@ class RedisLiveFanoutSource:
                     continue
                 if message_type != "message":
                     continue
+                if channel and channel in self._invalidation_tasks:
+                    continue
                 try:
                     publication = self._parse_publication(
                         channel=channel,
@@ -233,7 +260,10 @@ class RedisLiveFanoutSource:
                         continue
                     if not channel or channel not in self._channels:
                         raise RuntimeError("live_publication_channel_unattributable")
-                    await self._invalidate_channel(channel)
+                    invalidation = asyncio.create_task(
+                        self._invalidate_channel(channel)
+                    )
+                    self._invalidation_tasks[channel] = invalidation
                     continue
                 if self._on_publication is None:
                     raise RuntimeError("live_source_listener_missing")
@@ -244,49 +274,38 @@ class RedisLiveFanoutSource:
             await self._fail_transport()
 
     async def _invalidate_channel(self, channel: str) -> None:
-        async with self._command_lock:
-            if channel not in self._channels:
-                return
-            self._channels.discard(channel)
-            if self._on_channel_failure is None:
-                raise RuntimeError("live_source_channel_listener_missing")
-            await self._on_channel_failure(channel, "live_publication_invalid")
-            acknowledgement = self._register_control_acknowledgement(
-                "unsubscribe", channel
-            )
-            try:
+        current = asyncio.current_task()
+        acknowledgement: _ControlAcknowledgement | None = None
+        try:
+            async with self._command_lock:
+                if channel not in self._channels:
+                    return
+                self._channels.discard(channel)
+                if self._on_channel_failure is None:
+                    raise RuntimeError("live_source_channel_listener_missing")
+                await self._on_channel_failure(
+                    channel, "live_publication_invalid"
+                )
+                acknowledgement = self._register_control_acknowledgement(
+                    "unsubscribe", channel
+                )
                 await asyncio.wait_for(
                     self._require_pubsub().unsubscribe(channel),
                     timeout=LIVE_SUBSCRIBE_TIMEOUT_SECONDS,
                 )
-            except Exception:
-                self._retire_control_acknowledgement(
-                    "unsubscribe", channel, acknowledgement
-                )
-                await self._fail_transport()
-                return
-            invalidation = asyncio.create_task(
-                self._await_invalidation_ack(channel, acknowledgement)
-            )
-            self._invalidation_tasks[channel] = invalidation
-
-    async def _await_invalidation_ack(
-        self,
-        channel: str,
-        acknowledgement: _ControlAcknowledgement,
-    ) -> None:
-        current = asyncio.current_task()
-        try:
             await asyncio.wait_for(
                 asyncio.shield(acknowledgement.future),
                 timeout=LIVE_SUBSCRIBE_TIMEOUT_SECONDS,
             )
+        except asyncio.CancelledError:
+            raise
         except Exception:
             await self._fail_transport()
         finally:
-            self._retire_control_acknowledgement(
-                "unsubscribe", channel, acknowledgement
-            )
+            if acknowledgement is not None:
+                self._retire_control_acknowledgement(
+                    "unsubscribe", channel, acknowledgement
+                )
             if self._invalidation_tasks.get(channel) is current:
                 self._invalidation_tasks.pop(channel, None)
 
