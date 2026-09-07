@@ -306,9 +306,11 @@ export const ChatInput = memo(function ChatInput({
     };
   }, [scheduleTextareaResize, setInput]);
 
+  const hasUploadingAttachment = attachments.some((a) => a.isUploading);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canSend) return;
+    if (!canSend || hasUploadingAttachment) return;
     if (!disableSlashCommands && handleComposerCommandSubmit(input)) return;
     if (input.trim() && !isLoading && !disabled) {
       const trimmed = input.trim();
@@ -446,7 +448,6 @@ export const ChatInput = memo(function ChatInput({
   };
 
   const hasContent = !!input.trim() && !disabled;
-  const hasUploadingAttachment = attachments.some((a) => a.isUploading);
   const skillsAvailable =
     enableSkills && !!onSelectSkill;
   const toolsAvailable = !!onToggleTool && !!onToggleCategory && !!onToggleAll;

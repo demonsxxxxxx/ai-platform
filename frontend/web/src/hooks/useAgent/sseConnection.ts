@@ -11,10 +11,12 @@ import {
 } from "../../services/api/tokenManager";
 import { getRefreshToken } from "../../services/api/token";
 import {
-  handlePublicRunStreamFrameV4,
+  handlePublicRunStreamFrameV4Result,
+  setMessageSnapshot,
   type EventHandlerContext,
 } from "./eventHandlers";
 import {
+  adaptPublicRunStreamEventV4,
   comparePublicRunStreamCursors,
   type V4AdapterBinding,
   type V4PublicEvent,
@@ -429,7 +431,7 @@ export async function recoverReplayGap(
       };
     }
     ctx.publicStreamPresentation?.invalidate();
-    ctx.setMessages((messages) =>
+    setMessageSnapshot(ctx, (messages) =>
       messages.map((message) =>
         message.id === messageId ? { ...message, isStreaming: false } : message,
       ),
@@ -655,9 +657,22 @@ export async function connectToSSE(
   const isCurrentStream = () =>
     abortControllerRef.current === streamAbortController &&
     isCurrentSSETarget(ctx, targetSessionId, targetRunId, streamVersion);
+  const releasePendingConnection = () => {
+    if (abortControllerRef.current !== streamAbortController) return;
+    abortControllerRef.current = null;
+    isConnectingRef.current = false;
+    ctx.publicStreamPresentation?.invalidate();
+  };
 
-  const token = await getCurrentAccessToken();
+  let token: string | null;
+  try {
+    token = await getCurrentAccessToken();
+  } catch (error) {
+    releasePendingConnection();
+    throw error;
+  }
   if (!isCurrentStream()) {
+    releasePendingConnection();
     return;
   }
   const headers: Record<string, string> = {};
@@ -715,7 +730,7 @@ export async function connectToSSE(
       streamVersion,
     });
     ctx.publicStreamPresentation?.invalidate();
-    ctx.setMessages((prev) =>
+    setMessageSnapshot(ctx, (prev) =>
       prev.map((m) =>
         m.id === messageId
           ? {
@@ -807,20 +822,6 @@ export async function connectToSSE(
             receivedNonTerminalApplicationError = true;
             throw new Error("sse_event_id_missing");
           }
-          const candidateIncarnation =
-            typeof parsed === "object" &&
-            parsed !== null &&
-            !Array.isArray(parsed) &&
-            Number.isSafeInteger(
-              (parsed as { stream_incarnation?: unknown }).stream_incarnation,
-            )
-              ? (parsed as { stream_incarnation: number }).stream_incarnation
-              : null;
-          if (candidateIncarnation === null || candidateIncarnation < 1) {
-            receivedNonTerminalApplicationError = true;
-            throw new Error("sse_event_contract_invalid");
-          }
-          acceptedStreamIncarnation ??= candidateIncarnation;
           const frame: V4SseFrame = {
             eventHeader: event.event || "",
             transportCursor: eventId,
@@ -829,35 +830,44 @@ export async function connectToSSE(
             generation: streamVersion,
             value: parsed,
           };
+          // Validate the complete public envelope before deriving terminal
+          // metadata or binding the first stream incarnation. A malformed
+          // frame must not poison the incarnation used by reconnects.
+          const adaptedEvent = adaptPublicRunStreamEventV4(frame, {
+            runId: targetRunId,
+            streamIncarnation: acceptedStreamIncarnation,
+            generation: streamVersion,
+          });
+          if (!adaptedEvent) {
+            receivedNonTerminalApplicationError = true;
+            throw new Error("sse_event_contract_invalid");
+          }
+          const frameIncarnation = adaptedEvent.streamIncarnation;
+          const eventType = adaptedEvent.eventType;
+          // A replay gap belongs to the accepted/requested cursor incarnation,
+          // while its control frame advertises the current replacement stream.
+          const bindingIncarnation =
+            eventType === "stream.gap" && acceptedStreamIncarnation !== null
+              ? acceptedStreamIncarnation
+              : frameIncarnation;
           const binding = {
             sessionId: targetSessionId,
             runId: targetRunId,
             streamVersion,
-            streamIncarnation: acceptedStreamIncarnation,
+            streamIncarnation: bindingIncarnation,
             generation: streamVersion,
           };
           const adapterBinding: V4AdapterBinding = {
             runId: targetRunId,
-            streamIncarnation: acceptedStreamIncarnation,
+            streamIncarnation: bindingIncarnation,
             generation: streamVersion,
           };
-          const eventType =
-            typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-              ? (parsed as { event_type?: unknown }).event_type
-              : null;
-          const semanticEventId =
-            typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-              ? (parsed as { event_id?: unknown }).event_id
-              : null;
-          const payload =
-            typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) &&
-            typeof (parsed as { payload?: unknown }).payload === "object" &&
-            (parsed as { payload?: unknown }).payload !== null &&
-            !Array.isArray((parsed as { payload?: unknown }).payload)
-              ? ((parsed as { payload: Record<string, unknown> }).payload)
-              : null;
+          const semanticEventId = adaptedEvent.eventId;
+          const payload = (
+            adaptedEvent.event as unknown as { payload: Record<string, unknown> }
+          ).payload;
           const terminalEventId =
-            typeof payload?.terminal_event_id === "string"
+            typeof payload.terminal_event_id === "string"
               ? payload.terminal_event_id
               : null;
           const isRunTerminalEvent =
@@ -921,7 +931,7 @@ export async function connectToSSE(
                 sessionId: targetSessionId,
                 runId: targetRunId,
                 eventId,
-                streamIncarnation: acceptedStreamIncarnation!,
+                streamIncarnation: frameIncarnation,
               };
             }
             if (semanticApplied && provesRunProgress) {
@@ -934,12 +944,12 @@ export async function connectToSSE(
             const pending = pendingTerminalHydration;
             for (const commit of pending.duplicateTerminalCommits) commit();
             for (const commit of pending.pendingEndCommits) commit();
-            if (ctx.v4TerminalFenceRef) ctx.v4TerminalFenceRef.current = null;
-            ctx.v4TerminalEventIdsRef?.current.clear();
+            // Keep the terminal receipt/fence until the run/session owner is
+            // replaced. Late duplicate terminal/end frames remain transport-only.
             pendingTerminalHydration = null;
             pending.resolve();
           };
-          const accepted = handlePublicRunStreamFrameV4({
+          const handlingResult = handlePublicRunStreamFrameV4Result({
             frame,
             adapterBinding,
             messageId,
@@ -958,6 +968,14 @@ export async function connectToSSE(
               pending.resolve();
             },
           });
+          const accepted =
+            handlingResult.kind === "applied" ||
+            handlingResult.kind === "deferred";
+          if (accepted || transportCommitted) {
+            // Only an adapter-valid, owner-validated frame can establish the
+            // first incarnation. Raw JSON never changes this reconnect fence.
+            acceptedStreamIncarnation ??= frameIncarnation;
+          }
           if (!accepted) {
             const matchesPendingTerminal = Boolean(
               pendingBeforeFrame &&
@@ -965,6 +983,7 @@ export async function connectToSSE(
                 semanticEventId === pendingBeforeFrame.semanticEventId,
             );
             if (isRunTerminalEvent && matchesPendingTerminal) {
+              acceptedStreamIncarnation ??= frameIncarnation;
               pendingBeforeFrame!.duplicateTerminalCommits.push(() =>
                 commitTransportCursor(false),
               );
@@ -975,6 +994,7 @@ export async function connectToSSE(
               pendingBeforeFrame &&
               terminalEventId === pendingBeforeFrame.terminalEventId
             ) {
+              acceptedStreamIncarnation ??= frameIncarnation;
               pendingBeforeFrame.pendingEndCommits.push(() =>
                 commitTransportCursor(false),
               );

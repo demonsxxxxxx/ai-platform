@@ -96,6 +96,71 @@ async def create_file_upload_session(
     )
 
 
+async def activate_file_upload_session(
+    conn: AsyncConnection,
+    *,
+    upload_session_id: str,
+    expected_upload_id: str,
+    upload_id: str,
+) -> bool:
+    cursor = await conn.execute(
+        """
+        update file_upload_sessions
+        set upload_id = %s
+        where id = %s and state = 'pending' and upload_id = %s
+        returning id
+        """,
+        (upload_id, upload_session_id, expected_upload_id),
+    )
+    return await cursor.fetchone() is not None
+
+
+async def claim_direct_file_upload_session(
+    conn: AsyncConnection,
+    *,
+    upload_session_id: str,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str | None,
+    file_id: str,
+    original_name: str,
+    content_type: str,
+    expected_size_bytes: int,
+    storage_key: str,
+    upload_id: str,
+) -> bool:
+    cursor = await conn.execute(
+        """
+        insert into file_upload_sessions(
+            id, tenant_id, workspace_id, user_id, session_id, file_id,
+            original_name, content_type, expected_size_bytes, part_size_bytes,
+            part_count, storage_key, upload_id, expires_at
+        ) values (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s,
+            now() + interval '3 hours'
+        )
+        on conflict do nothing
+        returning id
+        """,
+        (
+            upload_session_id,
+            tenant_id,
+            workspace_id,
+            user_id,
+            session_id,
+            file_id,
+            original_name,
+            content_type,
+            expected_size_bytes,
+            expected_size_bytes,
+            storage_key,
+            upload_id,
+        ),
+    )
+    return await cursor.fetchone() is not None
+
+
 async def get_authorized_file_upload_session(
     conn: AsyncConnection,
     *,
@@ -119,23 +184,6 @@ async def get_authorized_file_upload_session(
     return dict(row) if row is not None else None
 
 
-async def claim_file_upload_session(
-    conn: AsyncConnection,
-    *,
-    upload_session_id: str,
-) -> bool:
-    cursor = await conn.execute(
-        """
-        update file_upload_sessions
-        set state = 'completing'
-        where id = %s and state = 'pending'
-        returning id
-        """,
-        (upload_session_id,),
-    )
-    return await cursor.fetchone() is not None
-
-
 async def complete_file_upload_session(
     conn: AsyncConnection,
     *,
@@ -145,7 +193,7 @@ async def complete_file_upload_session(
         """
         update file_upload_sessions
         set state = 'completed', completed_at = now()
-        where id = %s and state = 'completing'
+        where id = %s and state in ('pending', 'completing')
         """,
         (upload_session_id,),
     )
@@ -162,7 +210,8 @@ async def expire_file_upload_sessions(
         set state = 'expired'
         where id in (
             select id from file_upload_sessions
-            where state in ('pending', 'completing') and expires_at <= now()
+            where state in ('pending', 'completing', 'expired')
+              and expires_at <= now()
             order by expires_at asc
             limit %s
             for update skip locked
@@ -178,14 +227,17 @@ async def retry_expired_file_upload_session(
     conn: AsyncConnection,
     *,
     upload_session_id: str,
+    delay_seconds: int = 60,
 ) -> None:
+    if not 1 <= delay_seconds <= 86_400:
+        raise ValueError("upload cleanup retry delay out of range")
     await conn.execute(
         """
         update file_upload_sessions
-        set state = 'pending'
+        set state = 'expired', expires_at = now() + (%s * interval '1 second')
         where id = %s and state = 'expired'
         """,
-        (upload_session_id,),
+        (delay_seconds, upload_session_id),
     )
 
 

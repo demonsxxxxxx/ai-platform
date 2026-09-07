@@ -1322,6 +1322,9 @@ async def test_retention_queries_are_bounded_reference_safe_and_skip_locked():
     assert lock_params == (20,)
     assert "insert into object_deletion_outbox" in write_sql
     assert "snapshots.included_artifact_ids ? artifacts.id" in write_sql
+    assert "'retention_artifact_cleanup', true" in write_sql
+    assert "'deletion_owner_run_id', artifacts.run_id" in write_sql
+    assert "run_id = null" in write_sql
     assert json.loads(write_params[0]) == ["artifact-a"]
 
     await repositories.purge_deleted_memory_records(conn, grace_days=7, limit=25)

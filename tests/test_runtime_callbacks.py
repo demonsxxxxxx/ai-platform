@@ -106,18 +106,10 @@ def patch_active_attempt(
             lease["id"] = lease_id
         return [lease]
 
-    async def ignore_terminal_signal(**_kwargs):
-        return None
-
     monkeypatch.setattr(
         runtime_callbacks.repositories,
         "list_current_sandbox_runtime_leases_for_attempt",
         list_current_leases,
-    )
-    monkeypatch.setattr(
-        runtime_callbacks,
-        "publish_executor_terminal_signal",
-        ignore_terminal_signal,
     )
 
 
@@ -597,17 +589,7 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
         "record_sandbox_executor_terminal",
         fake_record_terminal,
     )
-    signaled = []
-
-    async def record_signal(**kwargs):
-        signaled.append(kwargs)
-
     patch_active_attempt(monkeypatch, runtime_callbacks, lease_id="lease-a")
-    monkeypatch.setattr(
-        runtime_callbacks,
-        "publish_executor_terminal_signal",
-        record_signal,
-    )
     client = TestClient(create_app())
 
     response = client.post(
@@ -627,10 +609,9 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
     assert len(terminal_calls) == 1
     assert terminal_calls[0][1]["lease_id"] == "lease-a"
     assert terminal_calls[0][1]["terminal_result"]["status"] == "completed"
-    assert signaled == [{}]
 
 
-def test_failed_executor_callback_persists_receipt_and_signals_reconciliation(monkeypatch):
+def test_failed_executor_callback_persists_receipt_for_reconciliation(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     calls = []
 
@@ -677,12 +658,6 @@ def test_failed_executor_callback_persists_receipt_and_signals_reconciliation(mo
     async def unexpected_release(*_args, **_kwargs):
         pytest.fail("failed callback must defer lease release to reconciliation")
 
-    async def fake_publish_pending(*_args, **_kwargs):
-        pytest.fail("failed callback must not publish a terminal row directly")
-
-    async def fake_signal(**kwargs):
-        calls.append("terminal_signal")
-
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
@@ -704,8 +679,6 @@ def test_failed_executor_callback_persists_receipt_and_signals_reconciliation(mo
         "release_sandbox_lease",
         unexpected_release,
     )
-    monkeypatch.setattr(runtime_callbacks, "publish_pending_v4_events", fake_publish_pending)
-    monkeypatch.setattr(runtime_callbacks, "publish_executor_terminal_signal", fake_signal)
 
     client = TestClient(create_app())
     response = client.post(
@@ -724,7 +697,6 @@ def test_failed_executor_callback_persists_receipt_and_signals_reconciliation(mo
     assert ("executor_terminal", "failed") in calls
     assert ("list_lease", "attempt-a") in calls
     assert "transaction_exit" in calls
-    assert calls.index("transaction_exit") < calls.index("terminal_signal")
 
 
 def test_executor_callback_does_not_stop_runtime_container_from_callback(monkeypatch):

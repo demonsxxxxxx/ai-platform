@@ -172,6 +172,7 @@ async def test_worker_materializes_64_history_candidates_plus_current_message():
         return {
             "id": "ctx-current",
             "included_message_ids": selected_message_ids,
+            "included_file_ids": ["file-current"],
         }
 
     async def message_loader(_conn, **kwargs):
@@ -195,9 +196,54 @@ async def test_worker_materializes_64_history_candidates_plus_current_message():
 
     assert loader_calls[0]["limit"] == 65
     assert result is not None
+    assert result["file_ids"] == ["file-current"]
     assert result["conversation_context"]["selected_message_count"] == 64
     assert result["conversation_context"]["selected_turn_count"] == 32
     assert all(
         message["run_id"] == "run-prior"
         for message in result["conversation_context"]["messages"]
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("included_message_ids", "included_file_ids"),
+    [
+        (None, []),
+        ("msg-a", []),
+        ([123], []),
+        (["../msg"], []),
+        (["msg-a", "msg-a"], []),
+        ([], None),
+        ([], "file-a"),
+        ([], ["../file"]),
+        ([], ["file-a", "file-a"]),
+    ],
+)
+async def test_worker_context_snapshot_rejects_invalid_members(
+    included_message_ids,
+    included_file_ids,
+):
+    async def snapshot_loader(_conn, **_kwargs):
+        return {
+            "id": "ctx-current",
+            "included_message_ids": included_message_ids,
+            "included_file_ids": included_file_ids,
+        }
+
+    result = await materialize_worker_context_snapshot(
+        object(),
+        identity={
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-current",
+        },
+        context_snapshot_id="ctx-current",
+        snapshot_loader=snapshot_loader,
+        message_loader=lambda *_args, **_kwargs: None,
+        context_projector=lambda row: {"context_snapshot_id": row["id"]},
+    )
+
+    assert result is None

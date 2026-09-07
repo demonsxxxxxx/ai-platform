@@ -246,7 +246,23 @@ Reached invariants: authenticated tenant/workspace/user/session authorization,
 immutable file identity, SHA-256 verification, safe names and paths, archive
 resource controls, atomic staging, public error redaction, and Sandbox CPU,
 memory, disk, process, and timeout controls remain fail-closed. Multipart parts
-are transport fragments only and are never exposed as separate files.
+are transport fragments only and are never exposed as separate files. The
+single-request compatibility route reserves a claim-unique object generation in
+`file_upload_sessions` before storage mutation; concurrent retries observe that
+durable owner and cannot delete or overwrite its object, while a later owner
+cannot be affected by a retained cleanup from an expired generation. A deleted
+file tombstone derives a fresh deterministic file and reservation generation,
+so retry identity remains stable without making the deleted identity usable
+again. Multipart initiation likewise persists an `initializing_*` reservation
+ObjectStorage to create upload state, then compare-and-sets the returned upload
+ID. Unknown initialization is reclaimed by repeatedly listing and aborting only
+that reservation's claim-unique key; its expired tombstone remains outside quota
+accounting because a retained or disconnected create can surface after any one
+empty listing. Successful empty scans defer that tombstone for one day; actual
+cleanup failures retry after one minute so unknown starts cannot starve ordinary
+session cleanup. Known multipart cleanup converges both the upload handle and
+its exact final object key, covering completion that reached ObjectStorage but
+not PostgreSQL.
 
 Acceptance: the complete nine-file `3.2.S.3.1-IP266` corpus (approximately
 164.18 MiB, with one approximately 63.49 MiB file) can upload and pass Run
@@ -283,6 +299,7 @@ content-derived admission limits with byte- and structure-derived limits.
 | Declared XLSX archive | 2,000 entries | archive safety validator | zip-bomb and archive-work bound |
 | Declared XLSX compressed entry | 8 MiB | archive safety validator | bounded decompression |
 | Declared XLSX expanded package | 32 MiB | archive safety validator | zip-bomb and memory bound |
+| Required DOCX expanded package | 64 MiB total / 32 MiB per entry / 2,000 entries | artifact collector | zip-bomb and shared-Worker bound |
 | Artifact output file | 64 MiB per file | artifact collector | bounded result transfer |
 | Artifact output set | 256 MiB total / 128 files | artifact collector | bounded result storage |
 

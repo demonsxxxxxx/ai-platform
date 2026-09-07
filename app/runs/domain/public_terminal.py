@@ -35,6 +35,7 @@ PUBLIC_TERMINAL_DETAIL_MESSAGES = {
     "context_file_staging_unavailable": "文件暂存失败。请稍后重试；如问题持续，请联系管理员。",
     "context_file_parser_contract_invalid": "文件处理器未能验证输入。请重新上传；如问题持续，请联系管理员。",
     "context_file_preprocessing_failed": "文件预处理失败。请重新导出后上传；如问题持续，请联系管理员。",
+    "current_request_too_large": "当前请求超过 16 KB 执行上限。请缩短或拆分请求后重试。",
     "run_cancelled": "任务已取消。取消前已产生的公开内容仍会保留。",
 }
 
@@ -92,6 +93,7 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "context_file_name_conflict": "context_file_name_conflict",
     "context_file_storage_unavailable": "context_file_storage_unavailable",
     "context_file_preprocessing_failed": "context_file_preprocessing_failed",
+    "current_request_too_large": "current_request_too_large",
     "executor_deadline_exceeded": "run_timeout",
     "executor_cleanup_timeout": "run_timeout",
     "claude_agent_sdk_turn_limit_exceeded": "run_budget_exhausted",

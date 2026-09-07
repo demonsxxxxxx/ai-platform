@@ -460,7 +460,7 @@ export async function connectToSSE(): Promise<void> {
   const commitAcceptedStreamEvent = (semanticApplied: boolean) => {
     commitTransportCursor(semanticApplied);
   };
-  handlePublicRunStreamFrameV4({
+  handlePublicRunStreamFrameV4Result({
     frame,
     onCommitted: commitAcceptedStreamEvent,
   });
@@ -477,7 +477,7 @@ export async function connectToSSE(): Promise<void> {
     )
     calls = cutover._typescript_call_arguments(
         connect,
-        "handlePublicRunStreamFrameV4",
+        "handlePublicRunStreamFrameV4Result",
     )
 
     assert "fake.acceptedStreamCursorRef" not in connect
@@ -493,7 +493,7 @@ export async function connectToSSE(): Promise<void> {
     ctx.acceptedStreamCursorRef.current = accepted;
   };
   const commitAcceptedStreamEvent = (semanticApplied: boolean) => {};
-  handlePublicRunStreamFrameV4({
+  handlePublicRunStreamFrameV4Result({
     frame,
     onCommitted: commitAcceptedStreamEvent,
   });
