@@ -1290,7 +1290,8 @@ async def test_executor_preserves_sdk_error_when_required_bash_completed(
 
     assert result["status"] == "failed"
     assert result["error_code"] == "claude_agent_sdk_upstream_error"
-    assert REQUIRED_CAPABILITY_EVIDENCE_KEY not in result
+    assert result[REQUIRED_CAPABILITY_EVIDENCE_KEY]["tool_call_id"] == "bash-call-1"
+    assert result[REQUIRED_CAPABILITY_EVIDENCE_KEY]["lifecycle_phase"] == "completed"
 
 
 @pytest.mark.asyncio

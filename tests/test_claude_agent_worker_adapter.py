@@ -2044,12 +2044,12 @@ async def test_sandbox_runtime_accepts_only_proven_controlled_skill_use(monkeypa
         (
             ["qa-file-reviewer"],
             "platform_controlled_runner",
-            "failed",
-            "required_tool_completion_evidence_missing",
+            "succeeded",
+            None,
         ),
     ],
 )
-async def test_sandbox_selected_skill_validates_only_reported_invocation(
+async def test_sandbox_selected_skill_does_not_require_invocation_evidence(
     monkeypatch,
     tmp_path,
     used_skills,
@@ -2092,8 +2092,8 @@ async def test_sandbox_selected_skill_validates_only_reported_invocation(
 
     assert result.status == expected_status
     assert result.result.get("error_code") == expected_error
-    assert result.result["used_skills"] == []
-    assert result.executor_payload["used_skills_source"] == "none"
+    assert result.result["used_skills"] == used_skills
+    assert result.executor_payload["used_skills_source"] == used_skills_source
 
 
 @pytest.mark.asyncio
@@ -4221,12 +4221,12 @@ async def test_worker_local_selected_skill_binds_acknowledged_pre_and_post_evide
     ("case", "expected_acknowledged", "expected_phases", "expected_error"),
     [
         ("missing_post", (True,), ("invocation_requested",), "required_tool_completion_evidence_mismatch"),
-        ("wrong_identity", (False,), (), "required_tool_completion_evidence_missing"),
-        ("malformed", (True, False), (), "required_tool_completion_evidence_missing"),
+        ("wrong_identity", (False,), (), None),
+        ("malformed", (True, False), (), None),
         ("failed", (True, True), ("invocation_requested", "failed"), "required_tool_completion_evidence_mismatch"),
     ],
 )
-async def test_worker_local_selected_skill_rejects_incomplete_or_invalid_evidence(
+async def test_worker_local_selected_skill_validates_evidence_without_making_skill_required(
     monkeypatch, tmp_path, case, expected_acknowledged, expected_phases, expected_error
 ):
     selected_pre = _unbound_skill_evidence("qa-file-reviewer", "invocation_requested")

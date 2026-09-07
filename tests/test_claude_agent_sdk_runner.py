@@ -1084,11 +1084,12 @@ async def test_failed_answer_projection_keeps_skill_and_bash_receipts(
         capability_facts.append(dict(fact))
         return True
 
-    subjects = with_sandbox_local_tool_capability_subjects(
-        [], sandbox_provider="opensandbox"
-    )
-    skill_subject = next(subject for subject in subjects if subject["identity"] == "Skill")
-    skill_subject["allowed_skill_names"] = ["qa-review"]
+    subjects = [
+        _skill_subject("qa-review"),
+        *with_sandbox_local_tool_capability_subjects(
+            [], sandbox_provider="opensandbox"
+        ),
+    ]
     monkeypatch.setitem(
         sys.modules,
         "claude_agent_sdk",
