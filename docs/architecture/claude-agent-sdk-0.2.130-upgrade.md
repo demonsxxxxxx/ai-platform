@@ -1,6 +1,14 @@
 # Claude Agent SDK 0.2.130 And Runtime Capacity Profile
 
-## Decision
+Status: historical upgrade and decision-baseline record. Version and capacity
+numbers below describe that upgrade, not the currently deployed profile.
+Current dependency authority is `pyproject.toml` plus `uv.lock`; current resource
+limits come from settings and effective deployment configuration. See
+[packaging](docker-packaging.md) and [system architecture](system-architecture.md).
+Preserve the public-projection failure contract below until its current owning
+Runs/SSE/Chat contracts explicitly replace it. No dependency is changed here.
+
+## Historical decision
 
 Pin `claude-agent-sdk==0.2.130`, set the process worker profile and global
 worker-run admission ceiling to 10, and bound each API or worker process to 10
@@ -40,7 +48,7 @@ types used by this adapter.
 | `ClaudeAgentOptions` | Existing model, system prompt, tools, hooks, session, limits, and stream fields remain available | Constructed only after platform admission and Skill-name validation |
 | `HookMatcher` | `matcher`, `hooks`, and `timeout` remain available | Exact `PostToolUse` evidence remains the only Skill-success authority |
 | Messages | `AssistantMessage`, `TextBlock`, and `StreamEvent` retain the consumed shapes | Partial assistant text is progress only and cannot prove tool or Skill success |
-| Terminal result | `ResultMessage` adds `terminal_reason` while retaining result/error/session/usage fields | Structured `ResultMessage` remains terminal authority; abnormal reasons fail closed |
+| Terminal result | `ResultMessage` adds `terminal_reason` while retaining result/error/session/usage fields | Structured `ResultMessage` is executor completion evidence; Runs owns the durable business terminal outcome; abnormal reasons fail closed |
 | Partial streaming | `include_partial_messages=True` remains supported | Public answer deltas continue through the existing safe projection callback |
 | Settings | `setting_sources` remains supported | Only explicit project settings are loaded after platform-controlled scrubbing |
 | Permissions | `permission_mode`, allowed tools, disallowed tools, and `can_use_tool` remain supported | Platform authorization, admission, sandbox, and context remain authoritative |
