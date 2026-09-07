@@ -37,29 +37,20 @@ the durable Run truth. Redis terminal intent is a projection of an already
 authorized terminal transition; it cannot create, replace, or reinterpret that
 transition.
 
-### 1.1 Decision-baseline gaps
+### 1.1 Source and migration status
 
-This document defines the target and the required migration evidence. It does
-not claim that the decision baseline already implements the boundary. At that
-baseline:
+The original decision-baseline notes are historical observations, not a current
+implementation inventory. Existing RunAttempt transitions, Runs-owned public
+terminal projection, committed v4 publication and terminal-successor recovery
+must be inspected in their owning modules. In particular, do not infer that
+terminal-successor recovery is absent from an earlier lifecycle audit: its
+current contract is [SSE execution control](redis-streams-sse-execution-control.md).
 
-- Run terminalization policy, SQL, event/audit writes, and Redis intent calls
-  remain mixed in `app/repositories.py`;
-- `app.streaming.infrastructure.postgres` and `app.platform.postgres.audit` do
-  not yet exist as the canonical transaction-scoped ledger adapters;
-- API/Admin cancellation still coordinates Sandbox provider stop and lease
-  release outside a public Sandbox Runtime application authority;
-- the durable terminal-intent path supports pending state and exact-ID retry,
-  but the terminal reconciler does not yet allocate a successor stream
-  incarnation when continuity is unprovable; and
-- routes/workers have not yet received an explicitly injected
-  `RunLifecycleService`.
-
-These are open behavior-migration blockers under Issue #1027/#1018. Merging the
-document or retiring the inactive bridge closes none of them. No PR may claim
-the Runs lifecycle boundary, Redis convergence, Sandbox cleanup authority, or
-runtime acceptance until the corresponding slices and evidence in section 9
-are terminal.
+The application-boundary migration remains incremental. Route/Worker
+orchestration, Sandbox lifecycle access and legacy repository surfaces must be
+inventoried per exact delivery subject. Target adapter names below describe
+ownership, not completed package placement. Source, tests, image and runtime
+acceptance remain separate. No issue is declared closed by this document.
 
 ## 2. Source ownership
 
@@ -166,9 +157,11 @@ The migration MUST preserve these observable semantics:
    state or leave the Run permanently nonterminal.
 9. **Sandbox cleanup remains Sandbox-owned.** After the Run cancellation fact
    commits, orchestration calls the public Sandbox Runtime release/reconcile
-   application API in a separate Sandbox-owned transaction. That authority
-   locks the scoped lease, fences the attempt/generation, calls provider stop,
-   and records release or cleanup failure. Runs never calls a provider or marks
+   application API through a separate Sandbox-owned operation boundary. That authority
+   owns the scoped lease and operation fence and records stop/release or cleanup
+   failure. The existing stop-under-lock compatibility mechanism must remain
+   until the Sandbox owner activates its separately proven claim/I/O/receipt
+   replacement. Runs never calls a provider or marks
    a Sandbox lease released. A cancelled Run with cleanup pending does not claim
    that the Sandbox was released.
 10. **Rollback is atomic.** Any exception before transaction completion rolls
