@@ -121,9 +121,9 @@ test("admin draft records remain visible in the canonical list", () => {
 
 test("legacy admin rows defer user availability to the authorized runtime projection", () => {
   const [entry] = buildSkillCatalogEntries(
-    [runtimeSkill("baoyu-translate")],
+    [runtimeSkill("legacy-skill")],
     [
-      adminSkill("baoyu-translate", "baoyu-translate", {
+      adminSkill("retired-skill", "retired-skill", {
         latestVersionStatus: "active",
         currentVersion: null,
         rolloutPercent: null,

@@ -253,7 +253,7 @@ def test_admin_skill_detail_returns_skill_versions_and_snapshots(monkeypatch):
 
     async def fake_list_skill_ids(conn):
         assert isinstance(conn, OpaqueConnection)
-        return ["baoyu-translate", "minimax-docx", "qa-file-reviewer"]
+        return ["minimax-docx", "qa-file-reviewer"]
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
@@ -371,17 +371,17 @@ def test_dependency_policy_allows_persisted_ctd_stability_reference_dependency()
 
 
 def test_dependency_policy_reports_persisted_public_dependency_without_allowing_it():
-    available = {"baoyu-translate", "minimax-docx", "qa-file-reviewer"}
+    available = {"ragflow-knowledge-search", "minimax-docx", "qa-file-reviewer"}
     policy = skill_dependency_policy(
         "qa-file-reviewer",
         available,
-        ["baoyu-translate"],
+        ["ragflow-knowledge-search"],
     )
 
-    assert policy["dependency_ids"] == ["baoyu-translate"]
+    assert policy["dependency_ids"] == ["ragflow-knowledge-search"]
     assert policy["dependency_details"] == [
         {
-            "skill_id": "baoyu-translate",
+            "skill_id": "ragflow-knowledge-search",
             "status": "blocked",
             "reason": "skill_dependency_not_internal",
             "public": True,
@@ -389,8 +389,8 @@ def test_dependency_policy_reports_persisted_public_dependency_without_allowing_
             "available": True,
         }
     ]
-    with pytest.raises(SkillDependencyPolicyError, match="skill_dependency_not_internal: baoyu-translate"):
-        validate_skill_dependency_ids("qa-file-reviewer", ["baoyu-translate"], available)
+    with pytest.raises(SkillDependencyPolicyError, match="skill_dependency_not_internal: ragflow-knowledge-search"):
+        validate_skill_dependency_ids("qa-file-reviewer", ["ragflow-knowledge-search"], available)
 
 
 def test_admin_skill_detail_does_not_infer_dependency_without_persisted_version(monkeypatch):
@@ -572,20 +572,14 @@ def test_admin_sync_builtin_skills_preserves_existing_immutable_dependency_manif
     skills_root = tmp_path / "skills"
     qa_dir = skills_root / "qa-file-reviewer"
     minimax_dir = skills_root / "minimax-docx"
-    translate_dir = skills_root / "baoyu-translate"
     qa_dir.mkdir(parents=True)
     minimax_dir.mkdir(parents=True)
-    translate_dir.mkdir(parents=True)
     (qa_dir / "SKILL.md").write_text(
         "---\nname: qa-file-reviewer\ndescription: QA review\n---\n\n# qa-file-reviewer\n",
         encoding="utf-8",
     )
     (minimax_dir / "SKILL.md").write_text(
         "---\nname: minimax-docx\ndescription: Word document generation\n---\n\n# minimax-docx\n",
-        encoding="utf-8",
-    )
-    (translate_dir / "SKILL.md").write_text(
-        "---\nname: baoyu-translate\ndescription: Translate documents\n---\n\n# baoyu-translate\n",
         encoding="utf-8",
     )
 

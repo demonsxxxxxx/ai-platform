@@ -613,9 +613,20 @@ def test_lambchat_sessions_project_public_agent_ids(monkeypatch):
             },
             {
                 "id": "ses_translate",
-                "agent_id": "baoyu-translate",
+                "agent_id": "translate",
                 "workspace_id": "default",
-                "title": "翻译",
+                "title": "旧翻译",
+                "status": "active",
+                "created_at": None,
+                "updated_at": None,
+            },
+            {
+                "id": "ses_custom_translate",
+                "agent_id": "custom-translate",
+                "agent_default_skill_id": "baoyu-translate",
+                "agent_profile_skill_id": "baoyu-translate",
+                "workspace_id": "default",
+                "title": "旧自定义翻译",
                 "status": "active",
                 "created_at": None,
                 "updated_at": None,
@@ -636,10 +647,15 @@ def test_lambchat_sessions_project_public_agent_ids(monkeypatch):
     sessions = response.json()["sessions"]
     assert sessions[0]["agent_id"] == "document-review"
     assert sessions[0]["metadata"]["agent_id"] == "document-review"
-    assert sessions[1]["agent_id"] == "document-translation"
-    assert sessions[1]["metadata"]["agent_id"] == "document-translation"
+    assert sessions[1]["agent_id"] == "retired-agent"
+    assert sessions[1]["metadata"]["agent_id"] == "retired-agent"
+    assert sessions[1]["name"] == "已停用 Agent 会话"
+    assert sessions[2]["agent_id"] == "retired-agent"
+    assert sessions[2]["metadata"]["agent_id"] == "retired-agent"
+    assert sessions[2]["name"] == "已停用 Agent 会话"
     assert "qa-word-review" not in str(response.json())
     assert "baoyu-translate" not in str(response.json())
+    assert "旧自定义翻译" not in str(response.json())
 
 
 def test_lambchat_session_detail_projects_public_agent_id(monkeypatch):
@@ -674,6 +690,40 @@ def test_lambchat_session_detail_projects_public_agent_id(monkeypatch):
     assert "qa-word-review" not in str(payload)
 
 
+def test_lambchat_session_detail_redacts_custom_retired_agent(monkeypatch):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
+        return {
+            "id": session_id,
+            "agent_id": "custom-translate",
+            "agent_default_skill_id": "baoyu-translate",
+            "workspace_id": "default",
+            "title": "旧自定义翻译",
+            "status": "active",
+            "created_at": None,
+            "updated_at": None,
+        }
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/sessions/ses_custom_translate", headers=auth_headers())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["agent_id"] == "retired-agent"
+    assert payload["metadata"]["agent_id"] == "retired-agent"
+    assert payload["name"] == "已停用 Agent 会话"
+    assert "baoyu-translate" not in str(payload)
+    assert "旧自定义翻译" not in str(payload)
+
+
 async def test_lambchat_agent_repository_exposes_only_canonical_agents():
     from app.repositories import list_lambchat_agents
 
@@ -695,7 +745,7 @@ async def test_lambchat_agent_repository_exposes_only_canonical_agents():
 
     assert rows == []
     sql, params = conn.executed[-1]
-    assert "agents.id in ('general-agent', 'baoyu-translate', 'qa-word-review')" in sql
+    assert "agents.id in ('general-agent', 'qa-word-review')" in sql
     assert "sop-assistant" not in sql
     assert "agents.status = 'active'" in sql
     assert "skills.status = 'active'" in sql
@@ -2365,7 +2415,7 @@ def test_lambchat_session_runs_redacts_raw_skill_agent_id_for_ordinary_user(
 
     assert response.status_code == 200
     run = response.json()["runs"][0]
-    assert run["capability_id"] == "document_translation"
+    assert run["capability_id"] is None
     assert "skill_id" not in run
     assert "baoyu-translate" not in str(run)
 

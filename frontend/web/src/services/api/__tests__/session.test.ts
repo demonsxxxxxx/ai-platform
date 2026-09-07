@@ -527,16 +527,16 @@ test("uses the routed agent for same-tab session continuation", () => {
       trace_id: "trace-translation",
       status: "queued",
       intent_decision: {
-        agent_id: "baoyu-translate",
+        agent_id: "qa-file-reviewer",
       },
     },
     "general-agent",
   );
 
-  assert.equal(routedAgentId, "baoyu-translate");
+  assert.equal(routedAgentId, "qa-file-reviewer");
   assert.equal(
     buildSubmitChatUrl(routedAgentId),
-    "/api/chat/stream?agent_id=baoyu-translate",
+    "/api/chat/stream?agent_id=qa-file-reviewer",
   );
 });
 
@@ -549,9 +549,9 @@ test("keeps the current agent when the response has no authoritative routed agen
         trace_id: "trace-a",
         status: "queued",
       },
-      "baoyu-translate",
+      "general-agent",
     ),
-    "baoyu-translate",
+    "general-agent",
   );
 });
 

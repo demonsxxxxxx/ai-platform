@@ -445,8 +445,8 @@ def payload(**overrides):
         "session_id": "ses_1",
         "run_id": "run_1",
         "attempt_id": "qat-test-attempt",
-        "agent_id": "translate",
-        "skill_id": "baoyu-translate",
+        "agent_id": "qa-word-review",
+        "skill_id": "qa-file-reviewer",
         "file_ids": ["file_1"],
         "input": {},
     }
@@ -1041,7 +1041,7 @@ def test_collect_workspace_artifacts_enforces_delivery_limits_before_storage(
         ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(payload(), workspace)
 
 
-@pytest.mark.parametrize("skill_id", ["qa-file-reviewer", "baoyu-translate"])
+@pytest.mark.parametrize("skill_id", ["qa-file-reviewer"])
 def test_collect_workspace_artifacts_validates_required_docx(monkeypatch, tmp_path, skill_id):
     workspace = tmp_path / "workspace"
     output = workspace / "output"
@@ -1070,7 +1070,7 @@ def test_collect_workspace_artifacts_validates_required_docx(monkeypatch, tmp_pa
     assert stored[0][1] == content
 
 
-@pytest.mark.parametrize("skill_id", ["qa-file-reviewer", "baoyu-translate"])
+@pytest.mark.parametrize("skill_id", ["qa-file-reviewer"])
 def test_collect_workspace_artifacts_rejects_fake_required_docx_before_upload(
     monkeypatch,
     tmp_path,
@@ -1183,7 +1183,7 @@ def test_collect_workspace_artifacts_rejects_malformed_required_docx_package(
     ) == []
 
 
-@pytest.mark.parametrize("skill_id", ["qa-file-reviewer", "baoyu-translate"])
+@pytest.mark.parametrize("skill_id", ["qa-file-reviewer"])
 def test_collect_workspace_artifacts_rejects_expanding_docx_before_parse_or_upload(
     monkeypatch,
     tmp_path,
@@ -1587,7 +1587,7 @@ async def test_harness_chat_cannot_enter_multi_agent_skill_resume_path(
 def test_qa_file_reviewer_does_not_infer_dependency_from_skill_id():
     selected = _allowed_skill_names(
         types.SimpleNamespace(skill_id="qa-file-reviewer", input={}, skill_manifests=[]),
-        ["qa-file-reviewer", "minimax-docx", "baoyu-translate"],
+        ["qa-file-reviewer", "minimax-docx"],
     )
 
     assert selected == ["qa-file-reviewer"]
@@ -1662,7 +1662,7 @@ async def test_agent_run_records_pinned_manifest_dependency_graph(monkeypatch, t
 def test_general_chat_does_not_stage_all_platform_skills_by_default():
     selected = _allowed_skill_names(
         payload(agent_id="general-agent", skill_id="general-chat", input={"message": "hello"}),
-        ["qa-file-reviewer", "minimax-docx", "baoyu-translate"],
+        ["qa-file-reviewer", "minimax-docx"],
     )
 
     assert selected == []
@@ -1670,7 +1670,6 @@ def test_general_chat_does_not_stage_all_platform_skills_by_default():
 
 def test_file_skill_artifact_contract_is_owned_by_the_selected_capability():
     assert _required_artifact_types(payload(skill_id="qa-file-reviewer")) == ("result_docx",)
-    assert _required_artifact_types(payload(skill_id="baoyu-translate")) == ("result_docx",)
     assert _required_artifact_types(payload(skill_id="general-chat", file_ids=[])) == ()
 
 
@@ -2100,13 +2099,13 @@ async def test_sandbox_selected_skill_validates_only_reported_invocation(
 @pytest.mark.asyncio
 async def test_agent_run_threads_materialized_file_names_in_payload_order(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
-    document_body_marker = "server-must-not-extract-this-document-body"
-    write_skill(tmp_path / "skills", name="baoyu-translate", description="Translate Word documents.")
+    write_skill(tmp_path / "skills", name="qa-file-reviewer", description="Review Word documents.")
     pins = _registry_pins(
         tmp_path / "skills",
-        skill_id="baoyu-translate",
-        input_payload={"message": "translate"},
+        skill_id="qa-file-reviewer",
+        input_payload={"message": "review"},
     )
+    document_body_marker = "private document body"
 
     async def materialize_files(payload, workspace):
         (workspace / "z.docx").write_text(document_body_marker, encoding="utf-8")
@@ -2120,9 +2119,9 @@ async def test_agent_run_threads_materialized_file_names_in_payload_order(monkey
 
     result = await adapter.submit_run(
         sandbox_writing_payload(
-            skill_id="baoyu-translate",
-            agent_id="baoyu-translate",
-            input={"message": "translate"},
+            skill_id="qa-file-reviewer",
+            agent_id="qa-word-review",
+            input={"message": "review"},
             skill_manifests=pins,
         )
     )

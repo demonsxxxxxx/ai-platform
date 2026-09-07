@@ -300,16 +300,16 @@ def test_build_skill_manifest_pins_keeps_ragflow_skill_as_single_zero_dependency
 
 def test_build_skill_manifest_pins_keeps_explicit_peer_skills_independent(tmp_path):
     write_skill(tmp_path, "qa-file-reviewer", "Review Word documents.")
-    write_skill(tmp_path, "baoyu-translate", "Translate documents.")
+    write_skill(tmp_path, "peer-skill", "Peer documents.")
     skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
 
     pins = build_skill_manifest_pins(
         skill_id="qa-file-reviewer",
-        input_payload={"skill_ids": ["baoyu-translate"]},
+        input_payload={"skill_ids": ["peer-skill"]},
         builtin_skills=skills,
     )
 
-    assert [pin["skill_id"] for pin in pins] == ["qa-file-reviewer", "baoyu-translate"]
+    assert [pin["skill_id"] for pin in pins] == ["qa-file-reviewer", "peer-skill"]
     assert [pin["dependency_ids"] for pin in pins] == [[], []]
 
 

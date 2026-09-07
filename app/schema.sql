@@ -3109,7 +3109,6 @@ insert into skills(id, name, version, description, input_modes, output_modes, ex
 values
   ('qa-file-reviewer', 'QA Word Review', '0.1.0', 'Review Word documents and return commented Word artifacts.', '["docx"]'::jsonb, '["result_docx", "result_json"]'::jsonb, 'claude-agent-worker'),
   ('minimax-docx', 'Minimax DOCX', '0.1.0', 'Internal Word document composition dependency used by first-party document Skills.', '["docx"]'::jsonb, '["docx"]'::jsonb, 'claude-agent-worker'),
-  ('baoyu-translate', 'Baoyu Translate', '0.1.0', 'Translate Word documents and return translated Word artifacts.', '["docx"]'::jsonb, '["result_docx"]'::jsonb, 'claude-agent-worker'),
   ('ragflow-knowledge-search', 'RAGFlow Knowledge Search', '0.1.0', 'Query company knowledge base with scoped citations through the platform-managed MCP tool.', '["chat"]'::jsonb, '["answer", "citations"]'::jsonb, 'claude-agent-worker')
 on conflict (id) do update set
   name = excluded.name,
@@ -3124,14 +3123,12 @@ insert into skill_versions(id, skill_id, version, content_hash, description, sou
 values
   ('skv_seed_qa_file_reviewer_0_1_0', 'qa-file-reviewer', '0.1.0', '0.1.0', 'Schema-seeded baseline for QA Word Review.', '{"kind":"schema-seed"}'::jsonb, '["minimax-docx"]'::jsonb, 'active', 'schema'),
   ('skv_seed_minimax_docx_0_1_0', 'minimax-docx', '0.1.0', '0.1.0', 'Schema-seeded baseline for internal DOCX composition dependency.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema'),
-  ('skv_seed_baoyu_translate_0_1_0', 'baoyu-translate', '0.1.0', '0.1.0', 'Schema-seeded baseline for Baoyu Translate.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema'),
   ('skv_seed_ragflow_knowledge_search_0_1_0', 'ragflow-knowledge-search', '0.1.0', '0.1.0', 'Schema-seeded baseline for RAGFlow Knowledge Search.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema')
 on conflict (skill_id, version) do nothing;
 
 insert into tenant_workbench_skills(tenant_id, skill_id, status, visible_to_user)
 values
   ('default', 'qa-file-reviewer', 'active', true),
-  ('default', 'baoyu-translate', 'active', true),
   ('default', 'ragflow-knowledge-search', 'active', true)
 on conflict (tenant_id, skill_id) do nothing;
 
@@ -3171,11 +3168,9 @@ on conflict (tenant_id, tool_id) do nothing;
 
 insert into agents(id, tenant_id, name, agent_type, description, default_skill_id, status)
 values
-  ('translate', 'default', '文档翻译', 'file', 'Legacy alias for baoyu-translate. Hidden from LambChat mode selection.', 'baoyu-translate', 'inactive'),
   ('document-review', 'default', '文档审核', 'file', 'Legacy alias for qa-word-review. Hidden from LambChat mode selection.', 'qa-file-reviewer', 'inactive'),
   ('general-agent', 'default', '通用聊天 Agent', 'chat', 'General company chat backed by the governed Harness without a Skill identity.', null, 'active'),
   ('qa-word-review', 'default', '文档审核', 'file', 'Upload Word documents and generate reviewed Word artifacts.', 'qa-file-reviewer', 'active'),
-  ('baoyu-translate', 'default', '文档翻译', 'file', 'Upload Word documents and generate translated Word artifacts.', 'baoyu-translate', 'active'),
   ('sop-assistant', 'default', 'SOP 助手', 'chat', 'Answer SOP questions with RAGFlow citations.', 'ragflow-knowledge-search', 'active')
 on conflict (id) do update set
   tenant_id = excluded.tenant_id,
@@ -3184,3 +3179,34 @@ on conflict (id) do update set
   description = excluded.description,
   default_skill_id = excluded.default_skill_id,
   status = excluded.status;
+
+update agents
+set status = 'inactive'
+where id in ('translate', 'baoyu-translate')
+   or default_skill_id = 'baoyu-translate'
+   or exists (
+     select 1
+     from agent_profiles current_profile
+     join agent_profile_revisions current_revision
+       on current_revision.tenant_id = current_profile.tenant_id
+      and current_revision.agent_id = current_profile.agent_id
+      and current_revision.revision = current_profile.published_revision
+      and current_revision.content_hash = current_profile.published_hash
+      and current_revision.revision_status = 'published'
+     where current_profile.tenant_id = agents.tenant_id
+       and current_profile.agent_id = agents.id
+       and current_profile.lifecycle_status = 'published'
+       and current_revision.skill_set @> '[{"skill_id": "baoyu-translate"}]'::jsonb
+   );
+
+update tenant_workbench_skills
+set status = 'disabled', visible_to_user = false
+where skill_id = 'baoyu-translate';
+
+update tenant_capability_distributions
+set status = 'disabled', visible_to_user = false
+where capability_kind = 'skill' and capability_id = 'baoyu-translate';
+
+update skills
+set status = 'inactive'
+where id = 'baoyu-translate';

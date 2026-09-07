@@ -449,19 +449,13 @@ async def test_successor_activation_schema_advances_to_concurrent_due_index_sche
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.03.2"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.07.1"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.EXPERT_SKILL_NAME_SCHEMA_VERSION
+        == schema_migrations.BAOYU_TRANSLATE_RETIREMENT_SCHEMA_VERSION
     )
-    assert (
-        schema_migrations.FILE_UPLOAD_SESSION_SCHEMA_VERSION
-        == "2026.09.03.1"
-    )
-    assert (
-        schema_migrations.USER_PROFILE_METADATA_SCHEMA_VERSION
-        == "2026.09.02.1"
-    )
+    assert schema_migrations.FILE_UPLOAD_SESSION_SCHEMA_VERSION == "2026.09.03.1"
+    assert schema_migrations.USER_PROFILE_METADATA_SCHEMA_VERSION == "2026.09.02.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -1143,7 +1137,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "6a6deb5b261012b1d5d52b80095b1afaddf61c2749854282451887c6a0847d2c"
+        "3ae831df7e851a85faa3378db0f847a72d86ded1510bcf11abdcab66fea6ad70"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

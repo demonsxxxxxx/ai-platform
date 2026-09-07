@@ -137,18 +137,33 @@ def test_schema_declares_principal_department_auth_snapshot():
 def test_schema_seeds_first_agent_apps():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 
-    assert "qa-file-reviewer" in schema
-    assert "'minimax-docx', 'Minimax DOCX'" in schema
-    assert "baoyu-translate" in schema
-    assert "ragflow-knowledge-search" in schema
+    skill_seed = schema[schema.index("insert into skills"):schema.index("insert into skill_versions")]
+    agent_start = schema.index("insert into agents")
+    agent_seed = schema[agent_start:schema.index("on conflict (id) do update set", agent_start)]
+
+    assert "qa-file-reviewer" in skill_seed
+    assert "'minimax-docx', 'Minimax DOCX'" in skill_seed
+    assert "baoyu-translate" not in skill_seed
+    assert "ragflow-knowledge-search" in skill_seed
     assert "ragflow_search" in schema
     assert "tenant_workbench_skills" in schema
-    assert "'translate', 'default'" in schema
-    assert "'document-review', 'default'" in schema
-    assert "qa-word-review" in schema
-    assert "sop-assistant" in schema
-    assert "Legacy alias for qa-word-review" in schema
-    assert "'qa-word-review', 'default', '文档审核', 'file'" in schema
+    assert "update agents\nset status = 'inactive'\nwhere id in ('translate', 'baoyu-translate')" in schema
+    assert "or default_skill_id = 'baoyu-translate'" in schema
+    assert (
+        "current_revision.skill_set @> '[{\"skill_id\": \"baoyu-translate\"}]'::jsonb"
+        in schema
+    )
+    assert "default_skill_id = null" not in schema[schema.index("update agents"):schema.index("update tenant_workbench_skills")]
+    assert "update skills\nset status = 'inactive'\nwhere id = 'baoyu-translate';" in schema
+    assert "update tenant_capability_distributions" in schema
+    assert "where capability_kind = 'skill' and capability_id = 'baoyu-translate';" in schema
+    assert "'translate', 'default'" not in agent_seed
+    assert "'baoyu-translate', 'default'" not in agent_seed
+    assert "'document-review', 'default'" in agent_seed
+    assert "qa-word-review" in agent_seed
+    assert "sop-assistant" in agent_seed
+    assert "Legacy alias for qa-word-review" in agent_seed
+    assert "'qa-word-review', 'default', '文档审核', 'file'" in agent_seed
 
 
 def test_schema_enables_read_only_ragflow_mcp_tool_poc():
@@ -614,7 +629,7 @@ def test_schema_seeds_builtin_skill_versions_without_exposing_internal_dependenc
     assert "'qa-file-reviewer', '0.1.0'" in schema
     assert "'minimax-docx', '0.1.0'" in schema
     assert "'general-chat', '0.1.0'" not in schema
-    assert "'baoyu-translate', '0.1.0'" in schema
+    assert "'baoyu-translate', '0.1.0'" not in schema
     assert "'ragflow-knowledge-search', '0.1.0'" in schema
     assert "on conflict (skill_id, version) do nothing" in skill_version_seed
     assert "do update set" not in skill_version_seed.split("insert into tenant_workbench_skills", 1)[0]

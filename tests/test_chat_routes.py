@@ -2116,6 +2116,10 @@ async def test_get_session_recovers_safe_agent_conversation_identity(monkeypatch
 async def test_create_chat_session_uses_platform_principal(monkeypatch):
     calls = []
 
+    async def fake_get_agent(conn, *, tenant_id, agent_id):
+        calls.append(("agent", tenant_id, agent_id))
+        return {"id": agent_id}
+
     async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
         calls.append(("workspace", tenant_id, workspace_id))
 
@@ -2131,32 +2135,70 @@ async def test_create_chat_session_uses_platform_principal(monkeypatch):
             {
                 "id": "ses_2",
                 "workspace_id": "default",
-                "agent_id": "translate",
-                "title": "Translate",
+                "agent_id": "general-agent",
+                "title": "General chat",
                 "created_at": None,
                 "updated_at": None,
             }
         ]
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.repositories.get_agent", fake_get_agent)
     monkeypatch.setattr("app.routes.chat.repositories.ensure_workspace", fake_ensure_workspace)
     monkeypatch.setattr("app.routes.chat.repositories.ensure_user", fake_ensure_user)
     monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
     monkeypatch.setattr("app.routes.chat.repositories.list_authorized_sessions", fake_list_authorized_sessions)
 
     response = await create_chat_session(
-        ChatSessionRequest(agent_id="translate", title="Translate"),
+        ChatSessionRequest(agent_id="general-agent", title="General chat"),
         principal=principal(),
     )
 
     assert response.session_id == "ses_2"
     assert ("user", "user-a", "User A") in calls
-    assert ("session", "user-a", "translate") in calls
+    assert ("session", "user-a", "general-agent") in calls
+
+
+@pytest.mark.parametrize(
+    "agent_id",
+    ["translate", "baoyu-translate", "document-translation", "retired-agent"],
+)
+@pytest.mark.asyncio
+async def test_create_chat_session_rejects_retired_agent_selectors(agent_id):
+    with pytest.raises(HTTPException) as exc_info:
+        await create_chat_session(
+            ChatSessionRequest(agent_id=agent_id, title="Retired"),
+            principal=principal(),
+        )
+
+    assert (exc_info.value.status_code, exc_info.value.detail) == (409, "agent_inactive")
+
+
+@pytest.mark.asyncio
+async def test_create_chat_session_rejects_inactive_custom_agent_after_migration(monkeypatch):
+    async def fake_get_agent(conn, *, tenant_id, agent_id):
+        assert (tenant_id, agent_id) == ("tenant-a", "legacy-custom-agent")
+        return None
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.repositories.get_agent", fake_get_agent)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_chat_session(
+            ChatSessionRequest(agent_id="legacy-custom-agent", title="Retired"),
+            principal=principal(),
+        )
+
+    assert (exc_info.value.status_code, exc_info.value.detail) == (409, "agent_inactive")
 
 
 @pytest.mark.asyncio
 async def test_create_chat_session_maps_public_agent_id_before_persisting(monkeypatch):
     calls = []
+
+    async def fake_get_agent(conn, *, tenant_id, agent_id):
+        assert (tenant_id, agent_id) == ("tenant-a", "qa-word-review")
+        return {"id": agent_id}
 
     async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
         return None
@@ -2181,6 +2223,7 @@ async def test_create_chat_session_maps_public_agent_id_before_persisting(monkey
         ]
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.repositories.get_agent", fake_get_agent)
     monkeypatch.setattr("app.routes.chat.repositories.ensure_workspace", fake_ensure_workspace)
     monkeypatch.setattr("app.routes.chat.repositories.ensure_user", fake_ensure_user)
     monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
@@ -3752,52 +3795,6 @@ async def test_chat_stream_rejects_raw_skill_id_for_ordinary_user(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_ignores_raw_skill_like_agent_id_for_ordinary_user(monkeypatch):
-    calls = []
-
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        calls.append(("resolve", agent_id, skill_id))
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
-
-    async def fake_create_run(conn, **kwargs):
-        calls.append(("run", kwargs["agent_id"], kwargs["skill_id"]))
-        return "run_general"
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_create_session(conn, **kwargs):
-        return "ses_general"
-
-    async def fake_enqueue_run(payload):
-        calls.append(("queue", payload["agent_id"], payload["skill_id"]))
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-
-    response = await chat_stream(
-        ChatStreamRequest(
-            agent_id="baoyu-translate",
-            message="hello",
-        ),
-        principal=principal(),
-    )
-
-    assert response.status == "queued"
-    assert not any(call[0] == "resolve" for call in calls)
-    assert ("run", "general-agent", None) in calls
-    assert ("queue", "general-agent", None) in calls
-
-
-@pytest.mark.asyncio
 async def test_general_chat_queues_claude_agent_worker_executor(monkeypatch):
     calls = []
 
@@ -4037,62 +4034,6 @@ async def test_chat_stream_ignores_file_id_metadata_outside_request_scope(monkey
 
 
 @pytest.mark.asyncio
-async def test_lambchat_translate_agent_defaults_to_translate_skill(monkeypatch):
-    calls = []
-
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        calls.append(("resolve", agent_id, skill_id))
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["docx"]}
-
-    async def fake_create_run(conn, **kwargs):
-        calls.append(("run", kwargs["agent_id"], kwargs["skill_id"], kwargs["input_json"]["file_ids"]))
-        return "run_translate"
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_create_session(conn, **kwargs):
-        calls.append(("session", kwargs["agent_id"]))
-        return "ses_translate"
-
-    async def fake_enqueue_run(payload):
-        calls.append(("queue", payload["agent_id"], payload["skill_id"], payload["file_ids"]))
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-
-    response = await chat_stream(
-        ChatStreamRequest(
-            message="翻译一下这个文档",
-            attachments=[
-                {
-                    "key": "file_translate",
-                    "name": "demo.docx",
-                    "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                }
-            ],
-        ),
-        agent_id="document-translation",
-        principal=principal(),
-    )
-
-    assert response.run_id == "run_translate"
-    assert ("resolve", "baoyu-translate", "baoyu-translate") in calls
-    assert ("queue", "baoyu-translate", "baoyu-translate", ["file_translate"]) in calls
-    assert response.intent_decision is not None
-    assert response.intent_decision.selected_capability == "document_translation"
-    assert "baoyu-translate" not in response.intent_decision.model_dump_json()
-
-
-@pytest.mark.asyncio
 async def test_chat_stream_reuses_authorized_prior_turn_file_for_routed_skill(monkeypatch):
     """A routed file-capable Skill reuses its snapshot-authorized session input."""
 
@@ -4136,7 +4077,7 @@ async def test_chat_stream_reuses_authorized_prior_turn_file_for_routed_skill(mo
         limit=20,
     ):
         calls.append(("continuation_runs", tenant_id, user_id, session_id, workspace_id, limit))
-        return [{"agent_id": "general-agent", "skill_id": "baoyu-translate"}]
+        return [{"agent_id": "general-agent", "skill_id": "qa-file-reviewer"}]
 
     async def fake_create_run(conn, **kwargs):
         run_id = next(run_ids)
@@ -4241,13 +4182,13 @@ async def test_chat_stream_reuses_authorized_prior_turn_file_for_routed_skill(mo
                 }
             ],
         ),
-        agent_id="document-translation",
+        agent_id="document-review",
         principal=principal(),
     )
 
     assert first.session_id == "ses_routed"
     assert first.intent_decision is not None
-    assert first.intent_decision.agent_id == "document-translation"
+    assert first.intent_decision.agent_id == "document-review"
 
     second = await chat_stream(
         ChatStreamRequest(
@@ -4260,29 +4201,29 @@ async def test_chat_stream_reuses_authorized_prior_turn_file_for_routed_skill(mo
 
     assert second.session_id == first.session_id
     assert second.intent_decision is not None
-    assert second.intent_decision.agent_id == "document-translation"
+    assert second.intent_decision.agent_id == "document-review"
     assert calls == [
-        ("resolve", "baoyu-translate", "baoyu-translate"),
+        ("resolve", "qa-word-review", "qa-file-reviewer"),
         ("workspace", "default"),
         ("files", "default", ["file_routed"], []),
-        ("session", "ses_routed", "baoyu-translate", "default"),
-        ("run", "ses_routed", "baoyu-translate", "baoyu-translate", "default", "run_routed_first"),
+        ("session", "ses_routed", "qa-word-review", "default"),
+        ("run", "ses_routed", "qa-word-review", "qa-file-reviewer", "default", "run_routed_first"),
         ("bind", ["file_routed"]),
-        ("queue", "ses_routed", "baoyu-translate", "baoyu-translate", "default", ["file_routed"]),
+        ("queue", "ses_routed", "qa-word-review", "qa-file-reviewer", "default", ["file_routed"]),
         ("session_lookup", None, False),
         ("session_lookup", "workspace-routed", True),
         ("continuation_runs", "tenant-a", "user-a", "ses_routed", "workspace-routed", 1),
-        ("resolve", "general-agent", "baoyu-translate"),
+        ("resolve", "general-agent", "qa-file-reviewer"),
         ("session_files", "tenant-a", "workspace-routed", "user-a", "ses_routed"),
         ("workspace", "workspace-routed"),
         ("files", "workspace-routed", ["file_routed"], ["file_routed"]),
-        ("run", "ses_routed", "general-agent", "baoyu-translate", "workspace-routed", "run_routed_second"),
+        ("run", "ses_routed", "general-agent", "qa-file-reviewer", "workspace-routed", "run_routed_second"),
         ("bind", []),
         (
             "queue",
             "ses_routed",
             "general-agent",
-            "baoyu-translate",
+            "qa-file-reviewer",
             "workspace-routed",
             ["file_routed"],
         ),
@@ -5228,66 +5169,6 @@ async def test_chat_stream_rejects_a_continuation_workspace_mismatch_before_rout
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_word_translate_file_id_routes_from_general_agent(monkeypatch):
-    calls = []
-
-    async def fake_get_file(conn, *, tenant_id, file_id):
-        calls.append(("get_file", tenant_id, file_id))
-        return {
-            "id": file_id,
-            "tenant_id": "tenant-a",
-            "workspace_id": "default",
-            "user_id": "user-a",
-            "session_id": None,
-            "run_id": None,
-            "original_name": "demo.docx",
-            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        }
-
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        calls.append(("resolve", agent_id, skill_id))
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["docx"]}
-
-    async def fake_create_run(conn, **kwargs):
-        calls.append(("run", kwargs["agent_id"], kwargs["skill_id"], kwargs["input_json"]["file_ids"]))
-        return "run_translate_file_id"
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_create_session(conn, **kwargs):
-        calls.append(("session", kwargs["agent_id"]))
-        return "ses_translate_file_id"
-
-    async def fake_enqueue_run(payload):
-        calls.append(("queue", payload["agent_id"], payload["skill_id"], payload["file_ids"]))
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.get_file", fake_get_file)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-
-    response = await chat_stream(
-        ChatStreamRequest(message="translate this Word file", file_ids=["file_word_translate"]),
-        agent_id="general-agent",
-        principal=principal(),
-    )
-
-    assert response.run_id == "run_translate_file_id"
-    assert ("get_file", "tenant-a", "file_word_translate") in calls
-    assert ("resolve", "baoyu-translate", "baoyu-translate") in calls
-    assert ("run", "baoyu-translate", "baoyu-translate", ["file_word_translate"]) in calls
-    assert ("queue", "baoyu-translate", "baoyu-translate", ["file_word_translate"]) in calls
-
-
-@pytest.mark.asyncio
 async def test_lambchat_txt_attachment_stays_on_general_chat(monkeypatch):
     calls = []
 
@@ -5341,59 +5222,6 @@ async def test_lambchat_txt_attachment_stays_on_general_chat(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_lambchat_word_translate_attachment_routes_from_general_agent(monkeypatch):
-    calls = []
-
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        calls.append(("resolve", agent_id, skill_id))
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["docx"]}
-
-    async def fake_create_run(conn, **kwargs):
-        calls.append(("run", kwargs["agent_id"], kwargs["skill_id"], kwargs["input_json"]["file_ids"]))
-        return "run_translate_inferred"
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_create_session(conn, **kwargs):
-        calls.append(("session", kwargs["agent_id"]))
-        return "ses_translate_inferred"
-
-    async def fake_enqueue_run(payload):
-        calls.append(("queue", payload["agent_id"], payload["skill_id"], payload["file_ids"]))
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-
-    response = await chat_stream(
-        ChatStreamRequest(
-            message="translate this Word file",
-            attachments=[
-                {
-                    "key": "file_word_translate",
-                    "name": "demo.docx",
-                    "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                }
-            ],
-        ),
-        agent_id="general-agent",
-        principal=principal(),
-    )
-
-    assert response.run_id == "run_translate_inferred"
-    assert ("resolve", "baoyu-translate", "baoyu-translate") in calls
-    assert ("queue", "baoyu-translate", "baoyu-translate", ["file_word_translate"]) in calls
-
-
-@pytest.mark.asyncio
 async def test_chat_stream_returns_suggestions_for_ambiguous_docx_without_creating_run(monkeypatch):
     calls = []
 
@@ -5418,7 +5246,6 @@ async def test_chat_stream_returns_suggestions_for_ambiguous_docx_without_creati
     async def all_principal_agents(conn, **kwargs):
         return [
             {"id": "qa-word-review", "default_skill_id": "qa-file-reviewer"},
-            {"id": "baoyu-translate", "default_skill_id": "baoyu-translate"},
             {"id": "general-agent", "default_skill_id": "general-chat"},
         ]
 
@@ -5454,7 +5281,6 @@ async def test_chat_stream_returns_suggestions_for_ambiguous_docx_without_creati
     assert response.run_id is None
     assert [item.capability_id for item in response.suggestions] == [
         "document_review",
-        "document_translation",
         "general_chat",
     ]
     assert calls == [("admission_lock", "tenant-a", "user-a")]
@@ -5467,7 +5293,7 @@ async def test_chat_stream_filters_confirmation_suggestions_through_principal_pr
     async def principal_agents(conn, **kwargs):
         calls.append(kwargs)
         return [
-            {"id": "baoyu-translate", "default_skill_id": "baoyu-translate"},
+            {"id": "qa-word-review", "default_skill_id": "qa-file-reviewer"},
             {"id": "general-agent", "default_skill_id": "general-chat"},
         ]
 
@@ -5488,11 +5314,11 @@ async def test_chat_stream_filters_confirmation_suggestions_through_principal_pr
 
     assert response.status == "needs_confirmation"
     assert [item.capability_id for item in response.suggestions] == [
-        "document_translation",
+        "document_review",
         "general_chat",
     ]
     assert [item.capability_id for item in response.intent_decision.suggestions] == [
-        "document_translation",
+        "document_review",
         "general_chat",
     ]
     assert calls == [
@@ -5776,23 +5602,12 @@ async def test_chat_stream_never_suggests_archived_default_skill_from_principal_
     async def fake_list_agents(conn, *, tenant_id):
         assert tenant_id == "tenant-a"
         return [
-            {"id": "baoyu-translate", "default_skill_id": "baoyu-translate", "status": "active"},
             {"id": "general-agent", "default_skill_id": "general-chat", "status": "active"},
             {"id": "qa-word-review", "default_skill_id": "qa-file-reviewer", "status": "active"},
         ]
 
     async def fake_list_distributions(conn, **kwargs):
         return [
-            {
-                "capability_kind": "skill",
-                "capability_id": "baoyu-translate",
-                "status": "active",
-                "visible_to_user": True,
-                "scope_mode": "allowlist",
-                "department_ids": [],
-                "allowed_roles": [],
-                "metadata_json": {},
-            },
             {
                 "capability_kind": "skill",
                 "capability_id": "general-chat",
@@ -5833,7 +5648,6 @@ async def test_chat_stream_never_suggests_archived_default_skill_from_principal_
 
     assert response.status == "needs_confirmation"
     assert [item.capability_id for item in response.suggestions] == [
-        "document_translation",
         "general_chat",
     ]
 

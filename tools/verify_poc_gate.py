@@ -496,7 +496,7 @@ def check_runtime_config(env_path: str, values: dict[str, str] | None = None) ->
         and bool(configured_model_id)
         and default_model_id == configured_model_id
         and catalog_valid
-        and {"general-chat", "qa-file-reviewer", "baoyu-translate"}.issubset(skills)
+        and {"general-chat", "qa-file-reviewer"}.issubset(skills)
     )
     return Gate(
         "runtime_config",
@@ -512,7 +512,7 @@ def check_runtime_config(env_path: str, values: dict[str, str] | None = None) ->
             "model_catalog_status": catalog_status,
             "available_model_ids": catalog_model_ids,
             "model_catalog_contains_configured_model": catalog_contains_configured_model,
-            "skills_present": sorted(skills.intersection({"general-chat", "qa-file-reviewer", "baoyu-translate"})),
+            "skills_present": sorted(skills.intersection({"general-chat", "qa-file-reviewer"})),
         },
     )
 
@@ -578,7 +578,6 @@ def check_db_evidence(container: str, db_user: str, db_name: str) -> list[Gate]:
     specs = [
         ("general_chat_run", "general-agent", "general-chat", False),
         ("review_artifact", "qa-word-review", "qa-file-reviewer", True),
-        ("translate_artifact", "baoyu-translate", "baoyu-translate", True),
     ]
     gates: list[Gate] = []
     for name, agent_id, skill_id, require_artifact in specs:
@@ -1566,7 +1565,7 @@ def main() -> int:
     db_gates = check_db_evidence(args.postgres_container, args.postgres_user, args.postgres_db)
     env_values = runtime_env_values(args.env_path, args.worker_container)
     runtime_config_gate = check_runtime_config(args.env_path, env_values)
-    artifact_rows = [gate.evidence for gate in db_gates if gate.name in {"review_artifact", "translate_artifact"} and gate.ok]
+    artifact_rows = [gate.evidence for gate in db_gates if gate.name == "review_artifact" and gate.ok]
     word_review_gate = check_word_review_attachment_chat(
         args.api_url,
         args.postgres_container,

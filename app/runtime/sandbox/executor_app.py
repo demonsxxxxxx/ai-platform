@@ -34,7 +34,6 @@ from app.control_plane_contracts import normalize_thinking_effort
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
-    _translation_target_language,
     run_claude_agent_sdk,
 )
 from app.public_execution import (
@@ -751,10 +750,9 @@ def _private_capability_fact(
     )
 
 
-_CONTROLLED_FILE_SKILLS = {"baoyu-translate", "qa-file-reviewer"}
+_CONTROLLED_FILE_SKILLS = {"qa-file-reviewer"}
 _CONTROLLED_FILE_SKILL_CAPABILITIES = {
     # These exactly mirror the server-owned builtin declarations in skills.pinning.
-    "baoyu-translate": frozenset({"Bash", "Write"}),
     "qa-file-reviewer": frozenset({"Bash", "Write"}),
 }
 _CONTROLLED_RUNNER_TIMEOUT_SECONDS = 900.0
@@ -1339,18 +1337,14 @@ def _controlled_file_skill_command(
         output_dir.resolve(strict=True).relative_to(workspace.resolve(strict=True))
     except (OSError, ValueError):
         return None, "controlled_skill_output_path_invalid"
-    script_name = "run_translation.py" if skill_id == "baoyu-translate" else "run_qa_review.py"
     script = _resolved_workspace_file(
         workspace,
-        workspace / ".claude" / "skills" / skill_id / "scripts" / script_name,
+        workspace / ".claude" / "skills" / skill_id / "scripts" / "run_qa_review.py",
     )
     if script is None:
         return None, "controlled_skill_runner_missing"
     command = [sys.executable, str(script), str(input_path), str(output_dir)]
-    if skill_id == "baoyu-translate":
-        command.extend(["--target-language", _translation_target_language(user_message)])
-    else:
-        command.append("--with-comments")
+    command.append("--with-comments")
     command.extend(["--original-filename", input_path.name])
     return command, None
 

@@ -115,8 +115,8 @@ def ensure_default_sample_docx(docx_path: Path) -> Path:
 
         document = Document()
         document.add_heading("AI Platform POC Sample", level=1)
-        document.add_paragraph("This document contains text for concurrent review and translation validation.")
-        document.add_paragraph("请将这段中文内容翻译为英文，并保留原始含义。")
+        document.add_paragraph("This document contains text for concurrent review validation.")
+        document.add_paragraph("请审核这份文档并保留原始含义。")
         table = document.add_table(rows=2, cols=2)
         table.cell(0, 0).text = "Field"
         table.cell(0, 1).text = "Value"
@@ -133,8 +133,8 @@ def write_minimal_docx(docx_path: Path) -> None:
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:body>
     <w:p><w:r><w:t>AI Platform POC Sample</w:t></w:r></w:p>
-    <w:p><w:r><w:t>This document contains text for concurrent review and translation validation.</w:t></w:r></w:p>
-    <w:p><w:r><w:t>请将这段中文内容翻译为英文，并保留原始含义。</w:t></w:r></w:p>
+    <w:p><w:r><w:t>This document contains text for concurrent review validation.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>请审核这份文档并保留原始含义。</w:t></w:r></w:p>
     <w:sectPr/>
   </w:body>
 </w:document>
@@ -301,8 +301,6 @@ def fixture_agent_id(account: Account) -> str:
 
 def _skill_id_for_agent(agent_id: str) -> str:
     return {
-        "baoyu-translate": "baoyu-translate",
-        "document-translation": "baoyu-translate",
         "qa-word-review": "qa-file-reviewer",
         "document-review": "qa-file-reviewer",
     }.get(agent_id, "general-chat")
@@ -741,7 +739,6 @@ def build_foundation_runtime_fixture_sql(
     skill_names = {
         "general-chat": "General Chat",
         "qa-file-reviewer": "Document Review",
-        "baoyu-translate": "Document Translation",
     }
     tenant_rows: list[str] = []
     workspace_rows: list[str] = []
@@ -2340,7 +2337,7 @@ def build_foundation_runtime_case_specs(
         ("general-chat", "run_creation", "general-agent", "并发创建运行验收，请简短回复。", False),
         ("word-review", "execution", "qa-word-review", "审核一下这个文档", True),
         ("cancel-probe", "cancel", "general-agent", "创建后取消路径验收，请简短回复。", False),
-        ("retry-probe", "retry", "baoyu-translate", "翻译一下这个文档，用于 retry 路径验收。", True),
+        ("retry-probe", "retry", "qa-word-review", "审核一下这个文档，用于 retry 路径验收。", True),
     ]
     specs: list[CaseSpec] = []
     scenario_seen = {scenario: 0 for _case_name, scenario, _agent_id, _message, _uses_docx in templates}
@@ -2899,7 +2896,6 @@ def main() -> int:
             [
                 (account, "general-chat", "general-agent", f"{account.label} 并发通用聊天验收，请简短回复。", None),
                 (account, "word-review", "general-agent", "审核一下这个文档", docx_path),
-                (account, "word-translate", "baoyu-translate", "翻译一下这个文档", docx_path),
             ]
         )
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(case_specs)) as pool:
@@ -2912,7 +2908,7 @@ def main() -> int:
             failures.append({"case": item["case"], "account": item["account"], "reason": "not_completed", "status": item["status"]})
         if item["has_tmp_path"]:
             failures.append({"case": item["case"], "account": item["account"], "reason": "tmp_path_leaked"})
-        if item["case"] in {"word-review", "word-translate"} and not item["artifact_ids"]:
+        if item["case"] == "word-review" and not item["artifact_ids"]:
             failures.append({"case": item["case"], "account": item["account"], "reason": "missing_artifact_link"})
         for download in item["downloads"]:
             if download["owner_status"] != 200 or download["owner_bytes"] <= 0:
