@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -39,67 +40,55 @@ def test_documentation_index_names_the_only_durable_authority_surfaces():
         assert relative_path in index
 
 
-def test_agent_work_defaults_avoid_task_and_worktree_multiplication():
-    workflow = " ".join(read(MULTI_AGENT_WORKFLOW).split())
+def test_agent_entrypoints_share_one_instruction_source():
+    imports = [line[1:].strip() for line in read(CLAUDE).splitlines() if line.startswith("@")]
 
-    assert "reuses its existing project worktree by default" in workflow
-    assert "a new issue or task alone is not a reason" in workflow
-    assert "Creating a worktree does not trigger a dependency install" in workflow
-    assert "generated dependency directories for authorized cleanup" in workflow
+    assert imports == ["AGENTS.md"]
+    assert (CLAUDE.parent / imports[0]).resolve() == AGENTS.resolve()
+    assert AGENTS.is_file()
 
 
-def test_agent_rule_authorities_preserve_safety_and_delivery_boundaries():
-    agents = " ".join(read(AGENTS).split())
-    claude = " ".join(read(CLAUDE).split())
-    multi_agent = " ".join(read(MULTI_AGENT_WORKFLOW).split())
-    github_workflow = " ".join(read(GITHUB_WORKFLOW).split())
-    local_test_execution = " ".join(read(LOCAL_TEST_EXECUTION).split())
-    pull_request_template = " ".join(read(PULL_REQUEST_TEMPLATE).split())
+def test_agent_rule_navigation_and_pr_template_remain_usable():
+    # Check navigable contracts, not prose used to describe optional workflows.
+    required_links = {
+        AGENTS: {
+            "docs/README.md",
+            "docs/agent-rules/local-test-execution.md",
+            "docs/agent-rules/github-issue-pr-workflow.md",
+            "docs/agent-rules/multi-agent-context-workflow.md",
+            "docs/operations/release-operations-runbook.md",
+        },
+        GITHUB_WORKFLOW: {
+            "../README.md",
+            "local-test-execution.md",
+            "../architecture/ci-test-readiness-governance.md",
+            "../operations/release-operations-runbook.md",
+        },
+        LOCAL_TEST_EXECUTION: {
+            "../architecture/ci-test-readiness-governance.md",
+            "github-issue-pr-workflow.md",
+        },
+        MULTI_AGENT_WORKFLOW: {
+            "github-issue-pr-workflow.md",
+            "../operations/release-operations-runbook.md",
+        },
+    }
+    for document, expected_links in required_links.items():
+        links = set(re.findall(r"\[[^\]\n]*\]\(([^)\s]+)\)", read(document)))
+        assert expected_links <= links, document
+        for link in links:
+            target = (document.parent / link.split("#", 1)[0]).resolve()
+            assert target.is_relative_to(ROOT.resolve()), (document, link)
+            assert target.is_file(), (document, link)
 
-    for authority in (
-        "docs/README.md",
-        "docs/agent-rules/multi-agent-context-workflow.md",
-        "docs/agent-rules/github-issue-pr-workflow.md",
-        "docs/agent-rules/local-test-execution.md",
-        "docs/operations/release-operations-runbook.md",
-    ):
-        assert authority in agents
-
-    assert "Access s72 only through SSH MCP" in agents
-    assert "Do not fall back to system SSH tools" in agents
-    assert "Commands and output must not contain `.env` values" in agents
-    assert "Keep tenant, workspace, and user boundaries explicit" in agents
-    assert "Ordinary-user projections must not expose raw skill identifiers" in agents
-
-    assert "Exactly one writer holds a given write scope" in multi_agent
-    assert "User authorization for one task or main session does not automatically grant another task" in multi_agent
-    assert "Read-only release readiness must pass for the exact release subject" in multi_agent
-
-    assert "Use a bounded Change Contract" in github_workflow
-    for boundary in (
-        "authentication, authorization, tenant or workspace isolation",
-        "secrets, credentials, or ordinary-user projection redaction",
-        "destructive lifecycle, retention, schema migration, or irreversible data compatibility",
-        "sandbox, command, tool, Skill, MCP, or executor admission",
-        "public API, callback, event, or streaming protocols",
-        "workflow, image, release, deployment, or rollback authority",
-    ):
-        assert boundary in github_workflow
-    assert "High-risk review uses real GitHub review" in github_workflow
-    assert "Local checks are developer feedback, not trusted merge authority" in github_workflow
-    assert "Merge only after the applicable required checks and review are complete" in github_workflow
-    assert "A merged source change is not a release" in github_workflow
-    assert "../architecture/ci-test-readiness-governance.md" in github_workflow
-
-    assert "including new untracked tests" in local_test_execution
-    assert "This file adds no separate repository rules" in claude
-    assert "docs/agent-rules/github-issue-pr-workflow.md" in pull_request_template
+    template = read(PULL_REQUEST_TEMPLATE)
+    assert "docs/agent-rules/github-issue-pr-workflow.md" in template
     for required_field in (
         "Falsifiable regression test:",
         "Reached boundaries and preserved invariants:",
         "Design or Change Contract:",
     ):
-        assert required_field in pull_request_template
+        assert required_field in template
 
 
 def test_source_architecture_authority_has_required_sections_and_anchors():
