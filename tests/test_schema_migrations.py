@@ -663,6 +663,14 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "chk_files_lifecycle_state",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert (
+        "artifacts",
+        "chk_artifacts_lifecycle_state",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "artifacts",
+        "chk_artifacts_run_owner",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
         "object_deletion_outbox",
         "chk_object_deletion_outbox_target",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
@@ -960,6 +968,26 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "c",
             "CHECK (lifecycle_state = ANY (ARRAY["
             "'active'::text, 'delete_pending'::text, 'deleted'::text]))",
+        ),
+        (
+            "artifacts",
+            "chk_artifacts_lifecycle_state",
+            "c",
+            "CHECK (lifecycle_state = ANY (ARRAY["
+            "'active'::text, 'delete_pending'::text, 'deleted'::text]))",
+        ),
+        (
+            "artifacts",
+            "chk_artifacts_run_owner",
+            "c",
+            "CHECK (run_id IS NOT NULL AND lifecycle_state = 'active'::text OR "
+            "run_id IS NULL AND lifecycle_state = 'delete_pending'::text "
+            "AND manifest_json @> '{\"provisional_reconciliation_cleanup\": true}'::jsonb "
+            "AND NULLIF(manifest_json ->> 'expected_run_id'::text, ''::text) IS NOT NULL OR "
+            "run_id IS NULL AND (lifecycle_state = ANY (ARRAY["
+            "'delete_pending'::text, 'deleted'::text])) "
+            "AND manifest_json @> '{\"retention_artifact_cleanup\": true}'::jsonb "
+            "AND NULLIF(manifest_json ->> 'deletion_owner_run_id'::text, ''::text) IS NOT NULL)",
         ),
         (
             "object_deletion_outbox",

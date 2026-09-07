@@ -116,8 +116,6 @@ get_authorized_artifact = artifacts.get_authorized_artifact
 list_revealed_artifact_sessions = artifacts.list_revealed_artifact_sessions
 list_revealed_artifacts = artifacts.list_revealed_artifacts
 queue_expired_artifacts_for_deletion = artifacts.queue_expired_artifacts_for_deletion
-reserve_provisional_artifact_cleanup = artifacts.reserve_provisional_artifact_cleanup
-promote_provisional_artifact_cleanup = artifacts.promote_provisional_artifact_cleanup
 get_data_retention_backlog = retention.get_data_retention_backlog
 purge_deleted_memory_records = retention.purge_deleted_memory_records
 get_agent = agent_catalog_persistence.get_agent
@@ -4381,11 +4379,7 @@ async def progress_run_tool_permission_terminalization(
     total_tokens = result_total or _coerce_int(staged.get("total_token_count"))
     estimated_cost_minor = result_cost or _coerce_int(staged.get("estimated_cost_minor"))
     artifact_cursor = await conn.execute(
-        """
-        select count(*) as artifact_count
-        from artifacts
-        where tenant_id = %s and run_id = %s and lifecycle_state = 'active'
-        """,
+        "select count(*) as artifact_count from artifacts where tenant_id = %s and run_id = %s",
         (tenant_id, run_id),
     )
     artifact_row = await artifact_cursor.fetchone()
@@ -4988,7 +4982,6 @@ async def list_run_artifacts(conn: AsyncConnection, *, tenant_id: str, run_id: s
         select id, trace_id, artifact_type, label, content_type, storage_key, size_bytes, manifest_version, manifest_json, created_at
         from artifacts
         where tenant_id = %s and run_id = %s
-          and lifecycle_state = 'active'
         order by created_at asc
         """,
         (tenant_id, run_id),

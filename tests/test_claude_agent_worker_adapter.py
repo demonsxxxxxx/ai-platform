@@ -17,6 +17,7 @@ from openpyxl import Workbook
 import app.executors.claude_agent_sdk_runner as sdk_runner
 import app.worker as worker_module
 from app.context.file_content import ContextFileContentError
+from app.execution.application import artifact_storage
 from app.executors import claude_agent_worker
 from app.executors.base import ArtifactManifest, ExecutorResult, RunPayload
 from app.executors.claude_agent_sdk_runner import (
@@ -1028,7 +1029,7 @@ def test_collect_workspace_artifacts_enforces_delivery_limits_before_storage(
     delivery.mkdir(parents=True)
     for name, content in files.items():
         (delivery / name).write_bytes(content)
-    monkeypatch.setattr(claude_agent_worker, limit_name, limit_value)
+    monkeypatch.setattr(artifact_storage, limit_name, limit_value)
 
     class FailIfStored:
         def put_bytes(self, **_kwargs):
@@ -1092,6 +1093,96 @@ def test_collect_workspace_artifacts_rejects_fake_required_docx_before_upload(
     ) == []
 
 
+@pytest.mark.parametrize(
+    ("content_types_xml", "relationships_xml"),
+    [
+        (
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types" />',
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships" />',
+        ),
+        (
+            (
+                '<?xml version="1.0" encoding="UTF-16"?>'
+                '<!DOCTYPE Types [<!ENTITY main "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml">]>'
+                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                '<Override PartName="/word/document.xml" ContentType="&main;" />'
+                "</Types>"
+            ).encode("utf-16"),
+            (
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                'Target="word/document.xml" />'
+                "</Relationships>"
+            ),
+        ),
+        (
+            (
+                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                '<Override PartName="/word/document.xml" '
+                'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml" />'
+                "</Types>"
+            ),
+            (
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                'Target="//word/document.xml" />'
+                "</Relationships>"
+            ),
+        ),
+        (
+            (
+                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                '<Override PartName="/word/document.xml" '
+                'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml" />'
+                "<Override PartName=\"/word/document.xml\" ContentType=\"text/plain\" />"
+                "</Types>"
+            ),
+            (
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                'Target="word/document.xml" />'
+                '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                'Target="other/document.xml" />'
+                "</Relationships>"
+            ),
+        ),
+    ],
+    ids=(
+        "missing-opc-references",
+        "utf16-internal-entity",
+        "noncanonical-target",
+        "ambiguous-main-declarations",
+    ),
+)
+def test_collect_workspace_artifacts_rejects_malformed_required_docx_package(
+    monkeypatch,
+    tmp_path,
+    content_types_xml,
+    relationships_xml,
+):
+    workspace = tmp_path / "workspace"
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    with zipfile.ZipFile(output / "document.docx", "w") as archive:
+        archive.writestr("[Content_Types].xml", content_types_xml)
+        archive.writestr("_rels/.rels", relationships_xml)
+        archive.writestr(
+            "word/document.xml",
+            '<document xmlns="http://schemas.openxmlformats.org/wordprocessingml/2006/main" />',
+        )
+
+    class FailIfStored:
+        def put_bytes(self, **_kwargs):
+            raise AssertionError("malformed required artifacts must not be uploaded")
+
+    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FailIfStored)
+
+    assert ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
+        payload(skill_id="qa-file-reviewer"),
+        workspace,
+    ) == []
+
+
 @pytest.mark.parametrize("skill_id", ["qa-file-reviewer", "baoyu-translate"])
 def test_collect_workspace_artifacts_rejects_expanding_docx_before_parse_or_upload(
     monkeypatch,
@@ -1105,12 +1196,7 @@ def test_collect_workspace_artifacts_rejects_expanding_docx_before_parse_or_uplo
     with zipfile.ZipFile(document_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("word/document.xml", b"A" * 1025)
 
-    monkeypatch.setattr(claude_agent_worker, "_MAX_DOCX_ARCHIVE_ENTRY_BYTES", 1024)
-    monkeypatch.setattr(
-        claude_agent_worker,
-        "Document",
-        lambda _path: pytest.fail("oversized DOCX content must reject before parsing"),
-    )
+    monkeypatch.setattr(artifact_storage, "_MAX_DOCX_ARCHIVE_ENTRY_BYTES", 1024)
 
     class FailIfStored:
         def put_bytes(self, **_kwargs):

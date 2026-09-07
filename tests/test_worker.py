@@ -2145,7 +2145,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr(
-        "app.worker.repositories.promote_provisional_artifact_cleanup",
+        "app.worker.promote_provisional_artifact_cleanup",
         promote_artifact_cleanup,
     )
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)

@@ -27,27 +27,33 @@ async def reserve_provisional_artifact_cleanup(
           size_bytes, manifest_json, lifecycle_state, delete_requested_at
         )
         values (
-          %s, %s, %s, 'reconciliation_provisional', 'Pending artifact cleanup',
+          %s, %s, null, 'reconciliation_provisional', 'Pending artifact cleanup',
           'application/octet-stream', %s, 0,
-          '{"provisional_reconciliation_cleanup":true}'::jsonb,
+          jsonb_build_object(
+            'provisional_reconciliation_cleanup', true,
+            'expected_run_id', %s::text
+          ),
           'delete_pending', now()
         )
         on conflict (id) do nothing
         """,
-        (artifact_id, tenant_id, run_id, storage_key),
+        (artifact_id, tenant_id, storage_key, run_id),
     )
     artifact = await (
         await conn.execute(
             """
             select id
             from artifacts
-            where id = %s and tenant_id = %s and run_id = %s
+            where id = %s and tenant_id = %s and run_id is null
               and storage_key = %s
               and lifecycle_state = 'delete_pending'
-              and manifest_json @> '{"provisional_reconciliation_cleanup":true}'::jsonb
+              and manifest_json @> jsonb_build_object(
+                'provisional_reconciliation_cleanup', true,
+                'expected_run_id', %s::text
+              )
             for update
             """,
-            (artifact_id, tenant_id, run_id, storage_key),
+            (artifact_id, tenant_id, storage_key, run_id),
         )
     ).fetchone()
     if artifact is None:
@@ -113,12 +119,15 @@ async def promote_provisional_artifact_cleanup(
              and artifacts.storage_key = outbox.storage_key
             where outbox.id = %s and outbox.tenant_id = %s
               and outbox.target_type = 'artifact' and outbox.state = 'pending'
-              and artifacts.run_id = %s and artifacts.storage_key = %s
+              and artifacts.run_id is null and artifacts.storage_key = %s
               and artifacts.lifecycle_state = 'delete_pending'
-              and artifacts.manifest_json @> '{"provisional_reconciliation_cleanup":true}'::jsonb
+              and artifacts.manifest_json @> jsonb_build_object(
+                'provisional_reconciliation_cleanup', true,
+                'expected_run_id', %s::text
+              )
             for update of outbox, artifacts
             """,
-            (f"objdel_{artifact_id}", tenant_id, run_id, storage_key),
+            (f"objdel_{artifact_id}", tenant_id, storage_key, run_id),
         )
     ).fetchone()
     if receipt is None:
@@ -130,12 +139,15 @@ async def promote_provisional_artifact_cleanup(
     cursor = await conn.execute(
         """
         delete from artifacts
-        where id = %s and tenant_id = %s and run_id = %s and storage_key = %s
+        where id = %s and tenant_id = %s and run_id is null and storage_key = %s
           and lifecycle_state = 'delete_pending'
-          and manifest_json @> '{"provisional_reconciliation_cleanup":true}'::jsonb
+          and manifest_json @> jsonb_build_object(
+            'provisional_reconciliation_cleanup', true,
+            'expected_run_id', %s::text
+          )
         returning id
         """,
-        (artifact_id, tenant_id, run_id, storage_key),
+        (artifact_id, tenant_id, storage_key, run_id),
     )
     return await cursor.fetchone() is not None
 
@@ -187,7 +199,12 @@ async def queue_expired_artifacts_for_deletion(
         ), tombstoned as (
           update artifacts
           set lifecycle_state = 'delete_pending',
-              delete_requested_at = coalesce(delete_requested_at, now())
+              delete_requested_at = coalesce(delete_requested_at, now()),
+              manifest_json = artifacts.manifest_json || jsonb_build_object(
+                'retention_artifact_cleanup', true,
+                'deletion_owner_run_id', artifacts.run_id
+              ),
+              run_id = null
           from requested
           where artifacts.id = requested.id
             and artifacts.lifecycle_state = 'active'

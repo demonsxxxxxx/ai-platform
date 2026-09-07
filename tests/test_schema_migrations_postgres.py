@@ -713,6 +713,7 @@ async def test_real_postgres_upgrade_namespaces_every_legacy_file_outbox_state()
         "alter table run_events drop constraint chk_run_events_stream_publication_claim",
         "alter table files drop constraint chk_files_lifecycle_state",
         "alter table artifacts drop constraint chk_artifacts_lifecycle_state",
+        "alter table artifacts drop constraint chk_artifacts_run_owner",
         "alter table object_deletion_outbox drop constraint chk_object_deletion_outbox_target",
         "alter table object_deletion_outbox drop constraint chk_object_deletion_outbox_target_state",
         "alter table object_deletion_outbox drop column lease_generation",

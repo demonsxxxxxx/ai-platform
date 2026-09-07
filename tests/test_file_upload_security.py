@@ -618,7 +618,9 @@ async def test_direct_upload_retry_waits_for_unknown_put_owner(monkeypatch):
             raise AssertionError("an unknown put outcome must not be deleted")
 
     monkeypatch.setattr(files_routes, "ObjectStorage", UncertainStorage)
-    upload = lambda: FakeUploadFile("small.txt", "text/plain", b"x")
+
+    def upload():
+        return FakeUploadFile("small.txt", "text/plain", b"x")
 
     with pytest.raises(HTTPException) as first_error:
         await files_routes.upload_file(upload(), "default", None, upload_principal())

@@ -14,6 +14,7 @@ from app.execution.api import restored_sandbox_run_payload
 from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+from app.persistence.artifacts import reserve_provisional_artifact_cleanup
 from app.routes.sandbox_runtime_cleanup import (
     cleanup_failed_sandbox_executor_reconciliation_leases,
     container_lease_from_persisted_row,
@@ -484,7 +485,7 @@ async def _reserve_reconciliation_artifact_cleanup(
     storage_key: str,
 ) -> str:
     async with transaction() as conn:
-        return await repositories.reserve_provisional_artifact_cleanup(
+        return await reserve_provisional_artifact_cleanup(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,

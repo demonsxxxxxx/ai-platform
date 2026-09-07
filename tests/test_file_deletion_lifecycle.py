@@ -56,10 +56,13 @@ async def test_provisional_artifact_cleanup_is_reserved_then_promoted_atomically
     provisional = {
         "id": "art_cleanup_a",
         "tenant_id": "tenant-a",
-        "run_id": "run-a",
+        "run_id": None,
         "storage_key": storage_key,
         "lifecycle_state": "delete_pending",
-        "manifest_json": {"provisional_reconciliation_cleanup": True},
+        "manifest_json": {
+            "provisional_reconciliation_cleanup": True,
+            "expected_run_id": "run-a",
+        },
     }
     outbox = {
         "id": "objdel_art_cleanup_a",
@@ -88,12 +91,17 @@ async def test_provisional_artifact_cleanup_is_reserved_then_promoted_atomically
     assert promoted is True
     statements = [statement for statement, _params in conn.calls]
     assert "lifecycle_state, delete_requested_at" in statements[0]
+    assert "values ( %s, %s, null" in statements[0]
+    assert "'expected_run_id', %s::text" in statements[0]
+    assert "run_id is null" in statements[1]
     assert "insert into object_deletion_outbox" in statements[2]
     assert "on conflict (tenant_id, artifact_id) do update" in statements[2]
     assert "state in ('pending', 'failed', 'dead_letter', 'deleted')" in statements[2]
     assert "outbox.state = 'pending'" in statements[4]
+    assert "artifacts.run_id is null" in statements[4]
     assert statements[5].startswith("delete from object_deletion_outbox")
     assert statements[6].startswith("delete from artifacts")
+    assert "run_id is null" in statements[6]
 
 
 @pytest.mark.asyncio

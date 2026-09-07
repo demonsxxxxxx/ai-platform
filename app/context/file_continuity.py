@@ -13,7 +13,6 @@ from app.context.file_content import (
     validate_context_file_for_stage,
 )
 from app.path_safety import ensure_creatable_inside
-from app.storage import ObjectStorageSizeLimitError, run_storage_io
 
 
 _FILE_INPUT_MODES = frozenset({"csv", "docx", "json", "markdown", "md", "pdf", "text", "txt", "xlsx"})
@@ -270,6 +269,8 @@ async def materialize_run_context_files(
     transaction_factory: Callable[[], AbstractAsyncContextManager[Any]],
     repository: Any,
     storage: Any | None,
+    storage_io: Callable[..., Awaitable[Any]],
+    storage_size_limit_error: type[Exception],
     workspace: Path,
     tenant_id: str,
     workspace_id: str,
@@ -383,12 +384,12 @@ async def materialize_run_context_files(
             try:
                 if hasattr(storage, "download_to_tempfile"):
                     try:
-                        downloaded = await run_storage_io(
+                        downloaded = await storage_io(
                             storage.download_to_tempfile,
                             storage_key=storage_key,
                             max_bytes=size_bytes,
                         )
-                    except ObjectStorageSizeLimitError as exc:
+                    except storage_size_limit_error as exc:
                         raise ContextFileContentError(
                             "context_file_identity_mismatch",
                             file_kind=file_kind,
@@ -410,18 +411,18 @@ async def materialize_run_context_files(
                             file_kind=file_kind,
                             attachment_index=attachment_index,
                         )
-                    await run_storage_io(shutil.copyfile, temporary_path, target)
+                    await storage_io(shutil.copyfile, temporary_path, target)
                     if filename.casefold().endswith(".xlsx") or str(row.get("content_type") or "").split(";", 1)[0].casefold() == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-                        content = await run_storage_io(target.read_bytes)
-                        await run_storage_io(validate_context_file_for_stage, row, content)
+                        content = await storage_io(target.read_bytes)
+                        await storage_io(validate_context_file_for_stage, row, content)
                 else:
                     try:
-                        content = await run_storage_io(
+                        content = await storage_io(
                             storage.get_bytes_bounded,
                             storage_key=storage_key,
                             max_bytes=size_bytes,
                         )
-                    except ObjectStorageSizeLimitError as exc:
+                    except storage_size_limit_error as exc:
                         raise ContextFileContentError(
                             "context_file_identity_mismatch",
                             file_kind=file_kind,
@@ -433,8 +434,8 @@ async def materialize_run_context_files(
                             file_kind=file_kind,
                             attachment_index=attachment_index,
                         ) from exc
-                    await run_storage_io(validate_context_file_for_stage, row, content)
-                    await run_storage_io(target.write_bytes, content)
+                    await storage_io(validate_context_file_for_stage, row, content)
+                    await storage_io(target.write_bytes, content)
             except ContextFileContentError as exc:
                 raise exc.bind_attachment(
                     attachment_index=attachment_index,

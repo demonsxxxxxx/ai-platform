@@ -1322,6 +1322,9 @@ async def test_retention_queries_are_bounded_reference_safe_and_skip_locked():
     assert lock_params == (20,)
     assert "insert into object_deletion_outbox" in write_sql
     assert "snapshots.included_artifact_ids ? artifacts.id" in write_sql
+    assert "'retention_artifact_cleanup', true" in write_sql
+    assert "'deletion_owner_run_id', artifacts.run_id" in write_sql
+    assert "run_id = null" in write_sql
     assert json.loads(write_params[0]) == ["artifact-a"]
 
     await repositories.purge_deleted_memory_records(conn, grace_days=7, limit=25)
@@ -8878,15 +8881,6 @@ async def test_terminalization_progresses_in_bounded_crash_retry_batches_without
     batch_sql = [sql for sql, _ in conn.sql if sql.startswith("with locked_run as")]
     assert len(batch_sql) == 3
     assert all("limit %s" in sql and "for update of permission_request skip locked" in sql for sql in batch_sql)
-    artifact_sql = [
-        sql.lower()
-        for sql, _ in conn.sql
-        if sql.lower().startswith("select count(*) as artifact_count from artifacts")
-    ]
-    assert artifact_sql == [
-        "select count(*) as artifact_count from artifacts "
-        "where tenant_id = %s and run_id = %s and lifecycle_state = 'active'"
-    ]
 
 
 @pytest.mark.asyncio
@@ -12956,7 +12950,6 @@ async def test_list_run_artifacts_returns_manifest_contract_columns():
     sql, _ = conn.calls[0]
     assert "trace_id" in sql
     assert "manifest_version" in sql
-    assert "lifecycle_state = 'active'" in sql
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,3 @@
-import asyncio
 import re
 from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -47,9 +46,12 @@ from app.execution.api import (
     WorkerQueueLease,
     WorkerRunCancelled,
     bind_worker_attempt_lifecycle,
+    build_artifact_execution_owner,
+    build_artifact_records,
     fail_run_and_reconcile_worker_child as _fail_run_and_reconcile_worker_child,
     finalize_worker_child_parent as _finalize_worker_child_parent,
     locked_run_payload_candidate as _locked_run_payload_candidate,
+    promote_artifact_reservations,
     restored_executor_reconciliation_queue_payload as _restored_executor_reconciliation_queue_payload,
     submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
     time,
@@ -70,6 +72,7 @@ from app.executors.base import (
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.mcp import api as mcp_api
+from app.persistence.artifacts import promote_provisional_artifact_cleanup, reserve_provisional_artifact_cleanup
 from app.principal_authority import (
     CURRENT_PRINCIPAL_DENIAL_REASON,
     resolve_current_principal,
@@ -2547,28 +2550,8 @@ async def process_run_payload(
                         run_id=run_payload.run_id,
                     )
 
-            loop = asyncio.get_running_loop()
-
-            async def reserve_artifact_cleanup(storage_key: str) -> str:
-                async with transaction_factory() as conn:
-                    return await repositories.reserve_provisional_artifact_cleanup(
-                        conn,
-                        tenant_id=run_payload.tenant_id,
-                        run_id=run_payload.run_id,
-                        storage_key=storage_key,
-                    )
-
-            def reserve_artifact_storage(storage_key: str) -> str:
-                receipt = asyncio.run_coroutine_threadsafe(
-                    reserve_artifact_cleanup(storage_key),
-                    loop,
-                )
-                return receipt.result()
-
-            execution_owner = RunExecutionOwner(
-                run_payload.run_id,
-                artifact_storage_scope=run_payload.attempt_id,
-                reserve_artifact_storage=reserve_artifact_storage,
+            execution_owner = build_artifact_execution_owner(
+                run_payload, transaction_factory, reserve_provisional_artifact_cleanup, RunExecutionOwner
             )
             started_at = time.monotonic()
             result = await _submit_run_until_cancelled(
@@ -2768,24 +2751,9 @@ async def process_run_payload(
     event_observability_kwargs = _event_observability_kwargs(observability, result.executor_payload)
     terminal_event_kwargs = {"trace_id": trace_id, **event_observability_kwargs} if event_observability_kwargs else {}
 
-    artifact_records = []
-    for artifact in result.artifacts:
-        if reconciliation is not None and not artifact.provisional_cleanup_id:
-            raise ValueError("executor_reconciliation_artifact_cleanup_receipt_missing")
-        artifact_id = repositories.new_id("art")
-        artifact_records.append(
-            {
-                "id": artifact_id,
-                "artifact_type": artifact.artifact_type,
-                "label": artifact.label,
-                "content_type": artifact.content_type,
-                "storage_key": artifact.storage_key,
-                "size_bytes": artifact.size_bytes,
-                "download_url": _artifact_download_url(artifact_id),
-                "manifest_json": artifact.manifest,
-                "provisional_cleanup_id": artifact.provisional_cleanup_id,
-            }
-        )
+    artifact_records = build_artifact_records(
+        result.artifacts, reconciliation is not None, repositories.new_id, _artifact_download_url
+    )
     skill_snapshot = _skill_snapshot_from_result(result)
     agent_capability_state = (
         project_agent_capability_state(
@@ -2963,17 +2931,10 @@ async def process_run_payload(
                             "count": agent_capability_state.optional_not_invoked_count,
                         },
                     )
+            await promote_artifact_reservations(
+                conn, artifact_records, payload, promote_provisional_artifact_cleanup
+            )
             for artifact in artifact_records:
-                if artifact["provisional_cleanup_id"] is not None:
-                    promoted = await repositories.promote_provisional_artifact_cleanup(
-                        conn,
-                        artifact_id=str(artifact["provisional_cleanup_id"]),
-                        tenant_id=payload.tenant_id,
-                        run_id=payload.run_id,
-                        storage_key=artifact["storage_key"],
-                    )
-                    if not promoted:
-                        raise RuntimeError("executor_artifact_cleanup_receipt_lost")
                 manifest_json = artifact_manifest_contract(
                     artifact_type=artifact["artifact_type"],
                     manifest=_sanitize_artifact_manifest(artifact["manifest_json"]),

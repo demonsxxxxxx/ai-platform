@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -8,7 +9,8 @@ from app.context.domain.conversation import (
     build_executor_conversation_context,
     empty_executor_conversation_context,
 )
-from app.validation import assert_safe_id
+
+_SAFE_SNAPSHOT_MEMBER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 
 SnapshotLoader = Callable[..., Awaitable[dict[str, Any] | None]]
 MessageLoader = Callable[..., Awaitable[list[dict[str, Any]]]]
@@ -40,16 +42,16 @@ async def materialize_worker_context_snapshot(
     raw_file_ids = scoped_snapshot.get("included_file_ids")
     if not isinstance(raw_message_ids, list) or not isinstance(raw_file_ids, list):
         return None
-    try:
-        selected_message_ids = [
-            assert_safe_id(message_id, "included_message_ids")
-            for message_id in raw_message_ids
-        ]
-        selected_file_ids = [
-            assert_safe_id(file_id, "included_file_ids") for file_id in raw_file_ids
-        ]
-    except (TypeError, ValueError):
+    if (
+        any(
+            not isinstance(member_id, str)
+            or not _SAFE_SNAPSHOT_MEMBER_ID.fullmatch(member_id)
+            for member_id in (*raw_message_ids, *raw_file_ids)
+        )
+    ):
         return None
+    selected_message_ids = list(raw_message_ids)
+    selected_file_ids = list(raw_file_ids)
     if len(selected_message_ids) != len(set(selected_message_ids)) or len(
         selected_file_ids
     ) != len(set(selected_file_ids)):
