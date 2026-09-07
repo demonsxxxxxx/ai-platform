@@ -117,7 +117,7 @@ test("initial load exposes loading then hydrates exact server profiles", async (
 
   assert.equal(loaded.listPhase, "ready");
   assert.equal(loaded.profiles.length, 1);
-  assert.deepEqual(loaded.activeEditor?.selectedSkills, [profile().selected_skill]);
+  assert.deepEqual(loaded.activeEditor?.selectedSkills, [{ skill_id: "document-review" }]);
   assert.deepEqual(loaded.activeEditor?.selectedMcpToolIds, profile().mcp_tool_ids);
   assert.equal(loaded.activeEditor?.revision, 7);
 });
@@ -290,17 +290,16 @@ test("edit disables publish, save fences the exact revision, then publish adopts
       instructions: "更新后的说明",
       selected_skill: {
         skill_id: "document-review",
-        expected_version: "2026.07.28",
       },
       skill_set: [{
         skill_id: "document-review",
-        expected_version: "2026.07.28",
       }],
       mcp_tool_ids: ["mcp:knowledge:search"],
       avatar_ref: "builtin:document",
       avatar_seed: "agt_document_review",
       avatar_asset_id: null,
       category: "operations",
+      market_tag: "",
       visibility: "tenant",
       allowed_department_ids: [],
       allowed_roles: [],

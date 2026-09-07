@@ -143,7 +143,7 @@ test("maps only complete authorized Skill and safe MCP identities", () => {
   ]);
 });
 
-test("hydrates every exact server identity without catalog fallback", () => {
+test("hydrates Skill names without catalog fallback", () => {
   const serverProfile = profile({
     selected_skill: {
       skill_id: "removed-skill",
@@ -158,7 +158,6 @@ test("hydrates every exact server identity without catalog fallback", () => {
   assert.equal(editor.status, "draft");
   assert.deepEqual(editor.selectedSkills, [{
     skill_id: "removed-skill",
-    expected_version: "sha256:removed",
   }]);
   assert.deepEqual(editor.selectedMcpToolIds, ["mcp:removed"]);
   assert.equal(isAgentProfileEditorDirty(editor), false);
@@ -202,11 +201,9 @@ test("materializes create and update requests with the exact optimistic revision
     instructions: "Keep trailing space. ",
     selected_skill: {
       skill_id: "document-review",
-      expected_version: "2026.07.28",
     },
     skill_set: [{
       skill_id: "document-review",
-      expected_version: "2026.07.28",
     }],
     mcp_tool_ids: ["mcp:knowledge:search"],
     avatar_ref: "builtin:agent",
@@ -268,20 +265,19 @@ test("reports precise missing data and revision reasons", () => {
   );
 });
 
-test("preserves and blocks stale Skill version and MCP identities", () => {
+test("accepts current Skill versions without pinning them in profile state", () => {
   const editor = hydrateAgentProfileEditor(profile());
   assert.equal(
-    validateAgentProfileEditor(editor, catalog({ skills: [skill({ expected_version: "new" })] }))?.code,
-    "selected_skill_stale",
+    validateAgentProfileEditor(editor, catalog({ skills: [skill({ expected_version: "new" })] })),
+    null,
   );
   const mcpIssue = validateAgentProfileEditor(editor, catalog({ mcpTools: [] }));
   assert.equal(mcpIssue?.code, "selected_mcp_tool_unavailable");
   assert.deepEqual(mcpIssue?.unavailableMcpToolIds, ["mcp:knowledge:search"]);
-  assert.deepEqual(editor.selectedMcpToolIds, ["mcp:knowledge:search"]);
-  assert.equal(editor.selectedSkills[0]?.expected_version, "2026.07.28");
+  assert.deepEqual(editor.selectedSkills, [{ skill_id: "document-review" }]);
 });
 
-test("persists an exact multi-Skill set while keeping the primary compatibility shadow", () => {
+test("persists Skill names while keeping the primary compatibility shadow", () => {
   const secondSkill = skill({ name: "fact-extraction", expected_version: "sha256:facts" });
   const editor = {
     ...hydrateAgentProfileEditor(profile()),
@@ -296,11 +292,14 @@ test("persists an exact multi-Skill set while keeping the primary compatibility 
     null,
   );
   const request = buildAgentProfileDraftRequest(editor);
-  assert.deepEqual(request.selected_skill, request.skill_set[0]);
-  assert.deepEqual(request.skill_set, editor.selectedSkills);
+  assert.deepEqual(request.selected_skill, { skill_id: "document-review" });
+  assert.deepEqual(request.skill_set, [
+    { skill_id: "document-review" },
+    { skill_id: "fact-extraction" },
+  ]);
 });
 
-test("rejects more than 32 Skills and duplicate Skill identities across versions", () => {
+test("rejects more than 32 Skills and duplicate Skill names", () => {
   const base = hydrateAgentProfileEditor(profile());
   const tooMany = {
     ...base,

@@ -478,7 +478,7 @@ test("mounted workbench hydrates, refreshes, and creates only an explicit local 
     assert.equal((reactProps(instructionsInput) as unknown as { value: string }).value, "仅回答公司支持范围内的问题。");
     assert.equal(container.querySelector('[aria-label="专家模型"]'), null);
     assert.match(container.textContent, /support-skill/);
-    assert.match(container.textContent, /support-skill2026\.07\.28/);
+    assert.doesNotMatch(container.textContent, /support-skill2026\.07\.28/);
     assert.match(container.textContent, /支持知识检索/);
 
     const pageTwo = findButton(container, "2");
@@ -550,6 +550,82 @@ test("mounted list fields preserve separators while editing and normalize on blu
       await Promise.resolve();
     });
     assert.equal(recommendedTasks.value, "任务一\n任务二");
+  } finally {
+    Object.assign(agentProfileApi, originals);
+    await React.act(async () => root.unmount());
+  }
+});
+
+test("market tag combobox shows existing tags, filters them, and accepts custom input", async () => {
+  const document = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
+  const originals = { ...agentProfileApi };
+  agentProfileApi.listAdmin = async () => ({
+    agent_profiles: [
+      profile({ market_tag: "客户支持" }),
+      profile({
+        agent_id: "agt_hr",
+        market_tag: "人力资源",
+        name: "人事助手",
+      }),
+    ],
+  });
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = ReactDOM.createRoot(container as never);
+  try {
+    await React.act(async () => {
+      root.render(React.createElement(AgentBuilderWorkbench, {
+        catalog: catalog(),
+        canManageProfiles: true,
+      }));
+      await flush();
+    });
+
+    const marketTag = container.querySelector('[aria-label="市场标签"]');
+    assert.ok(marketTag);
+    await React.act(async () => {
+      reactProps(marketTag).onFocus?.({ target: marketTag } as never);
+      await Promise.resolve();
+    });
+    const options = () => container.querySelector('[role="listbox"]')?.querySelectorAll('[role="option"]') ?? [];
+    assert.deepEqual(
+      options().map((option) => option.textContent),
+      ["客户支持", "人力资源"],
+    );
+
+    await React.act(async () => {
+      marketTag.value = "人力";
+      reactProps(marketTag).onChange?.({ target: marketTag } as never);
+      await Promise.resolve();
+    });
+    assert.deepEqual(options().map((option) => option.textContent), ["人力资源"]);
+
+    await React.act(async () => {
+      reactProps(marketTag).onKeyDown?.({
+        key: "ArrowDown",
+        preventDefault() {},
+      } as never);
+      await Promise.resolve();
+    });
+    await React.act(async () => {
+      reactProps(marketTag).onKeyDown?.({
+        key: "Enter",
+        preventDefault() {},
+      } as never);
+      await Promise.resolve();
+    });
+    assert.equal(marketTag.value, "人力资源");
+
+    await React.act(async () => {
+      marketTag.value = "自定义能力";
+      reactProps(marketTag).onChange?.({ target: marketTag } as never);
+      await Promise.resolve();
+    });
+    assert.equal(marketTag.value, "自定义能力");
+    assert.match(container.querySelector('[role="listbox"]')?.textContent ?? "", /可直接使用当前输入/);
   } finally {
     Object.assign(agentProfileApi, originals);
     await React.act(async () => root.unmount());
@@ -698,7 +774,7 @@ test("mounted dirty editor requires confirmation before switching profiles", asy
   }
 });
 
-test("mounted unresolved catalogs preserve server pins without stale or empty claims", async () => {
+test("mounted unresolved catalogs preserve server Skill names without stale or empty claims", async () => {
   const document = installDom();
   const ReactDOM = await import("react-dom/client");
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
@@ -725,7 +801,8 @@ test("mounted unresolved catalogs preserve server pins without stale or empty cl
       await flush();
     });
 
-    assert.match(container.textContent, /support-skill2026\.07\.28/);
+    assert.match(container.textContent, /support-skill/);
+    assert.doesNotMatch(container.textContent, /support-skill2026\.07\.28/);
     assert.match(container.textContent, /已保留服务端工具身份/);
     assert.doesNotMatch(container.textContent, /当前不可用|没有这一精确版本|需要明确移除/);
 

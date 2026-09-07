@@ -1,8 +1,8 @@
 import type {
   AgentProfileAdminProjection,
   AgentProfileDraftRequest,
+  AgentProfileSkillReference,
   PublicSkillResponse,
-  SelectedSkillRequest,
   ToolState,
 } from "../../types";
 
@@ -35,7 +35,7 @@ export interface AgentBuilderEditor {
   expectedOutputs: string[];
   permissionsAndDataAccessNotice: string;
   instructions: string;
-  selectedSkills: SelectedSkillRequest[];
+  selectedSkills: AgentProfileSkillReference[];
   selectedMcpToolIds: string[];
   avatarRef: AgentProfileDraftRequest["avatar_ref"];
   avatarSeed: string;
@@ -179,7 +179,7 @@ export function hydrateAgentProfileEditor(
     selectedSkills: (profile.skill_set?.length
       ? profile.skill_set
       : [profile.selected_skill]
-    ).map((skill) => ({ ...skill })),
+    ).map((skill) => ({ skill_id: skill.skill_id })),
     selectedMcpToolIds: [...profile.mcp_tool_ids],
     avatarRef: profile.avatar_ref,
     avatarSeed: profile.avatar_seed?.trim() || profile.agent_id,
@@ -193,11 +193,11 @@ export function hydrateAgentProfileEditor(
     materializedProfile: {
       ...profile,
       market_tag: profile.market_tag ?? "",
-      selected_skill: { ...profile.selected_skill },
+      selected_skill: { skill_id: profile.selected_skill.skill_id },
       skill_set: (profile.skill_set?.length
         ? profile.skill_set
         : [profile.selected_skill]
-      ).map((skill) => ({ ...skill })),
+      ).map((skill) => ({ skill_id: skill.skill_id })),
       mcp_tool_ids: [...profile.mcp_tool_ids],
       starter_prompts: [...profile.starter_prompts],
       recommended_tasks: [...profile.recommended_tasks],
@@ -223,7 +223,7 @@ function editorDefinition(editor: AgentBuilderEditor) {
     permissions_and_data_access_notice: editor.permissionsAndDataAccessNotice.trim(),
     instructions: editor.instructions,
     selected_skill: editor.selectedSkills[0] ?? null,
-    skill_set: editor.selectedSkills,
+    skill_set: editor.selectedSkills.map((skill) => ({ skill_id: skill.skill_id })),
     mcp_tool_ids: editor.selectedMcpToolIds,
     avatar_ref: editor.avatarRef,
     avatar_seed: editor.avatarSeed.trim(),
@@ -249,8 +249,11 @@ function profileDefinition(profile: AgentProfileAdminProjection) {
     expected_outputs: profile.expected_outputs,
     permissions_and_data_access_notice: profile.permissions_and_data_access_notice,
     instructions: profile.instructions,
-    selected_skill: profile.selected_skill,
-    skill_set: profile.skill_set?.length ? profile.skill_set : [profile.selected_skill],
+    selected_skill: { skill_id: profile.selected_skill.skill_id },
+    skill_set: (profile.skill_set?.length
+      ? profile.skill_set
+      : [profile.selected_skill]
+    ).map((skill) => ({ skill_id: skill.skill_id })),
     mcp_tool_ids: profile.mcp_tool_ids,
     avatar_ref: profile.avatar_ref,
     avatar_seed: profile.avatar_seed?.trim() || profile.agent_id,
@@ -303,7 +306,7 @@ export function hasUnsavedAgentProfileEdits(editor: AgentBuilderEditor): boolean
   );
 }
 
-/** Find exact current catalog identities without replacing stale server pins. */
+/** Find current catalog Skill names without replacing their package hashes. */
 export function validateAgentProfileEditor(
   editor: AgentBuilderEditor,
   catalog: AgentBuilderCurrentCatalog,
@@ -326,8 +329,7 @@ export function validateAgentProfileEditor(
     return catalog.skills.some(
       (skill) =>
         skill.enabled &&
-        skill.name === selection.skill_id &&
-        skill.expected_version === selection.expected_version,
+        skill.name === selection.skill_id,
     );
   });
   if (!selectedSkillsAreCurrent) return { code: "selected_skill_stale" };
@@ -371,7 +373,7 @@ export function getAgentProfilePublishBlock(
   return validateAgentProfileEditor(editor, catalog);
 }
 
-/** Materialize the exact optimistic-lock request accepted by agentProfileApi. */
+/** Materialize the optimistic-lock request using Skill names, not package hashes. */
 export function buildAgentProfileDraftRequest(
   editor: AgentBuilderEditor,
 ): AgentProfileDraftRequest {
@@ -389,8 +391,8 @@ export function buildAgentProfileDraftRequest(
     expected_outputs: editor.expectedOutputs.map((item) => item.trim()).filter(Boolean),
     permissions_and_data_access_notice: editor.permissionsAndDataAccessNotice.trim(),
     instructions: editor.instructions,
-    selected_skill: { ...editor.selectedSkills[0] },
-    skill_set: editor.selectedSkills.map((skill) => ({ ...skill })),
+    selected_skill: { skill_id: editor.selectedSkills[0].skill_id },
+    skill_set: editor.selectedSkills.map((skill) => ({ skill_id: skill.skill_id })),
     mcp_tool_ids: [...editor.selectedMcpToolIds],
     avatar_ref: editor.avatarRef,
     avatar_seed: editor.avatarSeed.trim() || editor.name.trim(),
@@ -415,7 +417,7 @@ export function agentBuilderBlockReason(issue: AgentBuilderValidationIssue): str
     case "instructions_required":
       return "缺少 Agent.md 初始指令，请填写后再保存。";
     case "skill_required":
-      return "缺少 Skill，请至少选择一个已授权版本。";
+      return "缺少 Skill，请至少选择一个已授权 Skill。";
     case "skill_limit_exceeded":
       return "一位专家最多可选择 32 个 Skill，请移除多余项。";
     case "profile_revision_missing":
@@ -423,7 +425,7 @@ export function agentBuilderBlockReason(issue: AgentBuilderValidationIssue): str
     case "catalog_unavailable":
       return "授权目录尚未完整加载，暂不能保存或发布。";
     case "selected_skill_stale":
-      return "所选 Skill 或其固定版本已不可用，请重新选择。";
+      return "所选 Skill 当前不可用，请重新选择。";
     case "selected_mcp_tool_unavailable":
       return `已选 MCP 工具中有 ${issue.unavailableMcpToolIds?.length ?? 1} 项不可用，请明确移除或重新选择。`;
     case "no_changes":

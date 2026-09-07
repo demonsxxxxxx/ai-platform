@@ -473,21 +473,6 @@ function AgentMarketCatalog({
           <div className="relative min-w-0 flex-1">
             <div className="flex items-center gap-2 lg:absolute lg:right-0 lg:top-0">
               <button
-                data-agent-market-favorites
-                aria-label="查看我的收藏"
-                aria-pressed={activeTab === "favorites"}
-                className={`inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] ${
-                  activeTab === "favorites"
-                    ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-white"
-                    : "border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] text-[var(--theme-text-secondary)] hover:border-[var(--theme-primary)] hover:text-[var(--theme-primary)]"
-                }`}
-                onClick={() => handleTab(activeTab === "favorites" ? "tags" : "favorites")}
-                type="button"
-              >
-                <Star aria-hidden="true" fill={activeTab === "favorites" ? "currentColor" : "none"} size={15} />
-                我的收藏
-              </button>
-              <button
                 aria-label="刷新专家目录"
                 className="btn-secondary inline-flex items-center gap-2"
                 disabled={catalog.phase === "loading"}
@@ -655,6 +640,21 @@ function AgentMarketCatalog({
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <div aria-label="排序方式" className="flex flex-wrap items-center gap-2" data-agent-market-sort role="group">
                 <span className="text-xs text-[var(--theme-text-secondary)]">排序方式</span>
+                <button
+                  data-agent-market-favorites
+                  aria-label="查看我的收藏"
+                  aria-pressed={activeTab === "favorites"}
+                  className={`inline-flex min-h-8 items-center gap-1.5 rounded-md border px-3 text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] ${
+                    activeTab === "favorites"
+                      ? "border-[var(--theme-primary)] bg-[var(--theme-primary-light)] text-[var(--theme-primary)]"
+                      : "border-[var(--theme-border)] text-[var(--theme-text-secondary)] hover:border-[var(--theme-primary)] hover:text-[var(--theme-primary)]"
+                  }`}
+                  onClick={() => handleTab(activeTab === "favorites" ? "tags" : "favorites")}
+                  type="button"
+                >
+                  <Star aria-hidden="true" fill={activeTab === "favorites" ? "currentColor" : "none"} size={14} />
+                  我的收藏
+                </button>
                 {([
                   ["default", "综合排序"],
                   ["tasks", "完成任务最多"],

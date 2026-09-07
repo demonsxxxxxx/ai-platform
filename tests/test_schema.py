@@ -45,6 +45,20 @@ def test_schema_enforces_agent_skill_set_shape_and_legacy_shadow_identity():
     assert "raise exception 'agent_profile_skill_set_invalid'" in schema
     assert "new.skill_set->0->>'skill_id' is distinct from new.skill_id" in schema
     assert "new.skill_set->0->>'expected_version' is distinct from new.skill_version" in schema
+    assert "create or replace function agent_profile_name_only_skill_set_prepare()" in schema
+    assert "create or replace function agent_profile_name_only_skill_set_finalize()" in schema
+    assert "create trigger trg_agent_profile_aa_name_only_skill_set_prepare" in schema
+    assert "create trigger trg_agent_profile_zz_name_only_skill_set_finalize" in schema
+    trigger_names = [
+        "trg_agent_profile_aa_name_only_skill_set_prepare",
+        "trg_agent_profile_legacy_insert_compatibility",
+        "trg_agent_profile_zz_name_only_skill_set_finalize",
+    ]
+    assert trigger_names == sorted(trigger_names)
+    assert "item || jsonb_build_object('expected_version', 'profile-current')" in schema
+    assert "jsonb_agg(item - 'expected_version' order by ordinal)" in schema
+    assert "new.skill_version := '';" in schema
+    assert "legacy_compatibility_write boolean not null default false" in schema
     assert "having count(*) > 1" in schema
     assert "published_hash text" in schema
     assert "published_status text" in schema

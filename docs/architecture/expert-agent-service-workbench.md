@@ -23,9 +23,12 @@ ordinary-user acceptance.
   private `instructions` field. It is system-level initialization owned by the
   published Agent Profile; it is not a user message and is never returned in a
   public projection.
-- **Agent Skill Set** is the exact set of professional capabilities pinned by
-  the Agent Profile and made available to the Agent SDK. It is not ordinary
-  chat, and membership does not require invocation on every task.
+- **Agent Skill Set** is the set of professional capabilities authorized by the
+  Agent Profile and made available to the Agent SDK. The profile stores stable
+  Skill names; publication or Run admission resolves each name against the
+  tenant-authorized catalog, and the accepted Run freezes the resolved versions.
+  It is not ordinary chat, and membership does not require invocation on every
+  task.
 - **Task** is the user-facing name for work created inside an Agent Workspace.
   The UI should use task-oriented labels instead of generic Chat labels.
 - **Archive Skill** means disabling and removing the tenant distribution from
@@ -73,7 +76,7 @@ The initial editing surface contains only these core fields:
 | --- | --- | --- |
 | `name` | Expert name | Public identity |
 | `instructions` | Agent.md initial instructions | Private system initialization |
-| `skill_set` | Skill Set | One or more exact governed Skill/version bindings |
+| `skill_set` | Skill Set | One or more authorized Skill-name references; publication or Run admission resolves and freezes versions |
 
 All other fields remain supported but are progressive configuration:
 
@@ -108,16 +111,19 @@ the browser.
 - Agent Conversations are created only after explicit user action and remain
   pinned to `agent_id`, immutable Revision, and `content_hash`.
 - Every run, retry, resume, and copy reauthorizes ownership, tenant,
-  publication, ACL, the Run-pinned model, Skill version, and MCP capability
-  server-side.
+  publication, ACL, the Run-pinned model, the current authorized Skill versions,
+  and MCP capability server-side. Agent Profile configuration stores Skill names;
+  accepted Run snapshots carry the immutable resolved versions.
 - Browser requests may select only an administrator-enabled public model. They
   cannot override private instructions, Skill, MCP, ACL, revision hash, or
   execution identity; the backend resolves and freezes the selected model and
   active connection revision when admitting the Run.
 - Agent Profile `instructions` stay in private execution input and the executor
   system prompt. They never become user content or a safe public field.
-- Expert Agents continue to require at least one exact governed Skill in their
-  immutable Skill Set. The Agent SDK autonomously decides whether and which
+- Expert Agents continue to require at least one authorized Skill name in their
+  profile Skill Set. Publication or Run admission resolves each name against the
+  current tenant-authorized catalog and freezes the resulting versions in the
+  immutable Run snapshot. The Agent SDK autonomously decides whether and which
   registered Skill to invoke for each task. Ordinary Harness chat remains
   `execution_kind=harness_chat` with `skill_id=null`; historical `general-chat`
   is compatibility data, not a new product Skill.
@@ -211,8 +217,11 @@ and artifact download remain bound to
 
 ## Rollout and Rollback
 
-This slice adds a version-pinned Agent Skill Set and autonomous SDK dispatch to
-the API, persistence, and execution contracts, alongside the UI changes.
+This slice stores authorized Agent Skill Set names in profile revisions and
+resolves current governed versions at publication or Run admission before the
+Agent SDK dispatches autonomously. The API, persistence, and execution
+contracts remain compatible with historical version-bearing profile rows,
+alongside the UI changes.
 Rollback requires application and schema compatibility with legacy singleton
 Skill revisions; it must not delete Agent revisions, conversations, Skill
 distributions, Runs, or historical compatibility rows. Do not use rollback to

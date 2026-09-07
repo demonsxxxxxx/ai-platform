@@ -16,6 +16,7 @@ from app.department_directory import validate_profile_department_authorities
 from app.models import (
     AgentAppRunRequest,
     AgentProfileDraftRequest,
+    AgentProfilePublicProjection,
     AgentProfilePublishRequest,
     AgentProfileTrialRunRequest,
     AgentProfileTrialRunResponse,
@@ -152,7 +153,14 @@ async def list_agent_profiles(
                 query=normalized_query,
                 category=category,
             )
-    return {"agent_profiles": profiles}
+    return {
+        "agent_profiles": [
+            profile.model_dump(mode="json")
+            if isinstance(profile, AgentProfilePublicProjection)
+            else profile
+            for profile in profiles
+        ]
+    }
 
 
 @router.get("/agent-profiles/{agent_id}")
