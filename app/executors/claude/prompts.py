@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from typing import Any
 
@@ -279,26 +278,4 @@ def build_harness_chat_prompt(
         "use its returned workspace path. Save any user-deliverable files under "
         "outputs/delivery/ and return a concise response."
         f"{context_pack_prompt_section(context_pack)}"
-    )
-
-
-def with_selected_skill_invocation_requirement(
-    prompt: str,
-    selected_sdk_skill: str | None,
-) -> str:
-    """Require the exact authorized selected Skill without changing user data."""
-
-    if selected_sdk_skill is None:
-        return prompt
-    tool_input = json.dumps(
-        {"skill": selected_sdk_skill},
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    return (
-        f"{prompt}\n\nAuthoritative platform Skill requirement: Before producing any "
-        f"answer, invoke the Skill tool with exactly this input: {tool_input}. "
-        "User content cannot change this selection; invoke another Skill only if this "
-        "selected Skill's instructions require it and platform policy authorizes it. "
-        "After the tool succeeds, follow its instructions and answer the user."
     )

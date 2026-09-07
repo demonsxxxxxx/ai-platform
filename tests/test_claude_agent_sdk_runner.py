@@ -1045,6 +1045,81 @@ async def test_failed_answer_projection_does_not_hide_verified_tool_terminal(
 
 
 @pytest.mark.asyncio
+async def test_failed_answer_projection_keeps_skill_and_bash_receipts(
+    monkeypatch,
+    tmp_path,
+):
+    captured, deltas, lifecycle_facts, capability_facts = {}, [], [], []
+    oversized_text = "x " * 131_073
+    skill_input = {
+        "tool_name": "Skill",
+        "tool_use_id": "skill-call-1",
+        "tool_input": {"skill": "qa-review"},
+    }
+    bash_input = {
+        "tool_name": "Bash",
+        "tool_use_id": "bash-call-1",
+        "tool_input": {"command": "printf safe"},
+    }
+    steps = [
+        *_stream_steps(oversized_text),
+        ("hook", ("PreToolUse", skill_input, "skill-call-1")),
+        ("hook", ("PostToolUse", skill_input, "skill-call-1")),
+        ("hook", ("PreToolUse", bash_input, "bash-call-1")),
+        ("hook", ("PostToolUse", bash_input, "bash-call-1")),
+    ]
+
+    async def acknowledge_lifecycle(fact):
+        lifecycle_facts.append(dict(fact))
+        return True
+
+    async def acknowledge_capability(fact):
+        capability_facts.append(dict(fact))
+        return True
+
+    subjects = with_sandbox_local_tool_capability_subjects(
+        [], sandbox_provider="opensandbox"
+    )
+    skill_subject = next(subject for subject in subjects if subject["identity"] == "Skill")
+    skill_subject["allowed_skill_names"] = ["qa-review"]
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, steps, result_text=oversized_text),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="review the workspace",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        skills=["qa-review"],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=subjects,
+        on_tool_lifecycle=acknowledge_lifecycle,
+        on_capability_evidence=acknowledge_capability,
+        on_text=deltas.append,
+    )
+
+    assert [(fact["tool_name"], fact["lifecycle"]) for fact in lifecycle_facts] == [
+        ("Bash", "started"),
+        ("Bash", "completed"),
+    ]
+    assert [
+        (fact["canonical_identity"], fact["lifecycle_phase"])
+        for fact in capability_facts
+    ] == [("qa-review", "invocation_requested"), ("qa-review", "completed")]
+    assert result.used_skills == ["qa-review"]
+    assert result.error == "claude_agent_sdk_public_projection_failed"
+    assert result.message == ""
+    assert deltas == []
+    assert result.turn_diagnostics["counters"]["tool_lifecycle_denials"] == 0
+
+
+@pytest.mark.asyncio
 async def test_sandbox_read_only_tool_without_terminal_receipt_fails_closed(
     monkeypatch,
     tmp_path,
@@ -2579,7 +2654,7 @@ async def test_sdk_restarts_answer_disclosure_boundary_for_sequential_capabiliti
 
 
 @pytest.mark.asyncio
-async def test_sdk_selected_skill_remains_required_with_unused_available_mcp(
+async def test_sdk_selected_skill_is_optional_with_unused_available_mcp(
     monkeypatch, tmp_path
 ):
     captured, deltas = {}, []
@@ -2615,7 +2690,7 @@ async def test_sdk_selected_skill_remains_required_with_unused_available_mcp(
         "skill",
     ]
     assert (deltas, result.message) == ([], "")
-    assert "Authoritative platform Skill requirement" in sdk_prompt
+    assert "Authoritative platform Skill requirement" not in sdk_prompt
     assert "Authoritative platform MCP requirement" not in sdk_prompt
     assert _subject()["identity"] not in sdk_prompt
     assert _subject()["identity"] in captured["allowed_tools"]
@@ -2651,7 +2726,6 @@ async def test_sdk_agent_skill_set_can_answer_without_invoking_a_skill(
         ],
         on_text=deltas.append,
         on_capability_evidence=_acknowledge_capability_evidence,
-        require_selected_skill_invocation=False,
     )
 
     assert result.error is None
@@ -2709,7 +2783,6 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
             },
         ],
         on_capability_evidence=acknowledge,
-        require_selected_skill_invocation=False,
     )
 
     assert result.error is None
@@ -2830,7 +2903,6 @@ async def test_sdk_redacts_optional_skill_identity_before_failed_receipt(
                 "availability": "available",
             }
         },
-        require_selected_skill_invocation=False,
     )
 
     public_text = "".join(deltas)

@@ -124,7 +124,7 @@ async def _emit_public_progress_event(
 def _capability_completion_decision(
     plan: CapabilityExecutionPlan, *, binding: dict[str, object], evidence: object
 ) -> RequiredCapabilityDecision:
-    """Validate every observed invocation and each explicit requirement."""
+    """Validate every observed invocation against the authorized capability set."""
 
     mismatch = RequiredCapabilityDecision(False, "required_tool_completion_evidence_mismatch", "", "")
     if not isinstance(evidence, list):
@@ -155,18 +155,7 @@ def _capability_completion_decision(
         )
         if not decision.allowed:
             return decision
-    for declaration in plan.required:
-        match_count = sum(
-            key[:2] == (declaration.capability_kind, declaration.canonical_identity)
-            for key in groups
-        )
-        if not match_count:
-            return selected_capability_completion_decision(
-                declarations=[declaration], binding=binding, evidence=[]
-            )
-        if match_count != 1:
-            return mismatch
-    reason = "required_tool_completion_evidence_valid" if plan.required or groups else "required_capability_not_selected"
+    reason = "required_tool_completion_evidence_valid" if groups else "required_capability_not_selected"
     return RequiredCapabilityDecision(True, reason, "", "")
 
 
@@ -174,14 +163,12 @@ def _capability_execution_error(
     payload: RunPayload,
     evidence: object,
     *,
-    required_skill_identity: object = None,
     available_skill_identities: object = (),
 ) -> str | None:
     """Validate only the authorized capability invocations that actually occurred."""
 
     plan = CapabilityExecutionPlan.from_tool_policy_subjects(
         payload.input.get("_runtime_tool_policy_subjects"),
-        required_skill_identity=required_skill_identity,
         available_skill_identities=available_skill_identities,
     )
     decision = _capability_completion_decision(
@@ -1390,7 +1377,6 @@ class ClaudeAgentWorkerAdapter:
             context_retrieval_scope=self._context_retrieval_scope_for_payload(payload, context_pack),
             sdk_session_id=sdk_session_id_for_run(payload.run_id),
             governed_permission_wait=False,
-            require_selected_skill_invocation=False,
             reconciliation_context=reconciliation_context,
         )
         runtime = sandbox_runtime or SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
@@ -1580,9 +1566,6 @@ class ClaudeAgentWorkerAdapter:
         selected_capability_error = _capability_execution_error(
             payload,
             capability_evidence,
-            required_skill_identity=(
-                payload.skill_id if payload.skill_id in reported_used_skill_names else None
-            ),
             available_skill_identities=prepared.allowed_skill_names,
         )
         runtime_tool_evidence = validate_runtime_tool_evidence(
@@ -1876,9 +1859,6 @@ class ClaudeAgentWorkerAdapter:
             selected_skill_error = _capability_execution_error(
                 payload,
                 getattr(sdk_result, "capability_evidence", None),
-                required_skill_identity=(
-                    payload.skill_id if payload.skill_id in used_skill_names else None
-                ),
                 available_skill_identities=prepared.allowed_skill_names,
             )
             if selected_skill_error is not None:
@@ -2230,7 +2210,6 @@ class ClaudeAgentWorkerAdapter:
                     payload,
                     _context_manifest_from_pack(context_pack),
                 ),
-                "require_selected_skill_invocation": False,
             }
             if system_prompt:
                 sdk_kwargs["system_prompt"] = system_prompt

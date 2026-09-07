@@ -226,7 +226,6 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         skills=["qa-file-reviewer"],
         tool_policy_subjects=subjects,
         execution_policy="sandbox_brokered",
-        require_selected_skill_invocation=False,
         on_tool_lifecycle=acknowledge_tool_lifecycle,
         on_capability_evidence=acknowledge_capability_evidence,
     )
@@ -2548,9 +2547,6 @@ def test_worker_capability_execution_plan_validates_observed_calls(case, expecte
     assert claude_agent_worker._capability_execution_error(
         current_payload,
         evidence,
-        required_skill_identity=(
-            skill_id if case in {"skill_completed", "skill_mcp_call_id"} else None
-        ),
         available_skill_identities=[skill_id],
     ) == expected_error
 
@@ -4216,7 +4212,6 @@ async def test_worker_local_selected_skill_binds_acknowledged_pre_and_post_evide
     assert claude_agent_worker._capability_execution_error(
         current_payload,
         result.capability_evidence,
-        required_skill_identity=current_payload.skill_id,
         available_skill_identities=[current_payload.skill_id],
     ) is None
 
@@ -4253,7 +4248,6 @@ async def test_worker_local_selected_skill_rejects_incomplete_or_invalid_evidenc
     assert claude_agent_worker._capability_execution_error(
         current_payload,
         result.capability_evidence,
-        required_skill_identity=current_payload.skill_id,
         available_skill_identities=[current_payload.skill_id],
     ) == expected_error
 
@@ -5224,12 +5218,10 @@ async def test_claude_worker_uses_runtime_model_value_for_sdk(monkeypatch, tmp_p
         public_skill_metadata,
         thinking_effort,
         tool_policy_subjects,
-        require_selected_skill_invocation,
     ):
         captured["model_id"] = model_id
         captured["public_skill_metadata"] = public_skill_metadata
         captured["thinking_effort"] = thinking_effort
-        captured["require_selected_skill_invocation"] = require_selected_skill_invocation
         return FakeQueryResult()
 
     adapter = ClaudeAgentWorkerAdapter()
@@ -5253,7 +5245,6 @@ async def test_claude_worker_uses_runtime_model_value_for_sdk(monkeypatch, tmp_p
     assert captured["model_id"] == "deepseek-v4-pro"
     assert captured["public_skill_metadata"] is None
     assert captured["thinking_effort"] == "off"
-    assert captured["require_selected_skill_invocation"] is False
 
 
 @pytest.mark.asyncio
@@ -5697,7 +5688,6 @@ async def test_sdk_runner_preserves_skill_use_when_query_raises_after_hook(monke
         cwd=tmp_path,
         skill_id="general-chat",
         skills=["qa-file-reviewer"],
-        require_selected_skill_invocation=False,
         on_capability_evidence=acknowledge_capability_evidence,
     )
 
@@ -5791,7 +5781,6 @@ async def test_sdk_runner_preserves_skill_use_when_timeout_fires_after_hook(monk
         cwd=tmp_path,
         skill_id="general-chat",
         skills=["qa-file-reviewer"],
-        require_selected_skill_invocation=False,
         on_capability_evidence=acknowledge_capability_evidence,
     )
 
