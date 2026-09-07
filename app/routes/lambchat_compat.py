@@ -36,7 +36,10 @@ from app.db import transaction
 from app.execution.api import list_public_models
 from app.models import LoginRequest, SessionRenameRequest
 from app.projection_redaction import (
+    PUBLIC_RETIRED_AGENT_ID,
+    PUBLIC_RETIRED_SESSION_TITLE,
     capability_id_from_skill,
+    is_retired_agent_for_projection,
     public_agent_id_for_projection,
     public_skill_display_label,
 )
@@ -145,11 +148,22 @@ def _sse(event: str, data: dict[str, Any], event_id: str | None = None) -> str:
 
 
 def _session_payload(row: dict[str, Any]) -> dict[str, Any]:
-    agent_id = public_agent_id_for_projection(row.get("agent_id"))
+    raw_agent_id = row.get("agent_id")
+    retired_agent = is_retired_agent_for_projection(
+        raw_agent_id,
+        row.get("agent_default_skill_id"),
+        row.get("agent_profile_skill_id"),
+        row.get("agent_profile_has_retired_skill"),
+    )
+    agent_id = (
+        PUBLIC_RETIRED_AGENT_ID
+        if retired_agent
+        else public_agent_id_for_projection(raw_agent_id, row.get("agent_default_skill_id"))
+    )
     return {
         "id": row["id"],
         "agent_id": agent_id,
-        "name": row.get("title") or "新会话",
+        "name": PUBLIC_RETIRED_SESSION_TITLE if retired_agent else row.get("title") or "新会话",
         "metadata": {"agent_id": agent_id, "workspace_id": row["workspace_id"]},
         "is_active": row.get("status", "active") == "active",
         "created_at": row.get("created_at"),

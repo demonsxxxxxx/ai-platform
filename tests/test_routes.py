@@ -4958,8 +4958,8 @@ async def test_create_run_rejects_file_skill_without_files(monkeypatch):
         await create_run(
             CreateRunRequest(
                 workspace_id="default",
-                agent_id="baoyu-translate",
-                capability_id="document_translation",
+                agent_id="qa-word-review",
+                capability_id="document_review",
                 file_ids=[],
             ),
             principal=principal(),
@@ -5035,8 +5035,8 @@ async def test_create_run_reuses_snapshot_authorized_session_file_without_rebind
         CreateRunRequest(
             workspace_id="default",
             session_id="ses-existing",
-            agent_id="baoyu-translate",
-            capability_id="document_translation",
+            agent_id="qa-word-review",
+            capability_id="document_review",
         ),
         principal=principal(),
     )

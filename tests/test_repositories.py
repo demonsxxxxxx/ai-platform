@@ -2462,8 +2462,8 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
             "status": "active",
         },
         {
-            "id": "baoyu-translate",
-            "default_skill_id": "baoyu-translate",
+            "id": "retired-agent",
+            "default_skill_id": "retired-skill",
             "status": "active",
         },
     ]
@@ -2488,7 +2488,7 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
         },
         {
             "capability_kind": "skill",
-            "capability_id": "baoyu-translate",
+            "capability_id": "retired-skill",
             "status": "disabled",
             "visible_to_user": False,
             "scope_mode": "allowlist",
@@ -2537,13 +2537,13 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
     assert [row["id"] for row in admin_rows] == [
         "general-agent",
         "qa-word-review",
-        "baoyu-translate",
+        "retired-agent",
     ]
     assert len(audits) == 3
     assert {audit["target_id"] for audit in audits} == {
         "general-chat",
         "qa-file-reviewer",
-        "baoyu-translate",
+        "retired-skill",
     }
     for audit in audits:
         assert audit["action"] == "capability_distribution.admin_bypass"
@@ -4486,7 +4486,7 @@ async def test_list_public_skill_catalog_hides_unreleased_selected_versions_by_d
             return [
                 catalog_row("general-chat", "active"),
                 catalog_row("qa-file-reviewer", "released"),
-                catalog_row("baoyu-translate", "draft"),
+                catalog_row("retired-skill", "draft"),
                 catalog_row("ragflow-knowledge-search", "reviewed"),
                 catalog_row("ctd-32s73-stability-template-fill", "disabled"),
                 catalog_row("custom-deprecated-skill", "deprecated"),

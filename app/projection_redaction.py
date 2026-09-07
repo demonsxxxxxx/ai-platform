@@ -16,7 +16,6 @@ from app.required_tool_contract import public_required_tool_detail
 CAPABILITY_BY_SKILL_ID = {
     LEGACY_SYNTHETIC_CHAT_SKILL_ID: "general_chat",
     "qa-file-reviewer": "document_review",
-    "baoyu-translate": "document_translation",
     "ragflow-knowledge-search": "knowledge_answer",
 }
 
@@ -24,20 +23,33 @@ CAPABILITY_BY_AGENT_ID = {
     "general-agent": "general_chat",
     "qa-word-review": "document_review",
     "document-review": "document_review",
-    "baoyu-translate": "document_translation",
     "sop-assistant": "knowledge_answer",
 }
 
 PUBLIC_AGENT_ID_BY_CAPABILITY = {
     "general_chat": "general-agent",
     "document_review": "document-review",
-    "document_translation": "document-translation",
     "knowledge_answer": "knowledge-answer",
 }
+
+PUBLIC_RETIRED_AGENT_ID = "retired-agent"
+PUBLIC_RETIRED_SESSION_TITLE = "已停用 Agent 会话"
+RETIRED_INTERNAL_AGENT_IDS = frozenset({"translate", "baoyu-translate"})
+
+
+def is_retired_agent_for_projection(agent_id: object, *skill_ids: object) -> bool:
+    return (
+        isinstance(agent_id, str) and agent_id in RETIRED_INTERNAL_AGENT_IDS
+    ) or any(
+        skill_id is True or skill_id == "baoyu-translate"
+        for skill_id in skill_ids
+    )
+
 
 INTERNAL_AGENT_ID_BY_PUBLIC_ID = {
     "document-review": "qa-word-review",
     "document-translation": "baoyu-translate",
+    PUBLIC_RETIRED_AGENT_ID: "baoyu-translate",
     "knowledge-answer": "sop-assistant",
 }
 
@@ -141,6 +153,8 @@ def public_execution_kind_for_projection(
 def public_agent_id_for_projection(agent_id: object, skill_id: object | None = None) -> str | None:
     """Return the public-facing agent id for user-visible projections."""
     if not isinstance(agent_id, str) or not agent_id:
+        return None
+    if is_retired_agent_for_projection(agent_id, skill_id):
         return None
     capability_id = capability_id_from_skill(skill_id, agent_id)
     if capability_id:
