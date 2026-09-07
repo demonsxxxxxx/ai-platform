@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+from uuid import uuid4
 
 from redis.asyncio import Redis
 import pytest
 
 from app.streaming.api import (
+    LivePublication,
+    LiveSubscriptionClosed,
+    RunStreamHub,
     V4ProjectionError,
     project_public_envelope_v4,
     stream_key,
@@ -17,6 +22,7 @@ from app.streaming.redis import (
     StreamEnvelope,
     StreamTransportUnavailable,
 )
+from app.streaming.infrastructure.redis_live import RedisLiveFanoutSource
 from app.streaming.infrastructure.v4 import V4RedisStreamBridge
 
 
@@ -80,6 +86,55 @@ async def _stream():
     await client.delete(key, state_key)
     await client.hset(state_key, mapping={"phase": "open", "open_protocol": "v4"})
     return client, key, state_key, V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+
+
+@pytest.mark.asyncio
+async def test_real_redis_malformed_channel_does_not_block_concurrent_subscribe(
+    monkeypatch,
+):
+    redis_url = _redis_url()
+    publisher = Redis.from_url(redis_url, decode_responses=True)
+    source = RedisLiveFanoutSource(redis_url=redis_url)
+    hub = RunStreamHub(source=source)
+    suffix = uuid4().hex
+    channel_a = f"sse-live:test:a:{suffix}"
+    channel_b = f"sse-live:test:b:{suffix}"
+    channel_c = f"sse-live:test:c:{suffix}"
+    failed = await hub.subscribe(channel_a)
+    failed_next = asyncio.create_task(failed.next(timeout_seconds=5))
+    unaffected = await hub.subscribe(channel_c)
+    pubsub = source._require_pubsub()
+    subscribe = pubsub.subscribe
+    post_malformed = json.dumps({"redis_id": "0-1", "envelope": "{}"})
+
+    async def subscribe_after_malformed(*channels, **kwargs):
+        if channel_b in channels:
+            assert await publisher.publish(channel_a, "not-json") == 1
+            assert await publisher.publish(channel_a, post_malformed) == 1
+        return await subscribe(*channels, **kwargs)
+
+    monkeypatch.setattr(pubsub, "subscribe", subscribe_after_malformed)
+    try:
+        subscribed = await asyncio.wait_for(hub.subscribe(channel_b), timeout=5)
+        with pytest.raises(
+            LiveSubscriptionClosed,
+            match="live_publication_invalid",
+        ):
+            await failed_next
+
+        payload = json.dumps({"redis_id": "1-0", "envelope": "{}"})
+        assert await publisher.publish(channel_c, payload) == 1
+        assert await unaffected.next(timeout_seconds=1) == LivePublication(
+            channel_c,
+            "1-0",
+            "{}",
+        )
+        assert source._transport_failed is False
+        await subscribed.aclose()
+        await unaffected.aclose()
+    finally:
+        await hub.aclose()
+        await publisher.aclose()
 
 
 @pytest.mark.asyncio

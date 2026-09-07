@@ -66,15 +66,20 @@ class FakePubSub:
         self.subscribed = []
         self.unsubscribed = []
         self.after_subscribe_ack = {}
+        self.before_subscribe_ack = {}
         self.delayed_subscribe_ack = set()
         self.drop_unsubscribe_ack = set()
         self.block_unsubscribe = False
         self.unsubscribe_started = asyncio.Event()
         self.unsubscribe_release = asyncio.Event()
+        self.subscribe_started = asyncio.Event()
         self.closed = False
 
     async def subscribe(self, channel):
         self.subscribed.append(channel)
+        self.subscribe_started.set()
+        for message in self.before_subscribe_ack.pop(channel, ()):
+            await self.messages.put(message)
         if channel not in self.delayed_subscribe_ack:
             await self.messages.put({"type": "subscribe", "channel": channel})
         message = self.after_subscribe_ack.pop(channel, None)
@@ -274,6 +279,52 @@ async def test_malformed_publication_after_subscribe_ack_stays_channel_scoped():
     assert await unaffected.next(timeout_seconds=1) == LivePublication(
         "channel-b", "4-0", "{}"
     )
+    await unaffected.aclose()
+    await hub.aclose()
+
+
+@pytest.mark.asyncio
+async def test_malformed_channel_does_not_block_concurrent_subscribe_or_other_channel(
+    monkeypatch,
+):
+    monkeypatch.setattr(redis_live, "LIVE_SUBSCRIBE_TIMEOUT_SECONDS", 0.05)
+    client = FakeRedisClient()
+    source = RedisLiveFanoutSource(client=client)
+    hub = RunStreamHub(source=source)
+    failed = await hub.subscribe("channel-a")
+    failed_next = asyncio.create_task(failed.next(timeout_seconds=1))
+    unaffected = await hub.subscribe("channel-c")
+    client.pubsub_instance.before_subscribe_ack["channel-b"] = (
+        {
+            "type": "message",
+            "channel": "channel-a",
+            "data": "not-json",
+        },
+        {
+            "type": "message",
+            "channel": "channel-a",
+            "data": json.dumps({"redis_id": "11-0", "envelope": "{}"}),
+        },
+    )
+
+    subscribed = await asyncio.wait_for(hub.subscribe("channel-b"), timeout=1)
+
+    with pytest.raises(LiveSubscriptionClosed, match="live_publication_invalid"):
+        await failed_next
+    await client.pubsub_instance.messages.put(
+        {
+            "type": "message",
+            "channel": "channel-c",
+            "data": json.dumps({"redis_id": "12-0", "envelope": "{}"}),
+        }
+    )
+    assert await unaffected.next(timeout_seconds=1) == LivePublication(
+        "channel-c", "12-0", "{}"
+    )
+    assert client.pubsub_calls == 1
+    assert source._transport_failed is False
+
+    await subscribed.aclose()
     await unaffected.aclose()
     await hub.aclose()
 
@@ -553,6 +604,53 @@ async def test_transport_rebuild_waits_for_old_command_cleanup(monkeypatch):
     )
     await reconnected.aclose()
     await hub.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stale_subscribe_cleanup_does_not_fail_rebuilt_transport(monkeypatch):
+    monkeypatch.setattr(redis_live, "LIVE_SUBSCRIBE_TIMEOUT_SECONDS", 0.01)
+    client = FakeRedisClient()
+    source = RedisLiveFanoutSource(client=client)
+
+    async def ignore_publication(_publication):
+        return None
+
+    async def ignore_channel_failure(_channel, _reason):
+        return None
+
+    async def ignore_transport_failure(_reason):
+        return None
+
+    callbacks = {
+        "on_publication": ignore_publication,
+        "on_channel_failure": ignore_channel_failure,
+        "on_failure": ignore_transport_failure,
+    }
+    await source.start(**callbacks)
+    old_pubsub = client.pubsub_instance
+    old_pubsub.delayed_subscribe_ack.add("channel-a")
+    old_subscription = asyncio.create_task(source.subscribe("channel-a"))
+    await old_pubsub.subscribe_started.wait()
+
+    await source._command_lock.acquire()
+    try:
+        restarting = asyncio.create_task(source.start(**callbacks))
+        await asyncio.sleep(0)
+        assert restarting.done() is False
+        await source._fail_transport()
+    finally:
+        source._command_lock.release()
+
+    await asyncio.wait_for(restarting, timeout=1)
+    with pytest.raises(RuntimeError, match="live_transport_unavailable"):
+        await old_subscription
+
+    assert old_pubsub.unsubscribed == []
+    assert source._transport_failed is False
+    await source.subscribe("channel-b")
+    assert source._channels == {"channel-b"}
+    await source.unsubscribe("channel-b")
+    await source.aclose()
 
 
 async def _append(values, value):
