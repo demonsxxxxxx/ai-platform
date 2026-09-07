@@ -37,8 +37,36 @@ It binds tenant, Run, current Attempt, runtime lease, callback index, and ordere
 batch items. The v4 platform adapter validates every item before receipt,
 assigns deterministic safe identities, and commits canonical public `run_events`
 plus the receipt atomically. Exact retries reuse the same rows and identities;
-a conflicting receipt fails closed. Callback transport fields and engine SDK
-objects are never browser wire fields.
+a conflicting receipt fails closed. The callback response acknowledges that
+PostgreSQL commit without waiting for Redis publication or a terminal wake;
+dedicated Worker loops retry publication and terminal reconciliation from the
+durable rows. Callback transport fields and engine SDK objects are never
+browser wire fields.
+
+The Sandbox may enqueue only single-item callbacks containing one adjacent,
+already-projected `message.delta` event before this boundary. The worker batches
+those callback items without concatenating or rewriting their events: each
+keeps its event identity and becomes its own durable row and SSE sequence. It
+uses a configured 50-millisecond aggregation delay, stops adding before a
+batch would exceed 100 events or 8 KiB of aggregate delta text, and holds at
+most 100 queued callback items. The text byte limit excludes envelope/JSON
+metadata. The configured delay does not bound queue residence, network retry
+or end-to-end latency; those require separate measurement. Deadline-based age
+handling and a wakeable forced flush are convergence targets, not claims about
+the current timer implementation. A larger pre-projected item and every multi-item callback remain
+synchronous barriers. Once v4 answer projection is accepted, the redundant
+legacy `assistant_delta` callback is suppressed. One ordered runner-event
+callback is in flight at a time; queue saturation backpressures the SDK. Every
+non-delta runner event, Tool lifecycle transition, error, cancellation, or
+terminal transition is a receipt barrier, so no later fact can overtake
+uncommitted public answer text. Cancellation discards only callbacks that have
+not started and waits for an in-flight delivery to reach its bounded receipt or
+rejection before terminal delivery. The callback HTTP client is reused for the
+application lifetime; reconnect behavior does not change callback identity or
+retry bytes. A cancellation request establishes the same 30-second monotonic
+shutdown deadline used by message buffering, progress cleanup, terminal callback
+retry, and callback-client close. Process shutdown reuses that deadline rather
+than starting consecutive or unbounded waits.
 
 The Sandbox may enqueue only single-item callbacks containing one adjacent,
 already-projected `message.delta` event before this boundary. The worker batches

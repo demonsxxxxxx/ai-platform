@@ -17,6 +17,7 @@ from app import repositories
 from app.files.api import (
     delete_expired_file_upload_session,
     expire_file_upload_sessions,
+    is_direct_file_upload_session,
     retry_expired_file_upload_session,
 )
 from app.bootstrap.files import configure_file_upload_services
@@ -41,7 +42,7 @@ from app.db import transaction
 from app.executors.registry import AdapterRegistry
 from app.executor_reconciler import run_executor_terminal_reconciler
 from app.runtime.sandbox.container_provider import create_container_provider
-from app.storage import ObjectStorage
+from app.storage import ObjectStorage, run_storage_io
 from app.routes.sandbox_runtime_cleanup import (
     SandboxRuntimeCleanupError,
     cleanup_expired_sandbox_leases as _cleanup_expired_sandbox_lease_records,
@@ -636,12 +637,26 @@ async def cleanup_expired_file_upload_sessions() -> int:
         return 0
     storage = ObjectStorage()
     for session in expired_sessions:
+        upload_id = str(session["upload_id"])
+        storage_key = str(session["storage_key"])
+        initialization_unknown = upload_id == f"initializing_{session['id']}"
         try:
-            await asyncio.to_thread(
-                storage.abort_multipart_upload,
-                storage_key=str(session["storage_key"]),
-                upload_id=str(session["upload_id"]),
-            )
+            if is_direct_file_upload_session(session):
+                await run_storage_io(
+                    storage.delete_object,
+                    storage_key=storage_key,
+                )
+            elif initialization_unknown:
+                await run_storage_io(
+                    storage.abort_multipart_uploads_for_key,
+                    storage_key=storage_key,
+                )
+            else:
+                await run_storage_io(
+                    storage.cleanup_multipart_upload,
+                    storage_key=storage_key,
+                    upload_id=upload_id,
+                )
         except Exception:
             async with transaction() as conn:
                 await retry_expired_file_upload_session(
@@ -650,21 +665,56 @@ async def cleanup_expired_file_upload_sessions() -> int:
                 )
         else:
             async with transaction() as conn:
-                await delete_expired_file_upload_session(
-                    conn,
-                    upload_session_id=str(session["id"]),
-                )
+                if initialization_unknown:
+                    await retry_expired_file_upload_session(
+                        conn,
+                        upload_session_id=str(session["id"]),
+                        delay_seconds=86_400,
+                    )
+                else:
+                    await delete_expired_file_upload_session(
+                        conn,
+                        upload_session_id=str(session["id"]),
+                    )
     return len(expired_sessions)
 
 
-async def run_worker_maintenance(
-    settings: object | None = None,
+async def run_worker_publication_maintenance(
+    settings: object,
     *,
-    v4_capabilities: WorkerV4Capabilities | None = None,
+    v4_capabilities: WorkerV4Capabilities,
 ) -> None:
-    settings = settings or get_settings()
-    if v4_capabilities is None:
-        raise RuntimeError("worker_v4_capabilities_unavailable")
+    async def drain_due_v4_publication() -> int:
+        scope_limit = max(1, min(int(getattr(settings, "v4_publication_scope_limit", 64)), 256))
+        event_limit = max(1, min(int(getattr(settings, "v4_publication_event_limit", 64)), 256))
+        return await publish_due_v4_events(
+            v4_capabilities.publication_claims,
+            v4_capabilities.publication_transport,
+            scope_limit=scope_limit,
+            event_limit=event_limit,
+        )
+
+    async def drain_pending_v4_admissions() -> int:
+        limit = max(1, min(int(getattr(settings, "v4_pending_admission_limit", 64)), 256))
+        return await publish_pending_admissions(
+            v4_capabilities,
+            limit=limit,
+        )
+
+    await run_maintenance_phases(
+        {
+            "v4_pending_admission": drain_pending_v4_admissions,
+            "v4_publication": drain_due_v4_publication,
+        },
+        logger=logger,
+    )
+
+
+async def run_worker_cleanup_maintenance(
+    settings: object,
+    *,
+    v4_capabilities: WorkerV4Capabilities,
+) -> None:
     phases = {
         "sandbox_cleanup": cleanup_expired_sandbox_leases,
         "memory_cleanup": lambda: cleanup_expired_memory_records_for_worker(settings),
@@ -682,41 +732,52 @@ async def run_worker_maintenance(
             v4_capabilities=v4_capabilities,
         ),
     }
-    if v4_capabilities is not None:
-        async def drain_due_v4_publication() -> int:
-            scope_limit = max(1, min(int(getattr(settings, "v4_publication_scope_limit", 64)), 256))
-            event_limit = max(1, min(int(getattr(settings, "v4_publication_event_limit", 64)), 256))
-            return await publish_due_v4_events(
-                v4_capabilities.publication_claims,
-                v4_capabilities.publication_transport,
-                scope_limit=scope_limit,
-                event_limit=event_limit,
-            )
+    await run_maintenance_phases(phases, logger=logger)
 
-        async def drain_pending_v4_admissions() -> int:
-            limit = max(1, min(int(getattr(settings, "v4_pending_admission_limit", 64)), 256))
-            return await publish_pending_admissions(
-                v4_capabilities,
-                limit=limit,
-            )
 
-        phases["v4_pending_admission"] = drain_pending_v4_admissions
-        phases["v4_publication"] = drain_due_v4_publication
-    await run_maintenance_phases(
-        phases,
-        logger=logger,
+async def run_worker_maintenance(
+    settings: object | None = None,
+    *,
+    v4_capabilities: WorkerV4Capabilities | None = None,
+) -> None:
+    settings = settings or get_settings()
+    if v4_capabilities is None:
+        raise RuntimeError("worker_v4_capabilities_unavailable")
+    await run_worker_publication_maintenance(
+        settings,
+        v4_capabilities=v4_capabilities,
+    )
+    await run_worker_cleanup_maintenance(
+        settings,
+        v4_capabilities=v4_capabilities,
     )
 
 
 async def _maintenance_until_done(
     settings: object,
     interval_seconds: float,
-    v4_capabilities: WorkerV4Capabilities | None = None,
+    v4_capabilities: WorkerV4Capabilities,
 ) -> None:
     await maintenance_until_done(
         settings,
         interval_seconds,
-        lambda current_settings: run_worker_maintenance(
+        lambda current_settings: run_worker_cleanup_maintenance(
+            current_settings,
+            v4_capabilities=v4_capabilities,
+        ),
+        logger=logger,
+    )
+
+
+async def _publication_maintenance_until_done(
+    settings: object,
+    interval_seconds: float,
+    v4_capabilities: WorkerV4Capabilities,
+) -> None:
+    await maintenance_until_done(
+        settings,
+        interval_seconds,
+        lambda current_settings: run_worker_publication_maintenance(
             current_settings,
             v4_capabilities=v4_capabilities,
         ),
@@ -953,6 +1014,17 @@ async def run_once(
         if run_background_maintenance
         else None
     )
+    publication_maintenance_task = (
+        asyncio.create_task(
+            _publication_maintenance_until_done(
+                settings,
+                _worker_maintenance_interval_seconds(settings),
+                v4_capabilities,
+            )
+        )
+        if run_background_maintenance
+        else None
+    )
 
     async def process_leased_message() -> WorkerOutcome:
         try:
@@ -1008,6 +1080,8 @@ async def run_once(
         tasks = [heartbeat_task, ownership_task, processing_task]
         if maintenance_task is not None:
             tasks.append(maintenance_task)
+        if publication_maintenance_task is not None:
+            tasks.append(publication_maintenance_task)
         for task in tasks:
             if not task.done():
                 task.cancel()
@@ -1054,6 +1128,8 @@ async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float =
     worker_runtime = build_worker_v4_runtime(transaction)
     registry = AdapterRegistry()
     worker_id = default_worker_id()
+    settings = get_settings()
+    await run_worker_maintenance(settings, v4_capabilities=worker_runtime.capabilities)
     reconciler_stop = asyncio.Event()
     reconciler_task = asyncio.create_task(
         run_executor_terminal_reconciler(
@@ -1068,17 +1144,41 @@ async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float =
         _worker_runtime_heartbeat_until_done(f"{socket.gethostname()}:{os.getpid()}"),
         name="ai-platform-worker-runtime-heartbeat",
     )
+    maintenance_task = asyncio.create_task(
+        _maintenance_until_done(
+            settings,
+            _worker_maintenance_interval_seconds(settings),
+            worker_runtime.capabilities,
+        ),
+        name="ai-platform-worker-cleanup-maintenance",
+    )
+    publication_maintenance_task = asyncio.create_task(
+        _publication_maintenance_until_done(
+            settings,
+            _worker_maintenance_interval_seconds(settings),
+            worker_runtime.capabilities,
+        ),
+        name="ai-platform-worker-publication-maintenance",
+    )
+    background_tasks = (
+        reconciler_task,
+        heartbeat_task,
+        maintenance_task,
+        publication_maintenance_task,
+    )
     try:
         while True:
-            _raise_if_background_task_stopped(reconciler_task)
-            _raise_if_background_task_stopped(heartbeat_task)
+            for task in background_tasks:
+                _raise_if_background_task_stopped(task)
             try:
                 outcome = await run_once(
-                registry=registry,
-                timeout_seconds=poll_timeout_seconds,
-                worker_id=worker_id,
-                v4_capabilities=worker_runtime.capabilities,
-            )
+                    registry=registry,
+                    timeout_seconds=poll_timeout_seconds,
+                    worker_id=worker_id,
+                    run_initial_maintenance=False,
+                    run_background_maintenance=False,
+                    v4_capabilities=worker_runtime.capabilities,
+                )
             except Exception:
                 logger.exception("Worker iteration failed")
                 await asyncio.sleep(idle_sleep_seconds)
@@ -1087,10 +1187,10 @@ async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float =
                 await asyncio.sleep(idle_sleep_seconds)
     finally:
         reconciler_stop.set()
-        for task in (reconciler_task, heartbeat_task):
+        for task in background_tasks:
             if not task.done():
                 task.cancel()
-        for task in (reconciler_task, heartbeat_task):
+        for task in background_tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         await worker_runtime.aclose()
@@ -1156,7 +1256,15 @@ async def run_worker_pool(
             _worker_maintenance_interval_seconds(settings),
             worker_runtime.capabilities,
         ),
-        name="ai-platform-worker-maintenance",
+        name="ai-platform-worker-cleanup-maintenance",
+    )
+    publication_maintenance_task = asyncio.create_task(
+        _publication_maintenance_until_done(
+            settings,
+            _worker_maintenance_interval_seconds(settings),
+            worker_runtime.capabilities,
+        ),
+        name="ai-platform-worker-publication-maintenance",
     )
     heartbeat_task = asyncio.create_task(
         _worker_runtime_heartbeat_until_done(process_worker_id),
@@ -1174,14 +1282,20 @@ async def run_worker_pool(
         )
         for index in range(resolved_worker_count)
     ]
+    background_tasks = [
+        reconciler_task,
+        maintenance_task,
+        publication_maintenance_task,
+        heartbeat_task,
+    ]
     try:
-        await asyncio.gather(*tasks, reconciler_task, maintenance_task, heartbeat_task)
+        await asyncio.gather(*tasks, *background_tasks)
     finally:
         reconciler_stop.set()
-        for task in [*tasks, reconciler_task, maintenance_task, heartbeat_task]:
+        for task in [*tasks, *background_tasks]:
             if not task.done():
                 task.cancel()
-        for task in [*tasks, reconciler_task, maintenance_task, heartbeat_task]:
+        for task in [*tasks, *background_tasks]:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         await worker_runtime.aclose()

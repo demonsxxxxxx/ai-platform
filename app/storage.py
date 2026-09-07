@@ -1,7 +1,10 @@
+import asyncio
 import hashlib
 import os
 import tempfile
 from dataclasses import dataclass
+from functools import partial
+from typing import Callable, TypeVar
 
 import boto3
 from botocore.client import Config
@@ -25,6 +28,77 @@ class DownloadedObject:
 
 class ObjectStorageSizeLimitError(ValueError):
     """Raised when a streamed object exceeds a caller-owned byte limit."""
+
+
+class StorageIOBusyError(RuntimeError):
+    """Raised when bounded storage workers cannot accept more work."""
+
+
+class StorageIOTimeoutError(TimeoutError):
+    """Raised when a storage operation exceeds its request wait budget."""
+
+
+_STORAGE_IO_CONCURRENCY = 4
+_STORAGE_IO_ADMISSION_LIMIT = 8
+_STORAGE_IO_ADMISSION_SECONDS = 5.0
+_STORAGE_IO_TIMEOUT_SECONDS = 120.0
+_STORAGE_IO_ADMISSIONS = asyncio.BoundedSemaphore(_STORAGE_IO_ADMISSION_LIMIT)
+_STORAGE_IO_SLOTS = asyncio.Semaphore(_STORAGE_IO_CONCURRENCY)
+_StorageResult = TypeVar("_StorageResult")
+
+
+async def run_storage_io(
+    operation: Callable[..., _StorageResult],
+    /,
+    *args: object,
+    timeout_seconds: float = _STORAGE_IO_TIMEOUT_SECONDS,
+    on_abandoned: Callable[[], None] | None = None,
+    **kwargs: object,
+) -> _StorageResult:
+    """Run blocking storage work without releasing its slot before it stops."""
+
+    admissions = _STORAGE_IO_ADMISSIONS
+    if admissions.locked():
+        raise StorageIOBusyError("storage_io_busy")
+    await admissions.acquire()
+    release_admission = True
+    slots = _STORAGE_IO_SLOTS
+    try:
+        try:
+            await asyncio.wait_for(
+                slots.acquire(),
+                timeout=_STORAGE_IO_ADMISSION_SECONDS,
+            )
+        except TimeoutError as exc:
+            raise StorageIOBusyError("storage_io_busy") from exc
+
+        task = asyncio.create_task(asyncio.to_thread(partial(operation, *args, **kwargs)))
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout=timeout_seconds)
+        except TimeoutError as exc:
+            if task.done():
+                return task.result()
+            if on_abandoned is not None:
+                on_abandoned()
+            raise StorageIOTimeoutError("storage_io_timeout") from exc
+        except BaseException:
+            if not task.done() and on_abandoned is not None:
+                on_abandoned()
+            raise
+        finally:
+            if task.done():
+                slots.release()
+            else:
+                def release_capacity(_task: object) -> None:
+                    slots.release()
+                    admissions.release()
+
+                release_admission = False
+                task.add_done_callback(release_capacity)
+            # A timed-out or cancelled thread keeps its capacity until it really stops.
+    finally:
+        if release_admission:
+            admissions.release()
 
 
 class ObjectStorage:
@@ -135,6 +209,44 @@ class ObjectStorage:
             Key=storage_key,
             UploadId=upload_id,
         )
+
+    def cleanup_multipart_upload(self, *, storage_key: str, upload_id: str) -> None:
+        abort_error: Exception | None = None
+        try:
+            self.abort_multipart_upload(storage_key=storage_key, upload_id=upload_id)
+        except Exception as exc:
+            response = getattr(exc, "response", {})
+            error = response.get("Error", {}) if isinstance(response, dict) else {}
+            if error.get("Code") != "NoSuchUpload":
+                abort_error = exc
+        delete_error: Exception | None = None
+        try:
+            self.delete_object(storage_key=storage_key)
+        except Exception as exc:
+            delete_error = exc
+        if abort_error is not None:
+            raise abort_error
+        if delete_error is not None:
+            raise delete_error
+
+    def abort_multipart_uploads_for_key(self, *, storage_key: str) -> int:
+        self.ensure_bucket()
+        request: dict[str, object] = {"Bucket": self.bucket, "Prefix": storage_key}
+        aborted = 0
+        while True:
+            response = self.client.list_multipart_uploads(**request)
+            for upload in response.get("Uploads") or []:
+                if str(upload.get("Key") or "") != storage_key:
+                    continue
+                upload_id = str(upload.get("UploadId") or "")
+                if not upload_id:
+                    continue
+                self.abort_multipart_upload(storage_key=storage_key, upload_id=upload_id)
+                aborted += 1
+            if not response.get("IsTruncated"):
+                return aborted
+            request["KeyMarker"] = str(response["NextKeyMarker"])
+            request["UploadIdMarker"] = str(response["NextUploadIdMarker"])
 
     def download_to_tempfile(self, *, storage_key: str, max_bytes: int) -> DownloadedObject:
         """Download one object to disk without holding the complete object in memory."""

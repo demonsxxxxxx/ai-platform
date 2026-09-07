@@ -663,6 +663,14 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "chk_files_lifecycle_state",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert (
+        "artifacts",
+        "chk_artifacts_lifecycle_state",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "artifacts",
+        "chk_artifacts_run_owner",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
         "object_deletion_outbox",
         "chk_object_deletion_outbox_target",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
@@ -962,6 +970,26 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "'active'::text, 'delete_pending'::text, 'deleted'::text]))",
         ),
         (
+            "artifacts",
+            "chk_artifacts_lifecycle_state",
+            "c",
+            "CHECK (lifecycle_state = ANY (ARRAY["
+            "'active'::text, 'delete_pending'::text, 'deleted'::text]))",
+        ),
+        (
+            "artifacts",
+            "chk_artifacts_run_owner",
+            "c",
+            "CHECK (run_id IS NOT NULL AND lifecycle_state = 'active'::text OR "
+            "run_id IS NULL AND lifecycle_state = 'delete_pending'::text "
+            "AND manifest_json @> '{\"provisional_reconciliation_cleanup\": true}'::jsonb "
+            "AND NULLIF(manifest_json ->> 'expected_run_id'::text, ''::text) IS NOT NULL OR "
+            "run_id IS NULL AND (lifecycle_state = ANY (ARRAY["
+            "'delete_pending'::text, 'deleted'::text])) "
+            "AND manifest_json @> '{\"retention_artifact_cleanup\": true}'::jsonb "
+            "AND NULLIF(manifest_json ->> 'deletion_owner_run_id'::text, ''::text) IS NOT NULL)",
+        ),
+        (
             "object_deletion_outbox",
             "chk_object_deletion_outbox_state",
             "c",
@@ -1115,7 +1143,7 @@ def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "c9813ff263ccfa7687a0f2e831d56cc9bc8e462250838425967406cc4061d138"
+        "6a6deb5b261012b1d5d52b80095b1afaddf61c2749854282451887c6a0847d2c"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "

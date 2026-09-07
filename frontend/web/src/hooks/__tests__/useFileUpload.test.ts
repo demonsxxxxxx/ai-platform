@@ -337,6 +337,7 @@ test("active XHR cancellation is idempotent and fences stale progress and result
   const result = deferred<UploadResult>();
   let onProgress: ((progress: number) => void) | undefined;
   let aborts = 0;
+  const deleted: string[] = [];
   const task = startFileUploadTask({
     file: harness.file,
     fileCategory: "document",
@@ -356,6 +357,10 @@ test("active XHR cancellation is idempotent and fences stale progress and result
           },
         };
       },
+    },
+    deleteFile: (key) => {
+      deleted.push(key);
+      return Promise.resolve();
     },
     createId: (() => {
       const ids = ["active-temp", "active-final"];
@@ -388,6 +393,7 @@ test("active XHR cancellation is idempotent and fences stale progress and result
   assert.equal(harness.state.updates, updatesAfterCancel);
   assert.equal(harness.state.removals, 1);
   assert.equal(harness.attachments.length, 0);
+  assert.deepEqual(deleted, ["uploaded-key"]);
   assert.deepEqual(harness.toasts, []);
   assert.deepEqual(harness.reports, []);
   assert.equal(harness.abortMap.size, 0);

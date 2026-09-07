@@ -132,6 +132,135 @@ def test_reconciler_restores_versioned_execution_payload_without_metadata_leakag
     ]
 
 
+@pytest.mark.asyncio
+async def test_reconciler_drains_backlog_before_cleanup_or_probe(monkeypatch):
+    from app import executor_reconciler
+
+    stop_event = asyncio.Event()
+    scans = 0
+
+    async def reconcile(**_kwargs):
+        nonlocal scans
+        scans += 1
+        if scans == 3:
+            stop_event.set()
+            return 0
+        return 1
+
+    async def unexpected(*_args, **_kwargs):
+        raise AssertionError("backlog drain must not wait for cleanup or probing")
+
+    monkeypatch.setattr(
+        executor_reconciler,
+        "reconcile_pending_executor_terminals_once",
+        reconcile,
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "cleanup_failed_sandbox_executor_reconciliation_leases",
+        unexpected,
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "probe_suspect_executor_tasks_once",
+        unexpected,
+    )
+
+    await run_executor_terminal_reconciler(stop_event)
+
+    assert scans == 3
+
+
+@pytest.mark.asyncio
+async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch):
+    from app import executor_reconciler
+
+    class Lease:
+        def model_copy(self, *, update):
+            assert update == {"workspace_host_path": "/workspace"}
+            return self
+
+    class Provider:
+        async def collect_workspace(self, _lease, _request, _workspace):
+            return None
+
+    class Adapter:
+        def reconcile_sandbox_terminal(self, **_kwargs):
+            raise AssertionError("the event loop must not call conversion directly")
+
+    class Registry:
+        def get(self, name):
+            assert name == "claude"
+            return Adapter()
+
+    provider = Provider()
+    lease = Lease()
+    bridged = []
+    adapter_contexts = []
+    abandonment_callbacks = []
+    reserved = []
+
+    async def reserve_cleanup(**kwargs):
+        reserved.append(kwargs)
+        return "art_cleanup_a"
+
+    async def bridge(operation, **kwargs):
+        bridged.append(operation.__name__)
+        adapter_contexts.append(kwargs["adapter_context"])
+        abandonment_callbacks.append(kwargs["on_abandoned"])
+        receipt_id = await asyncio.to_thread(
+            kwargs["adapter_context"]["_reserve_artifact_storage"],
+            "private/reconciliations/claim-a/result.txt",
+        )
+        assert receipt_id == "art_cleanup_a"
+        return _result()
+
+    monkeypatch.setattr(
+        executor_reconciler,
+        "_context_and_payload",
+        lambda _row: (
+            {"adapter_name": "claude", "adapter_context": {}, "dispatch_timings": {}},
+            {"status": "succeeded"},
+            SimpleNamespace(attempt_id="attempt-a"),
+        ),
+    )
+    monkeypatch.setattr(executor_reconciler, "_reconciliation_request", lambda *_args: object())
+    monkeypatch.setattr(
+        executor_reconciler,
+        "SandboxWorkspaceManager",
+        lambda: SimpleNamespace(prepare=lambda _request: SimpleNamespace(workspace_host_path="/workspace")),
+    )
+    monkeypatch.setattr(executor_reconciler, "container_lease_from_persisted_row", lambda _row: lease)
+    monkeypatch.setattr(executor_reconciler, "_container_provider_for_lease", lambda _lease: provider)
+    monkeypatch.setattr(executor_reconciler, "run_storage_io", bridge)
+    monkeypatch.setattr(
+        executor_reconciler,
+        "_reserve_reconciliation_artifact_cleanup",
+        reserve_cleanup,
+    )
+
+    result, actual_provider, actual_lease = await executor_reconciler._collect_workspace_and_convert_result(
+        {"id": "lease-a", "tenant_id": "tenant-a", "run_id": "run-a", "provider": "docker"},
+        registry=Registry(),
+        claim_token="claim-a",
+    )
+
+    assert result == _result()
+    assert actual_provider is provider
+    assert actual_lease is lease
+    assert bridged == ["reconcile_sandbox_terminal"]
+    assert adapter_contexts[0]["_artifact_storage_scope"] == "attempt-a"
+    assert abandonment_callbacks[0].__self__ is adapter_contexts[0]["_artifact_collection_abandoned"]
+    assert not adapter_contexts[0]["_artifact_collection_abandoned"].is_set()
+    assert reserved == [
+        {
+            "tenant_id": "tenant-a",
+            "run_id": "run-a",
+            "storage_key": "private/reconciliations/claim-a/result.txt",
+        }
+    ]
+
+
 def test_reconciler_classifies_invalid_persisted_run_payload_as_permanent(monkeypatch):
     row = _lease_row()
     row["executor_reconciliation_context_json"] = {
@@ -362,7 +491,7 @@ async def test_probe_releases_active_executor_for_future_heartbeat_checks(monkey
 
     processed = await probe_suspect_executor_tasks_once()
 
-    assert processed == 1
+    assert processed == 0
     assert selected_provider_names == ["fake"]
     assert claim_tokens and released == [
         {
@@ -852,16 +981,14 @@ async def test_reconciler_times_out_work_before_stale_claim_takeover(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_reconciler_reclaims_fresh_window_before_exhausted_failure_cleanup(monkeypatch):
+async def test_reconciler_keeps_transient_failures_eligible_after_many_attempts(monkeypatch):
     from app import executor_reconciler
 
     rows = []
-    for attempt_count in (5, 6):
+    for attempt_count in (500, 501):
         row = _lease_row()
         row["executor_terminal_reconciliation_attempt_count"] = attempt_count
         rows.append(row)
-    finish_calls = []
-    finish_cancelled = asyncio.Event()
     retried = []
     collect_calls = 0
 
@@ -876,25 +1003,11 @@ async def test_reconciler_reclaims_fresh_window_before_exhausted_failure_cleanup
         collect_calls += 1
         raise RuntimeError("terminal work failed")
 
-    async def finish(_lease_row, **_kwargs):
-        finish_calls.append(len(finish_calls) + 1)
-        if len(finish_calls) == 1:
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                finish_cancelled.set()
-                raise
-
     async def retry(_conn, **kwargs):
         retried.append(kwargs)
         return True
 
     monkeypatch.setattr(executor_reconciler, "transaction", _transaction)
-    monkeypatch.setattr(
-        executor_reconciler,
-        "_RECONCILIATION_WORK_TIMEOUT_SECONDS",
-        0.001,
-    )
     monkeypatch.setattr(
         executor_reconciler.sandbox_lease_repository,
         "claim_sandbox_executor_reconciliations",
@@ -902,7 +1015,11 @@ async def test_reconciler_reclaims_fresh_window_before_exhausted_failure_cleanup
     )
     monkeypatch.setattr(executor_reconciler.repositories, "get_run", get_run)
     monkeypatch.setattr(executor_reconciler, "_collect_workspace_and_convert_result", collect)
-    monkeypatch.setattr(executor_reconciler, "_finish_terminal_reconciliation_failure", finish)
+    monkeypatch.setattr(
+        executor_reconciler,
+        "_finish_terminal_reconciliation_failure",
+        lambda *_args, **_kwargs: pytest.fail("transient failure must remain retryable"),
+    )
     monkeypatch.setattr(
         executor_reconciler.sandbox_lease_repository,
         "retry_sandbox_executor_reconciliation",
@@ -910,21 +1027,146 @@ async def test_reconciler_reclaims_fresh_window_before_exhausted_failure_cleanup
     )
 
     assert await reconcile_pending_executor_terminals_once(worker_id="worker-a") == 1
-    assert finish_cancelled.is_set()
-    assert collect_calls == 1
-    assert len(retried) == 1
-    assert retried[0]["error"] == "TimeoutError"
+    assert await reconcile_pending_executor_terminals_once(worker_id="worker-a") == 1
+    assert collect_calls == 2
+    assert [item["error"] for item in retried] == ["RuntimeError", "RuntimeError"]
+
+
+@pytest.mark.asyncio
+async def test_reconciler_drains_ready_rows_without_idle_wait(monkeypatch):
+    from app import executor_reconciler
+
+    stop_event = asyncio.Event()
+    scan_results = iter((1, 1, 1, 0))
+    scans = []
+
+    async def reconcile(**_kwargs):
+        result = next(scan_results)
+        scans.append(result)
+        if result == 0:
+            stop_event.set()
+        return result
+
+    async def no_work(**_kwargs):
+        return []
+
+    async def no_probe():
+        return 0
+
+    async def unexpected_wait(**_kwargs):
+        pytest.fail("ready reconciliation rows must drain before the idle wait")
+
+    monkeypatch.setattr(executor_reconciler, "reconcile_pending_executor_terminals_once", reconcile)
+    monkeypatch.setattr(
+        executor_reconciler,
+        "cleanup_failed_sandbox_executor_reconciliation_leases",
+        no_work,
+    )
+    monkeypatch.setattr(executor_reconciler, "probe_suspect_executor_tasks_once", no_probe)
+    monkeypatch.setattr(executor_reconciler, "wait_for_executor_reconciliation_signal", unexpected_wait)
+
+    await run_executor_terminal_reconciler(stop_event, worker_id="worker-a")
+
+    assert scans == [1, 1, 1, 0]
+
+
+@pytest.mark.asyncio
+async def test_reconciler_waits_when_no_terminal_or_probe_progress(monkeypatch):
+    from app import executor_reconciler
+
+    stop_event = asyncio.Event()
+    calls = []
+
+    async def retry_only(**_kwargs):
+        calls.append("reconcile")
+        return 0
+
+    async def no_work(**_kwargs):
+        calls.append("cleanup")
+        return []
+
+    async def running_probe():
+        calls.append("probe")
+        return 0
+
+    async def wait(**_kwargs):
+        calls.append("wait")
+        stop_event.set()
 
     monkeypatch.setattr(
         executor_reconciler,
-        "_RECONCILIATION_WORK_TIMEOUT_SECONDS",
-        1.0,
+        "reconcile_pending_executor_terminals_once",
+        retry_only,
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "cleanup_failed_sandbox_executor_reconciliation_leases",
+        no_work,
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "probe_suspect_executor_tasks_once",
+        running_probe,
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "wait_for_executor_reconciliation_signal",
+        wait,
     )
 
-    assert await reconcile_pending_executor_terminals_once(worker_id="worker-a") == 1
-    assert finish_calls == [1, 2]
-    assert collect_calls == 1
-    assert len(retried) == 1
+    await run_executor_terminal_reconciler(stop_event, worker_id="worker-a")
+
+    assert calls == ["reconcile", "cleanup", "probe", "wait"]
+
+
+@pytest.mark.asyncio
+async def test_reconciler_immediately_processes_terminal_persisted_by_probe(monkeypatch):
+    from app import executor_reconciler
+
+    stop_event = asyncio.Event()
+    calls: list[str] = []
+
+    async def reconcile(**_kwargs):
+        calls.append("reconcile")
+        if calls.count("reconcile") == 2:
+            stop_event.set()
+        return 0
+
+    async def cleanup(**_kwargs):
+        calls.append("cleanup")
+        return []
+
+    async def persisted_probe():
+        calls.append("probe")
+        return 1
+
+    async def unexpected_wait(**_kwargs):
+        pytest.fail("a persisted probe terminal must be reconciled before idle wait")
+
+    monkeypatch.setattr(
+        executor_reconciler,
+        "reconcile_pending_executor_terminals_once",
+        reconcile,
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "cleanup_failed_sandbox_executor_reconciliation_leases",
+        cleanup,
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "probe_suspect_executor_tasks_once",
+        persisted_probe,
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "wait_for_executor_reconciliation_signal",
+        unexpected_wait,
+    )
+
+    await run_executor_terminal_reconciler(stop_event, worker_id="worker-a")
+
+    assert calls == ["reconcile", "cleanup", "probe", "reconcile"]
 
 
 @pytest.mark.asyncio
@@ -934,11 +1176,11 @@ async def test_reconciler_scans_postgres_when_redis_wakeup_is_unavailable(monkey
 
     async def reconcile(**kwargs):
         calls.append(kwargs["worker_id"])
-        stop_event.set()
         return 0
 
     async def cleanup(**_kwargs):
         calls.append("cleanup")
+        stop_event.set()
         return []
 
     async def unavailable(**_kwargs):
@@ -1046,6 +1288,8 @@ async def test_probe_and_terminal_claims_use_independent_attempt_counters():
     assert "executor_terminal_reconciliation_attempt_count = executor_terminal_reconciliation_attempt_count + 1" in statements[1]
     assert "status in ('active', 'released')" in statements[1]
     assert "case executor_reconciliation_status when 'pending' then 0" in statements[1]
+    assert "executor_reconciliation_status = 'retry'" in statements[1]
+    assert "greatest(1, executor_terminal_reconciliation_attempt_count)" in statements[1]
     assert "when 'claimed' then 1" in statements[1]
     assert "executor_reconciliation_attempt_count = executor_reconciliation_attempt_count + 1" not in statements[1]
 
@@ -1095,28 +1339,16 @@ async def test_probe_terminal_receipt_rejects_a_stale_claim_token():
     assert update_params[-2:] == ("stale-probe-claim", "stale-probe-claim")
 
 
-@pytest.mark.parametrize(
-    ("failure", "attempt_count", "expected_error"),
-    [
-        (
-            PermanentExecutorReconciliationError("executor_reconciliation_run_payload_invalid"),
-            1,
-            "executor_reconciliation_run_payload_invalid",
-        ),
-        (RuntimeError("transient failure exhausted"), 5, "RuntimeError"),
-    ],
-)
 @pytest.mark.asyncio
-async def test_reconciler_terminalizes_permanent_or_exhausted_failure(
-    monkeypatch,
-    failure,
-    attempt_count,
-    expected_error,
-):
+async def test_reconciler_terminalizes_explicit_permanent_failure(monkeypatch):
+    failure = PermanentExecutorReconciliationError(
+        "executor_reconciliation_run_payload_invalid"
+    )
+    expected_error = "executor_reconciliation_run_payload_invalid"
     finished = []
     retried = []
     row = _lease_row()
-    row["executor_terminal_reconciliation_attempt_count"] = attempt_count
+    row["executor_terminal_reconciliation_attempt_count"] = 1
 
     async def claim(_conn, **_kwargs):
         return [row]

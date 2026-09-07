@@ -99,6 +99,7 @@ interface FileUploadTaskOptions {
   cancelled: Set<string>;
   prepareFile: (file: File) => Promise<File>;
   uploadClient: UploadClient;
+  deleteFile?: (key: string) => Promise<unknown>;
   createId: () => string;
   notifyError: (message: string) => void;
   reportFailure: (error: unknown) => void;
@@ -147,6 +148,7 @@ export function startFileUploadTask({
   cancelled,
   prepareFile,
   uploadClient,
+  deleteFile = uploadApi.deleteFile,
   createId,
   notifyError,
   reportFailure,
@@ -208,6 +210,11 @@ export function startFileUploadTask({
       abortMap.set(tempId, handle.abort);
       const result = await handle.promise;
       if (isCancelled()) {
+        try {
+          await deleteFile(result.key);
+        } catch (error) {
+          reportFailure(error);
+        }
         finish();
         return;
       }

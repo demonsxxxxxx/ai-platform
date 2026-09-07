@@ -35,6 +35,16 @@ _PUBLIC_LANGUAGE_INSTRUCTION = (
 )
 
 
+class CurrentRequestTooLargeError(ValueError):
+    """The accepted current request cannot be represented without data loss."""
+
+
+def _current_request(user_message: str) -> str:
+    if len(user_message.encode("utf-8")) > _MAX_CURRENT_PROMPT_BYTES:
+        raise CurrentRequestTooLargeError("current_request_too_large")
+    return user_message
+
+
 def translation_target_language(user_message: str) -> str:
     """Map the supported user target-language spelling to the sandbox argument."""
 
@@ -209,9 +219,7 @@ def build_skill_prompt(
     conversation_context: dict[str, Any] | None = None,
     authorized_skill_catalog: AuthorizedSkillCatalogSnapshot | None = None,
 ) -> str:
-    bounded_user_message = truncate_utf8_text(
-        user_message, max_bytes=_MAX_CURRENT_PROMPT_BYTES
-    )
+    bounded_user_message = _current_request(user_message)
     file_lines: list[str] = []
     used_file_bytes = 0
     for name in file_names:
@@ -247,9 +255,7 @@ def build_harness_chat_prompt(
 ) -> str:
     """Build the base Harness prompt without advertising a Skill capability."""
 
-    bounded_user_message = truncate_utf8_text(
-        user_message, max_bytes=_MAX_CURRENT_PROMPT_BYTES
-    )
+    bounded_user_message = _current_request(user_message)
     file_lines: list[str] = []
     used_file_bytes = 0
     for name in file_names:

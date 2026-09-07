@@ -32,19 +32,13 @@ from app.runtime.sandbox.contracts import (
 )
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
 from app.runtime.sandbox.providers.opensandbox.startup import renew_opensandbox_lifetime
-from app.runtime.sandbox.executor_signals import (
-    ExecutorSignalUnavailable,
-    publish_executor_terminal_signal,
-)
 from app.settings import get_settings
 from app.streaming.api import (
     V4ProjectionError,
     WorkerV4Capabilities,
-    admit_v4_stream,
     append_callback_v4_rows,
     callback_item_to_v4,
     callback_thinking_summary_to_v4,
-    publish_pending_v4_events,
 )
 from app.streaming.redis import get_stream_authority
 from app.storage import ObjectStorage
@@ -318,29 +312,6 @@ async def record_executor_callback(
             run_id=callback.run_id,
             attempt_id=callback.attempt_id,
         )
-    if v4_items:
-        try:
-            if v4_items:
-                await admit_v4_stream(
-                    capabilities,
-                    tenant_id=tenant_id,
-                    run_id=callback.run_id,
-                    attempt_id=callback.attempt_id,
-                )
-            await publish_pending_v4_events(
-                capabilities,
-                tenant_id=tenant_id,
-                run_id=callback.run_id,
-                attempt_id=callback.attempt_id,
-            )
-        except Exception:  # noqa: BLE001 - PostgreSQL remains the callback authority.
-            logger.warning("callback_v4_publication_deferred", exc_info=True)
-    if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES and lease_id:
-        try:
-            await publish_executor_terminal_signal()
-        except ExecutorSignalUnavailable:
-            # PostgreSQL is authoritative; the worker falls back to bounded polling.
-            logger.warning("executor_terminal_signal_unavailable")
     return _executor_callback_receipt(
         callback,
         deduplicated=callback_deduplicated,

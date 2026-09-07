@@ -202,6 +202,13 @@ def test_schema_declares_file_lifecycle_and_typed_object_deletion_targets():
 
     assert "alter table files add column if not exists lifecycle_state" in schema
     assert "chk_files_lifecycle_state" in schema
+    assert "alter table artifacts alter column run_id drop not null" in schema
+    assert "chk_artifacts_lifecycle_state" in schema
+    assert "chk_artifacts_run_owner" in schema
+    assert "provisional_reconciliation_cleanup" in schema
+    assert "nullif(manifest_json ->> 'expected_run_id', '') is not null" in schema
+    assert "retention_artifact_cleanup" in schema
+    assert "nullif(manifest_json ->> 'deletion_owner_run_id', '') is not null" in schema
     assert "target_type text not null default 'artifact'" in schema
     assert "file_id text references files(id)" in schema
     assert "lease_generation bigint not null default 0" in schema

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  handlePublicRunStreamFrameV4,
+  handlePublicRunStreamFrameV4Result,
   type EventHandlerContext,
 } from "../../../../hooks/useAgent/eventHandlers";
 import type { StreamEventBinding } from "../../../../hooks/useAgent/eventHandlers";
@@ -9,6 +9,13 @@ import {
   adaptPublicRunStreamEventV4,
   projectV4EventToLegacyHandler,
 } from "../publicEventAdapter";
+
+const handlePublicRunStreamFrameV4 = (
+  args: Parameters<typeof handlePublicRunStreamFrameV4Result>[0],
+) => {
+  const result = handlePublicRunStreamFrameV4Result(args);
+  return result.kind === "applied" || result.kind === "deferred";
+};
 
 function frame(eventType: string, payload: Record<string, unknown>, messageId: string | null = null) {
   return adaptPublicRunStreamEventV4(
@@ -259,6 +266,127 @@ test("v4 terminal rejects a foreign Run before hydration", () => {
   }), false);
 });
 
+test("v4 terminal settle fails closed when cursor incarnation changes during hydration", () => {
+  let settle: ((accepted: boolean) => boolean) | undefined;
+  const settled: boolean[] = [];
+  const ctx = {
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    acceptedRunEventSequenceRef: { current: { sessionId: "session-1", runId: "run-1", sequence: null } },
+    acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: null, streamIncarnation: 1 } },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 7 },
+    v4TerminalFenceRef: { current: null },
+    v4TerminalReservationsRef: { current: new Set<string>() },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunTerminal: (_runId: string, _status: "succeeded" | "failed" | "cancelled", _messageId: string, onSettled?: (accepted: boolean) => boolean) => {
+      settle = onSettled;
+      return true;
+    },
+  } as unknown as EventHandlerContext;
+  const terminal = frame("run.succeeded", {
+    terminal_event_id: "terminal-incarnation",
+    hydrate_required: true,
+  }, "message-1");
+  assert.ok(terminal);
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame: {
+      eventHeader: "run.succeeded",
+      transportCursor: "run-1:1:1-0",
+      generation: 3,
+      value: terminal.event,
+    },
+    adapterBinding: { runId: "run-1", streamIncarnation: 1, generation: 3 },
+    messageId: "message-1",
+    ctx,
+    binding: { sessionId: "session-1", runId: "run-1", streamVersion: 7, streamIncarnation: 1, generation: 3 },
+    currentGeneration: 3,
+    onTerminalSettled: (accepted) => settled.push(accepted),
+  }), true);
+
+  ctx.acceptedStreamCursorRef!.current.streamIncarnation = 2;
+  assert.equal(settle?.(true), false);
+  assert.deepEqual(settled, [false]);
+  assert.equal(ctx.v4TerminalFenceRef!.current, null);
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, null);
+
+  let settleLegacy: ((accepted: boolean) => boolean) | undefined;
+  const legacyCtx = {
+    ...ctx,
+    acceptedRunEventSequenceRef: { current: { sessionId: "session-1", runId: "run-1", sequence: null } },
+    acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: null, streamIncarnation: 1 } },
+    v4TerminalFenceRef: undefined,
+    v4TerminalEventIdsRef: { current: new Set<string>() },
+    v4TerminalReservationsRef: { current: new Set<string>() },
+    onRunTerminal: (_runId: string, _status: "succeeded" | "failed" | "cancelled", _messageId: string, onSettled?: (accepted: boolean) => boolean) => {
+      settleLegacy = onSettled;
+      return true;
+    },
+  } as unknown as EventHandlerContext;
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame: {
+      eventHeader: "run.succeeded",
+      transportCursor: "run-1:1:1-0",
+      generation: 3,
+      value: terminal.event,
+    },
+    adapterBinding: { runId: "run-1", streamIncarnation: 1, generation: 3 },
+    messageId: "message-1",
+    ctx: legacyCtx,
+    binding: { sessionId: "session-1", runId: "run-1", streamVersion: 7, streamIncarnation: 1, generation: 3 },
+    currentGeneration: 3,
+  }), true);
+  legacyCtx.acceptedStreamCursorRef!.current.streamIncarnation = 2;
+  assert.equal(settleLegacy?.(true), false);
+  assert.equal(legacyCtx.v4TerminalEventIdsRef!.current.size, 0);
+  assert.equal(legacyCtx.acceptedRunEventSequenceRef!.current.sequence, null);
+});
+
+test("legacy terminal receipt rejects a higher-sequence replay before hydration", () => {
+  const ctx = {
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    acceptedRunEventSequenceRef: { current: { sessionId: "session-1", runId: "run-1", sequence: 1 } },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 7 },
+    v4TerminalEventIdsRef: { current: new Set(["terminal-legacy"]) },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunTerminal: () => {
+      throw new Error("duplicate legacy terminal hydrated");
+    },
+  } as unknown as EventHandlerContext;
+  const terminal = frame("run.succeeded", {
+    terminal_event_id: "terminal-legacy",
+    hydrate_required: true,
+  }, "message-1");
+  assert.ok(terminal);
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame: {
+      eventHeader: "run.succeeded",
+      transportCursor: "run-1:1:2-0",
+      generation: 3,
+      value: { ...terminal.event, event_id: "event-legacy-replay", seq: 2 },
+    },
+    adapterBinding: { runId: "run-1", streamIncarnation: 1, generation: 3 },
+    messageId: "message-1",
+    ctx,
+    binding: { sessionId: "session-1", runId: "run-1", streamVersion: 7, streamIncarnation: 1, generation: 3 },
+    currentGeneration: 3,
+  }), false);
+});
+
 test("v4 terminal end waits for authoritative hydration and scopes the fence", () => {
   const ctx = {
     sessionIdRef: { current: "session-1" },
@@ -408,7 +536,15 @@ test("v4 terminal receipt survives real finalization for every terminal outcome"
       binding,
       currentGeneration: 3,
     }), true);
-    assert.equal(ctx.v4TerminalFenceRef?.current, null);
+    assert.equal(
+      ctx.v4TerminalFenceRef?.current?.terminalEventId,
+      payload.terminal_event_id,
+    );
+    assert.equal(
+      ctx.v4TerminalFenceRef?.current?.streamEndEventId,
+      `end-${status}`,
+    );
+    assert.equal(ctx.v4TerminalEventIdsRef!.current.size, 0);
   }
 });
 

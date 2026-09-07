@@ -1665,6 +1665,21 @@ async def test_upload_file_response_does_not_expose_storage_key(monkeypatch):
     async def fake_create_file(conn, **kwargs):
         assert kwargs["storage_key"].startswith("tenants/tenant-a/")
 
+    async def fake_get_file(conn, **kwargs):
+        return None
+
+    async def fake_get_upload_session(conn, **kwargs):
+        return {"state": "pending"} if kwargs.get("for_update") else None
+
+    async def fake_claim_direct_upload(conn, **kwargs):
+        return True
+
+    async def fake_complete_upload(conn, **kwargs):
+        return None
+
+    async def fake_cleanup_expired_uploads(storage):
+        return None
+
     async def fake_get_file_storage_usage(conn, **kwargs):
         assert kwargs == {
             "tenant_id": "tenant-a",
@@ -1696,8 +1711,29 @@ async def test_upload_file_response_does_not_expose_storage_key(monkeypatch):
     monkeypatch.setattr("app.routes.files.ensure_workspace", fake_ensure_workspace)
     monkeypatch.setattr("app.routes.files.ensure_user", fake_ensure_user)
     monkeypatch.setattr("app.routes.files.create_file", fake_create_file)
+    monkeypatch.setattr("app.routes.files.get_file", fake_get_file)
+    monkeypatch.setattr(
+        "app.routes.files.get_authorized_file_upload_session",
+        fake_get_upload_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.files.claim_direct_file_upload_session",
+        fake_claim_direct_upload,
+    )
+    monkeypatch.setattr(
+        "app.routes.files.complete_file_upload_session",
+        fake_complete_upload,
+    )
+    monkeypatch.setattr(
+        "app.routes.files._cleanup_expired_upload_sessions",
+        fake_cleanup_expired_uploads,
+    )
     monkeypatch.setattr("app.routes.files.get_file_storage_usage", fake_get_file_storage_usage)
     monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
+    monkeypatch.setattr(
+        "app.routes.files._direct_upload_file_id",
+        lambda **_kwargs: "file_uploaded",
+    )
     monkeypatch.setattr("app.routes.files.new_id", lambda prefix: "file_uploaded")
 
     response = await upload_file(

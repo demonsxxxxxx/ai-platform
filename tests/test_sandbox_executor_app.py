@@ -4467,6 +4467,59 @@ async def test_message_delta_waits_for_cancelled_direct_barrier(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_message_delta_buffer_cancel_is_bounded(monkeypatch):
+    direct_started = asyncio.Event()
+    direct_cancelled = asyncio.Event()
+
+    async def deliver(_callback):
+        direct_started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            direct_cancelled.set()
+            raise
+
+    monkeypatch.setattr(executor_app, "_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS", 0.01)
+    buffer = executor_app._MessageDeltaCallbackBuffer(deliver)
+    await buffer.enqueue(message_delta_callback(1, "first"))
+    await direct_started.wait()
+
+    await asyncio.wait_for(buffer.cancel(), timeout=1)
+
+    await asyncio.wait_for(direct_cancelled.wait(), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_waits_for_in_flight_runner_batch(monkeypatch):
+    delivery_started = asyncio.Event()
+    release_delivery = asyncio.Event()
+    delivered: list[str] = []
+
+    async def deliver(callback):
+        delivered.append("delta" if callback.events else "heartbeat")
+        if callback.events:
+            delivery_started.set()
+            await release_delivery.wait()
+        return True
+
+    monkeypatch.setattr(executor_app, "_MESSAGE_DELTA_FLUSH_SECONDS", 0)
+    buffer = executor_app._MessageDeltaCallbackBuffer(deliver)
+    await buffer.enqueue(message_delta_callback(1, "first"))
+    await delivery_started.wait()
+    heartbeat = message_delta_callback(2, "unused").model_copy(update={"events": []})
+    heartbeat_send = asyncio.create_task(buffer.send(heartbeat))
+    await asyncio.sleep(0)
+
+    assert not heartbeat_send.done()
+    assert delivered == ["delta"]
+
+    release_delivery.set()
+    assert await heartbeat_send is True
+    assert await buffer.close() is True
+    assert delivered == ["delta", "heartbeat"]
+
+
+@pytest.mark.asyncio
 async def test_message_delta_buffer_batches_without_rewriting_event_identity(monkeypatch):
     delivered: list[ExecutorCallbackEvent] = []
 
@@ -5223,6 +5276,59 @@ def test_executor_execute_rejects_missing_executor_scope_binding(tmp_path):
 
     assert response.status_code == 503
     assert response.json() == {"detail": "executor_scope_not_configured"}
+
+
+def test_executor_cancel_uses_one_deadline_for_terminal_callback_retry(tmp_path, monkeypatch):
+    runner_started = threading.Event()
+
+    async def executor_runner(_request, _workspace_root, _emit_event):
+        runner_started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("cancelled runner must not resume")
+
+    async def callback_sender(_url, payload, _token):
+        if payload.get("status") == "cancelled":
+            await asyncio.Event().wait()
+        return callback_ack(payload)
+
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app._EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS",
+        0.05,
+    )
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        callback_sender=callback_sender,
+        executor_runner=executor_runner,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        terminal_callback_retry_seconds=300.0,
+    )
+
+    with TestClient(app) as client:
+        dispatched = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+        assert dispatched.status_code == 202
+        assert runner_started.wait(timeout=1.0)
+
+        started_at = time.monotonic()
+        cancelled = client.post(
+            "/v2/tasks/run-a/qat-attempt-a/cancel",
+            headers=auth_headers(),
+        )
+        assert cancelled.status_code == 202
+        while time.monotonic() - started_at < 0.5:
+            status_response = client.get(
+                "/v2/tasks/run-a/qat-attempt-a",
+                headers=auth_headers(),
+            )
+            if status_response.json()["status"] == "callback_failed":
+                break
+            time.sleep(0.01)
+
+        assert status_response.json()["status"] == "callback_failed"
+        assert time.monotonic() - started_at < 0.5
 
 
 def test_executor_execute_rejects_wrong_executor_scope(tmp_path):

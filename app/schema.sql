@@ -2981,9 +2981,34 @@ alter table artifacts add column if not exists expires_at timestamptz;
 alter table artifacts add column if not exists lifecycle_state text not null default 'active';
 alter table artifacts add column if not exists delete_requested_at timestamptz;
 alter table artifacts add column if not exists deleted_at timestamptz;
+alter table artifacts alter column run_id drop not null;
+alter table artifacts drop constraint if exists chk_artifacts_run_owner;
+update artifacts
+set manifest_json = manifest_json || jsonb_build_object(
+      'retention_artifact_cleanup', true,
+      'deletion_owner_run_id', run_id
+    ),
+    run_id = null
+where run_id is not null and lifecycle_state in ('delete_pending', 'deleted');
 alter table artifacts drop constraint if exists chk_artifacts_lifecycle_state;
 alter table artifacts add constraint chk_artifacts_lifecycle_state
   check (lifecycle_state in ('active', 'delete_pending', 'deleted'));
+alter table artifacts add constraint chk_artifacts_run_owner
+  check (
+    (run_id is not null and lifecycle_state = 'active')
+    or (
+      run_id is null
+      and lifecycle_state = 'delete_pending'
+      and manifest_json @> '{"provisional_reconciliation_cleanup":true}'::jsonb
+      and nullif(manifest_json ->> 'expected_run_id', '') is not null
+    )
+    or (
+      run_id is null
+      and lifecycle_state in ('delete_pending', 'deleted')
+      and manifest_json @> '{"retention_artifact_cleanup":true}'::jsonb
+      and nullif(manifest_json ->> 'deletion_owner_run_id', '') is not null
+    )
+  );
 
 create table if not exists object_deletion_outbox (
   id text primary key,
