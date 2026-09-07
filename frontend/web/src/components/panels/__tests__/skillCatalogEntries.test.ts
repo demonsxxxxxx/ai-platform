@@ -123,7 +123,7 @@ test("legacy admin rows defer user availability to the authorized runtime projec
   const [entry] = buildSkillCatalogEntries(
     [runtimeSkill("legacy-skill")],
     [
-      adminSkill("retired-skill", "retired-skill", {
+      adminSkill("retired-skill", "legacy-skill", {
         latestVersionStatus: "active",
         currentVersion: null,
         rolloutPercent: null,
