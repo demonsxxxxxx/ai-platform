@@ -2,11 +2,10 @@ import {
   Activity,
   AlertTriangle,
   CheckCircle2,
+  ChevronLeft,
   ChevronRight,
   CircleX,
   Clock3,
-  Pause,
-  Play,
   RadioTower,
   RefreshCw,
   ServerCog,
@@ -25,8 +24,8 @@ import {
 } from "../../services/api/adminRuns";
 import { formatDateTimeShort } from "../../utils/datetime";
 
-const POLL_INTERVAL_MS = 5_000;
 const RUN_LIMIT = 50;
+const PAGE_SIZE = 10;
 
 const STATUS_FILTERS = [
   { value: "all", label: "全部" },
@@ -653,8 +652,8 @@ export function RunMonitorPanel() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
+  const [page, setPage] = useState(1);
   const listRequestSequence = useRef(0);
   const detailRequestSequence = useRef(0);
   const selectedRunIdRef = useRef<string | null>(null);
@@ -711,20 +710,6 @@ export function RunMonitorPanel() {
     void loadRuns(true);
   }, [loadRuns]);
 
-  useEffect(() => {
-    if (!autoRefresh) return;
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") void loadRuns(false);
-    }, POLL_INTERVAL_MS);
-    const handleVisibility = () => {
-      if (document.visibilityState === "visible") void loadRuns(false);
-    };
-    document.addEventListener("visibilitychange", handleVisibility);
-    return () => {
-      window.clearInterval(interval);
-      document.removeEventListener("visibilitychange", handleVisibility);
-    };
-  }, [autoRefresh, loadRuns]);
 
   const selectRun = useCallback((runId: string) => {
     selectedRunIdRef.current = runId;
@@ -746,6 +731,18 @@ export function RunMonitorPanel() {
     () => filterAdminRuns(runs, statusFilter, searchQuery),
     [runs, searchQuery, statusFilter],
   );
+  const pageCount = Math.max(1, Math.ceil(filteredRuns.length / PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const visibleRuns = useMemo(
+    () => filteredRuns.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE),
+    [currentPage, filteredRuns],
+  );
+  useEffect(() => {
+    setPage(1);
+  }, [searchQuery, statusFilter]);
+  useEffect(() => {
+    setPage((current) => Math.min(current, pageCount));
+  }, [pageCount]);
   const summary = useMemo(() => summarizeAdminRuns(runs), [runs]);
   const queueInsight = useMemo(() => latestQueueInsight(runs), [runs]);
   const lastUpdatedLabel = lastUpdatedAt
@@ -753,29 +750,17 @@ export function RunMonitorPanel() {
     : "尚未刷新";
 
   const headerActions = (
-    <>
-      <button
-        type="button"
-        className="btn-icon flex size-9 items-center justify-center rounded-md"
-        onClick={() => setAutoRefresh((current) => !current)}
-        aria-pressed={autoRefresh}
-        aria-label={autoRefresh ? "暂停自动刷新" : "开启自动刷新"}
-        title={autoRefresh ? "暂停自动刷新" : "开启自动刷新"}
-      >
-        {autoRefresh ? <Pause size={16} /> : <Play size={16} />}
-      </button>
-      <button
-        ref={refreshButtonRef}
-        type="button"
-        className="btn-icon flex size-9 items-center justify-center rounded-md"
-        onClick={() => void loadRuns(false)}
-        disabled={isRefreshing}
-        aria-label="刷新最近运行"
-        title="刷新最近运行"
-      >
-        <RefreshCw size={16} className={isRefreshing ? "animate-spin" : ""} />
-      </button>
-    </>
+    <button
+      ref={refreshButtonRef}
+      type="button"
+      className="btn-icon flex size-9 items-center justify-center rounded-md"
+      onClick={() => void loadRuns(false)}
+      disabled={isRefreshing}
+      aria-label="刷新最近运行"
+      title="刷新最近运行"
+    >
+      <RefreshCw size={16} className={isRefreshing ? "animate-spin" : ""} />
+    </button>
   );
 
   if (isLoading && runs.length === 0) {
@@ -820,7 +805,7 @@ export function RunMonitorPanel() {
         searchPlaceholder="搜索 Chat / Run / 用户 / 工作区"
         searchAccessory={
           <span className="hidden shrink-0 text-xs text-[var(--theme-text-tertiary)] sm:inline">
-            {autoRefresh ? "每 5 秒更新" : "自动刷新已暂停"} · {lastUpdatedLabel}
+            手动刷新 · {lastUpdatedLabel}
           </span>
         }
       />
@@ -874,7 +859,7 @@ export function RunMonitorPanel() {
           ))}
         </div>
         <p className="text-xs text-[var(--theme-text-tertiary)]" aria-live="polite">
-          显示 {filteredRuns.length} / {runs.length} 条
+          最近 {runs.length} 条 · 筛选后 {filteredRuns.length} 条
         </p>
       </div>
 
@@ -896,12 +881,12 @@ export function RunMonitorPanel() {
           {filteredRuns.length ? (
             <>
               <DesktopRunTable
-                runs={filteredRuns}
+                runs={visibleRuns}
                 selectedRunId={selectedRunId}
                 onSelect={selectRun}
               />
               <MobileRunList
-                runs={filteredRuns}
+                runs={visibleRuns}
                 selectedRunId={selectedRunId}
                 onSelect={selectRun}
               />
@@ -919,7 +904,7 @@ export function RunMonitorPanel() {
               <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
                 {searchQuery || statusFilter !== "all"
                   ? "调整状态筛选或搜索条件后重试。"
-                  : "新的 Chat 请求入队后会自动出现在这里。"}
+                  : "点击右上角刷新按钮后，新的 Chat 请求会出现在这里。"}
               </p>
             </div>
           )}
@@ -946,6 +931,40 @@ export function RunMonitorPanel() {
           </div>
         ) : null}
       </div>
+
+      {filteredRuns.length ? (
+        <nav
+          aria-label="运行分页"
+          className="flex items-center justify-between gap-3 px-4 pb-4 pt-2 text-xs text-[var(--theme-text-tertiary)]"
+        >
+          <span className="tabular-nums">
+            第 {currentPage} / {pageCount} 页 · 显示 {Math.min((currentPage - 1) * PAGE_SIZE + 1, filteredRuns.length)}-
+            {Math.min(currentPage * PAGE_SIZE, filteredRuns.length)} / {filteredRuns.length} 条
+          </span>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              className="btn-secondary inline-flex h-8 items-center gap-1 rounded-md px-2.5"
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              disabled={currentPage === 1}
+              aria-label="上一页"
+            >
+              <ChevronLeft size={14} />
+              <span>上一页</span>
+            </button>
+            <button
+              type="button"
+              className="btn-secondary inline-flex h-8 items-center gap-1 rounded-md px-2.5"
+              onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
+              disabled={currentPage === pageCount}
+              aria-label="下一页"
+            >
+              <span>下一页</span>
+              <ChevronRight size={14} />
+            </button>
+          </div>
+        </nav>
+      ) : null}
 
       <span className="sr-only" aria-live="polite">
         {isRefreshing ? "正在刷新运行状态" : `运行状态已更新，${lastUpdatedLabel}`}

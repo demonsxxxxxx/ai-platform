@@ -56,6 +56,16 @@ const runs: AdminRunSummary[] = [
   },
 ];
 
+const paginatedRuns: AdminRunSummary[] = [
+  ...runs,
+  ...Array.from({ length: 10 }, (_, index) => ({
+    ...runs[1],
+    run_id: `run_failed_${index}`,
+    session_id: `chat_failed_${index}`,
+    error_code: `worker_execution_failed_${index}`,
+  })),
+];
+
 test("Run Monitor filters only the explicitly projected Run identities", () => {
   assert.deepEqual(filterAdminRuns(runs, "running", "chat_2026").map((run) => run.run_id), [
     "run_running",
@@ -161,7 +171,7 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
 
   adminRunsApi.list = async () => {
     calls.push("list");
-    return { runs, limit: 50 };
+    return { runs: paginatedRuns, limit: 50 };
   };
   adminRunsApi.detail = async (runId: string) => {
     calls.push(`detail:${runId}`);
@@ -179,9 +189,36 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     await waitFor(() => container.textContent?.includes("chat_2026_04") === true);
 
     assert.equal(calls[0], "list");
+    const listCallCount = calls.filter((call) => call === "list").length;
+    await act(async () => {
+      dom.window.document.dispatchEvent(new dom.window.Event("visibilitychange"));
+    });
+    assert.equal(calls.filter((call) => call === "list").length, listCallCount);
+    assert.equal(container.querySelector('button[aria-label="暂停自动刷新"]'), null);
+    assert.equal(container.querySelector('button[aria-label="开启自动刷新"]'), null);
     assert.match(container.textContent ?? "", /Worker 在线/);
     assert.match(container.textContent ?? "", /run_failed/);
     assert.match(container.textContent ?? "", /worker_execution_failed/);
+    assert.match(container.textContent ?? "", /显示 1-10 \/ 12 条/);
+
+    const nextPageButton = container.querySelector(
+      'button[aria-label="下一页"]',
+    ) as HTMLButtonElement | null;
+    assert.ok(nextPageButton);
+    assert.equal(nextPageButton.disabled, false);
+    await act(async () => {
+      nextPageButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    });
+    await waitFor(() => container.textContent?.includes("run_failed_8") === true);
+    assert.doesNotMatch(container.textContent ?? "", /run_failed_0/);
+    const previousPageButton = container.querySelector(
+      'button[aria-label="上一页"]',
+    ) as HTMLButtonElement | null;
+    assert.ok(previousPageButton);
+    await act(async () => {
+      previousPageButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    });
+    await waitFor(() => container.textContent?.includes("run_failed_0") === true);
 
     const openButtons = Array.from(
       container.querySelectorAll('button[aria-label="查看 run_running"]'),
@@ -240,7 +277,7 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     ) as HTMLButtonElement | null;
     assert.ok(refreshButton);
     await act(async () => {
-      dom.window.document.dispatchEvent(new dom.window.Event("visibilitychange"));
+      refreshButton?.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     });
     await waitFor(() => openButtons[0].isConnected === false);
     const refreshRemovalBackdrop = container.querySelector(
@@ -257,7 +294,7 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
 
     adminRunsApi.list = async () => ({ runs, limit: 50 });
     await act(async () => {
-      dom.window.document.dispatchEvent(new dom.window.Event("visibilitychange"));
+      refreshButton?.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     });
     await waitFor(() => container.textContent?.includes("run_running") === true);
 
@@ -318,36 +355,17 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
       allFilter.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     });
 
-    let listCalls = 0;
-    let resolveOlderList:
-      | ((value: { runs: AdminRunSummary[]; limit: number }) => void)
-      | undefined;
-    adminRunsApi.list = async () => {
-      listCalls += 1;
-      if (listCalls === 1) {
-        return new Promise((resolve) => {
-          resolveOlderList = resolve;
-        });
-      }
-      return { runs: [runs[1]], limit: 50 };
-    };
-    const refreshButtonForRace = container.querySelector(
+    adminRunsApi.list = async () => ({ runs: [runs[1]], limit: 50 });
+    const refreshButtonForManualCheck = container.querySelector(
       'button[aria-label="刷新最近运行"]',
     ) as HTMLButtonElement | null;
-    assert.ok(refreshButtonForRace);
+    assert.ok(refreshButtonForManualCheck);
     await act(async () => {
-      refreshButtonForRace.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+      refreshButtonForManualCheck.dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
     });
-    await waitFor(() => resolveOlderList !== undefined);
-    await act(async () => {
-      dom.window.document.dispatchEvent(new dom.window.Event("visibilitychange"));
-    });
-    await waitFor(() => listCalls === 2 && container.textContent?.includes("run_failed") === true);
-    await act(async () => {
-      resolveOlderList?.({ runs: [runs[0]], limit: 50 });
-      await Promise.resolve();
-    });
-    assert.match(container.textContent ?? "", /run_failed/);
+    await waitFor(() => container.textContent?.includes("run_failed") === true);
     assert.doesNotMatch(container.textContent ?? "", /run_running/);
   } finally {
     await act(async () => {

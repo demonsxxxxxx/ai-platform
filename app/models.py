@@ -22,7 +22,7 @@ from app.control_plane_contracts import (
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
 from app.agent_apps.api import AgentProfileAvatarRef, discard_legacy_agent_profile_model_id
 from app.agent_apps.api import (
-    normalize_agent_avatar_seed, normalize_agent_profile_display_items, normalize_agent_skill_set,
+    AgentProfileSkillReference, normalize_agent_avatar_seed, normalize_agent_profile_display_items, normalize_agent_skill_set,
 )
 from app.skills.release_policy import (
     validate_release_decision_lock,
@@ -239,8 +239,8 @@ class AgentProfileDraftRequest(BaseModel):
     permissions_and_data_access_notice: str = Field(default="", max_length=4_000)
     instructions: str = Field(min_length=1, max_length=MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
     _legacy_model_id: str = PrivateAttr(default="platform-selected")
-    skill_set: list[SelectedSkillRequest] = Field(default_factory=list, max_length=32)
-    selected_skill: SelectedSkillRequest | None = None
+    skill_set: list[AgentProfileSkillReference] = Field(default_factory=list, max_length=32)
+    selected_skill: AgentProfileSkillReference | None = None
     mcp_tool_ids: list[str] = Field(default_factory=list)
     avatar_ref: AgentProfileAvatarRef = "builtin:agent"
     avatar_asset_id: str | None = None
@@ -448,8 +448,8 @@ class AgentProfileAdminProjection(BaseModel):
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
     instructions: str
-    skill_set: list[SelectedSkillRequest] = Field(default_factory=list)
-    selected_skill: SelectedSkillRequest
+    skill_set: list[AgentProfileSkillReference] = Field(default_factory=list)
+    selected_skill: AgentProfileSkillReference
     mcp_tool_ids: list[str] = Field(default_factory=list)
     avatar_ref: AgentProfileAvatarRef = "builtin:agent"
     avatar_asset_id: str | None = None

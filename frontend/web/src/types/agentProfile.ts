@@ -1,5 +1,3 @@
-import type { SelectedSkillRequest } from "./skill";
-
 export const AGENT_PROFILE_AVATAR_REFS = [
   "builtin:agent",
   "builtin:assistant",
@@ -247,6 +245,12 @@ export function projectAgentConversationSession(value: unknown): AgentConversati
   };
 }
 
+export interface AgentProfileSkillReference {
+  skill_id: string;
+  /** Legacy response field; profile writes omit it and resolve the current Skill by name. */
+  expected_version?: string;
+}
+
 export interface AgentProfileDraftRequest {
   name: string;
   description: string;
@@ -258,8 +262,8 @@ export interface AgentProfileDraftRequest {
   expected_outputs: string[];
   permissions_and_data_access_notice: string;
   instructions: string;
-  selected_skill: SelectedSkillRequest;
-  skill_set: SelectedSkillRequest[];
+  selected_skill: AgentProfileSkillReference;
+  skill_set: AgentProfileSkillReference[];
   mcp_tool_ids: string[];
   avatar_ref: AgentProfileAvatarRef;
   avatar_seed: string;
@@ -280,7 +284,7 @@ export interface AgentProfileAdminProjection extends Omit<
 > {
   supported_input_types: UniversalAgentInputTypes;
   avatar_seed?: string;
-  skill_set?: SelectedSkillRequest[];
+  skill_set?: AgentProfileSkillReference[];
   agent_id: string;
   revision: number;
   /** Current aggregate publication; absent only while talking to a rolling old API. */

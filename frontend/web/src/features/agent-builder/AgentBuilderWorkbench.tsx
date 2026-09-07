@@ -126,18 +126,11 @@ export function AgentBuilderWorkbench({
   const skillCatalogResolved = catalog.skillsResolved && catalog.effectivePermissionsKnown;
   const mcpCatalogResolved = catalog.mcpToolsResolved;
   const selectedSkillKeys = new Set(
-    (activeEditor?.selectedSkills ?? []).map(
-      (skill) => `${skill.skill_id}:${skill.expected_version}`,
-    ),
+    (activeEditor?.selectedSkills ?? []).map((skill) => skill.skill_id),
   );
   const unavailableSelectedSkills = activeEditor && skillCatalogResolved
     ? activeEditor.selectedSkills.filter(
-        (selection) =>
-          !catalog.skills.some(
-            (skill) =>
-              skill.name === selection.skill_id &&
-              skill.expected_version === selection.expected_version,
-          ),
+        (selection) => !catalog.skills.some((skill) => skill.name === selection.skill_id),
       )
     : [];
   const unavailableMcpToolIds = activeEditor && mcpCatalogResolved
@@ -241,8 +234,7 @@ export function AgentBuilderWorkbench({
     (skill: PublicSkillResponse) => {
       updateEditor((editor) => {
         const selected = editor.selectedSkills.some(
-          (entry) =>
-            entry.skill_id === skill.name && entry.expected_version === skill.expected_version,
+          (entry) => entry.skill_id === skill.name,
         );
         const withoutSameSkill = editor.selectedSkills.filter(
           (entry) => entry.skill_id !== skill.name,
@@ -251,10 +243,7 @@ export function AgentBuilderWorkbench({
           ...editor,
           selectedSkills: selected
             ? withoutSameSkill
-            : [
-                ...withoutSameSkill,
-                { skill_id: skill.name, expected_version: skill.expected_version },
-              ],
+            : [...withoutSameSkill, { skill_id: skill.name }],
         };
       });
     },
@@ -592,21 +581,16 @@ export function AgentBuilderWorkbench({
                 {activeEditor.selectedSkills.length > 0 ? (
                   <div className="flex flex-wrap gap-2">
                     {activeEditor.selectedSkills.map((selection) => {
-                      const key = `${selection.skill_id}:${selection.expected_version}`;
+                      const key = selection.skill_id;
                       const unavailable = unavailableSelectedSkills.some(
-                        (entry) =>
-                          entry.skill_id === selection.skill_id &&
-                          entry.expected_version === selection.expected_version,
+                        (entry) => entry.skill_id === selection.skill_id,
                       );
                       return (
                         <span
                           className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${unavailable ? "border-[var(--theme-danger)] text-[var(--theme-danger)]" : "border-[var(--theme-border)] bg-[var(--theme-workbench-panel)]"}`}
                           key={key}
                         >
-                          <span>
-                            <span className="block font-medium">{selection.skill_id}</span>
-                            <span className="block text-xs text-[var(--theme-text-secondary)]">{selection.expected_version}</span>
-                          </span>
+                          <span className="font-medium">{selection.skill_id}</span>
                           <button
                             aria-label={`移除 Skill ${selection.skill_id}`}
                             className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-[var(--theme-hover)] disabled:opacity-60"
@@ -615,9 +599,7 @@ export function AgentBuilderWorkbench({
                               updateEditor((editor) => ({
                                 ...editor,
                                 selectedSkills: editor.selectedSkills.filter(
-                                  (entry) =>
-                                    entry.skill_id !== selection.skill_id ||
-                                    entry.expected_version !== selection.expected_version,
+                                  (entry) => entry.skill_id !== selection.skill_id,
                                 ),
                               }));
                             }}
@@ -634,7 +616,7 @@ export function AgentBuilderWorkbench({
                   <p className="text-sm text-[var(--theme-text-secondary)]">尚未配置 Skill</p>
                 )}
                 <p className="mt-3 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                  专家预绑定一组精确版本的 Skill；Agent SDK 根据任务上下文自主决定不调用、调用一个或调用多个。
+                  专家按名称配置一组授权 Skill；发布或执行时解析当前版本，Agent SDK 根据任务上下文自主决定不调用、调用一个或调用多个。
                 </p>
               </section>
 
@@ -792,11 +774,11 @@ export function AgentBuilderWorkbench({
           <div className="divide-y divide-[var(--theme-border)] border-y border-[var(--theme-border)]">
             {catalog.skills.map((skill) => (
               <label
-                key={`${skill.name}:${skill.expected_version}`}
+                key={skill.name}
                 className="flex cursor-pointer items-start gap-3 px-1 py-3 hover:bg-[var(--theme-hover)]"
               >
                 <input
-                  checked={selectedSkillKeys.has(`${skill.name}:${skill.expected_version}`)}
+                  checked={selectedSkillKeys.has(skill.name)}
                   disabled={interactionBusy}
                   onChange={() => toggleSkill(skill)}
                   type="checkbox"
