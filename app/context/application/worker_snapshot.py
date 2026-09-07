@@ -8,6 +8,7 @@ from app.context.domain.conversation import (
     build_executor_conversation_context,
     empty_executor_conversation_context,
 )
+from app.validation import assert_safe_id
 
 SnapshotLoader = Callable[..., Awaitable[dict[str, Any] | None]]
 MessageLoader = Callable[..., Awaitable[list[dict[str, Any]]]]
@@ -36,9 +37,23 @@ async def materialize_worker_context_snapshot(
         return None
 
     raw_message_ids = scoped_snapshot.get("included_message_ids")
-    if not isinstance(raw_message_ids, list):
+    raw_file_ids = scoped_snapshot.get("included_file_ids")
+    if not isinstance(raw_message_ids, list) or not isinstance(raw_file_ids, list):
         return None
-    selected_message_ids = [str(message_id or "").strip() for message_id in raw_message_ids]
+    try:
+        selected_message_ids = [
+            assert_safe_id(message_id, "included_message_ids")
+            for message_id in raw_message_ids
+        ]
+        selected_file_ids = [
+            assert_safe_id(file_id, "included_file_ids") for file_id in raw_file_ids
+        ]
+    except (TypeError, ValueError):
+        return None
+    if len(selected_message_ids) != len(set(selected_message_ids)) or len(
+        selected_file_ids
+    ) != len(set(selected_file_ids)):
+        return None
     if selected_message_ids:
         materialized_messages = await message_loader(
             conn,
@@ -65,4 +80,5 @@ async def materialize_worker_context_snapshot(
         "context_snapshot_id": str(context_ref["context_snapshot_id"]),
         "context_snapshot": context_ref,
         "conversation_context": conversation_context,
+        "file_ids": selected_file_ids,
     }

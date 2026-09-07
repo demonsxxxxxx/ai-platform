@@ -4,11 +4,14 @@ import hashlib
 import io
 import json
 import sys
+import threading
 import types
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
+from docx import Document
 from openpyxl import Workbook
 
 import app.executors.claude_agent_sdk_runner as sdk_runner
@@ -921,7 +924,10 @@ def test_collect_workspace_artifacts_includes_delivery_outputs(monkeypatch, tmp_
     workspace = tmp_path / "workspace"
     delivery = workspace / "outputs" / "run-002-ctd-fill" / "delivery"
     delivery.mkdir(parents=True)
-    (delivery / "filled.docx").write_bytes(b"docx")
+    document = Document()
+    document.add_paragraph("filled")
+    document.save(delivery / "filled.docx")
+    docx_bytes = (delivery / "filled.docx").read_bytes()
     debug_dir = workspace / "outputs" / "run-002-ctd-fill" / "_debug"
     debug_dir.mkdir()
     (debug_dir / "debug.txt").write_text("debug", encoding="utf-8")
@@ -945,8 +951,9 @@ def test_collect_workspace_artifacts_includes_delivery_outputs(monkeypatch, tmp_
     assert artifacts[0].manifest["workspace_output"] == "outputs/run-002-ctd-fill/delivery/filled.docx"
     assert stored == [
         (
-            "tenants/default/workspaces/default/sessions/ses_1/runs/run_1/artifacts/1/filled.docx",
-            b"docx",
+            "tenants/default/workspaces/default/sessions/ses_1/runs/run_1/"
+            f"artifacts/1/{hashlib.sha256(docx_bytes).hexdigest()}/filled.docx",
+            docx_bytes,
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         )
     ]
@@ -971,7 +978,15 @@ def test_collect_workspace_artifacts_assigns_safe_mime_types_and_keeps_unknown_f
 
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
 
-    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(payload(), workspace)
+    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
+        payload(
+            skill_id=None,
+            skill_manifests=[],
+            execution_kind="harness_chat",
+            schema_version="ai-platform.run-payload.v2",
+        ),
+        workspace,
+    )
 
     assert [artifact.content_type for artifact in artifacts] == [
         "image/png",
@@ -1026,12 +1041,15 @@ def test_collect_workspace_artifacts_enforces_delivery_limits_before_storage(
 
 
 @pytest.mark.parametrize("skill_id", ["qa-file-reviewer", "baoyu-translate"])
-def test_collect_workspace_artifacts_stores_docx_opaque(monkeypatch, tmp_path, skill_id):
+def test_collect_workspace_artifacts_validates_required_docx(monkeypatch, tmp_path, skill_id):
     workspace = tmp_path / "workspace"
     output = workspace / "output"
     output.mkdir(parents=True)
-    content = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1opaque-docx-artifact"
-    (output / "document.docx").write_bytes(content)
+    document_path = output / "document.docx"
+    document = Document()
+    document.add_paragraph("reviewed")
+    document.save(document_path)
+    content = document_path.read_bytes()
     stored = []
 
     class FakeStorage:
@@ -1049,6 +1067,221 @@ def test_collect_workspace_artifacts_stores_docx_opaque(monkeypatch, tmp_path, s
     assert [artifact.artifact_type for artifact in artifacts] == ["result_docx"]
     assert artifacts[0].label == "Word 文件"
     assert stored[0][1] == content
+
+
+@pytest.mark.parametrize("skill_id", ["qa-file-reviewer", "baoyu-translate"])
+def test_collect_workspace_artifacts_rejects_fake_required_docx_before_upload(
+    monkeypatch,
+    tmp_path,
+    skill_id,
+):
+    workspace = tmp_path / "workspace"
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    (output / "document.docx").write_bytes(b"not-a-docx")
+
+    class FailIfStored:
+        def put_bytes(self, **_kwargs):
+            raise AssertionError("invalid required artifacts must not be uploaded")
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FailIfStored)
+
+    assert ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
+        payload(skill_id=skill_id),
+        workspace,
+    ) == []
+
+
+@pytest.mark.parametrize("skill_id", ["qa-file-reviewer", "baoyu-translate"])
+def test_collect_workspace_artifacts_rejects_expanding_docx_before_parse_or_upload(
+    monkeypatch,
+    tmp_path,
+    skill_id,
+):
+    workspace = tmp_path / "workspace"
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    document_path = output / "document.docx"
+    with zipfile.ZipFile(document_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("word/document.xml", b"A" * 1025)
+
+    monkeypatch.setattr(claude_agent_worker, "_MAX_DOCX_ARCHIVE_ENTRY_BYTES", 1024)
+    monkeypatch.setattr(
+        claude_agent_worker,
+        "Document",
+        lambda _path: pytest.fail("oversized DOCX content must reject before parsing"),
+    )
+
+    class FailIfStored:
+        def put_bytes(self, **_kwargs):
+            raise AssertionError("oversized required artifacts must not be uploaded")
+
+    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FailIfStored)
+
+    assert ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
+        payload(skill_id=skill_id),
+        workspace,
+    ) == []
+
+
+def test_artifact_storage_keys_are_content_addressed_within_attempt_scope(
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    artifact_path = output / "result.txt"
+    artifact_path.write_text("first", encoding="utf-8")
+    objects: set[str] = set()
+
+    class RecordingStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            objects.add(storage_key)
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
+
+    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", RecordingStorage)
+    adapter = ClaudeAgentWorkerAdapter()
+    run_payload = payload(
+        skill_id=None,
+        skill_manifests=[],
+        execution_kind="harness_chat",
+        schema_version="ai-platform.run-payload.v2",
+    )
+
+    first = adapter._collect_workspace_artifacts(
+        run_payload,
+        workspace,
+        storage_scope="attempt-a",
+    )[0]
+    repeated = adapter._collect_workspace_artifacts(
+        run_payload,
+        workspace,
+        storage_scope="attempt-a",
+    )[0]
+    artifact_path.write_text("second", encoding="utf-8")
+    changed = adapter._collect_workspace_artifacts(
+        run_payload,
+        workspace,
+        storage_scope="attempt-a",
+    )[0]
+
+    assert first.storage_key == repeated.storage_key
+    assert first.storage_key != changed.storage_key
+    assert first.storage_key in objects and changed.storage_key in objects
+
+
+def test_collect_workspace_artifacts_reserves_durable_cleanup_before_upload(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    (output / "result.txt").write_text("result", encoding="utf-8")
+    calls = []
+
+    class RecordingStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            assert calls == [("reserve", storage_key)]
+            calls.append(("put", storage_key))
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
+
+        def delete_object(self, *, storage_key):
+            calls.append(("delete", storage_key))
+
+    def reserve(storage_key):
+        calls.append(("reserve", storage_key))
+        return "art_cleanup_receipt"
+
+    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", RecordingStorage)
+
+    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
+        payload(
+            skill_id=None,
+            skill_manifests=[],
+            execution_kind="harness_chat",
+            schema_version="ai-platform.run-payload.v2",
+        ),
+        workspace,
+        storage_scope="claim-a",
+        reserve_storage=reserve,
+    )
+
+    assert [call[0] for call in calls] == ["reserve", "put"]
+    assert artifacts[0].provisional_cleanup_id == "art_cleanup_receipt"
+
+
+def test_collect_workspace_artifacts_leaves_abandoned_reserved_write_for_durable_cleanup(
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    (output / "result.txt").write_text("result", encoding="utf-8")
+    abandoned = threading.Event()
+    deleted = []
+
+    class LateStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            abandoned.set()
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
+
+        def delete_object(self, *, storage_key):
+            deleted.append(storage_key)
+
+    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", LateStorage)
+
+    with pytest.raises(RuntimeError, match="collection abandoned"):
+        ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
+            payload(
+                skill_id=None,
+                skill_manifests=[],
+                execution_kind="harness_chat",
+                schema_version="ai-platform.run-payload.v2",
+            ),
+            workspace,
+            storage_scope="attempt-a",
+            abandoned=abandoned,
+            reserve_storage=lambda _storage_key: "art_cleanup_receipt",
+        )
+
+    assert deleted == []
+
+
+def test_collect_workspace_artifacts_cleans_up_partial_upload(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    (output / "a.txt").write_text("first", encoding="utf-8")
+    (output / "b.json").write_text("{}", encoding="utf-8")
+    deleted = []
+
+    class FailingStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            if storage_key.endswith("/b.json"):
+                raise RuntimeError("upload failed")
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
+
+        def delete_object(self, *, storage_key):
+            deleted.append(storage_key)
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FailingStorage)
+
+    with pytest.raises(RuntimeError, match="upload failed"):
+        ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
+            payload(
+                skill_id=None,
+                skill_manifests=[],
+                execution_kind="harness_chat",
+                schema_version="ai-platform.run-payload.v2",
+            ),
+            workspace,
+        )
+
+    assert len(deleted) == 1
+    assert deleted[0].startswith(
+        "tenants/default/workspaces/default/sessions/ses_1/runs/run_1/artifacts/1/"
+    )
+    assert deleted[0].endswith("/a.txt")
 
 
 @pytest.mark.asyncio
@@ -3633,6 +3866,49 @@ async def test_sdk_runtime_error_is_reported_without_delegate(
             expected_projection_reason
         )
     assert "C:/tenant" not in str(result.result)
+
+
+@pytest.mark.asyncio
+async def test_prompt_preflight_returns_typed_failure_before_runtime_dispatch(
+    monkeypatch,
+    tmp_path,
+):
+    adapter = ClaudeAgentWorkerAdapter()
+    sdk_calls = 0
+
+    async def no_files(_payload, _workspace):
+        return []
+
+    async def sdk_must_not_run(*_args, **_kwargs):
+        nonlocal sdk_calls
+        sdk_calls += 1
+        raise AssertionError("SDK dispatch must not start")
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.get_settings",
+        lambda: settings(tmp_path, sdk_enabled=True),
+    )
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_must_not_run)
+
+    failure = await adapter._run_with_staged_skills(
+        payload(
+            execution_kind="harness_chat",
+            skill_id=None,
+            skill_manifests=[],
+            skill_version="",
+            release_decision={},
+            schema_version="ai-platform.run-payload.v2",
+            file_ids=[],
+            input={"message": "x" * 20_000},
+        )
+    )
+
+    assert failure is not None
+    assert failure.status == "failed"
+    assert failure.result["error_code"] == "current_request_too_large"
+    assert failure.result["sdk_used"] is False
+    assert sdk_calls == 0
 
 
 @pytest.mark.asyncio

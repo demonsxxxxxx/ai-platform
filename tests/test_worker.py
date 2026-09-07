@@ -2131,11 +2131,24 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         calls.append(("attempt_terminal", kwargs["attempt_id"], kwargs["status"]))
         return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
 
+    async def promote_artifact_cleanup(_conn, **kwargs):
+        calls.append(("promote_artifact", kwargs["artifact_id"], kwargs["storage_key"]))
+        return True
+
+    async def create_artifact(_conn, **kwargs):
+        calls.append(("create_artifact", kwargs["storage_key"]))
+        return kwargs["artifact_id"]
+
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker.repositories.append_message", append_message)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(
+        "app.worker.repositories.promote_provisional_artifact_cleanup",
+        promote_artifact_cleanup,
+    )
+    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr(
         "app.worker.run_attempts.get_run_attempt",
         get_run_attempt,
@@ -2188,6 +2201,16 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         executor_version="1",
         capabilities={},
         result={"message": "done"},
+        artifacts=[
+            ArtifactManifest(
+                artifact_type="text",
+                label="Result",
+                content_type="text/plain",
+                storage_key="private/reconciliations/claim-a/result.txt",
+                size_bytes=6,
+                provisional_cleanup_id="art_cleanup_a",
+            )
+        ],
         executor_payload={},
     )
 
@@ -2201,12 +2224,19 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
-    assert messages == ["done"]
+    assert len(messages) == 1 and messages[0].startswith("done\n\n输出文件:\n- Result:")
     assert ("complete", "run-a") in calls
     assert ("attempt_fence", "worker-original", "qat-attempt-a") in calls
     assert ("attempt_terminal", "rat-attempt-a", "succeeded") in calls
     assert ("event", "assistant_message_created") in calls
     assert ("event", "run_succeeded") in calls
+    promote_call = (
+        "promote_artifact",
+        "art_cleanup_a",
+        "private/reconciliations/claim-a/result.txt",
+    )
+    create_call = ("create_artifact", "private/reconciliations/claim-a/result.txt")
+    assert calls.index(promote_call) < calls.index(create_call) < calls.index(("complete", "run-a"))
 
 
 def test_run_payload_accepts_only_complete_pinned_harness_profile():
@@ -2609,8 +2639,13 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
     authorized_profile = worker_module.parse_leased_queue_envelope(raw).payload.agent_profile
 
     class CaptureAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            calls.append(("adapter", payload))
+        async def submit_run(
+            self,
+            payload,
+            event_sink=None,
+            execution_owner=None,
+        ):
+            calls.append(("adapter", payload, execution_owner))
             return ExecutorResult(
                 status="succeeded",
                 adapter_version="capture/1",
@@ -2652,6 +2687,9 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         assert outcome.status == "succeeded", (outcome, calls)
         assert outcome.error_code is None
         adapter_payload = next(call[1] for call in calls if call[0] == "adapter")
+        execution_owner = next(call[2] for call in calls if call[0] == "adapter")
+        assert execution_owner.artifact_storage_scope == adapter_payload.attempt_id
+        assert callable(execution_owner.reserve_artifact_storage)
         assert adapter_payload.model_id == raw["model_id"]
         assert adapter_payload.model_value == raw["model_value"]
         assert adapter_payload.agent_profile == {
@@ -6498,7 +6536,7 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
 
 
 @pytest.mark.asyncio
-async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered(monkeypatch):
+async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are_tampered(monkeypatch):
     captured = {}
     calls = []
     version = "hash-qa-file-reviewer"
@@ -6531,7 +6569,7 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
             "trace_id": "trace_run_a",
             "input_json": {
                 "input": {"mode": "db", "message": "authoritative"},
-                "file_ids": ["file-db"],
+                "file_ids": ["file-db-input"],
                     "executor_type": "claude-agent-worker",
                 "skill_version": version,
                 "release_decision": release_decision(version),
@@ -6566,7 +6604,7 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
             "schema_version": "ai-platform.context-snapshot.v1",
             "context_kind": "executor",
             "included_message_ids": [],
-            "included_file_ids": ["file-db"],
+            "included_file_ids": ["file-snapshot"],
             "included_artifact_ids": [],
             "included_memory_record_ids": [],
             "redaction_summary_json": {},
@@ -6607,7 +6645,7 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
         for key, value in captured["payload"].input.items()
         if key != "_runtime_tool_policy_subjects"
     } == {"mode": "db", "message": "authoritative"}
-    assert captured["payload"].file_ids == ["file-db"]
+    assert captured["payload"].file_ids == ["file-snapshot"]
     assert captured["payload"].skill_version == version
     assert captured["payload"].release_decision == release_decision(version)
     assert captured["payload"].model_id == "platform-default"
@@ -8343,12 +8381,20 @@ async def test_worker_stops_silent_executor_after_cancel_requested(monkeypatch):
 
     original_submit_until_cancelled = worker_module._submit_run_until_cancelled
 
-    async def submit_until_cancelled(adapter, run_payload, *, event_sink, cancel_requested):
+    async def submit_until_cancelled(
+        adapter,
+        run_payload,
+        *,
+        event_sink,
+        cancel_requested,
+        execution_owner=None,
+    ):
         return await original_submit_until_cancelled(
             adapter,
             run_payload,
             event_sink=event_sink,
             cancel_requested=cancel_requested,
+            execution_owner=execution_owner,
             poll_interval_seconds=0.01,
         )
 
@@ -8451,12 +8497,20 @@ async def test_worker_waits_for_non_cooperative_adapter_before_cancel_terminal_a
 
     original_submit_until_cancelled = worker_module._submit_run_until_cancelled
 
-    async def submit_until_cancelled(adapter, run_payload, *, event_sink, cancel_requested):
+    async def submit_until_cancelled(
+        adapter,
+        run_payload,
+        *,
+        event_sink,
+        cancel_requested,
+        execution_owner=None,
+    ):
         return await original_submit_until_cancelled(
             adapter,
             run_payload,
             event_sink=event_sink,
             cancel_requested=cancel_requested,
+            execution_owner=execution_owner,
             poll_interval_seconds=0.005,
             stop_timeout_seconds=0.01,
             progress_interval_seconds=60,

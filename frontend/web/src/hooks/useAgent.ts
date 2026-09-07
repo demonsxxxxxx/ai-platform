@@ -79,6 +79,7 @@ import {
 import { getPublicTerminalPresentationDefinition } from "./useAgent/publicTerminalPresentation";
 import {
   rebindV4MessageOwner,
+  setMessageSnapshot,
   type AcceptedRunEventSequence,
   type AcceptedStreamCursor,
   type EventHandlerContext,
@@ -724,7 +725,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     streamIncarnation: null,
   });
 
-  const v4TerminalEventIdsRef = useRef<Set<string>>(new Set());
   const v4TerminalReservationsRef = useRef<Set<string>>(new Set());
   const v4TerminalFenceRef = useRef<V4TerminalFence | null>(null);
   const v4MessageOwnerRef = useRef<V4MessageOwner | null>(null);
@@ -939,7 +939,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
       v4TerminalFenceRef.current = null;
-      v4TerminalEventIdsRef.current.clear();
       v4TerminalReservationsRef.current.clear();
       clearReconcileOwners();
       clearReconnectTimeout(reconnectTimeoutRef);
@@ -1007,7 +1006,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       clearReconcileOwners();
       streamVersionRef.current += 1;
       v4TerminalFenceRef.current = null;
-      v4TerminalEventIdsRef.current.clear();
       v4TerminalReservationsRef.current.clear();
       clearReconnectTimeout(reconnectTimeoutRef);
       if (abortControllerRef.current) {
@@ -1069,7 +1067,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       const card = productCard();
       const cardEventId =
         card?.type === "run_status" ? card.event_id : null;
-      setMessages((previous) => {
+      setMessageSnapshot({ messagesRef, setMessages }, (previous) => {
         let matched = false;
         let cardAdded = false;
         const updated = previous.map((message) => {
@@ -1217,6 +1215,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         promise: Promise.resolve(),
       };
       const promise = (async () => {
+        let receiptSent = false;
+        const settle = (accepted: boolean): boolean => {
+          if (receiptSent) return false;
+          receiptSent = true;
+          return onSettled?.(accepted) !== false;
+        };
         try {
           let timeoutId: ReturnType<typeof setTimeout> | null = null;
           const eventsData = await Promise.race([
@@ -1233,7 +1237,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             }
           });
           if (!isCurrentTerminalHydration()) {
-            onSettled?.(false);
+            settle(false);
             return;
           }
           const events = (eventsData.events || []) as HistoryEvent[];
@@ -1249,8 +1253,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                 message.role === "assistant" && message.runId === targetRunId,
             );
           if (!hydratedAssistant && status !== "cancelled") {
+            settle(false);
             finalizeTerminalResultUnavailable(targetRunId, fallbackMessageId);
-            onSettled?.(false);
             return;
           }
           if (!hydratedAssistant) {
@@ -1305,39 +1309,30 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               hydratedAssistant.id,
             );
           }
-          let settled = false;
-          setMessages((previous) => {
-            if (!isCurrentTerminalHydration()) {
-              if (!settled) {
-                settled = true;
-                onSettled?.(false);
-              }
-              return previous;
-            }
-            const merged = mergeHydratedRunSegment(
-              previous,
-              hydratedMessages,
-              targetRunId,
-            );
-            if (!settled) {
-              settled = true;
-              if (onSettled?.(true) === false) {
-                return previous;
-              }
-              finalizeTerminalRun(
-                targetRunId,
-                status,
-                hydratedAssistant?.id || fallbackMessageId,
-              );
-            }
-            return merged;
-          });
+          if (!isCurrentTerminalHydration()) {
+            settle(false);
+            return;
+          }
+          const merged = mergeHydratedRunSegment(
+            messagesRef.current,
+            hydratedMessages,
+            targetRunId,
+          );
+          if (!settle(true)) {
+            return;
+          }
+          setMessageSnapshot({ messagesRef, setMessages }, merged);
+          finalizeTerminalRun(
+            targetRunId,
+            status,
+            hydratedAssistant?.id || fallbackMessageId,
+          );
         } catch {
           if (isCurrentTerminalHydration()) {
             finalizeTerminalResultUnavailable(targetRunId, fallbackMessageId);
           }
-          onSettled?.(false);
         } finally {
+          settle(false);
           if (terminalHydrationOwnerRef.current === owner) {
             terminalHydrationOwnerRef.current = null;
           }
@@ -1399,70 +1394,51 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       );
       const historySequence = maxAcceptedRunEventSequence(events, targetRunId);
       const lastTimestamp = getLastEventTimestamp(events);
-      return await new Promise<string | null>((resolve) => {
-        let settled = false;
-        setMessages((previous) => {
-          if (!isCurrent()) {
-            if (!settled) {
-              settled = true;
-              resolve(null);
-            }
-            return previous;
-          }
-          const merged = mergeHydratedRunSegment(
-            previous,
-            reconstructed,
-            targetRunId,
-          );
-          if (
-            !rebindV4MessageOwner(
-              v4MessageOwnerRef,
-              {
-                sessionId: targetSessionId,
-                runId: targetRunId,
-                streamVersion: expectedStreamVersion,
-                streamIncarnation: expectedStreamIncarnation,
-              },
-              streamingMessageId,
-            )
-          ) {
-            if (!settled) {
-              settled = true;
-              resolve(null);
-            }
-            return previous;
-          }
-          const acceptedSequence = acceptedRunEventSequenceRef.current;
-          const currentSequence =
-            acceptedSequence.sessionId === targetSessionId &&
-            acceptedSequence.runId === targetRunId
-              ? acceptedSequence.sequence
-              : null;
-          messagesRef.current = merged;
-          streamingMessageIdRef.current = streamingMessageId;
-          acceptedRunEventSequenceRef.current = {
+      if (!isCurrent()) return null;
+      const merged = mergeHydratedRunSegment(
+        messagesRef.current,
+        reconstructed,
+        targetRunId,
+      );
+      if (
+        !rebindV4MessageOwner(
+          v4MessageOwnerRef,
+          {
             sessionId: targetSessionId,
             runId: targetRunId,
-            sequence:
-              currentSequence === null
-                ? historySequence
-                : historySequence === null
-                  ? currentSequence
-                  : Math.max(currentSequence, historySequence),
-          };
-          for (const event of events) {
-            if (typeof event.id === "string") {
-              processedEventIdsRef.current.add(event.id);
-            }
-          }
-          if (lastTimestamp) lastHistoryTimestampRef.current = lastTimestamp;
-          if (!settled) {
-            settled = true;
-            resolve(streamingMessageId);
-          }
-          return merged;
-        });
-      });
+            streamVersion: expectedStreamVersion,
+            streamIncarnation: expectedStreamIncarnation,
+          },
+          streamingMessageId,
+        )
+      ) {
+        return null;
+      }
+      const acceptedSequence = acceptedRunEventSequenceRef.current;
+      const currentSequence =
+        acceptedSequence.sessionId === targetSessionId &&
+        acceptedSequence.runId === targetRunId
+          ? acceptedSequence.sequence
+          : null;
+      streamingMessageIdRef.current = streamingMessageId;
+      acceptedRunEventSequenceRef.current = {
+        sessionId: targetSessionId,
+        runId: targetRunId,
+        sequence:
+          currentSequence === null
+            ? historySequence
+            : historySequence === null
+              ? currentSequence
+              : Math.max(currentSequence, historySequence),
+      };
+      for (const event of events) {
+        if (typeof event.id === "string") {
+          processedEventIdsRef.current.add(event.id);
+        }
+      }
+      if (lastTimestamp) lastHistoryTimestampRef.current = lastTimestamp;
+      setMessageSnapshot({ messagesRef, setMessages }, merged);
+      return streamingMessageId;
     },
     [options],
   );
@@ -1476,7 +1452,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       processedEventIdsRef,
       acceptedRunEventSequenceRef,
       acceptedStreamCursorRef,
-      v4TerminalEventIdsRef,
       v4TerminalReservationsRef,
       v4TerminalFenceRef,
       v4MessageOwnerRef,
@@ -1486,6 +1461,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       streamVersionRef,
       setSessionId,
       setMessages,
+      messagesRef,
       setConnectionStatus: (status) =>
         setConnectionStatus(status as ConnectionStatus),
       setIsInitializingSandbox,
@@ -1576,7 +1552,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
   useEffect(() => {
     isMountedRef.current = true;
-    const terminalEventIds = v4TerminalEventIdsRef.current;
     const mountedGeneration = ++mountedGenerationRef.current;
     return () => {
       if (mountedGenerationRef.current !== mountedGeneration) {
@@ -1594,7 +1569,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
       v4TerminalFenceRef.current = null;
-      terminalEventIds.clear();
       v4TerminalReservationsRef.current.clear();
       statusRetryCountRef.current = 0;
       resetAcceptedStreamState(acceptedRunEventSequenceRef, acceptedStreamCursorRef);
@@ -1661,7 +1635,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
       v4TerminalFenceRef.current = null;
-      v4TerminalEventIdsRef.current.clear();
       v4TerminalReservationsRef.current.clear();
       clearReconcileOwners();
       isSendingRef.current = false;
@@ -1679,7 +1652,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       clearReconnectTimeout(reconnectTimeoutRef);
 
       setIsLoading(true);
-      setMessages([]);
+      setMessageSnapshot({ messagesRef, setMessages }, []);
       setError(null);
       setCurrentRunId(null);
       currentRunIdRef.current = null;
@@ -2204,7 +2177,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
       v4TerminalFenceRef.current = null;
-      v4TerminalEventIdsRef.current.clear();
       v4TerminalReservationsRef.current.clear();
       clearReconcileOwners();
       statusRetryCountRef.current = 0;
@@ -2554,21 +2526,18 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           if (runControlSessionId) {
             bindRunControlParent(runControlSessionId, newRunId);
           }
-          setMessages((prev) => {
-            const nextMessages = prev.map((m) =>
-              m.id === userMessageId
-                ? { ...m, runId: newRunId }
-                : m.id === assistantMessageId
+          const nextMessages = messagesRef.current.map((m) =>
+            m.id === userMessageId
+              ? { ...m, runId: newRunId }
+              : m.id === assistantMessageId
                 ? {
                     ...m,
                     id: newRunId,
                     runId: newRunId,
                   }
                 : m,
-            );
-            messagesRef.current = nextMessages;
-            return nextMessages;
-          });
+          );
+          setMessageSnapshot({ messagesRef, setMessages }, nextMessages);
         }
 
         const streamSessionId = newSessionId || requestSessionId;
@@ -2669,7 +2638,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         } else {
           const errorMessage = formatChatSubmissionError(err);
           setError(errorMessage);
-          setMessages((prev) =>
+          setMessageSnapshot({ messagesRef, setMessages }, (prev) =>
             prev.map((m) =>
               m.id === finalAssistantMessageId
                 ? {
@@ -2735,7 +2704,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     publicStreamPresentationRef.current?.invalidate();
     streamVersionRef.current += 1;
     v4TerminalFenceRef.current = null;
-    v4TerminalEventIdsRef.current.clear();
     v4TerminalReservationsRef.current.clear();
     isLoadingHistoryRef.current = false;
     isSendingRef.current = false;
@@ -2743,7 +2711,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     retryCountRef.current = 0;
     statusRetryCountRef.current = 0;
     clearReconcileOwners();
-    setMessages([]);
+    setMessageSnapshot({ messagesRef, setMessages }, []);
     setConfirmationRecovery(null);
     sessionAgentAuthorityRef.current = null;
     setSessionId(null);
@@ -2762,7 +2730,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     lastHistoryTimestampRef.current = null;
     streamingMessageIdRef.current = null;
     isReconnectFromHistoryRef.current = false;
-    messagesRef.current = [];
     sessionIdRef.current = null;
     currentRunIdRef.current = null;
     activeSubagentStackRef.current = [];

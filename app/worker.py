@@ -1,3 +1,4 @@
+import asyncio
 import re
 from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -2401,6 +2402,7 @@ async def process_run_payload(
                     },
                 )
                 return terminal_after_transaction.outcome
+            payload = payload.model_copy(update={"file_ids": context_ref["file_ids"]})
             try:
                 execution_spec = compile_execution_spec_for_dispatch(
                     run_identity=run_identity,
@@ -2545,12 +2547,36 @@ async def process_run_payload(
                         run_id=run_payload.run_id,
                     )
 
+            loop = asyncio.get_running_loop()
+
+            async def reserve_artifact_cleanup(storage_key: str) -> str:
+                async with transaction_factory() as conn:
+                    return await repositories.reserve_provisional_artifact_cleanup(
+                        conn,
+                        tenant_id=run_payload.tenant_id,
+                        run_id=run_payload.run_id,
+                        storage_key=storage_key,
+                    )
+
+            def reserve_artifact_storage(storage_key: str) -> str:
+                receipt = asyncio.run_coroutine_threadsafe(
+                    reserve_artifact_cleanup(storage_key),
+                    loop,
+                )
+                return receipt.result()
+
+            execution_owner = RunExecutionOwner(
+                run_payload.run_id,
+                artifact_storage_scope=run_payload.attempt_id,
+                reserve_artifact_storage=reserve_artifact_storage,
+            )
             started_at = time.monotonic()
             result = await _submit_run_until_cancelled(
                 adapter,
                 run_payload,
                 event_sink=event_sink,
                 cancel_requested=cancel_requested,
+                execution_owner=execution_owner,
             )
         if isinstance(result, ExecutorDispatchAccepted):
             if not result.lease_id:
@@ -2744,6 +2770,8 @@ async def process_run_payload(
 
     artifact_records = []
     for artifact in result.artifacts:
+        if reconciliation is not None and not artifact.provisional_cleanup_id:
+            raise ValueError("executor_reconciliation_artifact_cleanup_receipt_missing")
         artifact_id = repositories.new_id("art")
         artifact_records.append(
             {
@@ -2755,6 +2783,7 @@ async def process_run_payload(
                 "size_bytes": artifact.size_bytes,
                 "download_url": _artifact_download_url(artifact_id),
                 "manifest_json": artifact.manifest,
+                "provisional_cleanup_id": artifact.provisional_cleanup_id,
             }
         )
     skill_snapshot = _skill_snapshot_from_result(result)
@@ -2935,6 +2964,16 @@ async def process_run_payload(
                         },
                     )
             for artifact in artifact_records:
+                if artifact["provisional_cleanup_id"] is not None:
+                    promoted = await repositories.promote_provisional_artifact_cleanup(
+                        conn,
+                        artifact_id=str(artifact["provisional_cleanup_id"]),
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        storage_key=artifact["storage_key"],
+                    )
+                    if not promoted:
+                        raise RuntimeError("executor_artifact_cleanup_receipt_lost")
                 manifest_json = artifact_manifest_contract(
                     artifact_type=artifact["artifact_type"],
                     manifest=_sanitize_artifact_manifest(artifact["manifest_json"]),

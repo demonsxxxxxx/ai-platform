@@ -82,6 +82,10 @@ async def _controlled_terminal_reconciler(stop_event, **_kwargs):
     await stop_event.wait()
 
 
+async def _controlled_maintenance(*_args):
+    await asyncio.Event().wait()
+
+
 def test_write_worker_runtime_heartbeat_records_process_commit(monkeypatch, tmp_path):
     commit = "8" * 40
     heartbeat = tmp_path / "worker-runtime-heartbeat.json"
@@ -650,7 +654,7 @@ async def test_worker_maintenance_pending_admission_precedes_due_publication(mon
 
     monkeypatch.setattr(worker_main, "run_maintenance_phases", run_phases)
     monkeypatch.setattr(worker_main.queue, "reclaim_expired_leases", lambda **kwargs: [])
-    await worker_main.run_worker_maintenance(
+    await worker_main.run_worker_publication_maintenance(
         SimpleNamespace(v4_pending_admission_limit=1, v4_publication_scope_limit=1, v4_publication_event_limit=1),
         v4_capabilities=SimpleNamespace(
             pending_admissions=Pending(),
@@ -659,6 +663,47 @@ async def test_worker_maintenance_pending_admission_precedes_due_publication(mon
         ),
     )
     assert order == ["pending.scan", "due.scan"]
+
+
+@pytest.mark.asyncio
+async def test_publication_maintenance_progresses_while_cleanup_is_blocked(monkeypatch):
+    cleanup_started = asyncio.Event()
+    publication_progressed = asyncio.Event()
+    publication_calls = 0
+
+    async def blocked_cleanup(_settings, *, v4_capabilities):
+        assert v4_capabilities is _TEST_V4_CAPABILITIES
+        cleanup_started.set()
+        await asyncio.Event().wait()
+
+    async def publish(_settings, *, v4_capabilities):
+        nonlocal publication_calls
+        assert v4_capabilities is _TEST_V4_CAPABILITIES
+        publication_calls += 1
+        if publication_calls == 2:
+            publication_progressed.set()
+
+    monkeypatch.setattr(worker_main, "run_worker_cleanup_maintenance", blocked_cleanup)
+    monkeypatch.setattr(worker_main, "run_worker_publication_maintenance", publish)
+    cleanup_task = asyncio.create_task(
+        worker_main._maintenance_until_done(
+            object(), 0.001, _TEST_V4_CAPABILITIES
+        )
+    )
+    publication_task = asyncio.create_task(
+        worker_main._publication_maintenance_until_done(
+            object(), 0.001, _TEST_V4_CAPABILITIES
+        )
+    )
+    try:
+        await asyncio.wait_for(cleanup_started.wait(), timeout=0.5)
+        await asyncio.wait_for(publication_progressed.wait(), timeout=0.5)
+    finally:
+        cleanup_task.cancel()
+        publication_task.cancel()
+        await asyncio.gather(cleanup_task, publication_task, return_exceptions=True)
+
+    assert publication_calls >= 2
 
 
 @pytest.mark.asyncio
@@ -2725,10 +2770,23 @@ async def test_run_once_passes_queue_quota_settings_to_queue(monkeypatch):
 async def test_run_forever_closes_database_pool_when_cancelled(monkeypatch):
     calls = []
 
-    async def fake_run_once(registry=None, timeout_seconds=5, worker_id=None, *, v4_capabilities=None):
+    async def fake_run_once(
+        registry=None,
+        timeout_seconds=5,
+        worker_id=None,
+        run_initial_maintenance=True,
+        run_background_maintenance=True,
+        *,
+        v4_capabilities=None,
+    ):
         assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert run_initial_maintenance is False
+        assert run_background_maintenance is False
         calls.append(("run_once", timeout_seconds, worker_id is not None))
         raise asyncio.CancelledError()
+
+    async def fake_run_worker_maintenance(_settings, *, v4_capabilities):
+        assert v4_capabilities is _TEST_V4_CAPABILITIES
 
     async def fake_close_pool():
         calls.append(("close_pool",))
@@ -2737,6 +2795,7 @@ async def test_run_forever_closes_database_pool_when_cancelled(monkeypatch):
         calls.append(("close_redis_client",))
 
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
+    monkeypatch.setattr("app.worker_main.run_worker_maintenance", fake_run_worker_maintenance)
     monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", _controlled_terminal_reconciler)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_pool", fake_close_pool)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_redis_client", fake_close_redis_client)
@@ -2756,13 +2815,26 @@ async def test_run_forever_continues_after_transient_run_once_error(monkeypatch)
     calls = []
     continued = asyncio.Event()
 
-    async def fake_run_once(registry=None, timeout_seconds=5, worker_id=None, *, v4_capabilities=None):
+    async def fake_run_once(
+        registry=None,
+        timeout_seconds=5,
+        worker_id=None,
+        run_initial_maintenance=True,
+        run_background_maintenance=True,
+        *,
+        v4_capabilities=None,
+    ):
         assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert run_initial_maintenance is False
+        assert run_background_maintenance is False
         calls.append(("run_once", timeout_seconds, worker_id is not None))
         if len(calls) == 1:
             raise TimeoutError("Timeout reading from redis:6379")
         continued.set()
         raise asyncio.CancelledError()
+
+    async def fake_run_worker_maintenance(_settings, *, v4_capabilities):
+        assert v4_capabilities is _TEST_V4_CAPABILITIES
 
     async def fake_sleep(seconds):
         calls.append(("sleep", seconds))
@@ -2774,7 +2846,10 @@ async def test_run_forever_continues_after_transient_run_once_error(monkeypatch)
         calls.append(("close_redis_client",))
 
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
+    monkeypatch.setattr("app.worker_main.run_worker_maintenance", fake_run_worker_maintenance)
     monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", _controlled_terminal_reconciler)
+    monkeypatch.setattr("app.worker_main._maintenance_until_done", _controlled_maintenance)
+    monkeypatch.setattr("app.worker_main._publication_maintenance_until_done", _controlled_maintenance)
     monkeypatch.setattr("app.worker_main.asyncio.sleep", fake_sleep)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_pool", fake_close_pool)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_redis_client", fake_close_redis_client)
@@ -3422,3 +3497,73 @@ async def test_run_once_reclaims_queue_when_sandbox_runtime_cleanup_fails(monkey
         ("lease", "worker-a"),
     ]
     assert "Sandbox runtime cleanup maintenance failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_upload_cleanup_uses_storage_operation_owned_by_reservation_kind(monkeypatch):
+    operations: list[tuple[str, str, str | None]] = []
+    deleted: list[str] = []
+    retained: list[tuple[str, int]] = []
+
+    class Transaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class Storage:
+        def delete_object(self, *, storage_key):
+            operations.append(("delete", storage_key, None))
+
+        def abort_multipart_uploads_for_key(self, *, storage_key):
+            operations.append(("abort_key", storage_key, None))
+
+        def cleanup_multipart_upload(self, *, storage_key, upload_id):
+            operations.append(("cleanup", storage_key, upload_id))
+
+    async def expire(_conn, **_kwargs):
+        return [
+            {
+                "id": "upload-direct",
+                "tenant_id": "default",
+                "workspace_id": "default",
+                "session_id": None,
+                "file_id": "file-direct",
+                "storage_key": (
+                    "tenants/default/workspaces/default/sessions/unbound/"
+                    "files/file-direct/generations/direct_owner/content"
+                ),
+                "upload_id": "direct_owner",
+            },
+            {"id": "initializing", "storage_key": "initializing-key", "upload_id": "initializing_initializing"},
+            {"id": "multipart", "storage_key": "multipart-key", "upload_id": "s3-upload"},
+            {"id": "opaque", "storage_key": "opaque-key", "upload_id": "direct_opaque-upload"},
+        ]
+
+    async def delete(_conn, *, upload_session_id):
+        deleted.append(upload_session_id)
+
+    async def retry(_conn, *, upload_session_id, delay_seconds=60):
+        retained.append((upload_session_id, delay_seconds))
+
+    monkeypatch.setattr(worker_main, "transaction", Transaction)
+    monkeypatch.setattr(worker_main, "ObjectStorage", Storage)
+    monkeypatch.setattr(worker_main, "expire_file_upload_sessions", expire)
+    monkeypatch.setattr(worker_main, "retry_expired_file_upload_session", retry)
+    monkeypatch.setattr(worker_main, "delete_expired_file_upload_session", delete)
+
+    assert await worker_main.cleanup_expired_file_upload_sessions() == 4
+    assert operations == [
+        (
+            "delete",
+            "tenants/default/workspaces/default/sessions/unbound/"
+            "files/file-direct/generations/direct_owner/content",
+            None,
+        ),
+        ("abort_key", "initializing-key", None),
+        ("cleanup", "multipart-key", "s3-upload"),
+        ("cleanup", "opaque-key", "direct_opaque-upload"),
+    ]
+    assert deleted == ["upload-direct", "multipart", "opaque"]
+    assert retained == [("initializing", 86_400)]

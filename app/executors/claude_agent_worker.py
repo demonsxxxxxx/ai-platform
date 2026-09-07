@@ -1,10 +1,15 @@
 import base64
 import binascii
+import hashlib
 import inspect
 import shutil
+import threading
+import zipfile
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, Callable, ClassVar
+
+from docx import Document
 
 from app import control_plane_contracts as run_controls, repositories
 from app.capabilities import required_artifact_types_for_skill
@@ -48,7 +53,10 @@ from app.executors.claude_agent_sdk_runner import (
     run_claude_agent_sdk,
     sandbox_runtime_tool_policy_subjects as _sandbox_runtime_tool_policy_subjects,
 )
-from app.executors.claude.prompts import build_harness_chat_prompt
+from app.executors.claude.prompts import (
+    CurrentRequestTooLargeError,
+    build_harness_chat_prompt,
+)
 from app.execution.api import (
     SkillInvocationEvidenceBinder,
     claude_sdk_failure_code,
@@ -91,11 +99,34 @@ from app.skills.pinning import (
 )
 from app.skills.registry import BuiltinSkill, BuiltinSkillRegistry, skill_content_hash
 from app.skills.stager import SkillStager
-from app.storage import ObjectStorage
+from app.storage import ObjectStorage, run_storage_io
 
 _MAX_WORKSPACE_ARTIFACT_FILES = 128
 _MAX_WORKSPACE_ARTIFACT_FILE_BYTES = 64 * 1024 * 1024
 _MAX_WORKSPACE_ARTIFACT_TOTAL_BYTES = 256 * 1024 * 1024
+_MAX_DOCX_ARCHIVE_ENTRIES = 2000
+_MAX_DOCX_ARCHIVE_ENTRY_BYTES = 32 * 1024 * 1024
+_MAX_DOCX_ARCHIVE_TOTAL_BYTES = 64 * 1024 * 1024
+
+
+def _valid_docx_artifact(path: Path) -> bool:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            entries = archive.infolist()
+            if len(entries) > _MAX_DOCX_ARCHIVE_ENTRIES:
+                return False
+            total_bytes = 0
+            for entry in entries:
+                if entry.file_size > _MAX_DOCX_ARCHIVE_ENTRY_BYTES:
+                    return False
+                total_bytes += entry.file_size
+                if total_bytes > _MAX_DOCX_ARCHIVE_TOTAL_BYTES:
+                    return False
+        Document(path)
+        return True
+    except Exception:
+        return False
+
 
 _SANDBOX_SUCCESS_TERMINAL_STATUSES = {"completed", "succeeded"}
 _TOOL_PERMISSION_POLL_INTERVAL_SECONDS = 0.25
@@ -1259,19 +1290,43 @@ class ClaudeAgentWorkerAdapter:
             "file_names": file_names,
             "context_pack": prompt_context_pack,
         }
-        prompt = (
-            build_harness_chat_prompt(**prompt_builder_kwargs)
-            if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
-            else build_skill_prompt(
-                skill_id=str(payload.skill_id),
-                authorized_skill_catalog=(
-                    authorized_catalog.snapshot
-                    if authorized_catalog is not None
-                    else None
-                ),
-                **prompt_builder_kwargs,
+        try:
+            prompt = (
+                build_harness_chat_prompt(**prompt_builder_kwargs)
+                if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
+                else build_skill_prompt(
+                    skill_id=str(payload.skill_id),
+                    authorized_skill_catalog=(
+                        authorized_catalog.snapshot
+                        if authorized_catalog is not None
+                        else None
+                    ),
+                    **prompt_builder_kwargs,
+                )
             )
-        )
+        except CurrentRequestTooLargeError:
+            return None, ExecutorResult(
+                status="failed",
+                adapter_version=self.adapter_version,
+                executor_type=self.executor_type,
+                executor_version=self.executor_version,
+                capabilities=self.capabilities,
+                result={
+                    "message": "Current request exceeds the execution limit",
+                    "error_code": "current_request_too_large",
+                    "sdk_used": False,
+                    "sdk_error": "current_request_too_large",
+                    "delegate_used": False,
+                    "worker_boundary": self.executor_type,
+                },
+                artifacts=[],
+                executor_payload={
+                    "sdk_used": False,
+                    "sdk_error": "current_request_too_large",
+                    "delegate_used": False,
+                    "worker_boundary": self.executor_type,
+                },
+            )
         return (
             PreparedSdkRun(
                 workspace=resolved_workspace,
@@ -1485,19 +1540,37 @@ class ClaudeAgentWorkerAdapter:
                 if isinstance(value, dict)
             },
         )
+        storage_scope = str(adapter_context.get("_artifact_storage_scope") or "")
+        abandoned = adapter_context.get("_artifact_collection_abandoned")
+        if abandoned is not None and not isinstance(abandoned, threading.Event):
+            raise ValueError("artifact collection abandonment signal is invalid")
+        reserve_artifact_storage = adapter_context.get("_reserve_artifact_storage")
+        if reserve_artifact_storage is not None and not callable(reserve_artifact_storage):
+            raise ValueError("artifact storage reservation callback is invalid")
         runtime_result = _PersistedSandboxRuntimeResult(
             status=str(terminal_result.get("status") or ""),
             provider=provider,
             executor_response=dict(terminal_result),
             timings=dict(timings or {}),
         )
-        return self._executor_result_from_sandbox_runtime(payload, prepared, runtime_result)
+        return self._executor_result_from_sandbox_runtime(
+            payload,
+            prepared,
+            runtime_result,
+            storage_scope=storage_scope,
+            abandoned=abandoned,
+            reserve_storage=reserve_artifact_storage,
+        )
 
     def _executor_result_from_sandbox_runtime(
         self,
         payload: RunPayload,
         prepared: PreparedSdkRun | PreparedSandboxFinalization,
         runtime_result: object,
+        *,
+        storage_scope: str = "",
+        abandoned: threading.Event | None = None,
+        reserve_storage: Callable[[str], str] | None = None,
     ) -> ExecutorResult:
         executor_response = (
             dict(getattr(runtime_result, "executor_response", {}))
@@ -1714,7 +1787,13 @@ class ClaudeAgentWorkerAdapter:
                 },
             )
 
-        artifacts = self._collect_workspace_artifacts(payload, prepared.workspace)
+        artifacts = self._collect_workspace_artifacts(
+            payload,
+            prepared.workspace,
+            storage_scope=storage_scope,
+            abandoned=abandoned,
+            reserve_storage=reserve_storage,
+        )
         turn_diagnostics = _public_sdk_turn_diagnostics(
             payload,
             executor_response.get("sdk_turn_diagnostics"),
@@ -1796,7 +1875,26 @@ class ClaudeAgentWorkerAdapter:
             public_skill_metadata=prepared.public_skill_metadata,
         )
         if self._sdk_completed_normally(sdk_result):
-            artifacts = self._collect_workspace_artifacts(payload, prepared.workspace)
+            abandoned = threading.Event()
+            storage_scope = (
+                execution_owner.artifact_storage_scope
+                if execution_owner is not None
+                else ""
+            )
+            reserve_storage = (
+                execution_owner.reserve_artifact_storage
+                if execution_owner is not None
+                else None
+            )
+            artifacts = await run_storage_io(
+                self._collect_workspace_artifacts,
+                payload,
+                prepared.workspace,
+                storage_scope=storage_scope,
+                abandoned=abandoned,
+                reserve_storage=reserve_storage,
+                on_abandoned=abandoned.set,
+            )
             used_skill_names = _sdk_used_skill_names(sdk_result, prepared.staged_skill_names)
             used_skills_source = _sdk_used_skills_source(sdk_result, used_skill_names)
             inferred_used_skill_names = _inferred_used_skill_names(payload, prepared.staged_skill_names)
@@ -2238,7 +2336,15 @@ class ClaudeAgentWorkerAdapter:
             materialized_file_names=list(result.materialized_file_names),
         )
 
-    def _collect_workspace_artifacts(self, payload: RunPayload, workspace: Path) -> list[ArtifactManifest]:
+    def _collect_workspace_artifacts(
+        self,
+        payload: RunPayload,
+        workspace: Path,
+        *,
+        storage_scope: str = "",
+        abandoned: threading.Event | None = None,
+        reserve_storage: Callable[[str], str] | None = None,
+    ) -> list[ArtifactManifest]:
         artifacts: list[ArtifactManifest] = []
         storage = ObjectStorage()
         candidates: list[Path] = []
@@ -2264,31 +2370,68 @@ class ClaudeAgentWorkerAdapter:
                     raise ValueError("workspace artifacts exceed the file count limit")
                 seen_candidates.add(resolved)
                 candidates.append(item)
-        for index, path in enumerate(candidates, start=1):
-            content_type = _artifact_content_type(path.name)
-            artifact_type = _artifact_type(path.name)
-            storage_key = (
-                f"tenants/{payload.tenant_id}/workspaces/{payload.workspace_id}/"
-                f"sessions/{payload.session_id}/runs/{payload.run_id}/artifacts/{index}/{path.name}"
-            )
-            stored = storage.put_bytes(
-                storage_key=storage_key,
-                content=path.read_bytes(),
-                content_type=content_type,
-            )
-            artifacts.append(
-                ArtifactManifest(
-                    artifact_type=artifact_type,
-                    label=_artifact_label(path.name, artifact_type),
-                    content_type=content_type,
-                    storage_key=stored.storage_key,
-                    size_bytes=stored.size_bytes,
-                    manifest={
-                        "source_executor": self.executor_type,
-                        "workspace_output": path.relative_to(workspace).as_posix(),
-                    },
+        valid_candidates: list[Path] = []
+        for path in candidates:
+            if _artifact_type(path.name) == "result_docx" and not _valid_docx_artifact(path):
+                continue
+            valid_candidates.append(path)
+        if set(_required_artifact_types(payload)) - {
+            _artifact_type(path.name) for path in valid_candidates
+        }:
+            return []
+        try:
+            for index, path in enumerate(valid_candidates, start=1):
+                if abandoned is not None and abandoned.is_set():
+                    raise RuntimeError("workspace artifact collection abandoned")
+                content_type = _artifact_content_type(path.name)
+                artifact_type = _artifact_type(path.name)
+                content = path.read_bytes()
+                content_digest = hashlib.sha256(content).hexdigest()
+                scoped_path = f"reconciliations/{storage_scope}/" if storage_scope else ""
+                storage_key = (
+                    f"tenants/{payload.tenant_id}/workspaces/{payload.workspace_id}/"
+                    f"sessions/{payload.session_id}/runs/{payload.run_id}/{scoped_path}"
+                    f"artifacts/{index}/{content_digest}/{path.name}"
                 )
-            )
+                if reserve_storage is not None:
+                    provisional_cleanup_id = reserve_storage(storage_key)
+                else:
+                    provisional_cleanup_id = None
+                if abandoned is not None and abandoned.is_set():
+                    raise RuntimeError("workspace artifact collection abandoned")
+                stored = storage.put_bytes(
+                    storage_key=storage_key,
+                    content=content,
+                    content_type=content_type,
+                )
+                artifacts.append(
+                    ArtifactManifest(
+                        artifact_type=artifact_type,
+                        label=_artifact_label(path.name, artifact_type),
+                        content_type=content_type,
+                        storage_key=stored.storage_key,
+                        size_bytes=stored.size_bytes,
+                        manifest={
+                            "source_executor": self.executor_type,
+                            "workspace_output": path.relative_to(workspace).as_posix(),
+                        },
+                        provisional_cleanup_id=provisional_cleanup_id,
+                    )
+                )
+                if abandoned is not None and abandoned.is_set():
+                    raise RuntimeError("workspace artifact collection abandoned")
+        except Exception:
+            if reserve_storage is not None:
+                raise
+            cleanup_error: Exception | None = None
+            for artifact in artifacts:
+                try:
+                    storage.delete_object(storage_key=artifact.storage_key)
+                except Exception as exc:
+                    cleanup_error = cleanup_error or exc
+            if cleanup_error is not None:
+                raise RuntimeError("workspace_artifact_cleanup_failed") from cleanup_error
+            raise
         return artifacts
 
     def _workspace_artifact_dirs(self, workspace: Path) -> list[Path]:

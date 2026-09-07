@@ -89,7 +89,11 @@ test("keeps drafts local across remounts, submissions, and session scopes", asyn
   let attachments: NonNullable<ChatInputProps["attachments"]> = [];
   let selectedSkillState: ChatInputProps["selectedSkillState"];
   let clearSelectedSkillCalls = 0;
-  const onSend = () => submission.promise;
+  let sendCalls = 0;
+  const onSend = () => {
+    sendCalls += 1;
+    return submission.promise;
+  };
   const acceptedFileTypes: string[] = [];
   const tools: NonNullable<ChatInputProps["tools"]> = [];
   const skills: NonNullable<ChatInputProps["skills"]> = [];
@@ -279,6 +283,25 @@ test("keeps drafts local across remounts, submissions, and session scopes", asyn
       ["attachment-b"],
     );
     assert.equal(clearSelectedSkillCalls, 0);
+
+    const sendCallsBeforePendingUpload = sendCalls;
+    selectedSkillState = undefined;
+    attachments = [
+      {
+        id: "temp-pending",
+        key: "",
+        name: "pending.txt",
+        type: "document",
+        mimeType: "text/plain",
+        size: 1,
+        isUploading: true,
+      },
+    ];
+    await render(false, "session-2");
+    await typeDraft("must wait for upload");
+    await submit();
+    assert.equal(sendCalls, sendCallsBeforePendingUpload);
+    assert.equal(textarea().value, "must wait for upload");
   } finally {
     await act(async () => root.unmount());
     dom.window.close();
