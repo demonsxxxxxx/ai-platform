@@ -542,6 +542,10 @@ async def test_real_postgres_upgrade_preserves_legacy_artifact_outbox_identity()
             """
         )
         await admin.execute(
+            "alter table artifacts drop constraint chk_artifacts_run_owner"
+        )
+        await admin.execute("alter table artifacts alter column run_id set not null")
+        await admin.execute(
             """
             insert into artifacts(
               id, tenant_id, run_id, artifact_type, label, content_type,
@@ -606,10 +610,18 @@ async def test_real_postgres_upgrade_preserves_legacy_artifact_outbox_identity()
         cursor = await admin.execute(
             """
             select outbox.target_type, outbox.artifact_id, outbox.file_id,
-                   outbox.lease_generation, files.lifecycle_state
+                   outbox.lease_generation, files.lifecycle_state,
+                   artifacts.run_id as artifact_run_id,
+                   artifacts.lifecycle_state as artifact_lifecycle_state,
+                   artifacts.manifest_json ->> 'retention_artifact_cleanup'
+                     as retention_artifact_cleanup,
+                   artifacts.manifest_json ->> 'deletion_owner_run_id'
+                     as deletion_owner_run_id
             from object_deletion_outbox outbox
             cross join files
+            cross join artifacts
             where outbox.id = 'legacy-outbox' and files.id = 'legacy-file'
+              and artifacts.id = 'legacy-artifact'
             """
         )
         assert await cursor.fetchone() == {
@@ -618,6 +630,10 @@ async def test_real_postgres_upgrade_preserves_legacy_artifact_outbox_identity()
             "file_id": None,
             "lease_generation": 0,
             "lifecycle_state": "active",
+            "artifact_run_id": None,
+            "artifact_lifecycle_state": "delete_pending",
+            "retention_artifact_cleanup": "true",
+            "deletion_owner_run_id": "legacy-run",
         }
         async with factory() as conn:
             assert (await schema_migrations.schema_status(conn))["ready"] is True
