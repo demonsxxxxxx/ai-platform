@@ -795,7 +795,6 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         attempt_id="attempt-1",
         tool_policy_subjects=[subject],
         execution_policy="sandbox_brokered",
-        require_selected_skill_invocation=False,
     )
 
     assert result.error is None
@@ -922,7 +921,6 @@ async def test_runner_stops_ordinary_stream_at_cumulative_publication_bound(monk
         run_id="run-1187",
         attempt_id="attempt-1",
         execution_policy="sandbox_brokered",
-        require_selected_skill_invocation=False,
     )
 
     assert result.error == "claude_agent_sdk_public_projection_failed"
@@ -993,7 +991,6 @@ async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch, 
         run_id="run-1187",
         attempt_id="attempt-1",
         execution_policy="sandbox_brokered",
-        require_selected_skill_invocation=False,
     )
 
     assert result.error == "agent_event_callback_not_acknowledged"
@@ -1060,7 +1057,6 @@ async def test_outer_cancellation_propagates_while_agent_callback_waits(monkeypa
             run_id="run-1187",
             attempt_id="attempt-1",
             execution_policy="sandbox_brokered",
-            require_selected_skill_invocation=False,
         )
     )
     await asyncio.wait_for(callback_started.wait(), timeout=1)
@@ -1154,7 +1150,6 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
         attempt_id="attempt-1",
         tool_policy_subjects=[subject],
         execution_policy="sandbox_brokered",
-        require_selected_skill_invocation=False,
     )
 
     deltas = [candidate.payload["delta"] for candidate in candidates if candidate.event_type == "message.delta"]

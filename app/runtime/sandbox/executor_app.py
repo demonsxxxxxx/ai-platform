@@ -2205,9 +2205,6 @@ async def _default_executor_runner(
             "on_tool_lifecycle": on_tool_lifecycle,
             "tool_policy_subjects": _task_tool_policy_subjects(request),
             "execution_policy": "sandbox_brokered",
-            "require_selected_skill_invocation": request.config.get(
-                "require_selected_skill_invocation", True
-            ) is not False,
             "thinking_effort": normalize_thinking_effort(
                 request.config.get("thinking_effort")
             ),
@@ -2250,18 +2247,15 @@ async def _default_executor_runner(
     )
     if used_sdk and not error and not received_structured_terminal:
         error = "claude_agent_sdk_missing_structured_terminal"
-    if used_sdk and not error:
-        # Only a successful SDK run may be downgraded by missing completion
-        # evidence.  When the SDK already failed (timeout, cancelled, upstream
-        # error, ...) preserve that structured error so callers see the real
-        # terminal cause instead of a misleading evidence mismatch.
-        if required_capability_declaration is not None:
-            required_tool_states = set(required_tool_invocation_states.values())
-            if "started" in required_tool_states or "completed" not in required_tool_states:
-                required_capability_evidence = None
-                reject_capability_evidence("required_tool_completion_evidence_mismatch")
-        elif any(state == "started" for state in required_tool_invocation_states.values()):
-            reject_capability_evidence("tool_invocation_evidence_mismatch")
+    if used_sdk and required_capability_declaration is not None and received_structured_terminal:
+        required_tool_states = set(required_tool_invocation_states.values())
+        if "started" in required_tool_states or "completed" not in required_tool_states:
+            required_capability_evidence = None
+            reject_capability_evidence("required_tool_completion_evidence_mismatch")
+    elif used_sdk and not error and any(
+        state == "started" for state in required_tool_invocation_states.values()
+    ):
+        reject_capability_evidence("tool_invocation_evidence_mismatch")
     await emit_event(
         _PlatformExecutionPhaseFact(
             "model_wait",

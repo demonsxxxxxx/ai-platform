@@ -1347,7 +1347,8 @@ async def test_sdk_natural_route_registers_only_routed_skill_and_hook_proves_cho
     assert result.error is None
     assert result.used_skills == ["skill-c"]
     assert result.used_skills_source == "executor_hook"
-    assert 'exactly this input: {"skill":"skill-c"}' in (
+    assert captured["prompt_messages"][0]["message"]["content"] == "route implicitly"
+    assert "Authoritative platform Skill requirement" not in (
         captured["prompt_messages"][0]["message"]["content"]
     )
 
@@ -1465,9 +1466,8 @@ async def test_sdk_registers_required_private_dependency_and_denies_unrelated_pr
         },
     )
 
-    assert 'exactly this input: {"skill":"ctd-32s73-stability-template-fill"}' in captured[
-        "prompt"
-    ]
+    assert captured["prompt"] == "use selected"
+    assert "Authoritative platform Skill requirement" not in captured["prompt"]
     assert captured["skills"] == skill_ids
     assert captured["allowed_tools"] == [
         "Skill(ctd-32s73-stability-template-fill)",

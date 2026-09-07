@@ -1252,6 +1252,116 @@ async def test_executor_rejects_unacknowledged_required_bash_lifecycle(
     assert REQUIRED_CAPABILITY_EVIDENCE_KEY not in result
 
 
+@pytest.mark.asyncio
+async def test_executor_preserves_sdk_error_when_required_bash_completed(
+    monkeypatch,
+    tmp_path,
+):
+    declaration = parse_required_tool_declaration("请执行 Bash 命令 pwd")
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        lifecycle = kwargs["on_tool_lifecycle"]
+        assert await lifecycle(
+            {"tool_name": "Bash", "invocation_id": "bash-call-1", "lifecycle": "started"}
+        )
+        assert await lifecycle(
+            {"tool_name": "Bash", "invocation_id": "bash-call-1", "lifecycle": "completed"}
+        )
+        return sdk_result(error="claude_agent_sdk_upstream_error")
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    raw = task_payload()
+    raw["config"]["tool_policy_subjects"] = [
+        {
+            "identity": "Bash",
+            REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY: declaration.to_payload(),
+        }
+    ]
+    request = ExecutorTaskRequest.model_validate(raw)
+
+    async def emit_event(_event):
+        return True
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "claude_agent_sdk_upstream_error"
+    assert result[REQUIRED_CAPABILITY_EVIDENCE_KEY]["tool_call_id"] == "bash-call-1"
+    assert result[REQUIRED_CAPABILITY_EVIDENCE_KEY]["lifecycle_phase"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_executor_rejects_missing_required_bash_even_when_sdk_errors(
+    monkeypatch,
+    tmp_path,
+):
+    declaration = parse_required_tool_declaration("请执行 Bash 命令 pwd")
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        return sdk_result(error="claude_agent_sdk_upstream_error")
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    raw = task_payload()
+    raw["config"]["tool_policy_subjects"] = [
+        {
+            "identity": "Bash",
+            REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY: declaration.to_payload(),
+        }
+    ]
+    request = ExecutorTaskRequest.model_validate(raw)
+
+    async def emit_event(_event):
+        return True
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "required_tool_completion_evidence_mismatch"
+    assert REQUIRED_CAPABILITY_EVIDENCE_KEY not in result
+
+
+@pytest.mark.asyncio
+async def test_executor_preserves_missing_structured_terminal_over_required_bash(
+    monkeypatch,
+    tmp_path,
+):
+    declaration = parse_required_tool_declaration("请执行 Bash 命令 pwd")
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        return sdk_result(received_structured_terminal=False)
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    raw = task_payload()
+    raw["config"]["tool_policy_subjects"] = [
+        {
+            "identity": "Bash",
+            REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY: declaration.to_payload(),
+        }
+    ]
+    request = ExecutorTaskRequest.model_validate(raw)
+
+    async def emit_event(_event):
+        return True
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "claude_agent_sdk_missing_structured_terminal"
+    assert REQUIRED_CAPABILITY_EVIDENCE_KEY not in result
+
+
 def test_executor_http_response_preserves_private_required_capability_evidence(tmp_path):
     declaration = parse_required_tool_declaration("请执行 Bash 命令 pwd")
     evidence = RequiredCapabilityEvidence.from_executor_private_payload(
@@ -1283,41 +1393,6 @@ def test_executor_http_response_preserves_private_required_capability_evidence(t
 
     assert response.status_code == 200
     assert response.json()[REQUIRED_CAPABILITY_EVIDENCE_KEY] == evidence
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("configured_value", "expected"),
-    [(None, True), (0, True), ("false", True), (False, False), (True, True)],
-)
-async def test_executor_only_disables_required_skill_invocation_for_explicit_false(
-    monkeypatch,
-    tmp_path,
-    configured_value,
-    expected,
-):
-    captured = {}
-
-    class StubSettings:
-        claude_agent_sdk_enabled = True
-
-    async def fake_run_claude_agent_sdk(**kwargs):
-        captured.update(kwargs)
-        return sdk_result()
-
-    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
-    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    raw = task_payload()
-    raw["config"]["require_selected_skill_invocation"] = configured_value
-    request = ExecutorTaskRequest.model_validate(raw)
-
-    async def emit_event(_event):
-        return True
-
-    result = await _default_executor_runner(request, tmp_path, emit_event)
-
-    assert result["status"] == "completed"
-    assert captured["require_selected_skill_invocation"] is expected
 
 
 def test_executor_health_returns_ready(tmp_path):
