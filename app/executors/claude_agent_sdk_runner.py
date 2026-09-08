@@ -1462,12 +1462,12 @@ async def run_claude_agent_sdk(
         if kind in {"skill", "mcp"}
     }
     private_capability_tokens.update(
-        str(config["url"])
-        for server_id, config in mcp_servers.items()
-        if server_id != "ai-platform-context"
-        and isinstance(config, dict)
-        and isinstance(config.get("url"), str)
-        and config["url"]
+        str(subject["mcp_server_config"]["url"])
+        for subject in authorized_subjects.values()
+        if subject.get("mcp_server") != "ai-platform-context"
+        and isinstance(subject.get("mcp_server_config"), dict)
+        and isinstance(subject["mcp_server_config"].get("url"), str)
+        and subject["mcp_server_config"]["url"]
     )
     private_replacement = "\u2588"
     private_replacements = {

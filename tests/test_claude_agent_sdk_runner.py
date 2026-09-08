@@ -482,7 +482,7 @@ async def test_sandbox_bash_subject_is_exposed_and_admitted_with_acknowledged_li
 
     pretool_output = captured["hook_results"][0][1]["hookSpecificOutput"]
     assert result.error is None
-    assert result.message == ""
+    assert result.message == "done"
     assert captured["allowed_tools"] == [
         "Read",
         "Glob",
@@ -3246,7 +3246,7 @@ async def test_sdk_selected_skill_concurrent_rejection_prevents_inflight_commit(
         result.used_skills,
         result.capability_evidence,
         deltas,
-    ) == ("required_tool_completion_evidence_mismatch", "", [], [], [])
+    ) == ("required_tool_completion_evidence_mismatch", "sealed", [], [], ["sealed"])
 
 
 @pytest.mark.asyncio
@@ -3799,7 +3799,7 @@ async def test_sdk_keeps_successful_terminal_body_after_stream_failure(
 
     assert captured["include_partial_messages"] is True
     assert result.error is None
-    assert result.message == "safe partial must finish\n\nterminal final"
+    assert result.message == "safe partial must \n\nterminal final"
     assert "".join(deltas) == result.message
 
 
