@@ -1,88 +1,59 @@
-# AI Platform Agent Rules
+# Working in ai-platform
 
-## Scope
+Repository coding instructions. Product `Agent.md` files describe Agent
+Profiles or workspaces; they do not govern repository changes.
 
-This file applies to the current `ai-platform` repository root.
+## Work from the current source
 
-## Local Verification
+Use the current worktree and preserve unrelated edits. Choose implementation,
+planning, delegation, and test scope to fit the task. Routine changes need no
+separate issue, phase ledger, review transcript, or worktree.
 
-- Run the smallest repository-native checks that can falsify the change.
-- Run ordinary local pytest stages from the target worktree root through
-  `python tools/run_test_stage.py`; the procedure and result semantics live in
-  `docs/agent-rules/local-test-execution.md`.
-- Do not run full-repository pytest as a routine gate. Run it only when the user
-  requests it for a named risk decision.
-- Run Docker validation, builds, restarts, and runtime smoke only on a
-  Docker-capable environment. Follow
-  `docs/operations/release-operations-runbook.md` for release operations.
+Read the affected code and its owning contract. Use the links below when the
+task reaches that concern; do not recursively load every linked document.
+Historical evidence and `.codegraph` are navigation aids, not current runtime
+proof. Keep progress and blockers in the active task or PR.
 
-## Remote Runtime Access
+## Verification and cleanup
 
-- Access s72 only through SSH MCP. Confirm the configured connection and make
-  one bounded, secret-safe connection attempt before reporting it unavailable.
-- Do not fall back to system SSH tools, a browser, or local Docker state to infer
-  remote runtime state.
-- Commands and output must not contain `.env` values, account identifiers,
-  passwords, tokens, or prompts.
+Cover changed behavior with an owning regression test; reuse existing coverage
+when sufficient. Use `python tools/run_test_stage.py` for local pytest. Choose
+additional checks by affected risk, not a fixed sequence or whole-repo ritual.
+Documentation-only edits need relevant document checks, not invented runtime
+proof. Report checks run, results, and limits; never present a patch as pushed,
+a build as deployed, or an unobserved test or review as passed.
 
-## Authority
+Finish a migration by updating callers, tests, selectors, and owning docs and
+removing the replaced path. Keep compatibility only for identified consumers.
+Do not weaken required checks to make a candidate pass.
 
-- Use the current repository root, current user instruction, current code and
-  tests, and the durable authorities indexed by `docs/README.md`.
-- Confirm issue state from GitHub and runtime state from fresh evidence for the
-  exact subject. Historical evidence, old paths, and short-term notes are not
-  current product or runtime authority.
-- Keep current owners, ordering, blockers, and completion state in the active
-  task, issue, or pull request rather than durable policy documents.
-- `.codegraph` is a navigation cache, not source or runtime authority. Read the
-  current source before editing.
+## Boundaries to preserve
 
-## Working And Delegation
+- Platform admission, authorization, context binding, persistence, and public
+  projections remain platform-owned; SDK-specific types stay in the adapter.
+- Preserve tenant, workspace, user, Run/Attempt, and lease boundaries.
+- Ordinary-user projections exclude raw Skill identifiers, storage keys,
+  runtime paths, command fingerprints, private executor payloads, and secrets.
+- Never copy, print, or commit real environment files, credentials, account
+  identifiers, or private prompts. Use synthetic or authorized redacted data.
+- Fake providers are test-only. Do not mount the Docker socket in default Compose.
+- Access s72 only through SSH MCP, with one bounded, secret-safe connection check
+  when remote work is requested. Do not substitute system SSH or local state.
+  Deployment requires the release runbook, fresh evidence, and explicit authority.
 
-- Work in the current project worktree by default. Delegate only when isolation,
-  parallelism, continuity, or independent evidence is worth the coordination
-  cost.
-- Create another worktree only for concurrent writers or an independent
-  fixed-commit check that cannot safely use the current worktree. A new issue or
-  delegated task alone is not a reason.
-- Install only dependencies required by a selected check and missing from that
-  worktree. Report added worktrees and generated dependency directories for
-  authorized cleanup when the task ends.
-- Detailed ownership, permission, release-lease, and handoff rules live in
-  `docs/agent-rules/multi-agent-context-workflow.md`.
+Every behavior change must carry a retirement and compatibility disposition in
+its PR before review. Inventory superseded production paths, tests/selectors,
+and documentation/configuration; remove each obsolete surface or name the
+current compatibility owner and its removal proof. A behavior change is not
+complete while an old implementation, stale assertion, selector, or
+instruction remains active without an explicit disposition and an
+absence/inventory check. The checklist is a review index, not evidence by
+itself; reviewers must inspect or rerun the referenced inventory.
 
-## Change Control And Delivery
+## Read when relevant
 
-- A focused ordinary change may use its pull request as the complete change
-  record. High-risk changes follow the Change Contract, review, verification,
-  and delivery rules in `docs/agent-rules/github-issue-pr-workflow.md`.
-- Every behavior change needs a falsifiable owning test. Claim assembled or
-  runtime behavior only after observing that path. Template text and Agent
-  self-report are not evidence.
-- Every behavior change must carry a retirement and compatibility disposition
-  in the PR before review. Inventory superseded production paths,
-  tests/selectors, and documentation/configuration; remove each obsolete
-  surface or name the current compatibility owner and its removal proof. A
-  behavior change is not complete while an old implementation, stale
-  assertion, selector, or instruction remains active without an explicit
-  disposition and an absence/inventory check. The checklist is a review index,
-  not evidence by itself; reviewers and governance must inspect or rerun the
-  referenced inventory. Trusted governance enforces the required PR record
-  with `tools/check_pr_retirement.py`.
-- `AGENTS.md` is repository coding authority. Product Agent.md content belongs
-  to the Agent Profile/Workspace domain and is not implementation authority.
-
-## Product Boundaries
-
-- The platform owns admission, authorization, context binding, queueing,
-  sandbox policy, persistence, and public projections. Engine-specific SDK
-  types and callbacks terminate inside the Engine adapter.
-- Keep tenant, workspace, and user boundaries explicit in queue, quota,
-  maintenance, memory, and operational projections.
-- Ordinary-user projections must not expose raw skill identifiers, storage
-  keys, runtime paths, command fingerprints, executor-private payloads, or
-  secret-like data.
-- Fake sandbox providers are test-only. Runtime claims require evidence from
-  the exact deployed subject on a controlled Docker-capable host.
-- Do not mount the Docker socket in the default Compose file and do not copy,
-  print, or commit real deployment environment files.
+- Code ownership and product contracts: [documentation index](docs/README.md).
+- Python checks: [local test execution](docs/agent-rules/local-test-execution.md).
+- PR and review: [delivery workflow](docs/agent-rules/github-issue-pr-workflow.md).
+- Parallel work: [coordination](docs/agent-rules/multi-agent-context-workflow.md).
+- Deployment: [release runbook](docs/operations/release-operations-runbook.md).

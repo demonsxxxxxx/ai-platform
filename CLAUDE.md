@@ -1,4 +1,3 @@
-# Claude Code Repository Instructions
+# Claude Code
 
-Read and follow [`AGENTS.md`](AGENTS.md) and the authority documents it links.
-This file adds no separate repository rules.
+@AGENTS.md
