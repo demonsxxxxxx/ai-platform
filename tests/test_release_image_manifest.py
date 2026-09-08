@@ -19,7 +19,52 @@ from tools.release_image_manifest import (
     validate_manifest,
 )
 from tools import release_image_manifest
+from tools.release_compose_package import DATA_IMAGES, build_package
 from tools.oci_image_manifest import MAX_OCI_DOCUMENT_BYTES
+
+
+@pytest.mark.parametrize("profile", ["internal-test", "production"])
+def test_compose_package_contains_only_runtime_files_with_fixed_images(tmp_path, profile):
+    import tarfile
+    import yaml
+
+    manifest = _manifest()
+    output = tmp_path / "deployment.tar.gz"
+    data_images = {service: tag.rsplit(":", 1)[0] + "@sha256:" + "d" * 64 for service, tag in DATA_IMAGES.items()}
+    build_package(ROOT, manifest, profile, output, data_images)
+    with tarfile.open(output) as archive:
+        expected = {"compose.yaml", "compose.override.yaml", ".env.example", "release-image-manifest.json", "deploy.py", "README.md"}
+        if profile == "production":
+            expected.add("opensandbox-egress-nginx.conf.template")
+        assert set(archive.getnames()) == expected
+        base = yaml.safe_load(archive.extractfile("compose.yaml").read())
+        # BaseLoader preserves scalars without interpreting Compose's !reset tag.
+        overlay = yaml.load(archive.extractfile("compose.override.yaml").read(), Loader=yaml.BaseLoader)
+        assert base["name"] == "ai-platform-internal"
+        images = {item["role"]: item["image"] for item in manifest["subjects"]}
+        for service in ("api", "worker", "migrate", "workspace-init"):
+            assert base["services"][service]["image"] == images["backend"]["immutable_ref"]
+        assert base["services"]["frontend"]["image"] == images["frontend"]["immutable_ref"]
+        for service, reference in data_images.items():
+            assert base["services"][service]["image"] == reference
+        for service in ("api", "worker"):
+            env = overlay["services"][service]["environment"]
+            assert env["OPENSANDBOX_EXECUTOR_IMAGE"] == images["backend"]["immutable_ref"]
+            assert env["OPENSANDBOX_EXECUTOR_IMAGE_DIGEST"] == images["backend"]["manifest_digest"]
+        assert json.load(archive.extractfile("release-image-manifest.json")) == manifest
+        script = archive.extractfile("deploy.py").read().decode()
+        assert manifest["source_commit"] in script
+        assert "@@SOURCE_COMMIT@@" not in script
+        compile(script, "deploy.py", "exec")
+    before = output.read_bytes()
+    with pytest.raises(FileExistsError):
+        build_package(ROOT, manifest, profile, output, data_images)
+    assert output.read_bytes() == before
+    manifest["subjects"][0]["image"]["immutable_ref"] = "untrusted:latest"
+    rejected = tmp_path / "rejected.tar.gz"
+    with pytest.raises(ValueError):
+        build_package(ROOT, manifest, profile, rejected, data_images)
+    assert not rejected.exists()
 
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -241,13 +241,15 @@ def test_governance_rules_keep_status_and_release_authority_out_of_history_docs(
 def test_release_runbook_remains_the_only_executable_release_authority():
     runbook = read(RUNBOOK)
 
-    assert "Canonical Exact-Main Command" in runbook
-    assert "deploy-main-commit" in runbook
-    assert '--docker-cmd "sudo -n docker"' in runbook
-    assert "final source/runtime parity" in runbook
-    assert "same release authority" in runbook
-    assert "task ownership, readiness, and release leases live in" in runbook
+    assert "python3 deploy.py --env-file /absolute/path/to/.env" in runbook
+    assert "ai-platform-production.tar.gz" in runbook
+    assert "immutable Deployment Release" in runbook
+    assert "do not mix package files" in runbook
+    assert "final runtime acceptance" in runbook
+    assert "task ownership, readiness, and release leases live in" not in runbook
     assert "s72 gateway runbook" not in runbook
+    assert "deploy-main-commit" not in runbook
+    assert "incoming/latest-main.json" not in runbook
 
 
 def test_decommissioned_runtime_is_not_an_active_source_authority():
