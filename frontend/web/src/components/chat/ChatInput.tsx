@@ -871,6 +871,7 @@ export const ChatInput = memo(function ChatInput({
           )}
           <LibreChatComposerBox
             ref={containerRef}
+            data-disable-global-file-drop="true"
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
