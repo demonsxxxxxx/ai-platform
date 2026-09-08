@@ -5,6 +5,7 @@ import types
 import pytest
 
 from app.executors.claude_agent_sdk_runner import (
+    ScopedContextRetrievalIdentity,
     _sdk_run_timeout_seconds,
     project_sdk_turn_diagnostics,
     run_claude_agent_sdk,
@@ -12,6 +13,7 @@ from app.executors.claude_agent_sdk_runner import (
 from app.executors.claude.capability_policy import (
     _canonical_tool_policy_subjects,
     _mcp_server_options,
+    internal_context_tool_policy_subjects,
 )
 from app.required_tool_contract import (
     parse_required_tool_declaration,
@@ -241,8 +243,15 @@ def _fake_sdk(captured, *, hook_invocations, thinking_text=None):
 
 
 def _scripted_sdk(
-    captured, steps, *, result_text="done", result_error: str | None = None
+    captured,
+    steps,
+    *,
+    result_text="done",
+    result_error: str | None = None,
+    permission_denials=None,
 ):
+    denials = permission_denials
+
     class TextBlock:
         def __init__(self, text):
             self.text = text
@@ -264,7 +273,7 @@ def _scripted_sdk(
         errors = [result_error] if result_error is not None else None
         stop_reason = "end_turn"
         num_turns = 1
-        permission_denials = None
+        permission_denials = denials
 
     class HookMatcher:
         def __init__(self, *, matcher, hooks):
@@ -2024,6 +2033,83 @@ def _mcp_hook_steps(subject, *, call_id="mcp-call-1", terminal="completed"):
         ("hook", ("PreToolUse", hook_input, call_id)),
         ("hook", (terminal_hook, hook_input, call_id)),
     ]
+
+
+@pytest.mark.asyncio
+async def test_sdk_permission_denial_closes_started_internal_mcp_lifecycle(
+    monkeypatch, tmp_path
+):
+    captured, lifecycle_facts = {}, []
+    subject = internal_context_tool_policy_subjects(["read_session_messages"])[0]
+    call_id = "mcp-call-denied"
+    hook_input = {
+        "tool_name": subject["identity"],
+        "tool_use_id": call_id,
+        "tool_input": {"limit": 1, "offset": 0, "max_tokens": 10},
+    }
+    sdk = _scripted_sdk(
+        captured,
+        [("hook", ("PreToolUse", hook_input, call_id))],
+        permission_denials=[
+            {
+                "tool_name": subject["identity"],
+                "tool_use_id": call_id,
+                "tool_input": hook_input["tool_input"],
+            },
+            {
+                "tool_name": "Read",
+                "tool_use_id": "read-denied-without-start",
+                "tool_input": {},
+            },
+        ],
+    )
+
+    def sdk_tool(name, _description, _schema):
+        def decorate(function):
+            function.name = name
+            return function
+
+        return decorate
+
+    sdk.tool = sdk_tool
+    sdk.create_sdk_mcp_server = lambda *_args, **_kwargs: object()
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    class Retrieval:
+        async def execute(self, _action, _identity, _args):
+            return {"messages": []}
+
+    async def acknowledge(fact):
+        lifecycle_facts.append(
+            (fact["tool_name"], fact["invocation_id"], fact["lifecycle"])
+        )
+        return True
+
+    result = await run_claude_agent_sdk(
+        prompt="use scoped history",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        context_retrieval=Retrieval(),
+        context_retrieval_identity=ScopedContextRetrievalIdentity(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            agent_id="general-agent",
+        ),
+        on_tool_lifecycle=acknowledge,
+    )
+
+    assert lifecycle_facts == [
+        ("MCP", call_id, "started"),
+        ("MCP", call_id, "failed"),
+    ]
+    assert result.error is None
+    assert result.turn_diagnostics["counters"]["tool_admission_denials"] == 2
 
 
 @pytest.mark.asyncio

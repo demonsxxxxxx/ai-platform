@@ -2188,6 +2188,47 @@ async def run_claude_agent_sdk(
 
         return handler
 
+    async def reconcile_sdk_permission_denial(denial: object) -> None:
+        """Close only a call that the SDK reports as denied after it started."""
+
+        if isinstance(denial, dict):
+            tool_name = denial.get("tool_name")
+            tool_call_id = denial.get("tool_use_id")
+        else:
+            tool_name = getattr(denial, "tool_name", None)
+            tool_call_id = getattr(denial, "tool_use_id", None)
+        identity = adapter_identity(tool_name)
+        call_id = canonical_tool_call_id(tool_call_id) or ""
+        if not call_id:
+            return
+        if identity in internal_context_subjects:
+            if governed_builtin_invocation_states.get(("MCP", call_id)) == "started":
+                await record_tool_lifecycle(
+                    tool_name="MCP", tool_call_id=call_id, lifecycle="failed"
+                )
+            return
+        if identity.startswith("mcp__") and identity in authorized_subjects:
+            if (
+                capability_invocation_states.get(("mcp", identity, call_id))
+                == "invocation_requested"
+            ):
+                await record_capability_evidence(
+                    capability_kind="mcp",
+                    canonical_identity=identity,
+                    tool_call_id=call_id,
+                    lifecycle_phase="failed",
+                )
+            return
+        if (
+            governed_builtin_invocation_states.get((str(tool_name or ""), call_id))
+            == "started"
+            or observed_read_only_invocation_states.get((str(tool_name or ""), call_id))
+            == "started"
+        ):
+            await record_tool_lifecycle(
+                tool_name=tool_name, tool_call_id=call_id, lifecycle="failed"
+            )
+
     def generic_tool_lifecycle_hook(lifecycle: str):
         async def handler(
             hook_input, tool_use_id=None, _context=None
@@ -2510,6 +2551,8 @@ async def run_claude_agent_sdk(
                     diagnostic_counters["tool_admission_denials"] += len(
                         permission_denials
                     )
+                    for denial in permission_denials:
+                        await reconcile_sdk_permission_denial(denial)
                 result_session_id = message.session_id
                 usage = message.usage or message.model_usage or {}
                 sdk_terminal_reason = getattr(message, "terminal_reason", None)
