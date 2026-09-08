@@ -35,8 +35,8 @@ def available_context_retrieval_tools(manifest: dict[str, Any] | None) -> list[s
     }
     selected: list[str] = []
     selection = manifest.get("selection")
-    if isinstance(selection, dict) and _safe_nonnegative_int(
-        selection.get("history_candidate_count")
+    if isinstance(selection, dict) and (
+        _safe_nonnegative_int(selection.get("history_omitted_count")) > 0
     ):
         if "read_session_messages" in advertised:
             selected.append("read_session_messages")
