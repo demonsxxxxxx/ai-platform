@@ -720,7 +720,6 @@ async def test_autonomous_sandbox_bash_preserves_pretool_narration_on_missing_te
         "tool_input": {"command": "python --version"},
     }
     public_text = "I will inspect the sandbox. The inspection started."
-    public_before_tool = "I will inspect the sandbox. "
     steps = [
         *_stream_steps("I will inspect the sandbox. ", index=0),
         ("hook", ("PreToolUse", hook_input, "bash-call-1")),

@@ -96,7 +96,11 @@ class PublicAnswerStreamGate:
         if self._failed:
             return ()
         raw_candidate = self._pending + text
-        raw_hold = self._private_prefix_chars(raw_candidate)
+        raw_hold = (
+            0
+            if any(token in raw_candidate for token in self._tokens)
+            else self._private_prefix_chars(raw_candidate)
+        )
         if raw_hold:
             if raw_hold > self._max_private_token_chars:
                 self._fail("sanitizer_bound_exceeded")
