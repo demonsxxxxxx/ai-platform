@@ -441,6 +441,7 @@ export const sessionApi = {
       event_types?: string[];
       run_id?: string;
       exclude_run_id?: string;
+      signal?: AbortSignal;
     },
   ): Promise<SessionEventsResponse & { run_id?: string }> {
     const searchParams = new URLSearchParams();
@@ -457,7 +458,7 @@ export const sessionApi = {
     const url = `${API_BASE}/api/sessions/${sessionId}/events${
       searchParams.toString() ? `?${searchParams}` : ""
     }`;
-    return authFetch<SessionEventsResponse & { run_id?: string }>(url);
+    return authFetch<SessionEventsResponse & { run_id?: string }>(url, { signal: options?.signal });
   },
 
   /**

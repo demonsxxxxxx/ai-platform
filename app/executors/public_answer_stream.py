@@ -36,7 +36,6 @@ class PublicAnswerStreamGate:
         self._accepted_text = False
         self._public_answer_text = ""
         self._active_capability_invocations: set[tuple[str, str, str]] = set()
-        self._capability_boundary_seen = False
         self._failed = False
         self._failure_reason: str | None = None
         self._finished = False
@@ -72,7 +71,6 @@ class PublicAnswerStreamGate:
             self._failed
             or not isinstance(value, str)
             or self._accepted_text
-            or self._capability_boundary_seen
         ):
             return False
         projected = self._project(value)
@@ -92,8 +90,6 @@ class PublicAnswerStreamGate:
             self._fail("invalid_input")
             return ()
         if not text:
-            return ()
-        if self._active_capability_invocations:
             return ()
         self._accepted_text = True
         self._extend_logical_view(text)
@@ -130,7 +126,7 @@ class PublicAnswerStreamGate:
         capability_boundary: bool = False,
         invocation_key: tuple[str, str, str],
     ) -> None:
-        """Register private identities and close disclosure for one invocation."""
+        """Register invocation identities without suppressing Assistant text."""
 
         del capability_boundary
         if self._finished:
@@ -145,12 +141,7 @@ class PublicAnswerStreamGate:
         ):
             self._fail("invalid_input")
             return
-        held_chars = self._private_replacement_prefix_chars(self._pending)
-        if held_chars:
-            self._pending = self._pending[:-held_chars]
-            self._logical_view = self._logical_view[:-held_chars]
         self._active_capability_invocations.add(invocation_key)
-        self._capability_boundary_seen = True
 
     def register_private_replacements(
         self,
@@ -198,37 +189,27 @@ class PublicAnswerStreamGate:
             return PublicAnswerFinish((), "")
         if self._failed or release is not True:
             return self._discard()
-        if self._active_capability_invocations:
-            self._fail("upstream_projection_failed")
+        if not isinstance(final_text, str):
+            self._fail("invalid_input")
             return self._discard()
-
-        if self._capability_boundary_seen:
-            candidate = self._pending if self._accepted_text else ""
-            public_final_text = self._public_answer_text
+        safe_final = self._project(final_text)
+        if safe_final is None or len(safe_final) > self._max_sealed_chars:
+            if safe_final is not None:
+                self._fail("answer_too_large")
+            return self._discard()
+        if self._accepted_text and safe_final.startswith(self._public_answer_text):
+            candidate = safe_final[len(self._public_answer_text) :]
+        elif self._accepted_text:
+            candidate = self._pending
         else:
-            if not isinstance(final_text, str):
-                self._fail("invalid_input")
-                return self._discard()
-            safe_final = self._project(final_text)
-            if safe_final is None or len(safe_final) > self._max_sealed_chars:
-                if safe_final is not None:
-                    self._fail("answer_too_large")
-                return self._discard()
-            if self._accepted_text and safe_final.startswith(self._public_answer_text):
-                candidate = safe_final[len(self._public_answer_text) :]
-            elif self._accepted_text:
-                candidate = self._pending
-            else:
-                candidate = safe_final
-            public_final_text = safe_final
+            candidate = safe_final
+        public_final_text = safe_final
         emitted = self._project_across_publication_boundary(candidate)
         if emitted is None:
             return self._discard()
         chunks = self._emit(emitted)
         self._pending = ""
         self._finished = True
-        if self._capability_boundary_seen:
-            public_final_text = self._public_answer_text
         return PublicAnswerFinish(chunks, public_final_text)
 
     def _add_replacements(self, replacements: Mapping[str, str]) -> None:

@@ -108,6 +108,48 @@ def _gate(**kwargs):
     )
 
 
+@pytest.mark.parametrize("release_tool", [False, True])
+def test_assistant_text_is_preserved_independently_of_tool_completion(release_tool):
+    gate = _gate()
+    invocation = ("builtin", "Read", CALL_ID)
+    before = gate.accept("Before. ")
+    gate.seal(invocation_key=invocation)
+    during = gate.accept("During. ")
+    if release_tool:
+        assert gate.release_after_verified_capability(invocation)
+    after = gate.accept("After. ")
+    finished = gate.finish(final_text="Before. During. After. ", release=True)
+
+    assert "".join((*before, *during, *after, *finished.chunks)) == (
+        "Before. During. After. "
+    )
+    assert finished.final_text == "Before. During. After. "
+    assert gate.failed is False
+
+
+def test_sensitive_value_split_across_tool_boundary_preserves_surrounding_text():
+    endpoint = "https://private.example/mcp"
+    invocation = ("builtin", "Read", CALL_ID)
+    for split in range(1, len(endpoint)):
+        gate = PublicAnswerStreamGate(
+            private_replacements={endpoint: "[private endpoint]"},
+            sanitizer=_sanitize,
+            max_private_token_chars=64,
+            max_sealed_chars=256,
+        )
+        before = gate.accept(f"Before {endpoint[:split]}")
+        gate.seal(invocation_key=invocation)
+        during = gate.accept(f"{endpoint[split:]} after")
+        assert gate.release_after_verified_capability(invocation)
+        finished = gate.finish(final_text=f"Before {endpoint} after", release=True)
+        visible = "".join((*before, *during, *finished.chunks))
+
+        assert visible == "Before [private endpoint] after"
+        assert finished.final_text == visible
+        assert endpoint not in visible
+        assert gate.failed is False
+
+
 def test_unsealed_stream_emits_ordinary_text_and_redacts_full_known_identity():
     gate = _gate()
 
@@ -313,7 +355,9 @@ def test_private_token_split_at_capability_boundary_never_replays_published_byte
     finished = gate.finish(final_text=f"Before {token} after", release=True)
 
     public_text = "".join((*published, *later, *finished.chunks))
-    assert public_text == "Before "
+    replacement = "external tool" if token_kind == "identity" else "tool invocation"
+    assert public_text == f"Before {replacement} after"
+    assert finished.final_text == public_text
     assert token not in public_text
     assert token not in finished.final_text
 
@@ -338,9 +382,9 @@ def test_multiple_overlapping_calls_added_during_stream_project_safely_once():
     repeated = gate.finish(final_text="must not replay", release=True)
 
     public_text = "".join((*published, *later, *finished.chunks))
-    assert public_text == "Before "
+    assert public_text == "Before tool invocation after"
     assert first_call not in public_text and second_call not in public_text
-    assert finished.final_text == "Before "
+    assert finished.final_text == public_text
     assert repeated.chunks == () and repeated.final_text == ""
 
 
@@ -353,7 +397,7 @@ def test_capability_lifecycle_does_not_defer_safe_assistant_narration():
         capability_boundary=True,
         invocation_key=("mcp", IDENTITY, CALL_ID),
     )
-    assert gate.accept("private tool output") == ()
+    during = gate.accept("Inspection is in progress. ")
     gate.release_after_verified_capability(("mcp", IDENTITY, CALL_ID))
     after = gate.accept(f"The {CALL_ID} completed safely.")
     finished = gate.finish(
@@ -361,11 +405,12 @@ def test_capability_lifecycle_does_not_defer_safe_assistant_narration():
         release=True,
     )
 
-    public_text = "".join((*before, *after, *finished.chunks))
+    public_text = "".join((*before, *during, *after, *finished.chunks))
     assert public_text == (
-        "I will inspect the workspace. The tool invocation completed safely."
+        "I will inspect the workspace. Inspection is in progress. "
+        "The tool invocation completed safely."
     )
-    assert finished.final_text == public_text
+    assert finished.final_text == "A different structured terminal summary."
 
 
 def test_capability_boundary_preserves_safe_sanitizer_pending_text():
@@ -377,7 +422,6 @@ def test_capability_boundary_preserves_safe_sanitizer_pending_text():
 
     before = gate.accept("safe answer")
     gate.seal({CALL_ID: "tool invocation"}, invocation_key=invocation_key)
-    assert gate.accept("private tool output") == ()
     assert gate.release_after_verified_capability(invocation_key) is True
     finished = gate.finish(final_text="safe answer", release=True)
 
@@ -386,7 +430,7 @@ def test_capability_boundary_preserves_safe_sanitizer_pending_text():
     assert finished.final_text == "safe answer"
 
 
-def test_overlapping_capability_invocations_keep_disclosure_closed_until_all_complete():
+def test_overlapping_capability_invocations_preserve_each_assistant_fragment():
     gate = _gate()
 
     before = gate.accept("Before tools. ")
@@ -398,20 +442,20 @@ def test_overlapping_capability_invocations_keep_disclosure_closed_until_all_com
         {"call-two": "tool invocation"},
         invocation_key=("builtin", "Read", "call-two"),
     )
-    assert gate.accept("private concurrent output") == ()
+    during_first = gate.accept("Both tools running. ")
     assert (
         gate.release_after_verified_capability(("builtin", "Read", "call-one")) is True
     )
-    assert gate.accept("still private") == ()
+    during_second = gate.accept("One tool running. ")
     assert (
         gate.release_after_verified_capability(("builtin", "Read", "call-two")) is True
     )
     after = gate.accept("After tools.")
-    finished = gate.finish(final_text="different terminal", release=True)
+    body = "Before tools. Both tools running. One tool running. After tools."
+    finished = gate.finish(final_text=body, release=True)
 
-    assert "".join((*before, *after, *finished.chunks)) == (
-        "Before tools. After tools."
-    )
+    assert "".join((*before, *during_first, *during_second, *after, *finished.chunks)) == body
+    assert finished.final_text == body
 
 
 def test_failed_projection_still_releases_exact_tool_ownership():
@@ -444,7 +488,7 @@ def test_finished_gate_cannot_acquire_new_tool_ownership():
     assert gate.release_after_verified_capability(invocation_key) is False
 
 
-def test_unmatched_completion_cannot_reopen_an_active_invocation():
+def test_unmatched_completion_does_not_release_another_invocation():
     gate = _gate()
     active_key = ("builtin", "Read", "call-one")
 
@@ -456,8 +500,8 @@ def test_unmatched_completion_cannot_reopen_an_active_invocation():
     assert (
         gate.release_after_verified_capability(("builtin", "Read", "call-two")) is False
     )
-    assert gate.accept("private file content") == ()
     assert gate.release_after_verified_capability(active_key) is True
+    assert gate.release_after_verified_capability(active_key) is False
     after = gate.accept("safe after")
     finished = gate.finish(final_text="safe after", release=True)
 
@@ -488,9 +532,9 @@ def test_capability_bound_is_cumulative_across_the_public_timeline():
         capability_boundary=True,
         invocation_key=("builtin", "Read", "call-one"),
     )
-    assert gate.accept("private tool output") == ()
+    assert gate.accept("during ") == ("during ",)
     gate.release_after_verified_capability(("builtin", "Read", "call-one"))
-    assert gate.accept("after tool ") == ("after tool ",)
+    assert gate.accept("end ") == ("end ",)
     assert gate.accept("overflow") == ()
     assert gate.failed is True
 
@@ -540,7 +584,7 @@ def test_over_bound_initial_or_dynamic_private_token_fails_closed():
     assert dynamic.finish(final_text="sealed private text", release=True).chunks == ()
 
 
-def test_inflight_text_is_discarded_without_consuming_the_public_bound():
+def test_inflight_assistant_text_consumes_the_same_public_bound():
     gate = _gate()
     gate.seal(
         {CALL_ID: "tool invocation"},
@@ -552,9 +596,11 @@ def test_inflight_text_is_discarded_without_consuming_the_public_bound():
     published = gate.accept("safe answer")
     finished = gate.finish(final_text="safe answer", release=True)
 
-    assert gate.failed is False
-    assert "".join((*published, *finished.chunks)) == "safe answer"
-    assert finished.final_text == "safe answer"
+    assert gate.failed is True
+    assert gate.failure_reason == "answer_too_large"
+    assert published == ()
+    assert finished.chunks == ()
+    assert finished.final_text == ""
 
 
 def test_unsafe_terminal_replacement_still_fails_closed():
