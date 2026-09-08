@@ -49,6 +49,7 @@ export interface AgentProfilePublicProjection extends SelectedAgentProfileReques
   avatar_ref: AgentProfileAvatarRef;
   avatar_seed?: string;
   category: AgentProfileCategory;
+  market_tags?: string[];
   market_tag?: string;
   completed_tasks?: number;
   is_favorite?: boolean;
@@ -203,6 +204,12 @@ export function projectAgentProfilePublicProjection(value: unknown): AgentProfil
     avatar_ref: requireOneOf(record.avatar_ref, AGENT_PROFILE_AVATAR_REFS, PROFILE_ERROR),
     avatar_seed: projectAvatarSeed(record, PROFILE_ERROR),
     category: requireOneOf(record.category, AGENT_PROFILE_CATEGORIES, PROFILE_ERROR),
+    market_tags:
+      record.market_tags === undefined
+        ? record.market_tag === undefined || record.market_tag === ""
+          ? []
+          : [requireString(record.market_tag, PROFILE_ERROR, true)]
+        : requireStringList(record.market_tags, PROFILE_ERROR),
     market_tag: record.market_tag === undefined
       ? ""
       : requireString(record.market_tag, PROFILE_ERROR, true),
@@ -270,6 +277,7 @@ export interface AgentProfileDraftRequest {
   avatar_asset_id: string | null;
   category: AgentProfileCategory;
   market_tag?: string;
+  market_tags?: string[];
   visibility: "tenant" | "restricted";
   allowed_department_ids: string[];
   allowed_roles: string[];

@@ -21,6 +21,8 @@ import {
   buildAgentMarketDetailPath,
   buildAgentMarketWorkspacePath,
   filterPublishedMarketProfiles,
+  filterPublishedMarketProfilesByTags,
+  marketTagsForProfile,
   selectPublishedMarketProfile,
 } from "./agentMarketSelection";
 import { AgentIdentityAvatar } from "../../components/agent/AgentIdentityAvatar";
@@ -253,7 +255,18 @@ function ExpertMarketCard({
                 </div>
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--theme-text-secondary)]">
-                <span>{profile.market_tag || "未分类"}</span>
+                {marketTagsForProfile(profile).length > 0 ? (
+                  marketTagsForProfile(profile).map((tag) => (
+                    <span
+                      className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1"
+                      key={tag}
+                    >
+                      {tag}
+                    </span>
+                  ))
+                ) : (
+                  <span>未分类</span>
+                )}
                 <span aria-hidden="true">·</span>
                 <span>企业已发布</span>
               </div>
@@ -317,13 +330,13 @@ function ExpertMarketCard({
 function AgentMarketCatalog({
   catalog,
   refresh,
-  activeTag,
+  activeTags,
   activeTab,
   toggleFavorite,
 }: {
   catalog: CatalogState;
   refresh: () => void;
-  activeTag: string | null;
+  activeTags: readonly string[];
   activeTab: "tags" | "favorites";
   toggleFavorite: (profile: AgentProfilePublicProjection) => Promise<void>;
 }) {
@@ -342,8 +355,9 @@ function AgentMarketCatalog({
   const tagCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const profile of catalog.value) {
-      const tag = profile.market_tag?.trim();
-      if (tag) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+      for (const tag of marketTagsForProfile(profile)) {
+        counts.set(tag, (counts.get(tag) ?? 0) + 1);
+      }
     }
     return counts;
   }, [catalog.value]);
@@ -359,11 +373,13 @@ function AgentMarketCatalog({
   );
   const hotTags = marketTags.slice(0, 7);
   const hasActiveFilter =
-    searchQuery.trim().length > 0 || (activeTab === "tags" && activeTag !== null);
+    searchQuery.trim().length > 0 || (activeTab === "tags" && activeTags.length > 0);
   const visibleProfiles = useMemo(() => {
-    const filtered = filterPublishedMarketProfiles(catalog.value, searchQuery).filter((profile) =>
-      (activeTab !== "favorites" || profile.is_favorite) &&
-      (activeTab !== "tags" || activeTag === null || profile.market_tag === activeTag),
+    const filtered = filterPublishedMarketProfilesByTags(
+      filterPublishedMarketProfiles(catalog.value, searchQuery).filter((profile) =>
+        activeTab !== "favorites" || profile.is_favorite,
+      ),
+      activeTab === "tags" ? activeTags : [],
     );
     return [...filtered].sort((left, right) => {
       if (sort === "tasks") {
@@ -375,7 +391,7 @@ function AgentMarketCatalog({
       }
       return 0;
     });
-  }, [activeTab, activeTag, catalog.value, searchQuery, sort]);
+  }, [activeTab, activeTags, catalog.value, searchQuery, sort]);
 
   const pageCount = Math.max(1, Math.ceil(visibleProfiles.length / MARKET_PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
@@ -401,9 +417,14 @@ function AgentMarketCatalog({
   const handleTag = useCallback(
     (tag: string | null) => {
       const next = new URLSearchParams(searchParams);
-      if (tag === null) next.delete("tag");
-      else {
-        next.set("tag", tag);
+      if (tag === null) {
+        next.delete("tag");
+      } else {
+        const selectedTags = new Set(next.getAll("tag").map((value) => value.trim()).filter(Boolean));
+        if (selectedTags.has(tag)) selectedTags.delete(tag);
+        else selectedTags.add(tag);
+        next.delete("tag");
+        for (const selectedTag of selectedTags) next.append("tag", selectedTag);
         next.delete("tab");
       }
       setPage(1);
@@ -565,9 +586,9 @@ function AgentMarketCatalog({
                 role="group"
               >
                 <button
-                  aria-pressed={activeTab === "tags" && activeTag === null}
+                  aria-pressed={activeTab === "tags" && activeTags.length === 0}
                   className={`flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs transition-colors ${
-                    activeTab === "tags" && activeTag === null
+                    activeTab === "tags" && activeTags.length === 0
                       ? "bg-[var(--theme-primary)] text-white"
                       : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
                   }`}
@@ -578,9 +599,9 @@ function AgentMarketCatalog({
                 </button>
                 {filteredMarketTags.map((tag) => (
                   <button
-                    aria-pressed={activeTab === "tags" && activeTag === tag}
+                    aria-pressed={activeTab === "tags" && activeTags.includes(tag)}
                     className={`flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs transition-colors ${
-                      activeTab === "tags" && activeTag === tag
+                      activeTab === "tags" && activeTags.includes(tag)
                         ? "bg-[var(--theme-primary)] text-white"
                         : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
                     }`}
@@ -607,9 +628,9 @@ function AgentMarketCatalog({
               </div>
               <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
                 <button
-                  aria-pressed={activeTab === "tags" && activeTag === null}
+                  aria-pressed={activeTab === "tags" && activeTags.length === 0}
                   className={`inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full border px-3 text-xs transition-colors ${
-                    activeTab === "tags" && activeTag === null
+                    activeTab === "tags" && activeTags.length === 0
                       ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-white"
                       : "border-[var(--theme-border)] text-[var(--theme-text-secondary)] hover:border-[var(--theme-primary)] hover:text-[var(--theme-primary)]"
                   }`}
@@ -620,9 +641,9 @@ function AgentMarketCatalog({
                 </button>
                 {hotTags.map((tag) => (
                   <button
-                    aria-pressed={activeTab === "tags" && activeTag === tag}
+                    aria-pressed={activeTab === "tags" && activeTags.includes(tag)}
                     className={`inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full border px-3 text-xs transition-colors ${
-                      activeTab === "tags" && activeTag === tag
+                      activeTab === "tags" && activeTags.includes(tag)
                         ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-white"
                         : "border-[var(--theme-border)] text-[var(--theme-text-secondary)] hover:border-[var(--theme-primary)] hover:text-[var(--theme-primary)]"
                     }`}
@@ -817,7 +838,15 @@ function AgentMarketDetail({
             />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-[var(--theme-primary)]">
-                <span>{profile.market_tag || "未分类"}</span>
+                {marketTagsForProfile(profile).length > 0 ? (
+                  marketTagsForProfile(profile).map((tag) => (
+                    <span className="rounded-md bg-[var(--theme-primary-light)] px-2 py-1" key={tag}>
+                      {tag}
+                    </span>
+                  ))
+                ) : (
+                  <span>未分类</span>
+                )}
                 <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200">
                   企业已发布
                 </span>
@@ -908,8 +937,8 @@ export function AgentMarketRoute() {
   const [searchParams] = useSearchParams();
   const { agentId, revision } = useParams<{ agentId?: string; revision?: string }>();
   const isDetailRoute = agentId !== undefined || revision !== undefined;
-  const requestedTag = searchParams.get("tag")?.trim();
-  const activeTag = requestedTag || null;
+  const requestedTags = searchParams.getAll("tag").map((tag) => tag.trim()).filter(Boolean);
+  const activeTags = [...new Set(requestedTags)];
   const activeTab = searchParams.get("tab") === "favorites" ? "favorites" : "tags";
   const catalogKey = "catalog";
   const {
@@ -942,7 +971,7 @@ export function AgentMarketRoute() {
       <AgentMarketShell>
         <AgentMarketCatalog
           activeTab={activeTab}
-          activeTag={activeTag}
+          activeTags={activeTags}
           catalog={catalog}
           refresh={refreshCatalog}
           toggleFavorite={toggleFavorite}

@@ -245,6 +245,7 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         "avatar_ref": "builtin:agent",
         "avatar_seed": "agt_support",
         "category": "general",
+        "market_tags": [],
         "market_tag": "",
         "welcome_message": "",
         "starter_prompts": [],
@@ -688,17 +689,28 @@ def test_agent_profile_market_requires_authenticated_principal():
 
 
 def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
-    from app.models import AgentProfilePublicProjection
-
     async def profiles(_conn, *, principal):
         assert principal.tenant_id == "tenant-a"
         return [
-            AgentProfilePublicProjection(
-                agent_id="agt_support",
-                expected_revision=4,
-                name="Support assistant",
-                description="Approved support helper.",
-            )
+            {
+                "agent_id": "agt_support",
+                "expected_revision": 4,
+                "name": "Support assistant",
+                "description": "Approved support helper.",
+                "avatar_ref": "builtin:agent",
+                "avatar_seed": "",
+                "category": "general",
+                "market_tag": "",
+                "market_tags": [],
+                "welcome_message": "",
+                "starter_prompts": [],
+                "capability_summary": "",
+                "recommended_tasks": [],
+                "supported_input_types": ["text", "file"],
+                "expected_outputs": [],
+                "permissions_and_data_access_notice": "",
+                "published_at": None,
+            }
         ]
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
@@ -718,6 +730,8 @@ def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
                     "avatar_ref": "builtin:agent",
                     "avatar_seed": "",
                     "category": "general",
+                    "market_tag": "",
+                    "market_tags": [],
                     "welcome_message": "",
                     "starter_prompts": [],
                     "capability_summary": "",
@@ -849,16 +863,17 @@ def test_agent_profile_admin_write_accepts_and_discards_legacy_model_field(monke
     async def save_profile(_conn, *, definition, **_kwargs):
         saved_definitions.append(definition)
         return (
-            AgentProfileAdminProjection(
-                agent_id="agt_support",
-                revision=1,
-                status="draft",
-                name=definition.name,
-                instructions=definition.instructions,
-                selected_skill=definition.selected_skill,
-                market_tag=definition.market_tag,
-                content_hash="a" * 64,
-            ),
+            {
+                "agent_id": "agt_support",
+                "revision": 1,
+                "status": "draft",
+                "name": definition.name,
+                "instructions": definition.instructions,
+                "selected_skill": definition.selected_skill,
+                "market_tag": definition.market_tag,
+                "market_tags": definition.market_tags,
+                "content_hash": "a" * 64,
+            },
             "audit_profile_save",
         )
 
@@ -873,6 +888,7 @@ def test_agent_profile_admin_write_accepts_and_discards_legacy_model_field(monke
             "instructions": "Keep answers concise.",
             "model_id": "legacy-model",
             "market_tag": " 客户服务 ",
+            "market_tags": [" 客户服务 ", "写作 "],
             "selected_skill": {"skill_id": "general-chat", "expected_version": "version-a"},
             "expected_draft_revision": 0,
         },
@@ -893,10 +909,12 @@ def test_agent_profile_admin_write_accepts_and_discards_legacy_model_field(monke
     assert unknown_field_response.status_code == 422
     assert "model_id" not in response.json()["agent_profile"]
     assert response.json()["agent_profile"]["market_tag"] == "客户服务"
+    assert response.json()["agent_profile"]["market_tags"] == ["客户服务", "写作"]
     assert len(saved_definitions) == 1
     assert not hasattr(saved_definitions[0], "model_id")
     assert saved_definitions[0]._legacy_model_id == "platform-selected"
     assert saved_definitions[0].market_tag == "客户服务"
+    assert saved_definitions[0].market_tags == ["客户服务", "写作"]
 
 
 def test_agent_profile_admin_publish_requires_admin(monkeypatch):
