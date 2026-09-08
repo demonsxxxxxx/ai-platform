@@ -1908,7 +1908,7 @@ test("a scheduled reconnect reconciles a post-refresh transport failure", async 
   }
 });
 
-test("bounds replayed active run_event reconnects and converges unavailable once", async (t) => {
+test("keeps an active run recoverable after repeated replay-only transport losses", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let statusCalls = 0;
   let connectCalls = 0;
@@ -1997,21 +1997,32 @@ test("bounds replayed active run_event reconnects and converges unavailable once
 
   assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS);
   assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
-  assert.equal(unavailableCalls, 1);
-  assert.equal(context.reconnectTimeoutRef.current, null);
+  assert.equal(unavailableCalls, 0);
+  assert.notEqual(context.reconnectTimeoutRef.current, null);
 
-  t.mock.timers.tick(60_000);
+  t.mock.timers.tick(29_999);
   await flushAsync();
   assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS);
-  assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
-  assert.equal(unavailableCalls, 1);
+  t.mock.timers.tick(1);
+  await flushAsync();
+  assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
+  assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 2);
+  assert.equal(unavailableCalls, 0);
+
+  context.streamVersionRef.current += 1;
+  t.mock.timers.tick(30_000);
+  await flushAsync();
+  assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
+  assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 2);
 });
 
-test("bounds heartbeat-then-close reconnect loops without assistant text or new work", async (t) => {
+test("recovers a terminal run after heartbeat-only losses without inventing content", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let statusCalls = 0;
   let connectCalls = 0;
   let unavailableCalls = 0;
+  let terminalCalls = 0;
+  let status = "running";
   const messages = [
     {
       id: "assistant-heartbeat-loop",
@@ -2032,6 +2043,7 @@ test("bounds heartbeat-then-close reconnect loops without assistant text or new 
     messagesRef: { current: messages },
     sessionIdRef: { current: "session-heartbeat-loop" },
     currentRunIdRef: { current: "run-heartbeat-loop" },
+    onRunTerminal: () => { terminalCalls += 1; return true; },
     processedEventIdsRef: { current: new Set<string>() },
     acceptedRunEventSequenceRef: {
       current: {
@@ -2069,7 +2081,7 @@ test("bounds heartbeat-then-close reconnect loops without assistant text or new 
       return {
         session_id: "session-heartbeat-loop",
         run_id: "run-heartbeat-loop",
-        status: "running",
+        status,
       };
     },
     connect: async (sessionId, runId, messageId, reconnectContext) => {
@@ -2103,9 +2115,9 @@ test("bounds heartbeat-then-close reconnect loops without assistant text or new 
 
   assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS);
   assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
-  assert.equal(unavailableCalls, 1);
-  assert.equal(context.retryCountRef.current, MAX_CONSECUTIVE_SSE_RECONNECTS);
-  assert.equal(context.reconnectTimeoutRef.current, null);
+  assert.equal(unavailableCalls, 0);
+  assert.equal(context.retryCountRef.current, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
+  assert.notEqual(context.reconnectTimeoutRef.current, null);
   assert.deepEqual(messages, [
     {
       id: "assistant-heartbeat-loop",
@@ -2117,11 +2129,19 @@ test("bounds heartbeat-then-close reconnect loops without assistant text or new 
     },
   ]);
 
+  status = "succeeded";
+  t.mock.timers.tick(30_000);
+  await flushAsync();
+  assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
+  assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 2);
+  assert.equal(unavailableCalls, 0);
+  assert.equal(terminalCalls, 1);
+  assert.equal(context.reconnectTimeoutRef.current, null);
+
   t.mock.timers.tick(60_000);
   await flushAsync();
-  assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS);
-  assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
-  assert.equal(unavailableCalls, 1);
+  assert.equal(terminalCalls, 1);
+  assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
 });
 
 test("resets reconnect budget only after a unique current-run progress frame", async () => {

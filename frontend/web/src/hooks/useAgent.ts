@@ -60,6 +60,7 @@ import {
   prepareMessagesForRunningRun,
 } from "./useAgent/historyLoader";
 import { normalizeMessageTextLogicalIds } from "./useAgent/eventProcessor";
+import { recoverTerminalHistory } from "./useAgent/terminalHistoryRecovery";
 import {
   beginHistoryLoad,
   isCurrentHistoryLoad,
@@ -393,7 +394,7 @@ interface ReconcileOwner {
   promise: Promise<void>;
 }
 
-type TerminalHydrationOwner = ReconcileOwner;
+type TerminalHydrationOwner = ReconcileOwner & { controller: AbortController };
 
 type AuthScope = readonly [tenantId: string, userId: string];
 
@@ -630,9 +631,6 @@ function runControlAuthKey(identity: RunControlAuthIdentity): string {
     identity.isActive,
   ]);
 }
-
-/** A terminal result must not leave the composer blocked on a stalled history read. */
-const TERMINAL_HISTORY_HYDRATION_TIMEOUT_MS = 10_000;
 
 export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const {
@@ -900,6 +898,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
   const clearReconcileOwners = useCallback(() => {
     reconcileOwnerRef.current = null;
+    terminalHydrationOwnerRef.current?.controller.abort();
     terminalHydrationOwnerRef.current = null;
     replayGapRecoveryRef.current = null;
     v4MessageOwnerRef.current = null;
@@ -1208,7 +1207,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         return existing.promise;
       }
 
+      terminalHydrationOwnerRef.current?.controller.abort();
       const owner: TerminalHydrationOwner = {
+        controller: new AbortController(),
         sessionId: targetSessionId,
         runId: targetRunId,
         streamVersion,
@@ -1222,20 +1223,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           return onSettled?.(accepted) !== false;
         };
         try {
-          let timeoutId: ReturnType<typeof setTimeout> | null = null;
-          const eventsData = await Promise.race([
-            sessionApi.getEvents(targetSessionId, { run_id: targetRunId }),
-            new Promise<never>((_resolve, reject) => {
-              timeoutId = setTimeout(
-                () => reject(new Error("terminal history hydration timed out")),
-                TERMINAL_HISTORY_HYDRATION_TIMEOUT_MS,
-              );
-            }),
-          ]).finally(() => {
-            if (timeoutId !== null) {
-              clearTimeout(timeoutId);
-            }
-          });
+          const eventsData = await recoverTerminalHistory(
+            (signal) => sessionApi.getEvents(targetSessionId, { run_id: targetRunId, signal }),
+            owner.controller.signal,
+          );
           if (!isCurrentTerminalHydration()) {
             settle(false);
             return;

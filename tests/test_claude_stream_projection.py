@@ -1,7 +1,39 @@
 import pytest
 
 from app.control_plane_contracts import sanitize_public_payload
-from app.executors.claude_stream_projection import ClaudeStreamProjector
+from app.executors.claude_stream_projection import AssistantAnswerTimeline, ClaudeStreamProjector
+
+
+@pytest.mark.parametrize("result", ["", "Done.", "Done. More.", "Different final."])
+def test_answer_timeline_preserves_distinct_assistant_sources_and_terminal(result):
+    timeline = AssistantAnswerTimeline()
+    visible = [timeline.accept_delta("Checking. "), timeline.accept_delta("Please wait.")]
+    visible.append(timeline.accept_assistant("Checking. Please wait."))
+    visible.append(timeline.accept_assistant("Done."))
+    visible.append(timeline.accept_result(result))
+    expected = "Checking. Please wait.\n\nDone."
+    if result == "Done. More.":
+        expected += " More."
+    elif result == "Different final.":
+        expected += "\n\nDifferent final."
+    assert "".join(visible) == timeline.text == expected
+
+
+def test_answer_timeline_does_not_deduplicate_equal_text_from_distinct_messages():
+    timeline = AssistantAnswerTimeline()
+    assert timeline.accept_assistant("Same.") == "Same."
+    assert timeline.accept_assistant("Same.") == "\n\nSame."
+    assert timeline.accept_result("Same.") == ""
+    assert timeline.text == "Same.\n\nSame."
+
+
+def test_complete_message_preserves_a_different_already_streamed_delta():
+    timeline = AssistantAnswerTimeline()
+    assert timeline.accept_assistant("Earlier.") == "Earlier."
+    assert timeline.accept_delta("Provisional.") == "\n\nProvisional."
+    assert timeline.accept_assistant("Corrected.") == "\n\nCorrected."
+    assert timeline.accept_result("") == ""
+    assert timeline.text == "Earlier.\n\nProvisional.\n\nCorrected."
 
 
 def _projector(**kwargs):

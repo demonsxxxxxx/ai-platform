@@ -228,7 +228,7 @@ export const MAX_STATUS_QUERY_RETRIES = 2;
 export const REPLAY_GAP_STATUS_POLL_DELAY_MS = 1_000;
 /** Per-attempt ceiling for an authoritative run status read. */
 export const AUTHORITATIVE_STATUS_ATTEMPT_TIMEOUT_MS = 8_000;
-/** Maximum reconnects after continuous transport loss for one session/run. */
+/** Fast attempts before active runs switch to low-frequency transport recovery. */
 export const MAX_CONSECUTIVE_SSE_RECONNECTS = 3;
 type ReconnectDependencies = {
   getStatus?: typeof sessionApi.getStatus;
@@ -1262,17 +1262,11 @@ export async function reconnectSSE(
     return;
   }
 
-  if (retryCountRef.current >= MAX_CONSECUTIVE_SSE_RECONNECTS) {
-    // The backend is still active, but this client has exhausted its bounded
-    // transport recovery budget. Converge locally without inventing failure.
-    convergeUnavailable();
-    return;
-  }
-
   setConnectionStatus("reconnecting");
 
-  const delay = (dependencies.reconnectDelay || getReconnectDelay)(
-    retryCountRef.current,
+  const delay = Math.max(
+    (dependencies.reconnectDelay || getReconnectDelay)(retryCountRef.current),
+    retryCountRef.current >= MAX_CONSECUTIVE_SSE_RECONNECTS ? 30_000 : 0,
   );
   retryCountRef.current += 1;
   console.log(

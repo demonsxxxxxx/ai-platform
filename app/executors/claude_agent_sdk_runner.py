@@ -46,7 +46,7 @@ from app.execution.api import (
     ClaudeSdkAgentEventAdapter,
     projected_public_answer_failure_reason,
 )
-from app.executors.claude_stream_projection import ClaudeStreamProjector
+from app.executors.claude_stream_projection import AssistantAnswerTimeline, ClaudeStreamProjector
 from app.executors.public_answer_stream import PublicAnswerStreamGate
 from app.required_tool_contract import (
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
@@ -1462,12 +1462,12 @@ async def run_claude_agent_sdk(
         if kind in {"skill", "mcp"}
     }
     private_capability_tokens.update(
-        str(config["url"])
-        for server_id, config in mcp_servers.items()
-        if server_id != "ai-platform-context"
-        and isinstance(config, dict)
-        and isinstance(config.get("url"), str)
-        and config["url"]
+        str(subject["mcp_server_config"]["url"])
+        for subject in authorized_subjects.values()
+        if subject.get("mcp_server") != "ai-platform-context"
+        and isinstance(subject.get("mcp_server_config"), dict)
+        and isinstance(subject["mcp_server_config"].get("url"), str)
+        and subject["mcp_server_config"]["url"]
     )
     private_replacement = "\u2588"
     private_replacements = {
@@ -2330,7 +2330,7 @@ async def run_claude_agent_sdk(
     terminal_result_message: object | None = None
     received_structured_terminal = False
     stream_projector = (
-        ClaudeStreamProjector(sanitizer=sanitize_public_payload)
+        ClaudeStreamProjector(sanitizer=lambda value: value)
         if sandbox_partial_streaming
         else None
     )
@@ -2417,8 +2417,7 @@ async def run_claude_agent_sdk(
     async def consume() -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
         nonlocal last_public_stage, structured_result_text, terminal_result_message
-        projected_message_text = ""
-        last_assistant_text: str | None = None
+        answer_timeline = AssistantAnswerTimeline()
         async for message in query(
             prompt=_sdk_user_prompt_stream(
                 sdk_prompt,
@@ -2453,8 +2452,7 @@ async def run_claude_agent_sdk(
                 if stream_projector is None:
                     continue
                 for text in stream_projector.accept(raw_stream_event):
-                    projected_message_text += text
-                    for public_text in answer_stream_gate.accept(text):
+                    for public_text in answer_stream_gate.accept(answer_timeline.accept_delta(text)):
                         await publish_terminal_text(public_text)
                 continue
             if isinstance(message, AssistantMessage):
@@ -2499,19 +2497,8 @@ async def run_claude_agent_sdk(
                     and all(isinstance(text, str) for text in assistant_text_blocks)
                     else None
                 )
-                if isinstance(assistant_text, str):
-                    if not projected_message_text:
-                        missing_text = assistant_text
-                    elif assistant_text.startswith(projected_message_text):
-                        missing_text = assistant_text[len(projected_message_text) :]
-                    else:
-                        missing_text = ""
-                    for public_text in answer_stream_gate.accept(missing_text):
-                        await publish_terminal_text(public_text)
-                    last_assistant_text = assistant_text
-                elif projected_message_text:
-                    last_assistant_text = projected_message_text
-                projected_message_text = ""
+                for public_text in answer_stream_gate.accept(answer_timeline.accept_assistant(assistant_text)):
+                    await publish_terminal_text(public_text)
             elif isinstance(message, ResultMessage):
                 terminal_result_message = message
                 diagnostic_counters["result_messages"] += 1
@@ -2613,19 +2600,8 @@ async def run_claude_agent_sdk(
                         capability_evidence=list(capability_evidence),
                     )
                 received_structured_terminal = True
-                structured_result_text = str(message.result or "")
-                selected_body = (
-                    projected_message_text
-                    if projected_message_text
-                    else last_assistant_text
-                )
-                if selected_body is not None and structured_result_text.startswith(
-                    selected_body
-                ):
-                    for public_text in answer_stream_gate.accept(
-                        structured_result_text[len(selected_body) :]
-                    ):
-                        await publish_terminal_text(public_text)
+                answer_timeline.accept_result(str(message.result or ""))
+                structured_result_text = answer_timeline.text
                 stop_reason = getattr(message, "stop_reason", None)
                 terminal_reason = resolved_terminal_reason or (
                     str(stop_reason).strip()
@@ -2658,12 +2634,12 @@ async def run_claude_agent_sdk(
         ):
             terminal_error = _SDK_PUBLIC_PROJECTION_FAILED
         finished_answer = answer_stream_gate.finish(
-            final_text=structured_result_text,
-            release=terminal_error is None,
+            final_text=answer_timeline.text,
+            release=True,
         )
         if terminal_error is None and answer_stream_gate.failed:
             terminal_error = _SDK_PUBLIC_PROJECTION_FAILED
-        if terminal_error is None and isinstance(message, ResultMessage):
+        if not answer_stream_gate.failed and isinstance(terminal_result_message, ResultMessage):
             terminal_candidates: list[Any] = []
             for public_text in finished_answer.chunks:
                 for offset in range(0, len(public_text), _MAX_PUBLIC_DELTA_CHARS):
@@ -2678,13 +2654,13 @@ async def run_claude_agent_sdk(
             if agent_event_adapter is not None:
                 terminal_candidates.extend(
                     agent_event_adapter.accept_result(
-                        message,
+                        terminal_result_message,
                         final_content=finished_answer.final_text,
                     )
                 )
                 if not await publish_agent_candidates(tuple(terminal_candidates)):
                     terminal_error = "agent_event_callback_not_acknowledged"
-            if terminal_error is None and on_text is not None:
+            if on_text is not None:
                 for public_text in finished_answer.chunks:
                     callback_result = on_text(public_text)
                     if isawaitable(callback_result):
@@ -2692,7 +2668,9 @@ async def run_claude_agent_sdk(
         if terminal_error is not None:
             seal_agent_candidates(terminal_error)
         public_structured_result_text = (
-            finished_answer.final_text if terminal_error is None else ""
+            ""
+            if terminal_error == "agent_event_callback_not_acknowledged"
+            else finished_answer.final_text if not answer_stream_gate.failed else ""
         )
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
