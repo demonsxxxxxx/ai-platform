@@ -98,6 +98,20 @@ def test_context_planner_builds_non_conversation_manifest_without_private_payloa
     assert "large body must not be in prompt" not in serialized
 
 
+def test_authorized_history_does_not_expose_session_retrieval_tool():
+    manifest = {
+        "schema_version": "ai-platform.context-manifest.v1",
+        "selection": {
+            "history_candidate_count": 3,
+            "history_authorized_count": 3,
+            "history_omitted_count": 0,
+        },
+        "available_retrieval_tools": ["read_session_messages"],
+    }
+
+    assert available_context_retrieval_tools(manifest) == []
+
+
 def test_executor_context_pack_counts_authorized_history_without_message_refs():
     planner = ContextPlanner(token_budget=128)
     manifest = planner.plan(
