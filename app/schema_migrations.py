@@ -31,7 +31,8 @@ USER_PROFILE_METADATA_SCHEMA_VERSION = "2026.09.02.1"
 FILE_UPLOAD_SESSION_SCHEMA_VERSION = "2026.09.03.1"
 EXPERT_SKILL_NAME_SCHEMA_VERSION = "2026.09.03.2"
 BAOYU_TRANSLATE_RETIREMENT_SCHEMA_VERSION = "2026.09.07.1"
-TARGET_SCHEMA_VERSION = BAOYU_TRANSLATE_RETIREMENT_SCHEMA_VERSION
+EXPERT_MARKET_MULTI_TAG_SCHEMA_VERSION = "2026.09.07.2"
+TARGET_SCHEMA_VERSION = EXPERT_MARKET_MULTI_TAG_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # Keeping this ledger stable preserves readiness for the saved rollback binary.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION
@@ -69,6 +70,7 @@ CRITICAL_COLUMNS = (
     ("agent_profile_revisions", "avatar_seed", "text", True),
     ("agent_profile_revisions", "avatar_style_ref", "text", True),
     ("agent_profile_revisions", "market_tag", "text", True),
+    ("agent_profile_revisions", "market_tags", "jsonb", True),
     # Temporary physical compatibility for the previous binary; product DTOs ignore it.
     ("agent_profile_revisions", "supported_file_types", "jsonb", True),
     ("runs", "execution_kind", "text", True),

@@ -431,6 +431,7 @@ create table if not exists agent_profile_revisions (
   category text not null
     check (category in ('general', 'support', 'writing', 'research', 'operations')),
   market_tag text not null default '',
+  market_tags jsonb not null default '[]'::jsonb,
   visibility text not null,
   allowed_department_ids jsonb not null,
   allowed_roles jsonb not null,
@@ -949,6 +950,14 @@ alter table agent_profile_revisions add column if not exists avatar_seed text no
 alter table agent_profile_revisions add column if not exists skill_set jsonb not null default '[]'::jsonb;
 alter table agent_profile_revisions add column if not exists category text;
 alter table agent_profile_revisions add column if not exists market_tag text not null default '';
+alter table agent_profile_revisions add column if not exists market_tags jsonb not null default '[]'::jsonb;
+update agent_profile_revisions
+set market_tags = jsonb_build_array(btrim(market_tag))
+where btrim(market_tag) <> ''
+  and (
+    jsonb_typeof(market_tags) <> 'array'
+    or jsonb_array_length(market_tags) = 0
+  );
 alter table agent_profile_revisions add column if not exists visibility text;
 alter table agent_profile_revisions add column if not exists allowed_department_ids jsonb;
 alter table agent_profile_revisions add column if not exists allowed_roles jsonb;

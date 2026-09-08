@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useId,
   useMemo,
@@ -7,7 +8,7 @@ import {
   type FocusEvent,
   type KeyboardEvent,
 } from "react";
-import { Building2, ChevronDown, MessageSquareText, ShieldCheck } from "lucide-react";
+import { Building2, ChevronDown, MessageSquareText, ShieldCheck, X } from "lucide-react";
 
 import { DepartmentDirectorySelector } from "../../components/panels/DepartmentDirectorySelector";
 import {
@@ -35,13 +36,33 @@ function normalizeTag(value: string): string {
   return value.trim().normalize("NFKC").toLocaleLowerCase();
 }
 
+function parseMarketTags(value: string): string[] {
+  return [...new Set(value.split(/[,，\n]/).map((tag) => tag.trim()).filter(Boolean))];
+}
+
+function serializeMarketTags(tags: readonly string[]): string {
+  return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].join("\n");
+}
+
+function addMarketTag(tags: readonly string[], value: string): string[] {
+  const incoming = parseMarketTags(value);
+  const next = [...tags];
+  for (const tag of incoming) {
+    if (!next.some((existing) => normalizeTag(existing) === normalizeTag(tag))) next.push(tag);
+  }
+  return next;
+}
+
 function filterMarketTagSuggestions(
   suggestions: readonly string[],
   query: string,
+  selectedTags: readonly string[],
 ): string[] {
   const normalizedQuery = normalizeTag(query);
   return suggestions.filter(
-    (tag) => !normalizedQuery || normalizeTag(tag).includes(normalizedQuery),
+    (tag) =>
+      !selectedTags.some((selected) => normalizeTag(selected) === normalizeTag(tag)) &&
+      (!normalizedQuery || normalizeTag(tag).includes(normalizedQuery)),
   );
 }
 
@@ -63,45 +84,66 @@ function MarketTagCombobox({
   const [activeIndex, setActiveIndex] = useState(-1);
   const rootRef = useRef<HTMLDivElement>(null);
   const listboxId = useId();
+  const selectedTags = useMemo(() => parseMarketTags(value), [value]);
   const filteredSuggestions = useMemo(
-    () => filterMarketTagSuggestions(suggestions, query),
-    [query, suggestions],
+    () => filterMarketTagSuggestions(suggestions, query, selectedTags),
+    [query, selectedTags, suggestions],
   );
   const safeActiveIndex =
     activeIndex >= 0 && activeIndex < filteredSuggestions.length
       ? activeIndex
       : -1;
 
+  const commitQuery = useCallback(() => {
+    if (!query.trim()) return;
+    onChange(serializeMarketTags(addMarketTag(selectedTags, query)));
+    setQuery("");
+  }, [onChange, query, selectedTags]);
+
+  const closeSuggestions = useCallback(() => {
+    commitQuery();
+    setOpen(false);
+    setActiveIndex(-1);
+  }, [commitQuery]);
+
   useEffect(() => {
     if (!open) return;
     const closeOnOutsideClick = (event: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
-        setOpen(false);
-        setActiveIndex(-1);
+        closeSuggestions();
       }
     };
     document.addEventListener("mousedown", closeOnOutsideClick);
     return () => document.removeEventListener("mousedown", closeOnOutsideClick);
-  }, [open]);
+  }, [closeSuggestions, open]);
 
   const openSuggestions = () => {
-    setQuery("");
     setOpen(true);
     setActiveIndex(-1);
   };
 
   const chooseSuggestion = (tag: string) => {
-    onChange(tag);
-    setQuery(tag);
-    setOpen(false);
+    onChange(serializeMarketTags(addMarketTag(selectedTags, tag)));
+    setQuery("");
+    setOpen(true);
     setActiveIndex(-1);
+  };
+
+  const removeTag = (tag: string) => {
+    onChange(serializeMarketTags(selectedTags.filter((item) => item !== tag)));
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Escape") {
       event.preventDefault();
+      setQuery("");
       setOpen(false);
       setActiveIndex(-1);
+      return;
+    }
+    if (event.key === "," || event.key === "，") {
+      event.preventDefault();
+      commitQuery();
       return;
     }
     if (event.key === "ArrowDown") {
@@ -130,13 +172,10 @@ function MarketTagCombobox({
       }
       return;
     }
-    if (event.key === "Enter" && open) {
+    if (event.key === "Enter") {
       event.preventDefault();
-      if (safeActiveIndex >= 0) {
-        chooseSuggestion(filteredSuggestions[safeActiveIndex]);
-      } else {
-        setOpen(false);
-      }
+      if (open && safeActiveIndex >= 0) chooseSuggestion(filteredSuggestions[safeActiveIndex]);
+      else commitQuery();
       return;
     }
     if (event.key === "Home" && open && filteredSuggestions.length > 0) {
@@ -153,43 +192,58 @@ function MarketTagCombobox({
       className="relative"
       onBlur={(event: FocusEvent<HTMLDivElement>) => {
         const nextTarget = event.relatedTarget as Node | null;
-        if (!rootRef.current?.contains(nextTarget)) {
-          setOpen(false);
-          setActiveIndex(-1);
-        }
+        if (!rootRef.current?.contains(nextTarget)) closeSuggestions();
       }}
       ref={rootRef}
     >
-      <input
-        aria-activedescendant={
-          safeActiveIndex >= 0
-            ? `${listboxId}-option-${safeActiveIndex}`
-            : undefined
-        }
-        aria-autocomplete="list"
-        aria-controls={listboxId}
-        aria-expanded={open}
-        aria-haspopup="listbox"
-        aria-label="市场标签"
-        className={`${INPUT_CLASS} pr-9`}
-        disabled={disabled}
-        id={id}
-        maxLength={80}
-        onChange={(event) => {
-          onChange(event.target.value);
-          setQuery(event.target.value);
-          setOpen(true);
-          setActiveIndex(-1);
-        }}
-        onFocus={openSuggestions}
-        onKeyDown={handleKeyDown}
-        placeholder="例如：人力资源"
-        role="combobox"
-        value={value}
-      />
+      <div className={`${INPUT_CLASS} flex min-h-10 flex-wrap items-center gap-1.5 pr-9`}>
+        {selectedTags.map((tag) => (
+          <span
+            className="inline-flex max-w-full items-center gap-1 rounded-md bg-[var(--theme-primary-light)] px-2 py-1 text-xs text-[var(--theme-primary)]"
+            key={tag}
+          >
+            <span className="max-w-40 truncate">{tag}</span>
+            <button
+              aria-label={`移除标签 ${tag}`}
+              className="rounded p-0.5 hover:bg-[var(--theme-primary)]/15 focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--theme-primary)]"
+              disabled={disabled}
+              onClick={() => removeTag(tag)}
+              type="button"
+            >
+              <X aria-hidden="true" size={13} />
+            </button>
+          </span>
+        ))}
+        <input
+          aria-activedescendant={
+            safeActiveIndex >= 0
+              ? `${listboxId}-option-${safeActiveIndex}`
+              : undefined
+          }
+          aria-autocomplete="list"
+          aria-controls={listboxId}
+          aria-expanded={open}
+          aria-haspopup="listbox"
+          aria-label="市场标签"
+          className="min-w-24 flex-1 bg-transparent py-0.5 text-sm outline-none"
+          disabled={disabled}
+          id={id}
+          maxLength={80}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setOpen(true);
+            setActiveIndex(-1);
+          }}
+          onFocus={openSuggestions}
+          onKeyDown={handleKeyDown}
+          placeholder={selectedTags.length > 0 ? "继续添加标签" : "输入或选择标签，回车添加"}
+          role="combobox"
+          value={query}
+        />
+      </div>
       <ChevronDown
         aria-hidden="true"
-        className={`pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)] transition-transform ${open ? "rotate-180" : ""}`}
+        className={`pointer-events-none absolute right-3 top-5 -translate-y-1/2 text-[var(--theme-text-secondary)] transition-transform ${open ? "rotate-180" : ""}`}
         size={16}
       />
       {open ? (
@@ -217,7 +271,7 @@ function MarketTagCombobox({
             ))
           ) : (
             <p className="px-3 py-2 text-xs text-[var(--theme-text-secondary)]">
-              暂无匹配标签，可直接使用当前输入
+              暂无匹配标签，可直接输入后按回车添加
             </p>
           )}
         </div>

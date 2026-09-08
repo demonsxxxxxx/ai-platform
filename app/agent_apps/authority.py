@@ -14,6 +14,8 @@ from fastapi import HTTPException
 from app import repositories
 from app.agent_apps.api import (
     AGENT_PROFILE_AVATAR_REFS,
+    AgentProfileAdminProjection,
+    AgentProfileDraftDefinition,
     AgentProfilePublicProjection,
     AgentProfileSkillReference,
     normalize_agent_skill_reference,
@@ -27,7 +29,6 @@ from app.mcp import api as mcp_api
 from app.mcp.api import parse_mcp_tool_reference
 from app.models import (
     AgentConversationIdentity,
-    AgentProfileAdminProjection,
     AgentProfileDraftRequest,
     ChatSessionResponse,
     ChatStreamRequest,
@@ -65,6 +66,7 @@ _PRESENCE_AWARE_PROFILE_FIELDS = (
     "avatar_seed",
     "category",
     "market_tag",
+    "market_tags",
     "visibility",
     "allowed_department_ids",
     "allowed_roles",
@@ -85,7 +87,6 @@ _PROFILE_TRANSPORT_SELECTOR_PATHS = frozenset(
 _PROFILE_TRANSPORT_AGENT_OPTION_KEYS = frozenset(
     {"enable_thinking", "model", "model_id"}
 )
-
 
 @dataclass(frozen=True)
 class AgentProfileAdmission:
@@ -133,13 +134,32 @@ def _safe_category(value: Any) -> str:
     return candidate if candidate in _CATEGORIES else "general"
 
 
+def _safe_market_tags(value: Any, *, legacy_value: Any = "") -> list[str]:
+    raw_values = value if isinstance(value, list) else ([value] if isinstance(value, str) else [])
+    if not raw_values and isinstance(legacy_value, str):
+        raw_values = [legacy_value]
+    return [
+        candidate
+        for candidate in _safe_string_list(raw_values)
+        if "\x00" not in candidate and len(candidate) <= 80
+    ][:16]
+
+
 def _safe_market_tag(value: Any) -> str:
-    candidate = str(value or "").strip()
-    return candidate if "\x00" not in candidate else ""
+    tags = _safe_market_tags(value)
+    return tags[0] if tags else ""
+
+
+def _market_tags(definition: AgentProfileDraftRequest) -> list[str]:
+    tags = _safe_market_tags(getattr(definition, "market_tags", None))
+    if tags:
+        return tags
+    return _safe_market_tags(getattr(definition, "market_tag", ""))
 
 
 def _market_tag(definition: AgentProfileDraftRequest) -> str:
-    return _safe_market_tag(getattr(definition, "market_tag", ""))
+    tags = _market_tags(definition)
+    return tags[0] if tags else ""
 
 
 def _safe_completed_tasks(value: Any) -> int:
@@ -241,7 +261,13 @@ def profile_public_projection(
         ),
         "avatar_seed": _safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         "category": _safe_category(row.get("category")),
-        "market_tag": _safe_market_tag(row.get("market_tag")),
+        "market_tags": _safe_market_tags(
+            row.get("market_tags"),
+            legacy_value=row.get("market_tag"),
+        ),
+        "market_tag": _safe_market_tag(
+            row.get("market_tags") or row.get("market_tag")
+        ),
         "published_at": row.get("published_at"),
     }
     if "completed_tasks" in row:
@@ -342,8 +368,10 @@ def _revision_hash(
         "avatar_seed": definition.avatar_seed,
         "category": definition.category,
         **(
-            {"market_tag": _market_tag(definition)}
-            if include_market_tag and _market_tag(definition)
+            {
+                "market_tag": tags[0] if len(tags) == 1 else tags,
+            }
+            if include_market_tag and (tags := _market_tags(definition))
             else {}
         ),
         "visibility": definition.visibility,
@@ -772,7 +800,7 @@ def _revision_hash_matches(row: dict[str, Any], content_hash: str) -> bool:
 
 
 def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
-    definition = AgentProfileDraftRequest(
+    legacy = AgentProfileDraftRequest(
         name=str(row["name"]),
         description=str(row.get("description") or ""),
         welcome_message=str(row.get("welcome_message") or ""),
@@ -791,12 +819,19 @@ def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
         avatar_asset_id=(str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
         avatar_seed=_safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         category=_safe_category(row.get("category")),
-        market_tag=_safe_market_tag(row.get("market_tag")),
+        market_tag=_safe_market_tag(row.get("market_tags")) or _safe_market_tag(row.get("market_tag")),
         visibility=_safe_visibility(row.get("visibility")),
         allowed_department_ids=_safe_string_list(row.get("allowed_department_ids")),
         allowed_roles=_safe_string_list(row.get("allowed_roles")),
         allowed_user_ids=_safe_string_list(row.get("allowed_user_ids")),
         expected_draft_revision=int(row["revision"]),
+    )
+    definition = AgentProfileDraftDefinition.from_legacy(
+        legacy,
+        market_tags=_safe_market_tags(
+            row.get("market_tags"),
+            legacy_value=row.get("market_tag"),
+        ),
     )
     definition._legacy_model_id = str(row["model_id"])
     return definition
@@ -825,49 +860,61 @@ def _merge_omitted_profile_fields(
     updates = {
         field: getattr(prior, field, "")
         for field in _PRESENCE_AWARE_PROFILE_FIELDS
-        if field not in definition.model_fields_set
+        if field not in {"market_tag", "market_tags"}
+        and field not in definition.model_fields_set
     }
+    if (
+        "market_tag" not in definition.model_fields_set
+        and "market_tags" not in definition.model_fields_set
+    ):
+        updates.update(market_tag=prior.market_tag, market_tags=prior.market_tags)
     return definition.model_copy(update=updates) if updates else definition
 
 
 def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
-    return AgentProfileAdminProjection(
-        agent_id=str(row["agent_id"]),
-        revision=int(row["revision"]),
-        published_revision=(
+    skill_set = _skill_set(row)
+    market_tags = _safe_market_tags(
+        row.get("market_tags"),
+        legacy_value=row.get("market_tag"),
+    )
+    return AgentProfileAdminProjection({
+        "agent_id": str(row["agent_id"]),
+        "revision": int(row["revision"]),
+        "published_revision": (
             int(row["published_revision"])
             if row.get("published_revision") is not None
             else None
         ),
-        status=str(row["status"]),
-        name=str(row["name"]),
-        description=str(row.get("description") or ""),
-        welcome_message=str(row.get("welcome_message") or ""),
-        starter_prompts=_safe_string_list(row.get("starter_prompts")),
-        capability_summary=str(row.get("capability_summary") or ""),
-        recommended_tasks=_safe_string_list(row.get("recommended_tasks")),
-        supported_input_types=list(_ROLLING_LEGACY_SUPPORTED_INPUT_TYPES),
-        expected_outputs=_safe_string_list(row.get("expected_outputs")),
-        permissions_and_data_access_notice=str(
+        "status": str(row["status"]),
+        "name": str(row["name"]),
+        "description": str(row.get("description") or ""),
+        "welcome_message": str(row.get("welcome_message") or ""),
+        "starter_prompts": _safe_string_list(row.get("starter_prompts")),
+        "capability_summary": str(row.get("capability_summary") or ""),
+        "recommended_tasks": _safe_string_list(row.get("recommended_tasks")),
+        "supported_input_types": list(_ROLLING_LEGACY_SUPPORTED_INPUT_TYPES),
+        "expected_outputs": _safe_string_list(row.get("expected_outputs")),
+        "permissions_and_data_access_notice": str(
             row.get("permissions_and_data_access_notice") or ""
         ),
-        instructions=str(row["instructions"]),
-        skill_set=_skill_set(row),
-        selected_skill=_skill_set(row)[0],
-        mcp_tool_ids=_mcp_tool_ids(row),
-        avatar_ref=_safe_avatar_ref(row.get("avatar_style_ref") or row.get("avatar_ref")),
-        avatar_asset_id=(str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
-        avatar_seed=_safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
-        category=_safe_category(row.get("category")),
-        market_tag=_safe_market_tag(row.get("market_tag")),
-        visibility=_safe_visibility(row.get("visibility")),
-        allowed_department_ids=_safe_string_list(row.get("allowed_department_ids")),
-        allowed_roles=_safe_string_list(row.get("allowed_roles")),
-        allowed_user_ids=_safe_string_list(row.get("allowed_user_ids")),
-        content_hash=str(row["content_hash"]),
-        created_at=row.get("created_at"),
-        published_at=row.get("published_at"),
-    )
+        "instructions": str(row["instructions"]),
+        "skill_set": skill_set,
+        "selected_skill": skill_set[0],
+        "mcp_tool_ids": _mcp_tool_ids(row),
+        "avatar_ref": _safe_avatar_ref(row.get("avatar_style_ref") or row.get("avatar_ref")),
+        "avatar_asset_id": (str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
+        "avatar_seed": _safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
+        "category": _safe_category(row.get("category")),
+        "market_tag": market_tags[0] if market_tags else "",
+        "market_tags": market_tags,
+        "visibility": _safe_visibility(row.get("visibility")),
+        "allowed_department_ids": _safe_string_list(row.get("allowed_department_ids")),
+        "allowed_roles": _safe_string_list(row.get("allowed_roles")),
+        "allowed_user_ids": _safe_string_list(row.get("allowed_user_ids")),
+        "content_hash": str(row["content_hash"]),
+        "created_at": row.get("created_at"),
+        "published_at": row.get("published_at"),
+    })
 
 
 class AgentProfileAuthority:
@@ -1095,6 +1142,7 @@ class AgentProfileAuthority:
             avatar_seed=definition.avatar_seed,
             category=definition.category,
             market_tag=_market_tag(definition),
+            market_tags=_market_tags(definition),
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
             allowed_roles=definition.allowed_roles,
@@ -1187,6 +1235,7 @@ class AgentProfileAuthority:
             avatar_seed=definition.avatar_seed or agent_id,
             category=definition.category,
             market_tag=_market_tag(definition),
+            market_tags=_market_tags(definition),
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
             allowed_roles=definition.allowed_roles,
@@ -1307,6 +1356,7 @@ class AgentProfileAuthority:
             avatar_seed=authoring_row["avatar_seed"],
             category=definition.category,
             market_tag=_market_tag(definition),
+            market_tags=_market_tags(definition),
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
             allowed_roles=definition.allowed_roles,
