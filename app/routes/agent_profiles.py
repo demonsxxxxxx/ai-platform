@@ -322,7 +322,7 @@ async def create_agent_profile(
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
-    return {"agent_profile": profile, "audit_id": audit_id}
+    return {"agent_profile": profile.model_dump(mode="json"), "audit_id": audit_id}
 
 
 @router.put("/admin/agent-profiles/{agent_id}")
@@ -349,7 +349,7 @@ async def save_agent_profile_draft(
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
-    return {"agent_profile": profile, "audit_id": audit_id}
+    return {"agent_profile": profile.model_dump(mode="json"), "audit_id": audit_id}
 
 
 @router.post("/admin/agent-profiles/test", response_model=AgentProfileValidationResponse)
@@ -457,7 +457,7 @@ async def publish_agent_profile(
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
-    return {"agent_profile": profile, "audit_id": audit_id}
+    return {"agent_profile": profile.model_dump(mode="json"), "audit_id": audit_id}
 
 
 @router.post("/admin/agent-profiles/{agent_id}/unpublish")
@@ -484,4 +484,4 @@ async def unpublish_agent_profile(
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
-    return {"agent_profile": profile, "audit_id": audit_id}
+    return {"agent_profile": profile.model_dump(mode="json"), "audit_id": audit_id}

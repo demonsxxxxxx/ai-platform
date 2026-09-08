@@ -23,7 +23,10 @@ from app.agent_apps.authority import (
     _revision_hash,
     _revision_hash_matches,
 )
-from app.agent_apps.api import safe_agent_avatar_seed
+from app.agent_apps.api import (
+    AgentProfileAdminProjection as AgentAppsAdminProjection,
+    safe_agent_avatar_seed,
+)
 from app.agent_apps.application.skill_set_pinning import pin_agent_skill_set
 from app.auth import AuthPrincipal
 from app.models import (
@@ -863,17 +866,19 @@ def test_agent_profile_admin_write_accepts_and_discards_legacy_model_field(monke
     async def save_profile(_conn, *, definition, **_kwargs):
         saved_definitions.append(definition)
         return (
-            {
-                "agent_id": "agt_support",
-                "revision": 1,
-                "status": "draft",
-                "name": definition.name,
-                "instructions": definition.instructions,
-                "selected_skill": definition.selected_skill,
-                "market_tag": definition.market_tag,
-                "market_tags": definition.market_tags,
-                "content_hash": "a" * 64,
-            },
+            AgentAppsAdminProjection(
+                {
+                    "agent_id": "agt_support",
+                    "revision": 1,
+                    "status": "draft",
+                    "name": definition.name,
+                    "instructions": definition.instructions,
+                    "selected_skill": definition.selected_skill,
+                    "market_tag": definition.market_tag,
+                    "market_tags": definition.market_tags,
+                    "content_hash": "a" * 64,
+                }
+            ),
             "audit_profile_save",
         )
 
