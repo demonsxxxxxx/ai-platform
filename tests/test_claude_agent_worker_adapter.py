@@ -30,7 +30,6 @@ from app.executors.claude_agent_worker import (
     ClaudeAgentWorkerAdapter,
     PreparedSdkRun,
     _allowed_skill_names,
-    _inferred_used_skill_names,
     _ordinary_run_requires_sandbox,
     _required_artifact_types,
 )
@@ -1601,15 +1600,6 @@ def test_ctd_stability_template_fill_does_not_infer_dependency_from_skill_id():
     assert selected == ["ctd-32s73-stability-template-fill"]
 
 
-def test_inferred_used_skill_names_does_not_infer_unpinned_dependency():
-    used = _inferred_used_skill_names(
-        types.SimpleNamespace(skill_id="qa-file-reviewer", input={}, skill_manifests=[]),
-        ["qa-file-reviewer", "custom-dependency"],
-    )
-
-    assert used == ["qa-file-reviewer"]
-
-
 def test_allowed_skill_names_prefers_pinned_manifest_dependency_graph():
 
     selected = _allowed_skill_names(
@@ -1954,7 +1944,6 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
     assert result.result["staged_skills"] == ["qa-file-reviewer"]
     assert result.result["used_skills"] == ["qa-file-reviewer"]
     assert result.executor_payload["used_skills_source"] == "executor_hook"
-    assert result.executor_payload["inferred_used_skills"] == ["qa-file-reviewer"]
     manifest = result.executor_payload["skill_manifests"][0]
     assert manifest["skill_id"] == "qa-file-reviewer"
     assert manifest["version"]
@@ -3382,7 +3371,7 @@ async def test_agent_run_clears_stale_workspace_before_sdk(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
-async def test_qa_file_reviewer_manifest_does_not_infer_available_dependency(monkeypatch, tmp_path):
+async def test_qa_file_reviewer_manifest_keeps_unreported_dependency_unused(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills", name="qa-file-reviewer")
     write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
@@ -3412,13 +3401,12 @@ async def test_qa_file_reviewer_manifest_does_not_infer_available_dependency(mon
     assert manifests["qa-file-reviewer"]["dependency_ids"] == []
     assert result.result["used_skills"] == ["qa-file-reviewer"]
     assert result.executor_payload["used_skills_source"] == "executor_hook"
-    assert result.executor_payload["inferred_used_skills"] == ["qa-file-reviewer"]
     assert manifests["qa-file-reviewer"]["used"] is True
     assert "minimax-docx" not in manifests
 
 
 @pytest.mark.asyncio
-async def test_agent_run_prefers_sdk_reported_used_skills_over_inference(monkeypatch, tmp_path):
+async def test_agent_run_uses_sdk_reported_used_skills(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills", name="qa-file-reviewer")
     write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
@@ -3455,7 +3443,6 @@ async def test_agent_run_prefers_sdk_reported_used_skills_over_inference(monkeyp
     assert result.result["used_skills"] == ["qa-file-reviewer"]
     assert "used_skills_source" not in result.result
     assert result.executor_payload["used_skills_source"] == "executor_hook"
-    assert result.executor_payload["inferred_used_skills"] == ["qa-file-reviewer"]
     assert manifests["qa-file-reviewer"]["used"] is True
     assert "minimax-docx" not in manifests
 

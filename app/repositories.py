@@ -5003,15 +5003,14 @@ async def upsert_run_skill_snapshot(
     staged: bool,
     used: bool,
     used_skills_source: str = "",
-    inferred_used: bool = False,
 ) -> None:
     cursor = await conn.execute(
         """
         insert into run_skill_snapshots(
           id, tenant_id, run_id, skill_id, skill_version, content_hash,
-          source_json, dependency_ids, allowed, staged, used, used_skills_source, inferred_used
+          source_json, dependency_ids, allowed, staged, used, used_skills_source
         )
-        values (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s)
+        values (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s)
         on conflict (tenant_id, run_id, skill_id)
         do update set
           allowed = run_skill_snapshots.allowed or excluded.allowed,
@@ -5022,10 +5021,6 @@ async def upsert_run_skill_snapshot(
             when run_skill_snapshots.used then run_skill_snapshots.used_skills_source
             when excluded.used_skills_source <> '' then excluded.used_skills_source
             else run_skill_snapshots.used_skills_source
-          end,
-          inferred_used = case
-            when run_skill_snapshots.used or excluded.used then false
-            else run_skill_snapshots.inferred_used or excluded.inferred_used
           end
         where run_skill_snapshots.skill_version = excluded.skill_version
           and run_skill_snapshots.content_hash = excluded.content_hash
@@ -5046,7 +5041,6 @@ async def upsert_run_skill_snapshot(
             staged,
             used,
             used_skills_source,
-            inferred_used,
         ),
     )
     if await cursor.fetchone() is None:
@@ -5102,9 +5096,9 @@ async def insert_run_skill_snapshots_at_creation(
             """
             insert into run_skill_snapshots(
               id, tenant_id, run_id, skill_id, skill_version, content_hash,
-              source_json, dependency_ids, allowed, staged, used, used_skills_source, inferred_used
+              source_json, dependency_ids, allowed, staged, used, used_skills_source
             )
-            values (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, true, false, false, '', false)
+            values (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, true, false, false, '')
             on conflict (tenant_id, run_id, skill_id) do nothing
             returning id
             """,
@@ -5240,7 +5234,6 @@ async def list_run_skill_snapshots(conn: AsyncConnection, *, tenant_id: str, run
           staged,
           used,
           used_skills_source,
-          inferred_used,
           created_at
         from run_skill_snapshots
         where tenant_id = %s and run_id = %s
@@ -5254,13 +5247,9 @@ async def list_run_skill_snapshots(conn: AsyncConnection, *, tenant_id: str, run
         source = _sanitize_skill_snapshot_source(row.get("source_json"))
         dependency_ids = row.get("dependency_ids") if isinstance(row.get("dependency_ids"), list) else []
         used_skills_source = str(row.get("used_skills_source") or "").strip()
-        inferred_used = bool(row.get("inferred_used"))
         usage: dict[str, Any] = {}
-        if used_skills_source:
+        if used_skills_source and used_skills_source != "inferred":
             usage["used_skills_source"] = sanitize_public_text(used_skills_source)
-        if inferred_used:
-            usage["inferred_used"] = True
-            usage["inferred_used_skills"] = [str(row["skill_id"])]
         snapshot = {
             "skill_id": row["skill_id"],
             "skill_version": row["skill_version"],
@@ -5889,7 +5878,6 @@ async def get_admin_skill_detail(
           staged,
           used,
           used_skills_source,
-          inferred_used,
           created_at
         from run_skill_snapshots
         where tenant_id = %s and skill_id = %s
@@ -5901,7 +5889,6 @@ async def get_admin_skill_detail(
     snapshots = []
     for row in list(await snapshots_cursor.fetchall()):
         used_skills_source = str(row.get("used_skills_source") or "").strip()
-        inferred_used = bool(row.get("inferred_used"))
         snapshot = {
             "run_id": row["run_id"],
             "skill_id": row["skill_id"],
@@ -5913,11 +5900,8 @@ async def get_admin_skill_detail(
             "created_at": row.get("created_at"),
         }
         usage: dict[str, Any] = {}
-        if used_skills_source:
+        if used_skills_source and used_skills_source != "inferred":
             usage["used_skills_source"] = used_skills_source
-        if inferred_used:
-            usage["inferred_used"] = True
-            usage["inferred_used_skills"] = [str(row["skill_id"])]
         if usage:
             snapshot["usage"] = usage
         snapshots.append(snapshot)

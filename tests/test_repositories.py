@@ -10991,7 +10991,6 @@ async def test_upsert_run_skill_snapshot_is_tenant_and_run_scoped():
         staged=True,
         used=True,
         used_skills_source="executor_hook",
-        inferred_used=False,
     )
 
     sql, params = conn.calls[0]
@@ -11002,9 +11001,8 @@ async def test_upsert_run_skill_snapshot_is_tenant_and_run_scoped():
     assert any('"kind": "builtin"' in str(item) for item in params)
     assert any("minimax-docx" in str(item) for item in params)
     assert "used_skills_source" in sql
-    assert "inferred_used" in sql
+    assert "inferred_used" not in sql
     assert "executor_hook" in params
-    assert False in params
 
 
 @pytest.mark.asyncio
@@ -11624,7 +11622,7 @@ async def test_authorize_files_for_run_rejects_reusable_file_from_other_session(
 
 
 @pytest.mark.asyncio
-async def test_list_run_skill_snapshots_projects_persisted_telemetry():
+async def test_list_run_skill_snapshots_does_not_project_retired_inferred_telemetry():
     class SnapshotCursor:
         async def fetchall(self):
             return [
@@ -11681,7 +11679,7 @@ async def test_list_run_skill_snapshots_projects_persisted_telemetry():
     class SnapshotConnection:
         async def execute(self, sql, params):
             assert "used_skills_source" in sql
-            assert "inferred_used" in sql
+            assert "inferred_used" not in sql
             assert params == ("default", "run-a")
             return SnapshotCursor()
 
@@ -11726,11 +11724,6 @@ async def test_list_run_skill_snapshots_projects_persisted_telemetry():
             "staged": True,
             "used": False,
             "created_at": None,
-            "usage": {
-                "used_skills_source": "inferred",
-                "inferred_used": True,
-                "inferred_used_skills": ["qa-file-reviewer"],
-            },
         }
     ]
     serialized = json.dumps(snapshots, ensure_ascii=False)

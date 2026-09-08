@@ -315,7 +315,6 @@ def test_admin_run_detail_returns_explainability_contract(monkeypatch):
                     "used": True,
                     "usage": {
                         "used_skills_source": "executor_hook",
-                        "inferred_used": False,
                     },
                     "created_at": None,
                 }

@@ -59,6 +59,16 @@ This file applies to the current `ai-platform` repository root.
 - Every behavior change needs a falsifiable owning test. Claim assembled or
   runtime behavior only after observing that path. Template text and Agent
   self-report are not evidence.
+- Every behavior change must carry a retirement and compatibility disposition
+  in the PR before review. Inventory superseded production paths,
+  tests/selectors, and documentation/configuration; remove each obsolete
+  surface or name the current compatibility owner and its removal proof. A
+  behavior change is not complete while an old implementation, stale
+  assertion, selector, or instruction remains active without an explicit
+  disposition and an absence/inventory check. The checklist is a review index,
+  not evidence by itself; reviewers and governance must inspect or rerun the
+  referenced inventory. Trusted governance enforces the required PR record
+  with `tools/check_pr_retirement.py`.
 - `AGENTS.md` is repository coding authority. Product Agent.md content belongs
   to the Agent Profile/Workspace domain and is not implementation authority.
 

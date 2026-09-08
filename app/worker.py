@@ -770,26 +770,12 @@ def _required_agent_skill_id(payload: QueueRunPayload) -> str | None:
     return None
 
 
-def _inferred_used_skills_from_result(result: ExecutorResult) -> list[str]:
-    source = {**result.result, **result.executor_payload}
-    raw = source.get("inferred_used_skills")
-    if not isinstance(raw, list):
-        return []
-    inferred: list[str] = []
-    for item in raw:
-        skill_name = str(item).strip()
-        if skill_name and skill_name not in inferred:
-            inferred.append(skill_name)
-    return inferred
-
-
 def _skill_manifests_from_result(result: ExecutorResult) -> list[dict[str, Any]]:
     source = {**result.executor_payload, **result.result}
     raw = source.get("skill_manifests")
     if not isinstance(raw, list):
         return []
     used_skills = set(_native_used_skills_from_result(result))
-    inferred_used_skills = set(_inferred_used_skills_from_result(result))
     used_skills_source = str(result.executor_payload.get("used_skills_source") or "").strip()
     manifests: list[dict[str, Any]] = []
     for item in raw:
@@ -800,10 +786,6 @@ def _skill_manifests_from_result(result: ExecutorResult) -> list[dict[str, Any]]
         manifest["used"] = bool(skill_id and skill_id in used_skills)
         if manifest["used"]:
             manifest["used_skills_source"] = used_skills_source
-            manifest["inferred_used"] = False
-        elif skill_id and skill_id in inferred_used_skills:
-            manifest["used_skills_source"] = "inferred"
-            manifest["inferred_used"] = True
         manifests.append(manifest)
     return manifests
 
@@ -2995,7 +2977,6 @@ async def process_run_payload(
                     staged=bool(item.get("staged")),
                     used=bool(item.get("used")),
                     used_skills_source=str(item.get("used_skills_source") or "").strip(),
-                    inferred_used=bool(item.get("inferred_used")),
                 )
             if result.status == "succeeded":
                 await _attach_multi_agent_result_summary(

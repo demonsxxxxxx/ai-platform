@@ -1583,7 +1583,6 @@ class ClaudeAgentWorkerAdapter:
             allow_platform_controlled_runner=selected_capability_error is None,
         )
         used_skills_source = _sdk_used_skills_source(runtime_sdk_result, used_skill_names)
-        inferred_used_skill_names = _inferred_used_skill_names(payload, prepared.staged_skill_names)
         skill_manifests = (
             _skill_manifests_from_catalog(
                 prepared.skill_manifests,
@@ -1610,7 +1609,6 @@ class ClaudeAgentWorkerAdapter:
             "staged_skills": prepared.staged_skill_names,
             "used_skills": used_skill_names,
             "used_skills_source": used_skills_source,
-            "inferred_used_skills": inferred_used_skill_names,
             "skill_manifests": skill_manifests,
             "sandbox_provider": sandbox_provider,
             "sandbox_runtime_used": True,
@@ -1845,7 +1843,6 @@ class ClaudeAgentWorkerAdapter:
             )
             used_skill_names = _sdk_used_skill_names(sdk_result, prepared.staged_skill_names)
             used_skills_source = _sdk_used_skills_source(sdk_result, used_skill_names)
-            inferred_used_skill_names = _inferred_used_skill_names(payload, prepared.staged_skill_names)
             skill_manifests = _skill_manifests(
                 prepared.selected_skills,
                 used_skill_names=used_skill_names,
@@ -1896,7 +1893,6 @@ class ClaudeAgentWorkerAdapter:
                         "staged_skills": prepared.staged_skill_names,
                         "used_skills": used_skill_names,
                         "used_skills_source": used_skills_source,
-                        "inferred_used_skills": inferred_used_skill_names,
                         "skill_manifests": skill_manifests,
                         "required_artifact_types": list(_required_artifact_types(payload)),
                         "capability_evidence": list(
@@ -1943,7 +1939,6 @@ class ClaudeAgentWorkerAdapter:
                     "staged_skills": prepared.staged_skill_names,
                     "used_skills": used_skill_names,
                     "used_skills_source": used_skills_source,
-                    "inferred_used_skills": inferred_used_skill_names,
                     "skill_manifests": skill_manifests,
                     "required_artifact_types": list(_required_artifact_types(payload)),
                     "capability_evidence": list(
@@ -1954,7 +1949,6 @@ class ClaudeAgentWorkerAdapter:
             )
         used_skill_names = _sdk_used_skill_names(sdk_result, prepared.staged_skill_names) if sdk_result else []
         used_skills_source = _sdk_used_skills_source(sdk_result, used_skill_names)
-        inferred_used_skill_names = _inferred_used_skill_names(payload, prepared.staged_skill_names)
         skill_manifests = _skill_manifests(
             prepared.selected_skills,
             used_skill_names=used_skill_names,
@@ -2000,7 +1994,6 @@ class ClaudeAgentWorkerAdapter:
                 "staged_skills": prepared.staged_skill_names,
                 "used_skills": used_skill_names,
                 "used_skills_source": used_skills_source,
-                "inferred_used_skills": inferred_used_skill_names,
                 "skill_manifests": skill_manifests,
                 "sdk_turn_diagnostics": turn_diagnostics,
             },
@@ -2389,22 +2382,6 @@ def _with_pinned_manifest_dependencies(selected: list[str], pins: dict[str, dict
     for skill_name in selected:
         add_skill(skill_name)
     return expanded
-
-
-def _inferred_used_skill_names(payload: RunPayload, staged_skill_names: list[str]) -> list[str]:
-    staged = set(staged_skill_names)
-    used: list[str] = []
-    if payload.skill_id and payload.skill_id in staged:
-        used.append(payload.skill_id)
-        pinned_manifests = _pinned_skill_manifests(payload)
-        if pinned_manifests and payload.skill_id in pinned_manifests:
-            dependency_ids = _string_list(pinned_manifests[payload.skill_id].get("dependency_ids"))
-        else:
-            dependency_ids = []
-        for dependency_id in dependency_ids:
-            if dependency_id in staged and dependency_id not in used:
-                used.append(dependency_id)
-    return used
 
 
 def _run_workspace(settings: object, payload: RunPayload) -> Path:

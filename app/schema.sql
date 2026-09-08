@@ -1925,6 +1925,7 @@ create table if not exists run_skill_snapshots (
   staged boolean not null default false,
   used boolean not null default false,
   used_skills_source text not null default '',
+  -- Retained for pre-cleanup rows; current code never reads or writes inferred usage.
   inferred_used boolean not null default false,
   created_at timestamptz not null default now(),
   unique(tenant_id, run_id, skill_id)
