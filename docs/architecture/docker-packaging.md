@@ -232,10 +232,58 @@ publish a reviewed later source commit through the same workflow. Do not retag
 or overwrite an existing source tag, delete evidence to conceal a failure, or
 fall back to a runner-local image ID.
 
-## Later phases
+## Phase 3 deployment package authority
 
-Phase 3 may add a root local Compose facade and split the existing production
-Compose consumers to reviewed `image@sha256` inputs. Only after real layer and
-runtime measurements may a later decision split API, worker, or executor images.
-Neither phase may rename or duplicate `deploy/ai-platform/docker-compose.yml`, and
-both remain separate from release authority and runtime acceptance.
+The protected Packaging workflow assembles the runtime-only package after the
+ready manifest is verified. `tools/release_compose_package.py` reuses the
+reviewed Compose and OpenSandbox templates and replaces every service image
+with the exact `repository@sha256:...` reference resolved by CI. The archive
+contains no source tree, Git history, real environment file, mutable image tag,
+or host-specific secret.
+
+`deploy/ai-platform/deploy.py` is the single normal host entry point. It reads
+only the extracted package and the owner-held environment file. Its checks are
+ordered as follows: package and configuration identity, immutable local image
+identity, activity admission, a second activity check after admission is
+stopped, persistent-service preservation, migration, workspace initialization,
+application recreation, API/readiness/OpenSandbox checks, and Worker-heartbeat
+acceptance. A project-wide lock prevents concurrent package deployments.
+
+The package entry never asks GitHub for Actions or Release state, materializes a
+source checkout, builds an image, or updates a legacy subject file. `--check`
+is a no-change preflight. `--offline` skips the network pull only after the
+operator has loaded the exact package-bound images; it does not weaken digest
+verification. A failure after migration retains the data and stops application
+admission because restoring an old image is not proof of schema compatibility.
+
+The package's immutable Release and manifest are release authority; the running
+container image and independent post-deployment runtime checks are deployment
+and runtime evidence. The old source-checkout shell entry points and implicit
+latest selection are retired rather than kept as a second operator workflow.
+
+The package guide and [release operations runbook](../operations/release-operations-runbook.md)
+own the operator procedure. The host preparation guide remains separate because
+OpenSandbox systemd, network policy, credentials, and `runsc` are host inputs,
+not application package contents.
+
+## Compatibility and deletion proof
+
+The latest-Release resolver, source-checkout quickstart, their shell wrappers,
+and their dedicated tests are removed. `production_bootstrap.py` no longer
+contains application deployment, subject management, image rollback, or a release
+CLI. Backend CI runs the package entry tests instead of the removed controllers.
+
+Retained non-package tools have separate owners and consumers:
+
+- `release_authority.py` and its build/parity helpers support controlled builds
+  and the one-time s75 migration; they are not normal application upgrade commands.
+- `production_bootstrap.HostBootstrap` retains the secure host configuration,
+  unit rendering, and host-service recovery for the production OpenSandbox
+  systemd contract. `opensandbox_unit_guard.py` is invoked directly by that unit.
+- `s75_opensandbox_transition.py` retains the separately authorized migration
+  from the legacy sandbox topology and its network-guard validation.
+
+These host/build tools are not shipped in the application package. Retire their
+code and owning tests only when the corresponding host provisioning or legacy
+migration consumer is removed or replaced; test existence alone is not a
+compatibility reason. Do not add an ordinary deployment caller for them.

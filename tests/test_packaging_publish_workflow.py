@@ -770,6 +770,13 @@ def test_deployment_release_is_immutable_minimal_and_fresh_main_bound():
     assert 'test "$current_main" = "$GITHUB_SHA"' in release["run"]
     assert 'release create "$RELEASE_TAG"' in release["run"]
     assert '"$ASSET_PATH#$ASSET_LABEL"' in release["run"]
+    package = next(step for step in steps if "tools/release_compose_package.py" in step.get("run", ""))
+    verification = next(step for step in steps if "tools/release_image_manifest.py verify" in step.get("run", ""))
+    assert steps.index(verification) < steps.index(package) < steps.index(release)
+    assert "for profile in internal-test production" in package["run"]
+    assert "--manifest release-image-manifest.json" in package["run"]
+    for profile in ("internal-test", "production"):
+        assert f'"ai-platform-{profile}.tar.gz"' in release["run"]
     assert "release upload" not in release["run"]
     assert "release edit" not in release["run"]
     assert "--latest=false" in release["run"]

@@ -18,6 +18,36 @@ its eventual source migration must not create a second taxonomy.
 codes. Live, historical and hydrated messages use the same presentation catalog
 and message projection semantics.
 
+## User-visible content and redaction
+
+Assistant narration and final answers are content facts, independent of Tool
+admission, active invocations, completion evidence and Run outcome. Tool lifecycle
+state MUST NOT suppress ordinary Assistant text. A failed or cancelled Run keeps
+its already accepted safe content; its outcome is presented separately.
+
+Redaction replaces sensitive spans rather than dropping the containing paragraph
+or message. Skill accounts, passwords, tokens and private service endpoints must
+be identified from the authorized run-scoped Skill/configuration material before
+that material can produce public output. Pattern matching supplements known
+sensitive values; it cannot establish that arbitrary unlabelled text is safe.
+Sensitive values and the replacement registry never enter public events or logs.
+Cross-chunk matching retains only the undecided suffix needed for safe redaction.
+
+Non-sensitive narration, public Tool labels and authorized task-file references
+must survive redaction. They are not grounds for deleting an entire string.
+Platform credentials, private execution envelopes and other principals' material
+remain excluded. Authentication, tenant/workspace/session authorization, Tool
+admission and browser rendering safety are unchanged by this content policy.
+
+Live delivery, committed history and terminal hydration use the same content
+policy. Full Assistant messages reconcile their own streamed fragments by source
+identity. A distinct final answer must not be discarded because it is not a
+prefix extension of earlier narration. Repeated delivery of the same source
+must not duplicate content; equal text from distinct sources is not a duplicate.
+The hydrated fold includes the accepted narration and final answer, not only the
+last successful fragment. Missing or ambiguous source evidence is reported, not
+silently converted to an empty answer.
+
 ## Queue-to-processing presentation
 
 A truthful submission/status response may show `queued` and `queue_position`.
@@ -44,6 +74,13 @@ terminal result could not be synchronized. `status_unavailable` denotes missing
 status evidence and cannot replace a known terminal failure. None authorizes
 automatic resubmission of the user's task.
 
+Exhausting fast SSE reconnect attempts while authoritative status remains active
+enters bounded-rate recovery, not `status_unavailable`. A known terminal Run with
+a transient history-loading failure remains eligible for result recovery without
+resubmission or removal of accepted content. Recovery belongs to the current
+session/Run/connection generation and is cancelled on replacement or disposal.
+Authorization failure and foreign incarnation/cursor rejection remain fail-closed.
+
 Only the backend-approved fixed code/kind/severity taxonomy selects public text.
 Unknown, private, malformed or kind-mismatched details use the fixed `run_failed`
 fallback. Frontend display ignores arbitrary backend message text for these
@@ -58,10 +95,13 @@ also recorded in the historical SDK upgrade note.
 
 ## Private diagnostics and reconciliation
 
-Ordinary-user routes, SSE, history and status cards must never render raw SDK,
-parser, Tool or provider exceptions, inputs/results, credentials, paths, storage
-keys or private execution identities. Admin diagnostics remain a separately
-authorized bounded projection, never an alternate public endpoint.
+Ordinary-user routes, SSE, history and status cards must never render private SDK
+or executor envelopes, credentials, storage keys or private execution identities.
+User-visible narration and Tool details pass through the content policy above;
+private diagnostic payloads are not an alternate source of public answer text.
+Fixed Run-status cards retain their approved taxonomy independently of content.
+Admin diagnostics remain a separately authorized bounded projection, never an
+alternate public endpoint.
 
 The retained diagnostic boundary limits structured SDK/Tool values to 4 KiB,
 exception text to 8 KiB, lightweight lifecycle facts to 128, detailed calls and

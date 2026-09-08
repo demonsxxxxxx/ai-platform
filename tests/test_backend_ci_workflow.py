@@ -142,11 +142,9 @@ BACKEND_TEST_SHARDS = {
     ),
     "release-governance-authority": (
         "tests/test_governance_readiness.py",
-        "tests/test_deploy_latest_entry.py",
-        "tests/test_latest_main_quickstart.py",
+        "tests/test_compose_package_deploy.py",
         "tests/test_production_bootstrap.py",
         "tests/test_release_authority.py",
-        "tests/test_sandbox_quickstart.py",
         "tests/test_s75_opensandbox_transition.py",
     ),
 }
@@ -189,11 +187,9 @@ def test_backend_required_check_is_stable_for_every_main_pull_request():
     assert "tests/test_packaging_publish_workflow.py" in workflow
     assert "tests/test_release_image_manifest.py" in workflow
     assert "tests/test_governance_readiness.py" in workflow
-    assert "tests/test_deploy_latest_entry.py" in workflow
-    assert "tests/test_latest_main_quickstart.py" in workflow
+    assert "tests/test_compose_package_deploy.py" in workflow
     assert "tests/test_production_bootstrap.py" in workflow
     assert "tests/test_release_authority.py" in workflow
-    assert "tests/test_sandbox_quickstart.py" in workflow
     assert "tests/test_s75_opensandbox_transition.py" in workflow
     assert "tests/test_contract.py" in workflow
     assert "tests/test_worker_main.py" in workflow
@@ -269,7 +265,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     all_selectors = [
         selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors
     ]
-    assert len(all_selectors) == len(set(all_selectors)) == 81
+    assert len(all_selectors) == len(set(all_selectors)) == 79
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job

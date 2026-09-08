@@ -4,6 +4,64 @@ from collections.abc import Callable
 from typing import Any
 
 
+class AssistantAnswerTimeline:
+    """Reconcile SDK delta/full-message pairs without merging distinct turns.
+
+    Each AssistantMessage closes its current delta source. ResultMessage is a
+    terminal supplement to the last source, not a replacement for earlier text.
+    A non-prefix complete message remains after an emitted delta because live
+    publication cannot retract the earlier source. Content remains executor-
+    private here and must pass the answer gate.
+    """
+
+    def __init__(self) -> None:
+        self._messages: list[str] = []
+        self._streamed = ""
+
+    @property
+    def text(self) -> str:
+        return "\n\n".join(self._messages + ([self._streamed] if self._streamed else []))
+
+    def accept_delta(self, text: str) -> str:
+        prefix = "\n\n" if self._messages and not self._streamed and text else ""
+        self._streamed += text
+        return prefix + text
+
+    def accept_assistant(self, text: str | None) -> str:
+        complete = text if text else self._streamed
+        missing = ""
+        if complete:
+            if not self._streamed:
+                missing = ("\n\n" if self._messages else "") + complete
+            elif complete.startswith(self._streamed):
+                missing = complete[len(self._streamed):]
+            else:
+                # The delta may already be visible in the live callback and
+                # cannot be retracted when the complete message differs.
+                self._messages.append(self._streamed)
+                missing = "\n\n" + complete
+            self._messages.append(complete)
+        self._streamed = ""
+        return missing
+
+    def accept_result(self, text: str) -> str:
+        if self._streamed:
+            self.accept_assistant(None)
+        if not text:
+            return ""
+        full = self.text
+        if full and text.startswith(full):
+            self._messages = [text]
+            return text[len(full):]
+        if self._messages and text.startswith(self._messages[-1]):
+            missing = text[len(self._messages[-1]):]
+            self._messages[-1] = text
+            return missing
+        missing = ("\n\n" if self._messages else "") + text
+        self._messages.append(text)
+        return missing
+
+
 class ClaudeStreamProjector:
     """Project one SDK raw event stream into safe publishable text.
 
