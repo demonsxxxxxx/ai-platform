@@ -9,7 +9,9 @@ class AssistantAnswerTimeline:
 
     Each AssistantMessage closes its current delta source. ResultMessage is a
     terminal supplement to the last source, not a replacement for earlier text.
-    Content remains executor-private here and must pass the answer gate.
+    A non-prefix complete message remains after an emitted delta because live
+    publication cannot retract the earlier source. Content remains executor-
+    private here and must pass the answer gate.
     """
 
     def __init__(self) -> None:
@@ -33,8 +35,11 @@ class AssistantAnswerTimeline:
                 missing = ("\n\n" if self._messages else "") + complete
             elif complete.startswith(self._streamed):
                 missing = complete[len(self._streamed):]
-            # A differing complete message is authoritative for this source in
-            # terminal hydration, never appended as a duplicate live message.
+            else:
+                # The delta may already be visible in the live callback and
+                # cannot be retracted when the complete message differs.
+                self._messages.append(self._streamed)
+                missing = "\n\n" + complete
             self._messages.append(complete)
         self._streamed = ""
         return missing

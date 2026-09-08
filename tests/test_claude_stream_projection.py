@@ -27,13 +27,13 @@ def test_answer_timeline_does_not_deduplicate_equal_text_from_distinct_messages(
     assert timeline.text == "Same.\n\nSame."
 
 
-def test_complete_message_reconciles_its_own_different_delta_without_duplicate():
+def test_complete_message_preserves_a_different_already_streamed_delta():
     timeline = AssistantAnswerTimeline()
     assert timeline.accept_assistant("Earlier.") == "Earlier."
     assert timeline.accept_delta("Provisional.") == "\n\nProvisional."
-    assert timeline.accept_assistant("Corrected.") == ""
+    assert timeline.accept_assistant("Corrected.") == "\n\nCorrected."
     assert timeline.accept_result("") == ""
-    assert timeline.text == "Earlier.\n\nCorrected."
+    assert timeline.text == "Earlier.\n\nProvisional.\n\nCorrected."
 
 
 def _projector(**kwargs):

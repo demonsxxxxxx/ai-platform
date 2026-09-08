@@ -2453,7 +2453,7 @@ async def test_unmatched_capability_terminal_cannot_reopen_active_invocation(
 
 
 @pytest.mark.asyncio
-async def test_sdk_keeps_terminal_body_when_assistant_text_differs(
+async def test_sdk_converges_live_and_terminal_body_when_assistant_text_differs(
     monkeypatch,
     tmp_path,
 ):
@@ -2480,9 +2480,10 @@ async def test_sdk_keeps_terminal_body_when_assistant_text_differs(
         on_text=deltas.append,
     )
 
-    assert "".join(deltas) == "Streamed answer. "
+    expected_text = "Streamed answer. \n\nDifferent complete answer."
+    assert "".join(deltas) == expected_text
     assert result.error is None
-    assert result.message == "Different complete answer."
+    assert result.message == expected_text
 
 
 @pytest.mark.asyncio
