@@ -2456,14 +2456,10 @@ async def run_claude_agent_sdk(
                     projected_message_text += text
                     for public_text in answer_stream_gate.accept(text):
                         await publish_terminal_text(public_text)
-                if stream_projector.disabled:
-                    answer_stream_gate.fail_closed()
                 continue
             if isinstance(message, AssistantMessage):
                 if stream_projector is not None:
                     stream_projector.close_unfinished()
-                    if stream_projector.disabled:
-                        answer_stream_gate.fail_closed()
                 diagnostic_counters["assistant_messages"] += 1
                 assistant_message_identity = (
                     f"assistant_{diagnostic_counters['assistant_messages']}"
@@ -2509,7 +2505,6 @@ async def run_claude_agent_sdk(
                     elif assistant_text.startswith(projected_message_text):
                         missing_text = assistant_text[len(projected_message_text) :]
                     else:
-                        answer_stream_gate.fail_closed()
                         missing_text = ""
                     for public_text in answer_stream_gate.accept(missing_text):
                         await publish_terminal_text(public_text)
@@ -2624,14 +2619,13 @@ async def run_claude_agent_sdk(
                     if projected_message_text
                     else last_assistant_text
                 )
-                if selected_body is not None:
-                    if structured_result_text.startswith(selected_body):
-                        for public_text in answer_stream_gate.accept(
-                            structured_result_text[len(selected_body) :]
-                        ):
-                            await publish_terminal_text(public_text)
-                    else:
-                        answer_stream_gate.fail_closed()
+                if selected_body is not None and structured_result_text.startswith(
+                    selected_body
+                ):
+                    for public_text in answer_stream_gate.accept(
+                        structured_result_text[len(selected_body) :]
+                    ):
+                        await publish_terminal_text(public_text)
                 stop_reason = getattr(message, "stop_reason", None)
                 terminal_reason = resolved_terminal_reason or (
                     str(stop_reason).strip()
@@ -2641,8 +2635,6 @@ async def run_claude_agent_sdk(
                 break
         if stream_projector is not None:
             stream_projector.close_unfinished()
-            if stream_projector.disabled:
-                answer_stream_gate.fail_closed()
         terminal_error = (
             _SDK_MISSING_STRUCTURED_TERMINAL
             if not received_structured_terminal
