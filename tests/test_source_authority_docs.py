@@ -83,6 +83,16 @@ def test_agent_rule_navigation_and_pr_template_remain_usable():
 
     template = read(PULL_REQUEST_TEMPLATE)
     assert "docs/agent-rules/github-issue-pr-workflow.md" in template
+    assert "Retirement / Compatibility Disposition" in template
+    assert "retirement and compatibility disposition" in read(AGENTS)
+    for retirement_field in (
+        "Superseded production paths:",
+        "Superseded tests and selectors:",
+        "Superseded documentation and configuration:",
+        "Retained compatibility surfaces and removal proof:",
+        "Post-change absence or inventory check (command and result):",
+    ):
+        assert retirement_field in template
     for required_field in (
         "Falsifiable regression test:",
         "Reached boundaries and preserved invariants:",

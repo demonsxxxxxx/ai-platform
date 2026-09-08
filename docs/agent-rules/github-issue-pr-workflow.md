@@ -16,8 +16,13 @@ and any remaining limits. A docs-only change reports document verification.
 A separate issue, copied SHA inventory, review JSON, or deployment placeholder
 is unnecessary. GitHub and CI record the source identity.
 
-For retirement, state what was removed, which callers and tests moved, and
-which compatibility consumers remain. Update the owning documentation in the
+For retirement, complete every field in the template's `Retirement /
+Compatibility Disposition`: superseded production paths, tests/selectors,
+documentation/configuration, retained compatibility surfaces and removal proof,
+and a post-change absence or inventory command with its observed result. State
+what was removed, which callers and tests moved, and which compatibility
+consumers remain. Use `none` only after a current-source inventory proves that
+category has no superseded surface. Update the owning documentation in the
 same change; do not preserve obsolete code solely for an outdated test.
 
 ## High-risk changes

@@ -41,6 +41,15 @@ Do not weaken required checks to make a candidate pass.
   when remote work is requested. Do not substitute system SSH or local state.
   Deployment requires the release runbook, fresh evidence, and explicit authority.
 
+Every behavior change must carry a retirement and compatibility disposition in
+its PR before review. Inventory superseded production paths, tests/selectors,
+and documentation/configuration; remove each obsolete surface or name the
+current compatibility owner and its removal proof. A behavior change is not
+complete while an old implementation, stale assertion, selector, or
+instruction remains active without an explicit disposition and an
+absence/inventory check. The checklist is a review index, not evidence by
+itself; reviewers must inspect or rerun the referenced inventory.
+
 ## Read when relevant
 
 - Code ownership and product contracts: [documentation index](docs/README.md).

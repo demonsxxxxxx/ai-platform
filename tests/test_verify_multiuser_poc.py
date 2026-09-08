@@ -19,6 +19,16 @@ def load_verify_multiuser_poc():
     return module
 
 
+def test_foundation_fixture_does_not_write_retired_inferred_skill_usage():
+    module = load_verify_multiuser_poc()
+    sql = module.build_foundation_runtime_fixture_sql(
+        [module.Account(label="user-a", username="user-a", password="pw", tenant_id="frc-test-user-a")]
+    )
+
+    assert "inferred_used" not in sql
+    assert "used_skills_source, inferred_used" not in sql
+
+
 def test_default_sample_docx_contains_review_text(tmp_path):
     module = load_verify_multiuser_poc()
     sample_path = tmp_path / "sample.docx"

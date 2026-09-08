@@ -6796,7 +6796,6 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
             "staged": True,
             "used": True,
             "used_skills_source": "executor_hook",
-            "inferred_used": False,
         }
     ]
 
@@ -7276,7 +7275,6 @@ async def test_worker_persists_platform_controlled_runner_as_actually_used(monke
                     "used_skills_source": "platform_controlled_runner",
                     "staged_skills": ["qa-file-reviewer", "minimax-docx"],
                     "capability_evidence": capability_evidence,
-                    "inferred_used_skills": ["qa-file-reviewer", "minimax-docx"],
                     "skill_manifests": [
                         {
                             "skill_id": "qa-file-reviewer",
@@ -7357,17 +7355,15 @@ async def test_worker_persists_platform_controlled_runner_as_actually_used(monke
     assert snapshots[0]["skill_id"] == "qa-file-reviewer"
     assert snapshots[0]["used"] is True
     assert snapshots[0]["used_skills_source"] == "platform_controlled_runner"
-    assert snapshots[0]["inferred_used"] is False
     assert snapshots[1]["skill_id"] == "minimax-docx"
     assert snapshots[1]["used"] is False
-    assert snapshots[1]["used_skills_source"] == "inferred"
-    assert snapshots[1]["inferred_used"] is True
+    assert snapshots[1]["used_skills_source"] == ""
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "source",
-    ["executor_native", "inferred", "platform_controlled_runner"],
+    ["executor_native", "untrusted_claim", "platform_controlled_runner"],
 )
 async def test_optional_agent_skill_claim_cannot_bypass_required_artifact_contract(monkeypatch, source):
     failures = []
@@ -7544,7 +7540,7 @@ async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
     snapshots = []
     completed = {}
 
-    class InferredSkillAdapter:
+    class UntrustedSkillAdapter:
         async def submit_run(self, payload, event_sink=None):
             return ExecutorResult(
                 status="succeeded",
@@ -7557,8 +7553,7 @@ async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
                     "allowed_skills": ["qa-file-reviewer"],
                     "staged_skills": ["qa-file-reviewer"],
                     "used_skills": ["qa-file-reviewer"],
-                    "used_skills_source": "inferred",
-                    "inferred_used_skills": ["qa-file-reviewer"],
+                    "used_skills_source": "untrusted_claim",
                     "skill_manifests": [
                         {
                             "skill_id": "qa-file-reviewer",
@@ -7573,7 +7568,7 @@ async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
                     ],
                 },
                 artifacts=[reviewed_docx_artifact()],
-                executor_payload={"inferred_used_skills": ["qa-file-reviewer"]},
+                executor_payload={},
             )
 
     async def mark_run_running(conn, *, tenant_id, run_id):
@@ -7596,7 +7591,7 @@ async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
-    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": InferredSkillAdapter()}))
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": UntrustedSkillAdapter()}))
 
     assert outcome.status == "succeeded"
     assert completed["result_json"]["used_skills"] == []
@@ -7604,8 +7599,7 @@ async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
     assert "inferred_used_skills" not in completed["result_json"]
     assert completed["result_json"]["skills"]["used_skills"] == []
     assert snapshots[0]["used"] is False
-    assert snapshots[0]["used_skills_source"] == "inferred"
-    assert snapshots[0]["inferred_used"] is True
+    assert snapshots[0]["used_skills_source"] == ""
 
 
 @pytest.mark.asyncio
