@@ -509,7 +509,12 @@ async def test_sandbox_grep_is_workspace_bounded_and_records_acknowledged_lifecy
     hook_input = {
         "tool_name": "Grep",
         "tool_use_id": "grep-call-1",
-        "tool_input": {"pattern": "TODO", "path": str(tmp_path), "glob": "*.md"},
+        "tool_input": {
+            "pattern": "TODO",
+            "path": str(tmp_path),
+            "glob": "*.md",
+            "-n": True,
+        },
     }
     monkeypatch.setitem(
         sys.modules,

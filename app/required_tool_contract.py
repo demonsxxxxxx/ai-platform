@@ -685,6 +685,7 @@ _BUILTIN_CAPABILITY_PARAMETERS = {
             "head_limit",
             "offset",
             "context",
+            "-n",
         ],
         ["pattern"],
     ),
