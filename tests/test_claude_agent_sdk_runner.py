@@ -2445,7 +2445,7 @@ async def test_unmatched_capability_terminal_cannot_reopen_active_invocation(
 
 
 @pytest.mark.asyncio
-async def test_sdk_rejects_complete_assistant_that_contradicts_streamed_text(
+async def test_sdk_keeps_terminal_body_when_assistant_text_differs(
     monkeypatch,
     tmp_path,
 ):
@@ -2473,8 +2473,8 @@ async def test_sdk_rejects_complete_assistant_that_contradicts_streamed_text(
     )
 
     assert "".join(deltas) == "Streamed answer. "
-    assert result.error == "claude_agent_sdk_public_projection_failed"
-    assert result.message == ""
+    assert result.error is None
+    assert result.message == "Different complete answer."
 
 
 @pytest.mark.asyncio
@@ -3424,7 +3424,7 @@ async def test_sdk_complete_assistant_body_publishes_before_terminal_suffix(
 
 
 @pytest.mark.asyncio
-async def test_sdk_conflicting_result_rejects_complete_assistant_body(
+async def test_sdk_conflicting_result_keeps_terminal_body(
     monkeypatch, tmp_path
 ):
     captured, deltas = {}, []
@@ -3448,8 +3448,8 @@ async def test_sdk_conflicting_result_rejects_complete_assistant_body(
 
     assert deltas
     assert "Complete Assistant body".startswith("".join(deltas))
-    assert result.error == "claude_agent_sdk_public_projection_failed"
-    assert result.message == ""
+    assert result.error is None
+    assert result.message == "Conflicting terminal result"
 
 
 @pytest.mark.asyncio
@@ -3481,7 +3481,7 @@ async def test_sdk_result_prefix_comparison_preserves_trailing_space(
 
 
 @pytest.mark.asyncio
-async def test_sdk_result_supplies_body_for_selected_empty_assistant(
+async def test_sdk_result_replaces_body_for_selected_empty_assistant(
     monkeypatch, tmp_path
 ):
     captured, deltas = {}, []
@@ -3503,9 +3503,9 @@ async def test_sdk_result_supplies_body_for_selected_empty_assistant(
         on_text=deltas.append,
     )
 
-    assert "".join(deltas) == "Earlier. Current answer."
+    assert "".join(deltas).startswith("Earlier. Current")
     assert result.error is None
-    assert result.message == "Earlier. Current answer."
+    assert result.message == "Current answer."
 
 
 def _streaming_sdk(
@@ -3757,14 +3757,15 @@ async def test_sandbox_stream_duplicate_stop_never_replays_terminal_result(
         on_text=deltas.append,
     )
 
-    assert result.error == "claude_agent_sdk_public_projection_failed"
-    assert result.turn_diagnostics["projection_failure_reason"] == "upstream_projection_failed"
+    assert captured["include_partial_messages"] is True
+    assert result.error is None
+    assert result.message == "terminal final"
     assert deltas
     assert "short answer".startswith("".join(deltas))
 
 
 @pytest.mark.asyncio
-async def test_governed_unfinished_stream_fails_closed_without_terminal_replay(
+async def test_sdk_keeps_successful_terminal_body_after_stream_failure(
     monkeypatch, tmp_path
 ):
     captured = {}
@@ -3791,8 +3792,8 @@ async def test_governed_unfinished_stream_fails_closed_without_terminal_replay(
     )
 
     assert captured["include_partial_messages"] is True
-    assert result.error == "claude_agent_sdk_public_projection_failed"
-    assert result.turn_diagnostics["projection_failure_reason"] == "upstream_projection_failed"
+    assert result.error is None
+    assert result.message == "terminal final"
     assert deltas
     assert "safe partial must finish".startswith("".join(deltas))
 
@@ -3824,7 +3825,7 @@ async def test_governed_unfinished_stream_fails_closed_without_terminal_replay(
     ],
     ids=("start-only", "short-unfinished", "malformed-first-event"),
 )
-async def test_stream_failure_before_publication_rejects_terminal_fallback(
+async def test_stream_failure_before_publication_recovers_terminal_body(
     monkeypatch,
     tmp_path,
     events,
@@ -3851,9 +3852,9 @@ async def test_stream_failure_before_publication_rejects_terminal_fallback(
     )
 
     assert captured["include_partial_messages"] is True
-    assert deltas == []
-    assert result.error == "claude_agent_sdk_public_projection_failed"
-    assert result.message == ""
+    assert "".join(deltas) == "terminal fallback"
+    assert result.error is None
+    assert result.message == "terminal fallback"
 
 
 @pytest.mark.asyncio

@@ -202,10 +202,9 @@ class PublicAnswerStreamGate:
             self._fail("upstream_projection_failed")
             return self._discard()
 
-        if self._accepted_text:
-            candidate = self._pending
-        elif self._capability_boundary_seen:
-            candidate = ""
+        if self._capability_boundary_seen:
+            candidate = self._pending if self._accepted_text else ""
+            public_final_text = self._public_answer_text
         else:
             if not isinstance(final_text, str):
                 self._fail("invalid_input")
@@ -215,14 +214,22 @@ class PublicAnswerStreamGate:
                 if safe_final is not None:
                     self._fail("answer_too_large")
                 return self._discard()
-            candidate = safe_final
+            if self._accepted_text and safe_final.startswith(self._public_answer_text):
+                candidate = safe_final[len(self._public_answer_text) :]
+            elif self._accepted_text:
+                candidate = self._pending
+            else:
+                candidate = safe_final
+            public_final_text = safe_final
         emitted = self._project_across_publication_boundary(candidate)
         if emitted is None:
             return self._discard()
         chunks = self._emit(emitted)
         self._pending = ""
         self._finished = True
-        return PublicAnswerFinish(chunks, self._public_answer_text)
+        if self._capability_boundary_seen:
+            public_final_text = self._public_answer_text
+        return PublicAnswerFinish(chunks, public_final_text)
 
     def _add_replacements(self, replacements: Mapping[str, str]) -> None:
         try:
