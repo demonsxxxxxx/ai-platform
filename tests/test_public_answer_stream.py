@@ -151,7 +151,7 @@ def test_sanitizer_owned_secret_split_across_chunks_is_never_published(secret, s
     assert "[redacted-secret]" in public_text
 
 
-def test_progressive_stream_keeps_public_timeline_when_terminal_text_differs():
+def test_progressive_stream_terminal_is_authoritative_when_text_differs():
     gate = _gate()
 
     first = gate.accept("safe prefix mcp__")
@@ -161,19 +161,19 @@ def test_progressive_stream_keeps_public_timeline_when_terminal_text_differs():
     assert first == ("safe prefix ",)
     assert second == ("mcp__not-the-private-token ",)
     assert finished.chunks == ()
-    assert finished.final_text == "safe prefix mcp__not-the-private-token "
+    assert finished.final_text == "different terminal summary"
     assert gate.failed is False
 
 
-def test_progressive_stream_does_not_replay_terminal_result_as_body():
+def test_progressive_stream_appends_terminal_suffix_without_replay():
     gate = _gate()
 
     published = gate.accept("progressive ")
     finished = gate.finish(final_text="progressive answer", release=True)
 
     assert published == ("progressive ",)
-    assert finished.chunks == ()
-    assert finished.final_text == "progressive "
+    assert finished.chunks == ("answer",)
+    assert finished.final_text == "progressive answer"
 
 
 def test_progressive_stream_accepts_terminal_edge_whitespace_normalization():
@@ -185,7 +185,7 @@ def test_progressive_stream_accepts_terminal_edge_whitespace_normalization():
     assert published == ("progressive answer \n",)
     assert gate.failed is False
     assert finished.chunks == ()
-    assert finished.final_text == "progressive answer \n"
+    assert finished.final_text == "progressive answer"
 
 
 def test_progressive_stream_enforces_cumulative_bound_before_publication():
@@ -555,6 +555,17 @@ def test_inflight_text_is_discarded_without_consuming_the_public_bound():
     assert gate.failed is False
     assert "".join((*published, *finished.chunks)) == "safe answer"
     assert finished.final_text == "safe answer"
+
+
+def test_unsafe_terminal_replacement_still_fails_closed():
+    gate = _gate()
+
+    assert gate.accept("safe partial") == ("safe ",)
+    finished = gate.finish(final_text="raw-secret", release=True)
+
+    assert gate.failed is True
+    assert finished.chunks == ()
+    assert finished.final_text == ""
 
 
 def test_unsafe_sanitizer_result_fails_closed_without_raw_text():
