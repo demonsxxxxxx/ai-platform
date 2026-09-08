@@ -807,6 +807,34 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       "false",
     );
     assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
+    const customerServiceTag = categoryGroup
+      .querySelectorAll("button")
+      .find((button) => button.textContent?.includes("客户服务"));
+    assert.ok(customerServiceTag);
+    await React.act(async () => {
+      customerServiceTag.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.equal(
+      currentPath,
+      "/agent-market?q=%E8%B4%A2%E5%8A%A1&tag=%E8%B4%A2%E5%8A%A1&tag=%E5%AE%A2%E6%88%B7%E6%9C%8D%E5%8A%A1",
+    );
+    assert.equal(
+      categoryGroup.querySelectorAll("button").find((button) => button.textContent?.includes("财务"))?.getAttribute(
+        "aria-pressed",
+      ),
+      "true",
+    );
+    assert.equal(customerServiceTag.getAttribute("aria-pressed"), "true");
+    assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
+    await React.act(async () => {
+      customerServiceTag.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.equal(currentPath, "/agent-market?q=%E8%B4%A2%E5%8A%A1&tag=%E8%B4%A2%E5%8A%A1");
+    assert.equal(customerServiceTag.getAttribute("aria-pressed"), "false");
     const listView = container.querySelector('[aria-label="列表视图"]');
     assert.ok(listView);
     await React.act(async () => {

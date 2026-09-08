@@ -185,7 +185,7 @@ test("materializes create and update requests with the exact optimistic revision
       expected_version: "2026.07.28",
     }],
     selectedMcpToolIds: ["mcp:knowledge:search"],
-    marketTag: " 客户服务 ",
+    marketTag: " 客户服务\n人力资源 ",
     allowedDepartmentIds: ["药品注册"],
   };
   assert.deepEqual(buildAgentProfileDraftRequest(created), {
@@ -211,6 +211,7 @@ test("materializes create and update requests with the exact optimistic revision
     avatar_asset_id: null,
     category: "general",
     market_tag: "客户服务",
+    market_tags: ["客户服务", "人力资源"],
     visibility: "tenant",
     allowed_department_ids: ["药品注册"],
     allowed_roles: [],

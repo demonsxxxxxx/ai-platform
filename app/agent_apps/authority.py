@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException
+from pydantic import Field, field_validator, model_validator
 
 from app import repositories
 from app.agent_apps.api import (
@@ -17,6 +18,7 @@ from app.agent_apps.api import (
     AgentProfilePublicProjection,
     AgentProfileSkillReference,
     normalize_agent_skill_reference,
+    normalize_market_tags as normalize_market_tag_values,
     safe_agent_avatar_ref,
     safe_agent_avatar_seed,
 )
@@ -27,8 +29,8 @@ from app.mcp import api as mcp_api
 from app.mcp.api import parse_mcp_tool_reference
 from app.models import (
     AgentConversationIdentity,
-    AgentProfileAdminProjection,
-    AgentProfileDraftRequest,
+    AgentProfileAdminProjection as _LegacyAgentProfileAdminProjection,
+    AgentProfileDraftRequest as _LegacyAgentProfileDraftRequest,
     ChatSessionResponse,
     ChatStreamRequest,
     SelectedAgentProfileRequest,
@@ -65,6 +67,7 @@ _PRESENCE_AWARE_PROFILE_FIELDS = (
     "avatar_seed",
     "category",
     "market_tag",
+    "market_tags",
     "visibility",
     "allowed_department_ids",
     "allowed_roles",
@@ -85,6 +88,30 @@ _PROFILE_TRANSPORT_SELECTOR_PATHS = frozenset(
 _PROFILE_TRANSPORT_AGENT_OPTION_KEYS = frozenset(
     {"enable_thinking", "model", "model_id"}
 )
+
+
+class AgentProfileDraftRequest(_LegacyAgentProfileDraftRequest):
+    """Agent Apps draft contract with structured marketplace tags."""
+
+    market_tags: list[str] = Field(default_factory=list, max_length=16)
+
+    @field_validator("market_tags")
+    @classmethod
+    def normalize_market_tag_list(cls, value: list[str]):
+        return normalize_market_tag_values(value)
+
+    @model_validator(mode="after")
+    def normalize_market_tag_fields(self):
+        if not self.market_tags and self.market_tag:
+            self.market_tags = [self.market_tag]
+        self.market_tag = self.market_tags[0] if self.market_tags else ""
+        return self
+
+
+class AgentProfileAdminProjection(_LegacyAgentProfileAdminProjection):
+    """Agent Apps admin projection with structured marketplace tags."""
+
+    market_tags: list[str] = Field(default_factory=list, max_length=16)
 
 
 @dataclass(frozen=True)
@@ -133,13 +160,32 @@ def _safe_category(value: Any) -> str:
     return candidate if candidate in _CATEGORIES else "general"
 
 
+def _safe_market_tags(value: Any, *, legacy_value: Any = "") -> list[str]:
+    raw_values = value if isinstance(value, list) else ([value] if isinstance(value, str) else [])
+    if not raw_values and isinstance(legacy_value, str):
+        raw_values = [legacy_value]
+    return [
+        candidate
+        for candidate in _safe_string_list(raw_values)
+        if "\x00" not in candidate and len(candidate) <= 80
+    ][:16]
+
+
 def _safe_market_tag(value: Any) -> str:
-    candidate = str(value or "").strip()
-    return candidate if "\x00" not in candidate else ""
+    tags = _safe_market_tags(value)
+    return tags[0] if tags else ""
+
+
+def _market_tags(definition: AgentProfileDraftRequest) -> list[str]:
+    tags = _safe_market_tags(getattr(definition, "market_tags", None))
+    if tags:
+        return tags
+    return _safe_market_tags(getattr(definition, "market_tag", ""))
 
 
 def _market_tag(definition: AgentProfileDraftRequest) -> str:
-    return _safe_market_tag(getattr(definition, "market_tag", ""))
+    tags = _market_tags(definition)
+    return tags[0] if tags else ""
 
 
 def _safe_completed_tasks(value: Any) -> int:
@@ -241,7 +287,13 @@ def profile_public_projection(
         ),
         "avatar_seed": _safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         "category": _safe_category(row.get("category")),
-        "market_tag": _safe_market_tag(row.get("market_tag")),
+        "market_tags": _safe_market_tags(
+            row.get("market_tags"),
+            legacy_value=row.get("market_tag"),
+        ),
+        "market_tag": _safe_market_tag(
+            row.get("market_tags") or row.get("market_tag")
+        ),
         "published_at": row.get("published_at"),
     }
     if "completed_tasks" in row:
@@ -342,8 +394,10 @@ def _revision_hash(
         "avatar_seed": definition.avatar_seed,
         "category": definition.category,
         **(
-            {"market_tag": _market_tag(definition)}
-            if include_market_tag and _market_tag(definition)
+            {
+                "market_tag": tags[0] if len(tags) == 1 else tags,
+            }
+            if include_market_tag and (tags := _market_tags(definition))
             else {}
         ),
         "visibility": definition.visibility,
@@ -791,7 +845,11 @@ def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
         avatar_asset_id=(str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
         avatar_seed=_safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         category=_safe_category(row.get("category")),
-        market_tag=_safe_market_tag(row.get("market_tag")),
+        market_tag=_safe_market_tag(row.get("market_tags")) or _safe_market_tag(row.get("market_tag")),
+        market_tags=_safe_market_tags(
+            row.get("market_tags"),
+            legacy_value=row.get("market_tag"),
+        ),
         visibility=_safe_visibility(row.get("visibility")),
         allowed_department_ids=_safe_string_list(row.get("allowed_department_ids")),
         allowed_roles=_safe_string_list(row.get("allowed_roles")),
@@ -825,8 +883,14 @@ def _merge_omitted_profile_fields(
     updates = {
         field: getattr(prior, field, "")
         for field in _PRESENCE_AWARE_PROFILE_FIELDS
-        if field not in definition.model_fields_set
+        if field not in {"market_tag", "market_tags"}
+        and field not in definition.model_fields_set
     }
+    if (
+        "market_tag" not in definition.model_fields_set
+        and "market_tags" not in definition.model_fields_set
+    ):
+        updates.update(market_tag=prior.market_tag, market_tags=prior.market_tags)
     return definition.model_copy(update=updates) if updates else definition
 
 
@@ -859,7 +923,11 @@ def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
         avatar_asset_id=(str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
         avatar_seed=_safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         category=_safe_category(row.get("category")),
-        market_tag=_safe_market_tag(row.get("market_tag")),
+        market_tag=_safe_market_tag(row.get("market_tags")) or _safe_market_tag(row.get("market_tag")),
+        market_tags=_safe_market_tags(
+            row.get("market_tags"),
+            legacy_value=row.get("market_tag"),
+        ),
         visibility=_safe_visibility(row.get("visibility")),
         allowed_department_ids=_safe_string_list(row.get("allowed_department_ids")),
         allowed_roles=_safe_string_list(row.get("allowed_roles")),
@@ -1095,6 +1163,7 @@ class AgentProfileAuthority:
             avatar_seed=definition.avatar_seed,
             category=definition.category,
             market_tag=_market_tag(definition),
+            market_tags=_market_tags(definition),
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
             allowed_roles=definition.allowed_roles,
@@ -1187,6 +1256,7 @@ class AgentProfileAuthority:
             avatar_seed=definition.avatar_seed or agent_id,
             category=definition.category,
             market_tag=_market_tag(definition),
+            market_tags=_market_tags(definition),
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
             allowed_roles=definition.allowed_roles,
@@ -1307,6 +1377,7 @@ class AgentProfileAuthority:
             avatar_seed=authoring_row["avatar_seed"],
             category=definition.category,
             market_tag=_market_tag(definition),
+            market_tags=_market_tags(definition),
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
             allowed_roles=definition.allowed_roles,

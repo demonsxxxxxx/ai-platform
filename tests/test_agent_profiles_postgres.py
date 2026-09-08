@@ -123,6 +123,7 @@ create table agent_profile_revisions (
   category text not null
     check (category in ('general', 'support', 'writing', 'research', 'operations')),
   market_tag text not null default '',
+  market_tags jsonb not null default '[]'::jsonb,
   visibility text not null,
   allowed_department_ids jsonb not null,
   allowed_roles jsonb not null,
@@ -180,6 +181,7 @@ alter table agent_profile_revisions drop column if exists revision_status;
 alter table agent_profile_revisions drop column if exists avatar_style_ref;
 alter table agent_profile_revisions drop column if exists avatar_ref;
 alter table agent_profile_revisions drop column if exists category;
+alter table agent_profile_revisions drop column if exists market_tags;
 alter table agent_profile_revisions drop column if exists visibility;
 alter table agent_profile_revisions drop column if exists allowed_department_ids;
 alter table agent_profile_revisions drop column if exists allowed_roles;

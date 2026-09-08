@@ -3,8 +3,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request as HttpRequest
 from app import repositories
-from app.agent_apps import AgentProfileAuthority
-from app.agent_apps.api import normalize_market_tag
+from app.agent_apps.authority import AgentProfileAuthority, AgentProfileDraftRequest
+from app.agent_apps.api import normalize_market_tag, normalize_market_tags
 from app.agent_profiles import (
     list_admin_profiles,
     publish_draft,
@@ -15,8 +15,6 @@ from app.db import transaction
 from app.department_directory import validate_profile_department_authorities
 from app.models import (
     AgentAppRunRequest,
-    AgentProfileDraftRequest,
-    AgentProfilePublicProjection,
     AgentProfilePublishRequest,
     AgentProfileTrialRunRequest,
     AgentProfileTrialRunResponse,
@@ -74,9 +72,11 @@ def _normalize_catalog_query(query: str | None) -> str | None:
 
 def _parse_draft_payload(payload: dict[str, Any]) -> AgentProfileDraftRequest:
     definition_payload = dict(payload)
-    if "market_tag" in definition_payload:
-        definition_payload["market_tag"] = normalize_market_tag(definition_payload["market_tag"])
     try:
+        if "market_tags" in definition_payload:
+            definition_payload["market_tags"] = normalize_market_tags(definition_payload["market_tags"])
+        if "market_tag" in definition_payload:
+            definition_payload["market_tag"] = normalize_market_tag(definition_payload["market_tag"])
         return AgentProfileDraftRequest.model_validate(definition_payload)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -153,14 +153,7 @@ async def list_agent_profiles(
                 query=normalized_query,
                 category=category,
             )
-    return {
-        "agent_profiles": [
-            profile.model_dump(mode="json")
-            if isinstance(profile, AgentProfilePublicProjection)
-            else profile
-            for profile in profiles
-        ]
-    }
+    return {"agent_profiles": list(profiles)}
 
 
 @router.get("/agent-profiles/{agent_id}")

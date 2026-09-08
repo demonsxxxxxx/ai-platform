@@ -54,9 +54,23 @@ class AgentProfilePublicProjection(TypedDict):
     avatar_seed: str
     category: Literal["general", "support", "writing", "research", "operations"]
     market_tag: str
+    market_tags: list[str]
     published_at: Any | None
     completed_tasks: NotRequired[int]
     is_favorite: NotRequired[bool]
+
+
+def normalize_market_tags(value: object) -> list[str]:
+    if isinstance(value, str):
+        normalized = value.strip()
+        return (
+            []
+            if not normalized
+            else normalize_agent_profile_display_items([normalized], "market_tag", item_limit=80)
+        )
+    if not isinstance(value, list):
+        raise ValueError("market_tags_invalid")
+    return normalize_agent_profile_display_items(value, "market_tags", item_limit=80)
 
 
 def normalize_market_tag(value: object) -> str:
@@ -97,6 +111,7 @@ __all__ = [
     "normalize_agent_skill_reference",
     "normalize_agent_skill_set",
     "normalize_market_tag",
+    "normalize_market_tags",
     "pin_agent_skill_set",
     "safe_agent_avatar_ref",
     "safe_agent_avatar_seed",

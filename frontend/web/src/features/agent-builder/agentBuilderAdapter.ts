@@ -20,6 +20,20 @@ export interface AgentBuilderCurrentCatalog {
   effectivePermissionsKnown: boolean;
 }
 
+function parseMarketTags(value: string): string[] {
+  return [...new Set(value.split(/[,，\n]/).map((tag) => tag.trim()).filter(Boolean))];
+}
+
+function serializeMarketTags(tags: readonly string[]): string {
+  return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].join("\n");
+}
+
+function profileMarketTags(profile: AgentProfileAdminProjection): string[] {
+  const tags = profile.market_tags?.map((tag) => tag.trim()).filter(Boolean) ?? [];
+  if (tags.length > 0) return [...new Set(tags)];
+  return profile.market_tag?.trim() ? [profile.market_tag.trim()] : [];
+}
+
 export interface AgentBuilderEditor {
   agentId: string | null;
   revision: number | null;
@@ -185,7 +199,7 @@ export function hydrateAgentProfileEditor(
     avatarSeed: profile.avatar_seed?.trim() || profile.agent_id,
     avatarAssetId: profile.avatar_asset_id,
     category: profile.category,
-    marketTag: profile.market_tag ?? "",
+    marketTag: serializeMarketTags(profileMarketTags(profile)),
     visibility: profile.visibility,
     allowedDepartmentIds: [...profile.allowed_department_ids],
     allowedRoles: [...profile.allowed_roles],
@@ -229,7 +243,8 @@ function editorDefinition(editor: AgentBuilderEditor) {
     avatar_seed: editor.avatarSeed.trim(),
     avatar_asset_id: editor.avatarAssetId,
     category: editor.category,
-    market_tag: editor.marketTag.trim(),
+    market_tag: parseMarketTags(editor.marketTag)[0] ?? "",
+    market_tags: parseMarketTags(editor.marketTag),
     visibility: editor.visibility,
     allowed_department_ids: editor.allowedDepartmentIds,
     allowed_roles: editor.allowedRoles,
@@ -259,7 +274,8 @@ function profileDefinition(profile: AgentProfileAdminProjection) {
     avatar_seed: profile.avatar_seed?.trim() || profile.agent_id,
     avatar_asset_id: profile.avatar_asset_id,
     category: profile.category,
-    market_tag: profile.market_tag ?? "",
+    market_tag: profileMarketTags(profile)[0] ?? "",
+    market_tags: profileMarketTags(profile),
     visibility: profile.visibility,
     allowed_department_ids: profile.allowed_department_ids,
     allowed_roles: profile.allowed_roles,
@@ -398,7 +414,8 @@ export function buildAgentProfileDraftRequest(
     avatar_seed: editor.avatarSeed.trim() || editor.name.trim(),
     avatar_asset_id: editor.avatarAssetId,
     category: editor.category,
-    market_tag: editor.marketTag.trim(),
+    market_tag: parseMarketTags(editor.marketTag)[0] ?? "",
+    market_tags: parseMarketTags(editor.marketTag),
     visibility: editor.visibility,
     allowed_department_ids: [...editor.allowedDepartmentIds],
     allowed_roles: [...editor.allowedRoles],

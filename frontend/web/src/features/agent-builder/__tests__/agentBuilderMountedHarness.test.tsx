@@ -593,7 +593,7 @@ test("market tag combobox shows existing tags, filters them, and accepts custom 
     const options = () => container.querySelector('[role="listbox"]')?.querySelectorAll('[role="option"]') ?? [];
     assert.deepEqual(
       options().map((option) => option.textContent),
-      ["客户支持", "人力资源"],
+      ["人力资源"],
     );
 
     await React.act(async () => {
@@ -617,7 +617,8 @@ test("market tag combobox shows existing tags, filters them, and accepts custom 
       } as never);
       await Promise.resolve();
     });
-    assert.equal(marketTag.value, "人力资源");
+    assert.equal(marketTag.value, "");
+    assert.ok(container.querySelector('[aria-label="移除标签 人力资源"]'));
 
     await React.act(async () => {
       marketTag.value = "自定义能力";
@@ -625,7 +626,16 @@ test("market tag combobox shows existing tags, filters them, and accepts custom 
       await Promise.resolve();
     });
     assert.equal(marketTag.value, "自定义能力");
-    assert.match(container.querySelector('[role="listbox"]')?.textContent ?? "", /可直接使用当前输入/);
+    assert.match(container.querySelector('[role="listbox"]')?.textContent ?? "", /按回车添加/);
+    await React.act(async () => {
+      reactProps(marketTag).onKeyDown?.({
+        key: "Enter",
+        preventDefault() {},
+      } as never);
+      await Promise.resolve();
+    });
+    assert.equal(marketTag.value, "");
+    assert.ok(container.querySelector('[aria-label="移除标签 自定义能力"]'));
   } finally {
     Object.assign(agentProfileApi, originals);
     await React.act(async () => root.unmount());
