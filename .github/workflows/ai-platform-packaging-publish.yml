@@ -496,6 +496,23 @@ jobs:
             --expected-role backend \
             --expected-role frontend
 
+      - name: Assemble runtime-only Compose deployment packages
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from tools.release_compose_package import pin_data_images
+          Path("data-images.json").write_text(json.dumps(pin_data_images()), encoding="utf-8")
+          PY
+          for profile in internal-test production; do
+            python tools/release_compose_package.py \
+              --manifest release-image-manifest.json \
+              --data-images data-images.json \
+              --profile "$profile" \
+              --output "ai-platform-$profile.tar.gz"
+          done
+
       - name: Upload ready release image evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -528,6 +545,8 @@ jobs:
           test "$current_main" = "$GITHUB_SHA"
           "$GH_CLI_BIN" release create "$RELEASE_TAG" \
             "$ASSET_PATH#$ASSET_LABEL" \
+            "ai-platform-internal-test.tar.gz" \
+            "ai-platform-production.tar.gz" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "Deployment ${GITHUB_SHA::12}" \

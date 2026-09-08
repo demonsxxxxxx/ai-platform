@@ -19,105 +19,29 @@ docker compose -f deploy/ai-platform/docker-compose.yml --env-file deploy/ai-pla
 
 ## Deployment quick start
 
-Both managed environments use the same repository-owned entry point. The
-required profile selects the environment-specific safety controller, while
-physical host assignment remains in the deployment inventory.
+Download the desired immutable Deployment Release's
+`ai-platform-internal-test.tar.gz` or `ai-platform-production.tar.gz` and extract
+it into a new directory. The package fixes the application version and image
+digests; no Git checkout, Actions query or host build is needed.
 
-### Internal test
-
-After the one-time host configuration is in place, deploy the newest qualified
-immutable Deployment Release with one command:
-
-```bash
-./scripts/deploy-latest.sh --profile internal-test --latest
-```
-
-The command anonymously resolves the repository's latest immutable
-`deployment-<commit>-<run>-<attempt>` Release, verifies its GitHub SHA-256 and
-strict image manifest, materializes the exact qualified commit, pulls the exact
-Backend and Frontend GHCR digests, starts the existing Compose project, and runs
-API, container, and OpenSandbox health checks. Startup or health failure makes
-one image rollback attempt while preserving the existing data volumes.
-
-Repository source, Release metadata, and the small manifest asset are public.
-The quickstart removes inherited `GH_TOKEN` and `GITHUB_TOKEN`, sends no
-Authorization header, and does not replay Actions, SBOM, Trivy, signature, or
-provenance checks on the host. Packaging retains that complete evidence as its
-30-day Actions artifact and publishes only after GitHub immutable releases are
-enabled. The Docker host must already be logged in to `ghcr.io`. Existing
-deployments reuse
-the managed `.env` path from `incoming/latest-main.json`; the first deployment
-supplies it once:
+After the one-time Docker/Compose and OpenSandbox host preparation, configure
+an owner-held `0600` environment file (reuse the existing file when upgrading):
 
 ```bash
-./scripts/deploy-latest.sh --profile internal-test --latest \
-  --env-file /data/ai-platform-internal-test/config/stable/.env
+python3 deploy.py --env-file /absolute/path/to/.env
 ```
 
-The env file must be an owner-matching `0600` regular file under the managed
-`config` directory. The quickstart reads only its path and metadata. See
-`docs/operations/release-operations-runbook.md` for host preparation, failure
-semantics, and runtime acceptance boundaries.
+The entry pulls and verifies images, fences application admission, checks for
+active work, preserves persistent services, runs migration/init, and verifies
+the new runtime. With already-loaded digest-verified images, add `--offline`.
+Database migrations are not automatically reversed and there is no speculative
+image rollback after a migration has begun.
 
-### Production rebuild or update
-
-The production profile uses the governed OpenSandbox overlay. On a rebuilt host
-with Python 3.11+, Docker Compose v2, systemd, and Docker `runsc`, first restore
-these files from the approved secret store:
-
-- `/data/ai-platform-prod/config/production/.env` — `root:root 0600`
-- `/etc/ai-platform/opensandbox/server.env` — `root:root 0600`
-- `/etc/ai-platform/opensandbox/server.toml` —
-  `root:<OPENSANDBOX_SERVER_GID> 0640`
-
-The initial OpenSandbox file shapes are documented in
-`deploy/opensandbox/server-production.env.example` and
-`deploy/opensandbox/server-production.toml.example`; real values never belong
-in Git.
-
-The application env must use the same lifecycle URL and API key as those host
-files. Its OpenSandbox executor is the release-authority backend workload image,
-not the host service's `runtime.execd_image`. Pin the OpenSandbox server, execd,
-and egress sidecar by digest; the server digest must have been verified against
-an approved `server/v0.1.13` or newer release. The production TOML binds the
-trusted Server container to the private lifecycle address, selects the fixed
-internal sandbox network, denies host bind mounts, and retains `dns+nft` only as
-the pinned upstream egress-sidecar configuration; application requests omit the
-incompatible SDK `networkPolicy`.
-
-Docker with Compose v2, systemd, the Docker `runsc` runtime, and the exact
-active `ai-platform-opensandbox-network-guard.service` from the target checkout
-must already be installed. The root Docker account must be logged in to GHCR;
-GitHub source and immutable Deployment Release metadata are read anonymously.
-
-Then rebuild the OpenSandbox host service and production application from the
-newest qualified Deployment Release:
-
-```bash
-sudo -n ./scripts/deploy-latest.sh --profile production --latest \
-  --env-file /data/ai-platform-prod/config/production/.env
-```
-
-Later production updates reuse the approved environment path:
-
-```bash
-sudo -n ./scripts/deploy-latest.sh --profile production --latest
-```
-
-Routine application updates require the admitted OpenSandbox host configuration
-to remain unchanged. A Server/API-key/execd/egress or host-network change is a
-separate planned host maintenance operation, not an implicit image-update side
-effect.
-
-The command refuses partial or legacy production contours, requires quiescence
-before updating an existing direct-OpenSandbox runtime, and restores the
-previous verified images if target startup or parity fails. A successful command
-proves deployment smoke and exact runtime parity; the real application-owned
-OpenSandbox create/execute/file/cleanup acceptance remains a separate production
-gate. The OpenSandbox server is a trusted host control-plane component with
-effective Docker daemon authority through its socket; see
-`docs/operations/production-bootstrap.md` and the release runbook for that
-boundary and the host prerequisites.
+See the [deployment package guide](deploy/ai-platform/README.md) for first-use
+configuration, upgrade, offline images and failure handling. Production host
+provisioning and changes to OpenSandbox credentials/network policy remain
+separate controlled maintenance operations; see
+[production host preparation](docs/operations/production-bootstrap.md).
 
 ## Health check
 

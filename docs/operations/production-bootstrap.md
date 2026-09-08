@@ -1,196 +1,81 @@
-# Production bootstrap change contract
+# Production host preparation
 
-## Goal
+The application package is the normal production upgrade path. This document
+covers only the one-time host preparation and controlled maintenance of the
+independently managed OpenSandbox service. It does not ask an operator to keep
+a source checkout or rebuild application images.
 
-Provide one repository-owned command for rebuilding the production runtime
-after the operator has restored the approved host secrets and configuration:
+## Host prerequisites
 
-```bash
-sudo -n ./scripts/deploy-latest.sh --profile production --latest \
-  --env-file /data/ai-platform-prod/config/production/.env
+Use a Linux host with Python 3, Docker Compose v2, systemd, and a registered
+`runsc` runtime. Provision the production OpenSandbox server through the reviewed
+files in `deploy/opensandbox/`:
+
+- `/etc/ai-platform/opensandbox/server.env` as `root:root` mode `0600`;
+- `/etc/ai-platform/opensandbox/server.toml` as `root:<OPENSANDBOX_SERVER_GID>`
+  mode `0640`; and
+- `/data/ai-platform-prod/config/production/.env` as `root:root` mode `0600`.
+
+The TOML group is the dedicated server GID and is the only intentional
+non-root-readable secret configuration. Ownership contract: `root:<OPENSANDBOX_SERVER_GID> 0640`.
+Do not put real values in Git, issue text, package archives, or command output.
+
+The host policy must use the private lifecycle address, the reviewed digest-bound
+OpenSandbox server, the dedicated non-root identity, the Docker socket group,
+the `ai-platform-opensandbox-egress-internal-v1` network, `runsc`, digest-bound
+execd and egress images, `dns+nft`, disabled IPv6 egress, no host bind mounts,
+and no global sandbox binds or environment injection. The lifecycle API key is
+restricted to the reviewed plain URL-safe length. The network guard must be
+installed, enabled, and active before the server unit starts.
+
+Maintainer host preparation retains `production_bootstrap.HostBootstrap` for
+secure configuration validation, unit rendering and host-service recovery, and
+`opensandbox_unit_guard.py` for the unit's guarded container removal. These are
+not application upgrade entry points. The former production release CLI and
+its automatic application deployment have been removed; direct invocation
+fails before host changes.
+
+The OpenSandbox server is a trusted host control-plane component. A read-only
+Docker socket mount still grants effective Docker daemon authority, so accept
+only the reviewed root-owned unit and exact runtime contour. The guard and the
+unit must reject a foreign same-name server container. Host provisioning and
+changes to credentials, addresses, images, or policy are separate maintenance
+operations.
+
+## Verify the host
+
+Use privileged operations to verify, without printing configuration values:
+
+```sh
+systemctl is-active --quiet ai-platform-opensandbox-network-guard.service
+systemctl is-active --quiet opensandbox.service
 ```
 
-The command converges the independently managed OpenSandbox host service,
-resolves the newest qualified immutable Deployment Release, admits its strict
-manifest and digest-bound images, and deploys the production base Compose file
-plus `docker-compose.opensandbox.yml`.
+The application package also checks that `opensandbox.service` is active before
+it changes application services. A configured lifecycle listener is private;
+the local example uses port `18001` by default. The application CORS value must
+be the browser-visible frontend origin.
 
-The internal-test profile and the existing one-time legacy-to-direct OpenSandbox
-transition retain their current meanings.
+## Install or upgrade the application
 
-## Owner and bounded change surface
+Download the matching immutable production package from one Deployment Release,
+extract it, and reuse the owner-held application environment file. From the
+package directory run:
 
-The production bootstrap controller owns only host admission, OpenSandbox host
-service convergence, exact-image production Compose convergence, and bounded
-rollback to an already verified direct-OpenSandbox production runtime.
+```sh
+python3 deploy.py \
+  --env-file /data/ai-platform-prod/config/production/.env \
+  --docker-cmd 'sudo -n docker'
+```
 
-- `scripts/deploy-latest.sh`
-- `tools/production_bootstrap.py`
-- `tools/opensandbox_unit_guard.py`
-- `tests/test_deploy_latest_entry.py`
-- `tests/test_production_bootstrap.py`
-- `deploy/opensandbox/opensandbox-production.service`
-- `deploy/opensandbox/ai-platform-opensandbox-network-guard.service`
-- `deploy/opensandbox/server-production.env.example`
-- `deploy/opensandbox/server-production.toml.example`
-- `.github/workflows/ai-platform-backend.yml`
-- `tests/test_backend_ci_workflow.py`
-- `README.md`
-- `docs/operations/release-operations-runbook.md`
-- `docs/operations/latest-main-image-quickstart.md`
-- this contract
+The package validates immutable application and data image identities, active
+work protection, deployment mutual exclusion, migration, workspace
+initialization, API/Worker/OpenSandbox health, and persistent-service identity.
+It does not delete volumes or silently roll back an advanced schema. Independent
+post-deployment acceptance must confirm the target image/commit, API readiness,
+OpenSandbox checks, two advancing Worker heartbeat samples, `migrate` and
+`workspace-init` exit 0, unchanged PostgreSQL/Redis/MinIO identity and restart
+counts, no active work, and controller termination.
 
-The controller reuses `tools/latest_main_quickstart.py` for anonymous immutable
-Deployment Release admission, `tools/release_authority.py` for immutable image
-and Compose authority, and the existing legacy transition controller for runtime
-parity and quiescence checks. It does not create another release,
-sandbox-lifecycle, model-credential, or callback authority.
-
-## Host and secret invariants
-
-The command runs only as root on a POSIX system. The operator must restore these
-regular, non-symlink files before invoking it:
-
-- `/data/ai-platform-prod/config/production/.env`: `root:root 0600`
-- `/etc/ai-platform/opensandbox/server.env`: `root:root 0600`
-- `/etc/ai-platform/opensandbox/server.toml`:
-  `root:<OPENSANDBOX_SERVER_GID> 0640`
-
-The TOML's group must equal the dedicated server GID declared in `server.env`.
-That single group-read bit is required because the unit runs the server as the
-dedicated non-root identity; no other secret file is group-readable.
-
-The controller never prints or copies their contents and never generates a
-production API key, model credential, callback key, or proxy token. It may parse
-only the bounded fields required to prove host identity and OpenSandbox safety.
-Python 3.11 or newer, Docker with Compose v2, systemd, and a registered `runsc`
-runtime are base-host prerequisites; absence fails before application Compose
-mutation.
-
-The OpenSandbox environment must bind one private lifecycle address, use a
-digest-bound server image, identify a dedicated non-root UID/GID, and match the
-Docker socket group. The server digest must be verified out of band against an
-approved `server/v0.1.13` or newer release; upstream OCI labels do not prove that
-source version. The trusted Server container uses host networking but binds its
-HTTP listener only to that lifecycle address. The TOML must set
-`docker.network_mode` to `ai-platform-opensandbox-egress-internal-v1`, set
-`docker.host_ip` to the same lifecycle address, select gVisor `runsc`, pin both
-execd and the egress sidecar by digest, use `dns+nft`, disable IPv6 egress, deny
-all host bind mounts, and contain no global sandbox binds or environment
-injection. The lifecycle API key is restricted to 32-256 plain URL-safe ASCII
-characters so both TOML and Compose parse the same secret.
-
-Before the controller runs, the target checkout's exact root-owned
-`ai-platform-opensandbox-network-guard.service` must be installed, enabled, and
-active. Its first INPUT jump on `br-osb-egress` accepts only established return
-traffic and drops sandbox-initiated host traffic; stopping the service does not
-remove that fail-closed rule. The production OpenSandbox unit requires the
-guard. The controller authenticates its bytes and live rules before host service
-mutation, creates only the canonical server-state and platform-workspace
-directories, installs the exact checkout's reviewed unit as
-`opensandbox.service`, pulls all three immutable host images, and validates the
-running service without exposing configuration values.
-
-The installed unit records a SHA-256 fingerprint of the complete parsed host
-environment and TOML contract. An update of an existing application runtime must
-match that fingerprint exactly. Server image, API key, execd/egress image,
-UID/GID, address, or policy changes require a separately reviewed
-host-maintenance contract; they cannot silently enter the one-command application
-rollback path.
-
-Before host mutation, the controller also proves the application env uses the
-same plain, unquoted lifecycle URL and lifecycle API key as the host files. The
-private lifecycle address must be assigned to the production host. The
-application executor remains the admitted backend workload image; it is
-separate from the host TOML's digest-bound OpenSandbox `runtime.execd_image`.
-This prevents a syntactically valid Compose deployment from starting against a
-different OpenSandbox trust boundary without conflating the two image roles.
-
-The OpenSandbox server is a trusted host control-plane component. Its Docker
-socket bind is read-only at the filesystem layer, but Docker API access still
-grants effective Docker daemon authority; the unit hardening is defense in depth,
-not a host-isolation boundary. Production therefore admits only the root-owned,
-repository-managed unit and exact runtime contour, and still requires the real
-runsc and sandbox-lifecycle acceptance described below. The trusted server
-container itself uses Docker's host control-plane runtime; `runsc` is required
-for the executor/sandbox containers it creates and is proved on those containers.
-Before start and stop, the unit's isolated guard inspects the fixed container name
-and removes it only when the immutable image reference and all repository
-ownership labels match. A foreign same-name container blocks the service
-operation.
-
-## Release and runtime invariants
-
-- The candidate is the latest published, non-prerelease, immutable Deployment
-  Release. Its exact tag, target commit, GitHub Actions bot ownership, asset
-  label, GitHub digest, and strict manifest must agree on the Packaging run,
-  attempt, Backend image, and Frontend image.
-- Backend and frontend are admitted only as role-bound GHCR digest references
-  whose release labels and local image identities pass release-authority checks.
-- The target checkout is owner-managed, clean, exact-SHA, and materialized under
-  `/data/ai-platform-prod/releases/<commit>`.
-- Production uses Compose project `ai-platform-internal`, the base Compose file,
-  and `docker-compose.opensandbox.yml`, with
-  `SANDBOX_WORKSPACE_ROOT=/data/ai-platform-prod/runtime-workspaces`.
-- A cold bootstrap requires zero containers in that Compose project. A partial,
-  legacy, foreign, or ambiguous project blocks before mutation.
-- An update of an existing direct-OpenSandbox production runtime requires exact
-  current parity, zero nonterminal Runs/RunAttempts/leases and zero managed
-  sandbox containers, schema equality sufficient for image rollback, and an
-  already installed bootstrap-managed OpenSandbox unit with the same admitted
-  host-configuration fingerprint. The command does not adopt a foreign or
-  manually managed host service, or change OpenSandbox host configuration, during
-  an application update.
-- One owner-managed lock covers candidate discovery, host convergence, image
-  preparation, Compose mutation, health/parity checks, and rollback.
-- Inherited GitHub credentials are removed before anonymous admission and before
-  Docker, systemd, Compose, and health commands execute.
-
-## Failure, rollback, and stop conditions
-
-Failure before Compose mutation leaves the application runtime unchanged. For
-an existing verified direct-OpenSandbox runtime, target deployment or parity
-failure stops every available target admission container, proves quiescence
-again, and then performs one bounded restore from the exact previous checkout
-and the Backend and Frontend image IDs captured before preparation. Commit
-equality alone is not convergence: a qualified rerun of the same commit with
-new immutable digests deploys those images, and a failed attempt restores the
-captured IDs before restarting the previous runtime. If that rollback fence
-cannot be proved, the
-controller leaves admission stopped and does not start the previous image set.
-A cold bootstrap has no previous application runtime to restore. A failed first
-start fences admission and removes only the newly created Compose containers and
-networks with `down --remove-orphans`; named data volumes remain in place so the
-same approved subject can be retried. If that cleanup cannot be proved, the
-command fails closed for operator inspection. Database migrations are never
-reversed.
-
-The installed OpenSandbox unit has its own reviewed-template provenance. If an
-update changed that template, rollback restores and revalidates the previous
-unit before starting the previous application images. Container validation
-always requires the exact source label embedded in the installed unit, the
-digest-selected image ID and entrypoint, and the expected host configuration.
-
-The command stops without mutation for missing base-host prerequisites, unsafe
-configuration metadata, placeholder or inconsistent OpenSandbox configuration,
-untrusted unit ownership, active work, schema drift, incomplete runtime
-membership, invalid or mutable Deployment Release metadata, manifest or digest
-mismatch, mutable/mismatched images, or failed Compose semantic preflight. Scope expansion into OS package installation,
-secret-manager integration, DNS/TLS provisioning, or automated product-level
-acceptance requires a revised contract.
-
-## Falsifiable acceptance and evidence ceiling
-
-Focused tests must prove configuration validation, placeholder rejection,
-private lifecycle binding, runsc admission, host-network Server identity, exact
-host-input guard admission, unit convergence, token isolation, cold-runtime
-membership gating, exact-production Compose selection, existing-runtime
-quiescence, deployment ordering, and one-attempt rollback. Shell syntax, Python
-compilation, formatting, and the focused CI shard must pass.
-
-Local source tests and mocked command sequencing prove only the controller
-contract. A real production run must separately record the exact source and image
-digests, OpenSandbox service/container identity, production Compose parity,
-API readiness, one application-owned create/execute/file-collect/delete cycle,
-`HostConfig.Runtime=runsc`, network denial/egress reachability, callback/model
-proxy behavior, and orphan-free cleanup before production acceptance is claimed.
+Use the package's `--check` before a maintenance window. Do not run the retired
+source-checkout release controller or reconstruct a latest Release on the host.
