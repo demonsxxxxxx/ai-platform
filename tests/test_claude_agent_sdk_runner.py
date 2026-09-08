@@ -2389,7 +2389,7 @@ async def test_sdk_reconciles_complete_assistant_suffix_once(
     )
 
     assert published_before_hook
-    assert "Before ".startswith("".join(published_before_hook))
+    assert "".join(published_before_hook) == "Before \u2588"
     assert len(published_before_terminal) > len(published_before_hook)
     assert "".join(deltas) == "Before \u2588. After \u2588."
     assert "".join(deltas).count("\u2588.") == 2
