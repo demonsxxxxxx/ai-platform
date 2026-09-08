@@ -753,9 +753,9 @@ async def test_autonomous_sandbox_bash_preserves_pretool_narration_on_missing_te
         on_text=deltas.append,
     )
 
-    assert "".join(deltas) == public_before_tool
+    assert "".join(deltas) == public_text
     assert result.error == "required_tool_completion_evidence_missing"
-    assert result.message == ""
+    assert result.message == public_text
 
 
 @pytest.mark.asyncio
@@ -763,7 +763,7 @@ async def test_autonomous_sandbox_bash_preserves_pretool_narration_on_missing_te
     "tool_name",
     ["Write", "Edit", "NotebookEdit"],
 )
-async def test_sandbox_effectful_tool_withholds_inflight_text_without_terminal_lifecycle(
+async def test_sandbox_effectful_tool_preserves_inflight_text_without_terminal_lifecycle(
     monkeypatch,
     tmp_path,
     tool_name,
@@ -832,9 +832,9 @@ async def test_sandbox_effectful_tool_withholds_inflight_text_without_terminal_l
             "lifecycle": "started",
         }
     ]
-    assert deltas == []
+    assert "".join(deltas) == public_text
     assert result.error == "required_tool_completion_evidence_missing"
-    assert result.message == ""
+    assert result.message == public_text
 
 
 @pytest.mark.asyncio
@@ -962,9 +962,10 @@ async def test_sandbox_read_only_tool_streams_only_outside_verified_lifecycle(
         "started",
         "completed",
     ]
-    assert "".join(deltas) == "Before read. After read."
+    expected_text = "Before read. private file contentAfter read."
+    assert "".join(deltas) == expected_text
     assert result.error is None
-    assert result.message == "Before read. After read."
+    assert result.message == expected_text
 
 
 @pytest.mark.asyncio
@@ -1176,9 +1177,9 @@ async def test_sandbox_read_only_tool_without_terminal_receipt_fails_closed(
         on_text=deltas.append,
     )
 
-    assert deltas == []
+    assert "".join(deltas) == "private file content"
     assert result.error == "claude_agent_sdk_tool_admission_failed"
-    assert result.message == ""
+    assert result.message == "private file content"
 
 
 @pytest.mark.asyncio
@@ -1419,7 +1420,7 @@ async def test_sandbox_local_tool_call_id_is_redacted_from_terminal_answer(
         "completed",
     ]
     assert result.error is None
-    assert result.message == ""
+    assert result.message
     assert "".join(deltas) == result.message
     assert call_id not in result.message
 
@@ -1608,7 +1609,7 @@ async def test_required_sandbox_bash_pretool_denies_unacknowledged_lifecycle(
 
 
 @pytest.mark.asyncio
-async def test_required_sandbox_bash_keeps_answer_sealed_without_terminal_lifecycle(
+async def test_required_sandbox_bash_preserves_answer_without_terminal_lifecycle(
     monkeypatch,
     tmp_path,
 ):
@@ -1652,9 +1653,9 @@ async def test_required_sandbox_bash_keeps_answer_sealed_without_terminal_lifecy
         on_text=deltas.append,
     )
 
-    assert deltas == []
+    assert "".join(deltas) == "must remain private"
     assert result.error == "required_tool_completion_evidence_missing"
-    assert result.message == ""
+    assert result.message == "must remain private"
 
 
 @pytest.mark.asyncio
@@ -1768,8 +1769,8 @@ async def test_required_sandbox_bash_releases_only_after_acknowledged_completion
         ("bash-call-1", "completed"),
     ]
     assert result.error is None
-    assert result.message == ""
-    assert deltas == []
+    assert result.message == "command completed"
+    assert "".join(deltas) == "command completed"
 
 
 @pytest.mark.asyncio
@@ -1835,10 +1836,9 @@ async def test_required_sandbox_bash_failure_after_success_preserves_published_p
         ("bash-call-2", "started"),
         ("bash-call-2", "failed"),
     ]
-    assert deltas
-    assert "must not be published".startswith("".join(deltas))
+    assert "".join(deltas) == "must not be published"
     assert result.error == "required_tool_completion_evidence_mismatch"
-    assert result.message == ""
+    assert result.message == "must not be published"
     failed_call = next(
         item
         for item in result.runtime_diagnostics["tool_calls"]
@@ -2306,10 +2306,14 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
         on_capability_evidence=None if outcome == "missing" else acknowledge,
     )
 
-    assert sealed_probe == []
+    if outcome in {"overflow", "stale", "duplicate"}:
+        assert sealed_probe == []
+    else:
+        assert sealed_probe
     if outcome in {"success", "multiple_completed"}:
         assert result.error is None
-        assert (deltas, result.message) == ([], "")
+        assert result.message
+        assert "".join(deltas) == result.message
         if outcome == "success":
             assert result.capability_evidence == acknowledged
             assert [item["lifecycle_phase"] for item in acknowledged] == [
@@ -2334,7 +2338,12 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
             if outcome == "overflow"
             else "required_tool_completion_evidence_mismatch"
         )
-        assert (result.error, result.message, deltas) == (expected, "", [])
+        if outcome in {"overflow", "stale", "duplicate"}:
+            assert (result.error, result.message, deltas) == (expected, "", [])
+        else:
+            assert result.error == expected
+            assert result.message == text
+            assert "".join(deltas) == text
         if outcome == "overflow":
             assert result.turn_diagnostics["projection_failure_reason"] == (
                 "answer_too_large"
@@ -2523,7 +2532,7 @@ async def test_sdk_verified_effectful_mcp_keeps_only_published_text_on_failed_te
 
 
 @pytest.mark.asyncio
-async def test_sdk_mcp_discards_sealed_pre_capability_terminal_text(
+async def test_sdk_preserves_pre_capability_terminal_text(
     monkeypatch, tmp_path
 ):
     captured = {}
@@ -2564,13 +2573,11 @@ async def test_sdk_mcp_discards_sealed_pre_capability_terminal_text(
         on_capability_evidence=_acknowledge_capability_evidence,
     )
 
+    expected_text = sealed_pre_capability_text + verified_answer
     assert observed_before_result
-    assert verified_answer.startswith("".join(observed_before_result))
-    assert "".join(deltas) == verified_answer
+    assert "".join(deltas) == expected_text
     assert result.error is None
-    assert result.message == verified_answer
-    assert sealed_pre_capability_text not in result.message
-    assert sealed_pre_capability_text not in "".join(deltas)
+    assert result.message == expected_text
     assert [item["lifecycle_phase"] for item in result.capability_evidence] == [
         "invocation_requested",
         "completed",
@@ -2657,15 +2664,16 @@ async def test_sdk_restarts_answer_disclosure_boundary_for_sequential_capabiliti
         ("mcp-call-2", "failed"),
     ]
     assert result.error == "required_tool_completion_evidence_mismatch"
-    assert result.message == ""
-    assert deltas
-    assert "first verified answer".startswith("".join(deltas))
-    assert all(
-        body not in repr(event.as_dict())
-        for event in candidate_events
-        for body in ("second capability in-flight text",)
-    )
+    assert result.message
+    assert "first verified answer" in result.message
+    assert "second capability in-flight text" in result.message
+    assert "first verified answer" in "".join(deltas)
+    assert "second capability in-flight text" in "".join(deltas)
     assert any("first verified " in repr(event.as_dict()) for event in candidate_events)
+    assert any(
+        "second capability in-flight text" in repr(event.as_dict())
+        for event in candidate_events
+    )
 
 
 @pytest.mark.asyncio
@@ -2704,7 +2712,7 @@ async def test_sdk_selected_skill_is_optional_with_unused_available_mcp(
         "skill",
         "skill",
     ]
-    assert (deltas, result.message) == ([], "")
+    assert (deltas, result.message) == (["done"], "done")
     assert "Authoritative platform Skill requirement" not in sdk_prompt
     assert "Authoritative platform MCP requirement" not in sdk_prompt
     assert _subject()["identity"] not in sdk_prompt
@@ -2990,7 +2998,7 @@ async def test_sdk_selected_skill_streams_after_completed_evidence_before_termin
 
 
 @pytest.mark.asyncio
-async def test_sdk_selected_skill_publishes_only_terminal_suffix_after_capability(
+async def test_sdk_selected_skill_preserves_terminal_text_after_capability(
     monkeypatch,
     tmp_path,
 ):
@@ -3032,10 +3040,10 @@ async def test_sdk_selected_skill_publishes_only_terminal_suffix_after_capabilit
         on_capability_evidence=_acknowledge_capability_evidence,
     )
 
-    assert "".join(deltas) == " cumulative terminal answer"
+    expected_text = sealed_pre_capability_text + " cumulative terminal answer"
+    assert "".join(deltas) == expected_text
     assert result.error is None
-    assert result.message == " cumulative terminal answer"
-    assert sealed_pre_capability_text not in result.message
+    assert result.message == expected_text
     assert [item["lifecycle_phase"] for item in result.capability_evidence] == [
         "invocation_requested",
         "completed",
@@ -3043,7 +3051,7 @@ async def test_sdk_selected_skill_publishes_only_terminal_suffix_after_capabilit
 
 
 @pytest.mark.asyncio
-async def test_sdk_selected_skill_discards_sealed_pre_capability_terminal_text(
+async def test_sdk_selected_skill_preserves_pre_capability_terminal_text(
     monkeypatch,
     tmp_path,
 ):
@@ -3089,13 +3097,11 @@ async def test_sdk_selected_skill_discards_sealed_pre_capability_terminal_text(
         on_capability_evidence=_acknowledge_capability_evidence,
     )
 
+    expected_text = sealed_pre_capability_text + verified_answer
     assert observed_before_result
-    assert verified_answer.startswith("".join(observed_before_result))
-    assert "".join(deltas) == verified_answer
+    assert "".join(deltas) == expected_text
     assert result.error is None
-    assert result.message == verified_answer
-    assert sealed_pre_capability_text not in result.message
-    assert sealed_pre_capability_text not in "".join(deltas)
+    assert result.message == expected_text
     assert [item["lifecycle_phase"] for item in result.capability_evidence] == [
         "invocation_requested",
         "completed",
@@ -3162,7 +3168,7 @@ async def test_sdk_selected_skill_rejected_post_ack_preserves_pretool_narration(
         result.used_skills,
         result.capability_evidence,
         deltas,
-    ) == ("required_tool_completion_evidence_mismatch", "", [], [], [text])
+    ) == ("required_tool_completion_evidence_mismatch", text, [], [], [text])
 
 
 @pytest.mark.asyncio
@@ -3446,10 +3452,10 @@ async def test_sdk_conflicting_result_keeps_terminal_body(
         on_text=deltas.append,
     )
 
-    assert deltas
-    assert "Complete Assistant body".startswith("".join(deltas))
+    expected_text = "Complete Assistant body\n\nConflicting terminal result"
+    assert "".join(deltas) == expected_text
     assert result.error is None
-    assert result.message == "Conflicting terminal result"
+    assert result.message == expected_text
 
 
 @pytest.mark.asyncio
@@ -3503,9 +3509,10 @@ async def test_sdk_result_replaces_body_for_selected_empty_assistant(
         on_text=deltas.append,
     )
 
-    assert "".join(deltas).startswith("Earlier. Current")
+    expected_text = "Earlier. \n\nCurrent answer."
+    assert "".join(deltas) == expected_text
     assert result.error is None
-    assert result.message == "Current answer."
+    assert result.message == expected_text
 
 
 def _streaming_sdk(
@@ -3759,9 +3766,8 @@ async def test_sandbox_stream_duplicate_stop_never_replays_terminal_result(
 
     assert captured["include_partial_messages"] is True
     assert result.error is None
-    assert result.message == "terminal final"
-    assert deltas
-    assert "short answer".startswith("".join(deltas))
+    assert result.message == "short answer\n\nterminal final"
+    assert "".join(deltas) == result.message
 
 
 @pytest.mark.asyncio
@@ -3793,9 +3799,8 @@ async def test_sdk_keeps_successful_terminal_body_after_stream_failure(
 
     assert captured["include_partial_messages"] is True
     assert result.error is None
-    assert result.message == "terminal final"
-    assert deltas
-    assert "safe partial must finish".startswith("".join(deltas))
+    assert result.message == "safe partial must finish\n\nterminal final"
+    assert "".join(deltas) == result.message
 
 
 @pytest.mark.asyncio

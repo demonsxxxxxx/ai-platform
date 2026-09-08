@@ -2600,8 +2600,7 @@ async def run_claude_agent_sdk(
                         capability_evidence=list(capability_evidence),
                     )
                 received_structured_terminal = True
-                for public_text in answer_stream_gate.accept(answer_timeline.accept_result(str(message.result or ""))):
-                    await publish_terminal_text(public_text)
+                answer_timeline.accept_result(str(message.result or ""))
                 structured_result_text = answer_timeline.text
                 stop_reason = getattr(message, "stop_reason", None)
                 terminal_reason = resolved_terminal_reason or (
@@ -2669,7 +2668,9 @@ async def run_claude_agent_sdk(
         if terminal_error is not None:
             seal_agent_candidates(terminal_error)
         public_structured_result_text = (
-            finished_answer.final_text if not answer_stream_gate.failed else ""
+            ""
+            if terminal_error == "agent_event_callback_not_acknowledged"
+            else finished_answer.final_text if not answer_stream_gate.failed else ""
         )
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
