@@ -40,28 +40,26 @@ def test_models_normalize_agent_profile_acl_and_use_only_builtin_avatar_referenc
 
 
 def test_models_normalize_multiple_market_tags_and_keep_legacy_shadow():
-    from app.agent_apps.authority import AgentProfileDraftRequest as AgentAppsDraftRequest
+    from app.agent_apps.api import AgentProfileDraftDefinition, normalize_market_tags
 
-    definition = AgentAppsDraftRequest(
+    legacy = AgentProfileDraftRequest(
         name="Support assistant",
         instructions="Private instruction.",
-        market_tags=[" 客户服务 ", "写作"],
         market_tag="旧标签",
         selected_skill={"skill_id": "general-chat"},
         expected_draft_revision=0,
+    )
+    definition = AgentProfileDraftDefinition.from_legacy(
+        legacy,
+        market_tags=[" 客户服务 ", "写作"],
+        explicit_fields={"market_tags"},
     )
 
     assert definition.market_tags == ["客户服务", "写作"]
     assert definition.market_tag == "客户服务"
 
-    with pytest.raises(ValidationError):
-        AgentAppsDraftRequest(
-            name="Support assistant",
-            instructions="Private instruction.",
-            market_tags=["客户服务", "客户服务"],
-            selected_skill={"skill_id": "general-chat"},
-            expected_draft_revision=0,
-        )
+    with pytest.raises(ValueError):
+        normalize_market_tags(["客户服务", "客户服务"])
 
     with pytest.raises(ValidationError):
         AgentProfileDraftRequest.model_validate(

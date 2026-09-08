@@ -13,7 +13,6 @@ from app.agent_profiles import (
 )
 from app.agent_apps.authority import (
     _ROLLING_LEGACY_SUPPORTED_FILE_TYPES,
-    AgentProfileAdminProjection as AgentAppsProfileAdminProjection,
     AgentProfileAuthority,
     _legacy_revision_hash,
     _legacy_skill_set_revision_hash,
@@ -864,17 +863,17 @@ def test_agent_profile_admin_write_accepts_and_discards_legacy_model_field(monke
     async def save_profile(_conn, *, definition, **_kwargs):
         saved_definitions.append(definition)
         return (
-            AgentAppsProfileAdminProjection(
-                agent_id="agt_support",
-                revision=1,
-                status="draft",
-                name=definition.name,
-                instructions=definition.instructions,
-                selected_skill=definition.selected_skill,
-                market_tag=definition.market_tag,
-                market_tags=definition.market_tags,
-                content_hash="a" * 64,
-            ),
+            {
+                "agent_id": "agt_support",
+                "revision": 1,
+                "status": "draft",
+                "name": definition.name,
+                "instructions": definition.instructions,
+                "selected_skill": definition.selected_skill,
+                "market_tag": definition.market_tag,
+                "market_tags": definition.market_tags,
+                "content_hash": "a" * 64,
+            },
             "audit_profile_save",
         )
 
