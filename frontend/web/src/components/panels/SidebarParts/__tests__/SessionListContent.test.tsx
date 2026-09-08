@@ -3,6 +3,57 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
+import type { BackendSession } from "../../../../services/api.ts";
+import { groupSessionsByAgent } from "../../sessionHelpers.ts";
+
+test("global session history groups by Agent and sorts newest sessions first", () => {
+  const session = (
+    id: string,
+    agentId: string,
+    updatedAt: string,
+    name = id,
+  ): BackendSession => ({
+    id,
+    agent_id: agentId,
+    created_at: "2026-08-01T00:00:00Z",
+    updated_at: updatedAt,
+    is_active: true,
+    name,
+    metadata: {},
+    agent_conversation: {
+      agent_id: agentId,
+      revision: 3,
+      name: agentId === "agt_support" ? "支持助手" : "研究助手",
+      description: "",
+      welcome_message: "",
+      starter_prompts: [],
+      capability_summary: "",
+      recommended_tasks: [],
+      supported_input_types: ["text", "file"],
+      expected_outputs: [],
+      permissions_and_data_access_notice: "",
+      avatar_ref: "builtin:assistant",
+      category: agentId === "agt_support" ? "support" : "research",
+      published_at: null,
+    },
+  });
+
+  const groups = groupSessionsByAgent([
+    session("support-old", "agt_support", "2026-08-01T01:00:00Z"),
+    session("research-new", "agt_research", "2026-08-01T04:00:00Z"),
+    session("support-new", "agt_support", "2026-08-01T03:00:00Z"),
+  ]);
+
+  assert.deepEqual(groups.map(({ key, name }) => [key, name]), [
+    ["agt_research", "研究助手"],
+    ["agt_support", "支持助手"],
+  ]);
+  assert.deepEqual(
+    groups.find(({ key }) => key === "agt_support")?.sessions.map(({ id }) => id),
+    ["support-new", "support-old"],
+  );
+});
+
 test("SessionListContent gives ordinary users a Chinese Agent Market entry and admins Agent management", () => {
   const source = readFileSync(
     join(process.cwd(), "src/components/panels/SidebarParts/SessionListContent.tsx"),
@@ -32,4 +83,7 @@ test("SessionListContent gives ordinary users a Chinese Agent Market entry and a
       .length,
     2,
   );
+  assert.match(source, /groupSessionsByAgent/);
+  assert.match(source, /data-agent-history-group/);
+  assert.match(source, /aria-expanded=\{isExpanded\}/);
 });
