@@ -3,6 +3,8 @@
  */
 
 import type { BackendSession } from "../../services/api";
+import type { AgentConversationIdentity } from "../../types/agentProfile";
+import { DEFAULT_CHAT_AGENT_ID } from "../../services/api/session";
 import type { TFunction } from "i18next";
 import { parseDate } from "../../utils/datetime";
 
@@ -11,6 +13,61 @@ export function getSessionTitle(session: BackendSession, t: TFunction): string {
   const meta = session.metadata as Record<string, unknown>;
   if (meta?.title) return meta.title as string;
   return t("sidebar.newChat");
+}
+
+export interface AgentSessionGroup {
+  key: string;
+  name: string;
+  identity: AgentConversationIdentity | null;
+  sessions: BackendSession[];
+}
+
+function sessionTimestamp(session: BackendSession): number {
+  for (const value of [session.updated_at, session.created_at]) {
+    const timestamp = Date.parse(value);
+    if (Number.isFinite(timestamp)) return timestamp;
+  }
+  return 0;
+}
+
+function fallbackAgentName(session: BackendSession): string {
+  if (session.agent_id === DEFAULT_CHAT_AGENT_ID) return "通用助手";
+  return "其他专家";
+}
+
+/** Group the global history by public Agent identity, newest session first. */
+export function groupSessionsByAgent(
+  sessionList: BackendSession[],
+): AgentSessionGroup[] {
+  const groups = new Map<string, BackendSession[]>();
+  for (const session of sessionList) {
+    const key = session.agent_conversation?.agent_id ?? session.agent_id;
+    const group = groups.get(key);
+    if (group) group.push(session);
+    else groups.set(key, [session]);
+  }
+
+  return [...groups.entries()]
+    .map(([key, sessions]) => {
+      sessions.sort((left, right) => {
+        const timestampDifference =
+          sessionTimestamp(right) - sessionTimestamp(left);
+        return timestampDifference || right.id.localeCompare(left.id);
+      });
+      const identity = sessions.find((session) => session.agent_conversation)
+        ?.agent_conversation;
+      return {
+        key,
+        name: identity?.name ?? fallbackAgentName(sessions[0]),
+        identity: identity ?? null,
+        sessions,
+      };
+    })
+    .sort((left, right) => {
+      const leftTimestamp = sessionTimestamp(left.sessions[0]);
+      const rightTimestamp = sessionTimestamp(right.sessions[0]);
+      return rightTimestamp - leftTimestamp || left.key.localeCompare(right.key);
+    });
 }
 
 export function groupSessionsByTime(

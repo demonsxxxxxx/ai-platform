@@ -62,9 +62,9 @@ function AgentMarketShell({ children }: { children: ReactNode }) {
     authApi.updateMetadata({ sidebarCollapsed: String(collapsed) }).catch(() => {});
   }, []);
   const handleSelectSession = useCallback(
-    (_sessionId: string) => {
+    (sessionId: string) => {
       setMobileSidebarOpen(false);
-      navigate("/agent-market");
+      navigate(`/chat/${encodeURIComponent(sessionId)}`);
     },
     [navigate],
   );
@@ -90,6 +90,7 @@ function AgentMarketShell({ children }: { children: ReactNode }) {
           isCollapsed={sidebarCollapsed}
           onToggleCollapsed={handleSetSidebarCollapsed}
           navigationOnly
+          showSessionHistory
         />
       }
     >
