@@ -25,9 +25,9 @@ export function NonChatAppContent({
   const navigate = useNavigate();
 
   const handleSelectSession = useCallback(
-    (_id: string) => {
+    (sessionId: string) => {
       setMobileSidebarOpen(false);
-      navigate("/agent-market");
+      navigate(`/chat/${encodeURIComponent(sessionId)}`);
     },
     [navigate, setMobileSidebarOpen],
   );

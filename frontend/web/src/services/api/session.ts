@@ -12,6 +12,7 @@ import type {
 } from "../../types";
 import {
   projectAgentConversationSession,
+  type AgentConversationIdentity,
   type AgentConversationSessionProjection,
 } from "../../types/agentProfile";
 import { API_BASE } from "./config";
@@ -30,6 +31,8 @@ export interface BackendSession {
   name?: string;
   metadata: Record<string, unknown>;
   unread_count?: number;
+  purpose?: "conversation" | "builder_test";
+  agent_conversation?: AgentConversationIdentity | null;
 }
 
 // Session list response type
@@ -392,6 +395,36 @@ export function buildAuthoritativeChatSessionUrl(sessionId: string): string {
   return `${API_BASE}/api/ai/chat/sessions/${encodeURIComponent(sessionId)}`;
 }
 
+/** Build the canonical active-session list used by the global history sidebar. */
+export function buildAuthoritativeChatSessionListUrl(): string {
+  return `${API_BASE}/api/ai/chat/sessions`;
+}
+
+function projectAuthoritativeSession(
+  session: AgentConversationSessionProjection,
+): BackendSession {
+  return {
+    id: session.session_id,
+    agent_id: session.agent_id,
+    created_at: session.created_at ?? "",
+    updated_at: session.updated_at ?? session.created_at ?? "",
+    is_active: true,
+    name: session.title,
+    metadata: {},
+    purpose: session.purpose,
+    agent_conversation: session.agent_conversation,
+  };
+}
+
+export function projectAuthoritativeSessionList(value: unknown): BackendSession[] {
+  if (typeof value !== "object" || value === null || !Array.isArray((value as { sessions?: unknown }).sessions)) {
+    throw new Error("invalid_authoritative_session_list");
+  }
+  return (value as { sessions: unknown[] }).sessions.map((session) =>
+    projectAuthoritativeSession(projectAgentConversationSession(session)),
+  );
+}
+
 export const sessionApi = {
   /**
    * List all sessions with pagination
@@ -421,6 +454,15 @@ export const sessionApi = {
       }
       throw error;
     }
+  },
+
+  /** List active sessions with their disclosure-safe Agent identity projection. */
+  async listAuthoritative(): Promise<BackendSession[]> {
+    const response = await authFetch<unknown>(
+      buildAuthoritativeChatSessionListUrl(),
+      { cache: "no-store" },
+    );
+    return projectAuthoritativeSessionList(response);
   },
 
   /** Recover server-owned Agent identity without changing the compatibility API. */
