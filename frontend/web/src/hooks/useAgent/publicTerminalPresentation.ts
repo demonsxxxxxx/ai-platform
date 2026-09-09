@@ -1,4 +1,3 @@
-import { PUBLIC_PROJECTION_FAILURE_REASONS } from "../../generated/publicRunStreamV4";
 import i18n from "../../i18n";
 
 export interface PublicTerminalPresentationDefinition {
@@ -30,12 +29,6 @@ function failed(
 }
 
 export const PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS = {
-  claude_agent_sdk_public_projection_failed: failed(
-    "chat.runTerminal.publicProjectionFailed",
-    "模型执行已结束，但公开答案未通过安全投影。请重试；如问题持续，请联系管理员并提供任务编号。",
-    "chat.runStatus.event.publicProjectionFailed",
-    "公开答案投影失败",
-  ),
   run_failed: failed(
     "chat.runTerminal.failed",
     "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
@@ -113,6 +106,13 @@ export const PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS = {
     "chat.runStatus.event.contextFileTooLarge",
     "文件超过处理上限",
     "file_preprocessing",
+  ),
+  current_request_too_large: failed(
+    "chat.runTerminal.currentRequestTooLarge",
+    "当前请求超过 16 KB 执行上限。请缩短或拆分请求后重试。",
+    "chat.runStatus.event.currentRequestTooLarge",
+    "请求超过处理上限",
+    "input_validation",
   ),
   context_file_pdf_password_required: failed(
     "chat.runTerminal.contextFilePdfPasswordRequired",
@@ -246,10 +246,6 @@ export const PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS = {
   },
 } as const satisfies Record<string, PublicTerminalPresentationDefinition>;
 
-const PUBLIC_PROJECTION_FAILURE_REASON_SET = new Set<string>(
-  PUBLIC_PROJECTION_FAILURE_REASONS,
-);
-
 export type PublicTerminalDetailCode =
   keyof typeof PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS;
 
@@ -272,27 +268,15 @@ export function publicTerminalRunReference(value: unknown): string | undefined {
 
 export function publicTerminalPresentation(
   detailCode: string,
-  projectionFailureReason?: unknown,
 ):
   | (PublicTerminalPresentationDefinition & { message: string })
   | undefined {
   const definition = getPublicTerminalPresentationDefinition(detailCode);
   if (!definition) return undefined;
-  const reason =
-    detailCode === "claude_agent_sdk_public_projection_failed" &&
-    typeof projectionFailureReason === "string" &&
-    PUBLIC_PROJECTION_FAILURE_REASON_SET.has(projectionFailureReason)
-      ? projectionFailureReason
-      : null;
   return {
     ...definition,
-    message: reason
-      ? i18n.t("chat.runTerminal.publicProjectionFailedWithReason", {
-          defaultValue: `模型执行已结束，但公开答案未通过安全投影（${reason}）。请重试；如问题持续，请联系管理员并提供任务编号。`,
-          reason,
-        })
-      : i18n.t(definition.messageKey, {
-          defaultValue: definition.defaultMessage,
-        }),
+    message: i18n.t(definition.messageKey, {
+      defaultValue: definition.defaultMessage,
+    }),
   };
 }

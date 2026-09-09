@@ -80,48 +80,6 @@ def test_callback_v4_values_have_one_application_owner():
 
 
 @pytest.mark.asyncio
-async def test_projection_failure_terminal_v4_keeps_specific_public_code(monkeypatch):
-    from app.streaming.infrastructure import v4
-
-    captured: dict[str, object] = {}
-
-    async def append_run_v4_row(_conn, **kwargs):
-        captured.update(kwargs)
-        return kwargs
-
-    monkeypatch.setattr(v4, "append_run_v4_row", append_run_v4_row)
-
-    await v4.append_run_terminal_v4_row(
-        object(),
-        tenant_id="tenant-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        status="failed",
-        terminal_event_id=f"sev_{'a' * 64}",
-        error_code="claude_agent_sdk_public_projection_failed",
-        projection_failure_reason="answer_too_large",
-    )
-
-    payload = captured["payload"]
-    assert payload["code"] == "claude_agent_sdk_public_projection_failed"
-    assert "公开答案未通过安全投影" in payload["default_message"]
-    assert payload["projection_failure_reason"] == "answer_too_large"
-
-    captured.clear()
-    await v4.append_run_terminal_v4_row(
-        object(),
-        tenant_id="tenant-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        status="failed",
-        terminal_event_id=f"sev_{'b' * 64}",
-        error_code="claude_agent_sdk_tool_admission_failed",
-        projection_failure_reason="answer_too_large",
-    )
-    assert "projection_failure_reason" not in captured["payload"]
-
-
-@pytest.mark.asyncio
 async def test_pending_admission_locks_run_before_stream_authority(monkeypatch):
     calls: list[str] = []
 
@@ -2079,7 +2037,7 @@ def test_v4_projection_rejects_event_specific_code_combinations() -> None:
         )
         assert project_public_v4(row, authority=_authority()) is None
 
-    with pytest.raises(V4ProjectionError, match="v4_projection_failure_code_invalid"):
+    with pytest.raises(V4ProjectionError, match="v4_payload_keys_invalid"):
         validate_public_application_payload_v4(
             "run.failed",
             {

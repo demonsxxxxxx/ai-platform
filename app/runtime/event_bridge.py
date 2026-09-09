@@ -90,6 +90,9 @@ _V4_MESSAGE_EVENT_TYPES = frozenset(
         "subagent.cancelled",
     }
 )
+_V4_NATURAL_TEXT_EVENT_TYPES = frozenset(
+    {"message.delta", "message.completed", "thinking.delta", "thinking.completed"}
+)
 _V4_RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _V4_SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$")
 _V4_EVENT_ID_PATTERN = _V4_SAFE_REF_PATTERN
@@ -182,7 +185,14 @@ def _v4_agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
         return _private_executor_event()
     if not _v4_envelope_identity_is_valid(event):
         return _private_executor_event()
-    if not _public_strings_are_identity_safe(_v4_public_candidate(event)):
+    candidate = _v4_public_candidate(event)
+    identity_candidate = {**candidate, "payload": {}}
+    if not _public_strings_are_identity_safe(identity_candidate):
+        return _private_executor_event()
+    preserve_paths = event.type in _V4_NATURAL_TEXT_EVENT_TYPES
+    if sanitize_public_payload(
+        event.payload, preserve_paths=preserve_paths
+    ) != _without_none_public_values(event.payload):
         return _private_executor_event()
     stage = _V4_EVENT_STAGES.get(event.type)
     if stage is None or not event.run_id or not event.event_id:
@@ -197,7 +207,9 @@ def _v4_agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
             message_id=event.message_id,
             causation_event_id=event.causation_event_id,
             payload=dict(event.payload),
-            payload_sanitizer=sanitize_public_payload,
+            payload_sanitizer=lambda value: sanitize_public_payload(
+                value, preserve_paths=event.type in _V4_NATURAL_TEXT_EVENT_TYPES
+            ),
         )
     except (TypeError, ValueError):
         return _private_executor_event()

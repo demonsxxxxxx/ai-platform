@@ -356,7 +356,6 @@ def _run_terminal_payload(
     status: str,
     terminal_event_id: str,
     error_code: object = None,
-    projection_failure_reason: str | None = None,
     reason_code: str = "user_cancelled",
 ) -> dict[str, object]:
     if status == "succeeded":
@@ -371,19 +370,7 @@ def _run_terminal_payload(
         }
     if status != "failed":
         raise V4ProjectionError("v4_run_terminal_status_invalid")
-    projection = public_terminal_projection(
-        status,
-        error_code,
-        (
-            {
-                "sdk_turn_diagnostics": {
-                    "projection_failure_reason": projection_failure_reason,
-                }
-            }
-            if projection_failure_reason is not None
-            else None
-        ),
-    )
+    projection = public_terminal_projection(status, error_code)
     if projection is None or projection.get("detail_kind") != "failed":
         raise V4ProjectionError("v4_run_public_terminal_projection_unavailable")
     detail_code = str(projection.get("detail_code") or "")
@@ -398,11 +385,6 @@ def _run_terminal_payload(
         "default_message": default_message,
         "detail": None,
     }
-    event_payload = projection.get("event_payload")
-    if isinstance(event_payload, dict):
-        reason = event_payload.get("projection_failure_reason")
-        if isinstance(reason, str):
-            payload["projection_failure_reason"] = reason
     return payload
 
 
@@ -415,7 +397,6 @@ async def append_run_terminal_v4_row(
     status: str,
     terminal_event_id: str,
     error_code: object = None,
-    projection_failure_reason: str | None = None,
     reason_code: str = "user_cancelled",
     trace_ref: str | None = None,
 ) -> Mapping[str, object] | None:
@@ -431,7 +412,6 @@ async def append_run_terminal_v4_row(
             status=status,
             terminal_event_id=terminal_event_id,
             error_code=error_code,
-            projection_failure_reason=projection_failure_reason,
             reason_code=reason_code,
         ),
         batch_id=terminal_event_id,

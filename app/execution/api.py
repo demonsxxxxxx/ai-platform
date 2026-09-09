@@ -50,7 +50,6 @@ from app.execution.application.artifact_storage import (
 from app.execution.domain.public_projection import (
     claude_sdk_failure_code,
     claude_sdk_failure_message,
-    projected_public_answer_failure_reason,
     public_answer_failure_reason,
 )
 
@@ -108,7 +107,6 @@ __all__ = [
     "locked_run_payload_candidate",
     "parse_requested_model_selection",
     "promote_artifact_reservations",
-    "projected_public_answer_failure_reason",
     "public_answer_failure_reason",
     "resolve_chat_model_selection",
     "time",
