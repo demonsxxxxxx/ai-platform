@@ -31,11 +31,10 @@ from app.capability_distribution import (
     CapabilityAuthorizationDenial,
 )
 from app.chat_session_projection import session_response
-from app.conversations.api import (
+from app.conversations.api import resolve_chat_submission, submission_resolution_projection
+from app.conversations.transport.submission import (
     ChatSubmissionPreLedgerAbsenceResponse,
     ChatSubmissionResponse,
-    resolve_chat_submission,
-    submission_resolution_projection,
 )
 from app.context_builder import record_initial_context_snapshot
 from app.context.file_continuity import select_authorized_run_file_snapshot
@@ -2518,7 +2517,9 @@ async def chat_stream(
             if pending_submission_response is None:
                 raise
             return pending_submission_response
-        return admitted.outcome or pending_submission_response or ChatStreamResponse(
+        if admitted.outcome:
+            return ChatStreamResponse.model_validate(admitted.outcome)
+        return pending_submission_response or ChatStreamResponse(
             session_id=session_id,
             run_id=run_id,
             status="accepted_pending_enqueue",

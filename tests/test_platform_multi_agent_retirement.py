@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.main import create_app
-from app.conversations.api import ChatSubmissionResponse
+from app.conversations.transport.submission import ChatSubmissionResponse
 from app.repositories import RepositoryConflictError
 from app.run_admission_policy import (
     contains_persisted_platform_multi_agent_control,

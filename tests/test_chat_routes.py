@@ -16,7 +16,7 @@ from app.auth import AuthPrincipal
 from app.capability_distribution import CapabilityAuthorizationDenial
 from app.main import create_app
 from app.execution.api import RunModelSelection
-from app.conversations.api import ChatSubmissionResponse
+from app.conversations.transport.submission import ChatSubmissionResponse
 from app.models import (
     ChatSessionRequest,
     ChatStreamRequest,
@@ -4714,6 +4714,13 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     async def noop(*_args, **_kwargs):
         return None
 
+    async def no_model_selection(*_args, **_kwargs):
+        return RunModelSelection(
+            model_id="test-model", model_value="test-model", connection_revision=None
+        )
+
+    monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", no_model_selection)
+
     monkeypatch.setattr("app.routes.chat.transaction", tracked_transaction)
     monkeypatch.setattr(
         "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
@@ -4754,6 +4761,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     monkeypatch.setattr("app.routes.chat.repositories.mark_run_enqueue_failed", mark_enqueue_failed)
     monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
     monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr("app.routes.chat.authorize_selected_chat_mcp_tools", noop)
     monkeypatch.setattr("app.routes.chat.reauthorize_pinned_run_for_replay", reauthorize)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", existing_queue_admission)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)

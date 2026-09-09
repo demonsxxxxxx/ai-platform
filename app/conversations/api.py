@@ -9,7 +9,3 @@ from app.conversations.application.submission_resolution import (
 from app.conversations.application.submission_resolution import (
     submission_resolution_projection as submission_resolution_projection,
 )
-from app.conversations.transport.submission import (
-    ChatSubmissionPreLedgerAbsenceResponse as ChatSubmissionPreLedgerAbsenceResponse,
-    ChatSubmissionResponse as ChatSubmissionResponse,
-)
