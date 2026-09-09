@@ -31,9 +31,10 @@ from app.capability_distribution import (
     CapabilityAuthorizationDenial,
 )
 from app.chat_session_projection import session_response
-from app.conversations.api import (
-    resolve_chat_submission,
-    submission_resolution_projection,
+from app.conversations.api import resolve_chat_submission, submission_resolution_projection
+from app.conversations.transport.submission import (
+    ChatSubmissionPreLedgerAbsenceResponse,
+    ChatSubmissionResponse,
 )
 from app.context_builder import record_initial_context_snapshot
 from app.context.file_continuity import select_authorized_run_file_snapshot
@@ -63,8 +64,6 @@ from app.models import (
     ChatSessionResponse,
     ChatStreamRequest,
     ChatStreamResponse,
-    ChatSubmissionPreLedgerAbsenceResponse,
-    ChatSubmissionResponse,
     IntentDecisionResponse,
     QueueRunPayload,
     SelectedAgentProfileRequest,
@@ -348,27 +347,13 @@ def _existing_chat_submission_response(
     return _chat_stream_response_from_submission(row)
 
 
-def _chat_submission_response(projection: dict[str, Any]) -> ChatSubmissionResponse:
-    return ChatSubmissionResponse(
-        **{
-            **projection,
-            "outcome": (
-                ChatStreamResponse.model_validate(projection["outcome"])
-                if isinstance(projection["outcome"], dict)
-                else None
-            ),
-        }
-    )
-
-
 def _chat_submission_resolution(row: dict[str, Any]) -> ChatSubmissionResponse:
     if str(row.get("state") or "") == "admission_rejected":
         raise HTTPException(
             status_code=409,
             detail=str(row.get("rejection_code") or PLATFORM_MULTI_AGENT_NOT_SUPPORTED),
         )
-    projection = submission_resolution_projection(row)
-    return _chat_submission_response(projection)
+    return ChatSubmissionResponse(**submission_resolution_projection(row))
 
 
 def _require_chat_submission_admitted(resolution: ChatSubmissionResponse) -> ChatSubmissionResponse:
@@ -403,7 +388,7 @@ async def _resolve_chat_submission(
             status_code=409,
             detail=projection["rejection_code"] or PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
         )
-    return _chat_submission_response(projection)
+    return ChatSubmissionResponse(**projection)
 
 
 def _preledger_recovery_fingerprint(principal: AuthPrincipal) -> str:

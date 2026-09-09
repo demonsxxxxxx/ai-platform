@@ -11,11 +11,6 @@ from pydantic import (
     model_validator,
 )
 
-from app.conversations.transport.submission import (
-    ChatSubmissionPreLedgerAbsenceResponse,  # noqa: F401
-    ChatSubmissionResponse,  # noqa: F401
-)
-
 from app.control_plane_contracts import (
     HARNESS_CHAT_EXECUTOR_TYPE,
     RUN_EXECUTION_KIND_HARNESS_CHAT,
@@ -1406,9 +1401,6 @@ class AgentProfileTrialRunResponse(ChatStreamResponse):
     """Builder test response that keeps the durable test purpose explicit."""
 
     purpose: Literal["builder_test"] = "builder_test"
-
-
-ChatSubmissionResponse.model_rebuild(_types_namespace={"ChatStreamResponse": ChatStreamResponse})
 
 
 class AdminRunSummaryResponse(BaseModel):

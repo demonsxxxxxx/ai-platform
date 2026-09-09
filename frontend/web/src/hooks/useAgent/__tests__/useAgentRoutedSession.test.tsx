@@ -4059,10 +4059,7 @@ test("useAgent preserves an actionable hydrated failure without a generic duplic
   const originalGetEvents = sessionApi.getEvents;
   const originalFetch = dom.window.fetch;
   dom.window.fetch = async () =>
-    sseFramesResponse([
-      { event: "error", data: { error: "Executor failed" } },
-      { event: "done", data: { status: "failed" } },
-    ]);
+    completedPublicRunResponse("run-public-fallback-failed", "failed");
   sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "公开失败回退会话",
@@ -4077,7 +4074,7 @@ test("useAgent preserves an actionable hydrated failure without a generic duplic
   sessionApi.getStatus = (async () => ({
     session_id: "session-public-fallback-failed",
     run_id: "run-public-fallback-failed",
-    status: "error",
+    status: "failed",
     raw_status: "failed",
   })) as typeof sessionApi.getStatus;
   sessionApi.getEvents = (async (_sessionId, options) => ({

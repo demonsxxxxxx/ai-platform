@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
-
-if TYPE_CHECKING:
-    from app.models import ChatStreamResponse
 
 
 class ChatSubmissionResponse(BaseModel):
@@ -24,7 +21,7 @@ class ChatSubmissionResponse(BaseModel):
     ]
     submission_disposition: Literal["rejected_before_persist"] | None = None
     rejection_code: str | None = None
-    outcome: ChatStreamResponse | None = None
+    outcome: dict[str, Any] | None = None
     run_status: Literal[
         "queued", "running", "succeeded", "failed", "cancelled"
     ] | None = None
