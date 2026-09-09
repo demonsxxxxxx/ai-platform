@@ -472,6 +472,7 @@ export function ChatAppContent({
     pageDragAttachments,
     setPageDragAttachments,
     clearPageDragAttachments,
+    uploadControls,
   } = useDragAndDrop();
 
   const {
@@ -1483,6 +1484,7 @@ export function ChatAppContent({
             }
             attachments={pageDragAttachments}
             onAttachmentsChange={setPageDragAttachments}
+            uploadControls={uploadControls}
             externalNavigationToken={externalNavigationToken}
             externalNavigationTargetFile={externalNavigationTargetFile}
             externalNavigationTargetRunId={externalNavigationTargetRunId}

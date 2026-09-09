@@ -113,6 +113,7 @@ export const ChatInput = memo(function ChatInput({
   onSelectModel,
   attachments: externalAttachments,
   onAttachmentsChange: externalOnAttachmentsChange,
+  uploadControls: sharedUploadControls,
   pendingInput,
   onPendingInputConsumed,
   className,
@@ -246,10 +247,12 @@ export const ChatInput = memo(function ChatInput({
     validateCount,
     cancelUpload,
     clearUploads,
+    removeAttachment,
   } = useFileUpload({
     attachments,
     onAttachmentsChange: setAttachments,
     acceptedFileTypes,
+    sharedControls: sharedUploadControls,
   });
 
   const previousAttachmentScopeKeyRef = useRef(attachmentScopeKey);
@@ -801,9 +804,8 @@ export const ChatInput = memo(function ChatInput({
       dispatchComposerSelection({ type: "remove", id });
       if (id.startsWith("file:")) {
         const attachmentId = id.slice("file:".length);
-        setAttachments((previous) =>
-          previous.filter((attachment) => attachment.id !== attachmentId),
-        );
+        const attachment = attachments.find((item) => item.id === attachmentId);
+        if (attachment) removeAttachment(attachment);
         return;
       }
       if (id.startsWith("skill:")) {
@@ -821,9 +823,10 @@ export const ChatInput = memo(function ChatInput({
       }
     },
     [
+      attachments,
       onClearSelectedSkill,
       onToggleTool,
-      setAttachments,
+      removeAttachment,
       tools,
     ],
   );
@@ -879,7 +882,7 @@ export const ChatInput = memo(function ChatInput({
           >
             <ChatInputAttachments
               attachments={attachments}
-              onAttachmentsChange={setAttachments}
+              onRemoveAttachment={removeAttachment}
               onCancelUpload={cancelUpload}
               onImageViewerOpen={(url) => setImageViewerSrc(url)}
             />

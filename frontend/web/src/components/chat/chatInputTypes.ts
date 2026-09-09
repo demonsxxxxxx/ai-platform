@@ -8,6 +8,7 @@ import type {
   AgentOption,
   MessageAttachment,
 } from "../../types";
+import type { FileUploadControls } from "../../hooks/useFileUpload";
 import type {
   StopGenerationResult,
   SubmissionOutcome,
@@ -85,6 +86,8 @@ export interface ChatInputProps {
       | MessageAttachment[]
       | ((prev: MessageAttachment[]) => MessageAttachment[]),
   ) => void;
+  /** Optional shared controller used by page-level and Composer drops. */
+  uploadControls?: FileUploadControls;
   pendingInput?: string | null;
   onPendingInputConsumed?: () => void;
   className?: string;

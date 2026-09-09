@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 
 import { UploadRequestError } from "../../services/api/upload.ts";
@@ -10,6 +12,7 @@ import type {
 import {
   cancelTemporaryUpload,
   clearAttachmentResources,
+  removeAttachmentFromUpload,
   settleUploadFailure,
   startFileUploadTask,
 } from "../useFileUpload.ts";
@@ -191,6 +194,76 @@ function createHarness() {
     onAttachmentsChange,
   };
 }
+
+test("removing a Composer attachment cancels pending uploads and deletes ready files", async () => {
+  const pending: MessageAttachment = {
+    id: "temp-pending",
+    key: "",
+    name: "pending.txt",
+    type: "document",
+    mimeType: "text/plain",
+    size: 1,
+    isUploading: true,
+  };
+  const ready: MessageAttachment = {
+    id: "ready-file",
+    key: "server-file",
+    name: "ready.txt",
+    type: "document",
+    mimeType: "text/plain",
+    size: 1,
+  };
+  let attachments = [pending, ready];
+  const cancelled: string[] = [];
+  const deleted: string[] = [];
+  const onAttachmentsChange = (
+    change:
+      | MessageAttachment[]
+      | ((previous: MessageAttachment[]) => MessageAttachment[]),
+  ) => {
+    attachments = typeof change === "function" ? change(attachments) : change;
+  };
+
+  removeAttachmentFromUpload(
+    pending,
+    (id) => {
+      cancelled.push(id);
+      onAttachmentsChange((previous) =>
+        previous.filter((attachment) => attachment.id !== id),
+      );
+    },
+    onAttachmentsChange,
+    async (key) => deleted.push(key),
+  );
+  removeAttachmentFromUpload(
+    ready,
+    (id) => cancelled.push(id),
+    onAttachmentsChange,
+    async (key) => deleted.push(key),
+  );
+  await Promise.resolve();
+
+  assert.deepEqual(cancelled, ["temp-pending"]);
+  assert.deepEqual(deleted, ["server-file"]);
+  assert.deepEqual(attachments, []);
+});
+
+test("page drops and Composer drops use the same upload controller", () => {
+  const source = (path: string) => readFileSync(join(process.cwd(), path), "utf8");
+  const dragAndDrop = source("src/components/layout/AppContent/useDragAndDrop.ts");
+  const appContent = source("src/components/layout/AppContent/ChatAppContent.tsx");
+  const chatView = source("src/components/layout/AppContent/ChatView.tsx");
+  const chatInput = source("src/components/chat/ChatInput.tsx");
+  const uploadHook = source("src/hooks/useFileUpload.ts");
+
+  assert.match(uploadHook, /sharedControls\?: FileUploadControls/);
+  assert.match(dragAndDrop, /const uploadControls: FileUploadControls = useFileUpload/);
+  assert.match(dragAndDrop, /uploadControls,\s*clearPageDragAttachments: uploadControls\.clearUploads/);
+  assert.match(appContent, /uploadControls=\{uploadControls\}/);
+  assert.match(chatView, /uploadControls: FileUploadControls/);
+  assert.match(chatView, /uploadControls,\s*\n\s*\};/);
+  assert.match(chatInput, /sharedControls: sharedUploadControls/);
+});
 
 test("clearing attachment resources cancels uploads and deletes completed unbound files", () => {
   const cancelled: string[] = [];
