@@ -7,7 +7,6 @@ import pytest
 from app.executors.claude_agent_sdk_runner import (
     ScopedContextRetrievalIdentity,
     _sdk_run_timeout_seconds,
-    project_sdk_turn_diagnostics,
     run_claude_agent_sdk,
 )
 from app.executors.claude.capability_policy import (
@@ -46,40 +45,6 @@ def test_sdk_timeout_is_unbounded_by_default_and_bounded_when_configured():
         )
         is None
     )
-
-
-def test_public_diagnostics_allow_only_fixed_projection_failure_reasons():
-    common = {
-        "error_code": "claude_agent_sdk_public_projection_failed",
-        "selected_skill_id": None,
-        "used_skill_ids": [],
-        "public_skill_metadata": {},
-    }
-
-    allowed = project_sdk_turn_diagnostics(
-        {"projection_failure_reason": "answer_too_large"},
-        **common,
-    )
-    rejected = project_sdk_turn_diagnostics(
-        {"projection_failure_reason": "C:/private/path?token=secret"},
-        **common,
-    )
-    unrelated = [
-        project_sdk_turn_diagnostics(
-            {"projection_failure_reason": "answer_too_large"},
-            error_code=error_code,
-            selected_skill_id=None,
-            used_skill_ids=[],
-            public_skill_metadata={},
-        )
-        for error_code in (None, "claude_agent_sdk_tool_admission_failed")
-    ]
-
-    assert allowed["projection_failure_reason"] == "answer_too_large"
-    assert "projection_failure_reason" not in rejected
-    assert all("projection_failure_reason" not in item for item in unrelated)
-    assert "private" not in str(rejected)
-    assert "secret" not in str(rejected)
 
 
 def _settings():
@@ -1054,7 +1019,7 @@ async def test_failed_answer_projection_does_not_hide_verified_tool_terminal(
         for event in public_events
         if event.event_type in {"tool.started", "tool.completed", "tool.failed"}
     ] == ["tool.started", terminal_event]
-    assert result.error == "claude_agent_sdk_public_projection_failed"
+    assert result.error is None
     assert result.turn_diagnostics["counters"]["tool_lifecycle_denials"] == 0
 
 
@@ -1137,7 +1102,7 @@ async def test_failed_answer_projection_keeps_skill_and_bash_receipts(
         for fact in capability_facts
     ] == [("qa-review", "invocation_requested"), ("qa-review", "completed")]
     assert result.used_skills == ["qa-review"]
-    assert result.error == "claude_agent_sdk_public_projection_failed"
+    assert result.error is None
     assert result.message == ""
     assert deltas == []
     assert result.turn_diagnostics["counters"]["tool_lifecycle_denials"] == 0
@@ -2419,7 +2384,7 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
                 assert private_value not in result.message
     else:
         expected = (
-            "claude_agent_sdk_public_projection_failed"
+            None
             if outcome == "overflow"
             else "required_tool_completion_evidence_mismatch"
         )
@@ -2430,9 +2395,7 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
             assert result.message == text
             assert "".join(deltas) == text
         if outcome == "overflow":
-            assert result.turn_diagnostics["projection_failure_reason"] == (
-                "answer_too_large"
-            )
+            assert "projection_failure_reason" not in result.turn_diagnostics
 
 
 @pytest.mark.asyncio

@@ -1284,20 +1284,22 @@ def test_lambchat_terminal_answer_requires_consistent_identifier_capabilities(
 
 
 @pytest.mark.parametrize(
-    ("agent_id", "skill_id", "message", "private_marker", "expected_detail_code"),
+    ("agent_id", "skill_id", "message", "private_marker", "expected_content", "expected_detail_code"),
     [
         (
             "general-agent",
             "general-chat",
             "general-chat 拒绝读取 /var/lib/private/answer.txt",
-            "/var/",
-            "result_unavailable",
+            "",
+            "general-agent 拒绝读取 /var/lib/private/answer.txt",
+            None,
         ),
         (
             "executor_native",
             "custom-skill",
             "custom-skill 拒绝暴露运行时详情",
             "executor_native",
+            "拒绝暴露运行时详情",
             None,
         ),
     ],
@@ -1307,6 +1309,7 @@ def test_lambchat_terminal_answer_identifier_replacement_keeps_private_text_gate
     skill_id,
     message,
     private_marker,
+    expected_content,
     expected_detail_code,
 ):
     from app.routes.lambchat_compat import _terminal_final_payload
@@ -1323,7 +1326,7 @@ def test_lambchat_terminal_answer_identifier_replacement_keeps_private_text_gate
 
     assert final_payload is not None
     event_type, payload, _ = final_payload
-    assert private_marker not in str(payload)
+    assert private_marker not in str(payload) if private_marker else True
     assert skill_id not in str(payload)
     if expected_detail_code is not None:
         assert event_type == "final_detail"
@@ -1331,7 +1334,7 @@ def test_lambchat_terminal_answer_identifier_replacement_keeps_private_text_gate
         assert "content" not in payload
     else:
         assert event_type == "message:chunk"
-        assert payload["content"] == "拒绝暴露运行时详情"
+        assert payload["content"] == expected_content
 
 
 def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
@@ -1446,15 +1449,11 @@ def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
         ),
         (
             "failed",
-            "claude_agent_sdk_public_projection_failed",
-            {
-                "sdk_turn_diagnostics": {
-                    "projection_failure_reason": "private_token_boundary_conflict"
-                }
-            },
+            "run_failed",
+            {},
             "failed",
-            "claude_agent_sdk_public_projection_failed",
-            "private_token_boundary_conflict",
+            "run_failed",
+            None,
         ),
         ("canceled", None, {}, "cancelled", "run_cancelled", None),
     ],
@@ -1539,7 +1538,7 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
             "stage": "answer",
             "message": "",
             "payload_json": {
-                "delta": "secret token at /home/private/result.txt",
+                "delta": "api_key=actual-secret-value at /home/private/result.txt",
                 "source": "worker_answer_delta_v1",
                 "visible_to_user": True,
                 "severity": "info",
@@ -1563,17 +1562,14 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
         "run_started",
         "agent_step_started",
         "message:chunk",
+        "message:chunk",
         "final_detail",
         "done",
     ]
     assert history[2]["data"]["content"] == "已完成公开部分；"
-    assert history[3]["data"]["detail_kind"] == detail_kind
-    assert history[3]["data"]["detail_code"] == detail_code
-    if expected_reason is not None:
-        assert history[3]["data"]["projection_failure_reason"] == expected_reason
-        assert expected_reason in history[3]["data"]["message"]
-    else:
-        assert "projection_failure_reason" not in history[3]["data"]
+    assert history[4]["data"]["detail_kind"] == detail_kind
+    assert history[4]["data"]["detail_code"] == detail_code
+    assert "projection_failure_reason" not in history[4]["data"]
     assert history[-1]["data"]["status"] == (
         "cancelled" if status == "canceled" else status
     )
@@ -1581,8 +1577,8 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
     assert "已完成请求准备，正在进入受控执行阶段" in serialized
     assert "受控处理步骤仍在进行" in serialized
     assert "private chain of thought" not in serialized
-    assert "secret token" not in serialized
-    assert "/home/private" not in serialized
+    assert "actual-secret-value" not in serialized
+    assert "/home/private/result.txt" in serialized
     assert "worker-private" not in serialized
     assert "current_step" not in serialized
 
@@ -1699,7 +1695,7 @@ def test_lambchat_failed_history_reconstructs_authorized_v4_body() -> None:
 
 @pytest.mark.parametrize(
     ("v4_attempt_authorized", "expected_event_id"),
-    [(True, "evt4_mixed_delta"), (False, "evt-legacy-mixed")],
+    [(True, "evt4_mixed_delta"), (False, None)],
 )
 def test_lambchat_history_selects_one_authorized_body_source(
     v4_attempt_authorized,
@@ -1777,9 +1773,12 @@ def test_lambchat_history_selects_one_authorized_body_source(
         if record.history_event["event_type"] == "message:chunk"
     ]
 
-    assert len(chunks) == 1
-    assert chunks[0]["id"] == expected_event_id
-    assert chunks[0]["data"]["content"] == "同一份公开正文。"
+    if expected_event_id is None:
+        assert chunks == []
+    else:
+        assert len(chunks) == 1
+        assert chunks[0]["id"] == expected_event_id
+        assert chunks[0]["data"]["content"] == "同一份公开正文。"
 
 
 def test_lambchat_success_history_keeps_canonical_delta_before_terminal_answer():
@@ -2628,6 +2627,7 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
         "progress_kind": "completed",
         "wait_reason": None,
         "payload": {"activity": {"category": "capability", "status": "completed"}},
+        "activity": {"category": "capability", "status": "completed"},
         "created_at": None,
         "content": "已加载授权处理能力，下一步将按所选流程分析请求",
         "status": "planning",

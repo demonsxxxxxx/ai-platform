@@ -32,7 +32,6 @@ _CLAUDE_SDK_ACTIONABLE_FAILURE_CODES = frozenset(
         "claude_agent_sdk_missing_structured_terminal",
         "claude_agent_sdk_turn_limit_exceeded",
         "claude_agent_sdk_timeout",
-        "claude_agent_sdk_public_projection_failed",
         "claude_agent_sdk_tool_admission_failed",
         "claude_agent_sdk_upstream_error",
         "capability_callback_not_acknowledged",
@@ -76,9 +75,6 @@ def claude_sdk_failure_message(sdk_result: object) -> str:
         "claude_agent_sdk_timeout": "This run timed out. Retry or split the request.",
         "claude_agent_sdk_missing_structured_terminal": (
             "The executor ended without an authoritative terminal result. Please retry."
-        ),
-        "claude_agent_sdk_public_projection_failed": (
-            "The executor could not safely project the final answer."
         ),
         "claude_agent_sdk_tool_admission_failed": (
             "The selected capability or tool was not admitted by platform policy."
@@ -129,13 +125,3 @@ def public_answer_failure_reason(value: object) -> str | None:
         if isinstance(value, str) and value in PUBLIC_ANSWER_FAILURE_REASONS
         else None
     )
-
-
-def projected_public_answer_failure_reason(
-    error_code: object,
-    diagnostics: object,
-) -> str | None:
-    if error_code != "claude_agent_sdk_public_projection_failed":
-        return None
-    raw = diagnostics if isinstance(diagnostics, dict) else {}
-    return public_answer_failure_reason(raw.get("projection_failure_reason"))

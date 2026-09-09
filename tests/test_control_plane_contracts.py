@@ -408,7 +408,7 @@ def test_public_payload_sanitizer_preserves_safe_token_like_text():
     }
 
 
-def test_public_payload_sanitizer_preserves_public_urls_but_drops_runtime_paths():
+def test_public_payload_sanitizer_keeps_runtime_paths_out_of_payloads():
     payload = sanitize_public_payload(
         {
             "message": "See https://example.com/doc and http://example.com/home",
