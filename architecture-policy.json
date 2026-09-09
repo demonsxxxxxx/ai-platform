@@ -439,6 +439,26 @@
     },
     {
       "source_path": "app/repositories.py",
+      "target_module": "app.mcp.infrastructure.registry_postgres",
+      "module_alias": "mcp_registry_persistence",
+      "symbols": [
+        "_json_dict_projection",
+        "_json_string_list_projection",
+        "_mcp_server_projection",
+        "delete_mcp_server_registry",
+        "list_mcp_server_registry",
+        "list_mcp_server_registry_names",
+        "list_tenant_mcp_server_registry",
+        "record_mcp_server_credential",
+        "toggle_mcp_server_registry",
+        "upsert_mcp_server_registry"
+      ],
+      "owner": "mcp",
+      "reason": "The frozen global repository may expose its existing tenant MCP registry projection and credential lifecycle symbols only as exact identity aliases while their PostgreSQL implementation moves to the MCP registry adapter.",
+      "removal_condition": "After supported callers import the MCP API or registry application boundary, inventory external imports and remove this bridge in an authority-only change before deleting the repositories aliases."
+    },
+    {
+      "source_path": "app/repositories.py",
       "target_module": "app.platform.postgres.errors",
       "module_alias": "postgres_errors",
       "symbols": [
