@@ -8,7 +8,7 @@ from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
 from app.models import AdminRunDetailResponse, AdminRunListResponse, RunControlResponse
 from app.queue import get_queue_insight, get_run_queue_position, remove_queued_run
-from app.runs.api import RunCancellationUseCase, admin_runtime_diagnostics_from_run
+from app.runs.api import RunCancellationUseCase, admin_runtime_diagnostics_from_run, assemble_admin_model_output
 from app.routes.sandbox_runtime_cleanup import (
     SandboxRuntimeCleanupError,
     release_stopped_sandbox_leases_for_cancel,
@@ -310,7 +310,12 @@ async def admin_run_detail(
     if detail is None:
         raise HTTPException(status_code=404, detail="run_not_found")
     detail = dict(detail)
+    detail["run"] = dict(detail["run"])
     if runtime_diagnostics:
         detail["run"]["result"]["runtime_diagnostics"] = runtime_diagnostics
+    detail["run"]["model_output"] = assemble_admin_model_output(
+        detail.get("events", []),
+        sanitize_text=sanitize_public_text,
+    )
     detail["run"] = await attach_live_queue_context(detail["run"], tenant_id=principal.tenant_id)
     return AdminRunDetailResponse.model_validate(detail)

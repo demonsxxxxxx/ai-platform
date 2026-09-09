@@ -23,6 +23,10 @@ import {
   type AdminRunSummary,
 } from "../../services/api/adminRuns";
 import { formatDateTimeShort } from "../../utils/datetime";
+import {
+  buildAdminRunMonitorView,
+  type AdminRunTimelineItem,
+} from "./adminRunTimeline";
 
 const RUN_LIMIT = 50;
 const PAGE_SIZE = 10;
@@ -162,6 +166,26 @@ function StatusBadge({ status }: { status: string | null | undefined }) {
   );
 }
 
+function timelineStatusTone(status: AdminRunTimelineItem["status"]): string {
+  if (status === "failed" || status === "denied") {
+    return "bg-[var(--theme-danger-soft)] text-[var(--theme-danger)]";
+  }
+  if (status === "succeeded") {
+    return "bg-[var(--theme-success-soft)] text-[var(--theme-success)]";
+  }
+  if (status === "cancelled") {
+    return "bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]";
+  }
+  if (status === "running") {
+    return "bg-[var(--theme-info-soft)] text-[var(--theme-info)]";
+  }
+  return "bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]";
+}
+
+function timelineCountLabel(item: AdminRunTimelineItem): string {
+  return item.count > 1 ? ` · ${item.count} 次合并` : "";
+}
+
 function MetricTile({
   icon,
   label,
@@ -293,6 +317,10 @@ function RunDetail({
     };
   }, [fallbackFocusRef]);
 
+  const monitorView = detail
+    ? buildAdminRunMonitorView(detail.run, detail.events)
+    : null;
+
   return (
     <aside
       ref={detailRef}
@@ -389,34 +417,65 @@ function RunDetail({
           ) : null}
 
           <section className="p-4">
-            <h3 className="text-xs font-semibold text-[var(--theme-text)]">
-              阶段事件 <span className="font-normal text-[var(--theme-text-tertiary)]">({detail.events.length})</span>
-            </h3>
-            {detail.events.length ? (
-              <ol className="mt-3 space-y-3">
-                {detail.events.map((event, index) => (
+            <h3 className="text-xs font-semibold text-[var(--theme-text)]">运行概览</h3>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-3">
+                <span className="text-[11px] text-[var(--theme-text-tertiary)]">当前状态</span>
+                <div className="mt-1.5">
+                  <StatusBadge status={monitorView?.currentStatus ?? detail.run.status} />
+                </div>
+              </div>
+              <div className="min-w-0 rounded-md bg-[var(--theme-bg-sidebar)] p-3">
+                <span className="text-[11px] text-[var(--theme-text-tertiary)]">当前动作</span>
+                <p className="mt-1.5 truncate text-xs font-medium text-[var(--theme-text)]" title={monitorView?.currentAction}>
+                  {monitorView?.currentAction}
+                </p>
+              </div>
+            </div>
+            <div className="mt-3 rounded-md border border-[var(--theme-border)] p-3">
+              <div className="flex items-center justify-between gap-2">
+                <h4 className="text-xs font-semibold text-[var(--theme-text)]">模型输出</h4>
+                {monitorView?.modelOutput ? (
+                  <span className="text-[11px] text-[var(--theme-text-tertiary)]">已聚合</span>
+                ) : null}
+              </div>
+              {monitorView?.modelOutput ? (
+                <p className="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-5 text-[var(--theme-text-secondary)]">
+                  {monitorView.modelOutput}
+                </p>
+              ) : (
+                <p className="mt-2 text-xs text-[var(--theme-text-tertiary)]">暂无模型输出</p>
+              )}
+            </div>
+          </section>
+
+          <section className="p-4">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h3 className="text-xs font-semibold text-[var(--theme-text)]">最近活动</h3>
+              <span className="text-[11px] text-[var(--theme-text-tertiary)]">
+                {monitorView?.recentActivity.length ?? 0} 条 · 已记录 {monitorView?.rawEventCount ?? detail.events.length} 个事件
+              </span>
+            </div>
+            {monitorView?.recentActivity.length ? (
+              <ol className="mt-3 space-y-2">
+                {monitorView.recentActivity.map((item) => (
                   <li
-                    key={event.event_id ?? `${event.type ?? "event"}-${index}`}
+                    key={item.id}
                     className="grid grid-cols-[10px_minmax(0,1fr)] gap-3"
                   >
-                    <span className="mt-1.5 size-2 rounded-full bg-[var(--theme-info)] ring-2 ring-[var(--theme-info-soft)]" />
-                    <div className="min-w-0">
+                    <span className={`mt-1.5 size-2 rounded-full ${timelineStatusTone(item.status)}`} />
+                    <div className="min-w-0 rounded-md bg-[var(--theme-bg-sidebar)] p-2.5">
                       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                        <span className="font-mono text-xs font-medium text-[var(--theme-text)]">
-                          {event.type ?? "event"}
+                        <span className="text-xs font-medium text-[var(--theme-text)]">
+                          {item.label}{timelineCountLabel(item)}
                         </span>
-                        {event.stage ? (
-                          <span className="text-[11px] text-[var(--theme-text-tertiary)]">
-                            {event.stage}
-                          </span>
-                        ) : null}
                         <time className="ml-auto text-[11px] text-[var(--theme-text-tertiary)]">
-                          {dateTime(event.created_at)}
+                          {dateTime(item.created_at)}
                         </time>
                       </div>
-                      {event.message ? (
-                        <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                          {event.message}
+                      {item.detail ? (
+                        <p className="mt-1 text-[11px] leading-5 text-[var(--theme-text-secondary)]">
+                          {item.detail}
                         </p>
                       ) : null}
                     </div>
@@ -424,9 +483,7 @@ function RunDetail({
                 ))}
               </ol>
             ) : (
-              <p className="mt-2 text-xs text-[var(--theme-text-tertiary)]">
-                暂无阶段事件
-              </p>
+              <p className="mt-2 text-xs text-[var(--theme-text-tertiary)]">暂无可展示的活动</p>
             )}
           </section>
 

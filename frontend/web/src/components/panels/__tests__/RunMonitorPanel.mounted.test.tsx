@@ -228,7 +228,7 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     await act(async () => {
       openButtons[0].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     });
-    await waitFor(() => container.textContent?.includes("Worker 已领取请求") === true);
+    await waitFor(() => container.textContent?.includes("开始执行") === true);
 
     assert.ok(calls.includes("detail:run_running"));
     assert.match(container.textContent ?? "", /trace-a/);
