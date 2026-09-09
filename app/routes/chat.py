@@ -32,8 +32,6 @@ from app.capability_distribution import (
 )
 from app.chat_session_projection import session_response
 from app.conversations.api import (
-    ChatSubmissionPreLedgerAbsenceResponse,
-    ChatSubmissionResponse,
     resolve_chat_submission,
     submission_resolution_projection,
 )
@@ -65,6 +63,8 @@ from app.models import (
     ChatSessionResponse,
     ChatStreamRequest,
     ChatStreamResponse,
+    ChatSubmissionPreLedgerAbsenceResponse,
+    ChatSubmissionResponse,
     IntentDecisionResponse,
     QueueRunPayload,
     SelectedAgentProfileRequest,
