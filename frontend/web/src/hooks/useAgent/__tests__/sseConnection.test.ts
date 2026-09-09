@@ -1975,15 +1975,23 @@ test("keeps an active run recoverable after repeated replay-only transport losse
         false,
         async (_input, init) => {
           await init.onopen?.(new Response(null, { status: 200 }));
-          init.onmessage?.({
-            event: "run_event",
-            id: "evt-replayed-progress",
-            data: JSON.stringify({
-              run_id: "run-1",
-              sequence: 42,
-              event_type: "worker_started",
-            }),
-          } as never);
+          init.onmessage?.(
+            v4Frame({
+              cursor: `run-1:1:42-0`,
+              runId: "run-1",
+              eventType: "agent.progress",
+              eventId: "evt-replayed-progress",
+              seq: 42,
+              messageId: null,
+              payload: {
+                schema_version: "ai-platform.public-agent-progress.v1",
+                step_id: "phase_model_wait",
+                phase: "model_wait",
+                lifecycle: "progress",
+                message: "Waiting for the model response",
+              },
+            }) as never,
+          );
           await init.onclose?.();
         },
       );
@@ -2094,14 +2102,15 @@ test("recovers a terminal run after heartbeat-only losses without inventing cont
         false,
         async (_input, init) => {
           await init.onopen?.(new Response(null, { status: 200 }));
-          init.onmessage?.({
-            event: "heartbeat",
-            id: `run-heartbeat-loop:heartbeat:${connectCalls}`,
-            data: JSON.stringify({
-              run_id: "run-heartbeat-loop",
-              status: "running",
-            }),
-          } as never);
+          init.onmessage?.(
+            v4Frame({
+              cursor: `run-heartbeat-loop:1:${connectCalls}-0`,
+              runId: "run-heartbeat-loop",
+              eventType: "stream.heartbeat",
+              eventId: `heartbeat-${connectCalls}`,
+              payload: { status: "running" },
+            }) as never,
+          );
           await init.onclose?.();
         },
       );

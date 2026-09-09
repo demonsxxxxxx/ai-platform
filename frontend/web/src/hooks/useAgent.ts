@@ -93,6 +93,7 @@ import {
   reconnectSSE,
   clearReconnectTimeout,
   isNonRetryableSSEAuthenticationError,
+  isNonRetryableSSEConnectionError,
   queryAuthoritativeRunStatus,
   type ReplayGapRecoveryOwner,
   type SSEConnectionContext,
@@ -208,6 +209,15 @@ function parseChatSubmissionResolution(
     return null;
   }
   if (candidate.submission_id !== submissionId) {
+    return null;
+  }
+  if (
+    candidate.run_status !== undefined &&
+    candidate.run_status !== null &&
+    !["queued", "running", "succeeded", "failed", "cancelled"].includes(
+      candidate.run_status as string,
+    )
+  ) {
     return null;
   }
   if (candidate.state === "absent_before_ledger") {
@@ -1974,7 +1984,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               ) {
                 return;
               }
-              if (isNonRetryableSSEAuthenticationError(streamError)) {
+              if (
+                isNonRetryableSSEAuthenticationError(streamError) ||
+                isNonRetryableSSEConnectionError(streamError)
+              ) {
                 finalizeRunStatusUnavailable(
                   historyCurrentRunId,
                   streamingMessageId,
@@ -2561,7 +2574,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             // Admission has reached a concrete stream owner; a failed setup
             // must never leave the queued toast visible during reconciliation.
             toast.dismiss("chat-queue");
-            if (isNonRetryableSSEAuthenticationError(streamError)) {
+            if (
+              isNonRetryableSSEAuthenticationError(streamError) ||
+              isNonRetryableSSEConnectionError(streamError)
+            ) {
               finalizeRunStatusUnavailable(
                 streamRunId,
                 finalAssistantMessageId,

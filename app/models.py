@@ -1418,7 +1418,7 @@ class ChatSubmissionResponse(BaseModel):
     submission_disposition: Literal["rejected_before_persist"] | None = None
     rejection_code: str | None = None
     outcome: ChatStreamResponse | None = None
-
+    run_status: Literal["queued", "running", "succeeded", "failed", "cancelled"] | None = None
 
 class ChatSubmissionPreLedgerAbsenceResponse(BaseModel):
     """Versioned proof that this principal has no durable submission ledger row."""
