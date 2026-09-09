@@ -6,7 +6,6 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
-from app.execution.api import projected_public_answer_failure_reason
 from app.runtime.sandbox.contracts import ExecutorTaskDispatchReceipt, ExecutorTaskRequest
 from app.sandbox.api import normalize_sdk_runtime_diagnostics
 from app.settings import get_settings
@@ -91,15 +90,6 @@ def normalize_executor_reported_failure(
         normalized["message"] = safe_message
     if "sdk_error" in response:
         normalized["sdk_error"] = safe_code
-    raw_diagnostics = response.get("sdk_turn_diagnostics")
-    projection_failure_reason = projected_public_answer_failure_reason(
-        safe_code,
-        raw_diagnostics,
-    )
-    if projection_failure_reason is not None:
-        normalized["sdk_turn_diagnostics"] = {
-            "projection_failure_reason": projection_failure_reason
-        }
     runtime_diagnostics = normalize_sdk_runtime_diagnostics(
         response.get("runtime_diagnostics")
     )

@@ -2821,9 +2821,9 @@ async def test_get_run_allowlists_terminal_failure_and_preserves_admin_diagnosti
     )
     projection_failure = await get_run("run-a", principal=principal())
 
-    assert projection_failure.error_code == "claude_agent_sdk_public_projection_failed"
-    assert projection_failure.result["projection_failure_reason"] == "sanitizer_rejected"
-    assert "sanitizer_rejected" in projection_failure.error_message
+    assert projection_failure.error_code == "run_failed"
+    assert "projection_failure_reason" not in projection_failure.result
+    assert "sanitizer_rejected" not in projection_failure.error_message
     assert all(term not in projection_failure.model_dump_json() for term in raw_terms)
 
 

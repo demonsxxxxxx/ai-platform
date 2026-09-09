@@ -72,26 +72,27 @@ instantiates the stream and terminal message types.
   Run, provenance, and v4 consumers, the v4 schema and generated contracts, the
   existing frontend v4 adapter and terminal catalog, owning tests, and this
   contract.
-- **Invariants:** projection remains fail-closed; raw SDK/Hook errors, answer
-  bodies, paths, tool inputs, credentials, and executor-private identifiers never
-  enter ordinary-user output; true tool admission failures keep their existing
-  code.
-- **Acceptance:** every gate failure retains its first allowlisted reason and
-  returns `claude_agent_sdk_public_projection_failed`; Runs exposes that fixed
-  category and the reason only when the terminal status is `failed`, the error
-  code matches, and the reason is allowlisted; historical failures without a
-  retained reason remain unknown rather than inferred.
+- **Invariants:** projection remains fail-closed for credentials, concrete Skill
+  implementation/source information, and structured executor/storage fields.
+  Ordinary paths in natural-language answer and thinking text remain visible for
+  internal project workflows; unsafe answer text never enters ordinary-user
+  output.
+- **Acceptance:** public projection does not change Claude execution or Run
+  terminal status. The retired `claude_agent_sdk_public_projection_failed`
+  category and `projection_failure_reason` field are not emitted or accepted by
+  the v4 contract; historical records use the generic `run_failed` presentation.
 - **Regression proof:** gate tests cover size, sanitizer, replacement, terminal
-  consistency, and upstream-projector reasons; SDK/sandbox tests prove the new
-  code is distinct from tool admission and contains no raw failure text; Runs,
-  Chat, v4, route, and frontend live/replay tests prove ordinary-user projection
-  and historical hydration preserve only the fixed category and reason, while
-  schema/catalog parity rejects drift.
+  consistency, and upstream-projector reasons; SDK/sandbox tests prove public
+  projection cannot change execution status and contains no raw secret or Skill
+  implementation text; Runs, Chat, v4, route, and frontend live/replay tests
+  prove ordinary-user projection preserves allowed paths, filters structured
+  private fields, and rejects the retired projection-failure field.
 - **Evidence ceiling:** source and local tests cannot recover a reason discarded
   by an older deployed image; runtime acceptance begins with a new failure from
   the exact packaged image.
-- **Rollback:** remove the optional diagnostic reason and new public code while
-  retaining fail-closed projection; no data migration is required.
+- **Rollback:** restore the retired public failure category and v4 field only if
+  a separately approved disclosure policy requires public projection failures to
+  alter Run status; no data migration is required.
 - **Stop conditions:** any request to expose raw executor text, weaken
   sanitization, alter tool admission, or add an ordinary-user private-diagnostics
   endpoint requires a revised contract.

@@ -417,10 +417,7 @@ export function processMessageEvent(
       // remains intact.
       if (data.projection_version !== CHAT_PUBLIC_PROJECTION_VERSION) break;
       const detailCode = data.detail_code || "";
-      const terminal = publicTerminalPresentation(
-        detailCode,
-        data.projection_failure_reason,
-      );
+      const terminal = publicTerminalPresentation(detailCode);
       if (!terminal || data.detail_kind !== terminal.detailKind) break;
       const partialContent =
         content ||
