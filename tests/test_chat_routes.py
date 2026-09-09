@@ -16,7 +16,7 @@ from app.auth import AuthPrincipal
 from app.capability_distribution import CapabilityAuthorizationDenial
 from app.main import create_app
 from app.execution.api import RunModelSelection
-from app.conversations.transport.submission import ChatSubmissionResponse
+from app.conversations.api import ChatSubmissionResponse
 from app.models import (
     ChatSessionRequest,
     ChatStreamRequest,
