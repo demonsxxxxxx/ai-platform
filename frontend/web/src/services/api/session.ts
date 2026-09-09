@@ -129,6 +129,13 @@ export type ChatStreamResponse =
 export const CHAT_SUBMISSION_RESOLUTION_PROTOCOL_VERSION =
   "chat_submission_resolution.v2" as const;
 
+export type ChatSubmissionRunStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
 export interface DurableChatSubmissionResolution {
   protocol_version?: typeof CHAT_SUBMISSION_RESOLUTION_PROTOCOL_VERSION;
   submission_id: string;
@@ -141,6 +148,7 @@ export interface DurableChatSubmissionResolution {
   submission_disposition?: "rejected_before_persist";
   rejection_code?: string;
   outcome?: ChatStreamResponse;
+  run_status?: ChatSubmissionRunStatus | null;
 }
 
 /** A server-versioned, principal-scoped proof that no ledger row exists yet. */

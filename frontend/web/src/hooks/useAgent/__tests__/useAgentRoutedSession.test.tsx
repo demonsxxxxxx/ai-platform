@@ -391,6 +391,38 @@ function sseFramesResponse(
   );
 }
 
+function protocolInvalidSseResponse(
+  kind: "json" | "event-id" | "envelope",
+  runId: string,
+) {
+  const envelope = {
+    schema: "ai-platform.public-run-stream-control.v4",
+    event_id: `stream-open-${runId}`,
+    run_id: runId,
+    message_id: null,
+    seq: null,
+    event_type: "stream.open",
+    stream_incarnation: 1,
+    replayable: true,
+    trace_ref: null,
+    causation_event_id: null,
+    emitted_at: "2026-08-21T00:00:00Z",
+    payload: { design_id: STREAM_DESIGN_ID },
+  };
+  const body =
+    kind === "json"
+      ? `id: ${runId}:1:1-0\nevent: stream.open\ndata: {\n\n`
+      : kind === "event-id"
+        ? `event: stream.open\ndata: ${JSON.stringify(envelope)}\n\n`
+        : `id: ${runId}:1:1-0\nevent: stream.open\ndata: ${JSON.stringify({
+            ...envelope,
+            schema: "invalid.public-run-stream.v4",
+          })}\n\n`;
+  return new Response(body, {
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
 function controlledNonClosingSseResponse(body: string) {
   const encoder = new TextEncoder();
   let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
@@ -4233,6 +4265,86 @@ test("useAgent fails closed once for a non-retryable SSE authentication error", 
     sessionApi.getStatus = originalGetStatus;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
+  }
+});
+
+test("useAgent fails closed for each protocol-invalid SSE frame", async () => {
+  const cases = [
+    { kind: "json" as const, label: "invalid JSON" },
+    { kind: "event-id" as const, label: "missing event id" },
+    { kind: "envelope" as const, label: "invalid V4 envelope" },
+  ];
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalFetch = dom.window.fetch;
+
+  try {
+    for (const { kind, label } of cases) {
+      const harness = await loadReactHarness();
+      const sessionId = `session-protocol-invalid-${kind}`;
+      const runId = `run-protocol-invalid-${kind}`;
+      let statusCalls = 0;
+      let sseCalls = 0;
+      dom.window.localStorage.removeItem("ai_platform_session_present");
+      dom.window.fetch = async () => {
+        sseCalls += 1;
+        return protocolInvalidSseResponse(kind, runId);
+      };
+      sessionApi.markRead = async () => {};
+      sessionApi.generateTitle = async () => ({
+        title: label,
+        session_id: sessionId,
+      });
+      sessionApi.submitChat = (async () => ({
+        session_id: sessionId,
+        run_id: runId,
+        trace_id: `trace-${kind}`,
+        status: "queued",
+      })) as typeof sessionApi.submitChat;
+      sessionApi.getStatus = (async () => {
+        statusCalls += 1;
+        return {
+          session_id: sessionId,
+          run_id: runId,
+          status: "running",
+        };
+      }) as typeof sessionApi.getStatus;
+
+      try {
+        await harness.act(async () => {
+          await harness.hook.sendMessage(label);
+        });
+        await settle(harness.act);
+        await new Promise((resolve) => setTimeout(resolve, 1_100));
+        await settle(harness.act);
+
+        const parts = harness.hook.messages.flatMap((message) => message.parts || []);
+        assert.equal(statusCalls, 0, `${label} must not reconcile status`);
+        assert.equal(sseCalls, 1, `${label} must not reconnect`);
+        assert.equal(harness.hook.currentRunId, null);
+        assert.equal(harness.hook.isLoading, false);
+        assert.equal(harness.hook.connectionStatus, "disconnected");
+        assert.equal(
+          parts.filter(
+            (part) =>
+              part.type === "run_status" &&
+              part.event_id === `terminal-status-unavailable:${runId}`,
+          ).length,
+          1,
+        );
+      } finally {
+        await harness.cleanup();
+      }
+    }
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.getStatus = originalGetStatus;
+    dom.window.fetch = originalFetch;
   }
 });
 

@@ -171,7 +171,111 @@ def test_chat_submission_resolver_success_is_private_no_store(
     )
 
     assert response.status_code == 200
+    assert response.json()["run_status"] is None
     assert response.headers["cache-control"] == "private, no-store"
+
+
+@pytest.mark.parametrize(
+    ("raw_status", "expected_status"),
+    [
+        ("queued", "queued"),
+        ("running", "running"),
+        ("succeeded", "succeeded"),
+        ("failed", "failed"),
+        ("canceled", "cancelled"),
+        ("unknown", None),
+    ],
+)
+def test_chat_submission_resolver_projects_authorized_run_status(
+    monkeypatch, chat_submission_client, raw_status, expected_status
+):
+    submission_id = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"
+    calls = []
+
+    async def found_submission(_conn, **kwargs):
+        calls.append(("submission", kwargs))
+        return {
+            "submission_id": submission_id,
+            "run_id": "run-1",
+            "state": "queued",
+            "outcome_json": {
+                "session_id": "session-1",
+                "run_id": "run-1",
+                "trace_id": "trace-1",
+                "status": "queued",
+                "submission_id": submission_id,
+            },
+        }
+
+    async def authorized_run(_conn, **kwargs):
+        calls.append(("run", kwargs))
+        return {"status": raw_status}
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", found_submission)
+    monkeypatch.setattr(repository_module, "get_authorized_run", authorized_run)
+
+    response = chat_submission_client.get(
+        f"/api/chat/submissions/{submission_id}",
+        headers=_CHAT_SUBMISSION_CLIENT_HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["run_status"] == expected_status
+    assert calls == [
+        (
+            "submission",
+            {
+                "tenant_id": "tenant-a",
+                "user_id": "user-a",
+                "submission_id": submission_id,
+            },
+        ),
+        (
+            "run",
+            {
+                "tenant_id": "tenant-a",
+                "user_id": "user-a",
+                "run_id": "run-1",
+            },
+        ),
+    ]
+
+
+@pytest.mark.parametrize("prefix", _CHAT_SUBMISSION_ROUTE_PREFIXES)
+def test_chat_submission_resolver_missing_or_unreachable_run_projects_null_status(
+    monkeypatch, chat_submission_client, prefix
+):
+    submission_id = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"
+
+    async def found_submission(_conn, **_kwargs):
+        return {
+            "submission_id": submission_id,
+            "run_id": "run-1",
+            "state": "queued",
+            "outcome_json": {
+                "session_id": "session-1",
+                "run_id": "run-1",
+                "trace_id": "trace-1",
+                "status": "queued",
+                "submission_id": submission_id,
+            },
+        }
+
+    async def missing_run(_conn, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", found_submission)
+    monkeypatch.setattr(repository_module, "get_authorized_run", missing_run)
+
+    response = chat_submission_client.get(
+        f"{prefix}/chat/submissions/{submission_id}",
+        headers=_CHAT_SUBMISSION_CLIENT_HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["run_status"] is None
 
 
 @pytest.mark.parametrize("prefix", _CHAT_SUBMISSION_ROUTE_PREFIXES)

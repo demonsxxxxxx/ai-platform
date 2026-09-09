@@ -152,6 +152,25 @@ export function isNonRetryableSSEAuthenticationError(
   );
 }
 
+export const NON_RETRYABLE_SSE_CONNECTION_ERROR_CODE = "sse_connection_contract_invalid";
+
+/** A non-retryable startup conflict must converge without recovery. */
+export class NonRetryableSSEConnectionError extends Error {
+  readonly code = NON_RETRYABLE_SSE_CONNECTION_ERROR_CODE;
+
+  constructor(readonly reason: string) {
+    super(reason);
+    this.name = "NonRetryableSSEConnectionError";
+  }
+}
+
+export function isNonRetryableSSEConnectionError(
+  error: unknown,
+): error is NonRetryableSSEConnectionError {
+  return error instanceof NonRetryableSSEConnectionError &&
+    error.code === NON_RETRYABLE_SSE_CONNECTION_ERROR_CODE;
+}
+
 export const SSE_STARTUP_RETRY_BUDGET_MS = 10_000;
 const SSE_STARTUP_RETRY_BASE_DELAY_MS = 250;
 const SSE_RETRYABLE_STARTUP_CODES = new Set([
@@ -791,6 +810,11 @@ export async function connectToSSE(
           if (startupCode) {
             throw new RetryableSSEStartupError(startupCode);
           }
+          if (response.status === 409) {
+            throw new NonRetryableSSEConnectionError(
+              response.headers.get("X-SSE-Error-Code") || "sse_startup_conflict",
+            );
+          }
           if (!response.ok) {
             throw new Error(
               response.headers.get("X-SSE-Error-Code") ||
@@ -814,13 +838,11 @@ export async function connectToSSE(
           try {
             parsed = JSON.parse(event.data);
           } catch {
-            receivedNonTerminalApplicationError = true;
-            throw new Error("sse_event_json_invalid");
+            throw new NonRetryableSSEConnectionError("sse_event_json_invalid");
           }
           const eventId = event.id;
           if (!eventId) {
-            receivedNonTerminalApplicationError = true;
-            throw new Error("sse_event_id_missing");
+            throw new NonRetryableSSEConnectionError("sse_event_id_missing");
           }
           const frame: V4SseFrame = {
             eventHeader: event.event || "",
@@ -839,8 +861,7 @@ export async function connectToSSE(
             generation: streamVersion,
           });
           if (!adaptedEvent) {
-            receivedNonTerminalApplicationError = true;
-            throw new Error("sse_event_contract_invalid");
+            throw new NonRetryableSSEConnectionError("sse_event_contract_invalid");
           }
           const frameIncarnation = adaptedEvent.streamIncarnation;
           const eventType = adaptedEvent.eventType;
@@ -1002,8 +1023,7 @@ export async function connectToSSE(
             }
             if (createdPendingTerminal) pendingTerminalHydration = null;
             if (transportCommitted) return;
-            receivedNonTerminalApplicationError = true;
-            throw new Error("sse_event_contract_invalid");
+            throw new NonRetryableSSEConnectionError("sse_event_contract_invalid");
           }
         },
         onerror: (err) => {
@@ -1288,7 +1308,10 @@ export async function reconnectSSE(
           if (!isCurrentReconnect()) {
             return;
           }
-          if (isNonRetryableSSEAuthenticationError(error)) {
+          if (
+            isNonRetryableSSEAuthenticationError(error) ||
+            isNonRetryableSSEConnectionError(error)
+          ) {
             // Authentication cannot be recovered by a status read or another
             // stream attempt. The lifecycle converger clears the generation's
             // active stream without fabricating a backend failed result.
