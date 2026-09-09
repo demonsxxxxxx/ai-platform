@@ -12,6 +12,17 @@ import {
 import { uuid } from "../utils/uuid";
 import type { MessageAttachment, FileCategory } from "../types";
 
+export interface FileUploadControls {
+  uploadLimitsBytes: ResolvedUploadBytePolicy["limitsBytes"] | null;
+  uploadFiles: (files: FileList | File[], category?: FileCategory) => void;
+  uploadFile: (file: File, category?: FileCategory) => void;
+  validateSize: (file: File, category: FileCategory) => boolean;
+  validateCount: (newFileCount: number) => boolean;
+  cancelUpload: (id: string) => void;
+  clearUploads: () => void;
+  removeAttachment: (attachment: MessageAttachment) => void;
+}
+
 export interface UseFileUploadOptions {
   attachments: MessageAttachment[];
   onAttachmentsChange: (
@@ -20,6 +31,7 @@ export interface UseFileUploadOptions {
       | ((prev: MessageAttachment[]) => MessageAttachment[]),
   ) => void;
   acceptedFileTypes?: readonly string[];
+  sharedControls?: FileUploadControls;
 }
 
 type UploadTranslation = (key: string) => unknown;
@@ -136,6 +148,27 @@ export function cancelTemporaryUpload(
   onAttachmentsChange((previous) =>
     previous.filter((attachment) => attachment.id !== id),
   );
+}
+
+export function removeAttachmentFromUpload(
+  attachment: MessageAttachment,
+  cancelUpload: (id: string) => void,
+  onAttachmentsChange: UseFileUploadOptions["onAttachmentsChange"],
+  deleteFile: (key: string) => Promise<unknown> = uploadApi.deleteFile,
+): void {
+  if (attachment.isUploading) {
+    cancelUpload(attachment.id);
+    return;
+  }
+
+  onAttachmentsChange((previous) =>
+    previous.filter((item) => item.id !== attachment.id),
+  );
+  if (attachment.key) {
+    void deleteFile(attachment.key).catch((error) => {
+      console.error("Failed to delete file from server:", error);
+    });
+  }
 }
 
 /** Owns the full lifecycle of one temporary upload attachment. */
@@ -273,6 +306,7 @@ export function useFileUpload({
   attachments,
   onAttachmentsChange,
   acceptedFileTypes,
+  sharedControls,
 }: UseFileUploadOptions) {
   const { t } = useTranslation();
   const [uploadPolicy, setUploadPolicy] =
@@ -283,7 +317,7 @@ export function useFileUpload({
 
   // Fetch upload limits once
   useEffect(() => {
-    if (limitsFetched.current) {
+    if (sharedControls || limitsFetched.current) {
       return;
     }
 
@@ -302,7 +336,7 @@ export function useFileUpload({
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [sharedControls]);
 
   /** Validate file size, returns true if ok */
   const validateSize = useCallback(
@@ -354,6 +388,16 @@ export function useFileUpload({
     clearAttachmentResources(attachments, cancelUpload);
     onAttachmentsChange([]);
   }, [attachments, cancelUpload, onAttachmentsChange]);
+
+  const removeAttachment = useCallback(
+    (attachment: MessageAttachment) =>
+      removeAttachmentFromUpload(
+        attachment,
+        cancelUpload,
+        onAttachmentsChange,
+      ),
+    [cancelUpload, onAttachmentsChange],
+  );
 
   /** Upload a single file with progress tracking */
   const uploadFile = useCallback(
@@ -408,7 +452,7 @@ export function useFileUpload({
     [acceptedFileTypes, t, validateCount, validateSize, uploadFile],
   );
 
-  return {
+  const controls: FileUploadControls = {
     uploadLimitsBytes: uploadPolicy?.limitsBytes ?? null,
     uploadFiles,
     uploadFile,
@@ -416,7 +460,10 @@ export function useFileUpload({
     validateCount,
     cancelUpload,
     clearUploads,
+    removeAttachment,
   };
+
+  return sharedControls ?? controls;
 }
 
 export { getFileCategory };

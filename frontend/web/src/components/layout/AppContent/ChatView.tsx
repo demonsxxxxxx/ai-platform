@@ -121,6 +121,7 @@ import {
   type SessionWorkspaceProjection,
 } from "./sessionWorkspaceFiles";
 import { mergeProjectedSessionFiles } from "./sessionInputFiles";
+import type { FileUploadControls } from "../../../hooks/useFileUpload";
 
 const FLOATING_SCROLL_BUTTON_OFFSET_CLASS = "bottom-full mb-3";
 
@@ -197,6 +198,7 @@ interface ChatViewProps {
   onAttachmentsChange: React.Dispatch<
     React.SetStateAction<MessageAttachment[]>
   >;
+  uploadControls: FileUploadControls;
   externalNavigationToken?: string | null;
   externalNavigationTargetFile?: ExternalNavigationTargetFile | null;
   externalNavigationTargetRunId?: string | null;
@@ -259,6 +261,7 @@ export function ChatView({
   onLoadHistory,
   attachments,
   onAttachmentsChange,
+  uploadControls,
   externalNavigationToken,
   externalNavigationTargetFile,
   externalNavigationTargetRunId,
@@ -850,6 +853,7 @@ export function ChatView({
     onSelectModel,
     attachments,
     onAttachmentsChange,
+    uploadControls,
   };
 
   const assistantUiActions = useMemo(
