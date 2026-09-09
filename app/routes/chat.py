@@ -31,10 +31,11 @@ from app.capability_distribution import (
     CapabilityAuthorizationDenial,
 )
 from app.chat_session_projection import session_response
-from app.conversations.api import resolve_chat_submission, submission_resolution_projection
-from app.conversations.transport.submission import (
+from app.conversations.api import (
     ChatSubmissionPreLedgerAbsenceResponse,
     ChatSubmissionResponse,
+    resolve_chat_submission,
+    submission_resolution_projection,
 )
 from app.context_builder import record_initial_context_snapshot
 from app.context.file_continuity import select_authorized_run_file_snapshot

@@ -380,17 +380,6 @@ function sseEventResponse(event: string, data: Record<string, unknown>) {
   });
 }
 
-function sseFramesResponse(
-  frames: Array<{ event: string; data: Record<string, unknown> }>,
-) {
-  return new Response(
-    frames
-      .map(({ event, data }) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-      .join(""),
-    { headers: { "content-type": "text/event-stream" } },
-  );
-}
-
 function protocolInvalidSseResponse(
   kind: "json" | "event-id" | "envelope",
   runId: string,
