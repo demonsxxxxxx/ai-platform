@@ -31,6 +31,10 @@ from app.capability_distribution import (
     CapabilityAuthorizationDenial,
 )
 from app.chat_session_projection import session_response
+from app.conversations.api import (
+    resolve_chat_submission,
+    submission_resolution_projection,
+)
 from app.context_builder import record_initial_context_snapshot
 from app.context.file_continuity import select_authorized_run_file_snapshot
 from app.control_plane_contracts import (
@@ -350,18 +354,7 @@ def _chat_submission_resolution(row: dict[str, Any]) -> ChatSubmissionResponse:
             status_code=409,
             detail=str(row.get("rejection_code") or PLATFORM_MULTI_AGENT_NOT_SUPPORTED),
         )
-    outcome = row.get("outcome_json")
-    return ChatSubmissionResponse(
-        submission_id=str(row["submission_id"]),
-        state=str(row.get("state") or "accepted_pending_enqueue"),
-        submission_disposition=(
-            "rejected_before_persist"
-            if row.get("submission_disposition") == "rejected_before_persist"
-            else None
-        ),
-        rejection_code=str(row["rejection_code"]) if row.get("rejection_code") else None,
-        outcome=ChatStreamResponse.model_validate(outcome) if isinstance(outcome, dict) and outcome else None,
-    )
+    return ChatSubmissionResponse(**submission_resolution_projection(row))
 
 
 def _require_chat_submission_admitted(resolution: ChatSubmissionResponse) -> ChatSubmissionResponse:
@@ -381,15 +374,22 @@ async def _resolve_chat_submission(
     """Read one principal-scoped durable ledger row without changing it."""
 
     async with transaction() as conn:
-        submission = await repositories.get_chat_submission(
+        projection = await resolve_chat_submission(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
             submission_id=submission_id,
+            get_submission=repositories.get_chat_submission,
+            get_authorized_run=repositories.get_authorized_run,
         )
-    if submission is None:
+    if projection is None:
         return None
-    return _chat_submission_resolution(submission)
+    if projection["state"] == "admission_rejected":
+        raise HTTPException(
+            status_code=409,
+            detail=projection["rejection_code"] or PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
+        )
+    return ChatSubmissionResponse(**projection)
 
 
 def _preledger_recovery_fingerprint(principal: AuthPrincipal) -> str:

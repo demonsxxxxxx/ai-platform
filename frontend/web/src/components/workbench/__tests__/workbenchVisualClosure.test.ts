@@ -133,6 +133,15 @@ test("narrow authenticated shell keeps a visible LibreChat rail", () => {
   assert.match(nonChatAppContent, /onMobileOpen=\{\(\) => setMobileSidebarOpen\(true\)\}/);
 });
 
+test("company navigation exposes conversation history without chat actions", () => {
+  const nonChatAppContent = read(
+    "src/components/layout/AppContent/NonChatAppContent.tsx",
+  );
+
+  assert.match(nonChatAppContent, /navigationOnly/);
+  assert.match(nonChatAppContent, /showSessionHistory=\{activeTab === "apps"\}/);
+});
+
 test("post-login shell removes legacy LambChat runtime identifiers", () => {
   const auth = read("src/hooks/useAuth.tsx");
   const sources = [
