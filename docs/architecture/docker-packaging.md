@@ -276,7 +276,9 @@ CLI. Backend CI runs the package entry tests instead of the removed controllers.
 Retained non-package tools have separate owners and consumers:
 
 - `release_authority.py` and its build/parity helpers support controlled builds
-  and the one-time s75 migration; they are not normal application upgrade commands.
+  through `deploy-main-commit`, mirror probes and parity verification. The s75
+  transition imports `deploy_clean_commit` directly for migration and recovery.
+  Normal application installs and upgrades use the package entry.
 - `production_bootstrap.HostBootstrap` retains the secure host configuration,
   unit rendering, and host-service recovery for the production OpenSandbox
   systemd contract. `opensandbox_unit_guard.py` is invoked directly by that unit.

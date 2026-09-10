@@ -10,13 +10,6 @@ Thin platform service for the enterprise AI Agent platform.
 - Enqueues AI runs for worker execution.
 - Delegates execution through the configured sandbox and Engine adapters.
 
-## Local compose
-
-```powershell
-Copy-Item deploy/ai-platform/.env.example deploy/ai-platform/.env
-docker compose -f deploy/ai-platform/docker-compose.yml --env-file deploy/ai-platform/.env up -d --build
-```
-
 ## Deployment quick start
 
 Download the desired immutable Deployment Release's
@@ -84,11 +77,7 @@ Run one leased job and exit:
 python -m app.worker_main --once --timeout 1
 ```
 
-Run the worker loop in compose:
-
-```powershell
-docker compose -f deploy/ai-platform/docker-compose.yml --env-file deploy/ai-platform/.env --profile worker up -d --build
-```
+The deployment package starts the Worker as a required service alongside the API.
 
 The worker consumes the platform queue, updates run events/status, and calls the configured executor adapter. The adapter is not the platform source of truth.
 
