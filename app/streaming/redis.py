@@ -36,7 +36,6 @@ from app.streaming.contracts import (
     _rfc3339_utc,
     canonical_json_bytes,
     stable_event_id as stable_event_id,
-    tenant_scope as tenant_scope,
     validate_public_payload as validate_public_payload,
 )
 
