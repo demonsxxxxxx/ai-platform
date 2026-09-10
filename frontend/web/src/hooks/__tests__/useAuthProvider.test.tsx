@@ -386,6 +386,7 @@ async function mountAuthPageHarness(
     loginWithAD: authApi.loginWithAD,
     logout: authApi.logout,
     beginOAuth: authApi.beginOAuth,
+    getADLoginConfig: authApi.getADLoginConfig,
     getOAuthProviders: authApi.getOAuthProviders,
     updateMetadata: authApi.updateMetadata,
     toastSuccess: toast.success,
@@ -393,10 +394,10 @@ async function mountAuthPageHarness(
   };
   authApi.bootstrapAuthContext = async () => undefined;
   authApi.beginOAuth = async () => ({ state: "test-oauth-state" });
+  authApi.getADLoginConfig = async () => ({ ad_login_url: null });
   authApi.getOAuthProviders = async () => ({
     providers: [],
     registration_enabled: true,
-    ad_login_url: null,
     turnstile: {
       enabled: false,
       site_key: "",
@@ -470,6 +471,7 @@ async function mountAuthPageHarness(
         loginWithAD: originals.loginWithAD,
         logout: originals.logout,
         beginOAuth: originals.beginOAuth,
+        getADLoginConfig: originals.getADLoginConfig,
         getOAuthProviders: originals.getOAuthProviders,
         updateMetadata: originals.updateMetadata,
       });
@@ -1045,9 +1047,7 @@ test("AuthPage attempts Windows login automatically and redirects on success", a
       }
       return authUser("ad001", "tenant-a");
     };
-    api.getOAuthProviders = async () => ({
-      providers: [],
-      registration_enabled: false,
+    api.getADLoginConfig = async () => ({
       ad_login_url: "http://company.test/api/login/GetADName",
     });
     api.loginWithAD = async (loginUrl) => {
@@ -1076,9 +1076,7 @@ test("AuthPage silently falls back to the password form when Windows login fails
     api.getCurrentUser = async () => {
       throw new ApiRequestError("unauthorized", 401, "unauthorized");
     };
-    api.getOAuthProviders = async () => ({
-      providers: [],
-      registration_enabled: false,
+    api.getADLoginConfig = async () => ({
       ad_login_url: "http://company.test/api/login/GetADName",
     });
     api.loginWithAD = async () => {
@@ -1100,12 +1098,12 @@ test("AuthPage silently falls back to the password form when Windows login fails
   }
 });
 
-test("AuthPage silently falls back when provider discovery is unavailable", async () => {
+test("AuthPage silently falls back when AD configuration is unavailable", async () => {
   const mounted = await mountAuthPageHarness((api) => {
     api.getCurrentUser = async () => {
       throw new ApiRequestError("unauthorized", 401, "unauthorized");
     };
-    api.getOAuthProviders = async () => {
+    api.getADLoginConfig = async () => {
       throw new DOMException("timed out", "TimeoutError");
     };
   });
@@ -1122,10 +1120,8 @@ test("AuthPage silently falls back when provider discovery is unavailable", asyn
   }
 });
 
-test("AuthPage cancels deferred AD discovery when another login wins", async () => {
-  const providerDiscovery = deferred<{
-    providers: { id: string; name: string }[];
-    registration_enabled: boolean;
+test("AuthPage cancels deferred AD configuration when another login wins", async () => {
+  const adConfiguration = deferred<{
     ad_login_url: string | null;
   }>();
   let currentUserCalls = 0;
@@ -1139,9 +1135,9 @@ test("AuthPage cancels deferred AD discovery when another login wins", async () 
       }
       return authUser("password-user", "tenant-a");
     };
-    api.getOAuthProviders = async (signal) => {
+    api.getADLoginConfig = async (signal) => {
       discoverySignal = signal;
-      return providerDiscovery.promise;
+      return adConfiguration.promise;
     };
     api.login = async () => undefined;
     api.loginWithAD = async () => {
@@ -1158,9 +1154,7 @@ test("AuthPage cancels deferred AD discovery when another login wins", async () 
     });
     assert.equal(discoverySignal?.aborted, true);
 
-    providerDiscovery.resolve({
-      providers: [],
-      registration_enabled: true,
+    adConfiguration.resolve({
       ad_login_url: "http://company.test/api/login/GetADName",
     });
     await mounted.React.act(async () => {

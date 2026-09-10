@@ -161,24 +161,29 @@ test("AD login exchanges the JWT from the GetADName user array", async () => {
     ]);
     assert.equal(stubs.fetchInit[0].credentials, "include");
     assert.equal(stubs.fetchInit[0].cache, "no-store");
-    assert.equal(stubs.fetchInit[0].signal instanceof AbortSignal, true);
-    assert.deepEqual(JSON.parse(String(stubs.fetchInit[1].body)), { token });
-    assert.equal(stubs.fetchInit[1].signal, controller.signal);
+    const requestSignal = stubs.fetchInit[0].signal as AbortSignal;
+    assert.equal(requestSignal instanceof AbortSignal, true);
+    assert.notEqual(requestSignal, controller.signal);
+    assert.equal(stubs.fetchInit[1].signal, requestSignal);
+    controller.abort();
+    assert.equal(requestSignal.aborted, true);
+    assert.deepEqual(JSON.parse(String(stubs.fetchInit[1].body)), {
+      workid: "ad001",
+      cnname: "AD User",
+      token,
+    });
   } finally {
     stubs.restore();
   }
 });
 
-test("provider discovery composes the caller cancellation signal", async () => {
-  const stubs = installAuthApiBrowserStubs({
-    providers: [],
-    registration_enabled: true,
-    ad_login_url: null,
-  });
+test("AD configuration composes the caller cancellation signal", async () => {
+  const stubs = installAuthApiBrowserStubs({ ad_login_url: null });
   const controller = new AbortController();
   try {
-    await authApi.getOAuthProviders(controller.signal);
+    await authApi.getADLoginConfig(controller.signal);
 
+    assert.deepEqual(stubs.fetchCalls, ["/api/ai/auth/ad-login/config"]);
     const requestSignal = stubs.fetchInit[0].signal as AbortSignal;
     assert.equal(requestSignal instanceof AbortSignal, true);
     assert.notEqual(requestSignal, controller.signal);

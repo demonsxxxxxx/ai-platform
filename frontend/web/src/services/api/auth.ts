@@ -102,35 +102,50 @@ export function buildOAuthLoginUrl(provider: string, state?: string): string {
 
 const COMPANY_AD_LOGIN_TIMEOUT_MS = 15_000;
 
-function withCompanyAuthTimeout(signal?: AbortSignal): AbortSignal {
+function withADLoginTimeout(signal?: AbortSignal): AbortSignal {
   const timeout = AbortSignal.timeout(COMPANY_AD_LOGIN_TIMEOUT_MS);
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-async function fetchCompanyADToken(
+async function fetchCompanyADLogin(
   loginUrl: string,
-  signal?: AbortSignal,
-): Promise<string> {
-  const requestSignal = withCompanyAuthTimeout(signal);
+  signal: AbortSignal,
+): Promise<{ workid: string; cnname: string; token: string }> {
   const response = await fetch(loginUrl, {
     credentials: "include",
     cache: "no-store",
     headers: { Accept: "application/json" },
-    signal: requestSignal,
+    signal,
   });
   if (!response.ok) throw new Error("ad_login_failed");
 
   const payload: unknown = await response.json().catch(() => null);
   const firstResult = Array.isArray(payload) ? payload[0] : null;
+  const workid =
+    firstResult && typeof firstResult === "object"
+      ? (firstResult as { workid?: unknown }).workid
+      : null;
+  const cnname =
+    firstResult && typeof firstResult === "object"
+      ? (firstResult as { cnname?: unknown }).cnname
+      : null;
+  const token =
+    firstResult && typeof firstResult === "object"
+      ? (firstResult as { token?: unknown }).token
+      : null;
   if (
-    !firstResult ||
-    typeof firstResult !== "object" ||
-    typeof (firstResult as { token?: unknown }).token !== "string" ||
-    !(firstResult as { token: string }).token.trim()
+    typeof workid !== "string" ||
+    !workid.trim() ||
+    typeof token !== "string" ||
+    !token.trim()
   ) {
     throw new Error("ad_login_failed");
   }
-  return (firstResult as { token: string }).token;
+  return {
+    workid: workid.trim(),
+    cnname: typeof cnname === "string" && cnname.trim() ? cnname.trim() : workid.trim(),
+    token: token.trim(),
+  };
 }
 
 export const authApi = {
@@ -168,18 +183,32 @@ export const authApi = {
 
   },
 
+  /** Read the canonical platform configuration for optional Windows login. */
+  async getADLoginConfig(signal?: AbortSignal): Promise<{
+    ad_login_url: string | null;
+  }> {
+    return authFetch<{ ad_login_url: string | null }>(
+      `${API_BASE}/api/ai/auth/ad-login/config`,
+      {
+        skipAuth: true,
+        signal: withADLoginTimeout(signal),
+      },
+    );
+  },
+
   /** Exchange the browser's Windows-authenticated company JWT for a platform session. */
   async loginWithAD(loginUrl: string, signal?: AbortSignal): Promise<void> {
-    const token = await fetchCompanyADToken(loginUrl, signal);
+    const requestSignal = withADLoginTimeout(signal);
+    const companyLogin = await fetchCompanyADLogin(loginUrl, requestSignal);
     await authFetch<PrincipalResponseWire>(
       `${API_BASE}/api/ai/auth/ad-login`,
       {
         method: "POST",
         skipAuth: true,
         credentials: "include",
-        body: JSON.stringify({ token }),
+        body: JSON.stringify(companyLogin),
         headers: { "Content-Type": "application/json" },
-        signal,
+        signal: requestSignal,
       },
     );
   },
@@ -318,10 +347,9 @@ export const authApi = {
   /**
    * 获取可用的 OAuth 提供商列表
    */
-  async getOAuthProviders(signal?: AbortSignal): Promise<{
+  async getOAuthProviders(): Promise<{
     providers: { id: string; name: string }[];
     registration_enabled: boolean;
-    ad_login_url: string | null;
     turnstile?: {
       enabled: boolean;
       site_key: string;
@@ -333,7 +361,6 @@ export const authApi = {
     return authFetch<{
       providers: { id: string; name: string }[];
       registration_enabled: boolean;
-      ad_login_url: string | null;
       turnstile?: {
         enabled: boolean;
         site_key: string;
@@ -341,10 +368,7 @@ export const authApi = {
         require_on_register: boolean;
         require_on_password_change: boolean;
       };
-    }>(`${API_BASE}/api/auth/oauth/providers`, {
-      skipAuth: true,
-      signal: withCompanyAuthTimeout(signal),
-    });
+    }>(`${API_BASE}/api/auth/oauth/providers`, { skipAuth: true });
   },
 
   /**

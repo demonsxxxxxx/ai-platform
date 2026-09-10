@@ -110,6 +110,30 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
 
   useEffect(() => clearRedirectTimers, [clearRedirectTimers]);
 
+  // 保留现有 OAuth、注册和 Turnstile 兼容配置；AD 登录使用独立平台路由。
+  useEffect(() => {
+    let mounted = true;
+    const fetchAuthData = async () => {
+      try {
+        const result = await authApi.getOAuthProviders();
+        if (!mounted) return;
+        setOauthProviders(result.providers);
+        if (result.turnstile) setTurnstileConfig(result.turnstile);
+        if (!result.registration_enabled && modeRef.current === "register") {
+          setMode("login");
+          setEmail("");
+          setConfirmPassword("");
+        }
+      } catch {
+        // 兼容配置不可用时使用页面安全默认值。
+      }
+    };
+    void fetchAuthData();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   // 检查当前模式是否需要 Turnstile
   const requiresTurnstile = () => {
     if (!turnstileConfig.enabled || !turnstileConfig.site_key) return false;
@@ -155,7 +179,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
     }, AUTH_REDIRECT_ANIMATION_MS);
   }, [clearRedirectTimers, onSuccess]);
 
-  // 获取 OAuth 提供商列表、认证设置，并在登录入口自动尝试一次 Windows 免密登录。
+  // 读取正式 AD 配置，并在登录入口自动尝试一次 Windows 免密登录。
   useEffect(() => {
     if (isLoading || authDiscoveryStartedRef.current) return;
     authDiscoveryStartedRef.current = true;
@@ -168,24 +192,13 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
       }
       let startedRedirect = false;
       try {
-        const result = await authApi.getOAuthProviders(controller.signal);
+        const result = await authApi.getADLoginConfig(controller.signal);
         if (
           !mountedRef.current ||
           controller.signal.aborted ||
           isAuthenticatedRef.current
         ) {
           return;
-        }
-        setOauthProviders(result.providers);
-        // 设置 Turnstile 配置
-        if (result.turnstile) {
-          setTurnstileConfig(result.turnstile);
-        }
-        // 如果注册已关闭且当前是注册模式，切换回登录
-        if (!result.registration_enabled && modeRef.current === "register") {
-          setMode("login");
-          setEmail("");
-          setConfirmPassword("");
         }
         if (result.ad_login_url && modeRef.current === "login") {
           const loginOutcome = await loginWithAD(result.ad_login_url);
@@ -194,7 +207,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
           beginSuccessRedirect(loginOutcome.value);
         }
       } catch {
-        // Windows 或 provider 登录不可用时保留账号密码登录。
+        // Windows 或 AD 配置不可用时保留账号密码登录。
       } finally {
         if (mountedRef.current && !startedRedirect) setIsAttemptingAD(false);
       }

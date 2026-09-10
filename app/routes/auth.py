@@ -4,6 +4,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth import AuthPrincipal, is_ai_admin, principal_to_response, require_principal
 from app.auth_sessions import (
@@ -24,15 +25,11 @@ from app.auth_sessions import (
 )
 from app.db import transaction
 from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
-from app.models import ADLoginRequest, AuthContextBootstrapRequest, LoginRequest, OAuthCallbackRequest, PrincipalResponse
+from app.models import AuthContextBootstrapRequest, LoginRequest, OAuthCallbackRequest, PrincipalResponse
 from app.principal_authority import (
-    CompanyLoginTokenConfigurationError,
-    CompanyLoginTokenInvalid,
     PrincipalAuthorityDenied,
     fetch_company_user_info,
     resolve_login_principal,
-    resolve_verified_company_principal,
-    verify_company_login_token,
 )
 from app.repositories import append_audit_log, ensure_user
 from app.settings import get_settings
@@ -40,6 +37,15 @@ from app.validation import assert_safe_id
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+class ADLoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workid: str = Field(min_length=1, max_length=64)
+    cnname: str = Field(min_length=1, max_length=128)
+    token: str = Field(min_length=1, max_length=8192)
+
 
 async def call_existing_login(username: str, password: str) -> dict[str, Any]:
     settings = get_settings()
@@ -107,6 +113,18 @@ def _oauth_provider(provider: str) -> str:
         return assert_safe_id(provider, "oauth_provider")
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="oauth_provider_unavailable") from exc
+
+
+@router.get("/auth/ad-login/config")
+async def ad_login_config(response: Response) -> dict[str, str | None]:
+    """Publish only the browser URL needed to start optional company AD login."""
+
+    settings = get_settings()
+    base_url = settings.existing_auth_base_url.rstrip("/")
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "ad_login_url": f"{base_url}/api/login/GetADName" if base_url else None
+    }
 
 
 @router.post("/auth/bootstrap")
@@ -266,10 +284,10 @@ async def login(request: LoginRequest, http_request: Request) -> PrincipalRespon
 
 @router.post("/auth/ad-login", response_model=PrincipalResponse)
 async def ad_login(request: ADLoginRequest, http_request: Request) -> PrincipalResponse:
-    """Exchange a verified company AD JWT for the platform's HttpOnly session."""
+    """Create a platform session and retain the company JWT only for MCP calls."""
 
     operation = await _begin_browser_operation(http_request, "ad-login")
-    principal, company_jwt = await _resolve_ad_login_principal(request.token)
+    principal, company_jwt = await _resolve_ad_login_principal(request)
     async with transaction() as conn:
         await _persist_login_principal(conn, principal)
         commit_status = await commit_auth_operation(operation, principal_snapshot(principal))
@@ -305,19 +323,18 @@ async def _resolve_login_principal(
     return principal, company_jwt.strip() if isinstance(company_jwt, str) else None
 
 
-async def _resolve_ad_login_principal(company_jwt: str) -> tuple[AuthPrincipal, str]:
-    settings = get_settings()
+async def _resolve_ad_login_principal(request: ADLoginRequest) -> tuple[AuthPrincipal, str]:
     try:
-        claims = verify_company_login_token(company_jwt, settings=settings)
-        principal = resolve_verified_company_principal(claims, settings=settings)
-    except CompanyLoginTokenConfigurationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="company_login_unavailable",
-        ) from exc
-    except (CompanyLoginTokenInvalid, PrincipalAuthorityDenied) as exc:
+        principal = await resolve_login_principal(
+            work_id=request.workid,
+            login_name=request.workid,
+            display_name=request.cnname,
+            user_info_adapter=call_existing_user_info,
+            settings=get_settings(),
+        )
+    except PrincipalAuthorityDenied as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="company_login_failed") from exc
-    return principal, company_jwt
+    return principal, request.token
 
 
 async def _store_mcp_login_jwt(
