@@ -5,6 +5,7 @@ import types
 import pytest
 
 from app.streaming import redis as stream_redis
+from app.streaming.contracts import STREAM_DESIGN_ID, committed_public_stream_event
 
 
 def _settings():
@@ -29,7 +30,7 @@ def _envelope(
         stream_incarnation=incarnation,
         event_type=event_type,
         emitted_at="2026-08-08T00:00:00Z",
-        payload=payload or {"design_id": stream_redis.STREAM_DESIGN_ID},
+        payload=payload or {"design_id": STREAM_DESIGN_ID},
     )
 
 
@@ -269,7 +270,7 @@ def test_committed_execution_projection_uses_only_pg_identity_sequence_and_creat
         },
     }
 
-    projected = stream_redis.committed_public_stream_event(row)
+    projected = committed_public_stream_event(row)
 
     assert projected is not None
     envelope_type, payload = projected
@@ -331,67 +332,6 @@ def test_terminal_and_end_payloads_are_exact_and_cross_linked():
         stream_redis.StreamProjectionError, match="stream_end_payload_invalid"
     ):
         _envelope(event_id="sev_end", event_type="end", payload={"done": True})
-
-
-@pytest.mark.asyncio
-async def test_run_publisher_appends_committed_safe_projection_with_pg_semantic_id():
-    appended = []
-
-    class Bridge:
-        async def append(self, envelope, *, terminal=False):
-            appended.append((envelope, terminal))
-            return stream_redis.StreamCursor("run-a", 1, "1-0")
-
-        async def aclose(self):
-            return None
-
-    authority = stream_redis.StreamAuthority(
-        "tenant-a",
-        "run-a",
-        "attempt-a",
-        "scope-a",
-        1,
-        "confirmed",
-        "sev-open",
-        _envelope().canonical_bytes.decode(),
-        "digest",
-        1,
-        "active",
-    )
-    publisher = stream_redis.RunStreamPublisher(
-        "tenant-a",
-        "run-a",
-        "attempt-a",
-        "secret",
-        bridge=Bridge(),
-        authority=authority,
-    )
-
-    published = await publisher.publish_committed_event(
-        {
-            "id": "evt-execution-1",
-            "run_id": "run-a",
-            "sequence": 17,
-            "event_type": "execution_step",
-            "visible_to_user": True,
-            "created_at": "2026-08-09T01:02:03Z",
-            "payload_json": {
-                "step_id": "pex_execution_1",
-                "kind": "processing",
-                "stage": "execution",
-                "status": "running",
-                "title": "Process request",
-                "summary": "Running controlled processing",
-                "progress": {"current": 0, "total": 1},
-            },
-        }
-    )
-
-    assert published is True
-    assert appended[0][0].event_id == "evt-execution-1"
-    assert appended[0][0].event_type == "semantic_progress"
-    assert appended[0][0].emitted_at == "2026-08-09T01:02:03Z"
-    assert appended[0][1] is False
 
 
 def test_stable_event_id_is_deterministic_per_batch_item():

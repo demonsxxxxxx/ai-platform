@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -24,7 +23,6 @@ from app.streaming.api import (
 )
 from app.streaming.contracts import (
     PUBLIC_EVENT_TYPES as PUBLIC_EVENT_TYPES,
-    STREAM_DESIGN_ID,
     STREAM_EVENT_SCHEMA,
     STREAM_GAP_SCHEMA as STREAM_GAP_SCHEMA,
     STREAM_PROJECTION_VERSION,
@@ -37,10 +35,8 @@ from app.streaming.contracts import (
     StreamProjectionError as StreamProjectionError,
     _rfc3339_utc,
     canonical_json_bytes,
-    committed_public_stream_event,
-    new_envelope,
     stable_event_id as stable_event_id,
-    tenant_scope,
+    tenant_scope as tenant_scope,
     validate_public_payload as validate_public_payload,
 )
 
@@ -141,44 +137,6 @@ _SCRIPT_CONTRACT_ERRORS = frozenset(
 
 class StreamTransportUnavailable(RuntimeError):
     pass
-
-
-async def publish_committed_stream_event(
-    bridge: "RedisStreamBridge",
-    *,
-    authority: "StreamAuthority",
-    row: Mapping[str, object],
-) -> bool:
-    """Append one exact post-commit safe projection to the live stream."""
-
-    projection = committed_public_stream_event(row)
-    if projection is None:
-        return False
-    event_type, payload = projection
-    event_id = row.get("id")
-    emitted_at = row.get("created_at")
-    if (
-        authority.state != "confirmed"
-        or row.get("run_id") != authority.run_id
-        or not isinstance(event_id, str)
-        or not event_id
-        or not isinstance(emitted_at, str)
-        or not emitted_at
-    ):
-        raise StreamContractError("stream_committed_event_invalid")
-    await bridge.append(
-        new_envelope(
-            event_id=event_id,
-            tenant_scope_value=authority.tenant_scope,
-            run_id=authority.run_id,
-            attempt_id=authority.attempt_id,
-            stream_incarnation=authority.stream_incarnation,
-            event_type=event_type,
-            payload=payload,
-            emitted_at=emitted_at,
-        )
-    )
-    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -680,63 +638,6 @@ def terminal_event_ids(
     ), _semantic_id("ai-platform-stream-terminal-v3", *base, "end")
 
 
-async def create_or_get_stream_admission(
-    conn: AsyncConnection[dict[str, object]],
-    *,
-    tenant_id: str,
-    run_id: str,
-    attempt_id: str,
-    tenant_scope: str,
-) -> StreamAuthority:
-    result = await conn.execute(
-        "select * from sse_stream_authorities where tenant_id = %s and run_id = %s for update",
-        (tenant_id, run_id),
-    )
-    row = await result.fetchone()
-    if row is not None:
-        current = _authority(row)
-        if current.attempt_id != attempt_id or current.tenant_scope != tenant_scope:
-            raise SseAuthorityConflictError("sse_stream_attempt_conflict")
-        return current
-    incarnation = 1
-    event_id = stream_open_event_id(
-        tenant_scope=tenant_scope,
-        run_id=run_id,
-        attempt_id=attempt_id,
-        incarnation=incarnation,
-    )
-    envelope = StreamEnvelope(
-        event_id,
-        tenant_scope,
-        run_id,
-        attempt_id,
-        incarnation,
-        "stream_open",
-        {"design_id": STREAM_DESIGN_ID},
-        datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-    )
-    payload = envelope.canonical_bytes.decode()
-    result = await conn.execute(
-        """insert into sse_stream_authorities(tenant_id,run_id,attempt_id,design_id,projection_version,tenant_scope,stream_incarnation,state,open_event_id,open_payload_bytes,open_payload_digest) values (%s,%s,%s,%s,%s,%s,%s,'admission_pending',%s,%s,%s) returning *""",
-        (
-            tenant_id,
-            run_id,
-            attempt_id,
-            STREAM_DESIGN_ID,
-            STREAM_PROJECTION_VERSION,
-            tenant_scope,
-            incarnation,
-            event_id,
-            payload,
-            _sha256(payload),
-        ),
-    )
-    row = await result.fetchone()
-    if row is None:
-        raise SseAuthorityConflictError("sse_stream_admission_unavailable")
-    return _authority(row)
-
-
 async def create_or_get_stream_admission_v4(
     conn: AsyncConnection[dict[str, object]],
     *,
@@ -1100,151 +1001,3 @@ async def mark_terminal_intent_published(
     if row is None:
         raise SseAuthorityConflictError("sse_terminal_intent_fenced")
     return _intent(row)
-
-
-def _frozen_payload(value: str, *, digest: str, error: str) -> dict[str, object]:
-    if not hmac.compare_digest(_sha256(value), digest):
-        raise StreamContractError(error)
-    try:
-        payload = json.loads(value)
-    except (TypeError, ValueError) as exc:
-        raise StreamContractError(error) from exc
-    if not isinstance(payload, dict):
-        raise StreamContractError(error)
-    return payload
-
-
-async def publish_terminal_intent(
-    bridge: RedisStreamBridge,
-    *,
-    authority: StreamAuthority,
-    intent: TerminalPublicationIntent,
-) -> tuple[StreamCursor, StreamCursor]:
-    """Publish one committed, frozen terminal intent without holding a PG transaction."""
-
-    if (
-        authority.tenant_id != intent.tenant_id
-        or authority.run_id != intent.run_id
-        or authority.attempt_id != intent.attempt_id
-        or authority.stream_incarnation != intent.stream_incarnation
-        or authority.state != "terminal"
-    ):
-        raise StreamContractError("stream_terminal_authority_mismatch")
-    terminal_payload = _frozen_payload(
-        intent.terminal_payload_bytes,
-        digest=intent.terminal_payload_digest,
-        error="stream_terminal_payload_digest_mismatch",
-    )
-    end_payload = _frozen_payload(
-        intent.end_payload_bytes,
-        digest=intent.end_payload_digest,
-        error="stream_end_payload_digest_mismatch",
-    )
-    terminal_cursor = await bridge.append(
-        new_envelope(
-            event_id=intent.terminal_event_id,
-            tenant_scope_value=authority.tenant_scope,
-            run_id=intent.run_id,
-            attempt_id=intent.attempt_id,
-            stream_incarnation=intent.stream_incarnation,
-            event_type="terminal",
-            payload=terminal_payload,
-            emitted_at=intent.emitted_at,
-        ),
-        terminal=True,
-    )
-    end_cursor = await bridge.append(
-        new_envelope(
-            event_id=intent.end_event_id,
-            tenant_scope_value=authority.tenant_scope,
-            run_id=intent.run_id,
-            attempt_id=intent.attempt_id,
-            stream_incarnation=intent.stream_incarnation,
-            event_type="end",
-            payload=end_payload,
-            emitted_at=intent.emitted_at,
-        ),
-        terminal=True,
-    )
-    return terminal_cursor, end_cursor
-
-
-CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
-_ASSISTANT_DELTA_INPUT_STAGES = frozenset({"message", "assistant"})
-
-
-def canonical_assistant_delta_event(
-    *, stage: str, payload: dict[str, Any] | None
-) -> tuple[str, str, dict[str, Any]] | None:
-    if stage not in _ASSISTANT_DELTA_INPUT_STAGES or not isinstance(payload, dict):
-        return None
-    delta = payload.get("delta")
-    if not isinstance(delta, str) or not delta:
-        return None
-    return (
-        "answer",
-        "",
-        {
-            "delta": delta,
-            "source": CHAT_ASSISTANT_DELTA_SOURCE,
-            "visible_to_user": True,
-            "severity": "info",
-        },
-    )
-
-
-@dataclass(slots=True)
-class RunStreamPublisher:
-    tenant_id: str
-    run_id: str
-    attempt_id: str
-    authority_secret: str
-    bridge: RedisStreamBridge = field(default_factory=RedisStreamBridge)
-    authority: StreamAuthority | None = None
-
-    async def prepare(self, conn: Any) -> None:
-        self.authority = await create_or_get_stream_admission(
-            conn,
-            tenant_id=self.tenant_id,
-            run_id=self.run_id,
-            attempt_id=self.attempt_id,
-            tenant_scope=tenant_scope(self.tenant_id, secret=self.authority_secret),
-        )
-
-    async def open(self) -> None:
-        authority = self._authority()
-        await self.bridge.append(StreamEnvelope.from_json(authority.open_payload_bytes))
-
-    async def confirm(self, conn: Any) -> None:
-        self.authority = await confirm_stream_admission(
-            conn, authority=self._authority()
-        )
-
-    async def refresh(self, conn: Any) -> None:
-        authority = await get_stream_authority(
-            conn,
-            tenant_id=self.tenant_id,
-            run_id=self.run_id,
-        )
-        if (
-            authority is None
-            or authority.attempt_id != self.attempt_id
-            or authority.state != "confirmed"
-        ):
-            raise StreamContractError("sse_stream_attempt_inactive")
-        self.authority = authority
-
-    async def publish_committed_event(self, row: Mapping[str, object]) -> bool:
-        return await publish_committed_stream_event(
-            self.bridge,
-            authority=self._authority(),
-            row=row,
-        )
-
-    async def aclose(self) -> None:
-        await self.bridge.aclose()
-
-    def _authority(self) -> StreamAuthority:
-        if self.authority is None:
-            raise RuntimeError("sse_stream_admission_missing")
-        return self.authority

@@ -1,10 +1,8 @@
 from datetime import datetime, timedelta, timezone
-from dataclasses import replace
 
 import pytest
 
 from app.streaming import redis as control
-from app.streaming.redis import StreamEnvelope
 
 
 class Result:
@@ -46,41 +44,6 @@ def authority_row(**overrides):
     }
     row.update(overrides)
     return row
-
-
-@pytest.mark.asyncio
-async def test_stream_admission_freezes_open_envelope_before_confirmation():
-    inserted_row = authority_row()
-    conn = ScriptedConnection([None, inserted_row])
-
-    authority = await control.create_or_get_stream_admission(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        tenant_scope="scope-a",
-    )
-
-    insert_params = conn.calls[1][1]
-    frozen_envelope = StreamEnvelope.from_json(insert_params[8])
-    assert authority.state == "admission_pending"
-    assert frozen_envelope.event_id == insert_params[7]
-    assert frozen_envelope.event_type == "stream_open"
-    assert frozen_envelope.stream_incarnation == 1
-    assert control._sha256(insert_params[8]) == insert_params[9]
-
-    confirmed_row = authority_row(
-        state="confirmed", open_payload_digest=insert_params[9]
-    )
-    confirmed = await control.confirm_stream_admission(
-        ScriptedConnection([confirmed_row]),
-        authority=replace(
-            authority,
-            open_payload_bytes=insert_params[8],
-            open_payload_digest=insert_params[9],
-        ),
-    )
-    assert confirmed.state == "confirmed"
 
 
 @pytest.mark.asyncio
@@ -142,22 +105,6 @@ async def test_admission_confirmation_is_idempotent_after_terminal_promotion():
     assert "when state = 'terminal' then 'terminal'" in statement
     assert "state in ('admission_pending','confirmed','terminal')" in statement
     assert confirmed.state == "terminal"
-
-
-@pytest.mark.asyncio
-async def test_stream_admission_rejects_a_different_attempt_instead_of_creating_parallel_authority():
-    conn = ScriptedConnection([authority_row()])
-    with pytest.raises(
-        control.SseAuthorityConflictError, match="sse_stream_attempt_conflict"
-    ):
-        await control.create_or_get_stream_admission(
-            conn,
-            tenant_id="tenant-a",
-            run_id="run-a",
-            attempt_id="attempt-b",
-            tenant_scope="scope-a",
-        )
-    assert len(conn.calls) == 1
 
 
 def test_authority_lease_checks_authority_deadline_without_database_io():
@@ -337,38 +284,3 @@ async def test_terminal_intent_duplicate_with_different_payload_hash_fails_close
         control.SseAuthorityConflictError, match="sse_terminal_intent_conflict"
     ):
         await control.persist_terminal_intent(conn, intent=intent)
-
-
-@pytest.mark.asyncio
-async def test_terminal_publisher_emits_terminal_then_end_with_frozen_timestamp_and_bytes():
-    intent = control.freeze_terminal_intent(
-        tenant_id="tenant-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        tenant_scope="scope-a",
-        stream_incarnation=1,
-        status="succeeded",
-    )
-    authority = control._authority(authority_row(state="terminal"))
-
-    class RecordingBridge:
-        def __init__(self):
-            self.envelopes = []
-
-        async def append(self, envelope, *, terminal=False):
-            self.envelopes.append((envelope, terminal))
-            return control.StreamCursor("run-a", 1, f"1-{len(self.envelopes)}")
-
-    bridge = RecordingBridge()
-    await control.publish_terminal_intent(bridge, authority=authority, intent=intent)
-
-    assert [item.event_type for item, _ in bridge.envelopes] == ["terminal", "end"]
-    assert all(terminal for _, terminal in bridge.envelopes)
-    assert [item.emitted_at for item, _ in bridge.envelopes] == [
-        intent.emitted_at,
-        intent.emitted_at,
-    ]
-    assert bridge.envelopes[0][0].payload["event_id"] == intent.terminal_event_id
-    assert (
-        bridge.envelopes[1][0].payload["terminal_event_id"] == intent.terminal_event_id
-    )

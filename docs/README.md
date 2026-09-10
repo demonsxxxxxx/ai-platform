@@ -65,6 +65,12 @@ Chat and SSE contracts until explicitly replaced.
 
 ## Delivery and operations
 
+[State authority implementation plan](implementation/state-authority-convergence.md)
+turns the fixed-source Yuxi comparison into bounded cleanup and recovery slices,
+with caller retirement, agent exploration scopes, and falsifiable acceptance.
+It is a proposed implementation plan; detailed contracts above remain authoritative
+and execution progress belongs in the active task or PR.
+
 [AGENTS](../AGENTS.md), [PR workflow](agent-rules/github-issue-pr-workflow.md),
 [local test execution](agent-rules/local-test-execution.md), and
 [multi-agent workflow](agent-rules/multi-agent-context-workflow.md) own repository
