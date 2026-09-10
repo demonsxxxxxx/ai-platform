@@ -49,14 +49,14 @@ test("admin lifecycle URLs target review and fully rolled-out stable promotion",
   );
 });
 
-test("admin catalog normalizer exposes draft rediscovery without private package fields", () => {
+test("admin catalog normalizer exposes draft rediscovery and released aggregate lifecycle without private package fields", () => {
   const catalog = normalizeAdminSkillCatalogResponse({
     items: [
       {
         skill_id: "research",
         name: "research",
         description: "Research workflow",
-        lifecycle_status: "active",
+        lifecycle_status: "released",
         distribution_status: "disabled",
         visible_to_user: false,
         latest_version: "sha-123",
@@ -72,7 +72,7 @@ test("admin catalog normalizer exposes draft rediscovery without private package
       skillId: "research",
       name: "research",
       description: "Research workflow",
-      lifecycleStatus: "active",
+      lifecycleStatus: "released",
       distributionStatus: "disabled",
       visibleToUser: false,
       latestVersion: "sha-123",

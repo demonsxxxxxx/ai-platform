@@ -56,6 +56,7 @@ export function NonChatAppContent({
           isCollapsed={sidebarCollapsed}
           onToggleCollapsed={setSidebarCollapsed}
           navigationOnly
+          showSessionHistory={activeTab === "apps"}
         />
       }
     >
