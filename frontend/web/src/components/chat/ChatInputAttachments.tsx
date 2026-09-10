@@ -30,7 +30,9 @@ export function ChatInputAttachments({
             key={attachment.id}
             data-composer-file-reference={attachment.id}
             data-composer-file-state={
-              attachment.isUploading ? "uploading" : "ready"
+              attachment.isUploading
+                ? (attachment.uploadStatus ?? "uploading")
+                : "ready"
             }
             data-composer-file-type={attachment.type}
           >

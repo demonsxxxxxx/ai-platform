@@ -26,10 +26,14 @@ export interface UploadHandle {
 export type UploadRequestErrorKind =
   | "file_too_large"
   | "unsupported_file_type"
+  | "capacity"
   | "recoverable"
   | "cancelled";
 
-type SafeUploadErrorCode = "file_too_large" | "unsupported_file_type";
+type SafeUploadErrorCode =
+  | "file_too_large"
+  | "unsupported_file_type"
+  | "upload_session_limit_exceeded";
 
 /** A bounded upload failure projection that never contains backend detail. */
 export class UploadRequestError extends Error {
@@ -176,6 +180,13 @@ function uploadMultipartFile(file: File, options: UploadOptions): UploadHandle {
     }
     if (aborted) {
       throw new UploadRequestError("cancelled");
+    }
+    if (
+      error instanceof ApiRequestError &&
+      error.status === 429 &&
+      error.code === "upload_session_limit_exceeded"
+    ) {
+      throw new UploadRequestError("capacity", error.status, error.code);
     }
     if (
       error instanceof ApiRequestError &&
