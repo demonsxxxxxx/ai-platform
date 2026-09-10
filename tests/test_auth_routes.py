@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.auth import (
+    COMPANY_AUTHZ_POLICY_VERSION,
     AuthPrincipal,
     authority_checked_at_now,
     is_ai_admin,
@@ -311,6 +312,108 @@ def test_login_returns_ai_role_without_mutating_context_cookie(monkeypatch):
         "jwt": "company.jwt.signature",
     }
     assert "set-cookie" not in response.headers
+
+
+def test_ad_login_resolves_company_authority_and_retains_jwt_for_mcp(monkeypatch):
+    token = "company.jwt.signature"
+    observed = {}
+
+    async def current_user_info(work_id):
+        observed["work_id"] = work_id
+        return {
+            "workid": work_id,
+            "username": work_id,
+            "cnname": "AD User",
+            "department": "研发一部",
+            "role": "user",
+        }
+
+    async def noop(*args, **kwargs):
+        del args, kwargs
+
+    stored = {}
+
+    async def fake_store(principal, company_jwt):
+        stored["user_id"] = principal.user_id
+        stored["jwt"] = company_jwt
+
+    settings = auth_settings()
+    monkeypatch.setattr("app.auth.get_settings", lambda: settings)
+    monkeypatch.setattr("app.routes.auth.get_settings", lambda: settings)
+    monkeypatch.setattr("app.routes.auth.call_existing_user_info", current_user_info)
+    monkeypatch.setattr("app.routes.auth._persist_login_principal", noop)
+    monkeypatch.setattr("app.routes.auth._store_mcp_login_jwt", fake_store)
+
+    client = browser_client()
+    response = client.post(
+        "/api/ai/auth/ad-login",
+        json={"workid": "ad001", "cnname": "AD User", "token": token},
+    )
+
+    assert response.status_code == 200
+    expected_principal = {
+        "user_id": "ad001",
+        "user_name": "ad001",
+        "display_name": "AD User",
+        "tenant_id": "default",
+        "department_id": "研发一部",
+        "roles": ["user"],
+        "permissions": EXPECTED_COMPANY_USER_PERMISSIONS,
+        "is_admin": False,
+        "source": "company-login",
+        "authz_policy_version": COMPANY_AUTHZ_POLICY_VERSION,
+        "authority_source": "company-user-info",
+        "authority_checked_at": response.json()["authority_checked_at"],
+    }
+    assert response.json() == expected_principal
+    current_response = client.get("/api/ai/auth/me")
+    assert current_response.status_code == 200
+    assert current_response.json() == expected_principal
+    assert observed == {"work_id": "ad001"}
+    assert stored == {"user_id": "ad001", "jwt": token}
+
+
+def test_ad_login_rejects_browser_supplied_authority_fields():
+    response = browser_client().post(
+        "/api/ai/auth/ad-login",
+        json={
+            "workid": "ad001",
+            "cnname": "AD User",
+            "token": "company.jwt.signature",
+            "department": "admin",
+            "role": "admin",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "invalid_ad_login_request"}
+
+
+def test_ad_login_config_uses_existing_company_login_url(monkeypatch):
+    monkeypatch.setattr(
+        "app.routes.auth.get_settings",
+        lambda: auth_settings(existing_auth_base_url="http://company.test/"),
+    )
+
+    response = TestClient(create_app()).get("/api/ai/auth/ad-login/config")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ad_login_url": "http://company.test/api/login/GetADName"
+    }
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_ad_login_config_is_disabled_without_company_login_url(monkeypatch):
+    monkeypatch.setattr(
+        "app.routes.auth.get_settings",
+        lambda: auth_settings(existing_auth_base_url=""),
+    )
+
+    response = TestClient(create_app()).get("/api/ai/auth/ad-login/config")
+
+    assert response.status_code == 200
+    assert response.json() == {"ad_login_url": None}
 
 
 def test_company_user_login_gets_baseline_ai_permissions(monkeypatch):
@@ -869,3 +972,4 @@ def test_lambchat_oauth_providers_disable_registration():
     assert response.status_code == 200
     assert response.json()["providers"] == []
     assert response.json()["registration_enabled"] is False
+    assert "ad_login_url" not in response.json()
