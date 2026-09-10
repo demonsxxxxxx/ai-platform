@@ -13,7 +13,9 @@ import {
 import { uploadApi } from "../upload.ts";
 
 function installAuthApiBrowserStubs(
-  responseBody: Record<string, unknown> = {
+  responseBody:
+    | Record<string, unknown>
+    | ((callIndex: number) => unknown) = {
     user_id: "dev001",
     user_name: "dev001",
     display_name: "Developer",
@@ -40,9 +42,14 @@ function installAuthApiBrowserStubs(
   Object.defineProperty(globalThis, "fetch", {
     configurable: true,
     value: async (input: RequestInfo | URL, init?: RequestInit) => {
+      const callIndex = fetchCalls.length;
       fetchCalls.push(String(input));
       fetchInit.push(init ?? {});
-      return new Response(JSON.stringify(responseBody), {
+      const body =
+        typeof responseBody === "function"
+          ? responseBody(callIndex)
+          : responseBody;
+      return new Response(JSON.stringify(body), {
         status,
         headers: { "Content-Type": "application/json" },
       });
@@ -111,6 +118,77 @@ test("current-user projection preserves the authenticated tenant and department 
     assert.equal(user.id, "dev001");
     assert.equal(user.tenant_id, "default");
     assert.equal(user.department_id, "研发一部");
+  } finally {
+    stubs.restore();
+  }
+});
+
+test("AD login exchanges the JWT from the GetADName user array", async () => {
+  const token = "signed-company-jwt";
+  const stubs = installAuthApiBrowserStubs((callIndex) =>
+    callIndex === 0
+      ? [
+          {
+            workid: "ad001",
+            username: "ad001",
+            cnname: "AD User",
+            depart: "研发一部",
+            role: "user",
+            token,
+          },
+        ]
+      : {
+          user_id: "ad001",
+          display_name: "AD User",
+          tenant_id: "default",
+          department_id: "研发一部",
+          roles: ["user"],
+          permissions: ["agent:use"],
+          is_admin: false,
+          source: "company-login",
+        },
+  );
+  const controller = new AbortController();
+  try {
+    await authApi.loginWithAD(
+      "http://company.test/api/login/GetADName",
+      controller.signal,
+    );
+
+    assert.deepEqual(stubs.fetchCalls, [
+      "http://company.test/api/login/GetADName",
+      "/api/ai/auth/ad-login",
+    ]);
+    assert.equal(stubs.fetchInit[0].credentials, "include");
+    assert.equal(stubs.fetchInit[0].cache, "no-store");
+    const requestSignal = stubs.fetchInit[0].signal as AbortSignal;
+    assert.equal(requestSignal instanceof AbortSignal, true);
+    assert.notEqual(requestSignal, controller.signal);
+    assert.equal(stubs.fetchInit[1].signal, requestSignal);
+    controller.abort();
+    assert.equal(requestSignal.aborted, true);
+    assert.deepEqual(JSON.parse(String(stubs.fetchInit[1].body)), {
+      workid: "ad001",
+      cnname: "AD User",
+      token,
+    });
+  } finally {
+    stubs.restore();
+  }
+});
+
+test("AD configuration composes the caller cancellation signal", async () => {
+  const stubs = installAuthApiBrowserStubs({ ad_login_url: null });
+  const controller = new AbortController();
+  try {
+    await authApi.getADLoginConfig(controller.signal);
+
+    assert.deepEqual(stubs.fetchCalls, ["/api/ai/auth/ad-login/config"]);
+    const requestSignal = stubs.fetchInit[0].signal as AbortSignal;
+    assert.equal(requestSignal instanceof AbortSignal, true);
+    assert.notEqual(requestSignal, controller.signal);
+    controller.abort();
+    assert.equal(requestSignal.aborted, true);
   } finally {
     stubs.restore();
   }
