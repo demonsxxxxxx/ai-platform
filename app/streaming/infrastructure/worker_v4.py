@@ -19,7 +19,7 @@ from app.streaming.application.worker_publication_v4 import (
     V4StreamAuthorityLookup,
     WorkerEventPersistence,
 )
-from app.streaming.contracts import tenant_scope
+from app.streaming.domain.live import tenant_scope
 from app.streaming.redis import (
     StreamContractError,
     StreamTransportUnavailable,

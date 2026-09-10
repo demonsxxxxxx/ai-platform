@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 from app.runs.api import CancelRequestAuthority, RunTerminalEventFact
-from app.streaming.contracts import tenant_scope
+from app.streaming.domain.live import tenant_scope
 from app.streaming.infrastructure import v4 as _v4
 from app.streaming.redis import (
     create_or_get_stream_admission_v4,
