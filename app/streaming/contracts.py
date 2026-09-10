@@ -24,6 +24,7 @@ from app.streaming.api import (
     StreamCursor,
     StreamGap as StreamGap,
     canonical_json_bytes,
+    tenant_scope as tenant_scope,
 )
 from app.streaming.events import (
     INTERNAL_STREAM_EVENT_SCHEMA,
@@ -31,8 +32,6 @@ from app.streaming.events import (
     STREAM_DESIGN_ID as GENERATED_STREAM_DESIGN_ID,
     STREAM_PROJECTION_VERSION as GENERATED_STREAM_PROJECTION_VERSION,
 )
-from app.streaming.domain.live import tenant_scope as tenant_scope
-
 STREAM_EVENT_SCHEMA = INTERNAL_STREAM_EVENT_SCHEMA
 STREAM_PROJECTION_VERSION = GENERATED_STREAM_PROJECTION_VERSION
 STREAM_DESIGN_ID = GENERATED_STREAM_DESIGN_ID

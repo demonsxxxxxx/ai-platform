@@ -55,6 +55,7 @@ from app.streaming.domain.live import (
     redis_id_tuple,
     stream_key,
     stream_live_channel,
+    tenant_scope,
 )
 from app.streaming.domain.public_events_v4 import (
     V4_METADATA_KEY as V4_METADATA_KEY,
@@ -158,4 +159,5 @@ __all__ = [
     "redis_id_tuple",
     "stream_key",
     "stream_live_channel",
+    "tenant_scope",
 ]
