@@ -4,7 +4,6 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth import AuthPrincipal, is_ai_admin, principal_to_response, require_principal
 from app.auth_sessions import (
@@ -37,14 +36,6 @@ from app.validation import assert_safe_id
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-
-class ADLoginRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    workid: str = Field(min_length=1, max_length=64)
-    cnname: str = Field(min_length=1, max_length=128)
-    token: str = Field(min_length=1, max_length=8192)
 
 
 async def call_existing_login(username: str, password: str) -> dict[str, Any]:
@@ -283,11 +274,33 @@ async def login(request: LoginRequest, http_request: Request) -> PrincipalRespon
 
 
 @router.post("/auth/ad-login", response_model=PrincipalResponse)
-async def ad_login(request: ADLoginRequest, http_request: Request) -> PrincipalResponse:
+async def ad_login(request: dict[str, Any], http_request: Request) -> PrincipalResponse:
     """Create a platform session and retain the company JWT only for MCP calls."""
 
+    if set(request) != {"workid", "cnname", "token"}:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid_ad_login_request")
+    work_id = request["workid"]
+    display_name = request["cnname"]
+    company_jwt = request["token"]
+    if (
+        not isinstance(work_id, str)
+        or not work_id.strip()
+        or len(work_id) > 64
+        or not isinstance(display_name, str)
+        or not display_name.strip()
+        or len(display_name) > 128
+        or not isinstance(company_jwt, str)
+        or not company_jwt.strip()
+        or len(company_jwt) > 8192
+    ):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid_ad_login_request")
+
     operation = await _begin_browser_operation(http_request, "ad-login")
-    principal, company_jwt = await _resolve_ad_login_principal(request)
+    principal, company_jwt = await _resolve_ad_login_principal(
+        work_id=work_id.strip(),
+        display_name=display_name.strip(),
+        company_jwt=company_jwt.strip(),
+    )
     async with transaction() as conn:
         await _persist_login_principal(conn, principal)
         commit_status = await commit_auth_operation(operation, principal_snapshot(principal))
@@ -323,18 +336,23 @@ async def _resolve_login_principal(
     return principal, company_jwt.strip() if isinstance(company_jwt, str) else None
 
 
-async def _resolve_ad_login_principal(request: ADLoginRequest) -> tuple[AuthPrincipal, str]:
+async def _resolve_ad_login_principal(
+    *,
+    work_id: str,
+    display_name: str,
+    company_jwt: str,
+) -> tuple[AuthPrincipal, str]:
     try:
         principal = await resolve_login_principal(
-            work_id=request.workid,
-            login_name=request.workid,
-            display_name=request.cnname,
+            work_id=work_id,
+            login_name=work_id,
+            display_name=display_name,
             user_info_adapter=call_existing_user_info,
             settings=get_settings(),
         )
     except PrincipalAuthorityDenied as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="company_login_failed") from exc
-    return principal, request.token
+    return principal, company_jwt
 
 
 async def _store_mcp_login_jwt(

@@ -373,6 +373,22 @@ def test_ad_login_resolves_company_authority_and_retains_jwt_for_mcp(monkeypatch
     assert stored == {"user_id": "ad001", "jwt": token}
 
 
+def test_ad_login_rejects_browser_supplied_authority_fields():
+    response = browser_client().post(
+        "/api/ai/auth/ad-login",
+        json={
+            "workid": "ad001",
+            "cnname": "AD User",
+            "token": "company.jwt.signature",
+            "department": "admin",
+            "role": "admin",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "invalid_ad_login_request"}
+
+
 def test_ad_login_config_uses_existing_company_login_url(monkeypatch):
     monkeypatch.setattr(
         "app.routes.auth.get_settings",
