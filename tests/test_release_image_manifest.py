@@ -56,6 +56,30 @@ def test_compose_package_contains_only_runtime_files_with_fixed_images(tmp_path,
         assert manifest["source_commit"] in script
         assert "@@SOURCE_COMMIT@@" not in script
         compile(script, "deploy.py", "exec")
+        env_example = archive.extractfile(".env.example").read().decode()
+        env_keys = {line.partition("=")[0] for line in env_example.splitlines() if "=" in line}
+        assert not env_keys.intersection({
+            "AI_PLATFORM_IMAGE", "AI_PLATFORM_FRONTEND_IMAGE", "AI_PLATFORM_SOURCE_COMMIT",
+            "OPENSANDBOX_EXECUTOR_IMAGE", "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
+            "DEPLOYMENT_ENVIRONMENT", "SANDBOX_CONTAINER_PROVIDER", "SANDBOX_SECURITY_PROFILE",
+            "SANDBOX_EGRESS_POLICY_ENABLED", "OPENSANDBOX_USE_SERVER_PROXY",
+            "OPENSANDBOX_EXPECTED_NETWORK_MODE", "DOCKER_SOCKET_GID",
+            "OPENSANDBOX_ALLOWED_EGRESS_HOSTS", "AI_PLATFORM_BUILD_COMMIT", "AI_PLATFORM_BUILD_DIRTY",
+        })
+        assert {"POSTGRES_PASSWORD", "MODEL_CONNECTION_ENCRYPTION_KEY", "OPENSANDBOX_API_KEY"} <= env_keys
+        expected_profile = "governed" if profile == "production" else "internal-test"
+        for service in ("api", "worker"):
+            env = {**base["services"][service]["environment"], **overlay["services"][service]["environment"]}
+            assert env["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
+            assert env["SANDBOX_SECURITY_PROFILE"] == expected_profile
+            assert env["SANDBOX_EGRESS_POLICY_ENABLED"] == ("true" if profile == "production" else "false")
+            assert env["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
+            assert env["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == ("ai-platform-opensandbox-egress-internal-v1" if profile == "production" else "bridge")
+        assert ("OPENSANDBOX_EGRESS_PROXY_URL" in env_keys) == (profile == "internal-test")
+        source_env = (ROOT / "deploy/ai-platform/.env.example").read_text()
+        for line in env_example.splitlines():
+            if line and not line.startswith("#"):
+                assert line in source_env.splitlines()
     before = output.read_bytes()
     with pytest.raises(FileExistsError):
         build_package(ROOT, manifest, profile, output, data_images)

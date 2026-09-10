@@ -20,6 +20,14 @@ PROFILES = {
     "production": "docker-compose.opensandbox.yml",
 }
 
+# Fixed by the selected Compose profile, or used only by source/legacy tools.
+PACKAGE_OMITTED_ENV_KEYS = {
+    "DEPLOYMENT_ENVIRONMENT", "SANDBOX_CONTAINER_PROVIDER", "SANDBOX_SECURITY_PROFILE",
+    "SANDBOX_EGRESS_POLICY_ENABLED", "OPENSANDBOX_USE_SERVER_PROXY",
+    "OPENSANDBOX_EXPECTED_NETWORK_MODE", "DOCKER_SOCKET_GID",
+    "OPENSANDBOX_ALLOWED_EGRESS_HOSTS", "AI_PLATFORM_BUILD_COMMIT", "AI_PLATFORM_BUILD_DIRTY",
+}
+
 DATA_IMAGES = {
     "postgres": "postgres:16-alpine",
     "redis": "redis:7-alpine",
@@ -70,6 +78,13 @@ def build_package(source: Path, manifest: dict, profile: str, output: Path, data
         if path.is_symlink() or not path.is_file():
             raise ValueError(f"package source is not a regular file: {original}")
         text = path.read_text(encoding="utf-8")
+        if name == ".env.example":
+            omitted = PACKAGE_OMITTED_ENV_KEYS | bindings.keys()
+            if profile == "production":
+                omitted = omitted | {"OPENSANDBOX_EGRESS_PROXY_URL"}
+            # Remove each assignment and its directly attached explanation.
+            for key in sorted(omitted):
+                text = re.sub(rf"(?m)(?:^#[^\n]*\n)*^{key}=[^\n]*(?:\n|$)", "", text)
         if name.endswith(".yaml"):
             for key, value in bindings.items():
                 text = text.replace("${" + key + ":?set " + key + "}", value)

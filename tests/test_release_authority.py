@@ -26,7 +26,6 @@ from tools.release_authority import (
     build_parity_report,
     collect_live_parity,
     deploy_clean_commit,
-    preserve_dirty_source,
 )
 
 
@@ -1511,30 +1510,6 @@ def test_clean_commit_uses_git_porcelain_flag_supported_by_211(monkeypatch, tmp_
     assert all("--porcelain=v1" not in args for args in commands)
 
 
-def test_preserve_dirty_source_writes_hashed_manifest_without_cleaning_repo(tmp_path):
-    repo = tmp_path / "repo"
-    commit = _init_repo(repo)
-    (repo / "tracked.txt").write_text("dirty\n", encoding="utf-8")
-    (repo / "notes.txt").write_text("preserve me\n", encoding="utf-8")
-    (repo / ".env").write_text("SECRET=do-not-read\n", encoding="utf-8")
-
-    output = preserve_dirty_source(repo, tmp_path / "preserved")
-    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
-    inventory = json.loads((output / "inventory.json").read_text(encoding="utf-8"))
-
-    assert manifest["schema_version"] == "ai-platform.release-authority-preservation.v1"
-    assert manifest["source_head"] == commit
-    assert manifest["source_was_dirty"] is True
-    assert manifest["artifacts"]["tracked.patch"]["sha256"]
-    assert manifest["artifacts"]["untracked.tar"]["sha256"]
-    env_record = next(item for item in inventory if item["path"] == ".env")
-    assert env_record["content_preserved"] is False
-    assert env_record["sha256"] is None
-    assert (repo / "tracked.txt").read_text(encoding="utf-8") == "dirty\n"
-    assert (repo / "notes.txt").is_file()
-    assert (repo / ".env").is_file()
-
-
 def test_parity_report_rejects_manual_frontend_and_commit_mismatch():
     commit = "a" * 40
     repository = AUTHORITATIVE_REPOSITORY
@@ -2964,7 +2939,7 @@ def test_deploy_rejects_spoofed_repo_owned_frontend(monkeypatch, tmp_path):
         raise AssertionError("spoofed repo-local ownership must be rejected")
 
 
-def test_release_authority_cli_exposes_preserve_deploy_and_verify_commands():
+def test_release_authority_cli_exposes_controlled_build_and_verify_commands():
     result = subprocess.run(
         [sys.executable, "tools/release_authority.py", "--help"],
         check=True,
@@ -2972,19 +2947,9 @@ def test_release_authority_cli_exposes_preserve_deploy_and_verify_commands():
         text=True,
     )
 
-    assert "preserve-dirty" in result.stdout
-    assert "deploy" in result.stdout
+    assert "deploy-main-commit" in result.stdout
+    assert "probe-apt-mirrors" in result.stdout
     assert "verify" in result.stdout
-
-    deploy_help = subprocess.run(
-        [sys.executable, "tools/release_authority.py", "deploy", "--help"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    assert "--expected-manual-frontend-image" in deploy_help
-    assert "--expected-manual-frontend-image-id" in deploy_help
-    assert "--compose-file" in deploy_help
 
     verify_help = subprocess.run(
         [sys.executable, "tools/release_authority.py", "verify", "--help"],
@@ -5222,38 +5187,6 @@ def test_auto_rerun_reuses_verified_target_images_without_rebuild(monkeypatch, t
     assert not any("build" in command for command, _ in commands)
     assert sum(command[-2:] == ["config", "--quiet"] for command, _ in commands) == 2
     assert sum("up" in command for command, _ in commands) == 2
-
-
-def test_legacy_deploy_cli_dispatch_does_not_read_auto_strategy(monkeypatch, capsys, tmp_path):
-    observed = {}
-
-    def fake_deploy(repo_root, commit, **kwargs):
-        observed["repo_root"] = repo_root
-        observed["commit"] = commit
-        observed["kwargs"] = kwargs
-        return {"commit": commit}
-
-    monkeypatch.setattr("tools.release_authority.deploy_clean_commit", fake_deploy)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "release_authority.py",
-            "deploy",
-            "--repo-root",
-            str(tmp_path),
-            "--commit",
-            "a" * 40,
-            "--env-file",
-            str(tmp_path / ".env"),
-        ],
-    )
-
-    assert release_authority.main() == 0
-    assert observed["repo_root"] == tmp_path
-    assert observed["commit"] == "a" * 40
-    assert "strategy" not in observed["kwargs"]
-    assert json.loads(capsys.readouterr().out) == {"commit": "a" * 40}
 
 
 def test_deploy_main_cli_forwards_explicit_auto_strategy(monkeypatch, capsys, tmp_path):

@@ -7,6 +7,23 @@ contains executable deployment code. Image digests and the application commit
 are already fixed in the package. Git, Actions access, a source checkout and
 host-side image builds are not required.
 
+The packaged environment example contains operator configuration. Application
+image references, source commit and executor image digest are bound by the
+Release and omitted from that example.
+
+The package also fixes the OpenSandbox provider, security profile, server proxy
+and network mode. Production selects governed egress; internal-test selects the
+bridge test profile. Choose the matching package rather than editing these values.
+
+OpenSandbox configuration has two owners:
+
+| Configuration | Owner |
+| --- | --- |
+| Lifecycle connection | Application env: production uses `OPENSANDBOX_BASE_URL`; internal-test requires `OPENSANDBOX_DOMAIN` and `OPENSANDBOX_PROTOCOL`. Both require `OPENSANDBOX_API_KEY`. |
+| Workspace and capabilities | Application env: `SANDBOX_WORKSPACE_ROOT`, `SANDBOX_CALLBACK_TOKEN`; production also requires `SANDBOX_EGRESS_PROOF_SIGNING_KEY` and `MODEL_PROXY_INTERNAL_TOKEN`. |
+| Timeouts and workspace I/O | Optional application tuning: `OPENSANDBOX_REQUEST_TIMEOUT_SECONDS`, `OPENSANDBOX_TIMEOUT_SECONDS`, workspace mount and startup I/O settings. |
+| Kernel isolation and host firewall | Host OpenSandbox TOML, Docker `runsc` runtime and network-guard service, prepared once by the host administrator. |
+
 ## Prepare the host once
 
 Use a Linux host with Python 3, Docker, Docker Compose supporting `--wait` and

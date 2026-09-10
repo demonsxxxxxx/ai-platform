@@ -42,6 +42,30 @@ unit must reject a foreign same-name server container. Host provisioning and
 changes to credentials, addresses, images, or policy are separate maintenance
 operations.
 
+## Kernel and network isolation
+
+The production topology combines gVisor (`runsc`) with network enforcement
+outside the sandbox: the internal Docker bridge, host INPUT/DOCKER-USER guard
+and the stateless model/callback proxy. The SDK create request sends
+`network_policy=None` in both supported profiles. The server's retained
+`[egress] mode = "dns+nft"` setting is a host configuration check, not evidence
+that a per-sandbox egress sidecar is active.
+
+OpenSandbox's [secure runtime guide](https://github.com/opensandbox-group/OpenSandbox/blob/main/docs/guides/secure-container.md#5-egress-sidecar-incompatible-with-gvisor)
+documents the incompatibility between gVisor and its built-in egress sidecar.
+That sidecar needs NAT redirect support inside the sandbox network stack.
+The platform's host firewall uses the host kernel instead. Validate the actual
+production contour with a sandbox created by the selected package: `runsc`
+identity, denied direct external/host/peer access, allowed model/callback proxy
+access, artifact collection and cleanup. A healthy lifecycle listener alone
+does not establish those properties.
+
+The internal-test package selects ordinary `bridge`, disables governed egress
+and permits its explicit model-credential forwarding exception. Editing
+`DEPLOYMENT_ENVIRONMENT` in its env file does not convert it to production;
+the Compose profile fixes that value. Moving to production requires the matching
+host topology, production package and runtime acceptance.
+
 ## Verify the host
 
 Use privileged operations to verify, without printing configuration values:
