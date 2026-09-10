@@ -63,6 +63,14 @@ test(
     assert.equal(unsupported.status, 415);
     assert.equal(unsupported.code, "unsupported_file_type");
     assert.doesNotMatch(unsupported.message, /unsupported/i);
+
+    const capacity = await expectInitiationError(
+      429,
+      "upload_session_limit_exceeded",
+    );
+    assert.equal(capacity.kind, "capacity");
+    assert.equal(capacity.status, 429);
+    assert.equal(capacity.code, "upload_session_limit_exceeded");
   },
 );
 

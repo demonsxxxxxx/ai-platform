@@ -1096,6 +1096,7 @@
     "dragDropOr": "或点击下方按钮选择",
     "effectiveLimits": "上传限制：图片 {{image}}MB / 视频 {{video}}MB / 音频 {{audio}}MB / 文档 {{document}}MB / 最多 {{maxFiles}} 个文件",
     "fileTooLarge": "文件大小超过限制",
+    "duplicateFile": "文件已添加，请勿重复上传",
     "maxFilesSummary": "单次最多上传 {{maxFiles}} 个文件",
     "noPermission": "没有权限上传{{type}}文件",
     "removeAttachment": "移除附件",
@@ -1110,7 +1111,9 @@
     "uploadFailed": "上传失败",
     "uploadFailedRecoverable": "文件上传未完成，请检查网络后重试",
     "uploadSuccess": "上传成功",
-    "uploading": "上传中..."
+    "uploading": "上传中...",
+    "waiting": "等待上传...",
+    "waitingForCapacity": "等待可用上传名额..."
   },
   "imageViewer": {
     "download": "下载",

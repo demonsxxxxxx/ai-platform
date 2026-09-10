@@ -152,7 +152,6 @@ def _session_payload(row: dict[str, Any]) -> dict[str, Any]:
     retired_agent = is_retired_agent_for_projection(
         raw_agent_id,
         row.get("agent_default_skill_id"),
-        row.get("agent_profile_skill_id"),
         row.get("agent_profile_has_retired_skill"),
     )
     agent_id = (
@@ -1454,12 +1453,14 @@ async def upload_config() -> dict[str, object]:
         "audio": MAX_UPLOAD_BYTES,
         "document": MAX_UPLOAD_BYTES,
     }
+    settings = get_settings()
     max_files = 32
     return {
         "enabled": True,
         "provider": "ai-platform",
         "uploadLimitsBytes": upload_limits_bytes,
         "maxFiles": max_files,
+        "maxActiveUploadSessions": settings.file_upload_max_active_sessions,
         # Preserve the pre-existing byte-valued wire aliases. Older frontends
         # remain bounded by the canonical server-side 413 during rollout.
         "uploadLimits": {

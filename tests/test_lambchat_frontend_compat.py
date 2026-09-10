@@ -836,6 +836,7 @@ def test_upload_config_exposes_canonical_byte_contract_with_legacy_aliases():
     }
     assert payload["uploadLimitsBytes"] == expected_limits_bytes
     assert payload["maxFiles"] == 32
+    assert payload["maxActiveUploadSessions"] == 3
     assert payload["max_file_size_bytes"] == MAX_UPLOAD_BYTES
     assert payload["uploadLimits"] == {**expected_limits_bytes, "maxFiles": 32}
     assert payload["max_file_size"] == MAX_UPLOAD_BYTES
