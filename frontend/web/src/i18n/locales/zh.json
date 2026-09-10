@@ -145,6 +145,7 @@
     "noSteps": "暂无协作步骤",
     "noTimeline": "暂无时间线",
     "preview": "预览",
+    "previewFailed": "无法读取 Skill ZIP，请检查文件后重试。",
     "retry": "重试",
     "status": {
       "blocked": "阻塞",
@@ -2252,6 +2253,7 @@
     "adminUploadRequiresNewSkill": "管理员上传只发布全新的 Skill",
     "adminReleaseZipTitle": "发布 Skill ZIP",
     "adminReleaseZipSubtitle": "上传一个受治理的版本包，并通过审核后发布。",
+    "adminCatalogInvalid": "Skill 管理目录与当前服务版本不一致，请刷新页面；问题持续时请检查前后端部署版本。",
     "adminReleaseLifecycleTitle": "发布流程",
     "adminReleaseLifecycleHint": "ZIP 会先成为不可变草稿，完成审核后以 100% 发布到稳定通道，最后刷新授权目录。",
     "adminReleaseDraftStep": "上传不可变草稿",
