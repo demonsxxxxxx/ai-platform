@@ -1034,6 +1034,12 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1)
 
 
+class ADLoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=1, max_length=8192)
+
+
 class AuthContextBootstrapRequest(BaseModel):
     """Browser-generated non-credential nonce used to derive a stable context."""
 

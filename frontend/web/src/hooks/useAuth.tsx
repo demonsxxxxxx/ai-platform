@@ -122,6 +122,9 @@ interface AuthContextType extends AuthState {
     credentials: LoginRequest,
     turnstileToken?: string,
   ) => Promise<AuthOperationOutcome<string | null>>;
+  loginWithAD: (
+    loginUrl: string,
+  ) => Promise<AuthOperationOutcome<string | null>>;
   register: (
     userData: UserCreate,
     turnstileToken?: string,
@@ -505,6 +508,47 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     ],
   );
 
+  // AD 登录：浏览器先取得 Windows 身份签发的公司 JWT，再由服务端换取平台 session。
+  const loginWithAD = useCallback(
+    async (loginUrl: string): Promise<AuthOperationOutcome<string | null>> => {
+      const owner = beginAuthOperation();
+      if (isCurrentAuthOperation(owner)) setIsLoading(true);
+      let sessionEstablished = false;
+      try {
+        await ensureBrowserAuthContextBeforeLogin(owner.abortController.signal);
+        if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
+        await authApi.loginWithAD(loginUrl, owner.abortController.signal);
+        if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
+        sessionEstablished = true;
+        if (!establishLocalSession(owner)) return cancelledAuthOperation();
+        const currentUser = await getCurrentUserWithOneStaleRepair(owner);
+        if (!applyAuthenticatedUser(currentUser, owner)) {
+          return cancelledAuthOperation();
+        }
+        const redirectPath = getRedirectPath();
+        if (redirectPath) clearRedirectPath();
+        return completedAuthOperation(redirectPath ?? null);
+      } catch (error) {
+        if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
+        if (sessionEstablished) {
+          const converged = await rollbackOwnedSession(owner);
+          if (!converged) return cancelledAuthOperation();
+        }
+        throw error;
+      } finally {
+        if (isCurrentAuthOperation(owner)) setIsLoading(false);
+      }
+    },
+    [
+      applyAuthenticatedUser,
+      beginAuthOperation,
+      establishLocalSession,
+      getCurrentUserWithOneStaleRepair,
+      isCurrentAuthOperation,
+      rollbackOwnedSession,
+    ],
+  );
+
   // 注册
   const register = useCallback(
     async (
@@ -640,6 +684,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isLoading,
     permissions,
     login,
+    loginWithAD,
     register,
     loginWithOAuth,
     handleOAuthCallback,

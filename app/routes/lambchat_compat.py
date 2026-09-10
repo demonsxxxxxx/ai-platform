@@ -1357,9 +1357,17 @@ async def refresh(payload: dict[str, str]) -> dict[str, object]:
 
 @router.get("/auth/oauth/providers")
 async def oauth_providers() -> dict[str, object]:
+    settings = get_settings()
+    base_url = settings.existing_auth_base_url.rstrip("/")
+    ad_login_url = (
+        f"{base_url}/api/login/GetADName"
+        if base_url and str(getattr(settings, "existing_auth_jwt_secret", "") or "").strip()
+        else None
+    )
     return {
         "providers": [],
         "registration_enabled": False,
+        "ad_login_url": ad_login_url,
         "turnstile": {
             "enabled": False,
             "site_key": "",

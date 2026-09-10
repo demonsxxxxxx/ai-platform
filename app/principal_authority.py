@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
+import hmac
+import json
+import math
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -88,6 +95,75 @@ class PrincipalAuthorityDenied(Exception):
     def __init__(self) -> None:
         super().__init__(CURRENT_PRINCIPAL_DENIAL_REASON)
         self.reason = CURRENT_PRINCIPAL_DENIAL_REASON
+
+
+class CompanyLoginTokenInvalid(Exception):
+    """Report an invalid token from the company AD login endpoint."""
+
+
+class CompanyLoginTokenConfigurationError(Exception):
+    """Report missing company JWT verification configuration."""
+
+
+def verify_company_login_token(token: str, *, settings: Any | None = None) -> dict[str, Any]:
+    """Verify the JWT issued by the Windows-authenticated company login API."""
+
+    effective_settings = settings or get_settings()
+    secret = str(getattr(effective_settings, "existing_auth_jwt_secret", "") or "")
+    issuer = str(getattr(effective_settings, "existing_auth_jwt_issuer", "") or "").strip()
+    audience = str(getattr(effective_settings, "existing_auth_jwt_audience", "") or "").strip()
+    if len(secret.encode("utf-8")) < 32 or not issuer or not audience:
+        raise CompanyLoginTokenConfigurationError()
+
+    parts = token.split(".")
+    if len(parts) != 3 or any(not part for part in parts):
+        raise CompanyLoginTokenInvalid()
+    header_part, payload_part, signature_part = parts
+    try:
+        header = json.loads(_decode_jwt_part(header_part))
+        payload = json.loads(_decode_jwt_part(payload_part))
+        signature = _decode_jwt_part(signature_part)
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        raise CompanyLoginTokenInvalid() from None
+    if not isinstance(header, dict) or header.get("alg") != "HS256":
+        raise CompanyLoginTokenInvalid()
+    if not isinstance(payload, dict):
+        raise CompanyLoginTokenInvalid()
+
+    expected_signature = hmac.new(
+        secret.encode("utf-8"),
+        f"{header_part}.{payload_part}".encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    if not hmac.compare_digest(signature, expected_signature):
+        raise CompanyLoginTokenInvalid()
+    if payload.get("iss") != issuer or payload.get("aud") != audience:
+        raise CompanyLoginTokenInvalid()
+    expiration = payload.get("exp")
+    if isinstance(expiration, bool) or not isinstance(expiration, (int, float)):
+        raise CompanyLoginTokenInvalid()
+    if isinstance(expiration, float) and not math.isfinite(expiration):
+        raise CompanyLoginTokenInvalid()
+    if time.time() >= expiration:
+        raise CompanyLoginTokenInvalid()
+    not_before = payload.get("nbf")
+    if not_before is not None:
+        if isinstance(not_before, bool) or not isinstance(not_before, (int, float)):
+            raise CompanyLoginTokenInvalid()
+        if isinstance(not_before, float) and not math.isfinite(not_before):
+            raise CompanyLoginTokenInvalid()
+        if time.time() < not_before:
+            raise CompanyLoginTokenInvalid()
+    for claim in ("workid", "cnname", "depart", "username", "role"):
+        if not isinstance(payload.get(claim), str) or not payload[claim].strip():
+            raise CompanyLoginTokenInvalid()
+    return payload
+
+
+def _decode_jwt_part(value: str) -> bytes:
+    if any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for character in value):
+        raise ValueError("invalid_jwt_encoding")
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
 async def fetch_company_user_info(work_id: str, *, settings: Any | None = None) -> object:

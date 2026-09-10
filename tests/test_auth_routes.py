@@ -1,5 +1,10 @@
 from contextlib import asynccontextmanager
+import base64
+import hashlib
+import hmac
+import json
 from types import SimpleNamespace
+import time
 
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
@@ -311,6 +316,94 @@ def test_login_returns_ai_role_without_mutating_context_cookie(monkeypatch):
         "jwt": "company.jwt.signature",
     }
     assert "set-cookie" not in response.headers
+
+
+def _company_jwt(payload: dict[str, object], secret: str) -> str:
+    def encode(value: object) -> str:
+        raw = json.dumps(value, separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+    header = encode({"alg": "HS256", "typ": "JWT"})
+    body = encode(payload)
+    signature = hmac.new(
+        secret.encode(), f"{header}.{body}".encode(), hashlib.sha256
+    ).digest()
+    return f"{header}.{body}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
+
+
+def test_ad_login_exchanges_verified_company_token_for_platform_session(monkeypatch):
+    secret = "company-jwt-secret-with-at-least-32-bytes"
+    token = _company_jwt(
+        {
+            "iss": "non-gmp-lims",
+            "aud": "web-ui",
+            "exp": time.time() + 300,
+            "workid": "ad001",
+            "cnname": "AD User",
+            "depart": "研发一部",
+            "username": "ad001",
+            "role": "user",
+        },
+        secret,
+    )
+
+    async def fake_user_info(work_id):
+        assert work_id == "ad001"
+        return {"workid": work_id, "roles": ["user"], "department": "研发一部"}
+
+    async def noop(*args, **kwargs):
+        del args, kwargs
+
+    stored = {}
+
+    async def fake_store(principal, company_jwt):
+        stored["user_id"] = principal.user_id
+        stored["jwt"] = company_jwt
+
+    settings = auth_settings(
+        existing_auth_jwt_secret=secret,
+        existing_auth_jwt_issuer="non-gmp-lims",
+        existing_auth_jwt_audience="web-ui",
+    )
+    monkeypatch.setattr("app.auth.get_settings", lambda: settings)
+    monkeypatch.setattr("app.routes.auth.get_settings", lambda: settings)
+    monkeypatch.setattr("app.routes.auth.call_existing_user_info", fake_user_info)
+    monkeypatch.setattr("app.routes.auth._persist_login_principal", noop)
+    monkeypatch.setattr("app.routes.auth._store_mcp_login_jwt", fake_store)
+
+    client = browser_client()
+    response = client.post("/api/ai/auth/ad-login", json={"token": token})
+
+    assert response.status_code == 200
+    assert response.json()["user_id"] == "ad001"
+    assert stored == {"user_id": "ad001", "jwt": token}
+
+
+def test_company_login_token_rejects_invalid_signature(monkeypatch):
+    from app.principal_authority import CompanyLoginTokenInvalid, verify_company_login_token
+
+    settings = auth_settings(
+        existing_auth_jwt_secret="company-jwt-secret-with-at-least-32-bytes",
+        existing_auth_jwt_issuer="non-gmp-lims",
+        existing_auth_jwt_audience="web-ui",
+    )
+    token = _company_jwt(
+        {
+            "iss": "non-gmp-lims",
+            "aud": "web-ui",
+            "exp": time.time() + 300,
+            "workid": "ad001",
+            "cnname": "AD User",
+            "depart": "研发一部",
+            "username": "ad001",
+            "role": "user",
+        },
+        "different-secret-with-at-least-32-bytes",
+    )
+
+    monkeypatch.setattr("app.principal_authority.get_settings", lambda: settings)
+    with pytest.raises(CompanyLoginTokenInvalid):
+        verify_company_login_token(token, settings=settings)
 
 
 def test_company_user_login_gets_baseline_ai_permissions(monkeypatch):

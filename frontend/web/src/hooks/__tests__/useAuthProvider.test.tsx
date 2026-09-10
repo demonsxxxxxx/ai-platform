@@ -396,6 +396,7 @@ async function mountAuthPageHarness(
   authApi.getOAuthProviders = async () => ({
     providers: [],
     registration_enabled: true,
+    ad_login_url: null,
     turnstile: {
       enabled: false,
       site_key: "",

@@ -100,6 +100,31 @@ export function buildOAuthLoginUrl(provider: string, state?: string): string {
   return `${API_BASE}/api/auth/oauth/${safeProvider}${suffix}`;
 }
 
+async function fetchCompanyADToken(
+  loginUrl: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const response = await fetch(loginUrl, {
+    credentials: "include",
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) throw new Error("ad_login_failed");
+
+  const payload: unknown = await response.json().catch(() => null);
+  const firstResult = Array.isArray(payload) ? payload[0] : null;
+  if (
+    !firstResult ||
+    typeof firstResult !== "object" ||
+    typeof (firstResult as { token?: unknown }).token !== "string" ||
+    !(firstResult as { token: string }).token.trim()
+  ) {
+    throw new Error("ad_login_failed");
+  }
+  return (firstResult as { token: string }).token;
+}
+
 export const authApi = {
   /**
    * Establish the stable HttpOnly browser auth context before any mutation.
@@ -133,6 +158,22 @@ export const authApi = {
       },
     );
 
+  },
+
+  /** Exchange the browser's Windows-authenticated company JWT for a platform session. */
+  async loginWithAD(loginUrl: string, signal?: AbortSignal): Promise<void> {
+    const token = await fetchCompanyADToken(loginUrl, signal);
+    await authFetch<PrincipalResponseWire>(
+      `${API_BASE}/api/ai/auth/ad-login`,
+      {
+        method: "POST",
+        skipAuth: true,
+        credentials: "include",
+        body: JSON.stringify({ token }),
+        headers: { "Content-Type": "application/json" },
+        signal,
+      },
+    );
   },
 
   /**
@@ -272,6 +313,7 @@ export const authApi = {
   async getOAuthProviders(): Promise<{
     providers: { id: string; name: string }[];
     registration_enabled: boolean;
+    ad_login_url: string | null;
     turnstile?: {
       enabled: boolean;
       site_key: string;
@@ -283,6 +325,7 @@ export const authApi = {
     return authFetch<{
       providers: { id: string; name: string }[];
       registration_enabled: boolean;
+      ad_login_url: string | null;
       turnstile?: {
         enabled: boolean;
         site_key: string;

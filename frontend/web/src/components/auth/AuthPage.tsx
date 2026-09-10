@@ -3,7 +3,7 @@
  */
 
 import { useState, useEffect, useRef, Fragment } from "react";
-import { User, Mail, AlertCircle, AtSign } from "lucide-react";
+import { User, Mail, AlertCircle, AtSign, Building2 } from "lucide-react";
 import { PasswordInput } from "./PasswordInput";
 import toast from "react-hot-toast";
 import { useTranslation } from "react-i18next";
@@ -73,10 +73,11 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
     setTurnstileKey((prev) => prev + 1);
   }, [theme]);
 
-  const { login, register, loginWithOAuth } = useAuth();
+  const { login, loginWithAD, register, loginWithOAuth } = useAuth();
   const [oauthProviders, setOauthProviders] = useState<
     { id: string; name: string }[]
   >([]);
+  const [adLoginUrl, setAdLoginUrl] = useState<string | null>(null);
   const [turnstileConfig, setTurnstileConfig] = useState<TurnstileConfig>({
     enabled: false,
     site_key: "",
@@ -112,6 +113,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
         const result = await authApi.getOAuthProviders();
         if (!mounted) return;
         setOauthProviders(result.providers);
+        setAdLoginUrl(result.ad_login_url);
         // 设置 Turnstile 配置
         if (result.turnstile) {
           setTurnstileConfig(result.turnstile);
@@ -153,6 +155,37 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
       await loginWithOAuth(provider);
     } catch {
       toast.error(t("auth.oauthLoginFailed"));
+    }
+  };
+
+  // AD 登录处理
+  const handleADLogin = async () => {
+    if (!adLoginUrl) return;
+    setError(null);
+    setIsSubmitting(true);
+    let startedRedirect = false;
+    try {
+      const loginOutcome = await loginWithAD(adLoginUrl);
+      if (!mountedRef.current) return;
+      if (loginOutcome.status === "cancelled") return;
+      if (loginOutcome.status !== "completed") return;
+      toast.success(t("auth.loginSuccess"));
+      startedRedirect = true;
+      beginSuccessRedirect(loginOutcome.value);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      const errorMessage =
+        err instanceof BrowserAuthCoordinatorError
+          ? t("auth.browserCoordinationUnavailable")
+          : err instanceof ApiRequestError
+          ? err.message
+          : t("auth.adLoginFailed");
+      toast.error(errorMessage);
+      setError(errorMessage);
+    } finally {
+      if (mountedRef.current && !startedRedirect) {
+        setIsSubmitting(false);
+      }
     }
   };
 
@@ -360,9 +393,9 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
           {/* Form card */}
           <div className="auth-panel rounded-[1.35rem] p-4 shadow-stone-200/50 sm:rounded-2xl sm:p-6 lg:p-8 2xl:p-10 dark:shadow-stone-950/40">
             {/* OAuth buttons */}
-            {oauthProviders.length > 0 && (
+            {(oauthProviders.length > 0 || (mode === "login" && adLoginUrl)) && (
               <div className="mb-4 sm:mb-5 lg:mb-6 2xl:mb-8">
-                <div className="flex items-center justify-center gap-2 sm:gap-3">
+                <div className="flex flex-wrap items-center justify-center gap-2 sm:gap-3">
                   {oauthProviders.map((provider) => (
                     <Fragment key={provider.id}>
                       <button
@@ -414,6 +447,17 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
                       </button>
                     </Fragment>
                   ))}
+                  {mode === "login" && adLoginUrl && (
+                    <button
+                      type="button"
+                      onClick={handleADLogin}
+                      disabled={isSubmitting || isRedirecting}
+                      className="flex h-11 min-w-12 items-center justify-center gap-2 rounded-xl border border-stone-200 bg-white/85 px-3 text-sm font-medium text-stone-700 shadow-sm transition-all hover:-translate-y-0.5 hover:bg-white hover:shadow-md active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 dark:border-stone-700 dark:bg-stone-800/70 dark:text-stone-200 dark:hover:bg-stone-800 dark:hover:shadow-lg sm:h-auto sm:gap-2.5 sm:p-3"
+                    >
+                      {isSubmitting ? <LoadingSpinner size="sm" /> : <Building2 size={18} />}
+                      <span>{t("auth.adLogin")}</span>
+                    </button>
+                  )}
                 </div>
 
                 {/* Divider */}

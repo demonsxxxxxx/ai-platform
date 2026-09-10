@@ -24,11 +24,14 @@ from app.auth_sessions import (
 )
 from app.db import transaction
 from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
-from app.models import AuthContextBootstrapRequest, LoginRequest, OAuthCallbackRequest, PrincipalResponse
+from app.models import ADLoginRequest, AuthContextBootstrapRequest, LoginRequest, OAuthCallbackRequest, PrincipalResponse
 from app.principal_authority import (
+    CompanyLoginTokenConfigurationError,
+    CompanyLoginTokenInvalid,
     PrincipalAuthorityDenied,
     fetch_company_user_info,
     resolve_login_principal,
+    verify_company_login_token,
 )
 from app.repositories import append_audit_log, ensure_user
 from app.settings import get_settings
@@ -260,6 +263,21 @@ async def login(request: LoginRequest, http_request: Request) -> PrincipalRespon
     return PrincipalResponse.model_validate(principal_to_response(principal))
 
 
+@router.post("/auth/ad-login", response_model=PrincipalResponse)
+async def ad_login(request: ADLoginRequest, http_request: Request) -> PrincipalResponse:
+    """Exchange a verified company AD JWT for the platform's HttpOnly session."""
+
+    operation = await _begin_browser_operation(http_request, "ad-login")
+    principal, company_jwt = await _resolve_ad_login_principal(request.token)
+    async with transaction() as conn:
+        await _persist_login_principal(conn, principal)
+        commit_status = await commit_auth_operation(operation, principal_snapshot(principal))
+        if commit_status != "committed":
+            _raise_commit_failure(commit_status)
+    await _store_mcp_login_jwt(principal, company_jwt)
+    return PrincipalResponse.model_validate(principal_to_response(principal))
+
+
 async def _resolve_login_principal(
     request: LoginRequest,
 ) -> tuple[AuthPrincipal, str | None]:
@@ -284,6 +302,34 @@ async def _resolve_login_principal(
     except PrincipalAuthorityDenied as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="company_login_failed") from exc
     return principal, company_jwt.strip() if isinstance(company_jwt, str) else None
+
+
+async def _resolve_ad_login_principal(company_jwt: str) -> tuple[AuthPrincipal, str]:
+    settings = get_settings()
+    try:
+        claims = verify_company_login_token(company_jwt, settings=settings)
+    except CompanyLoginTokenConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="company_login_unavailable",
+        ) from exc
+    except CompanyLoginTokenInvalid as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="company_login_failed") from exc
+
+    work_id = claims["workid"].strip()
+    login_name = claims["username"].strip()
+    display_name = claims["cnname"].strip() or login_name or work_id
+    try:
+        principal = await resolve_login_principal(
+            work_id=work_id,
+            login_name=login_name,
+            display_name=display_name,
+            user_info_adapter=call_existing_user_info,
+            settings=settings,
+        )
+    except PrincipalAuthorityDenied as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="company_login_failed") from exc
+    return principal, company_jwt
 
 
 async def _store_mcp_login_jwt(
