@@ -12,6 +12,8 @@ import type {
 import {
   cancelTemporaryUpload,
   clearAttachmentResources,
+  createUploadScheduler,
+  isDuplicateFileUpload,
   removeAttachmentFromUpload,
   settleUploadFailure,
   startFileUploadTask,
@@ -163,6 +165,54 @@ function uploadResult(): UploadResult {
   };
 }
 
+test("duplicate uploads require the same tracked File object", () => {
+  const file = new File(["fixture"], "fixture.txt", {
+    type: "text/plain",
+    lastModified: 10,
+  });
+  const distinctFileWithSameMetadata = new File(["fixture"], "fixture.txt", {
+    type: "text/plain",
+    lastModified: 10,
+  });
+  const tracked = new Map([["temp", file]]);
+
+  assert.equal(isDuplicateFileUpload(file, tracked), true);
+  assert.equal(isDuplicateFileUpload(distinctFileWithSameMetadata, tracked), false);
+  assert.equal(
+    isDuplicateFileUpload(
+      new File(["different"], "other.txt", { type: "text/plain" }),
+      new Map(),
+    ),
+    false,
+  );
+});
+
+test("upload scheduler starts bounded tasks in FIFO order", async () => {
+  const scheduler = createUploadScheduler(2);
+  const first = scheduler.reserve();
+  const second = scheduler.reserve();
+  const third = scheduler.reserve();
+  const fourth = scheduler.reserve();
+  const started: string[] = [];
+
+  assert.equal(first.waitFor, undefined);
+  assert.equal(second.waitFor, undefined);
+  assert.ok(third.waitFor);
+  assert.ok(fourth.waitFor);
+  void third.waitFor.then(() => started.push("third"));
+  void fourth.waitFor.then(() => started.push("fourth"));
+
+  first.release();
+  await third.waitFor;
+  assert.deepEqual(started, ["third"]);
+
+  second.release();
+  await fourth.waitFor;
+  assert.deepEqual(started, ["third", "fourth"]);
+  third.release();
+  fourth.release();
+});
+
 function createHarness() {
   const attachments: MessageAttachment[] = [];
   const abortMap = new Map<string, () => void>();
@@ -194,6 +244,137 @@ function createHarness() {
     onAttachmentsChange,
   };
 }
+
+test("queued uploads wait for a scheduler slot before preparing a file", async () => {
+  const harness = createHarness();
+  const firstStarted = deferred<void>();
+  const firstResult = deferred<UploadResult>();
+  let prepareCalls = 0;
+  let uploadCalls = 0;
+  const ids = ["first-temp", "second-temp", "first-final", "second-final"];
+  const scheduler = createUploadScheduler(1);
+  const firstReservation = scheduler.reserve();
+  const secondReservation = scheduler.reserve();
+
+  const first = startFileUploadTask({
+    file: harness.file,
+    fileCategory: "document",
+    t: translate,
+    onAttachmentsChange: harness.onAttachmentsChange,
+    abortMap: harness.abortMap,
+    cancelled: harness.cancelled,
+    waitFor: firstReservation.waitFor,
+    prepareFile: () => {
+      prepareCalls += 1;
+      return Promise.resolve(harness.file);
+    },
+    uploadClient: {
+      uploadFile: () => {
+        uploadCalls += 1;
+        firstStarted.resolve();
+        return { promise: firstResult.promise, abort: () => {} };
+      },
+    },
+    createId: () => ids.shift() ?? "unexpected",
+    notifyError: (message) => harness.toasts.push(message),
+    reportFailure: (error) => harness.reports.push(error),
+    onTaskSettled: firstReservation.release,
+  });
+  const second = startFileUploadTask({
+    file: new File(["second"], "second.txt", { type: "text/plain" }),
+    fileCategory: "document",
+    t: translate,
+    onAttachmentsChange: harness.onAttachmentsChange,
+    abortMap: harness.abortMap,
+    cancelled: harness.cancelled,
+    waitFor: secondReservation.waitFor,
+    prepareFile: () => {
+      prepareCalls += 1;
+      return Promise.resolve(harness.file);
+    },
+    uploadClient: {
+      uploadFile: () => {
+        uploadCalls += 1;
+        return { promise: Promise.resolve(uploadResult()), abort: () => {} };
+      },
+    },
+    createId: () => ids.shift() ?? "unexpected",
+    notifyError: (message) => harness.toasts.push(message),
+    reportFailure: (error) => harness.reports.push(error),
+    onTaskSettled: secondReservation.release,
+  });
+
+  await firstStarted.promise;
+  assert.equal(prepareCalls, 1);
+  assert.equal(uploadCalls, 1);
+  assert.equal(harness.attachments.length, 2);
+  assert.equal(
+    harness.attachments.find((attachment) => attachment.id === "temp-second-temp")
+      ?.uploadStatus,
+    "queued",
+  );
+
+  firstResult.resolve(uploadResult());
+  await first.done;
+  await second.done;
+
+  assert.equal(prepareCalls, 2);
+  assert.equal(uploadCalls, 2);
+  assert.equal(harness.attachments.length, 2);
+  assert.equal(harness.attachments.every((attachment) => !attachment.isUploading), true);
+  assert.deepEqual(harness.toasts, []);
+  assert.deepEqual(harness.reports, []);
+});
+
+test("upload capacity responses retry without dropping the attachment", async () => {
+  const harness = createHarness();
+  const delays: number[] = [];
+  let uploadCalls = 0;
+  const ids = ["retry-temp", "retry-final"];
+
+  const task = startFileUploadTask({
+    file: harness.file,
+    fileCategory: "document",
+    t: translate,
+    onAttachmentsChange: harness.onAttachmentsChange,
+    abortMap: harness.abortMap,
+    cancelled: harness.cancelled,
+    prepareFile: () => Promise.resolve(harness.file),
+    uploadClient: {
+      uploadFile: () => {
+        uploadCalls += 1;
+        return {
+          promise:
+            uploadCalls < 3
+              ? Promise.reject(
+                  new UploadRequestError(
+                    "capacity",
+                    429,
+                    "upload_session_limit_exceeded",
+                  ),
+                )
+              : Promise.resolve(uploadResult()),
+          abort: () => {},
+        };
+      },
+    },
+    retryDelay: async (attempt) => {
+      delays.push(attempt);
+    },
+    createId: () => ids.shift() ?? "unexpected",
+    notifyError: (message) => harness.toasts.push(message),
+    reportFailure: (error) => harness.reports.push(error),
+  });
+
+  await task.done;
+
+  assert.equal(uploadCalls, 3);
+  assert.deepEqual(delays, [0, 1]);
+  assert.equal(harness.attachments.length, 1);
+  assert.equal(harness.attachments[0]?.isUploading, undefined);
+  assert.deepEqual(harness.toasts, []);
+  assert.deepEqual(harness.reports, []);
+});
 
 test("removing a Composer attachment cancels pending uploads and deletes ready files", async () => {
   const pending: MessageAttachment = {
