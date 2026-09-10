@@ -31,6 +31,7 @@ from app.principal_authority import (
     PrincipalAuthorityDenied,
     fetch_company_user_info,
     resolve_login_principal,
+    resolve_verified_company_principal,
     verify_company_login_token,
 )
 from app.repositories import append_audit_log, ensure_user
@@ -308,26 +309,13 @@ async def _resolve_ad_login_principal(company_jwt: str) -> tuple[AuthPrincipal, 
     settings = get_settings()
     try:
         claims = verify_company_login_token(company_jwt, settings=settings)
+        principal = resolve_verified_company_principal(claims, settings=settings)
     except CompanyLoginTokenConfigurationError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="company_login_unavailable",
         ) from exc
-    except CompanyLoginTokenInvalid as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="company_login_failed") from exc
-
-    work_id = claims["workid"].strip()
-    login_name = claims["username"].strip()
-    display_name = claims["cnname"].strip() or login_name or work_id
-    try:
-        principal = await resolve_login_principal(
-            work_id=work_id,
-            login_name=login_name,
-            display_name=display_name,
-            user_info_adapter=call_existing_user_info,
-            settings=settings,
-        )
-    except PrincipalAuthorityDenied as exc:
+    except (CompanyLoginTokenInvalid, PrincipalAuthorityDenied) as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="company_login_failed") from exc
     return principal, company_jwt
 

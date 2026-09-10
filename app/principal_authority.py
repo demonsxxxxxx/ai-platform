@@ -180,6 +180,43 @@ async def fetch_company_user_info(work_id: str, *, settings: Any | None = None) 
         return response.json()
 
 
+def resolve_verified_company_principal(
+    claims: dict[str, Any],
+    *,
+    settings: Any | None = None,
+) -> AuthPrincipal:
+    """Build the platform principal from the already verified AD JWT claims."""
+
+    effective_settings = settings or get_settings()
+    work_id = str(claims["workid"]).strip()
+    login_name = str(claims["username"]).strip()
+    display_name = str(claims["cnname"]).strip()
+    roles, department_id = _normalize_company_record(
+        expected_work_id=work_id,
+        tenant_id=str(effective_settings.default_tenant_id),
+        raw_user_info={
+            "workid": work_id,
+            "username": login_name,
+            "cnname": display_name,
+            "department": str(claims["depart"]).strip(),
+            "role": str(claims["role"]).strip(),
+        },
+        settings=effective_settings,
+    )
+    return AuthPrincipal(
+        user_id=work_id,
+        display_name=display_name,
+        tenant_id=effective_settings.default_tenant_id,
+        department_id=department_id,
+        roles=roles,
+        permissions=_effective_permissions(roles),
+        source="company-login",
+        authz_policy_version=COMPANY_AUTHZ_POLICY_VERSION,
+        authority_source="company-ad-jwt",
+        authority_checked_at=authority_checked_at_now(),
+    )
+
+
 async def resolve_login_principal(
     *,
     work_id: str,

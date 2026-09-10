@@ -383,6 +383,7 @@ async function mountAuthPageHarness(
     bootstrapAuthContext: authApi.bootstrapAuthContext,
     getCurrentUser: authApi.getCurrentUser,
     login: authApi.login,
+    loginWithAD: authApi.loginWithAD,
     logout: authApi.logout,
     beginOAuth: authApi.beginOAuth,
     getOAuthProviders: authApi.getOAuthProviders,
@@ -392,7 +393,6 @@ async function mountAuthPageHarness(
   };
   authApi.bootstrapAuthContext = async () => undefined;
   authApi.beginOAuth = async () => ({ state: "test-oauth-state" });
-  configure(authApi);
   authApi.getOAuthProviders = async () => ({
     providers: [],
     registration_enabled: true,
@@ -406,6 +406,7 @@ async function mountAuthPageHarness(
     },
   });
   authApi.updateMetadata = async () => authUser("admin-a", "tenant-a");
+  configure(authApi);
   storage.clear();
   storage.set("ai_platform_session_present", "test-session-marker");
 
@@ -447,8 +448,7 @@ async function mountAuthPageHarness(
         ),
       ),
     );
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
   });
 
   return {
@@ -467,6 +467,7 @@ async function mountAuthPageHarness(
         bootstrapAuthContext: originals.bootstrapAuthContext,
         getCurrentUser: originals.getCurrentUser,
         login: originals.login,
+        loginWithAD: originals.loginWithAD,
         logout: originals.logout,
         beginOAuth: originals.beginOAuth,
         getOAuthProviders: originals.getOAuthProviders,
@@ -1028,6 +1029,147 @@ test("an OAuth hydration superseded by logout returns an explicit cancelled outc
 
     assert.deepEqual(outcome, { status: "cancelled" });
     assert.equal(mounted.auth.user, null);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("AuthPage attempts Windows login automatically and redirects on success", async () => {
+  let currentUserCalls = 0;
+  let adLoginCalls = 0;
+  const mounted = await mountAuthPageHarness((api) => {
+    api.getCurrentUser = async () => {
+      currentUserCalls += 1;
+      if (currentUserCalls === 1) {
+        throw new ApiRequestError("unauthorized", 401, "unauthorized");
+      }
+      return authUser("ad001", "tenant-a");
+    };
+    api.getOAuthProviders = async () => ({
+      providers: [],
+      registration_enabled: false,
+      ad_login_url: "http://company.test/api/login/GetADName",
+    });
+    api.loginWithAD = async (loginUrl) => {
+      adLoginCalls += 1;
+      assert.equal(loginUrl, "http://company.test/api/login/GetADName");
+    };
+  });
+  try {
+    await mounted.React.act(async () => {
+      for (let index = 0; index < 12; index += 1) await Promise.resolve();
+    });
+
+    assert.equal(adLoginCalls, 1);
+    assert.equal(mounted.auth.isAuthenticated, true);
+    assert.equal(mounted.auth.user?.id, "ad001");
+    assert.equal(findElements(mounted.container, "input").length, 0);
+    assert.deepEqual(mounted.errorToasts, []);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("AuthPage silently falls back to the password form when Windows login fails", async () => {
+  let adLoginCalls = 0;
+  const mounted = await mountAuthPageHarness((api) => {
+    api.getCurrentUser = async () => {
+      throw new ApiRequestError("unauthorized", 401, "unauthorized");
+    };
+    api.getOAuthProviders = async () => ({
+      providers: [],
+      registration_enabled: false,
+      ad_login_url: "http://company.test/api/login/GetADName",
+    });
+    api.loginWithAD = async () => {
+      adLoginCalls += 1;
+      throw new Error("Windows authentication unavailable");
+    };
+  });
+  try {
+    await mounted.React.act(async () => {
+      for (let index = 0; index < 12; index += 1) await Promise.resolve();
+    });
+
+    assert.equal(adLoginCalls, 1);
+    assert.equal(mounted.auth.isAuthenticated, false);
+    assert.equal(findElements(mounted.container, "input").length >= 2, true);
+    assert.deepEqual(mounted.errorToasts, []);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("AuthPage silently falls back when provider discovery is unavailable", async () => {
+  const mounted = await mountAuthPageHarness((api) => {
+    api.getCurrentUser = async () => {
+      throw new ApiRequestError("unauthorized", 401, "unauthorized");
+    };
+    api.getOAuthProviders = async () => {
+      throw new DOMException("timed out", "TimeoutError");
+    };
+  });
+  try {
+    await mounted.React.act(async () => {
+      for (let index = 0; index < 12; index += 1) await Promise.resolve();
+    });
+
+    assert.equal(mounted.auth.isAuthenticated, false);
+    assert.equal(findElements(mounted.container, "input").length >= 2, true);
+    assert.deepEqual(mounted.errorToasts, []);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("AuthPage cancels deferred AD discovery when another login wins", async () => {
+  const providerDiscovery = deferred<{
+    providers: { id: string; name: string }[];
+    registration_enabled: boolean;
+    ad_login_url: string | null;
+  }>();
+  let currentUserCalls = 0;
+  let adLoginCalls = 0;
+  let discoverySignal: AbortSignal | undefined;
+  const mounted = await mountAuthPageHarness((api) => {
+    api.getCurrentUser = async () => {
+      currentUserCalls += 1;
+      if (currentUserCalls === 1) {
+        throw new ApiRequestError("unauthorized", 401, "unauthorized");
+      }
+      return authUser("password-user", "tenant-a");
+    };
+    api.getOAuthProviders = async (signal) => {
+      discoverySignal = signal;
+      return providerDiscovery.promise;
+    };
+    api.login = async () => undefined;
+    api.loginWithAD = async () => {
+      adLoginCalls += 1;
+    };
+  });
+  try {
+    await mounted.React.act(async () => {
+      const outcome = await mounted.auth.login({
+        username: "password-user",
+        password: "safe-test",
+      });
+      assert.equal(outcome.status, "completed");
+    });
+    assert.equal(discoverySignal?.aborted, true);
+
+    providerDiscovery.resolve({
+      providers: [],
+      registration_enabled: true,
+      ad_login_url: "http://company.test/api/login/GetADName",
+    });
+    await mounted.React.act(async () => {
+      for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    });
+
+    assert.equal(mounted.auth.user?.id, "password-user");
+    assert.equal(adLoginCalls, 0);
+    assert.deepEqual(mounted.successfulRedirects, []);
   } finally {
     await mounted.cleanup();
   }

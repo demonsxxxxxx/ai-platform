@@ -2,8 +2,8 @@
  * 登录/注册页面组件
  */
 
-import { useState, useEffect, useRef, Fragment } from "react";
-import { User, Mail, AlertCircle, AtSign, Building2 } from "lucide-react";
+import { useState, useEffect, useRef, useCallback, Fragment } from "react";
+import { User, Mail, AlertCircle, AtSign } from "lucide-react";
 import { PasswordInput } from "./PasswordInput";
 import toast from "react-hot-toast";
 import { useTranslation } from "react-i18next";
@@ -60,6 +60,9 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isAttemptingAD, setIsAttemptingAD] = useState(
+    (initialMode ?? "login") === "login",
+  );
   const [isRedirecting, setIsRedirecting] = useState(false);
   const [contactAdminOpen, setContactAdminOpen] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
@@ -73,11 +76,10 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
     setTurnstileKey((prev) => prev + 1);
   }, [theme]);
 
-  const { login, loginWithAD, register, loginWithOAuth } = useAuth();
+  const { login, loginWithAD, register, loginWithOAuth, isAuthenticated, isLoading } = useAuth();
   const [oauthProviders, setOauthProviders] = useState<
     { id: string; name: string }[]
   >([]);
-  const [adLoginUrl, setAdLoginUrl] = useState<string | null>(null);
   const [turnstileConfig, setTurnstileConfig] = useState<TurnstileConfig>({
     enabled: false,
     site_key: "",
@@ -89,10 +91,13 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
   // Use ref to access current mode without adding it to deps
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  const isAuthenticatedRef = useRef(isAuthenticated);
+  isAuthenticatedRef.current = isAuthenticated;
+  const authDiscoveryStartedRef = useRef(false);
   const redirectTimerRef = useRef<number | null>(null);
   const redirectFailsafeRef = useRef<number | null>(null);
 
-  const clearRedirectTimers = () => {
+  const clearRedirectTimers = useCallback(() => {
     if (redirectTimerRef.current !== null) {
       window.clearTimeout(redirectTimerRef.current);
       redirectTimerRef.current = null;
@@ -101,38 +106,9 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
       window.clearTimeout(redirectFailsafeRef.current);
       redirectFailsafeRef.current = null;
     }
-  };
-
-  useEffect(() => clearRedirectTimers, []);
-
-  // 获取 OAuth 提供商列表和认证设置
-  useEffect(() => {
-    let mounted = true;
-    const fetchAuthData = async () => {
-      try {
-        const result = await authApi.getOAuthProviders();
-        if (!mounted) return;
-        setOauthProviders(result.providers);
-        setAdLoginUrl(result.ad_login_url);
-        // 设置 Turnstile 配置
-        if (result.turnstile) {
-          setTurnstileConfig(result.turnstile);
-        }
-        // 如果注册已关闭且当前是注册模式，切换回登录
-        if (!result.registration_enabled && modeRef.current === "register") {
-          setMode("login");
-          setEmail("");
-          setConfirmPassword("");
-        }
-      } catch {
-        // 忽略错误，可能 OAuth 未配置
-      }
-    };
-    fetchAuthData();
-    return () => {
-      mounted = false;
-    };
   }, []);
+
+  useEffect(() => clearRedirectTimers, [clearRedirectTimers]);
 
   // 检查当前模式是否需要 Turnstile
   const requiresTurnstile = () => {
@@ -158,38 +134,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
     }
   };
 
-  // AD 登录处理
-  const handleADLogin = async () => {
-    if (!adLoginUrl) return;
-    setError(null);
-    setIsSubmitting(true);
-    let startedRedirect = false;
-    try {
-      const loginOutcome = await loginWithAD(adLoginUrl);
-      if (!mountedRef.current) return;
-      if (loginOutcome.status === "cancelled") return;
-      if (loginOutcome.status !== "completed") return;
-      toast.success(t("auth.loginSuccess"));
-      startedRedirect = true;
-      beginSuccessRedirect(loginOutcome.value);
-    } catch (err) {
-      if (!mountedRef.current) return;
-      const errorMessage =
-        err instanceof BrowserAuthCoordinatorError
-          ? t("auth.browserCoordinationUnavailable")
-          : err instanceof ApiRequestError
-          ? err.message
-          : t("auth.adLoginFailed");
-      toast.error(errorMessage);
-      setError(errorMessage);
-    } finally {
-      if (mountedRef.current && !startedRedirect) {
-        setIsSubmitting(false);
-      }
-    }
-  };
-
-  const beginSuccessRedirect = (redirectPath?: string | null) => {
+  const beginSuccessRedirect = useCallback((redirectPath?: string | null) => {
     const nextPath = resolvePostAuthRedirectPath(redirectPath);
     clearRedirectTimers();
     setIsRedirecting(true);
@@ -208,7 +153,55 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
         setIsSubmitting(false);
       }
     }, AUTH_REDIRECT_ANIMATION_MS);
-  };
+  }, [clearRedirectTimers, onSuccess]);
+
+  // 获取 OAuth 提供商列表、认证设置，并在登录入口自动尝试一次 Windows 免密登录。
+  useEffect(() => {
+    if (isLoading || authDiscoveryStartedRef.current) return;
+    authDiscoveryStartedRef.current = true;
+    const controller = new AbortController();
+
+    const fetchAuthData = async () => {
+      if (isAuthenticated) {
+        setIsAttemptingAD(false);
+        return;
+      }
+      let startedRedirect = false;
+      try {
+        const result = await authApi.getOAuthProviders(controller.signal);
+        if (
+          !mountedRef.current ||
+          controller.signal.aborted ||
+          isAuthenticatedRef.current
+        ) {
+          return;
+        }
+        setOauthProviders(result.providers);
+        // 设置 Turnstile 配置
+        if (result.turnstile) {
+          setTurnstileConfig(result.turnstile);
+        }
+        // 如果注册已关闭且当前是注册模式，切换回登录
+        if (!result.registration_enabled && modeRef.current === "register") {
+          setMode("login");
+          setEmail("");
+          setConfirmPassword("");
+        }
+        if (result.ad_login_url && modeRef.current === "login") {
+          const loginOutcome = await loginWithAD(result.ad_login_url);
+          if (!mountedRef.current || loginOutcome.status !== "completed") return;
+          startedRedirect = true;
+          beginSuccessRedirect(loginOutcome.value);
+        }
+      } catch {
+        // Windows 或 provider 登录不可用时保留账号密码登录。
+      } finally {
+        if (mountedRef.current && !startedRedirect) setIsAttemptingAD(false);
+      }
+    };
+    void fetchAuthData();
+    return () => controller.abort();
+  }, [beginSuccessRedirect, isAuthenticated, isLoading, loginWithAD]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -334,6 +327,14 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
     }
   };
 
+  if (isAttemptingAD) {
+    return (
+      <div className="auth-shell flex min-h-screen items-center justify-center">
+        <Loading size="lg" className="justify-center" />
+      </div>
+    );
+  }
+
   if (isRedirecting) {
     return (
       <div className="auth-shell flex min-h-screen items-center justify-center">
@@ -393,7 +394,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
           {/* Form card */}
           <div className="auth-panel rounded-[1.35rem] p-4 shadow-stone-200/50 sm:rounded-2xl sm:p-6 lg:p-8 2xl:p-10 dark:shadow-stone-950/40">
             {/* OAuth buttons */}
-            {(oauthProviders.length > 0 || (mode === "login" && adLoginUrl)) && (
+            {oauthProviders.length > 0 && (
               <div className="mb-4 sm:mb-5 lg:mb-6 2xl:mb-8">
                 <div className="flex flex-wrap items-center justify-center gap-2 sm:gap-3">
                   {oauthProviders.map((provider) => (
@@ -447,17 +448,6 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
                       </button>
                     </Fragment>
                   ))}
-                  {mode === "login" && adLoginUrl && (
-                    <button
-                      type="button"
-                      onClick={handleADLogin}
-                      disabled={isSubmitting || isRedirecting}
-                      className="flex h-11 min-w-12 items-center justify-center gap-2 rounded-xl border border-stone-200 bg-white/85 px-3 text-sm font-medium text-stone-700 shadow-sm transition-all hover:-translate-y-0.5 hover:bg-white hover:shadow-md active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 dark:border-stone-700 dark:bg-stone-800/70 dark:text-stone-200 dark:hover:bg-stone-800 dark:hover:shadow-lg sm:h-auto sm:gap-2.5 sm:p-3"
-                    >
-                      {isSubmitting ? <LoadingSpinner size="sm" /> : <Building2 size={18} />}
-                      <span>{t("auth.adLogin")}</span>
-                    </button>
-                  )}
                 </div>
 
                 {/* Divider */}

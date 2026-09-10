@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.auth import (
+    COMPANY_AUTHZ_POLICY_VERSION,
     AuthPrincipal,
     authority_checked_at_now,
     is_ai_admin,
@@ -347,9 +348,8 @@ def test_ad_login_exchanges_verified_company_token_for_platform_session(monkeypa
         secret,
     )
 
-    async def fake_user_info(work_id):
-        assert work_id == "ad001"
-        return {"workid": work_id, "roles": ["user"], "department": "研发一部"}
+    async def unexpected_user_info(_work_id):
+        raise AssertionError("AD login must use the verified GetADName claims")
 
     async def noop(*args, **kwargs):
         del args, kwargs
@@ -367,7 +367,7 @@ def test_ad_login_exchanges_verified_company_token_for_platform_session(monkeypa
     )
     monkeypatch.setattr("app.auth.get_settings", lambda: settings)
     monkeypatch.setattr("app.routes.auth.get_settings", lambda: settings)
-    monkeypatch.setattr("app.routes.auth.call_existing_user_info", fake_user_info)
+    monkeypatch.setattr("app.routes.auth.call_existing_user_info", unexpected_user_info)
     monkeypatch.setattr("app.routes.auth._persist_login_principal", noop)
     monkeypatch.setattr("app.routes.auth._store_mcp_login_jwt", fake_store)
 
@@ -375,7 +375,24 @@ def test_ad_login_exchanges_verified_company_token_for_platform_session(monkeypa
     response = client.post("/api/ai/auth/ad-login", json={"token": token})
 
     assert response.status_code == 200
-    assert response.json()["user_id"] == "ad001"
+    expected_principal = {
+        "user_id": "ad001",
+        "user_name": "ad001",
+        "display_name": "AD User",
+        "tenant_id": "default",
+        "department_id": "研发一部",
+        "roles": ["user"],
+        "permissions": EXPECTED_COMPANY_USER_PERMISSIONS,
+        "is_admin": False,
+        "source": "company-login",
+        "authz_policy_version": COMPANY_AUTHZ_POLICY_VERSION,
+        "authority_source": "company-ad-jwt",
+        "authority_checked_at": response.json()["authority_checked_at"],
+    }
+    assert response.json() == expected_principal
+    current_response = client.get("/api/ai/auth/me")
+    assert current_response.status_code == 200
+    assert current_response.json() == expected_principal
     assert stored == {"user_id": "ad001", "jwt": token}
 
 

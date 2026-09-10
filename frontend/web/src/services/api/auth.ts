@@ -100,15 +100,23 @@ export function buildOAuthLoginUrl(provider: string, state?: string): string {
   return `${API_BASE}/api/auth/oauth/${safeProvider}${suffix}`;
 }
 
+const COMPANY_AD_LOGIN_TIMEOUT_MS = 15_000;
+
+function withCompanyAuthTimeout(signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(COMPANY_AD_LOGIN_TIMEOUT_MS);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
 async function fetchCompanyADToken(
   loginUrl: string,
   signal?: AbortSignal,
 ): Promise<string> {
+  const requestSignal = withCompanyAuthTimeout(signal);
   const response = await fetch(loginUrl, {
     credentials: "include",
     cache: "no-store",
     headers: { Accept: "application/json" },
-    signal,
+    signal: requestSignal,
   });
   if (!response.ok) throw new Error("ad_login_failed");
 
@@ -310,7 +318,7 @@ export const authApi = {
   /**
    * 获取可用的 OAuth 提供商列表
    */
-  async getOAuthProviders(): Promise<{
+  async getOAuthProviders(signal?: AbortSignal): Promise<{
     providers: { id: string; name: string }[];
     registration_enabled: boolean;
     ad_login_url: string | null;
@@ -333,7 +341,10 @@ export const authApi = {
         require_on_register: boolean;
         require_on_password_change: boolean;
       };
-    }>(`${API_BASE}/api/auth/oauth/providers`, { skipAuth: true });
+    }>(`${API_BASE}/api/auth/oauth/providers`, {
+      skipAuth: true,
+      signal: withCompanyAuthTimeout(signal),
+    });
   },
 
   /**
