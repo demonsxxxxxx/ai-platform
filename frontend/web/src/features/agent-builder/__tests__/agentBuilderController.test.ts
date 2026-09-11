@@ -304,6 +304,7 @@ test("edit disables publish, save fences the exact revision, then publish adopts
       avatar_asset_id: null,
       category: "operations",
       market_tag: "",
+      market_tags: [],
       visibility: "tenant",
       allowed_department_ids: [],
       allowed_roles: [],

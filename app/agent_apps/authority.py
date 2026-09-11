@@ -1047,7 +1047,6 @@ class AgentProfileAuthority:
                         agent_id=agent_id,
                         skill_id=selected_skill["skill_id"],
                         rollout_key=principal.user_id,
-                        normalized_input={},
                         principal_department_id=principal.department_id,
                         principal_roles=principal.roles,
                         is_admin=is_ai_admin(principal),

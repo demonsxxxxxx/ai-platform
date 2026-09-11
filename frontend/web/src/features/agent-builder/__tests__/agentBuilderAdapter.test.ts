@@ -283,7 +283,6 @@ test("blocks stale Skill versions but preserves stable MCP references outside th
     null,
   );
   assert.deepEqual(editor.selectedMcpToolIds, ["gateway::previously-authorized"]);
-  assert.equal(editor.selectedSkills[0]?.expected_version, "2026.07.28");
   assert.deepEqual(editor.selectedSkills, [{ skill_id: "document-review" }]);
 });
 
