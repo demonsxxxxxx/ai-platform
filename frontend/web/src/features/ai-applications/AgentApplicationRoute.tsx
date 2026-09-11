@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import toast from "react-hot-toast";
 import {
   AlertCircle,
   ArrowLeft,
@@ -24,6 +25,7 @@ import {
 
 import type { Message } from "../../types";
 import { APP_ROUTE_PATHS } from "../../appRouteManifest";
+import { useAuth } from "../../hooks/useAuth";
 import { resolveInternalAiApplication } from "./aiApplicationCatalog";
 import "./wordReviewApplication.css";
 
@@ -241,8 +243,8 @@ function AppFrame({
 }) {
   const navigate = useNavigate();
   return (
-    <main className="min-h-screen bg-[#f5f8fb] text-[#122235]">
-      <header className="border-b border-[#dce5ed] bg-white">
+    <main className="flex h-full min-h-0 flex-col overflow-hidden bg-[#f5f8fb] text-[#122235]">
+      <header className="shrink-0 border-b border-[#dce5ed] bg-white">
         <div className="mx-auto flex min-h-[72px] w-full max-w-[1440px] items-center gap-4 px-5 sm:px-8">
           <button
             type="button"
@@ -263,7 +265,7 @@ function AppFrame({
           {status}
         </div>
       </header>
-      <div className="mx-auto w-full max-w-[1440px] px-5 py-5 sm:px-8 sm:py-7">{children}</div>
+      <div className="mx-auto min-h-0 w-full max-w-[1440px] flex-1 overflow-y-auto px-5 py-5 sm:px-8 sm:py-7">{children}</div>
     </main>
   );
 }
@@ -395,9 +397,9 @@ function KnowledgeBaseApplication() {
         failed={!configured}
         message="公司知识库访问配置未提供，请配置 VITE_RAGFLOW_SOP_SHARE_URL。"
       />
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
-        <section className="flex min-h-[calc(100vh-150px)] flex-col overflow-hidden rounded-lg border border-[#dce5ed] bg-white shadow-[0_2px_8px_rgba(31,58,80,0.04)]">
-          <div className="flex items-center justify-between border-b border-[#edf1f4] px-5 py-4">
+      <div className="grid min-h-0 gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
+        <section className="flex h-[calc(100dvh-150px)] min-h-[420px] flex-col overflow-hidden rounded-lg border border-[#dce5ed] bg-white shadow-[0_2px_8px_rgba(31,58,80,0.04)]">
+          <div className="shrink-0 flex items-center justify-between border-b border-[#edf1f4] px-5 py-4">
             <div>
               <h2 className="text-sm font-bold text-[#1b344b]">问询对话</h2>
               <p className="mt-1 text-xs text-[#8294a5]">回答将基于已授权的公司知识库内容</p>
@@ -411,7 +413,7 @@ function KnowledgeBaseApplication() {
               <Trash2 size={14} /> 清空
             </button>
           </div>
-          <div className="flex-1 overflow-y-auto px-5 py-6 sm:px-8">
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6 sm:px-8">
             {messages.length === 0 ? (
               <div className="mx-auto flex max-w-[680px] flex-col items-center pt-12 text-center sm:pt-20">
                 <span className="flex size-16 items-center justify-center rounded-full bg-[#e6f6f1] text-[#168c73]"><Sparkles size={28} /></span>
@@ -437,7 +439,7 @@ function KnowledgeBaseApplication() {
               </div>
             )}
           </div>
-          <form onSubmit={submit} className="border-t border-[#edf1f4] bg-[#fbfcfd] p-4 sm:p-5">
+          <form onSubmit={submit} className="shrink-0 border-t border-[#edf1f4] bg-[#fbfcfd] p-4 sm:p-5">
             {localError && <p className="mb-2 text-xs text-[#c35b50]">{localError}</p>}
             <div className="flex items-end gap-2 rounded-lg border border-[#d4e0e8] bg-white p-2 focus-within:border-[#55aaa0] focus-within:ring-2 focus-within:ring-[#d9f0ed]">
               <textarea
@@ -484,7 +486,6 @@ const WORD_REVIEW_API_BASE = (
 ).replace(/\/+$/, "");
 const WORD_REVIEW_SKILL_ID = "qa-file-reviewer";
 const WORD_REVIEW_AGENT_ID = "qa-word-review";
-const WORD_REVIEW_WORK_ID_KEY = "workid";
 const WORD_REVIEW_HISTORY_KEY = "wordReviewHistory";
 const WORD_REVIEW_MAX_FILE_SIZE = 20 * 1024 * 1024;
 const WORD_REVIEW_HISTORY_LIMIT = 200;
@@ -570,10 +571,10 @@ function getStoredWordReviewValue(key: string, fallback: string): string {
   }
 }
 
-function getWordReviewContext(sessionId: string) {
+function getWordReviewContext(sessionId: string, workId: string, tenantId: string) {
   return {
-    workId: getStoredWordReviewValue(WORD_REVIEW_WORK_ID_KEY, "default"),
-    tenantId: getStoredWordReviewValue("tenant_id", "default"),
+    workId,
+    tenantId,
     workspaceId: getStoredWordReviewValue("workspace_id", "default"),
     agentId: WORD_REVIEW_AGENT_ID,
     sessionId,
@@ -883,10 +884,10 @@ function normalizeWordReviewHistoryItem(value: unknown, index: number): WordRevi
   };
 }
 
-function readLocalWordReviewHistory(): WordReviewHistoryItem[] {
+function readLocalWordReviewHistory(workId: string): WordReviewHistoryItem[] {
   if (typeof window === "undefined") return [];
   try {
-    const raw = window.localStorage.getItem(WORD_REVIEW_HISTORY_KEY);
+    const raw = window.localStorage.getItem(`${WORD_REVIEW_HISTORY_KEY}:${workId}`);
     if (!raw || raw.length > 1024 * 1024) return [];
     const parsed: unknown = JSON.parse(raw);
     return Array.isArray(parsed)
@@ -960,7 +961,7 @@ function isWordReviewAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
-function useWordReviewController() {
+function useWordReviewController(workId: string, tenantId: string) {
   const [tasks, setTasks] = useState<WordReviewTask[]>([]);
   const [history, setHistory] = useState<WordReviewHistoryItem[]>([]);
   const [stats, setStats] = useState<WordReviewStats>({ total: 0, todayCount: 0, daily: [] });
@@ -985,7 +986,7 @@ function useWordReviewController() {
 
   const persistHistory = (items: WordReviewHistoryItem[]) => {
     try {
-      window.localStorage.setItem(WORD_REVIEW_HISTORY_KEY, JSON.stringify(items.slice(0, WORD_REVIEW_HISTORY_LIMIT)));
+      window.localStorage.setItem(`${WORD_REVIEW_HISTORY_KEY}:${workId}`, JSON.stringify(items.slice(0, WORD_REVIEW_HISTORY_LIMIT)));
     } catch {
       // The service remains the source of truth when browser storage is unavailable.
     }
@@ -1015,7 +1016,7 @@ function useWordReviewController() {
     setHistoryLoading(true);
     setHistoryError("");
     try {
-      const remote = await fetchWordReviewHistory(getStoredWordReviewValue(WORD_REVIEW_WORK_ID_KEY, "default"));
+      const remote = await fetchWordReviewHistory(workId);
       if (mountedRef.current) {
         setHistory((current) => mergeWordReviewHistory(remote, current));
         setServiceFailed(false);
@@ -1051,11 +1052,12 @@ function useWordReviewController() {
 
   useEffect(() => {
     let active = true;
-    setHistory(readLocalWordReviewHistory());
+    mountedRef.current = true;
+    setHistory(readLocalWordReviewHistory(workId));
     void (async () => {
       const [statsResult, historyResult] = await Promise.allSettled([
         fetchWordReviewStats(),
-        fetchWordReviewHistory(getStoredWordReviewValue(WORD_REVIEW_WORK_ID_KEY, "default")),
+        fetchWordReviewHistory(workId),
       ]);
       if (!active) return;
       if (statsResult.status === "fulfilled") setStats(statsResult.value);
@@ -1076,7 +1078,7 @@ function useWordReviewController() {
       for (const abort of abortRequests.values()) abort();
       abortRequests.clear();
     };
-  }, []);
+  }, [workId]);
 
   useEffect(() => {
     const pageCount = Math.max(1, Math.ceil(history.length / WORD_REVIEW_HISTORY_PAGE_SIZE));
@@ -1089,7 +1091,7 @@ function useWordReviewController() {
     taskSeqRef.current += 1;
     const localId = `${WORD_REVIEW_SKILL_ID}-task-${Date.now()}-${taskSeqRef.current}`;
     const sessionId = `wr-session-${Date.now()}-${taskSeqRef.current}-${Math.random().toString(36).slice(2, 8)}`;
-    const context = getWordReviewContext(sessionId);
+    const context = getWordReviewContext(sessionId, workId, tenantId);
     return {
       localId,
       taskId: "",
@@ -1412,10 +1414,12 @@ function useWordReviewController() {
     const pageIds = selectableHistory.map((item) => item.id);
     setSelectedHistoryIds((current) => checked ? Array.from(new Set([...current, ...pageIds])) : current.filter((id) => !pageIds.includes(id)));
   };
-  const batchDownloadHistory = async (download: (file: WordReviewFile, taskId: string) => void) => {
+  const batchDownloadHistory = async (
+    download: (file: WordReviewFile, taskId: string) => Promise<void>,
+  ) => {
     for (const item of selectedHistory) {
       for (const file of item.files) {
-        download(file, item.taskId);
+        await download(file, item.taskId);
         await new Promise((resolve) => window.setTimeout(resolve, 160));
       }
     }
@@ -1458,6 +1462,9 @@ function ReviewStatus({ loading, failed }: { loading: boolean; failed: boolean }
 }
 
 function WordReviewApplication() {
+  const { user } = useAuth();
+  const workId = user?.id.trim() || "";
+  const tenantId = user?.tenant_id?.trim() || "default";
   const {
     tasks,
     history,
@@ -1487,24 +1494,30 @@ function WordReviewApplication() {
     togglePageHistorySelection,
     setSelectedHistoryIds,
     setHistoryPage,
-  } = useWordReviewController();
+  } = useWordReviewController(workId, tenantId);
   const [activeTab, setActiveTab] = useState<"current" | "history">("current");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploading = tasks.some((task) => task.status === "uploading");
   const isLoading = tasks.some((task) => ["queued", "running"].includes(task.status));
   const failureReason = "文档审核服务暂时无法连接，请检查 8014 服务。";
 
-  const downloadResultFile = (file: WordReviewFile, taskId: string) => {
+  const downloadResultFile = async (file: WordReviewFile, taskId: string) => {
     const url = downloadUrl(file, taskId);
     if (!url) return;
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = file.name || "review-result";
-    link.target = "_blank";
-    link.rel = "noreferrer";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw await wordReviewResponseError(response);
+      const objectUrl = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = file.name || "review-result";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "下载审核结果失败");
+    }
   };
 
   const reviewStats = [
@@ -1729,9 +1742,9 @@ function WordReviewApplication() {
                               {task.files.map((file) => (
                                 <span key={`${file.path}-${file.fileKey}-${file.name}`} className="result-file-group">
                                   {viewUrl(file) && <a className="result-file" href={viewUrl(file)} target="_blank" rel="noreferrer"><ExternalLink size={12} />在线查看</a>}
-                                  <a className="result-file" href={downloadUrl(file, task.taskId) || undefined} target="_blank" rel="noreferrer">
+                                  <button type="button" className="result-file" onClick={() => void downloadResultFile(file, task.taskId)}>
                                     <ExternalLink size={12} />{file.label}
-                                  </a>
+                                  </button>
                                 </span>
                               ))}
                             </div>
@@ -1758,7 +1771,7 @@ function WordReviewApplication() {
                   <label className="history-select-all"><input type="checkbox" checked={allVisibleHistorySelected} onChange={(event) => togglePageHistorySelection(event.target.checked)} />选择本页</label>
                   <span className="history-count">已选 {selectedHistory.length} 条</span>
                   <button type="button" className="secondary-button" onClick={() => setSelectedHistoryIds([])} disabled={selectedHistoryIds.length === 0}>清空选择</button>
-                  <button type="button" className="primary-button" onClick={() => void batchDownloadHistory((file, taskId) => downloadResultFile(file, taskId))} disabled={selectedHistory.length === 0}><ExternalLink size={14} />批量下载</button>
+                  <button type="button" className="primary-button" onClick={() => void batchDownloadHistory(downloadResultFile)} disabled={selectedHistory.length === 0}><ExternalLink size={14} />批量下载</button>
                 </div>
                 {historyError && <p className="task-error">{historyError}</p>}
                 <div className="task-list">
@@ -1783,7 +1796,7 @@ function WordReviewApplication() {
                           {item.files.map((file) => (
                             <span key={`${file.path}-${file.fileKey}-${file.name}`} className="result-file-group">
                               {viewUrl(file) && <a className="secondary-button" href={viewUrl(file)} target="_blank" rel="noreferrer"><ExternalLink size={13} />在线查看</a>}
-                              <a className="secondary-button" href={downloadUrl(file, item.taskId) || undefined} target="_blank" rel="noreferrer"><ExternalLink size={13} />{file.label}</a>
+                              <button type="button" className="secondary-button" onClick={() => void downloadResultFile(file, item.taskId)}><ExternalLink size={13} />{file.label}</button>
                             </span>
                           ))}
                         </div>

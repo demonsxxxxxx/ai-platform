@@ -262,6 +262,24 @@ export const authApi = {
     return mapPrincipalToUser(principal);
   },
 
+  /** Read the current user's company credential for the document-translator handoff. */
+  async getCompanyCredentialForHandoff(signal?: AbortSignal): Promise<string> {
+    const payload = await authFetch<{ credential?: unknown }>(
+      `${API_BASE}/api/ai/auth/company-credential-handoff`,
+      {
+        method: "POST",
+        skipAuth: true,
+        credentials: "include",
+        cache: "no-store",
+        signal,
+      },
+    );
+    if (typeof payload.credential !== "string" || !payload.credential.trim()) {
+      throw new Error("company_credential_unavailable");
+    }
+    return payload.credential.trim();
+  },
+
   /**
    * 登出
    */

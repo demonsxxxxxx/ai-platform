@@ -283,6 +283,11 @@ def test_login_returns_ai_role_without_mutating_context_cookie(monkeypatch):
                 jwt=jwt,
             )
 
+        async def get(self, principal):
+            assert principal.tenant_id == stored_jwt["tenant_id"]
+            assert principal.user_id == stored_jwt["user_id"]
+            return stored_jwt["jwt"]
+
     settings = auth_settings(ai_session_cookie_secure=True)
     monkeypatch.setattr("app.auth.get_settings", lambda: settings)
     monkeypatch.setattr("app.routes.auth.get_settings", lambda: settings)
@@ -312,6 +317,19 @@ def test_login_returns_ai_role_without_mutating_context_cookie(monkeypatch):
         "jwt": "company.jwt.signature",
     }
     assert "set-cookie" not in response.headers
+
+    handoff_response = client.post("/api/ai/auth/company-credential-handoff")
+    assert handoff_response.status_code == 200
+    assert handoff_response.json() == {"credential": "company.jwt.signature"}
+    assert handoff_response.headers["cache-control"] == "private, no-store"
+    assert handoff_response.headers["pragma"] == "no-cache"
+
+
+def test_company_credential_handoff_requires_an_authenticated_principal():
+    response = TestClient(create_app()).post("/api/ai/auth/company-credential-handoff")
+
+    assert response.status_code == 401
+    assert "credential" not in response.text
 
 
 def test_ad_login_resolves_company_authority_and_retains_jwt_for_mcp(monkeypatch):
