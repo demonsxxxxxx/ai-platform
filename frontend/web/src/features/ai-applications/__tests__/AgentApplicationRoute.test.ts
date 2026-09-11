@@ -30,7 +30,7 @@ test("application routes render task-specific surfaces and use the independent W
   assert.match(routeSource, /SOP_RAGFLOW_API_BASE = "http:\/\/10\.56\.0\.211:8080"/);
   assert.match(routeSource, /VITE_RAGFLOW_SOP_SHARE_URL/);
   assert.match(routeSource, /\/api\/v1\/chatbots\/\$\{encodeURIComponent\(config\.chatId\)\}\/completions/);
-  assert.match(routeSource, /Authorization: `Bearer \$\{config\.apiKey\}`/);
+  assert.match(routeSource, /Authorization: `Bearer \$\{config\.auth\}`/);
   assert.match(routeSource, /Accept: "text\/event-stream"/);
   assert.doesNotMatch(routeSource, /useAgent\(|getPublished\(|agentProfileApi|sendMessage\(/);
   assert.match(routeSource, /VITE_WORD_REVIEW_API_TARGET/);

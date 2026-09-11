@@ -37,7 +37,7 @@ function findCatalogMetadataKeyPaths(
 test("launchpad keeps the copied web catalog and AI application entries", () => {
   const entries = launchpadGroups.flatMap((group) => group.entries);
 
-  assert.equal(launchpadGroups.length, 13);
+  assert.equal(launchpadGroups.length, 14);
   assert.equal(entries.length, 127);
   assert.equal(new Set(entries.map((entry) => entry.id)).size, 127);
   assert.equal(
@@ -48,6 +48,7 @@ test("launchpad keeps the copied web catalog and AI application entries", () => 
     launchpadGroups.map((group) => group.name),
     [
       "内网登录",
+      "企业内部AI助手",
       "AI",
       "翻译",
       "绘图",
@@ -73,6 +74,18 @@ test("launchpad keeps the copied web catalog and AI application entries", () => 
       icon: "lingxi-platform.png",
       url: "http://10.56.0.25:8189/#/TaskManagement/indexSpace",
     },
+  );
+  const enterpriseAiGroup = launchpadGroups[1];
+  assert.deepEqual(
+    enterpriseAiGroup?.entries.map((entry) => entry.name),
+    [
+      "SOP问询助手",
+      "Word文档翻译",
+      "Word文档审核",
+      "ai-draw",
+      "data-formulator",
+      "pdf-translate",
+    ],
   );
   assert.ok(entries.some((entry) => entry.name === "SOP问询助手"));
   assert.ok(entries.some((entry) => entry.name === "Word文档翻译"));

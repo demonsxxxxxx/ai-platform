@@ -61,15 +61,15 @@ const SOP_REQUEST_TIMEOUT = 120_000;
 
 interface SopRagflowConfig {
   chatId: string;
-  apiKey: string;
+  auth: string;
 }
 
 function getSopRagflowConfig(): SopRagflowConfig | null {
   try {
     const shareUrl = new URL(SOP_RAGFLOW_SHARE_URL);
     const chatId = shareUrl.searchParams.get("shared_id")?.trim() || "";
-    const apiKey = shareUrl.searchParams.get("auth")?.trim() || "";
-    return chatId && apiKey ? { chatId, apiKey } : null;
+    const auth = shareUrl.searchParams.get("auth")?.trim() || "";
+    return chatId && auth ? { chatId, auth } : null;
   } catch {
     return null;
   }
@@ -124,7 +124,7 @@ async function streamSopAnswer(
         headers: {
           Accept: "text/event-stream",
           "Content-Type": "application/json",
-          Authorization: `Bearer ${config.apiKey}`,
+          Authorization: `Bearer ${config.auth}`,
         },
         body: JSON.stringify({
           question,
