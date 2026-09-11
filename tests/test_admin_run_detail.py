@@ -350,6 +350,62 @@ def test_admin_run_detail_returns_explainability_contract(monkeypatch):
     assert data["skill_snapshots"][0]["usage"]["used_skills_source"] == "executor_hook"
 
 
+def test_admin_run_detail_restores_private_runtime_diagnostics(monkeypatch):
+    diagnostics = {
+        "schema_version": "ai-platform.sdk-runtime-diagnostics.v1",
+        "error_code": "claude_agent_sdk_tool_admission_failed",
+        "tool_calls": [{"tool_name": "Bash", "invocation_id": "tool-1"}],
+    }
+
+    async def fake_get_admin_run_detail(conn, *, tenant_id, run_id):
+        return {
+            "run": {
+                "run_id": run_id,
+                "session_id": "ses-a",
+                "user_id": "user-a",
+                "status": "failed",
+                "agent_id": "general-agent",
+                "skill_id": "general-chat",
+                "created_at": None,
+                "started_at": None,
+                "finished_at": None,
+                "input": {},
+                "result": {},
+            },
+            "events": [],
+            "steps": [],
+            "artifacts": [],
+            "sandbox_leases": [],
+            "skill_snapshots": [],
+            "audit": [],
+        }
+
+    async def fake_get_run(conn, *, tenant_id, run_id):
+        assert tenant_id == "default"
+        assert run_id == "run_failed"
+        return {
+            "status": "failed",
+            "result_json": {"runtime_diagnostics": diagnostics},
+        }
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.admin_runs.repositories.get_admin_run_detail",
+        fake_get_admin_run_detail,
+    )
+    monkeypatch.setattr(
+        "app.routes.admin_runs.repositories.get_run",
+        fake_get_run,
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/admin/runs/run_failed", headers=headers())
+
+    assert response.status_code == 200
+    assert response.json()["run"]["result"]["runtime_diagnostics"] == diagnostics
+
+
 def test_admin_run_detail_includes_live_queue_context_for_queued_run(monkeypatch):
     async def fake_get_admin_run_detail(conn, *, tenant_id, run_id):
         return {

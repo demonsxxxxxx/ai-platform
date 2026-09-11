@@ -3,6 +3,7 @@ import functools
 import gc
 import hashlib
 import json
+import logging
 import os
 import shutil
 import threading
@@ -16,7 +17,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.execution.api import ClaudeAgentEventCandidate
-from app.executors.claude_agent_sdk_runner import build_skill_prompt
+from app.executors.claude_agent_sdk_runner import (
+    ClaudeAgentSdkNotAvailable,
+    build_skill_prompt,
+)
 from app.public_execution import PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
 from app.platform.public_payload import sanitize_public_payload
 from app.required_tool_contract import (
@@ -43,6 +47,9 @@ from app.runtime.sandbox.executor_app import (
     _default_callback_sender,
     _default_executor_runner,
     create_executor_app,
+)
+from app.sandbox.domain.runtime_diagnostics import (
+    SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
 )
 from app.tool_permission_lifecycle import tool_permission_budget
 from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
@@ -189,20 +196,75 @@ def callback_retry_policy(
     )
 
 
-def test_executor_lifespan_shutdown_cancels_active_task_and_delivers_terminal(tmp_path):
+@pytest.mark.parametrize(
+    ("blocking_event", "queued_event"),
+    [
+        pytest.param(
+            AgentEvent(
+                type="message.delta",
+                event_id="evt_in-flight",
+                run_id="run-a",
+                message_id="msg-a",
+                payload={"delta": "first"},
+            ),
+            AgentEvent(
+                type="message.delta",
+                event_id="evt_queued",
+                run_id="run-a",
+                message_id="msg-a",
+                payload={"delta": "second"},
+            ),
+            id="buffered-delta",
+        ),
+        pytest.param(
+            AgentEvent(
+                type="tool.started",
+                event_id="evt_direct-barrier",
+                run_id="run-a",
+                payload={"tool_call_id": "call-a"},
+            ),
+            None,
+            id="direct-barrier",
+        ),
+    ],
+)
+def test_executor_lifespan_shutdown_drains_in_flight_callback_before_terminal(
+    tmp_path,
+    caplog,
+    blocking_event,
+    queued_event,
+):
+    caplog.set_level(logging.INFO, logger=executor_app.__name__)
     started = threading.Event()
-    cancelled = threading.Event()
+    queued = threading.Event()
+    release_callback = threading.Event()
+    callback_committed = threading.Event()
+    callback_cancelled = threading.Event()
     callbacks = []
 
-    async def executor_runner(_request, _workspace_root, _emit_event):
-        started.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            cancelled.set()
+    async def executor_runner(_request, _workspace_root, emit_event):
+        await emit_event(blocking_event)
+        while not started.is_set():
+            await asyncio.sleep(0)
+        if queued_event is not None:
+            await emit_event(queued_event)
+            queued.set()
+        await asyncio.Event().wait()
 
     async def callback_sender(_url, payload, _token):
         callbacks.append(payload)
+        if any(
+            event.get("event_id") == blocking_event.event_id
+            for event in payload.get("events", [])
+        ):
+            started.set()
+            try:
+                while not release_callback.is_set():
+                    await asyncio.sleep(0.001)
+                callback_committed.set()
+            except asyncio.CancelledError:
+                callback_cancelled.set()
+                raise
         return callback_ack(payload)
 
     app = create_executor_app(
@@ -220,12 +282,443 @@ def test_executor_lifespan_shutdown_cancels_active_task_and_delivers_terminal(tm
         response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
         assert response.status_code == 202
         assert started.wait(timeout=2)
+        if queued_event is not None:
+            assert queued.wait(timeout=2)
+        threading.Timer(0.05, release_callback.set).start()
 
-    assert cancelled.is_set()
+    assert callback_committed.is_set()
+    assert not callback_cancelled.is_set()
     terminal_callbacks = [callback for callback in callbacks if callback.get("terminal_result")]
     assert len(terminal_callbacks) == 1
     assert terminal_callbacks[0]["status"] == "cancelled"
     assert terminal_callbacks[0]["terminal_result"]["status"] == "cancelled"
+    runner_event_callbacks = [callback for callback in callbacks if callback.get("events")]
+    assert [
+        event["event_id"]
+        for callback in runner_event_callbacks
+        for event in callback["events"]
+    ] == [blocking_event.event_id]
+    assert callbacks.index(runner_event_callbacks[0]) < callbacks.index(terminal_callbacks[0])
+    cancellation_diagnostics = terminal_callbacks[0]["terminal_result"][
+        "runtime_diagnostics"
+    ]
+    assert cancellation_diagnostics["error_code"] == "executor_cancelled"
+    assert cancellation_diagnostics["sdk"]["exception_type"] == "CancelledError"
+    terminal_records = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "sandbox_execution_terminal"
+    ]
+    assert len(terminal_records) == 1
+    assert terminal_records[0].sandbox_execution_status == "cancelled"
+    assert terminal_records[0].sandbox_error_code == "executor_cancelled"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_deadline_never_overtakes_uncertain_body_callback(
+    tmp_path,
+    monkeypatch,
+):
+    callback_started = asyncio.Event()
+    release_callback = asyncio.Event()
+    runner_finished = asyncio.Event()
+    callbacks = []
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        await emit_event(message_delta_callback("shutdown", "body").events[0])
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            while not release_callback.is_set():
+                try:
+                    await release_callback.wait()
+                except asyncio.CancelledError:
+                    continue
+            await emit_event(message_delta_callback("late_after_shutdown", "late").events[0])
+        finally:
+            runner_finished.set()
+        return {"status": "completed", "message": "done"}
+
+    async def callback_sender(_url, payload, _token):
+        callbacks.append(payload)
+        if any(event.get("event_id") == "evt_shutdown" for event in payload.get("events", [])):
+            callback_started.set()
+            while not release_callback.is_set():
+                try:
+                    await release_callback.wait()
+                except asyncio.CancelledError:
+                    continue
+        return callback_ack(payload)
+
+    monkeypatch.setattr(executor_app, "_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS", 0.01)
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        callback_sender=callback_sender,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        heartbeat_interval_seconds=60,
+        nonterminal_callback_retry_policy=callback_retry_policy(
+            attempt_timeout_seconds=60,
+        ),
+    )
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    try:
+        dispatch = next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
+        await dispatch(
+            ExecutorTaskRequest.model_validate(task_payload()),
+            executor_credential=EXECUTOR_AUTH_TOKEN,
+        )
+        await asyncio.wait_for(callback_started.wait(), timeout=1)
+        started_at = asyncio.get_running_loop().time()
+        await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=0.5)
+        assert asyncio.get_running_loop().time() - started_at < 0.5
+        assert not any(callback.get("terminal_result") for callback in callbacks)
+    finally:
+        release_callback.set()
+        await asyncio.wait_for(runner_finished.wait(), timeout=1)
+        await asyncio.sleep(0)
+        assert not any(
+            event.get("event_id") == "evt_late_after_shutdown"
+            for callback in callbacks
+            for event in callback.get("events", [])
+        )
+        assert not any(callback.get("terminal_result") for callback in callbacks)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_deadline_bounds_unconfirmed_terminal_callback(
+    tmp_path,
+    monkeypatch,
+):
+    terminal_started = asyncio.Event()
+    release_terminal = asyncio.Event()
+    callbacks = []
+
+    async def executor_runner(_request, _workspace_root, _emit_event):
+        return {"status": "completed", "message": "done"}
+
+    async def callback_sender(_url, payload, _token):
+        callbacks.append(payload)
+        if payload.get("terminal_result"):
+            terminal_started.set()
+            while not release_terminal.is_set():
+                try:
+                    await release_terminal.wait()
+                except asyncio.CancelledError:
+                    continue
+        return callback_ack(payload)
+
+    monkeypatch.setattr(executor_app, "_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS", 0.01)
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        callback_sender=callback_sender,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        heartbeat_interval_seconds=60,
+    )
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    try:
+        dispatch = next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
+        await dispatch(
+            ExecutorTaskRequest.model_validate(task_payload()),
+            executor_credential=EXECUTOR_AUTH_TOKEN,
+        )
+        await asyncio.wait_for(terminal_started.wait(), timeout=1)
+        started_at = asyncio.get_running_loop().time()
+        await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=0.5)
+        assert asyncio.get_running_loop().time() - started_at < 0.5
+        assert len([callback for callback in callbacks if callback.get("terminal_result")]) == 1
+    finally:
+        release_terminal.set()
+        await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_deadline_does_not_start_terminal_retry_after_expiry(
+    tmp_path,
+    monkeypatch,
+):
+    runner_started = asyncio.Event()
+    terminal_attempts = 0
+    real_sleep = asyncio.sleep
+
+    async def executor_runner(_request, _workspace_root, _emit_event):
+        runner_started.set()
+        await asyncio.Event().wait()
+
+    async def callback_sender(_url, payload, _token):
+        nonlocal terminal_attempts
+        if payload.get("terminal_result"):
+            terminal_attempts += 1
+            return {"accepted": False}
+        return callback_ack(payload)
+
+    async def sleep_past_deadline(delay):
+        await real_sleep(delay + 0.02 if delay > 0 and terminal_attempts else delay)
+
+    monkeypatch.setattr(executor_app, "_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(executor_app.asyncio, "sleep", sleep_past_deadline)
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        callback_sender=callback_sender,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        heartbeat_interval_seconds=60,
+    )
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    dispatch = next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
+    await dispatch(
+        ExecutorTaskRequest.model_validate(task_payload()),
+        executor_credential=EXECUTOR_AUTH_TOKEN,
+    )
+    await asyncio.wait_for(runner_started.wait(), timeout=1)
+
+    await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=0.5)
+
+    assert terminal_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_api_cancel_keeps_started_terminal_owned_until_shutdown_deadline(
+    tmp_path,
+    monkeypatch,
+):
+    runner_started = asyncio.Event()
+    terminal_started = asyncio.Event()
+    terminal_finished = asyncio.Event()
+    release_terminal = asyncio.Event()
+    terminal_cancellations = 0
+
+    async def executor_runner(_request, _workspace_root, _emit_event):
+        runner_started.set()
+        await asyncio.Event().wait()
+
+    async def callback_sender(_url, payload, _token):
+        nonlocal terminal_cancellations
+        if payload.get("terminal_result"):
+            terminal_started.set()
+            try:
+                while not release_terminal.is_set():
+                    try:
+                        await release_terminal.wait()
+                    except asyncio.CancelledError:
+                        terminal_cancellations += 1
+            finally:
+                terminal_finished.set()
+        return callback_ack(payload)
+
+    monkeypatch.setattr(executor_app, "_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS", 0.01)
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        callback_sender=callback_sender,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        heartbeat_interval_seconds=60,
+    )
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    try:
+        dispatch = next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
+        cancel = next(
+            route.endpoint
+            for route in app.routes
+            if route.path == "/v2/tasks/{run_id}/{attempt_id}/cancel"
+        )
+        await dispatch(
+            ExecutorTaskRequest.model_validate(task_payload()),
+            executor_credential=EXECUTOR_AUTH_TOKEN,
+        )
+        await asyncio.wait_for(runner_started.wait(), timeout=1)
+        await cancel("run-a", "qat-attempt-a", executor_credential=EXECUTOR_AUTH_TOKEN)
+        await asyncio.wait_for(terminal_started.wait(), timeout=1)
+        await cancel("run-a", "qat-attempt-a", executor_credential=EXECUTOR_AUTH_TOKEN)
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert terminal_cancellations == 0
+
+        await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=0.5)
+
+        assert terminal_cancellations >= 1
+    finally:
+        release_terminal.set()
+        await asyncio.wait_for(terminal_finished.wait(), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_api_cancel_waits_for_in_flight_heartbeat_before_terminal(
+    tmp_path,
+):
+    runner_started = asyncio.Event()
+    heartbeat_started = asyncio.Event()
+    heartbeat_release = asyncio.Event()
+    heartbeat_cancelled = asyncio.Event()
+    terminal_started = asyncio.Event()
+
+    async def executor_runner(_request, _workspace_root, _emit_event):
+        runner_started.set()
+        await asyncio.Event().wait()
+
+    async def callback_sender(_url, payload, _token):
+        state_patch = payload.get("state_patch")
+        if isinstance(state_patch, dict) and state_patch.get("executor_heartbeat") is True:
+            heartbeat_started.set()
+            try:
+                await heartbeat_release.wait()
+            except asyncio.CancelledError:
+                heartbeat_cancelled.set()
+                raise
+        if payload.get("terminal_result"):
+            terminal_started.set()
+        return callback_ack(payload)
+
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        callback_sender=callback_sender,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        heartbeat_interval_seconds=0.001,
+    )
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    try:
+        dispatch = next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
+        cancel = next(
+            route.endpoint
+            for route in app.routes
+            if route.path == "/v2/tasks/{run_id}/{attempt_id}/cancel"
+        )
+        await dispatch(
+            ExecutorTaskRequest.model_validate(task_payload()),
+            executor_credential=EXECUTOR_AUTH_TOKEN,
+        )
+        await asyncio.wait_for(runner_started.wait(), timeout=1)
+        await asyncio.wait_for(heartbeat_started.wait(), timeout=1)
+
+        await cancel("run-a", "qat-attempt-a", executor_credential=EXECUTOR_AUTH_TOKEN)
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert not heartbeat_cancelled.is_set()
+        assert not terminal_started.is_set()
+
+        heartbeat_release.set()
+        await asyncio.wait_for(terminal_started.wait(), timeout=1)
+        await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=1)
+    finally:
+        heartbeat_release.set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("shutdown_before_failure", "failure_before_cancel"),
+    [(False, False), (True, False), (False, True)],
+)
+async def test_api_cancel_transport_error_in_heartbeat_suppresses_terminal(
+    tmp_path,
+    shutdown_before_failure,
+    failure_before_cancel,
+):
+    runner_started = asyncio.Event()
+    heartbeat_started = asyncio.Event()
+    heartbeat_failure = asyncio.Event()
+    terminal_started = asyncio.Event()
+
+    async def executor_runner(_request, _workspace_root, _emit_event):
+        runner_started.set()
+        await asyncio.Event().wait()
+
+    async def callback_sender(_url, payload, _token):
+        state_patch = payload.get("state_patch")
+        if isinstance(state_patch, dict) and state_patch.get("executor_heartbeat") is True:
+            heartbeat_started.set()
+            await heartbeat_failure.wait()
+            raise httpx.ReadTimeout("heartbeat response lost")
+        if payload.get("terminal_result"):
+            terminal_started.set()
+        return callback_ack(payload)
+
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        callback_sender=callback_sender,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        heartbeat_interval_seconds=0.001,
+    )
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    try:
+        dispatch = next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
+        cancel = next(
+            route.endpoint
+            for route in app.routes
+            if route.path == "/v2/tasks/{run_id}/{attempt_id}/cancel"
+        )
+        get_status = next(
+            route.endpoint
+            for route in app.routes
+            if route.path == "/v2/tasks/{run_id}/{attempt_id}"
+        )
+        await dispatch(
+            ExecutorTaskRequest.model_validate(task_payload()),
+            executor_credential=EXECUTOR_AUTH_TOKEN,
+        )
+        await asyncio.wait_for(runner_started.wait(), timeout=1)
+        await asyncio.wait_for(heartbeat_started.wait(), timeout=1)
+        if failure_before_cancel:
+            heartbeat_failure.set()
+        await cancel("run-a", "qat-attempt-a", executor_credential=EXECUTOR_AUTH_TOKEN)
+        shutdown_task = None
+        if shutdown_before_failure:
+            shutdown_task = asyncio.create_task(lifespan.__aexit__(None, None, None))
+            await asyncio.sleep(0)
+        heartbeat_failure.set()
+
+        async def wait_for_failure():
+            while True:
+                response = await get_status(
+                    "run-a",
+                    "qat-attempt-a",
+                    executor_credential=EXECUTOR_AUTH_TOKEN,
+                )
+                if response["status"] == "callback_failed":
+                    return response
+                await asyncio.sleep(0)
+
+        response = await asyncio.wait_for(wait_for_failure(), timeout=1)
+        assert response["error_message"] == "executor_callback_delivery_uncertain"
+        assert not terminal_started.is_set()
+        if shutdown_task is None:
+            await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=1)
+        else:
+            await asyncio.wait_for(shutdown_task, timeout=1)
+    finally:
+        heartbeat_failure.set()
 
 
 def test_removed_v1_execute_route_returns_404(tmp_path):
@@ -270,7 +763,7 @@ def write_minimal_docx(path: Path) -> None:
         )
 
 
-def selected_baoyu_skill_policy() -> list[dict[str, object]]:
+def selected_file_skill_policy() -> list[dict[str, object]]:
     return [
         {
             "identity": identity,
@@ -281,14 +774,14 @@ def selected_baoyu_skill_policy() -> list[dict[str, object]]:
             "identity_authorized": True,
             "object_authorized": True,
             "parameters_authorized": True,
-            "allowed_skill_names": ["baoyu-translate"] if identity == "Skill" else [],
+            "allowed_skill_names": ["qa-file-reviewer"] if identity == "Skill" else [],
         }
         for identity in ("Bash", "Write", "Skill")
     ]
 
 
-def skill_only_baoyu_policy() -> list[dict[str, object]]:
-    return [subject for subject in selected_baoyu_skill_policy() if subject["identity"] == "Skill"]
+def skill_only_file_policy() -> list[dict[str, object]]:
+    return [subject for subject in selected_file_skill_policy() if subject["identity"] == "Skill"]
 
 
 def selected_mcp_task_payload() -> dict[str, object]:
@@ -663,7 +1156,33 @@ async def test_executor_rejects_conflicting_required_bash_lifecycle(
                     "lifecycle": phase,
                 }
             )
-        return sdk_result()
+        return sdk_result(
+            error="claude_agent_sdk_tool_admission_failed",
+            runtime_diagnostics={
+                "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+                "error_code": "claude_agent_sdk_tool_admission_failed",
+                "failure_source": "sdk_result_error",
+                "failure_stage": "model_wait",
+                "sdk": {"errors": ["actual SDK admission failure"]},
+                "tool_policy_denials": [
+                    {
+                        "tool_name": "Bash",
+                        "invocation_id": "bash-call-1",
+                        "reason": "tool_parameters_not_authorized",
+                        "tool_input": {"command": "printf diagnostic"},
+                    }
+                ],
+                "tool_calls": [
+                    {
+                        "tool_name": "Bash",
+                        "invocation_id": "bash-call-1",
+                        "last_stage": "failed",
+                        "tool_input": {"command": "printf diagnostic"},
+                    }
+                ],
+                "tool_lifecycles": [],
+            },
+        )
 
     monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
     monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
@@ -684,6 +1203,15 @@ async def test_executor_rejects_conflicting_required_bash_lifecycle(
     assert result["status"] == "failed"
     assert result["error_code"] == "required_tool_completion_evidence_mismatch"
     assert REQUIRED_CAPABILITY_EVIDENCE_KEY not in result
+    diagnostics = result["runtime_diagnostics"]
+    assert diagnostics["runner_error_code"] == "claude_agent_sdk_tool_admission_failed"
+    assert diagnostics["sdk"]["errors"] == ["actual SDK admission failure"]
+    assert diagnostics["tool_calls"][0]["tool_input"] == {
+        "command": "printf diagnostic"
+    }
+    assert diagnostics["tool_policy_denials"][0]["reason"] == (
+        "tool_parameters_not_authorized"
+    )
 
 
 @pytest.mark.asyncio
@@ -724,6 +1252,116 @@ async def test_executor_rejects_unacknowledged_required_bash_lifecycle(
     assert REQUIRED_CAPABILITY_EVIDENCE_KEY not in result
 
 
+@pytest.mark.asyncio
+async def test_executor_preserves_sdk_error_when_required_bash_completed(
+    monkeypatch,
+    tmp_path,
+):
+    declaration = parse_required_tool_declaration("请执行 Bash 命令 pwd")
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        lifecycle = kwargs["on_tool_lifecycle"]
+        assert await lifecycle(
+            {"tool_name": "Bash", "invocation_id": "bash-call-1", "lifecycle": "started"}
+        )
+        assert await lifecycle(
+            {"tool_name": "Bash", "invocation_id": "bash-call-1", "lifecycle": "completed"}
+        )
+        return sdk_result(error="claude_agent_sdk_upstream_error")
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    raw = task_payload()
+    raw["config"]["tool_policy_subjects"] = [
+        {
+            "identity": "Bash",
+            REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY: declaration.to_payload(),
+        }
+    ]
+    request = ExecutorTaskRequest.model_validate(raw)
+
+    async def emit_event(_event):
+        return True
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "claude_agent_sdk_upstream_error"
+    assert result[REQUIRED_CAPABILITY_EVIDENCE_KEY]["tool_call_id"] == "bash-call-1"
+    assert result[REQUIRED_CAPABILITY_EVIDENCE_KEY]["lifecycle_phase"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_executor_rejects_missing_required_bash_even_when_sdk_errors(
+    monkeypatch,
+    tmp_path,
+):
+    declaration = parse_required_tool_declaration("请执行 Bash 命令 pwd")
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        return sdk_result(error="claude_agent_sdk_upstream_error")
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    raw = task_payload()
+    raw["config"]["tool_policy_subjects"] = [
+        {
+            "identity": "Bash",
+            REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY: declaration.to_payload(),
+        }
+    ]
+    request = ExecutorTaskRequest.model_validate(raw)
+
+    async def emit_event(_event):
+        return True
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "required_tool_completion_evidence_mismatch"
+    assert REQUIRED_CAPABILITY_EVIDENCE_KEY not in result
+
+
+@pytest.mark.asyncio
+async def test_executor_preserves_missing_structured_terminal_over_required_bash(
+    monkeypatch,
+    tmp_path,
+):
+    declaration = parse_required_tool_declaration("请执行 Bash 命令 pwd")
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        return sdk_result(received_structured_terminal=False)
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    raw = task_payload()
+    raw["config"]["tool_policy_subjects"] = [
+        {
+            "identity": "Bash",
+            REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY: declaration.to_payload(),
+        }
+    ]
+    request = ExecutorTaskRequest.model_validate(raw)
+
+    async def emit_event(_event):
+        return True
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "claude_agent_sdk_missing_structured_terminal"
+    assert REQUIRED_CAPABILITY_EVIDENCE_KEY not in result
+
+
 def test_executor_http_response_preserves_private_required_capability_evidence(tmp_path):
     declaration = parse_required_tool_declaration("请执行 Bash 命令 pwd")
     evidence = RequiredCapabilityEvidence.from_executor_private_payload(
@@ -755,41 +1393,6 @@ def test_executor_http_response_preserves_private_required_capability_evidence(t
 
     assert response.status_code == 200
     assert response.json()[REQUIRED_CAPABILITY_EVIDENCE_KEY] == evidence
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("configured_value", "expected"),
-    [(None, True), (0, True), ("false", True), (False, False), (True, True)],
-)
-async def test_executor_only_disables_required_skill_invocation_for_explicit_false(
-    monkeypatch,
-    tmp_path,
-    configured_value,
-    expected,
-):
-    captured = {}
-
-    class StubSettings:
-        claude_agent_sdk_enabled = True
-
-    async def fake_run_claude_agent_sdk(**kwargs):
-        captured.update(kwargs)
-        return sdk_result()
-
-    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
-    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    raw = task_payload()
-    raw["config"]["require_selected_skill_invocation"] = configured_value
-    request = ExecutorTaskRequest.model_validate(raw)
-
-    async def emit_event(_event):
-        return True
-
-    result = await _default_executor_runner(request, tmp_path, emit_event)
-
-    assert result["status"] == "completed"
-    assert captured["require_selected_skill_invocation"] is expected
 
 
 def test_executor_health_returns_ready(tmp_path):
@@ -1034,6 +1637,7 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
 async def test_sdk_timeout_preserved_over_pending_tool_invocation_state(
     monkeypatch,
     tmp_path,
+    caplog,
 ):
     """A real SDK failure (timeout) must not be masked by pending evidence.
 
@@ -1043,6 +1647,7 @@ async def test_sdk_timeout_preserved_over_pending_tool_invocation_state(
     """
 
     callbacks = []
+    caplog.set_level(logging.INFO, logger=executor_app.__name__)
 
     class StubSettings:
         claude_agent_sdk_enabled = True
@@ -1059,7 +1664,7 @@ async def test_sdk_timeout_preserved_over_pending_tool_invocation_state(
             "timed out",
             error="claude_agent_sdk_timeout",
             received_structured_terminal=False,
-            terminal_reason=None,
+            terminal_reason="private_token_secret",
             turn_diagnostics={
                 "terminal_class": "timeout",
                 "error_code": "claude_agent_sdk_timeout",
@@ -1095,6 +1700,31 @@ async def test_sdk_timeout_preserved_over_pending_tool_invocation_state(
     assert "assistant_messages=85" in message
     assert "tool_policy_denials=4" in message
     assert "denied_tools=Bash(parameter_not_authorized)" in message
+    lifecycle_records = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "sandbox_tool_lifecycle"
+    ]
+    assert [record.sandbox_tool_lifecycle for record in lifecycle_records] == [
+        "started",
+        "incomplete",
+    ]
+    assert lifecycle_records[1].sandbox_tool_lifecycle_reason == "sdk_terminal"
+    assert lifecycle_records[0].sandbox_tool_call_digest == hashlib.sha256(
+        b"skill-call-1"
+    ).hexdigest()[:16]
+    assert "skill-call-1" not in caplog.text
+    assert "private-command" not in caplog.text
+    assert "private_token_secret" not in caplog.text
+    terminal_records = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "sandbox_execution_terminal"
+    ]
+    assert len(terminal_records) == 1
+    assert terminal_records[0].sandbox_execution_status == "failed"
+    assert terminal_records[0].sandbox_error_code == "claude_agent_sdk_timeout"
+    assert not hasattr(terminal_records[0], "sandbox_terminal_reason")
 
 
 @pytest.mark.parametrize(
@@ -1604,6 +2234,71 @@ def test_executor_capability_rejection_seals_public_events_without_local_claim(
     assert capability_attempts == 1
 
 
+@pytest.mark.asyncio
+async def test_executor_tool_lifecycle_cancellation_logs_one_terminal_fact(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    caplog.set_level(logging.INFO, logger=executor_app.__name__)
+    callback_started = asyncio.Event()
+    release_callback = asyncio.Event()
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def emit_event(event):
+        if getattr(event, "type", "") == "capability_invoking":
+            callback_started.set()
+            await release_callback.wait()
+        return True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        capability_task = asyncio.create_task(
+            kwargs["on_capability_evidence"](
+                sdk_mcp_evidence(
+                    "mcp__tenant-server__search",
+                    "capability-call-1",
+                    "invocation_requested",
+                )
+            )
+        )
+        await asyncio.wait_for(callback_started.wait(), timeout=2.0)
+        lifecycle_task = asyncio.create_task(
+            kwargs["on_tool_lifecycle"](
+                {
+                    "tool_name": "Bash",
+                    "invocation_id": "bash-call-1",
+                    "lifecycle": "started",
+                }
+            )
+        )
+        await asyncio.sleep(0)
+        lifecycle_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(lifecycle_task, timeout=2.0)
+        release_callback.set()
+        assert await asyncio.wait_for(capability_task, timeout=2.0) is False
+        return sdk_result()
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    request = ExecutorTaskRequest.model_validate(selected_mcp_task_payload())
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "failed"
+    tool_records = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "sandbox_tool_lifecycle"
+        and record.sandbox_tool_name == "Bash"
+    ]
+    assert len(tool_records) == 1
+    assert tool_records[0].sandbox_tool_lifecycle == "cancelled"
+    assert tool_records[0].sandbox_tool_lifecycle_reason == "callback_cancelled"
+
+
 @pytest.mark.parametrize("cancel_target", ["lock_owner", "lock_waiter"])
 def test_executor_capability_callback_cancellation_poison_seals_run(
     tmp_path,
@@ -1885,16 +2580,20 @@ def test_executor_execute_fails_closed_after_final_delta_without_structured_term
         ("claude_agent_sdk_selected_skill_not_authorized", True, "claude_agent_sdk_selected_skill_not_authorized"),
         ("claude_agent_sdk_turn_limit_exceeded", True, "claude_agent_sdk_turn_limit_exceeded"),
         ("claude_agent_sdk_timeout", True, "claude_agent_sdk_timeout"),
+        ("claude_agent_sdk_cancelled", True, "claude_agent_sdk_cancelled"),
+        ("internal_kernel_failure", True, "internal_kernel_failure"),
         (
             "claude_agent_sdk_public_projection_failed",
             True,
             "claude_agent_sdk_public_projection_failed",
         ),
         ("claude_agent_sdk_tool_admission_failed", True, "claude_agent_sdk_tool_admission_failed"),
+        ("required_tool_completion_evidence_missing", True, "required_tool_completion_evidence_missing"),
+        ("required_tool_completion_evidence_mismatch", True, "required_tool_completion_evidence_mismatch"),
         ("claude_agent_sdk_upstream_error", True, "claude_agent_sdk_upstream_error"),
     ],
 )
-def test_executor_execute_canonicalizes_sdk_failures_without_rewriting_specific_codes(
+def test_executor_execute_preserves_bounded_sdk_error_codes(
     tmp_path, monkeypatch, sdk_error, used_sdk, expected_error_code
 ):
     callbacks = []
@@ -1911,6 +2610,11 @@ def test_executor_execute_canonicalizes_sdk_failures_without_rewriting_specific_
             turn_diagnostics={
                 "schema_version": "ai-platform.sdk-turn-diagnostics.v1",
                 "terminal_class": "upstream_error",
+            },
+            runtime_diagnostics={
+                "error_code": sdk_error,
+                "failure_source": "sdk_result_error",
+                "sdk": {"errors": ["actual SDK failure"]},
             },
         )
 
@@ -1936,6 +2640,11 @@ def test_executor_execute_canonicalizes_sdk_failures_without_rewriting_specific_
         "schema_version": "ai-platform.sdk-turn-diagnostics.v1",
         "terminal_class": "upstream_error",
     }
+    diagnostics = body["runtime_diagnostics"]
+    assert diagnostics["error_code"] == expected_error_code
+    assert diagnostics["failure_source"] == "sandbox_terminal_normalization"
+    assert diagnostics["runner_failure_source"] == "sdk_result_error"
+    assert diagnostics["sdk"] == {"errors": ["actual SDK failure"]}
     assert callbacks[-1]["state_patch"] == {
         "stage": "executor_finished",
         "error_code": expected_error_code,
@@ -2020,6 +2729,16 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
         calls["skills"] = kwargs["skills"]
         calls["subjects"] = kwargs["tool_policy_subjects"]
         assert "on_tool_permission" not in kwargs
+        candidate = SimpleNamespace(
+            as_agent_event_fields=lambda: {
+                "type": "message.delta",
+                "payload": {"delta": "sdk partial"},
+                "event_id": "evt_sdk_partial",
+                "run_id": "run-a",
+                "message_id": "msg-a",
+            }
+        )
+        assert await kwargs["on_agent_event"]((candidate,)) is True
         await kwargs["on_text"]("sdk partial")
         return sdk_result("sdk final", usage={"input_tokens": 1, "output_tokens": 1})
 
@@ -2061,6 +2780,11 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
     assert calls["skills"] == []
     assert calls["subjects"][0]["identity"] == "Bash"
     assert any(
+        event["type"] == "message.delta"
+        for callback in callbacks
+        for event in callback.get("events", [])
+    )
+    assert not any(
         event["type"] == "assistant_delta"
         for callback in callbacks
         for event in callback.get("events", [])
@@ -2068,75 +2792,10 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
     assert not any("tool-permission" in str(callback) for callback in callbacks)
 
 
-    workspace = Path(tmp_path)
-    write_minimal_docx(workspace / "inputs" / "source.docx")
-    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
-    script.parent.mkdir(parents=True)
-    script.write_text(
-        """import shutil
-import sys
-from pathlib import Path
-
-source = Path(sys.argv[1])
-output = Path(sys.argv[2])
-output.mkdir(parents=True, exist_ok=True)
-shutil.copyfile(source, output / \"translated.docx\")
-(output / \"target-language.txt\").write_text(
-    sys.argv[sys.argv.index(\"--target-language\") + 1], encoding=\"utf-8\"
-)
-""",
-        encoding="utf-8",
-    )
-
-    async def sdk_must_not_run(**_kwargs):
-        raise AssertionError("selected file Skill must not be left to SDK discretion")
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
-
-    payload = task_payload()
-    payload["prompt"] = build_skill_prompt(
-        skill_id="baoyu-translate",
-        user_message="请将此文档翻译为中文",
-        file_names=["source.docx"],
-    )
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
-    payload["config"]["materialized_file_names"] = ["source.docx"]
-    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
-
-    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "completed"
-    assert body["sdk_used"] is False
-    assert body["executor_mode"] == "platform_controlled_runner"
-    assert body["used_skills"] == ["baoyu-translate"]
-    assert body["used_skills_source"] == "platform_controlled_runner"
-    assert body["tool_invocation_evidence"] == []
-    assert [item["lifecycle_phase"] for item in body["capability_evidence"]] == [
-        "invocation_requested",
-        "completed",
-    ]
-    assert {
-        (item["evidence_source"], item["trust_basis"])
-        for item in body["capability_evidence"]
-    } == {("controlled_skill_runner", "process_bound_invocation")}
-    assert all(
-        item["run_id"] == payload["run_id"]
-        and item["attempt_id"] == payload["attempt_id"]
-        for item in body["capability_evidence"]
-    )
-    assert (workspace / "output" / "translated.docx").is_file()
-    assert "Controlled fast path" not in payload["prompt"]
-    assert (workspace / "output" / "target-language.txt").read_text(encoding="utf-8") == "Chinese"
-
-
 def test_executor_fails_closed_for_skill_only_authorization(tmp_path, monkeypatch):
     workspace = Path(tmp_path)
     write_minimal_docx(workspace / "source.docx")
-    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
+    script = workspace / ".claude" / "skills" / "qa-file-reviewer" / "scripts" / "run_qa_review.py"
     script.parent.mkdir(parents=True)
     script.write_text(
         """from pathlib import Path
@@ -2151,9 +2810,9 @@ Path("untrusted-runner-executed").write_text("unexpected", encoding="utf-8")
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
     payload = task_payload()
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
+    payload["config"]["skill_ids"] = ["qa-file-reviewer"]
     payload["config"]["materialized_file_names"] = ["source.docx"]
-    payload["config"]["tool_policy_subjects"] = skill_only_baoyu_policy()
+    payload["config"]["tool_policy_subjects"] = skill_only_file_policy()
     client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
     response = client.post("/v2/tasks", json=payload, headers=auth_headers())
@@ -2169,7 +2828,7 @@ Path("untrusted-runner-executed").write_text("unexpected", encoding="utf-8")
 def test_executor_uses_minimal_secret_free_environment_for_controlled_runner(tmp_path, monkeypatch):
     workspace = Path(tmp_path)
     write_minimal_docx(workspace / "source.docx")
-    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
+    script = workspace / ".claude" / "skills" / "qa-file-reviewer" / "scripts" / "run_qa_review.py"
     script.parent.mkdir(parents=True)
     script.write_text(
         """import json
@@ -2193,9 +2852,9 @@ shutil.copyfile(sys.argv[1], output / "translated.docx")
     monkeypatch.setenv("AI_PLATFORM_EXECUTOR_AUTH_TOKEN", "executor-token")
     monkeypatch.setenv("UNRELATED_SECRET", "must-not-inherit")
     payload = task_payload()
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
+    payload["config"]["skill_ids"] = ["qa-file-reviewer"]
     payload["config"]["materialized_file_names"] = ["source.docx"]
-    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
+    payload["config"]["tool_policy_subjects"] = selected_file_skill_policy()
     client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
     response = client.post("/v2/tasks", json=payload, headers=auth_headers())
@@ -2214,7 +2873,7 @@ def test_executor_uses_worker_materialized_docx_order_without_sorting(tmp_path):
     workspace = Path(tmp_path)
     write_minimal_docx(workspace / "z.docx")
     write_minimal_docx(workspace / "a.docx")
-    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
+    script = workspace / ".claude" / "skills" / "qa-file-reviewer" / "scripts" / "run_qa_review.py"
     script.parent.mkdir(parents=True)
     script.write_text(
         """import shutil
@@ -2229,9 +2888,9 @@ shutil.copyfile(sys.argv[1], output / "translated.docx")
         encoding="utf-8",
     )
     payload = task_payload()
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
+    payload["config"]["skill_ids"] = ["qa-file-reviewer"]
     payload["config"]["materialized_file_names"] = ["z.docx", "a.docx"]
-    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
+    payload["config"]["tool_policy_subjects"] = selected_file_skill_policy()
     client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
     response = client.post("/v2/tasks", json=payload, headers=auth_headers())
@@ -2244,7 +2903,7 @@ shutil.copyfile(sys.argv[1], output / "translated.docx")
 def test_executor_rejects_unsafe_materialized_file_name_without_executing(tmp_path, monkeypatch):
     workspace = Path(tmp_path)
     write_minimal_docx(workspace / "source.docx")
-    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
+    script = workspace / ".claude" / "skills" / "qa-file-reviewer" / "scripts" / "run_qa_review.py"
     script.parent.mkdir(parents=True)
     script.write_text("from pathlib import Path\nPath('unexpected').write_text('ran')\n", encoding="utf-8")
 
@@ -2253,9 +2912,9 @@ def test_executor_rejects_unsafe_materialized_file_name_without_executing(tmp_pa
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
     payload = task_payload()
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
+    payload["config"]["skill_ids"] = ["qa-file-reviewer"]
     payload["config"]["materialized_file_names"] = ["../escape.docx"]
-    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
+    payload["config"]["tool_policy_subjects"] = selected_file_skill_policy()
     client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
     response = client.post("/v2/tasks", json=payload, headers=auth_headers())
@@ -2263,44 +2922,6 @@ def test_executor_rejects_unsafe_materialized_file_name_without_executing(tmp_pa
     assert response.status_code == 200
     assert response.json()["error_code"] == "controlled_skill_input_name_invalid"
     assert not (workspace / "unexpected").exists()
-
-
-def test_executor_runs_real_staged_baoyu_entrypoint_and_produces_translated_docx(tmp_path, monkeypatch):
-    class StubSettings:
-        claude_agent_sdk_enabled = True
-
-    workspace = Path(tmp_path)
-    write_minimal_docx(workspace / "source.docx")
-    source_script = Path(__file__).parents[1] / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
-    staged_script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
-    staged_script.parent.mkdir(parents=True)
-    staged_script.write_bytes(source_script.read_bytes())
-
-    async def sdk_must_not_run(**_kwargs):
-        raise AssertionError("the real staged file Skill must not be left to SDK discretion")
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
-
-    payload = task_payload()
-    payload["prompt"] = build_skill_prompt(
-        skill_id="baoyu-translate",
-        user_message="translate this document to English",
-        file_names=["source.docx"],
-    )
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
-    payload["config"]["materialized_file_names"] = ["source.docx"]
-    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
-
-    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "completed"
-    output_docx = workspace / "output" / "source_translated.docx"
-    assert output_docx.is_file()
-    with zipfile.ZipFile(output_docx) as archive:
-        assert "word/document.xml" in archive.namelist()
 
 
 def test_executor_runs_real_staged_qa_entrypoint_with_minimal_environment(tmp_path, monkeypatch):
@@ -2331,7 +2952,7 @@ def test_executor_runs_real_staged_qa_entrypoint_with_minimal_environment(tmp_pa
     )
     payload["config"]["skill_ids"] = ["qa-file-reviewer", "minimax-docx"]
     payload["config"]["materialized_file_names"] = ["source.docx"]
-    qa_policy = selected_baoyu_skill_policy()
+    qa_policy = selected_file_skill_policy()
     next(subject for subject in qa_policy if subject["identity"] == "Skill")["allowed_skill_names"] = [
         "qa-file-reviewer"
     ]
@@ -2354,7 +2975,7 @@ def test_executor_fails_closed_when_selected_file_skill_runner_fails(tmp_path, m
 
     workspace = Path(tmp_path)
     write_minimal_docx(workspace / "source.docx")
-    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
+    script = workspace / ".claude" / "skills" / "qa-file-reviewer" / "scripts" / "run_qa_review.py"
     script.parent.mkdir(parents=True)
     script.write_text("raise SystemExit(7)\n", encoding="utf-8")
 
@@ -2365,9 +2986,9 @@ def test_executor_fails_closed_when_selected_file_skill_runner_fails(tmp_path, m
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
 
     payload = task_payload()
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
+    payload["config"]["skill_ids"] = ["qa-file-reviewer"]
     payload["config"]["materialized_file_names"] = ["source.docx"]
-    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
+    payload["config"]["tool_policy_subjects"] = selected_file_skill_policy()
     client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
     response = client.post("/v2/tasks", json=payload, headers=auth_headers())
@@ -2382,11 +3003,11 @@ def test_executor_fails_closed_when_selected_file_skill_runner_fails(tmp_path, m
 
 
 def test_executor_fails_closed_when_selected_file_skill_runner_is_not_staged(tmp_path, monkeypatch):
-    class StubSettings:
-        claude_agent_sdk_enabled = True
-
     workspace = Path(tmp_path)
     write_minimal_docx(workspace / "source.docx")
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
 
     async def sdk_must_not_run(**_kwargs):
         raise AssertionError("missing staged Skill runner must not fall back to SDK discretion")
@@ -2395,9 +3016,9 @@ def test_executor_fails_closed_when_selected_file_skill_runner_is_not_staged(tmp
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
 
     payload = task_payload()
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
+    payload["config"]["skill_ids"] = ["qa-file-reviewer"]
     payload["config"]["materialized_file_names"] = ["source.docx"]
-    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
+    payload["config"]["tool_policy_subjects"] = selected_file_skill_policy()
     client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
 
     response = client.post("/v2/tasks", json=payload, headers=auth_headers())
@@ -2414,7 +3035,7 @@ def test_executor_fails_closed_when_selected_file_skill_runner_is_not_staged(tmp
 async def test_selected_file_skill_cancellation_terminates_the_controlled_process(tmp_path):
     workspace = Path(tmp_path)
     write_minimal_docx(workspace / "source.docx")
-    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
+    script = workspace / ".claude" / "skills" / "qa-file-reviewer" / "scripts" / "run_qa_review.py"
     script.parent.mkdir(parents=True)
     child = script.with_name("late_child.py")
     child.write_text(
@@ -2442,9 +3063,9 @@ time.sleep(10)
         encoding="utf-8",
     )
     payload = task_payload()
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
+    payload["config"]["skill_ids"] = ["qa-file-reviewer"]
     payload["config"]["materialized_file_names"] = ["source.docx"]
-    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
+    payload["config"]["tool_policy_subjects"] = selected_file_skill_policy()
     request = ExecutorTaskRequest.model_validate(payload)
     invocation_admitted = asyncio.Event()
 
@@ -2490,7 +3111,7 @@ async def test_executor_deadline_stops_controlled_runner_descendants_before_term
 
     handshake_server = await asyncio.start_server(observe_runner_entry, "127.0.0.1", 0)
     handshake_port = handshake_server.sockets[0].getsockname()[1]
-    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
+    script = workspace / ".claude" / "skills" / "qa-file-reviewer" / "scripts" / "run_qa_review.py"
     script.parent.mkdir(parents=True)
     child = script.with_name("late_child.py")
     child.write_text(
@@ -2557,9 +3178,9 @@ time.sleep(10)
     monkeypatch.setattr(executor_app, "_await_with_deadline", await_after_runner_handshake)
     payload = task_payload()
     payload["config"]["resource_limits"] = {"max_seconds": 0.15}
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
+    payload["config"]["skill_ids"] = ["qa-file-reviewer"]
     payload["config"]["materialized_file_names"] = ["source.docx"]
-    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
+    payload["config"]["tool_policy_subjects"] = selected_file_skill_policy()
     app = create_executor_app(
         workspace_root=workspace,
         callback_sender=lambda url, callback_payload, token: callback_ack(callback_payload),
@@ -2590,7 +3211,7 @@ time.sleep(10)
 def test_executor_fails_closed_without_matching_skill_authorization(tmp_path, monkeypatch):
     workspace = Path(tmp_path)
     write_minimal_docx(workspace / "source.docx")
-    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
+    script = workspace / ".claude" / "skills" / "qa-file-reviewer" / "scripts" / "run_qa_review.py"
     script.parent.mkdir(parents=True)
     script.write_text("raise AssertionError('unauthorized script executed')\n", encoding="utf-8")
     async def sdk_must_not_run(**_kwargs):
@@ -2599,11 +3220,11 @@ def test_executor_fails_closed_without_matching_skill_authorization(tmp_path, mo
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
 
     payload = task_payload()
-    payload["config"]["skill_ids"] = ["baoyu-translate"]
+    payload["config"]["skill_ids"] = ["qa-file-reviewer"]
     payload["config"]["materialized_file_names"] = ["source.docx"]
-    denied_policy = selected_baoyu_skill_policy()
+    denied_policy = selected_file_skill_policy()
     next(subject for subject in denied_policy if subject["identity"] == "Skill")["allowed_skill_names"] = [
-        "qa-file-reviewer"
+        "minimax-docx"
     ]
     payload["config"]["tool_policy_subjects"] = denied_policy
     client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
@@ -2678,6 +3299,31 @@ def test_executor_execute_fails_when_claude_sdk_disabled(tmp_path, monkeypatch):
     assert body["status"] == "failed"
     assert body["error_code"] == "claude_agent_sdk_disabled"
     assert body["executor_mode"] == "claude_agent_sdk_disabled"
+    assert body["runtime_diagnostics"]["error_code"] == "claude_agent_sdk_disabled"
+
+
+def test_executor_execute_preserves_sdk_unavailable_exception(tmp_path, monkeypatch):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def unavailable_sdk(**_kwargs):
+        raise ClaudeAgentSdkNotAvailable("private import failure")
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.run_claude_agent_sdk",
+        unavailable_sdk,
+    )
+    client = create_test_client(tmp_path)
+
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["error_code"] == "claude_agent_sdk_unavailable"
+    diagnostics = body["runtime_diagnostics"]
+    assert diagnostics["sdk"]["exception_type"] == "ClaudeAgentSdkNotAvailable"
+    assert diagnostics["sdk"]["exception_message"] == "private import failure"
 
 
 def test_executor_execute_rehydrates_context_retrieval_for_manifest(tmp_path, monkeypatch):
@@ -3198,7 +3844,8 @@ async def test_default_executor_runner_seals_when_agent_event_emit_is_rejected(t
     assert [event.type for event in callback_batches[0].events] == ["message.delta"]
 
 
-def test_executor_execute_does_not_rewrite_runner_timeout_error_as_deadline(tmp_path):
+def test_executor_execute_does_not_rewrite_runner_timeout_error_as_deadline(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger=executor_app.__name__)
     async def executor_runner(request, workspace_root, emit_event):
         raise TimeoutError("runner dependency timed out")
 
@@ -3214,8 +3861,20 @@ def test_executor_execute_does_not_rewrite_runner_timeout_error_as_deadline(tmp_
     assert response.json()["status"] == "failed"
     assert response.json()["error_code"] == "executor_runner_failed"
     assert response.json()["error_message"] == "runner dependency timed out"
+    diagnostics = response.json()["runtime_diagnostics"]
+    assert diagnostics["error_code"] == "executor_runner_failed"
+    assert diagnostics["sdk"]["exception_type"] == "TimeoutError"
+    assert diagnostics["sdk"]["exception_message"] == "runner dependency timed out"
     assert "requested_max_seconds" not in response.json()
     assert "timeout_elapsed_ms" not in response.json()
+    terminal_records = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "sandbox_execution_terminal"
+    ]
+    assert len(terminal_records) == 1
+    assert terminal_records[0].sandbox_execution_status == "failed"
+    assert terminal_records[0].sandbox_error_code == "executor_runner_failed"
 
 
 @pytest.mark.asyncio
@@ -3643,6 +4302,463 @@ def test_callback_batch_factory_allocates_distinct_adjacent_identities():
     assert first != second
 
 
+@pytest.mark.parametrize("as_batch", [False, True])
+def test_executor_records_v4_first_text_without_legacy_delta(tmp_path, monkeypatch, as_batch):
+    callbacks = []
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        callback = message_delta_callback(1, "first")
+        await emit_event(callback if as_batch else callback.events[0])
+        return {"status": "completed", "message": "done"}
+
+    def callback_sender(_url, payload, _token):
+        callbacks.append(payload)
+        return callback_ack(payload)
+
+    monkeypatch.setattr(executor_app, "_elapsed_ms", lambda _started: 37)
+    client = create_test_client(
+        tmp_path, callback_sender=callback_sender, executor_runner=executor_runner,
+    )
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["executor_first_token_latency_ms"] == 37
+    assert all(
+        event["type"] != "assistant_delta"
+        for callback in callbacks for event in callback.get("events", [])
+    )
+
+
+def test_executor_records_first_text_in_v4_ownership_batch(tmp_path, monkeypatch):
+    async def executor_runner(_request, _workspace_root, emit_event):
+        delta = message_delta_callback(1, "first")
+        await emit_event(delta.model_copy(update={
+            "events": [
+                AgentEvent(
+                    type="message.started",
+                    event_id="evt_started",
+                    run_id="run-a",
+                    message_id="msg-a",
+                    payload={},
+                ),
+                *delta.events,
+            ]
+        }))
+        return {"status": "completed", "message": "done"}
+
+    monkeypatch.setattr(executor_app, "_elapsed_ms", lambda _started: 41)
+    response = create_test_client(
+        tmp_path,
+        executor_runner=executor_runner,
+    ).post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["executor_first_token_latency_ms"] == 41
+
+
+def message_delta_callback(index: object, delta: str) -> ExecutorCallbackEvent:
+    return ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="qat-attempt-a",
+        callback_token_id="cbt_run-a",
+        batch_id=f"batch-{index}",
+        status="running",
+        progress=20,
+        state_patch={"stage": "agent_event"},
+        events=[
+            AgentEvent(
+                type="message.delta",
+                payload={"delta": delta},
+                event_id=f"evt_{index}",
+                run_id="run-a",
+                message_id="msg-a",
+            )
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_message_delta_buffer_does_not_batch_past_utf8_bound(monkeypatch):
+    delivered: list[ExecutorCallbackEvent] = []
+
+    async def deliver(callback):
+        delivered.append(callback)
+        return True
+
+    monkeypatch.setattr(executor_app, "_MESSAGE_DELTA_FLUSH_SECONDS", 0)
+    monkeypatch.setattr(executor_app, "_MESSAGE_DELTA_MAX_BATCH_BYTES", 5)
+    buffer = executor_app._MessageDeltaCallbackBuffer(deliver)
+    await buffer.enqueue(message_delta_callback(1, "1234"))
+    await buffer.enqueue(message_delta_callback(2, "56"))
+    assert executor_app._message_delta_size(message_delta_callback(3, "ééé")) is None
+
+    assert await buffer.close() is True
+    assert [item.events[0].payload["delta"] for item in delivered] == ["1234", "56"]
+
+
+@pytest.mark.asyncio
+async def test_message_delta_waits_for_cancelled_direct_barrier(monkeypatch):
+    direct_started = asyncio.Event()
+    release_direct = asyncio.Event()
+    direct_cancelled = False
+    delivered: list[str] = []
+
+    async def deliver(callback):
+        nonlocal direct_cancelled
+        if not callback.events:
+            direct_started.set()
+            try:
+                await release_direct.wait()
+            except asyncio.CancelledError:
+                direct_cancelled = True
+                raise
+            delivered.append("direct")
+        else:
+            delivered.append("delta")
+        return True
+
+    monkeypatch.setattr(executor_app, "_MESSAGE_DELTA_FLUSH_SECONDS", 0)
+    buffer = executor_app._MessageDeltaCallbackBuffer(deliver)
+    direct = message_delta_callback(1, "unused").model_copy(update={"events": []})
+    direct_send = asyncio.create_task(buffer.send(direct))
+    await direct_started.wait()
+    direct_send.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await direct_send
+
+    delta_enqueue = asyncio.create_task(buffer.enqueue(message_delta_callback(2, "next")))
+    await asyncio.sleep(0.01)
+    assert not delta_enqueue.done()
+
+    release_direct.set()
+    assert await delta_enqueue is True
+    assert await buffer.close() is True
+    assert direct_cancelled is False
+    assert delivered == ["direct", "delta"]
+
+
+@pytest.mark.asyncio
+async def test_message_delta_buffer_cancel_is_bounded(monkeypatch):
+    direct_started = asyncio.Event()
+    direct_cancelled = asyncio.Event()
+
+    async def deliver(_callback):
+        direct_started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            direct_cancelled.set()
+            raise
+
+    monkeypatch.setattr(executor_app, "_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS", 0.01)
+    buffer = executor_app._MessageDeltaCallbackBuffer(deliver)
+    await buffer.enqueue(message_delta_callback(1, "first"))
+    await direct_started.wait()
+
+    await asyncio.wait_for(buffer.cancel(), timeout=1)
+
+    await asyncio.wait_for(direct_cancelled.wait(), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_waits_for_in_flight_runner_batch(monkeypatch):
+    delivery_started = asyncio.Event()
+    release_delivery = asyncio.Event()
+    delivered: list[str] = []
+
+    async def deliver(callback):
+        delivered.append("delta" if callback.events else "heartbeat")
+        if callback.events:
+            delivery_started.set()
+            await release_delivery.wait()
+        return True
+
+    monkeypatch.setattr(executor_app, "_MESSAGE_DELTA_FLUSH_SECONDS", 0)
+    buffer = executor_app._MessageDeltaCallbackBuffer(deliver)
+    await buffer.enqueue(message_delta_callback(1, "first"))
+    await delivery_started.wait()
+    heartbeat = message_delta_callback(2, "unused").model_copy(update={"events": []})
+    heartbeat_send = asyncio.create_task(buffer.send(heartbeat))
+    await asyncio.sleep(0)
+
+    assert not heartbeat_send.done()
+    assert delivered == ["delta"]
+
+    release_delivery.set()
+    assert await heartbeat_send is True
+    assert await buffer.close() is True
+    assert delivered == ["delta", "heartbeat"]
+
+
+@pytest.mark.asyncio
+async def test_message_delta_buffer_batches_without_rewriting_event_identity(monkeypatch):
+    delivered: list[ExecutorCallbackEvent] = []
+
+    async def deliver(callback):
+        delivered.append(callback)
+        return True
+
+    monkeypatch.setattr(executor_app, "_MESSAGE_DELTA_FLUSH_SECONDS", 0)
+    buffer = executor_app._MessageDeltaCallbackBuffer(deliver)
+    for index in range(101):
+        await buffer.enqueue(message_delta_callback(index, "x"))
+
+    assert await buffer.close() is True
+    assert [len(callback.events) for callback in delivered] == [100, 1]
+    assert [
+        event.event_id for callback in delivered for event in callback.events
+    ] == [f"evt_{index}" for index in range(101)]
+
+
+@pytest.mark.asyncio
+async def test_message_delta_buffer_backpressures_when_queue_is_full(monkeypatch):
+    delivery_started = asyncio.Event()
+    release_delivery = asyncio.Event()
+
+    async def deliver(_callback):
+        delivery_started.set()
+        await release_delivery.wait()
+        return True
+
+    monkeypatch.setattr(executor_app, "_MESSAGE_DELTA_FLUSH_SECONDS", 0)
+    buffer = executor_app._MessageDeltaCallbackBuffer(deliver)
+    await buffer.enqueue(message_delta_callback("in-flight", "in-flight"))
+    await delivery_started.wait()
+    for index in range(executor_app._MESSAGE_DELTA_QUEUE_SIZE):
+        await buffer.enqueue(message_delta_callback(index, f"{index} "))
+
+    blocked = asyncio.create_task(
+        buffer.enqueue(message_delta_callback("blocked", "blocked"))
+    )
+    await asyncio.sleep(0)
+    assert not blocked.done()
+
+    release_delivery.set()
+    assert await asyncio.wait_for(blocked, timeout=1)
+    assert await buffer.close()
+
+
+@pytest.mark.asyncio
+async def test_message_delta_buffer_propagates_worker_failure_without_hanging():
+    async def fail(_callback):
+        raise RuntimeError("delivery bug")
+
+    buffer = executor_app._MessageDeltaCallbackBuffer(fail)
+    await buffer.enqueue(message_delta_callback("failure", "text"))
+
+    with pytest.raises(RuntimeError, match="delivery bug"):
+        await asyncio.wait_for(buffer.close(), timeout=1)
+
+
+def test_executor_batches_adjacent_message_deltas_before_tool_boundary(tmp_path):
+    callbacks: list[dict[str, object]] = []
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        await emit_event(message_delta_callback(1, "one ").events[0])
+        await emit_event(message_delta_callback(2, "two").events[0])
+        await emit_event(AgentEvent(type="tool_call_started", message="tool"))
+        return {"status": "completed", "message": "done"}
+
+    def callback_sender(_url, payload, _token):
+        callbacks.append(payload)
+        return callback_ack(payload)
+
+    client = create_test_client(tmp_path, callback_sender=callback_sender, executor_runner=executor_runner)
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    delta_callbacks = [
+        callback
+        for callback in callbacks
+        if any(event.get("type") == "message.delta" for event in callback.get("events", []))
+    ]
+    assert len(delta_callbacks) == 1
+    assert [event["event_id"] for event in delta_callbacks[0]["events"]] == [
+        "evt_1",
+        "evt_2",
+    ]
+    assert [event["payload"]["delta"] for event in delta_callbacks[0]["events"]] == [
+        "one ",
+        "two",
+    ]
+    assert callbacks.index(delta_callbacks[0]) < next(
+        index
+        for index, callback in enumerate(callbacks)
+        if any(event.get("type") == "tool_call_started" for event in callback.get("events", []))
+    )
+
+
+@pytest.mark.asyncio
+async def test_executor_consumes_next_delta_while_callback_is_in_flight(tmp_path):
+    callback_started = asyncio.Event()
+    next_delta_consumed = asyncio.Event()
+    release_callback = asyncio.Event()
+    message_deltas: list[str] = []
+    callbacks: list[dict[str, object]] = []
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        await emit_event(message_delta_callback(1, "first").events[0])
+        await callback_started.wait()
+        await emit_event(message_delta_callback(2, "second").events[0])
+        next_delta_consumed.set()
+        return {"status": "completed", "message": "done"}
+
+    async def callback_sender(_url, payload, _token):
+        callbacks.append(payload)
+        deltas = [
+            event["payload"]["delta"]
+            for event in payload.get("events", [])
+            if event.get("type") == "message.delta"
+        ]
+        if deltas:
+            message_deltas.extend(deltas)
+            if len(message_deltas) == 1:
+                callback_started.set()
+                await release_callback.wait()
+        return callback_ack(payload)
+
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        callback_sender=callback_sender,
+        executor_runner=executor_runner,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        dispatch_in_background=False,
+    )
+    execution = asyncio.create_task(
+        _synchronous_executor_endpoint(app)(
+            ExecutorTaskRequest.model_validate(task_payload()),
+            executor_credential=EXECUTOR_AUTH_TOKEN,
+        )
+    )
+
+    await asyncio.wait_for(callback_started.wait(), timeout=1)
+    await asyncio.wait_for(next_delta_consumed.wait(), timeout=1)
+    assert not execution.done()
+    release_callback.set()
+    result = await asyncio.wait_for(execution, timeout=1)
+
+    assert result["status"] == "completed"
+    assert message_deltas == ["first", "second"]
+    last_delta = max(
+        index
+        for index, callback in enumerate(callbacks)
+        if any(event.get("type") == "message.delta" for event in callback.get("events", []))
+    )
+    finished = next(
+        index
+        for index, callback in enumerate(callbacks)
+        if callback.get("state_patch", {}).get("stage") == "executor_finished"
+    )
+    assert last_delta < finished
+
+
+def test_executor_reuses_default_callback_client_for_app_lifespan(tmp_path, monkeypatch):
+    clients = []
+    callbacks: list[dict[str, object]] = []
+    runner_started = threading.Event()
+    runner_cancelled = threading.Event()
+    terminal_started = threading.Event()
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return callback_ack(self.payload)
+
+    class FakeClient:
+        def __init__(self, *, timeout):
+            clients.append(self)
+            self.closed = False
+
+        async def post(self, _url, *, json, headers):
+            callbacks.append(json)
+            if json.get("terminal_result"):
+                terminal_started.set()
+            return FakeResponse(json)
+
+        async def aclose(self):
+            assert terminal_started.is_set()
+            self.closed = True
+
+    async def executor_runner(_request, _workspace_root, _emit_event):
+        runner_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            runner_cancelled.set()
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.httpx.AsyncClient", FakeClient)
+    monkeypatch.setattr(executor_app, "_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS", 0.1)
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+        assert response.status_code == 202
+        assert runner_started.wait(timeout=2)
+
+    assert runner_cancelled.is_set()
+    assert terminal_started.is_set()
+    assert len(clients) == 1
+    assert len(callbacks) > 1
+    assert clients[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_shutdown_deadline_bounds_shared_callback_client_close(tmp_path, monkeypatch):
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    class FakeClient:
+        def __init__(self, *, timeout):
+            pass
+
+        async def aclose(self):
+            close_started.set()
+            while not release_close.is_set():
+                try:
+                    await release_close.wait()
+                except asyncio.CancelledError:
+                    continue
+
+    monkeypatch.setattr(executor_app.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(executor_app, "_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS", 0.01)
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+    )
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    try:
+        started_at = asyncio.get_running_loop().time()
+        await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=0.5)
+        assert asyncio.get_running_loop().time() - started_at < 0.5
+        assert close_started.is_set()
+    finally:
+        release_close.set()
+        await asyncio.sleep(0.05)
+
+
 def test_executor_retries_assistant_delta_with_immutable_batch(tmp_path, caplog):
     assistant_attempts: list[dict[str, object]] = []
     caplog.set_level("WARNING", logger=executor_app.__name__)
@@ -3698,7 +4814,7 @@ def test_executor_retries_assistant_delta_with_immutable_batch(tmp_path, caplog)
 
 
 def test_executor_does_not_overtake_retrying_callback_batch(tmp_path):
-    assistant_attempts: list[tuple[str, str]] = []
+    delta_attempts: list[tuple[str, str]] = []
     first_attempt_started = asyncio.Event()
     release_first_attempt = asyncio.Event()
     in_flight = 0
@@ -3706,11 +4822,11 @@ def test_executor_does_not_overtake_retrying_callback_batch(tmp_path):
 
     async def executor_runner(_request, _workspace_root, emit_event):
         first = asyncio.create_task(
-            emit_event(AgentEvent(type="assistant_delta", message="first", payload={"delta": "first"}))
+            emit_event(message_delta_callback(1, "first").events[0])
         )
         await first_attempt_started.wait()
         second = asyncio.create_task(
-            emit_event(AgentEvent(type="assistant_delta", message="second", payload={"delta": "second"}))
+            emit_event(message_delta_callback(2, "second").events[0])
         )
         release_first_attempt.set()
         await asyncio.gather(first, second)
@@ -3718,16 +4834,16 @@ def test_executor_does_not_overtake_retrying_callback_batch(tmp_path):
 
     async def callback_sender(url, payload, token):
         nonlocal in_flight, max_in_flight
-        assistant_events = [
-            event for event in payload.get("events", []) if event.get("type") == "assistant_delta"
+        delta_events = [
+            event for event in payload.get("events", []) if event.get("type") == "message.delta"
         ]
-        if assistant_events:
+        if delta_events:
             in_flight += 1
             max_in_flight = max(max_in_flight, in_flight)
             try:
-                delta = assistant_events[0]["payload"]["delta"]
-                assistant_attempts.append((payload["batch_id"], delta))
-                if delta == "first" and len(assistant_attempts) == 1:
+                delta = delta_events[0]["payload"]["delta"]
+                delta_attempts.append((payload["batch_id"], delta))
+                if delta == "first" and len(delta_attempts) == 1:
                     first_attempt_started.set()
                     await release_first_attempt.wait()
                     raise httpx.ConnectError(
@@ -3750,9 +4866,9 @@ def test_executor_does_not_overtake_retrying_callback_batch(tmp_path):
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
-    first_batch_id = assistant_attempts[0][0]
-    second_batch_id = assistant_attempts[2][0]
-    assert assistant_attempts == [
+    first_batch_id = delta_attempts[0][0]
+    second_batch_id = delta_attempts[2][0]
+    assert delta_attempts == [
         (first_batch_id, "first"),
         (first_batch_id, "first"),
         (second_batch_id, "second"),
@@ -3945,6 +5061,88 @@ def test_executor_exhausts_timed_out_callback_and_seals_late_deltas(tmp_path):
     assert all(event.get("message") != "late" for attempt in assistant_attempts for event in attempt.get("events", []))
 
 
+@pytest.mark.asyncio
+async def test_exhausted_transport_callback_suppresses_terminal(tmp_path):
+    assistant_attempts = 0
+    terminal_callbacks = []
+
+    async def executor_runner(_request, _workspace_root, emit_event):
+        await emit_event(
+            AgentEvent(
+                type="assistant_delta",
+                message="partial",
+                payload={"delta": "partial"},
+            )
+        )
+        return {"status": "completed", "message": "done"}
+
+    async def callback_sender(url, payload, _token):
+        nonlocal assistant_attempts
+        if payload.get("terminal_result"):
+            terminal_callbacks.append(payload)
+        if any(
+            event.get("type") == "assistant_delta"
+            for event in payload.get("events", [])
+        ):
+            assistant_attempts += 1
+            raise httpx.ReadTimeout(
+                "response lost after commit",
+                request=httpx.Request("POST", url),
+            )
+        return callback_ack(payload)
+
+    async def skip_retry_delay(_delay):
+        return None
+
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        executor_runner=executor_runner,
+        callback_sender=callback_sender,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        nonterminal_callback_retry_policy=callback_retry_policy(max_attempts=2),
+        callback_retry_sleep=skip_retry_delay,
+    )
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    lifespan_closed = False
+    try:
+        dispatch = next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
+        get_status = next(
+            route.endpoint
+            for route in app.routes
+            if route.path == "/v2/tasks/{run_id}/{attempt_id}"
+        )
+        await dispatch(
+            ExecutorTaskRequest.model_validate(task_payload()),
+            executor_credential=EXECUTOR_AUTH_TOKEN,
+        )
+
+        async def wait_for_failure():
+            while True:
+                response = await get_status(
+                    "run-a",
+                    "qat-attempt-a",
+                    executor_credential=EXECUTOR_AUTH_TOKEN,
+                )
+                if response["status"] == "callback_failed":
+                    return response
+                await asyncio.sleep(0)
+
+        response = await asyncio.wait_for(wait_for_failure(), timeout=1)
+        assert response["error_message"] == "executor_callback_delivery_uncertain"
+        assert assistant_attempts == 2
+        assert terminal_callbacks == []
+        await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=1)
+        lifespan_closed = True
+    finally:
+        if not lifespan_closed:
+            await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=1)
+
+
 def test_executor_finished_observation_marker_path_is_container_path(tmp_path, monkeypatch):
     callbacks = []
 
@@ -4050,6 +5248,59 @@ def test_executor_execute_rejects_missing_executor_scope_binding(tmp_path):
 
     assert response.status_code == 503
     assert response.json() == {"detail": "executor_scope_not_configured"}
+
+
+def test_executor_cancel_uses_one_deadline_for_terminal_callback_retry(tmp_path, monkeypatch):
+    runner_started = threading.Event()
+
+    async def executor_runner(_request, _workspace_root, _emit_event):
+        runner_started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("cancelled runner must not resume")
+
+    async def callback_sender(_url, payload, _token):
+        if payload.get("status") == "cancelled":
+            await asyncio.Event().wait()
+        return callback_ack(payload)
+
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app._EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS",
+        0.05,
+    )
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        callback_sender=callback_sender,
+        executor_runner=executor_runner,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        terminal_callback_retry_seconds=300.0,
+    )
+
+    with TestClient(app) as client:
+        dispatched = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+        assert dispatched.status_code == 202
+        assert runner_started.wait(timeout=1.0)
+
+        started_at = time.monotonic()
+        cancelled = client.post(
+            "/v2/tasks/run-a/qat-attempt-a/cancel",
+            headers=auth_headers(),
+        )
+        assert cancelled.status_code == 202
+        while time.monotonic() - started_at < 0.5:
+            status_response = client.get(
+                "/v2/tasks/run-a/qat-attempt-a",
+                headers=auth_headers(),
+            )
+            if status_response.json()["status"] == "callback_failed":
+                break
+            time.sleep(0.01)
+
+        assert status_response.json()["status"] == "callback_failed"
+        assert time.monotonic() - started_at < 0.5
 
 
 def test_executor_execute_rejects_wrong_executor_scope(tmp_path):

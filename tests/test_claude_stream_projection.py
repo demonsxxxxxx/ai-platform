@@ -1,7 +1,39 @@
 import pytest
 
 from app.control_plane_contracts import sanitize_public_payload
-from app.executors.claude_stream_projection import ClaudeStreamProjector
+from app.executors.claude_stream_projection import AssistantAnswerTimeline, ClaudeStreamProjector
+
+
+@pytest.mark.parametrize("result", ["", "Done.", "Done. More.", "Different final."])
+def test_answer_timeline_preserves_distinct_assistant_sources_and_terminal(result):
+    timeline = AssistantAnswerTimeline()
+    visible = [timeline.accept_delta("Checking. "), timeline.accept_delta("Please wait.")]
+    visible.append(timeline.accept_assistant("Checking. Please wait."))
+    visible.append(timeline.accept_assistant("Done."))
+    visible.append(timeline.accept_result(result))
+    expected = "Checking. Please wait.\n\nDone."
+    if result == "Done. More.":
+        expected += " More."
+    elif result == "Different final.":
+        expected += "\n\nDifferent final."
+    assert "".join(visible) == timeline.text == expected
+
+
+def test_answer_timeline_does_not_deduplicate_equal_text_from_distinct_messages():
+    timeline = AssistantAnswerTimeline()
+    assert timeline.accept_assistant("Same.") == "Same."
+    assert timeline.accept_assistant("Same.") == "\n\nSame."
+    assert timeline.accept_result("Same.") == ""
+    assert timeline.text == "Same.\n\nSame."
+
+
+def test_complete_message_preserves_a_different_already_streamed_delta():
+    timeline = AssistantAnswerTimeline()
+    assert timeline.accept_assistant("Earlier.") == "Earlier."
+    assert timeline.accept_delta("Provisional.") == "\n\nProvisional."
+    assert timeline.accept_assistant("Corrected.") == "\n\nCorrected."
+    assert timeline.accept_result("") == ""
+    assert timeline.text == "Earlier.\n\nProvisional.\n\nCorrected."
 
 
 def _projector(**kwargs):
@@ -57,6 +89,54 @@ def test_projector_disables_at_max_pending_bound():
     projector.accept(_start())
     assert projector.accept(_text_delta("x" * 9)) == ()
     assert projector.disabled is True
+
+
+def test_projector_accepts_large_fragment_with_stable_boundary_near_end():
+    projector = _projector(max_pending_chars=8)
+    safe_text = "safe " * 4
+
+    projector.accept(_start())
+    assert projector.accept(_text_delta(safe_text)) == (safe_text,)
+    assert projector.accept(_stop()) == ()
+    assert projector.disabled is False
+
+
+def test_projector_accepts_full_size_whitespace_fragment_in_constant_sanitizer_calls():
+    sanitizer_calls = 0
+
+    def counting_sanitizer(value):
+        nonlocal sanitizer_calls
+        sanitizer_calls += 1
+        return sanitize_public_payload(value)
+
+    projector = ClaudeStreamProjector(
+        sanitizer=counting_sanitizer,
+        max_pending_chars=4_096,
+    )
+    safe_text = "a " * 131_072
+
+    projector.accept(_start())
+    assert projector.accept(_text_delta(safe_text)) == (safe_text,)
+    assert sanitizer_calls <= 4
+
+
+def test_projector_rejects_oversized_unbroken_suffix_before_publication():
+    projector = _projector(max_pending_chars=8)
+
+    projector.accept(_start())
+    assert projector.accept(_text_delta("ok " + "x" * 16)) == ()
+    assert projector.disabled is True
+    assert projector.partial_emitted is False
+
+
+def test_projector_rejects_email_continuation_without_partial_publication():
+    projector = _projector(max_pending_chars=64)
+
+    projector.accept(_start())
+    assert projector.accept(_text_delta("x" * 20)) == ()
+    assert projector.accept(_text_delta("@example.com ")) == ()
+    assert projector.disabled is True
+    assert projector.partial_emitted is False
 
 
 @pytest.mark.parametrize(

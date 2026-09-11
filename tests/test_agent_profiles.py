@@ -23,7 +23,10 @@ from app.agent_apps.authority import (
     _revision_hash,
     _revision_hash_matches,
 )
-from app.agent_apps.api import safe_agent_avatar_seed
+from app.agent_apps.api import (
+    AgentProfileAdminProjection as AgentAppsAdminProjection,
+    safe_agent_avatar_seed,
+)
 from app.agent_apps.application.skill_set_pinning import pin_agent_skill_set
 from app.auth import AuthPrincipal
 from app.models import (
@@ -40,6 +43,14 @@ from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app import repositories as repository_module
 from app.main import create_app
 from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
+
+
+def test_agent_profile_draft_accepts_extended_builtin_avatar_style():
+    definition = AgentProfileDraftRequest.model_validate(
+        {**profile_draft_payload("Private instruction"), "avatar_ref": "builtin:planet"}
+    )
+
+    assert definition.avatar_ref == "builtin:planet"
 
 
 def test_agent_profile_draft_rejects_retired_supported_file_types():
@@ -92,6 +103,13 @@ def test_agent_profile_projections_require_universal_text_and_file_input(model, 
     assert model.model_validate(payload).supported_input_types == ["text", "file"]
     with pytest.raises(ValueError, match="universal text/file"):
         model.model_validate({**payload, "supported_input_types": ["text"]})
+
+
+def test_agent_profile_authority_keeps_extended_builtin_avatar_style():
+    from app.agent_apps.authority import _safe_avatar_ref
+
+    assert _safe_avatar_ref("builtin:pixel") == "builtin:pixel"
+    assert _safe_avatar_ref("not-a-style") == "builtin:agent"
 
 
 def test_agent_profile_avatar_seed_uses_unicode_code_points_and_rejects_c0_controls():
@@ -230,6 +248,8 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         "avatar_ref": "builtin:agent",
         "avatar_seed": "agt_support",
         "category": "general",
+        "market_tags": [],
+        "market_tag": "",
         "welcome_message": "",
         "starter_prompts": [],
         "capability_summary": "",
@@ -299,7 +319,7 @@ def test_agent_profile_accepts_multiple_executable_skills_and_keeps_primary_shad
         }
     )
 
-    assert [skill.skill_id for skill in definition.skill_set] == [
+    assert [skill["skill_id"] for skill in definition.skill_set] == [
         "document-review",
         "workflow-automation",
     ]
@@ -672,22 +692,33 @@ def test_agent_profile_market_requires_authenticated_principal():
 
 
 def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
-    from app.models import AgentProfilePublicProjection
-
     async def profiles(_conn, *, principal):
         assert principal.tenant_id == "tenant-a"
         return [
-            AgentProfilePublicProjection(
-                agent_id="agt_support",
-                expected_revision=4,
-                name="Support assistant",
-                description="Approved support helper.",
-            )
+            {
+                "agent_id": "agt_support",
+                "expected_revision": 4,
+                "name": "Support assistant",
+                "description": "Approved support helper.",
+                "avatar_ref": "builtin:agent",
+                "avatar_seed": "",
+                "category": "general",
+                "market_tag": "",
+                "market_tags": [],
+                "welcome_message": "",
+                "starter_prompts": [],
+                "capability_summary": "",
+                "recommended_tasks": [],
+                "supported_input_types": ["text", "file"],
+                "expected_outputs": [],
+                "permissions_and_data_access_notice": "",
+                "published_at": None,
+            }
         ]
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.agent_profiles.list_public_profiles", profiles)
+    monkeypatch.setattr("app.routes.agent_profiles._authority.list_public", profiles)
 
     response = TestClient(create_app()).get("/api/ai/agent-profiles", headers=ordinary_headers())
 
@@ -702,6 +733,8 @@ def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
                     "avatar_ref": "builtin:agent",
                     "avatar_seed": "",
                     "category": "general",
+                    "market_tag": "",
+                    "market_tags": [],
                     "welcome_message": "",
                     "starter_prompts": [],
                     "capability_summary": "",
@@ -725,7 +758,7 @@ def test_agent_profile_market_normalizes_unicode_search_before_repository_query(
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.agent_profiles.list_public_profiles", profiles)
+    monkeypatch.setattr("app.routes.agent_profiles._authority.list_public", profiles)
 
     response = TestClient(create_app()).get(
         "/api/ai/agent-profiles",
@@ -748,7 +781,7 @@ def test_agent_profile_market_rejects_query_that_expands_past_limit_after_normal
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.agent_profiles.list_public_profiles", profiles)
+    monkeypatch.setattr("app.routes.agent_profiles._authority.list_public", profiles)
 
     response = TestClient(create_app()).get(
         "/api/ai/agent-profiles",
@@ -770,10 +803,9 @@ def test_agent_profile_admin_wire_never_projects_retired_file_type_field(monkeyp
         name="Support assistant",
         description="Approved support helper.",
         instructions="Keep answers concise.",
-        selected_skill=SelectedSkillRequest(
-            skill_id="general-chat",
-            expected_version="version-a",
-        ),
+        selected_skill={
+            "skill_id": "general-chat",
+        },
         content_hash="a" * 64,
     )
 
@@ -796,15 +828,15 @@ def test_agent_profile_admin_wire_never_projects_retired_file_type_field(monkeyp
     )
 
     assert legacy_response.status_code == 200
+    assert legacy_response.json()["agent_profiles"][0]["agent_id"] == "agt_support"
     assert "supported_file_types" not in legacy_response.json()["agent_profiles"][0]
     assert current_response.status_code == 200
     assert "supported_file_types" not in current_response.json()["agent_profiles"][0]
-    schema = client.get("/openapi.json").json()
-    admin_projection = schema["components"]["schemas"]["AgentProfileAdminProjection"]
-    draft_request = schema["components"]["schemas"]["AgentProfileDraftRequest"]
-    assert "supported_file_types" not in admin_projection["properties"]
-    assert "model_id" not in admin_projection["properties"]
-    assert "model_id" not in draft_request["properties"]
+    admin_projection = AgentProfileAdminProjection.model_fields
+    draft_request = AgentProfileDraftRequest.model_fields
+    assert "supported_file_types" not in admin_projection
+    assert "model_id" not in admin_projection
+    assert "model_id" not in draft_request
     assert "model_id" not in current_response.json()["agent_profiles"][0]
     assert current_response.json()["agent_profiles"][0]["published_revision"] == 4
 
@@ -834,14 +866,18 @@ def test_agent_profile_admin_write_accepts_and_discards_legacy_model_field(monke
     async def save_profile(_conn, *, definition, **_kwargs):
         saved_definitions.append(definition)
         return (
-            AgentProfileAdminProjection(
-                agent_id="agt_support",
-                revision=1,
-                status="draft",
-                name=definition.name,
-                instructions=definition.instructions,
-                selected_skill=definition.selected_skill,
-                content_hash="a" * 64,
+            AgentAppsAdminProjection(
+                {
+                    "agent_id": "agt_support",
+                    "revision": 1,
+                    "status": "draft",
+                    "name": definition.name,
+                    "instructions": definition.instructions,
+                    "selected_skill": definition.selected_skill,
+                    "market_tag": definition.market_tag,
+                    "market_tags": definition.market_tags,
+                    "content_hash": "a" * 64,
+                }
             ),
             "audit_profile_save",
         )
@@ -857,6 +893,7 @@ def test_agent_profile_admin_write_accepts_and_discards_legacy_model_field(monke
             "instructions": "Keep answers concise.",
             "model_id": "legacy-model",
             "market_tag": " 客户服务 ",
+            "market_tags": [" 客户服务 ", "写作 "],
             "selected_skill": {"skill_id": "general-chat", "expected_version": "version-a"},
             "expected_draft_revision": 0,
         },
@@ -875,11 +912,14 @@ def test_agent_profile_admin_write_accepts_and_discards_legacy_model_field(monke
 
     assert response.status_code == 200
     assert unknown_field_response.status_code == 422
-    assert "model_id" not in response.json()
+    assert "model_id" not in response.json()["agent_profile"]
+    assert response.json()["agent_profile"]["market_tag"] == "客户服务"
+    assert response.json()["agent_profile"]["market_tags"] == ["客户服务", "写作"]
     assert len(saved_definitions) == 1
     assert not hasattr(saved_definitions[0], "model_id")
     assert saved_definitions[0]._legacy_model_id == "platform-selected"
     assert saved_definitions[0].market_tag == "客户服务"
+    assert saved_definitions[0].market_tags == ["客户服务", "写作"]
 
 
 def test_agent_profile_admin_publish_requires_admin(monkeypatch):
@@ -1721,7 +1761,7 @@ def _draft(*, expected_draft_revision: int) -> AgentProfileDraftRequest:
         name="Support assistant",
         description="Approved support helper.",
         instructions="Private instruction",
-        selected_skill=SelectedSkillRequest(skill_id="general-chat", expected_version="version-a"),
+        selected_skill={"skill_id": "general-chat"},
         mcp_tool_ids=[],
         expected_draft_revision=expected_draft_revision,
     )

@@ -437,7 +437,16 @@ test("mounted workbench hydrates, refreshes, and creates only an explicit local 
   const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
   const originals = { ...agentProfileApi };
   const responses = [
-    [profile()],
+    [
+      profile(),
+      ...Array.from(
+        { length: 20 },
+        (_, index) => profile({
+          agent_id: `agt_support_${index + 2}`,
+          name: `支持助手 ${index + 2}`,
+        }),
+      ),
+    ],
     [profile({ revision: 5, name: "支持助手新版" })],
   ];
   let listCalls = 0;
@@ -469,9 +478,19 @@ test("mounted workbench hydrates, refreshes, and creates only an explicit local 
     assert.equal((reactProps(instructionsInput) as unknown as { value: string }).value, "仅回答公司支持范围内的问题。");
     assert.equal(container.querySelector('[aria-label="专家模型"]'), null);
     assert.match(container.textContent, /support-skill/);
-    assert.match(container.textContent, /support-skill2026\.07\.28/);
+    assert.doesNotMatch(container.textContent, /support-skill2026\.07\.28/);
     assert.match(container.textContent, /支持知识检索/);
-    assert.match(container.textContent, /revision 4/);
+
+    const pageTwo = findButton(container, "2");
+    await React.act(async () => {
+      await reactProps(pageTwo).onClick?.({} as never);
+      await Promise.resolve();
+    });
+    const directoryProfiles = container.querySelectorAll("button").filter(
+      (button) => button.getAttribute("aria-label")?.startsWith("编辑专家 "),
+    );
+    assert.equal(directoryProfiles.length, 1);
+    assert.match(directoryProfiles[0].getAttribute("aria-label") ?? "", /支持助手 21/);
 
     const refreshButton = container.querySelector('[aria-label="刷新专家与授权目录"]');
     assert.ok(refreshButton);
@@ -482,7 +501,6 @@ test("mounted workbench hydrates, refreshes, and creates only an explicit local 
     assert.equal(listCalls, 2);
     assert.equal(catalogRetryCalls, 1);
     assert.equal(container.querySelector('[aria-label="专家名称"]')?.value, "支持助手新版");
-    assert.match(container.textContent, /revision 5/);
 
     await React.act(async () => {
       await reactProps(findButton(container, "新建专家")).onClick?.({} as never);
@@ -532,6 +550,92 @@ test("mounted list fields preserve separators while editing and normalize on blu
       await Promise.resolve();
     });
     assert.equal(recommendedTasks.value, "任务一\n任务二");
+  } finally {
+    Object.assign(agentProfileApi, originals);
+    await React.act(async () => root.unmount());
+  }
+});
+
+test("market tag combobox shows existing tags, filters them, and accepts custom input", async () => {
+  const document = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
+  const originals = { ...agentProfileApi };
+  agentProfileApi.listAdmin = async () => ({
+    agent_profiles: [
+      profile({ market_tag: "客户支持" }),
+      profile({
+        agent_id: "agt_hr",
+        market_tag: "人力资源",
+        name: "人事助手",
+      }),
+    ],
+  });
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = ReactDOM.createRoot(container as never);
+  try {
+    await React.act(async () => {
+      root.render(React.createElement(AgentBuilderWorkbench, {
+        catalog: catalog(),
+        canManageProfiles: true,
+      }));
+      await flush();
+    });
+
+    const marketTag = container.querySelector('[aria-label="市场标签"]');
+    assert.ok(marketTag);
+    await React.act(async () => {
+      reactProps(marketTag).onFocus?.({ target: marketTag } as never);
+      await Promise.resolve();
+    });
+    const options = () => container.querySelector('[role="listbox"]')?.querySelectorAll('[role="option"]') ?? [];
+    assert.deepEqual(
+      options().map((option) => option.textContent),
+      ["人力资源"],
+    );
+
+    await React.act(async () => {
+      marketTag.value = "人力";
+      reactProps(marketTag).onChange?.({ target: marketTag } as never);
+      await Promise.resolve();
+    });
+    assert.deepEqual(options().map((option) => option.textContent), ["人力资源"]);
+
+    await React.act(async () => {
+      reactProps(marketTag).onKeyDown?.({
+        key: "ArrowDown",
+        preventDefault() {},
+      } as never);
+      await Promise.resolve();
+    });
+    await React.act(async () => {
+      reactProps(marketTag).onKeyDown?.({
+        key: "Enter",
+        preventDefault() {},
+      } as never);
+      await Promise.resolve();
+    });
+    assert.equal(marketTag.value, "");
+    assert.ok(container.querySelector('[aria-label="移除标签 人力资源"]'));
+
+    await React.act(async () => {
+      marketTag.value = "自定义能力";
+      reactProps(marketTag).onChange?.({ target: marketTag } as never);
+      await Promise.resolve();
+    });
+    assert.equal(marketTag.value, "自定义能力");
+    assert.match(container.querySelector('[role="listbox"]')?.textContent ?? "", /按回车添加/);
+    await React.act(async () => {
+      reactProps(marketTag).onKeyDown?.({
+        key: "Enter",
+        preventDefault() {},
+      } as never);
+      await Promise.resolve();
+    });
+    assert.equal(marketTag.value, "");
+    assert.ok(container.querySelector('[aria-label="移除标签 自定义能力"]'));
   } finally {
     Object.assign(agentProfileApi, originals);
     await React.act(async () => root.unmount());
@@ -592,8 +696,7 @@ test("mounted edit disables publish until save materializes a revision, then ado
     assert.equal(saveCalls.length, 1);
     assert.equal((saveCalls[0][0] as { expected_draft_revision: number }).expected_draft_revision, 4);
     assert.equal(saveCalls[0][1], "agt_support");
-    assert.match(container.textContent, /revision 5/);
-    assert.match(container.textContent, /草稿已保存为服务端 revision 5/);
+    assert.match(container.textContent, /草稿已保存，当前发布版本未改变/);
     const publishAfterSave = findButton(container, "发布");
     assert.equal(publishAfterSave.disabled || publishAfterSave.hasAttribute("disabled"), false);
 
@@ -602,9 +705,8 @@ test("mounted edit disables publish until save materializes a revision, then ado
       await flush();
     });
     assert.deepEqual(publishCalls, [["agt_support", 5]]);
-    assert.match(container.textContent, /revision 6/);
     assert.match(container.textContent, /已发布/);
-    assert.match(container.textContent, /发布成功，当前服务端 revision 为 6/);
+    assert.match(container.textContent, /发布成功，发布版本已更新/);
     const publishedButton = findButton(container, "发布");
     assert.equal(publishedButton.disabled || publishedButton.hasAttribute("disabled"), true);
   } finally {
@@ -637,7 +739,7 @@ test("mounted dirty editor requires confirmation before switching profiles", asy
       await flush();
     });
     const nameInput = container.querySelector('[aria-label="专家名称"]');
-    const otherProfile = container.querySelector('[aria-label="编辑专家 其他助手，草稿，revision 4"]');
+    const otherProfile = container.querySelector('[aria-label="编辑专家 其他助手，草稿"]');
     assert.ok(nameInput);
     assert.ok(otherProfile);
     await React.act(async () => {
@@ -659,7 +761,7 @@ test("mounted dirty editor requires confirmation before switching profiles", asy
     assert.doesNotMatch(document.body.textContent, /放弃未保存更改/);
     assert.equal(container.querySelector('[aria-label="专家名称"]')?.value, "未保存名称");
 
-    const otherProfileAfterCancel = container.querySelector('[aria-label="编辑专家 其他助手，草稿，revision 4"]');
+    const otherProfileAfterCancel = container.querySelector('[aria-label="编辑专家 其他助手，草稿"]');
     assert.ok(otherProfileAfterCancel);
     await React.act(async () => {
       await reactProps(otherProfileAfterCancel).onClick?.({} as never);
@@ -682,7 +784,7 @@ test("mounted dirty editor requires confirmation before switching profiles", asy
   }
 });
 
-test("mounted unresolved catalogs preserve server pins without stale or empty claims", async () => {
+test("mounted unresolved catalogs preserve server Skill names without stale or empty claims", async () => {
   const document = installDom();
   const ReactDOM = await import("react-dom/client");
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
@@ -709,7 +811,8 @@ test("mounted unresolved catalogs preserve server pins without stale or empty cl
       await flush();
     });
 
-    assert.match(container.textContent, /support-skill2026\.07\.28/);
+    assert.match(container.textContent, /support-skill/);
+    assert.doesNotMatch(container.textContent, /support-skill2026\.07\.28/);
     assert.match(container.textContent, /已保留服务端工具身份/);
     assert.doesNotMatch(container.textContent, /当前不可用|没有这一精确版本|需要明确移除/);
 
@@ -798,7 +901,6 @@ test("mounted save conflict is safe, explicitly recoverable, and retryable", asy
     assert.match(container.textContent, /agent_profile_revision_stale/);
     assert.doesNotMatch(container.textContent, /raw database|private payload/);
     assert.equal(container.querySelector('[aria-label="专家名称"]')?.value, "重试后的名称");
-    assert.match(container.textContent, /revision 4/);
 
     await React.act(async () => {
       await reactProps(findButton(container, "加载服务端版本")).onClick?.({} as never);
@@ -811,7 +913,6 @@ test("mounted save conflict is safe, explicitly recoverable, and retryable", asy
     });
     assert.equal(listCalls, 2);
     assert.equal(container.querySelector('[aria-label="专家名称"]')?.value, "服务端最新名称");
-    assert.match(container.textContent, /revision 5/);
     assert.doesNotMatch(container.textContent, /agent_profile_revision_stale/);
 
     const recoveredNameInput = container.querySelector('[aria-label="专家名称"]');
@@ -823,7 +924,7 @@ test("mounted save conflict is safe, explicitly recoverable, and retryable", asy
       await flush();
     });
     assert.equal(saveAttempts, 2);
-    assert.match(container.textContent, /草稿已保存为服务端 revision 6/);
+    assert.match(container.textContent, /草稿已保存，当前发布版本未改变/);
   } finally {
     Object.assign(agentProfileApi, originals);
     await React.act(async () => root.unmount());

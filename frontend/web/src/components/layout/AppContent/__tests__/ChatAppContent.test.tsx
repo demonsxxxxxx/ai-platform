@@ -68,6 +68,22 @@ test("Agent workspace history selection loads before changing its session route"
   );
 });
 
+test("Agent first send leaves route mutation to the shared session synchronizer", () => {
+  const source = readFileSync(new URL("../ChatAppContent.tsx", import.meta.url), "utf8");
+  const handlerStart = source.indexOf("submitMessage: async (createdSessionId");
+  const handlerEnd = source.indexOf("return submission;", handlerStart);
+  assert.notEqual(handlerStart, -1);
+  assert.notEqual(handlerEnd, -1);
+
+  const handler = source.slice(handlerStart, handlerEnd);
+  assert.match(handler, /const submission = sendMessage\(/);
+  assert.doesNotMatch(handler, /navigate\(/);
+  assert.match(
+    source,
+    /useSessionSync\(\{[\s\S]*?sessionRouteBasePath: agentWorkspaceRouteBasePath/,
+  );
+});
+
 test("recovers an exact current Agent Conversation and keeps ordinary sessions generic", async () => {
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetPublished = agentProfileApi.getPublished;

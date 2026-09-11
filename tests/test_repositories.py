@@ -508,7 +508,7 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
                 return SingleRowCursor({"current_revision": 7})
             if "insert into agent_profile_revisions" in normalized:
                 return SingleRowCursor(
-                    {"published_at": None if params[33] is None else "database-timestamp"}
+                    {"published_at": None if params[35] is None else "database-timestamp"}
                 )
             return SingleRowCursor(None)
 
@@ -538,20 +538,23 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
         insert into agent_profile_revisions(
           tenant_id, agent_id, revision, status, revision_status, name, description, instructions,
           model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
-          avatar_ref, avatar_seed, category, market_tag, visibility, allowed_department_ids, allowed_roles,
+          avatar_ref, avatar_style_ref, avatar_seed, category, market_tag, market_tags, visibility, allowed_department_ids, allowed_roles,
           allowed_user_ids, welcome_message, starter_prompts, capability_summary,
           recommended_tasks, supported_input_types, supported_file_types, expected_outputs,
           permissions_and_data_access_notice, avatar_asset_id,
           created_by, published_by, published_at,
           published_from_revision, withdrawn_from_revision
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s,
-                %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s::jsonb,
-                %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s,
-                %s, %s, %s, case when %s::text is null then null else now() end, %s, %s)
+        values (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s::jsonb,
+                %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s,
+                %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s,
+                %s, %s, case when %s::text is null then null else now() end,
+                %s, %s)
         returning tenant_id, agent_id, revision, revision_status as status, name, description, instructions,
                   model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
-                  avatar_ref, avatar_seed, category, market_tag, visibility, allowed_department_ids, allowed_roles,
+                  avatar_ref, avatar_style_ref, avatar_seed, category, market_tag, market_tags, visibility, allowed_department_ids, allowed_roles,
                   allowed_user_ids, welcome_message, starter_prompts, capability_summary,
                   recommended_tasks, supported_input_types,
                   supported_file_types as legacy_supported_file_types, expected_outputs,
@@ -559,14 +562,14 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
                   created_at, published_at
         """.split()
     )
-    assert len(params) == insert_sql.count("%s") == 36
+    assert len(params) == insert_sql.count("%s") == 38
     assert params == (
         "tenant-a", "agt_support", 8, expected_legacy_status, status,
         "Support assistant", "Approved support helper.",
         "Private instruction", "model-a", "general-chat", "version-a",
         '[{"skill_id": "general-chat", "expected_version": "version-a"}]',
         '["mcp-a", "mcp-b"]',
-        "a" * 64, "builtin:agent", "", "general", "", "tenant", "[]", "[]", "[]",
+        "a" * 64, "builtin:agent", "", "", "general", "", "[]", "tenant", "[]", "[]", "[]",
         "", "[]", "", "[]", '["text"]', "[]", "[]", "", None,
         "creator-a", published_by, published_by, published_from_revision, None,
     )
@@ -605,6 +608,10 @@ async def test_list_published_agent_profiles_searches_safe_public_use_fields():
     assert "jsonb_array_elements_text" in conn.sql
     assert "jsonb_typeof(agent_profile_revisions.recommended_tasks) = 'array'" in conn.sql
     assert "normalize(recommended_task.value, NFKC) ilike %s" in conn.sql
+    assert "select count(*)" in conn.sql
+    assert "runs.tenant_id = agent_profile_revisions.tenant_id" in conn.sql
+    assert "runs.agent_id = agent_profile_revisions.agent_id" in conn.sql
+    assert "runs.status = 'succeeded'" in conn.sql
     assert conn.sql.count("escape E'\\\\'") == 4
     assert conn.params == (
         "company-default",
@@ -1318,6 +1325,9 @@ async def test_retention_queries_are_bounded_reference_safe_and_skip_locked():
     assert lock_params == (20,)
     assert "insert into object_deletion_outbox" in write_sql
     assert "snapshots.included_artifact_ids ? artifacts.id" in write_sql
+    assert "'retention_artifact_cleanup', true" in write_sql
+    assert "'deletion_owner_run_id', artifacts.run_id" in write_sql
+    assert "run_id = null" in write_sql
     assert json.loads(write_params[0]) == ["artifact-a"]
 
     await repositories.purge_deleted_memory_records(conn, grace_days=7, limit=25)
@@ -2455,8 +2465,8 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
             "status": "active",
         },
         {
-            "id": "baoyu-translate",
-            "default_skill_id": "baoyu-translate",
+            "id": "retired-agent",
+            "default_skill_id": "retired-skill",
             "status": "active",
         },
     ]
@@ -2481,7 +2491,7 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
         },
         {
             "capability_kind": "skill",
-            "capability_id": "baoyu-translate",
+            "capability_id": "retired-skill",
             "status": "disabled",
             "visible_to_user": False,
             "scope_mode": "allowlist",
@@ -2530,13 +2540,13 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
     assert [row["id"] for row in admin_rows] == [
         "general-agent",
         "qa-word-review",
-        "baoyu-translate",
+        "retired-agent",
     ]
     assert len(audits) == 3
     assert {audit["target_id"] for audit in audits} == {
         "general-chat",
         "qa-file-reviewer",
-        "baoyu-translate",
+        "retired-skill",
     }
     for audit in audits:
         assert audit["action"] == "capability_distribution.admin_bypass"
@@ -4564,84 +4574,6 @@ async def test_list_public_skill_catalog_hides_non_materializable_current_versio
 
 
 @pytest.mark.asyncio
-async def test_list_workbench_skills_projects_distribution_without_legacy_status_or_visibility(monkeypatch):
-    async def no_backfill(conn, *, tenant_id):
-        return None
-
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
-
-    class Cursor:
-        async def fetchall(self):
-            return [
-                {
-                    "skill_id": "qa-file-reviewer",
-                    "name": "QA Word Review",
-                    "version": "0.1.0",
-                    "description": "Review",
-                    "input_modes": ["docx"],
-                    "output_modes": ["reviewed_docx"],
-                    "executor_type": "claude-agent-worker",
-                    "lifecycle_status": "active",
-                    "status": "disabled",
-                    "visible_to_user": False,
-                }
-            ]
-
-    class Connection:
-        async def execute(self, sql, params):
-            self.sql = " ".join(sql.split())
-            self.params = params
-            return Cursor()
-
-    conn = Connection()
-    rows = await repositories.list_workbench_skills(conn, tenant_id="tenant-a", include_disabled=True)
-
-    assert rows[0]["status"] == "disabled"
-    assert "tenant_capability_distributions" in conn.sql
-    assert "tenant_workbench_skills" not in conn.sql
-    assert "skills.status as lifecycle_status" in conn.sql
-    assert "general-chat" not in conn.sql
-
-
-@pytest.mark.asyncio
-async def test_list_workbench_capabilities_uses_global_lifecycle_and_distribution_authority(monkeypatch):
-    async def no_backfill(conn, *, tenant_id):
-        assert tenant_id == "tenant-a"
-
-    class Cursor:
-        async def fetchall(self):
-            return []
-
-    class Connection:
-        def __init__(self):
-            self.sql = ""
-            self.params = None
-
-        async def execute(self, sql, params=()):
-            self.sql = " ".join(sql.split())
-            self.params = params
-            return Cursor()
-
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
-    conn = Connection()
-
-    rows = await repositories.list_workbench_capabilities(conn, tenant_id="tenant-a")
-
-    assert rows == []
-    assert "tenant_workbench_skills" not in conn.sql
-    assert "join tenant_capability_distributions" in conn.sql
-    assert "skills.status" in conn.sql
-    assert "tenant_capability_distributions.status" in conn.sql
-    assert "tenant_capability_distributions.visible_to_user" in conn.sql
-    assert "left join skills on skills.id = agents.default_skill_id" in conn.sql
-    assert (
-        "when agents.agent_type = 'chat' and agents.default_skill_id is null then 'active'"
-        in conn.sql
-    )
-    assert conn.params == ("tenant-a", "tenant-a")
-
-
-@pytest.mark.asyncio
 async def test_list_public_skill_catalog_hides_unreleased_selected_versions_by_default(monkeypatch):
     async def no_backfill(conn, *, tenant_id):
         return None
@@ -4671,7 +4603,7 @@ async def test_list_public_skill_catalog_hides_unreleased_selected_versions_by_d
             return [
                 catalog_row("general-chat", "active"),
                 catalog_row("qa-file-reviewer", "released"),
-                catalog_row("baoyu-translate", "draft"),
+                catalog_row("retired-skill", "draft"),
                 catalog_row("ragflow-knowledge-search", "reviewed"),
                 catalog_row("ctd-32s73-stability-template-fill", "disabled"),
                 catalog_row("custom-deprecated-skill", "deprecated"),
@@ -6042,7 +5974,7 @@ async def test_list_run_events_supports_sequence_cursor_and_limit():
 
     sql, params = conn.calls[0]
     assert "sequence > %s" in sql
-    assert "order by sequence asc, created_at asc" in sql
+    assert "order by event.sequence asc, event.created_at asc" in sql
     assert "limit %s" in sql
     assert params == ("tenant-a", "run-a", 7, 20)
 

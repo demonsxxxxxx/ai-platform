@@ -30,7 +30,6 @@ OPENSANDBOX_PRODUCTION_SERVICE = Path(
     "deploy/opensandbox/opensandbox-production.service"
 )
 ENV_EXAMPLE_FILE = DEPLOY_DIR / ".env.example"
-REPOSITORY_DEPLOY_ENV = "${PROJECT_DIR}/deploy/ai-platform/.env"
 
 
 def compose_service_text(compose_text: str, service_name: str) -> str:
@@ -134,26 +133,6 @@ def test_skill_manifest_reference_transport_has_no_rollout_switch():
     assert "SKILL_MANIFEST_REFERENCE_WRITES_ENABLED" not in api_section
     assert "SKILL_MANIFEST_REFERENCE_WRITES_ENABLED" not in worker_section
     assert "SKILL_MANIFEST_REFERENCE_WRITES_ENABLED" not in env_values
-
-
-def test_run_api_with_deploy_env_derives_database_and_s3_settings():
-    script = Path("tools/run_api_with_deploy_env.sh")
-
-    text = script.read_text(encoding="utf-8")
-
-    assert REPOSITORY_DEPLOY_ENV in text
-    assert "/home/" not in text
-    assert 'PORT="${AI_PLATFORM_PORT:-8020}"' in text
-    assert "Default: 8020" in text
-    assert "18080" not in text
-    assert 'DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/${POSTGRES_DB}"' in text
-    assert 'S3_ENDPOINT_URL="http://localhost:${MINIO_API_PORT}"' in text
-    assert 'S3_ACCESS_KEY_ID="${MINIO_ROOT_USER}"' in text
-    assert 'S3_SECRET_ACCESS_KEY="${MINIO_ROOT_PASSWORD}"' in text
-    assert 'CLAUDE_AGENT_SDK_ENABLED=false' in text
-    assert "--check-env" in text
-    assert "sed -E 's/=.*/=SET/'" in text
-    assert "TRUSTED_PRINCIPAL_SECRET|CLAUDE_AGENT_SDK_ENABLED" not in text
 
 
 def test_compose_forwards_database_pool_settings_to_api_and_worker():
@@ -285,10 +264,10 @@ def test_dockerfile_precreates_private_workspace_before_nonroot_executor():
     assert "/workspace" not in dependency_layer
 
 
-def test_dockerfile_installs_git_and_pandoc_for_sdk_agent_worktrees():
+def test_dockerfile_installs_required_runtime_packages():
     content = Path("Dockerfile").read_text(encoding="utf-8")
 
-    assert "apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk git pandoc passwd" in content
+    assert "apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk git libexpat1 libssh2-1 pandoc passwd" in content
 
 
 def test_dockerfile_uses_independent_optional_debian_mirror_args_without_disabling_apt_security():

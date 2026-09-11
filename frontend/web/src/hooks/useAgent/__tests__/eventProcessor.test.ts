@@ -157,7 +157,10 @@ test("projects oversized context files as a specific safe terminal", () => {
     "run-file-too-large",
   );
 
-  assert.equal(result.content, "文件超过 32 MB 处理上限。请选择更小的文件后重试。");
+  assert.equal(
+    result.content,
+    "文件超过 128 MB，或文件总量超过 256 MB。请选择更小的文件或减少文件数量后重试。",
+  );
   const terminal = result.parts[0];
   assert.equal(terminal?.type, "run_status");
   if (terminal?.type !== "run_status") throw new Error("expected run status");

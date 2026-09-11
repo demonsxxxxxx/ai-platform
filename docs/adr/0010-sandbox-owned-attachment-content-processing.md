@@ -37,7 +37,7 @@ content-injection, type-specific, or lightweight-chat exception.
 ```text
 upload/storage
   -> immutable run snapshot authorization
-  -> bounded byte and structural-safety validation
+  -> bounded identity checks plus temporary XLSX package safety
   -> atomically materialized read-only inputs/
   -> file metadata manifest
   -> selected Agent/Skill reads original bytes in Sandbox
@@ -72,19 +72,22 @@ Owner: file continuity and storage boundary.
 Output: immutable facts containing only file ID, basename, content type, byte
 count, and digest. These facts are not document content.
 
-### A3. XLSX package safety and opaque document staging
+### A3. Format-independent staging and temporary XLSX package safety
 
-For XLSX, the platform performs non-semantic archive safety checks: bounded entry
-count, bounded compressed and uncompressed sizes, bounded compression ratio, no
-absolute or traversal paths, no duplicate normalized names, no encrypted package,
-and no active Office content. DOCX and PDF files are opaque after A1-A2 and file-type
-classification: the platform does not enumerate DOCX ZIP entries or inspect DOCX macros,
-ActiveX, OLE/CFB payloads, embedded packages, or relationships, and it does not parse,
-decrypt, count pages, or inspect PDF contents. The selected Skill may inspect accepted
-original bytes only inside its sandbox and under its existing tool and network policy.
+Attachment admission does not require a platform parser, recognized extension,
+matching MIME type, or document magic signature. After A1-A2, DOC, DOCX, PDF, XLS,
+PPT, PPTX, and other authorized files remain opaque original bytes. The selected
+Skill may inspect those bytes only inside its Sandbox and under its existing tool
+and network policy.
 
-This step must not read cells, paragraphs, tables, document text, formulas, or
-PDF page text. It must not produce a summary.
+As a temporary resource control, a file declared as XLSX by either its extension
+or MIME type receives the existing non-semantic archive checks: bounded entry count,
+bounded compressed and uncompressed sizes, bounded compression ratio, no absolute
+or traversal paths, no duplicate normalized names, no encrypted package, and no
+active Office content. This XLSX check is not a general file-type allowlist.
+
+This step must not read cells, paragraphs, tables, document text, formulas,
+slides, or PDF page text. It must not produce a summary.
 
 Owner: attachment safety validator.
 
@@ -116,9 +119,17 @@ content.
 ### A6. Sandbox-owned content processing
 
 The selected Skill decides which original files to read and uses its approved
-sandbox tools/libraries, such as `openpyxl`, `python-docx`, or `pypdf`. It may
-inspect all or a selected portion of a document under Sandbox CPU, memory,
-disk, timeout, and network restrictions.
+Sandbox tools/libraries, such as `openpyxl`, `python-docx`, `pypdf`, or the pinned
+`firecrawl-anydoc` parser for legacy Office and PowerPoint files. The Skill may inspect
+all or a selected portion of a document under Sandbox CPU, memory, disk, timeout, and
+network restrictions.
+
+`firecrawl-anydoc` also exposes an explicit `ocr="hosted"` option that can send a
+whole OCR-required document to Firecrawl Parse. The platform does not configure
+Firecrawl credentials or endpoints and does not invoke hosted OCR. Governed Sandboxes
+remain on the fixed internal network with no external egress, and their sole proxy
+rejects every route except the existing model and callback contracts. Hosted OCR and
+external attachment transmission therefore remain prohibited.
 
 Owner: selected Agent/Skill.
 
@@ -140,6 +151,7 @@ The cutover removes these platform behaviors and their contracts from the produc
 execution path:
 
 - typed attachment preprocessing requirements and parser evidence;
+- parser-era extension/MIME/magic classification as a staging allowlist;
 - the Run-execution XLSX parser contract, evidence, and model-context limits;
 - `platform_typed_attachment_data` model messages;
 - DOCX package inspection, including macro, ActiveX, OLE/CFB, embedded-package,
@@ -170,9 +182,11 @@ The cutover does not relax these controls:
   rejection;
 - upload, per-file, total-stage, file-count, sandbox disk, CPU, memory, timeout,
   and artifact collection quotas;
-- XLSX archive bomb, encryption, macro, ActiveX, and OLE protection;
-- DOCX and PDF package structures and contents are opaque to platform staging;
-  they are handled only by the selected sandbox Skill under its existing policy;
+- XLSX archive bomb, encryption, macro, ActiveX, and OLE protection for files
+  declared as XLSX by extension or MIME type;
+- all other document package structures and contents are opaque to platform
+  staging and are handled only by the selected Sandbox Skill;
+- no hosted OCR or external document transmission from the local document parser;
 - no direct Agent authority to platform storage, databases, Redis, or host
   filesystem;
 - public error redaction: no content, file ID, storage key, absolute path, or
@@ -215,6 +229,59 @@ The model receives metadata equivalent to:
 This example is metadata only. It is not an alternative content-extraction
 channel and no attachment text or cell values may be appended to it.
 
+## Upload and staging change contract
+
+This approved change aligns the file path with the raw-file decision above.
+
+Owner: file upload route, storage adapter, context materializer, and Sandbox
+workspace-transfer owners.
+
+Bounded paths: `app/routes/files.py`, `app/storage.py`,
+`app/context/file_continuity.py`, `app/context/file_content.py`,
+`app/runtime/sandbox/container_provider.py`, the owning upload/context tests,
+frontend upload configuration, and this ADR. No document parser, Agent/Skill
+prompt, public projection, or unrelated storage lifecycle behavior is in scope.
+
+Reached invariants: authenticated tenant/workspace/user/session authorization,
+immutable file identity, SHA-256 verification, safe names and paths, archive
+resource controls, atomic staging, public error redaction, and Sandbox CPU,
+memory, disk, process, and timeout controls remain fail-closed. Multipart parts
+are transport fragments only and are never exposed as separate files. The
+single-request compatibility route reserves a claim-unique object generation in
+`file_upload_sessions` before storage mutation; concurrent retries observe that
+durable owner and cannot delete or overwrite its object, while a later owner
+cannot be affected by a retained cleanup from an expired generation. A deleted
+file tombstone derives a fresh deterministic file and reservation generation,
+so retry identity remains stable without making the deleted identity usable
+again. Multipart initiation likewise persists an `initializing_*` reservation
+ObjectStorage to create upload state, then compare-and-sets the returned upload
+ID. Unknown initialization is reclaimed by repeatedly listing and aborting only
+that reservation's claim-unique key; its expired tombstone remains outside quota
+accounting because a retained or disconnected create can surface after any one
+empty listing. Successful empty scans defer that tombstone for one day; actual
+cleanup failures retry after one minute so unknown starts cannot starve ordinary
+session cleanup. Known multipart cleanup converges both the upload handle and
+its exact final object key, covering completion that reached ObjectStorage but
+not PostgreSQL.
+
+Acceptance: the complete nine-file `3.2.S.3.1-IP266` corpus (approximately
+164.18 MiB, with one approximately 63.49 MiB file) can upload and pass Run
+admission under the new limits; a 129 MiB input or a 257 MiB input set fails
+before workspace writes; staging does not retain the complete input set in
+memory; interrupted or expired multipart sessions cannot create a file row;
+cross-user and cross-workspace uploads cannot be completed; and the exact
+legacy safety regressions remain covered.
+
+Evidence ceiling: local static and focused tests prove source behavior only.
+Actual memory use, Sandbox disk capacity, and production object-storage
+performance require CI and controlled Docker-host runtime evidence. This change
+must stop before raising Run limits if stream staging, real-Sandbox transfer, or
+resource-boundary tests fail.
+
+Rollback: revert the release-atomic code and documentation change. Existing
+completed file objects and file rows remain readable; incomplete upload sessions
+are abortable and may be garbage-collected without changing historical files.
+
 ## Limit Matrix
 
 The raw-file contract does not remove resource boundaries. It replaces
@@ -222,14 +289,17 @@ content-derived admission limits with byte- and structure-derived limits.
 
 | Boundary | Limit | Enforcement owner | Purpose |
 | --- | ---: | --- | --- |
-| Run input file | 32 MiB per file | workspace materializer | bounded disk and transfer |
-| Run input set | 128 MiB total | workspace materializer | bounded sandbox staging |
-| Run input set | 512 files | workspace materializer | bounded descriptor and disk work |
-| XLSX archive / DOCX outer plus embedded archives | 2,000 cumulative entries | archive safety validator | zip-bomb and archive-work bound |
-| XLSX compressed entry | 8 MiB | archive safety validator | bounded decompression |
-| XLSX expanded package | 32 MiB | archive safety validator | zip-bomb and memory bound |
-| DOCX compressed entry | 32 MiB | archive safety validator | bounded decompression |
-| DOCX outer plus embedded archives | 64 MiB cumulative expanded bytes | archive safety validator | zip-bomb and memory bound |
+| Stored upload object | 512 MiB | upload session and object storage | bounded persistent object |
+| Legacy single-request upload | 32 MiB | upload route | bounded compatibility path |
+| Multipart threshold | 32 MiB | upload client and storage adapter | retryable transport |
+| Multipart part | 8 MiB | upload client and upload route | bounded request |
+| Run input file | 128 MiB | workspace materializer | bounded disk and transfer |
+| Run input set | 256 MiB total | workspace materializer | bounded sandbox staging |
+| Run input set | 32 files | Run request and materializer | bounded descriptor and disk work |
+| Declared XLSX archive | 2,000 entries | archive safety validator | zip-bomb and archive-work bound |
+| Declared XLSX compressed entry | 8 MiB | archive safety validator | bounded decompression |
+| Declared XLSX expanded package | 32 MiB | archive safety validator | zip-bomb and memory bound |
+| Required DOCX expanded package | 64 MiB total / 32 MiB per entry / 2,000 entries | artifact collector | zip-bomb and shared-Worker bound |
 | Artifact output file | 64 MiB per file | artifact collector | bounded result transfer |
 | Artifact output set | 256 MiB total / 128 files | artifact collector | bounded result storage |
 
@@ -242,9 +312,9 @@ execution bounds for that work.
 ## Public Failure Contract
 
 The browser distinguishes only safe user-correctable delivery failures, such as
-file unavailable, file too large, unsupported/unsafe package, storage
-unavailable, or file-name conflict. It does not display parser-specific errors
-because platform content parsing is removed. The public projection remains
+file unavailable, file too large, unsafe declared XLSX package, storage unavailable,
+or file-name conflict. New staging no longer emits a parser-supported-type failure.
+Persisted historical failures keep their existing projection. The public projection remains
 allowlisted and must not expose attachment identity or internals.
 
 ## Consequences
@@ -276,11 +346,20 @@ behavior.
 
 - A valid XLSX with more than 2,048 populated cells materializes to `inputs/`
   and can start an Agent run.
-- A valid DOCX is materialized without platform paragraph/table extraction.
+- The complete nine-file `3.2.S.3.1-IP266` corpus (approximately 164.18 MiB)
+  can upload through Multipart and pass Run admission; a 129 MiB file or a
+  257 MiB input set fails before workspace writes.
+- Multipart sessions are tenant-, workspace-, and user-bound; duplicate completion,
+  expiry, abort, and quota failures do not create file rows or leave live uploads.
+- Valid DOC, DOCX, XLS, XLSX, PPT, and PPTX inputs are materialized without
+  platform content extraction or a parser-supported-type gate.
+- The pinned local Sandbox parser extracts fixed markers from synthetic DOC, XLS,
+  PPT, and PPTX fixtures in the candidate image with `ocr="reject"` and container
+  networking disabled.
 - The SDK input stream contains no `platform_typed_attachment_data` message or
   attachment business content.
-- Unsafe archives, oversize input, identity mismatch, scope mismatch, and
-  workspace path escape continue to fail before any workspace write.
+- Unsafe declared XLSX archives, oversize input, identity mismatch, scope mismatch,
+  and workspace path escape continue to fail before any workspace write.
 - Production code has no call path from run dispatch or runtime staging to a
   document-content parser.
 - Tests demonstrate raw-file staging, metadata-only Agent delivery, and the
@@ -288,5 +367,9 @@ behavior.
 
 ## Rollback
 
-Revert the release-atomic PR. No data migration, schema change, or persisted
-parser state is introduced by this decision.
+Revert the release-atomic code and documentation change using the repository's
+schema rollback procedure. The additive `file_upload_sessions` table and settings
+are ignored by older file paths; completed file rows and objects remain readable,
+while pending or completing sessions can be aborted and garbage-collected. Do not
+raise Run limits in a rollback image that still has the former 32/128 MiB staging
+contract.

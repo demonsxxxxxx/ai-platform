@@ -1,114 +1,92 @@
-# Latest-main image quickstart change contract
+# Deployment package quickstart
 
-## Goal
+The public immutable Deployment Release contains a runtime-only package. Choose
+one package and its matching manifest from the same Release:
 
-Provide one host command that waits for the current authoritative `main` commit
-to finish the backend, frontend, and packaging GitHub Actions workflows, resolves
-the two published GHCR image digests from the packaging evidence, materializes
-the exact release checkout, and delegates deployment to the selected managed
-environment controller.
+- `ai-platform-internal-test.tar.gz` for the internal-test OpenSandbox overlay.
+- `ai-platform-production.tar.gz` for the production OpenSandbox overlay.
 
-The operator command is:
+Extract the archive into a new directory and do not mix files with another
+version. The package contains the exact Compose files, immutable application and
+data image references, `deploy.py`, `.env.example`, and
+`release-image-manifest.json`. It does not need a Git checkout, GitHub Actions
+access, source files, or a host build.
 
-```bash
-./scripts/deploy-latest.sh --profile internal-test --latest
+## First install
+
+The host needs Linux, Python 3, Docker, Compose v2 with `--wait` and `!reset`,
+and the already-provisioned `opensandbox.service`. Production OpenSandbox
+credentials, network policy, `runsc`, the lifecycle address, and workspace
+permissions are one-time host preparation; see [production host preparation](production-bootstrap.md).
+
+For a new installation, create the environment file in the extracted directory:
+
+```sh
+umask 077
+cp .env.example .env
+# Set the host-specific public origin, credentials, storage, model, and
+# OpenSandbox settings.
+chmod 600 .env
 ```
 
-The same profile command without `--latest` remains available for a
-controller-prepared `incoming/latest-main.json` subject.
+For an upgrade, reuse the existing environment file. Never overwrite it with
+the example or print its values. The invoking user must own it and its mode must
+be exactly `0600`.
 
-## Bounded change surface
+## Deploy
 
-- `scripts/deploy-latest.sh`
-- `scripts/quickstart-s72.sh` (internal-test alias)
-- `tools/latest_main_quickstart.py`
-- `tests/test_deploy_latest_entry.py`
-- `tests/test_latest_main_quickstart.py`
-- `tests/test_sandbox_quickstart.py`
-- `.github/workflows/ai-platform-backend.yml`
-- `tests/test_backend_ci_workflow.py`
-- `README.md`
-- `docs/operations/release-operations-runbook.md`
-- this contract
+Back up the database and make sure there are no active Runs, Attempts, leases,
+or sandbox containers. From the extracted package directory:
 
-The existing Compose convergence, health checking, runtime inspection, data
-volume preservation, and image rollback implementation remains owned by
-`tools/sandbox_quickstart.py`.
+```sh
+python3 deploy.py --env-file /absolute/path/to/.env
+```
 
-## Admission and authority contract
+If Docker requires sudo:
 
-The latest deployment candidate is the exact 40-character SHA currently at the
-fixed repository's `refs/heads/main`. For that same SHA, the controller must
-require completed successful `push` runs and successful final jobs for all of:
+```sh
+python3 deploy.py --env-file /absolute/path/to/.env --docker-cmd 'sudo -n docker'
+```
 
-| Workflow | Required final job |
-| --- | --- |
-| `.github/workflows/ai-platform-backend.yml` | `backend required` |
-| `.github/workflows/ai-platform-frontend.yml` | `frontend required` |
-| `.github/workflows/ai-platform-packaging-publish.yml` | `release image ready manifest` |
+The entry validates the package and all digest identities, checks activity,
+stops application admission, checks activity again, preserves PostgreSQL/Redis/
+MinIO containers and volumes, runs migration and workspace initialization,
+starts the application, and verifies API readiness, OpenSandbox reachability,
+application identity, and an advancing Worker heartbeat. It never removes data
+volumes and does not automatically reverse a migration.
 
-The packaging run's ready artifact name is derived only from the exact SHA, run
-ID, and run attempt. The downloaded archive is bounded and extracted without
-following archive paths or links. The exact target checkout's
-`release_image_manifest.py verify` command must validate all manifest, SBOM,
-provenance, signature, and scan evidence before either image digest is admitted.
+Use `--check` to validate configuration, activity, and already cached image
+digests without pulling or changing services:
 
-The controller never accepts mutable image tags. It atomically replaces
-`incoming/latest-main.json` only after workflow, artifact, checkout, manifest,
-and managed environment validation all succeed. A failure before that replace
-leaves the previous subject byte-for-byte unchanged.
+```sh
+python3 deploy.py --env-file /absolute/path/to/.env --check
+```
 
-## Host and secret contract
+This is a preflight result, not deployment acceptance.
 
-The private GitHub repository is read with a repository Contents-and-Actions
-read token from `GH_TOKEN` or `GITHUB_TOKEN`, with an authenticated local GitHub
-CLI token as a fallback. The token is removed from the child deployment
-environment before any Git, Docker, Compose, or health command runs. The host
-must already be logged in to `ghcr.io` for private image pulls.
+## Offline images
 
-An existing valid quickstart subject supplies the stable managed `.env` path.
-For the first deployment, the operator supplies the path with `--env-file`; the
-controller records only that path and never reads or prints the file contents.
+Load downloaded OCI or Docker image archives into the same Docker daemon while
+retaining their complete `repository@sha256:...` identities. Then use:
 
-One owner-managed advisory lock covers candidate discovery, checkout
-materialization, artifact verification, subject replacement, pull, Compose
-mutation, health checks, and rollback. Contention fails without mutating the
-runtime.
+```sh
+python3 deploy.py --env-file /absolute/path/to/.env --offline
+```
 
-## Failure and rollback contract
+Offline mode skips network pulls but still verifies each expected `RepoDigest`.
+Missing images, floating tags, manually retagged images, or package mixing fail
+before application admission changes.
 
-- Missing, pending beyond the bounded wait, failed, cancelled, or mismatched
-  Actions evidence blocks deployment before Compose mutation.
-- Download, archive, manifest, checkout, or environment validation failure
-  blocks deployment before subject replacement and Compose mutation.
-- Artifact download and archive validation complete before target checkout
-  materialization. A successfully materialized exact-commit checkout is retained
-  as an owner-managed retry and rollback asset; this command does not delete
-  release checkouts automatically.
-- Image pull failure blocks target startup.
-- Target startup or health failure delegates to the existing one-attempt image
-  rollback. Persistent data volumes remain in place; database migrations are
-  not reversed.
-- The approved target subject remains available for an operator retry after a
-  post-admission deployment failure.
+## Failure behavior
 
-## Falsifiable acceptance
+Failures before admission leave the current runtime untouched. If new activity
+appears after admission is stopped, the old application containers are restored
+and migration is not started. Once migration begins, a failure stops application
+admission and retains data. The package does not guess whether an old binary is
+compatible with an advanced schema, so use a compatible package or the approved
+database restore procedure. Do not edit migration checksums or run a second
+package process while one is active.
 
-Focused tests must prove exact-SHA three-workflow gating, final-job gating,
-bounded archive extraction, external run/attempt binding, semantic manifest
-verification, token isolation, atomic subject preservation/replacement,
-checkout handoff, lock contention, zero-argument compatibility, and CI ownership
-of both quickstart test files. Static compilation and shell syntax checks must
-also pass. Docker runtime acceptance remains explicitly unavailable on hosts
-without Docker and Compose.
-
-## Production consumer
-
-The exact-main resolver and release-artifact admission in this contract are also
-reused by
-`sudo -n ./scripts/deploy-latest.sh --profile production --latest`. That profile
-has a separate production change contract in
-`docs/operations/production-bootstrap.md`. It uses `/data/ai-platform-prod`, the
-direct governed OpenSandbox overlay, host-service convergence, production
-quiescence, and production parity/rollback checks. The `internal-test` profile
-selects only the internal-test overlay.
+The normal package path never fetches `main`, queries Actions, materializes a
+source checkout, changes the Docker daemon proxy, provisions the OpenSandbox
+host, or runs a second Compose project.

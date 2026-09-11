@@ -26,7 +26,6 @@ from tools.release_authority import (
     build_parity_report,
     collect_live_parity,
     deploy_clean_commit,
-    preserve_dirty_source,
 )
 
 
@@ -141,120 +140,6 @@ def test_opensandbox_compose_overlay_uses_direct_sdk_and_egress_proxy():
         "default",
         release_authority.DIRECT_OPENSANDBOX_NETWORK_KEY,
     }
-
-
-def test_runbook_states_governed_proof_key_rotation_and_sandbox_overlay_contract():
-    text = RUNBOOK.read_text(encoding="utf-8")
-    contract_text = " ".join(text.split())
-    canonical_invocation = "python3 -B tools/release_authority.py deploy-main-commit"
-
-    assert "SANDBOX_EGRESS_PROOF_KEY_ID=<non-secret-current-key-id>" in text
-    assert "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON=<empty-or-bounded-read-only-previous-key-map>" in text
-    assert text.count(canonical_invocation) == 2
-    assert "python3 tools/release_authority.py deploy-main-commit" not in text
-    assert text.count("umask 077") == 2
-    assert text.index("umask 077") < text.index(canonical_invocation)
-    assert "Resolve `SOURCE`" in text
-    assert "operator must" in text
-    assert "repository does not hard-code a server identity" in text
-    assert ': "${SOURCE:?set SOURCE to the operator-approved coordination checkout}"' in text
-    assert ': "${ROOT:?set ROOT to the operator-approved managed release root}"' in text
-    assert '--release-root "$ROOT/releases"' in text
-    assert '--canonical-build-timeout-seconds 1800' in text
-    command_bound = re.search(
-        r"timeout --signal=INT --kill-after=(\d+)s (\d+)s",
-        text,
-    )
-    durable_bound = re.search(r"durable runner with a (\d+)-second deadline", text)
-    assert command_bound is not None
-    assert durable_bound is not None
-    assert "timeout --signal=TERM" not in text
-    kill_grace_seconds = int(command_bound.group(1))
-    command_timeout_seconds = int(command_bound.group(2))
-    durable_timeout_seconds = int(durable_bound.group(1))
-    default_timeout_slot_counts = {
-        "coordination_source": 2,
-        "materialize_existing_checkout": 11,
-        "initial_managed_target": 4,
-        "current_runtime_and_parity": 14,
-        "runtime_diff": 1,
-        "deploy_and_converge": 22,
-        "final_parity": 11,
-    }
-    assert sum(default_timeout_slot_counts.values()) == 65
-    aggregate_stage_maximum_seconds = (
-        2 * release_authority.CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS
-        + sum(default_timeout_slot_counts.values())
-        * release_authority.DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
-        + 4 * release_authority.HTTP_PROBE_TIMEOUT_SECONDS
-        + release_authority.COMPOSE_CONFIG_PREFLIGHT_MAX_TOTAL_SECONDS
-    )
-    assert command_timeout_seconds >= aggregate_stage_maximum_seconds
-    assert command_timeout_seconds - aggregate_stage_maximum_seconds >= (
-        release_authority.DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
-    )
-    assert kill_grace_seconds > 2 * release_authority.PROCESS_TREE_TERMINATION_GRACE_SECONDS
-    assert durable_timeout_seconds >= (
-        command_timeout_seconds
-        + kill_grace_seconds
-        + release_authority.DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
-    )
-    assert "Do not add `--env-file`" in text
-    assert "normal flow" in text
-    assert "$ROOT/deploy/ai-platform/.env" in text
-    assert "tracked, staged, and ordinary untracked" in text
-    assert "Ignored-only artifacts" in text
-    assert "immutable target checkout" in text
-    assert "mode `0600`" in text
-    assert "must equal that exact canonical path after normalization" in contract_text
-    assert "commit/tree is the tracked-source manifest" in contract_text
-    assert "symlinks and non-regular entries" in contract_text
-    assert "there is no separate manifest" in contract_text
-    assert "world-writable" in contract_text
-    assert "before any Git command or fetch" in contract_text
-    assert "Only after that local trust gate" in contract_text
-    assert "--compose-file deploy/ai-platform/docker-compose.yml" in text
-    assert text.count("--compose-file deploy/ai-platform/docker-compose.opensandbox-internal-test.yml") == 2
-    assert "--compose-file deploy/ai-platform/docker-compose.sandbox.yml" not in text
-    assert "The production release uses the base Compose file plus" in text
-    assert "`docker-compose.opensandbox.yml`" in text
-    assert "The production deployment keeps Compose project `ai-platform-internal`" in text
-    assert "never invokes a project migration or volume aliases" in contract_text
-    assert "same project and volumes" in text
-    assert "`/data/ai-platform-prod/runtime-workspaces` platform bind" in text
-    assert "OpenSandbox sandboxes never receive that host path" in text
-    for command in ("migrate", "finalize", "rollback"):
-        assert f"-m tools.s75_opensandbox_transition {command}" in text
-    assert "HostConfig.Runtime=runsc" in text
-    assert "/etc/systemd/system/ai-platform-opensandbox-network-guard.service" in text
-    assert "root-owned, regular, and not group- or world-writable" in text
-    assert "/etc/ai-platform/opensandbox/server.toml" in text
-    assert "the lifecycle listener, API, PostgreSQL, Redis, MinIO" in text
-    assert "another host port" in text
-    assert "real application-owned Run" in text
-    assert "Never use `down -v`" in text
-    assert "--env-file <release-root>/deploy/ai-platform/.env" not in text
-    assert "--env-file deploy/ai-platform/.env" not in text
-    canonical_command = re.search(r"```bash\n(?P<command>.*?)```", text, re.DOTALL)
-    assert canonical_command is not None
-    command = canonical_command.group("command")
-    assert 'git -C "$SOURCE" checkout --detach "$TARGET"' in command
-    assert 'test "$(git -C "$SOURCE" rev-parse HEAD)" = "$TARGET"' in command
-    assert 'test -z "$(git -C "$SOURCE" status --porcelain --untracked-files=all)"' in command
-    assert command.index("fetch --no-tags") < command.index("checkout --detach")
-    assert command.index("checkout --detach") < command.index("rev-parse HEAD")
-    assert command.index("rev-parse HEAD") < command.index(canonical_invocation)
-    assert "git -C \"$SOURCE\" clean" not in command
-    assert "git -C \"$SOURCE\" reset" not in command
-    assert "git -C \"$SOURCE\" stash" not in command
-    assert "--allow-backend-layer-flatten-recovery" in text
-    assert "Do not retag the canonical current backend subject" in text
-    assert "do not run `docker export`, `docker import`, `docker tag`, or Compose by hand" in contract_text
-    assert "`authority_commit`" in text
-    assert "Secure provisioning and read-only Compose semantic preflight" in text
-    assert "config --quiet" in text
-    assert "missing-required-config" in text
-    assert "33 bounded Compose semantic parser attempts" in text
 
 
 def test_direct_release_authority_cli_no_bytecode_flag_leaves_no_sibling_bytecode(tmp_path):
@@ -1623,30 +1508,6 @@ def test_clean_commit_uses_git_porcelain_flag_supported_by_211(monkeypatch, tmp_
     assert ("status", "--porcelain", "--untracked-files=all") in commands
     assert ("ls-files", "--others", "--ignored", "--exclude-standard", "-z") in commands
     assert all("--porcelain=v1" not in args for args in commands)
-
-
-def test_preserve_dirty_source_writes_hashed_manifest_without_cleaning_repo(tmp_path):
-    repo = tmp_path / "repo"
-    commit = _init_repo(repo)
-    (repo / "tracked.txt").write_text("dirty\n", encoding="utf-8")
-    (repo / "notes.txt").write_text("preserve me\n", encoding="utf-8")
-    (repo / ".env").write_text("SECRET=do-not-read\n", encoding="utf-8")
-
-    output = preserve_dirty_source(repo, tmp_path / "preserved")
-    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
-    inventory = json.loads((output / "inventory.json").read_text(encoding="utf-8"))
-
-    assert manifest["schema_version"] == "ai-platform.release-authority-preservation.v1"
-    assert manifest["source_head"] == commit
-    assert manifest["source_was_dirty"] is True
-    assert manifest["artifacts"]["tracked.patch"]["sha256"]
-    assert manifest["artifacts"]["untracked.tar"]["sha256"]
-    env_record = next(item for item in inventory if item["path"] == ".env")
-    assert env_record["content_preserved"] is False
-    assert env_record["sha256"] is None
-    assert (repo / "tracked.txt").read_text(encoding="utf-8") == "dirty\n"
-    assert (repo / "notes.txt").is_file()
-    assert (repo / ".env").is_file()
 
 
 def test_parity_report_rejects_manual_frontend_and_commit_mismatch():
@@ -3078,7 +2939,7 @@ def test_deploy_rejects_spoofed_repo_owned_frontend(monkeypatch, tmp_path):
         raise AssertionError("spoofed repo-local ownership must be rejected")
 
 
-def test_release_authority_cli_exposes_preserve_deploy_and_verify_commands():
+def test_release_authority_cli_exposes_controlled_build_and_verify_commands():
     result = subprocess.run(
         [sys.executable, "tools/release_authority.py", "--help"],
         check=True,
@@ -3086,19 +2947,9 @@ def test_release_authority_cli_exposes_preserve_deploy_and_verify_commands():
         text=True,
     )
 
-    assert "preserve-dirty" in result.stdout
-    assert "deploy" in result.stdout
+    assert "deploy-main-commit" in result.stdout
+    assert "probe-apt-mirrors" in result.stdout
     assert "verify" in result.stdout
-
-    deploy_help = subprocess.run(
-        [sys.executable, "tools/release_authority.py", "deploy", "--help"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    assert "--expected-manual-frontend-image" in deploy_help
-    assert "--expected-manual-frontend-image-id" in deploy_help
-    assert "--compose-file" in deploy_help
 
     verify_help = subprocess.run(
         [sys.executable, "tools/release_authority.py", "verify", "--help"],
@@ -4582,8 +4433,12 @@ def test_dockerfiles_install_dependencies_before_source_and_provenance_layers():
     assert backend.index("COPY pyproject.toml uv.lock") < backend.index("uv sync --locked")
     assert backend.index("uv sync --locked") < backend.index("COPY app /app/app")
     assert backend.index("COPY app /app/app") < backend.index("LABEL ai-platform.source-commit")
-    assert frontend.index("pnpm install --frozen-lockfile") < frontend.index("COPY frontend/web/src")
-    assert frontend.index("COPY frontend/web/src") < frontend.index("corepack pnpm run ci:verify")
+    assert frontend.index("pnpm install --frozen-lockfile") < frontend.index(
+        "COPY frontend/web/src"
+    )
+    assert frontend.index("COPY frontend/web/src") < frontend.index(
+        "corepack pnpm run build"
+    )
 
 
 def test_auto_release_plan_uses_exact_git_pyproject_blobs_and_fails_closed(tmp_path):
@@ -5332,38 +5187,6 @@ def test_auto_rerun_reuses_verified_target_images_without_rebuild(monkeypatch, t
     assert not any("build" in command for command, _ in commands)
     assert sum(command[-2:] == ["config", "--quiet"] for command, _ in commands) == 2
     assert sum("up" in command for command, _ in commands) == 2
-
-
-def test_legacy_deploy_cli_dispatch_does_not_read_auto_strategy(monkeypatch, capsys, tmp_path):
-    observed = {}
-
-    def fake_deploy(repo_root, commit, **kwargs):
-        observed["repo_root"] = repo_root
-        observed["commit"] = commit
-        observed["kwargs"] = kwargs
-        return {"commit": commit}
-
-    monkeypatch.setattr("tools.release_authority.deploy_clean_commit", fake_deploy)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "release_authority.py",
-            "deploy",
-            "--repo-root",
-            str(tmp_path),
-            "--commit",
-            "a" * 40,
-            "--env-file",
-            str(tmp_path / ".env"),
-        ],
-    )
-
-    assert release_authority.main() == 0
-    assert observed["repo_root"] == tmp_path
-    assert observed["commit"] == "a" * 40
-    assert "strategy" not in observed["kwargs"]
-    assert json.loads(capsys.readouterr().out) == {"commit": "a" * 40}
 
 
 def test_deploy_main_cli_forwards_explicit_auto_strategy(monkeypatch, capsys, tmp_path):

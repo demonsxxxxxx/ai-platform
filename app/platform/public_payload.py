@@ -10,9 +10,7 @@ from app.memory_redaction import (
 )
 
 
-FORBIDDEN_PUBLIC_MARKERS = (
-    ".claude/",
-    ".claude\\",
+FORBIDDEN_PUBLIC_PATH_MARKERS = (
     "/tmp/",
     "/app/",
     "/home/",
@@ -20,15 +18,19 @@ FORBIDDEN_PUBLIC_MARKERS = (
     "agent-workspaces",
     "output/",
     "qa-review-queue-runtime",
+    "runtime211",
+    "tenants/",
+    "workspaces/",
+)
+FORBIDDEN_PUBLIC_SKILL_MARKERS = (
+    ".claude/",
+    ".claude\\",
     "run_qa_review.py",
     "run_translation.py",
-    "runtime211",
     "used_skills_source",
     "executor_hook",
     "executor_native",
     "inferred_used",
-    "tenants/",
-    "workspaces/",
 )
 FORBIDDEN_PUBLIC_KEYS = {
     "storage_key",
@@ -96,26 +98,29 @@ FORBIDDEN_PUBLIC_KEYS = {
     "delegate_executor_type",
     "legacy_runtime_fallback_used",
 }
-WINDOWS_DRIVE_PATH_PATTERN = re.compile(r"(?i)(?:^|[\s\"'({\[,=:])(?:[a-z]:[\\/])")
-_WINDOWS_PUBLIC_PATH_FRAGMENT_PATTERN = re.compile(
-    r'(?i)(?<![A-Za-z0-9_])[A-Za-z]:[\\/][^\r\n"<>]*'
-)
-_FORBIDDEN_PUBLIC_FRAGMENT_PATTERNS = tuple(
-    re.compile(rf"\S*{re.escape(marker)}\S*") for marker in FORBIDDEN_PUBLIC_MARKERS
-)
 FORBIDDEN_PUBLIC_KEY_ALIASES = {
     "".join(ch for ch in key if ch.isalnum()).lower()
     for key in FORBIDDEN_PUBLIC_KEYS
 }
 
 
-def _has_forbidden_public_marker(value: str) -> bool:
-    return bool(WINDOWS_DRIVE_PATH_PATTERN.search(value)) or any(
-        marker in value for marker in FORBIDDEN_PUBLIC_MARKERS
+def _has_forbidden_public_path(value: str, *, preserve_paths: bool = False) -> bool:
+    if any(marker in value for marker in FORBIDDEN_PUBLIC_SKILL_MARKERS):
+        return True
+    if preserve_paths:
+        return False
+    windows_path = re.search(r"(?i)(?:^|[\s\"'({\[,=:])(?:[a-z]:[\\/])", value)
+    return bool(windows_path) or any(
+        marker in value for marker in FORBIDDEN_PUBLIC_PATH_MARKERS
     )
 
 
-def sanitize_public_payload(value: Any, *, preserve_sensitive_keys: bool = False) -> Any:
+def sanitize_public_payload(
+    value: Any,
+    *,
+    preserve_sensitive_keys: bool = False,
+    preserve_paths: bool = False,
+) -> Any:
     if isinstance(value, dict):
         cleaned = {}
         for key, item in value.items():
@@ -127,42 +132,49 @@ def sanitize_public_payload(value: Any, *, preserve_sensitive_keys: bool = False
             sanitized = sanitize_public_payload(
                 item,
                 preserve_sensitive_keys=preserve_sensitive_keys,
+                preserve_paths=preserve_paths,
             )
             if sanitized is not None:
                 cleaned[key] = sanitized
         return cleaned
     if isinstance(value, list):
         cleaned_items = [
-            sanitize_public_payload(item, preserve_sensitive_keys=preserve_sensitive_keys)
+            sanitize_public_payload(
+                item,
+                preserve_sensitive_keys=preserve_sensitive_keys,
+                preserve_paths=preserve_paths,
+            )
             for item in value
         ]
         return [item for item in cleaned_items if item is not None]
     if isinstance(value, tuple):
         cleaned_items = (
-            sanitize_public_payload(item, preserve_sensitive_keys=preserve_sensitive_keys)
+            sanitize_public_payload(
+                item,
+                preserve_sensitive_keys=preserve_sensitive_keys,
+                preserve_paths=preserve_paths,
+            )
             for item in value
         )
         return tuple(item for item in cleaned_items if item is not None)
     if isinstance(value, str):
-        if _has_forbidden_public_marker(value):
+        if _has_forbidden_public_path(value, preserve_paths=preserve_paths):
             return None
         return redact_memory_text(value, mode=MEMORY_REDACTION_MODE_STRICT)
     return value
 
 
-def sanitize_public_text(value: object) -> str:
+def sanitize_public_text(value: object, *, preserve_paths: bool = False) -> str:
     text = "" if value is None else str(value)
-    sanitized = sanitize_public_payload(text)
+    sanitized = sanitize_public_payload(text, preserve_paths=preserve_paths)
     return sanitized if isinstance(sanitized, str) else ""
+
+
+def sanitize_public_answer_text(value: object) -> str:
+    return sanitize_public_text(value, preserve_paths=True)
 
 
 def sanitize_public_reasoning_text(value: object) -> str:
-    """Redact private fragments while preserving the model's public summary."""
+    """Redact private Skill fragments while preserving ordinary model paths."""
 
-    text = "" if value is None else str(value)
-    redacted = _WINDOWS_PUBLIC_PATH_FRAGMENT_PATTERN.sub("[redacted-path]", text)
-    for pattern in _FORBIDDEN_PUBLIC_FRAGMENT_PATTERNS:
-        redacted = pattern.sub("[redacted-private]", redacted)
-    redacted = redact_memory_text(redacted, mode=MEMORY_REDACTION_MODE_STRICT)
-    sanitized = sanitize_public_payload(redacted)
-    return sanitized if isinstance(sanitized, str) else ""
+    return sanitize_public_text(value, preserve_paths=True)

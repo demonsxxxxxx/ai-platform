@@ -12,7 +12,16 @@ from uuid import UUID
 from fastapi import HTTPException
 
 from app import repositories
-from app.agent_apps.api import safe_agent_avatar_seed
+from app.agent_apps.api import (
+    AGENT_PROFILE_AVATAR_REFS,
+    AgentProfileAdminProjection,
+    AgentProfileDraftDefinition,
+    AgentProfilePublicProjection,
+    AgentProfileSkillReference,
+    normalize_agent_skill_reference,
+    safe_agent_avatar_ref,
+    safe_agent_avatar_seed,
+)
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
@@ -20,18 +29,12 @@ from app.mcp import api as mcp_api
 from app.mcp.api import parse_mcp_tool_reference
 from app.models import (
     AgentConversationIdentity,
-    AgentProfileAdminProjection,
     AgentProfileDraftRequest,
     ChatSessionResponse,
     ChatStreamRequest,
     SelectedAgentProfileRequest,
-    SelectedSkillRequest,
 )
 
-AgentProfilePublicProjection = dict[str, Any]
-
-
-_AVATAR_REFS = {"builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"}
 _CATEGORIES = {"general", "support", "writing", "research", "operations"}
 _VISIBILITIES = {"tenant", "restricted"}
 _AGENT_PROFILE_DEPARTMENT_AUTHORITY_INVALID = "agent_profile_department_authority_invalid"
@@ -63,6 +66,7 @@ _PRESENCE_AWARE_PROFILE_FIELDS = (
     "avatar_seed",
     "category",
     "market_tag",
+    "market_tags",
     "visibility",
     "allowed_department_ids",
     "allowed_roles",
@@ -83,7 +87,6 @@ _PROFILE_TRANSPORT_SELECTOR_PATHS = frozenset(
 _PROFILE_TRANSPORT_AGENT_OPTION_KEYS = frozenset(
     {"enable_thinking", "model", "model_id"}
 )
-
 
 @dataclass(frozen=True)
 class AgentProfileAdmission:
@@ -109,9 +112,17 @@ class AgentProfileAdmission:
             object.__setattr__(self, "configured_mcp_tool_ids", self.mcp_tool_ids)
 
 
+_LEGACY_AVATAR_REFS = frozenset(
+    {"builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"}
+)
+
+
+def _storage_avatar_ref(value: str) -> str:
+    return value if value in _LEGACY_AVATAR_REFS else "builtin:agent"
+
+
 def _safe_avatar_ref(value: Any) -> str:
-    candidate = str(value or "").strip()
-    return candidate if candidate in _AVATAR_REFS else "builtin:agent"
+    return safe_agent_avatar_ref(value)
 
 
 def _safe_avatar_seed(value: Any, *, fallback: str) -> str:
@@ -123,13 +134,36 @@ def _safe_category(value: Any) -> str:
     return candidate if candidate in _CATEGORIES else "general"
 
 
+def _safe_market_tags(value: Any, *, legacy_value: Any = "") -> list[str]:
+    raw_values = value if isinstance(value, list) else ([value] if isinstance(value, str) else [])
+    if not raw_values and isinstance(legacy_value, str):
+        raw_values = [legacy_value]
+    return [
+        candidate
+        for candidate in _safe_string_list(raw_values)
+        if "\x00" not in candidate and len(candidate) <= 80
+    ][:16]
+
+
 def _safe_market_tag(value: Any) -> str:
-    candidate = str(value or "").strip()
-    return candidate if "\x00" not in candidate else ""
+    tags = _safe_market_tags(value)
+    return tags[0] if tags else ""
+
+
+def _market_tags(definition: AgentProfileDraftRequest) -> list[str]:
+    tags = _safe_market_tags(getattr(definition, "market_tags", None))
+    if tags:
+        return tags
+    return _safe_market_tags(getattr(definition, "market_tag", ""))
 
 
 def _market_tag(definition: AgentProfileDraftRequest) -> str:
-    return _safe_market_tag(getattr(definition, "market_tag", ""))
+    tags = _market_tags(definition)
+    return tags[0] if tags else ""
+
+
+def _safe_completed_tasks(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
 def _safe_visibility(value: Any) -> str:
@@ -165,7 +199,7 @@ def _effective_mcp_tool_ids(
     return configured, tuple(effective)
 
 
-def _skill_set(row: dict[str, Any]) -> list[SelectedSkillRequest]:
+def _skill_set(row: dict[str, Any]) -> list[AgentProfileSkillReference]:
     raw = row.get("skill_set")
     if not isinstance(raw, list) or not raw:
         raw = [
@@ -175,10 +209,10 @@ def _skill_set(row: dict[str, Any]) -> list[SelectedSkillRequest]:
             }
         ]
     try:
-        skills = [SelectedSkillRequest.model_validate(item) for item in raw]
+        skills = [normalize_agent_skill_reference(item) for item in raw]
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_invalid") from exc
-    if len({skill.skill_id for skill in skills}) != len(skills):
+    if len({skill["skill_id"] for skill in skills}) != len(skills):
         raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
     return skills
 
@@ -205,7 +239,7 @@ def profile_public_projection(
     row: dict[str, Any],
     *,
     is_favorite: bool | None = None,
-) -> dict[str, Any]:
+) -> AgentProfilePublicProjection:
     """Return the only Agent Profile card/detail fields available to ordinary users."""
 
     projection = {
@@ -222,12 +256,22 @@ def profile_public_projection(
         "permissions_and_data_access_notice": str(
             row.get("permissions_and_data_access_notice") or ""
         ),
-        "avatar_ref": _safe_avatar_ref(row.get("avatar_ref")),
+        "avatar_ref": _safe_avatar_ref(
+            row.get("avatar_style_ref") or row.get("avatar_ref")
+        ),
         "avatar_seed": _safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         "category": _safe_category(row.get("category")),
-        "market_tag": _safe_market_tag(row.get("market_tag")),
+        "market_tags": _safe_market_tags(
+            row.get("market_tags"),
+            legacy_value=row.get("market_tag"),
+        ),
+        "market_tag": _safe_market_tag(
+            row.get("market_tags") or row.get("market_tag")
+        ),
         "published_at": row.get("published_at"),
     }
+    if "completed_tasks" in row:
+        projection["completed_tasks"] = _safe_completed_tasks(row.get("completed_tasks"))
     if is_favorite is not None:
         projection["is_favorite"] = is_favorite
     return projection
@@ -256,6 +300,45 @@ def conversation_identity_projection(row: dict[str, Any]) -> AgentConversationId
     )
 
 
+async def _authorize_current_profile_skill(
+    conn,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    skill_id: str,
+    rollout_key: str,
+    principal_department_id: str | None,
+    principal_roles: list[str] | None,
+    is_admin: bool,
+    permissions: list[str] | None,
+) -> dict[str, Any]:
+    skill = await repositories.resolve_selected_skill(
+        conn,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        skill_id=skill_id,
+    )
+    expected_version = repositories.resolve_rollout_skill_decision(
+        skill,
+        tenant_id=tenant_id,
+        skill_id=skill_id,
+        rollout_key=rollout_key,
+    ).selected_version
+    return await repositories.authorize_selected_run_capabilities(
+        conn,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        skill_id=skill_id,
+        expected_version=expected_version,
+        rollout_key=rollout_key,
+        normalized_input={},
+        principal_department_id=principal_department_id,
+        principal_roles=principal_roles,
+        is_admin=is_admin,
+        permissions=permissions,
+    )
+
+
 def _revision_hash(
     definition: AgentProfileDraftRequest,
     *,
@@ -278,13 +361,19 @@ def _revision_hash(
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,
         "model_id": definition._legacy_model_id,
-        "skill_set": [skill.model_dump(mode="json") for skill in definition.skill_set],
+        "skill_set": [dict(skill) for skill in definition.skill_set],
         "mcp_tool_ids": definition.mcp_tool_ids,
         "avatar_ref": definition.avatar_ref,
         "avatar_asset_id": definition.avatar_asset_id,
         "avatar_seed": definition.avatar_seed,
         "category": definition.category,
-        **({"market_tag": _market_tag(definition)} if include_market_tag else {}),
+        **(
+            {
+                "market_tag": tags[0] if len(tags) == 1 else tags,
+            }
+            if include_market_tag and (tags := _market_tags(definition))
+            else {}
+        ),
         "visibility": definition.visibility,
         "allowed_department_ids": definition.allowed_department_ids,
         "allowed_roles": definition.allowed_roles,
@@ -315,7 +404,7 @@ def _legacy_skill_set_revision_hash(
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,
         "model_id": definition._legacy_model_id,
-        "skill_set": [skill.model_dump(mode="json") for skill in definition.skill_set],
+        "skill_set": [dict(skill) for skill in definition.skill_set],
         "mcp_tool_ids": definition.mcp_tool_ids,
         "avatar_ref": definition.avatar_ref,
         "avatar_asset_id": definition.avatar_asset_id,
@@ -354,7 +443,7 @@ def _omitted_file_type_skill_set_revision_hash(
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,
         "model_id": definition._legacy_model_id,
-        "skill_set": [skill.model_dump(mode="json") for skill in definition.skill_set],
+        "skill_set": [dict(skill) for skill in definition.skill_set],
         "mcp_tool_ids": definition.mcp_tool_ids,
         "avatar_ref": definition.avatar_ref,
         "avatar_asset_id": definition.avatar_asset_id,
@@ -397,8 +486,8 @@ def _legacy_revision_hash(
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,
         "model_id": definition._legacy_model_id,
-        "skill_id": primary.skill_id,
-        "skill_version": primary.expected_version,
+        "skill_id": primary["skill_id"],
+        "skill_version": primary.get("expected_version"),
         "mcp_tool_ids": definition.mcp_tool_ids,
         "avatar_ref": definition.avatar_ref,
         "avatar_asset_id": definition.avatar_asset_id,
@@ -433,7 +522,7 @@ def _pre_avatar_seed_skill_set_revision_hash(
         "permissions_and_data_access_notice": definition.permissions_and_data_access_notice,
         "instructions": definition.instructions,
         "model_id": definition._legacy_model_id,
-        "skill_set": [skill.model_dump(mode="json") for skill in definition.skill_set],
+        "skill_set": [dict(skill) for skill in definition.skill_set],
         "mcp_tool_ids": definition.mcp_tool_ids,
         "avatar_ref": definition.avatar_ref,
         "avatar_asset_id": definition.avatar_asset_id,
@@ -458,8 +547,8 @@ def _lifecycle_revision_hash(definition: AgentProfileDraftRequest) -> str:
         "description": definition.description,
         "instructions": definition.instructions,
         "model_id": definition._legacy_model_id,
-        "skill_id": primary.skill_id,
-        "skill_version": primary.expected_version,
+        "skill_id": primary["skill_id"],
+        "skill_version": primary.get("expected_version"),
         "mcp_tool_ids": definition.mcp_tool_ids,
         "avatar_ref": definition.avatar_ref,
         "category": definition.category,
@@ -483,8 +572,8 @@ def _mvp_revision_hash(definition: AgentProfileDraftRequest) -> str:
         "description": definition.description,
         "instructions": definition.instructions,
         "model_id": definition._legacy_model_id,
-        "skill_id": primary.skill_id,
-        "skill_version": primary.expected_version,
+        "skill_id": primary["skill_id"],
+        "skill_version": primary.get("expected_version"),
         "mcp_tool_ids": definition.mcp_tool_ids,
     }
     encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -522,9 +611,12 @@ def _strict_hash_skill_set_shape(row: dict[str, Any]) -> bool:
         return False
     if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
         raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
-    skills = [SelectedSkillRequest.model_validate(item) for item in raw]
-    canonical = [skill.model_dump(mode="json") for skill in skills]
-    if raw != canonical or len({skill.skill_id for skill in skills}) != len(skills):
+    try:
+        skills = [normalize_agent_skill_reference(item) for item in raw]
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="agent_profile_revision_invalid") from exc
+    canonical = [dict(skill) for skill in skills]
+    if raw != canonical or len({skill["skill_id"] for skill in skills}) != len(skills):
         raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
     return True
 
@@ -557,7 +649,7 @@ def _strict_hash_row_shape(row: dict[str, Any]) -> tuple[dict[str, list[str] | N
     ):
         raise HTTPException(status_code=409, detail="agent_profile_revision_invalid")
     for field, allowed in (
-        ("avatar_ref", _AVATAR_REFS),
+        ("avatar_ref", AGENT_PROFILE_AVATAR_REFS),
         ("category", _CATEGORIES),
         ("visibility", _VISIBILITIES),
     ):
@@ -708,7 +800,7 @@ def _revision_hash_matches(row: dict[str, Any], content_hash: str) -> bool:
 
 
 def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
-    definition = AgentProfileDraftRequest(
+    legacy = AgentProfileDraftRequest(
         name=str(row["name"]),
         description=str(row.get("description") or ""),
         welcome_message=str(row.get("welcome_message") or ""),
@@ -723,18 +815,38 @@ def _draft_from_row(row: dict[str, Any]) -> AgentProfileDraftRequest:
         instructions=str(row["instructions"]),
         skill_set=_skill_set(row),
         mcp_tool_ids=_mcp_tool_ids(row),
-        avatar_ref=_safe_avatar_ref(row.get("avatar_ref")),
+        avatar_ref=_safe_avatar_ref(row.get("avatar_style_ref") or row.get("avatar_ref")),
         avatar_asset_id=(str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
         avatar_seed=_safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
         category=_safe_category(row.get("category")),
+        market_tag=_safe_market_tag(row.get("market_tags")) or _safe_market_tag(row.get("market_tag")),
         visibility=_safe_visibility(row.get("visibility")),
         allowed_department_ids=_safe_string_list(row.get("allowed_department_ids")),
         allowed_roles=_safe_string_list(row.get("allowed_roles")),
         allowed_user_ids=_safe_string_list(row.get("allowed_user_ids")),
         expected_draft_revision=int(row["revision"]),
     )
+    definition = AgentProfileDraftDefinition.from_legacy(
+        legacy,
+        market_tags=_safe_market_tags(
+            row.get("market_tags"),
+            legacy_value=row.get("market_tag"),
+        ),
+    )
     definition._legacy_model_id = str(row["model_id"])
     return definition
+
+
+def _name_only_skill_set(
+    definition: AgentProfileDraftRequest,
+) -> AgentProfileDraftRequest:
+    skill_set = [{"skill_id": skill["skill_id"]} for skill in definition.skill_set]
+    return definition.model_copy(
+        update={
+            "selected_skill": skill_set[0],
+            "skill_set": skill_set,
+        }
+    )
 
 
 def _merge_omitted_profile_fields(
@@ -748,48 +860,61 @@ def _merge_omitted_profile_fields(
     updates = {
         field: getattr(prior, field, "")
         for field in _PRESENCE_AWARE_PROFILE_FIELDS
-        if field not in definition.model_fields_set
+        if field not in {"market_tag", "market_tags"}
+        and field not in definition.model_fields_set
     }
+    if (
+        "market_tag" not in definition.model_fields_set
+        and "market_tags" not in definition.model_fields_set
+    ):
+        updates.update(market_tag=prior.market_tag, market_tags=prior.market_tags)
     return definition.model_copy(update=updates) if updates else definition
 
 
 def _admin_projection(row: dict[str, Any]) -> AgentProfileAdminProjection:
-    return AgentProfileAdminProjection(
-        agent_id=str(row["agent_id"]),
-        revision=int(row["revision"]),
-        published_revision=(
+    skill_set = _skill_set(row)
+    market_tags = _safe_market_tags(
+        row.get("market_tags"),
+        legacy_value=row.get("market_tag"),
+    )
+    return AgentProfileAdminProjection({
+        "agent_id": str(row["agent_id"]),
+        "revision": int(row["revision"]),
+        "published_revision": (
             int(row["published_revision"])
             if row.get("published_revision") is not None
             else None
         ),
-        status=str(row["status"]),
-        name=str(row["name"]),
-        description=str(row.get("description") or ""),
-        welcome_message=str(row.get("welcome_message") or ""),
-        starter_prompts=_safe_string_list(row.get("starter_prompts")),
-        capability_summary=str(row.get("capability_summary") or ""),
-        recommended_tasks=_safe_string_list(row.get("recommended_tasks")),
-        supported_input_types=list(_ROLLING_LEGACY_SUPPORTED_INPUT_TYPES),
-        expected_outputs=_safe_string_list(row.get("expected_outputs")),
-        permissions_and_data_access_notice=str(
+        "status": str(row["status"]),
+        "name": str(row["name"]),
+        "description": str(row.get("description") or ""),
+        "welcome_message": str(row.get("welcome_message") or ""),
+        "starter_prompts": _safe_string_list(row.get("starter_prompts")),
+        "capability_summary": str(row.get("capability_summary") or ""),
+        "recommended_tasks": _safe_string_list(row.get("recommended_tasks")),
+        "supported_input_types": list(_ROLLING_LEGACY_SUPPORTED_INPUT_TYPES),
+        "expected_outputs": _safe_string_list(row.get("expected_outputs")),
+        "permissions_and_data_access_notice": str(
             row.get("permissions_and_data_access_notice") or ""
         ),
-        instructions=str(row["instructions"]),
-        skill_set=_skill_set(row),
-        selected_skill=_skill_set(row)[0],
-        mcp_tool_ids=_mcp_tool_ids(row),
-        avatar_ref=_safe_avatar_ref(row.get("avatar_ref")),
-        avatar_asset_id=(str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
-        avatar_seed=_safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
-        category=_safe_category(row.get("category")),
-        visibility=_safe_visibility(row.get("visibility")),
-        allowed_department_ids=_safe_string_list(row.get("allowed_department_ids")),
-        allowed_roles=_safe_string_list(row.get("allowed_roles")),
-        allowed_user_ids=_safe_string_list(row.get("allowed_user_ids")),
-        content_hash=str(row["content_hash"]),
-        created_at=row.get("created_at"),
-        published_at=row.get("published_at"),
-    )
+        "instructions": str(row["instructions"]),
+        "skill_set": skill_set,
+        "selected_skill": skill_set[0],
+        "mcp_tool_ids": _mcp_tool_ids(row),
+        "avatar_ref": _safe_avatar_ref(row.get("avatar_style_ref") or row.get("avatar_ref")),
+        "avatar_asset_id": (str(row.get("avatar_asset_id")) if row.get("avatar_asset_id") else None),
+        "avatar_seed": _safe_avatar_seed(row.get("avatar_seed"), fallback=str(row["agent_id"])),
+        "category": _safe_category(row.get("category")),
+        "market_tag": market_tags[0] if market_tags else "",
+        "market_tags": market_tags,
+        "visibility": _safe_visibility(row.get("visibility")),
+        "allowed_department_ids": _safe_string_list(row.get("allowed_department_ids")),
+        "allowed_roles": _safe_string_list(row.get("allowed_roles")),
+        "allowed_user_ids": _safe_string_list(row.get("allowed_user_ids")),
+        "content_hash": str(row["content_hash"]),
+        "created_at": row.get("created_at"),
+        "published_at": row.get("published_at"),
+    })
 
 
 class AgentProfileAuthority:
@@ -916,12 +1041,11 @@ class AgentProfileAuthority:
         try:
             skills = tuple(
                 [
-                    await repositories.authorize_selected_run_capabilities(
+                    await _authorize_current_profile_skill(
                         conn,
                         tenant_id=principal.tenant_id,
                         agent_id=agent_id,
-                        skill_id=selected_skill.skill_id,
-                        expected_version=selected_skill.expected_version,
+                        skill_id=selected_skill["skill_id"],
                         rollout_key=principal.user_id,
                         normalized_input={},
                         principal_department_id=principal.department_id,
@@ -983,13 +1107,14 @@ class AgentProfileAuthority:
             definition = _merge_omitted_profile_fields(definition, prior_row=prior_row)
         if not definition.avatar_seed:
             definition = definition.model_copy(update={"avatar_seed": resolved_agent_id})
+        definition = _name_only_skill_set(definition)
         await self._validate_profile_department_authorities(definition)
         await repositories.ensure_agent_profile_identity(
             conn,
             tenant_id=principal.tenant_id,
             agent_id=resolved_agent_id,
             name=definition.name,
-            default_skill_id=definition.skill_set[0].skill_id,
+            default_skill_id=definition.skill_set[0]["skill_id"],
         )
         row = await repositories.create_agent_profile_revision(
             conn,
@@ -1000,9 +1125,9 @@ class AgentProfileAuthority:
             description=definition.description,
             instructions=definition.instructions,
             legacy_model_id=_PROFILE_MODEL_COMPATIBILITY_SENTINEL,
-            skill_id=definition.skill_set[0].skill_id,
-            skill_version=definition.skill_set[0].expected_version,
-            skill_set=[skill.model_dump(mode="json") for skill in definition.skill_set],
+            skill_id=definition.skill_set[0]["skill_id"],
+            skill_version=definition.skill_set[0].get("expected_version") or "",
+            skill_set=[dict(skill) for skill in definition.skill_set],
             mcp_tool_ids=definition.mcp_tool_ids,
             welcome_message=definition.welcome_message,
             starter_prompts=definition.starter_prompts,
@@ -1012,11 +1137,13 @@ class AgentProfileAuthority:
             legacy_supported_file_types=list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
             expected_outputs=definition.expected_outputs,
             permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
-            avatar_ref=definition.avatar_ref,
+            avatar_ref=_storage_avatar_ref(definition.avatar_ref),
+            avatar_style_ref=definition.avatar_ref,
             avatar_asset_id=definition.avatar_asset_id,
             avatar_seed=definition.avatar_seed,
             category=definition.category,
             market_tag=_market_tag(definition),
+            market_tags=_market_tags(definition),
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
             allowed_roles=definition.allowed_roles,
@@ -1080,6 +1207,7 @@ class AgentProfileAuthority:
         definition = _draft_from_row(draft_row)
         await self._validate_profile_department_authorities(definition)
         await self._validate_definition(conn, principal=principal, agent_id=agent_id, definition=definition)
+        definition = _name_only_skill_set(definition)
         definition._legacy_model_id = _PROFILE_MODEL_COMPATIBILITY_SENTINEL
         row = await repositories.create_agent_profile_revision(
             conn,
@@ -1090,9 +1218,9 @@ class AgentProfileAuthority:
             description=definition.description,
             instructions=definition.instructions,
             legacy_model_id=_PROFILE_MODEL_COMPATIBILITY_SENTINEL,
-            skill_id=definition.skill_set[0].skill_id,
-            skill_version=definition.skill_set[0].expected_version,
-            skill_set=[skill.model_dump(mode="json") for skill in definition.skill_set],
+            skill_id=definition.skill_set[0]["skill_id"],
+            skill_version=definition.skill_set[0].get("expected_version") or "",
+            skill_set=[dict(skill) for skill in definition.skill_set],
             mcp_tool_ids=definition.mcp_tool_ids,
             welcome_message=definition.welcome_message,
             starter_prompts=definition.starter_prompts,
@@ -1102,11 +1230,13 @@ class AgentProfileAuthority:
             legacy_supported_file_types=list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
             expected_outputs=definition.expected_outputs,
             permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
-            avatar_ref=definition.avatar_ref,
+            avatar_ref=_storage_avatar_ref(definition.avatar_ref),
+            avatar_style_ref=definition.avatar_ref,
             avatar_asset_id=definition.avatar_asset_id,
             avatar_seed=definition.avatar_seed or agent_id,
             category=definition.category,
             market_tag=_market_tag(definition),
+            market_tags=_market_tags(definition),
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
             allowed_roles=definition.allowed_roles,
@@ -1202,9 +1332,9 @@ class AgentProfileAuthority:
             description=definition.description,
             instructions=definition.instructions,
             legacy_model_id=str(authoring_row["model_id"]),
-            skill_id=definition.skill_set[0].skill_id,
-            skill_version=definition.skill_set[0].expected_version,
-            skill_set=[skill.model_dump(mode="json") for skill in definition.skill_set],
+            skill_id=definition.skill_set[0]["skill_id"],
+            skill_version=definition.skill_set[0].get("expected_version") or "",
+            skill_set=[dict(skill) for skill in definition.skill_set],
             mcp_tool_ids=definition.mcp_tool_ids,
             welcome_message=definition.welcome_message,
             starter_prompts=definition.starter_prompts,
@@ -1219,13 +1349,15 @@ class AgentProfileAuthority:
             ),
             expected_outputs=definition.expected_outputs,
             permissions_and_data_access_notice=definition.permissions_and_data_access_notice,
-            avatar_ref=definition.avatar_ref,
+            avatar_ref=_storage_avatar_ref(definition.avatar_ref),
+            avatar_style_ref=definition.avatar_ref,
             avatar_asset_id=definition.avatar_asset_id,
             # Preserve the persisted value exactly: historical hashes intentionally
             # omit avatar_seed and use an empty value as their schema marker.
             avatar_seed=authoring_row["avatar_seed"],
             category=definition.category,
             market_tag=_market_tag(definition),
+            market_tags=_market_tags(definition),
             visibility=definition.visibility,
             allowed_department_ids=definition.allowed_department_ids,
             allowed_roles=definition.allowed_roles,
@@ -1603,7 +1735,13 @@ class AgentProfileAuthority:
                 "revision": revision,
                 "content_hash": content_hash,
                 "instructions": str(row["instructions"]),
-                "skill_set": [skill.model_dump(mode="json") for skill in _skill_set(row)],
+                "skill_set": [
+                    {
+                        "skill_id": str(skill["skill_id"]),
+                        "expected_version": str(skill.get("skill_version") or ""),
+                    }
+                    for skill in skills
+                ],
             },
             public_identity=conversation_identity_projection(row),
             configured_mcp_tool_ids=configured_mcp_tool_ids,

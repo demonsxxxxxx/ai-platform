@@ -27,12 +27,11 @@ OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION = "opensandbox-workspace-v1"
 
 _EXPLICIT_SKILL_BASH_IDENTITY = ("Bash",)
 _SERVER_BUILTIN_NON_BASH_TOOL_DECLARATIONS = {
-    "baoyu-translate": ("Write",),
     "ctd-32s73-stability-template-fill": ("Write",),
     "minimax-docx": ("Write",),
     "qa-file-reviewer": ("Write",),
 }
-_PLATFORM_CONTROLLED_SKILLS = frozenset({"baoyu-translate", "qa-file-reviewer"})
+_PLATFORM_CONTROLLED_SKILLS = frozenset({"qa-file-reviewer"})
 _NATIVE_UPLOADED_TOOL_IDENTITIES = (
     "Read",
     "Glob",

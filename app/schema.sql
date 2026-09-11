@@ -41,8 +41,30 @@ create table if not exists users (
   email text,
   external_id text,
   status text not null default 'active',
-  created_at timestamptz not null default now()
+  metadata_json jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  constraint chk_users_metadata_json_object check (jsonb_typeof(metadata_json) = 'object')
 );
+
+alter table users
+  add column if not exists metadata_json jsonb not null default '{}'::jsonb;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'chk_users_metadata_json_object'
+      and conrelid = 'users'::regclass
+  ) then
+    alter table users
+      add constraint chk_users_metadata_json_object
+      check (jsonb_typeof(metadata_json) = 'object') not valid;
+  end if;
+end
+$$;
+
+alter table users validate constraint chk_users_metadata_json_object;
 
 create table if not exists skills (
   id text primary key,
@@ -398,11 +420,18 @@ create table if not exists agent_profile_revisions (
   content_hash text not null,
   avatar_ref text not null
     check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research')),
+  avatar_style_ref text not null default ''
+    check (avatar_style_ref = '' or avatar_style_ref in (
+      'builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research',
+      'builtin:cartoon', 'builtin:emoji', 'builtin:pixel', 'builtin:portrait',
+      'builtin:abstract', 'builtin:planet', 'builtin:clay', 'builtin:icon'
+    )),
   avatar_asset_id text,
   avatar_seed text not null default '',
   category text not null
     check (category in ('general', 'support', 'writing', 'research', 'operations')),
   market_tag text not null default '',
+  market_tags jsonb not null default '[]'::jsonb,
   visibility text not null,
   allowed_department_ids jsonb not null,
   allowed_roles jsonb not null,
@@ -915,11 +944,20 @@ alter table agent_profile_revisions add column if not exists published_from_revi
 alter table agent_profile_revisions add column if not exists withdrawn_from_revision bigint;
 alter table agent_profile_revisions add column if not exists revision_status text;
 alter table agent_profile_revisions add column if not exists avatar_ref text;
+alter table agent_profile_revisions add column if not exists avatar_style_ref text not null default '';
 alter table agent_profile_revisions add column if not exists avatar_asset_id text;
 alter table agent_profile_revisions add column if not exists avatar_seed text not null default '';
 alter table agent_profile_revisions add column if not exists skill_set jsonb not null default '[]'::jsonb;
 alter table agent_profile_revisions add column if not exists category text;
 alter table agent_profile_revisions add column if not exists market_tag text not null default '';
+alter table agent_profile_revisions add column if not exists market_tags jsonb not null default '[]'::jsonb;
+update agent_profile_revisions
+set market_tags = jsonb_build_array(btrim(market_tag))
+where btrim(market_tag) <> ''
+  and (
+    jsonb_typeof(market_tags) <> 'array'
+    or jsonb_array_length(market_tags) = 0
+  );
 alter table agent_profile_revisions add column if not exists visibility text;
 alter table agent_profile_revisions add column if not exists allowed_department_ids jsonb;
 alter table agent_profile_revisions add column if not exists allowed_roles jsonb;
@@ -944,6 +982,7 @@ alter table agent_profiles drop constraint if exists chk_agent_profiles_lifecycl
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_status_check;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_revision_status_check;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_avatar_ref_check;
+alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_avatar_style_ref_check;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_category_check;
 alter table agent_profile_revisions drop constraint if exists chk_agent_profile_revisions_visibility;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_visibility_check;
@@ -979,6 +1018,14 @@ update agent_profile_revisions
 set avatar_ref = 'builtin:agent'
 where avatar_ref is null
    or avatar_ref not in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research');
+update agent_profile_revisions
+set avatar_style_ref = ''
+where avatar_style_ref is null
+   or avatar_style_ref not in (
+     '', 'builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research',
+     'builtin:cartoon', 'builtin:emoji', 'builtin:pixel', 'builtin:portrait',
+     'builtin:abstract', 'builtin:planet', 'builtin:clay', 'builtin:icon'
+   );
 update agent_profile_revisions
 set category = 'general'
 where category is null
@@ -1050,6 +1097,12 @@ alter table agent_profile_revisions add constraint agent_profile_revisions_revis
   check (revision_status in ('draft', 'published', 'withdrawn'));
 alter table agent_profile_revisions add constraint agent_profile_revisions_avatar_ref_check
   check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research'));
+alter table agent_profile_revisions add constraint agent_profile_revisions_avatar_style_ref_check
+  check (avatar_style_ref = '' or avatar_style_ref in (
+    'builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research',
+    'builtin:cartoon', 'builtin:emoji', 'builtin:pixel', 'builtin:portrait',
+    'builtin:abstract', 'builtin:planet', 'builtin:clay', 'builtin:icon'
+  ));
 alter table agent_profile_revisions add constraint agent_profile_revisions_category_check
   check (category in ('general', 'support', 'writing', 'research', 'operations'));
 alter table agent_profile_revisions add constraint chk_agent_profile_revisions_visibility
@@ -1584,6 +1637,72 @@ drop trigger if exists trg_agent_profile_legacy_insert_compatibility on agent_pr
 create trigger trg_agent_profile_legacy_insert_compatibility
 before insert on agent_profile_revisions
 for each row execute function agent_profile_legacy_insert_compatibility();
+
+-- New Agent Apps writers persist name-only Skill references. These triggers keep
+-- the legacy trigger's contract unchanged for rollback binaries: the prepare
+-- trigger supplies a private validation marker, and the finalize trigger removes
+-- it before the row is stored.
+create or replace function agent_profile_name_only_skill_set_prepare()
+returns trigger
+language plpgsql
+as $$
+declare
+  normalized_skill_set jsonb;
+begin
+  if new.revision_status is not null
+     and jsonb_typeof(new.skill_set) = 'array'
+     and jsonb_array_length(new.skill_set) > 0
+     and not exists (
+       select 1
+       from jsonb_array_elements(new.skill_set) item
+       where jsonb_typeof(item) <> 'object' or item ? 'expected_version'
+     ) then
+    select jsonb_agg(
+      item || jsonb_build_object('expected_version', 'profile-current')
+      order by ordinal
+    )
+    into normalized_skill_set
+    from jsonb_array_elements(new.skill_set) with ordinality as elements(item, ordinal);
+    new.skill_set := normalized_skill_set;
+    new.skill_version := 'profile-current';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists trg_agent_profile_aa_name_only_skill_set_prepare on agent_profile_revisions;
+create trigger trg_agent_profile_aa_name_only_skill_set_prepare
+before insert on agent_profile_revisions
+for each row execute function agent_profile_name_only_skill_set_prepare();
+
+create or replace function agent_profile_name_only_skill_set_finalize()
+returns trigger
+language plpgsql
+as $$
+declare
+  normalized_skill_set jsonb;
+begin
+  if new.revision_status is not null
+     and new.skill_version = 'profile-current'
+     and jsonb_typeof(new.skill_set) = 'array'
+     and jsonb_array_length(new.skill_set) > 0
+     and not exists (
+       select 1
+       from jsonb_array_elements(new.skill_set) item
+       where item->>'expected_version' is distinct from 'profile-current'
+     ) then
+    select jsonb_agg(item - 'expected_version' order by ordinal)
+    into normalized_skill_set
+    from jsonb_array_elements(new.skill_set) with ordinality as elements(item, ordinal);
+    new.skill_set := normalized_skill_set;
+    new.skill_version := '';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists trg_agent_profile_zz_name_only_skill_set_finalize on agent_profile_revisions;
+create trigger trg_agent_profile_zz_name_only_skill_set_finalize
+before insert on agent_profile_revisions
+for each row execute function agent_profile_name_only_skill_set_finalize();
 
 drop trigger if exists trg_agent_profile_legacy_insert_reconcile on agent_profile_revisions;
 create trigger trg_agent_profile_legacy_insert_reconcile
@@ -2795,6 +2914,30 @@ create index if not exists idx_sandbox_leases_attempt
 -- alter table sandbox_leases drop column if exists runtime_container_name;
 -- alter table sandbox_leases drop column if exists runtime_container_id;
 
+create table if not exists file_upload_sessions (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  workspace_id text not null references workspaces(id),
+  user_id text not null references users(id),
+  session_id text,
+  file_id text not null unique,
+  original_name text not null,
+  content_type text not null,
+  expected_size_bytes bigint not null check (expected_size_bytes > 0),
+  part_size_bytes bigint not null check (part_size_bytes > 0),
+  part_count integer not null check (part_count > 0),
+  storage_key text not null unique,
+  upload_id text not null unique,
+  state text not null default 'pending',
+  expires_at timestamptz not null,
+  completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  check (state in ('pending', 'completing', 'completed', 'aborted', 'expired'))
+);
+
+create index if not exists idx_file_upload_sessions_scope
+  on file_upload_sessions(tenant_id, workspace_id, user_id, state, expires_at);
+
 create table if not exists files (
   id text primary key,
   tenant_id text not null references tenants(id),
@@ -2847,9 +2990,34 @@ alter table artifacts add column if not exists expires_at timestamptz;
 alter table artifacts add column if not exists lifecycle_state text not null default 'active';
 alter table artifacts add column if not exists delete_requested_at timestamptz;
 alter table artifacts add column if not exists deleted_at timestamptz;
+alter table artifacts alter column run_id drop not null;
+alter table artifacts drop constraint if exists chk_artifacts_run_owner;
+update artifacts
+set manifest_json = manifest_json || jsonb_build_object(
+      'retention_artifact_cleanup', true,
+      'deletion_owner_run_id', run_id
+    ),
+    run_id = null
+where run_id is not null and lifecycle_state in ('delete_pending', 'deleted');
 alter table artifacts drop constraint if exists chk_artifacts_lifecycle_state;
 alter table artifacts add constraint chk_artifacts_lifecycle_state
   check (lifecycle_state in ('active', 'delete_pending', 'deleted'));
+alter table artifacts add constraint chk_artifacts_run_owner
+  check (
+    (run_id is not null and lifecycle_state = 'active')
+    or (
+      run_id is null
+      and lifecycle_state = 'delete_pending'
+      and manifest_json @> '{"provisional_reconciliation_cleanup":true}'::jsonb
+      and nullif(manifest_json ->> 'expected_run_id', '') is not null
+    )
+    or (
+      run_id is null
+      and lifecycle_state in ('delete_pending', 'deleted')
+      and manifest_json @> '{"retention_artifact_cleanup":true}'::jsonb
+      and nullif(manifest_json ->> 'deletion_owner_run_id', '') is not null
+    )
+  );
 
 create table if not exists object_deletion_outbox (
   id text primary key,
@@ -2950,7 +3118,6 @@ insert into skills(id, name, version, description, input_modes, output_modes, ex
 values
   ('qa-file-reviewer', 'QA Word Review', '0.1.0', 'Review Word documents and return commented Word artifacts.', '["docx"]'::jsonb, '["result_docx", "result_json"]'::jsonb, 'claude-agent-worker'),
   ('minimax-docx', 'Minimax DOCX', '0.1.0', 'Internal Word document composition dependency used by first-party document Skills.', '["docx"]'::jsonb, '["docx"]'::jsonb, 'claude-agent-worker'),
-  ('baoyu-translate', 'Baoyu Translate', '0.1.0', 'Translate Word documents and return translated Word artifacts.', '["docx"]'::jsonb, '["result_docx"]'::jsonb, 'claude-agent-worker'),
   ('ragflow-knowledge-search', 'RAGFlow Knowledge Search', '0.1.0', 'Query company knowledge base with scoped citations through the platform-managed MCP tool.', '["chat"]'::jsonb, '["answer", "citations"]'::jsonb, 'claude-agent-worker')
 on conflict (id) do update set
   name = excluded.name,
@@ -2965,14 +3132,12 @@ insert into skill_versions(id, skill_id, version, content_hash, description, sou
 values
   ('skv_seed_qa_file_reviewer_0_1_0', 'qa-file-reviewer', '0.1.0', '0.1.0', 'Schema-seeded baseline for QA Word Review.', '{"kind":"schema-seed"}'::jsonb, '["minimax-docx"]'::jsonb, 'active', 'schema'),
   ('skv_seed_minimax_docx_0_1_0', 'minimax-docx', '0.1.0', '0.1.0', 'Schema-seeded baseline for internal DOCX composition dependency.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema'),
-  ('skv_seed_baoyu_translate_0_1_0', 'baoyu-translate', '0.1.0', '0.1.0', 'Schema-seeded baseline for Baoyu Translate.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema'),
   ('skv_seed_ragflow_knowledge_search_0_1_0', 'ragflow-knowledge-search', '0.1.0', '0.1.0', 'Schema-seeded baseline for RAGFlow Knowledge Search.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema')
 on conflict (skill_id, version) do nothing;
 
 insert into tenant_workbench_skills(tenant_id, skill_id, status, visible_to_user)
 values
   ('default', 'qa-file-reviewer', 'active', true),
-  ('default', 'baoyu-translate', 'active', true),
   ('default', 'ragflow-knowledge-search', 'active', true)
 on conflict (tenant_id, skill_id) do nothing;
 
@@ -3012,11 +3177,9 @@ on conflict (tenant_id, tool_id) do nothing;
 
 insert into agents(id, tenant_id, name, agent_type, description, default_skill_id, status)
 values
-  ('translate', 'default', '文档翻译', 'file', 'Legacy alias for baoyu-translate. Hidden from LambChat mode selection.', 'baoyu-translate', 'inactive'),
   ('document-review', 'default', '文档审核', 'file', 'Legacy alias for qa-word-review. Hidden from LambChat mode selection.', 'qa-file-reviewer', 'inactive'),
   ('general-agent', 'default', '通用聊天 Agent', 'chat', 'General company chat backed by the governed Harness without a Skill identity.', null, 'active'),
   ('qa-word-review', 'default', '文档审核', 'file', 'Upload Word documents and generate reviewed Word artifacts.', 'qa-file-reviewer', 'active'),
-  ('baoyu-translate', 'default', '文档翻译', 'file', 'Upload Word documents and generate translated Word artifacts.', 'baoyu-translate', 'active'),
   ('sop-assistant', 'default', 'SOP 助手', 'chat', 'Answer SOP questions with RAGFlow citations.', 'ragflow-knowledge-search', 'active')
 on conflict (id) do update set
   tenant_id = excluded.tenant_id,
@@ -3025,3 +3188,46 @@ on conflict (id) do update set
   description = excluded.description,
   default_skill_id = excluded.default_skill_id,
   status = excluded.status;
+
+update agents
+set status = 'inactive'
+where id in ('translate', 'baoyu-translate')
+   or default_skill_id = 'baoyu-translate'
+   or exists (
+     select 1
+     from agent_profiles current_profile
+     join agent_profile_revisions current_revision
+       on current_revision.tenant_id = current_profile.tenant_id
+      and current_revision.agent_id = current_profile.agent_id
+      and current_revision.revision = current_profile.published_revision
+      and current_revision.content_hash = current_profile.published_hash
+      and current_revision.revision_status = 'published'
+     where current_profile.tenant_id = agents.tenant_id
+       and current_profile.agent_id = agents.id
+       and current_profile.lifecycle_status = 'published'
+       and current_revision.skill_set @> '[{"skill_id": "baoyu-translate"}]'::jsonb
+   );
+
+update tenant_workbench_skills
+set status = 'disabled', visible_to_user = false
+where skill_id = 'baoyu-translate';
+
+update tenant_capability_distributions
+set status = 'disabled', visible_to_user = false
+where capability_kind = 'skill' and capability_id = 'baoyu-translate';
+
+update skills
+set status = 'inactive'
+where id = 'baoyu-translate';
+
+update tenant_workbench_skills
+set status = 'disabled', visible_to_user = false
+where skill_id = 'general-chat';
+
+update tenant_capability_distributions
+set status = 'disabled', visible_to_user = false
+where capability_kind = 'skill' and capability_id = 'general-chat';
+
+update skills
+set status = 'inactive'
+where id = 'general-chat';

@@ -11,7 +11,41 @@ current Run/Attempt/sandbox authority, durable public-event publication,
 authorization leases and revocation, retry maintenance, missing-stream
 successor recovery, and terminal convergence.
 
-## Authority reuse and admission
+## Change Contract: Agent first-send stream ownership
+
+- **Owner:** Agent Workspace composer coordination and the existing frontend
+  session-route synchronizer.
+- **Bounded paths:** `ChatAppContent.tsx`, its source-ownership test, the existing
+  mounted routed-session/SSE harness, and this contract.
+- **Invariants:** one first-send POST owns one SSE connection; Agent identity,
+  Thinking, Skill, MCP, model, authorization, cursor, and wire contracts remain
+  unchanged; the shared session synchronizer remains the only URL writer after
+  binding.
+- **Acceptance:** a first send binds before submission and performs no route
+  mutation while the submission/SSE owner is active; the existing route
+  synchronizer still derives the Agent conversation URL from the bound session.
+- **Regression proof:** the source-ownership test rejects a first-send
+  coordinator that mutates the route; a mounted Agent-route test holds the SSE
+  open while canonicalizing the bound URL and proves no exact-history load or
+  abort displaces that owner before terminal state.
+- **Evidence ceiling:** local frontend tests cannot establish deployed browser
+  behavior; runtime acceptance requires the exact packaged image on s72.
+- **Rollback:** restore the removed navigation only if the shared route
+  synchronizer no longer canonicalizes bound Agent sessions, together with an
+  owning replacement test.
+- **Stop conditions:** any need to change SSE v4 bytes, cursor semantics,
+  authorization leases, backend publication, or generic-chat routing requires a
+  revised contract.
+
+## Change Contract: Chat submission and SSE admission convergence
+
+- **Owner:** Conversations application owns the read-only linked-Run status projection; the existing frontend SSE connection/reconciliation owner owns startup conflict recovery and terminal convergence.
+- **Bounded paths:** `app/conversations/application/submission_resolution.py`, `app/conversations/api.py`, the legacy Chat compatibility imports/delegation, `frontend/web/src/hooks/useAgent.ts`, `frontend/web/src/hooks/useAgent/sseConnection.ts`, their owning tests, and this contract.
+- **Invariants:** `chat_submissions.state` and `outcome.status` remain admission/ledger facts; `runs.status` remains the execution authority; linked Run lookup is scoped by tenant and user; missing or inaccessible Runs project as `run_status: null`; SSE wire bytes, Redis persistence, Worker authority timing, stream version, incarnation, cursor, and current-owner fences remain unchanged.
+- **Acceptance:** a submission response exposes an authorized normalized `run_status` for `queued`, `running`, `succeeded`, `failed`, and `cancelled` (including raw `canceled` normalization); explicit transient `sse_stream_not_admitted` and `sse_stream_not_confirmed` conflicts remain bounded and recoverable; terminal Runs hydrate without further reconnect; explicit non-retryable startup conflicts and invalid public frames fail closed without status reconciliation or reconnect and settle local loading/streaming state.
+- **Regression proof:** owning tests cover linked status projection, missing/cross-principal Run fencing, retryable 409 recovery, terminal convergence, bounded active retry exhaustion, non-retryable conflicts, invalid JSON/missing event ID/invalid V4 envelope, stale callbacks, and the absence of lingering reconnect work.
+- **Stop conditions:** do not treat admission `queued` as an active Run; do not retry arbitrary 409s or protocol-invalid frames; any change to Worker authority timing, SSE wire/schema, Redis/persistence semantics, or cross-incarnation successor recovery requires a revised contract and independent acceptance.
+
 
 The implementation begins from current durable authority rather than introducing
 a parallel execution state machine:
@@ -80,7 +114,9 @@ accepted cursor.
 Safety-critical interaction does not depend on Pub/Sub. A missed notification
 is repaired by Stream replay; missing terminal history is repaired only by the
 successor protocol below. No unbounded in-memory queue or PostgreSQL-to-browser
-polling fallback is permitted.
+polling fallback is permitted. Canonical v4 `message.delta` rows still commit
+in PostgreSQL before publication; this restriction forbids an alternate
+browser delivery plane, not the canonical durable event ledger.
 
 ## Authorization lease
 
@@ -134,7 +170,7 @@ The guarantee is intentionally bounded: after `effective`, the application and
 owned SSE gateway produce/accept no new payload under the old epoch. An ASGI send
 return means bytes reached the protocol server boundary, not that the browser
 received them. Bytes already handed to a protocol server, kernel, Nginx, load
-balancer, or client buffer may still arrive. V3 therefore makes no browser-byte
+balancer, or client buffer may still arrive. V4 therefore makes no browser-byte
 or commit-time-zero-frame promise.
 
 The owned gateway must support cancellation and connection close; Nginx must
@@ -163,7 +199,7 @@ After dispatch, a Redis append or shared live-feed failure:
 5. preserves cancellation, resource, egress, and safety control.
 
 Eligible non-interactive work may continue only while those control authorities
-remain reliable. V3 does not expose runtime approval over this stream. Any
+remain reliable. V4 does not expose runtime approval over this stream. Any
 future safety-critical interaction must first define its own durable authority
 and fail-closed behavior; Pub/Sub delivery alone can never authorize a side
 effect.
@@ -264,3 +300,14 @@ Pending Redis publication does not leave a terminal run permanently `running`.
   hash retry, exclusive terminal successor preparation, expired-claim takeover
   without incarnation reuse, candidate completeness, stale-token/source-fingerprint
   rejection, duplicate event, late delta, and final hydrate replacement.
+
+## Convergence proposals and evidence
+
+The [runtime convergence proposal](runtime-convergence.md) separates durable
+callback acknowledgement from publication latency and critical retry scheduling
+from bulk cleanup. It does not alter this contract until the relevant owners
+approve and implement the slice. Every publisher still uses the existing
+committed claim, frozen bytes and fenced receipt. Proposed backlog, wake-up,
+callback and shutdown tests are in the [system matrix](../acceptance/system-architecture-matrix.md).
+An accepted document or a local scheduler probe does not establish deployed
+latency, provider isolation or completed RunAttempt migration.

@@ -21,6 +21,9 @@ RunStopCallback = Callable[[str], Awaitable[bool | None] | bool | None]
 _ExecutionResult = TypeVar("_ExecutionResult")
 
 
+ArtifactStorageReservation = Callable[[str], str]
+
+
 @dataclass(frozen=True)
 class RunStopResult:
     """Observable result of one bounded execution-owner stop attempt."""
@@ -33,8 +36,16 @@ class RunStopResult:
 class RunExecutionOwner:
     """Own one run task and its adapter-registered external stop operation."""
 
-    def __init__(self, run_id: str) -> None:
+    def __init__(
+        self,
+        run_id: str,
+        *,
+        artifact_storage_scope: str = "",
+        reserve_artifact_storage: ArtifactStorageReservation | None = None,
+    ) -> None:
         self.run_id = run_id
+        self.artifact_storage_scope = artifact_storage_scope
+        self.reserve_artifact_storage = reserve_artifact_storage
         self._task: asyncio.Task[Any] | None = None
         self._stop_callbacks: list[RunStopCallback] = []
         self._stop_lock = asyncio.Lock()
@@ -160,6 +171,7 @@ class ArtifactManifest:
     storage_key: str
     size_bytes: int
     manifest: dict[str, Any] = field(default_factory=dict)
+    provisional_cleanup_id: str | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)

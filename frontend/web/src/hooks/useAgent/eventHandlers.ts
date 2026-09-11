@@ -21,7 +21,6 @@ import type {
 } from "./types";
 import {
   isPublicExecutionEvent,
-  isAssistantTextProjection,
   isSequencedPublicChatEvent,
   PUBLIC_EXECUTION_EVENT_TYPES,
 } from "./types";
@@ -58,6 +57,7 @@ export interface EventHandlerContext {
   acceptedStreamCursorRef?: React.MutableRefObject<AcceptedStreamCursor>;
   /** v4 terminal fence: stream.end is accepted only after its terminal event. */
   v4TerminalEventIdsRef?: React.MutableRefObject<Set<string>>;
+  v4TerminalReservationsRef?: React.MutableRefObject<Set<string>>;
   v4TerminalFenceRef?: React.MutableRefObject<V4TerminalFence | null>;
   v4MessageOwnerRef?: React.MutableRefObject<V4MessageOwner | null>;
   v4MessageCandidateRef?: React.MutableRefObject<V4MessageCandidate | null>;
@@ -66,6 +66,8 @@ export interface EventHandlerContext {
   streamVersionRef: React.MutableRefObject<number>;
   setSessionId: (id: string) => void;
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
+  /** Immediate stream projection snapshot; React state is only its render projection. */
+  messagesRef: React.MutableRefObject<Message[]>;
   setConnectionStatus: (status: string) => void;
   setIsInitializingSandbox: (loading: boolean) => void;
   setSandboxError: (error: string | null) => void;
@@ -73,7 +75,7 @@ export interface EventHandlerContext {
     runId: string,
     status: TerminalRunStatus,
     messageId: string,
-    onAccepted?: () => void,
+    onSettled?: (accepted: boolean) => boolean,
   ) => boolean;
   onRunStatusUnavailable?: (runId: string, messageId: string) => boolean;
   dismissQueueToast?: () => void;
@@ -126,6 +128,7 @@ export interface V4TerminalFence {
   generation?: number;
   streamVersion?: number;
   terminalEventId: string;
+  streamEndEventId?: string;
 }
 
 function matchesV4TerminalFence(
@@ -145,29 +148,48 @@ function matchesV4TerminalFence(
   );
 }
 
+function isCurrentV4TerminalSettle(
+  event: V4PublicEvent,
+  ctx: EventHandlerContext,
+  streamVersion: number,
+  sessionId: string | null,
+): boolean {
+  const acceptedCursor = ctx.acceptedStreamCursorRef?.current;
+  return Boolean(
+    sessionId &&
+      ctx.sessionIdRef.current === sessionId &&
+      ctx.currentRunIdRef.current === event.runId &&
+      ctx.streamVersionRef.current === streamVersion &&
+      !(
+        acceptedCursor?.sessionId === sessionId &&
+        acceptedCursor.runId === event.runId &&
+        acceptedCursor.streamIncarnation != null &&
+        acceptedCursor.streamIncarnation !== event.streamIncarnation
+      ),
+  );
+}
+
 export function acceptV4TerminalFence(
   event: V4PublicEvent,
   ctx: EventHandlerContext,
   terminalEventId: string,
+  streamVersion: number,
   onAccepted: () => void,
-): () => void {
+): boolean {
   const sessionId = ctx.sessionIdRef.current;
-  const runId = event.runId;
-  const streamVersion = ctx.streamVersionRef.current;
-  return () => {
-    if (!sessionId || ctx.sessionIdRef.current !== sessionId) return;
-    if (ctx.currentRunIdRef.current && ctx.currentRunIdRef.current !== runId) return;
-    ctx.v4TerminalFenceRef!.current = {
-      sessionId,
-      runId,
-      streamIncarnation: event.streamIncarnation,
-      generation: event.generation,
-      streamVersion,
-      terminalEventId,
-    };
-    ctx.v4TerminalEventIdsRef?.current.add(terminalEventId);
-    onAccepted();
+  if (!isCurrentV4TerminalSettle(event, ctx, streamVersion, sessionId)) {
+    return false;
+  }
+  ctx.v4TerminalFenceRef!.current = {
+    sessionId: sessionId!,
+    runId: event.runId,
+    streamIncarnation: event.streamIncarnation,
+    generation: event.generation,
+    streamVersion,
+    terminalEventId,
   };
+  onAccepted();
+  return true;
 }
 
 /** Durable, bounded public-event cursor for the active session/run stream. */
@@ -263,7 +285,7 @@ function isCurrentV4GapOwner(
   );
 }
 
-function claimV4TerminalSequence(
+function canAcceptV4TerminalSequence(
   event: V4PublicEvent,
   ctx: EventHandlerContext,
   binding: V4StreamEventBinding,
@@ -271,15 +293,26 @@ function claimV4TerminalSequence(
   if (event.sequence === null) return true;
   const accepted = ctx.acceptedRunEventSequenceRef?.current;
   if (!accepted) return false;
-  if (
-    accepted.sessionId === binding.sessionId &&
-    accepted.runId === binding.runId &&
-    accepted.sequence !== null &&
-    event.sequence <= accepted.sequence
-  ) {
-    return false;
-  }
-  if (ctx.acceptedRunEventSequenceRef) {
+  return (
+    ctx.sessionIdRef.current === binding.sessionId &&
+    ctx.currentRunIdRef.current === binding.runId &&
+    ctx.streamVersionRef.current === binding.streamVersion &&
+    !(
+      accepted.sessionId === binding.sessionId &&
+      accepted.runId === binding.runId &&
+      accepted.sequence !== null &&
+      event.sequence <= accepted.sequence
+    )
+  );
+}
+
+function commitV4TerminalSequence(
+  event: V4PublicEvent,
+  ctx: EventHandlerContext,
+  binding: V4StreamEventBinding,
+): boolean {
+  if (!canAcceptV4TerminalSequence(event, ctx, binding)) return false;
+  if (event.sequence !== null && ctx.acceptedRunEventSequenceRef) {
     ctx.acceptedRunEventSequenceRef.current = {
       sessionId: binding.sessionId,
       runId: binding.runId,
@@ -370,6 +403,21 @@ function dismissQueueToast(ctx: EventHandlerContext): void {
 }
 
 /**
+ * Publish a message projection without putting stream bookkeeping in a React
+ * updater. The ref is the receive-time snapshot used by reconnect recovery;
+ * React receives only the already-derived value.
+ */
+export function setMessageSnapshot(
+  ctx: Pick<EventHandlerContext, "messagesRef" | "setMessages">,
+  update: React.SetStateAction<Message[]>,
+): void {
+  const current = ctx.messagesRef.current;
+  const next = typeof update === "function" ? update(current) : update;
+  ctx.messagesRef.current = next;
+  ctx.setMessages(next);
+}
+
+/**
  * Additive v4 production seam. The existing handler remains the sole owner of
  * message, status, artifact, cursor, and terminal side effects.
  */
@@ -379,6 +427,7 @@ export function handlePublicRunStreamEventV4(
   ctx: EventHandlerContext,
   binding: StreamEventBinding | undefined,
   onCommitted?: (semanticApplied: boolean) => void,
+  onTerminalSettled?: (accepted: boolean) => void,
 ): boolean {
   if (!isStrictV4Binding(binding)) return false;
   const terminalEventId =
@@ -416,26 +465,70 @@ export function handlePublicRunStreamEventV4(
     return false;
   }
   if (terminalStatus && event.eventType !== "stream.end") {
-    if (terminalEventId && (ctx.v4TerminalEventIdsRef?.current.has(terminalEventId) || ctx.v4TerminalFenceRef?.current?.terminalEventId === terminalEventId)) return false;
-    if (!claimV4TerminalSequence(event, ctx, binding)) return false;
+    if (
+      !terminalEventId ||
+      !ctx.onRunTerminal ||
+      ctx.v4TerminalFenceRef?.current?.terminalEventId === terminalEventId ||
+      ctx.v4TerminalEventIdsRef?.current.has(terminalEventId) ||
+      ctx.v4TerminalReservationsRef?.current.has(terminalEventId) ||
+      !canAcceptV4TerminalSequence(event, ctx, binding)
+    ) {
+      if (
+        terminalEventId &&
+        (ctx.v4TerminalEventIdsRef?.current.has(terminalEventId) ||
+          ctx.v4TerminalFenceRef?.current?.terminalEventId === terminalEventId)
+      ) {
+        onCommitted?.(false);
+      }
+      return false;
+    }
+    ctx.v4TerminalReservationsRef?.current.add(terminalEventId);
     const owner = presentationOwner(binding, messageId);
     if (owner) ctx.publicStreamPresentation?.flush(owner);
-    if (!terminalEventId || !ctx.onRunTerminal) return false;
-    if (!ctx.v4TerminalFenceRef) {
-      const accepted = ctx.onRunTerminal(event.runId, terminalStatus, messageId);
-      if (accepted) ctx.v4TerminalEventIdsRef?.current.add(terminalEventId);
-      onCommitted?.(false);
-      return accepted;
-    }
+    const settle = (accepted: boolean): boolean => {
+      const sessionId = ctx.sessionIdRef.current;
+      ctx.v4TerminalReservationsRef?.current.delete(terminalEventId);
+      if (
+        !accepted ||
+        !isCurrentV4TerminalSettle(
+          event,
+          ctx,
+          binding.streamVersion,
+          sessionId,
+        ) ||
+        !commitV4TerminalSequence(event, ctx, binding)
+      ) {
+        onTerminalSettled?.(false);
+        return false;
+      }
+      if (!ctx.v4TerminalFenceRef) {
+        ctx.v4TerminalEventIdsRef?.current.add(terminalEventId);
+        onCommitted?.(false);
+        onTerminalSettled?.(true);
+        return true;
+      }
+      const fenceAccepted = acceptV4TerminalFence(
+        event,
+        ctx,
+        terminalEventId,
+        binding.streamVersion,
+        () => {
+          onCommitted?.(false);
+        },
+      );
+      onTerminalSettled?.(fenceAccepted);
+      return fenceAccepted;
+    };
     const accepted = ctx.onRunTerminal(
       event.runId,
       terminalStatus,
       messageId,
-      acceptV4TerminalFence(event, ctx, terminalEventId, () => {
-        onCommitted?.(false);
-      }),
+      settle,
     );
-    if (!accepted) return false;
+    if (!accepted) {
+      ctx.v4TerminalReservationsRef?.current.delete(terminalEventId);
+      return false;
+    }
     return true;
   }
   if (event.eventType === "stream.end") {
@@ -446,9 +539,14 @@ export function handlePublicRunStreamEventV4(
         ctx.v4TerminalEventIdsRef?.current.has(terminalEventId),
     );
     if (!fenced && !legacyFenced) return false;
+    if (fenced && ctx.v4TerminalFenceRef?.current?.streamEndEventId) {
+      onCommitted?.(false);
+      return false;
+    }
+    if (fenced && ctx.v4TerminalFenceRef) {
+      ctx.v4TerminalFenceRef.current!.streamEndEventId = event.eventId;
+    }
     onCommitted?.(false);
-    if (ctx.v4TerminalFenceRef) ctx.v4TerminalFenceRef.current = null;
-    ctx.v4TerminalEventIdsRef?.current.clear();
     return true;
   }
   const owner = ctx.v4MessageOwnerRef?.current;
@@ -503,7 +601,7 @@ export function handlePublicRunStreamEventV4(
     projected.streamEvent,
     projected.messageId,
     event.transportCursor,
-    event.emittedAt,
+    undefined,
     ctx,
     binding,
     commit,
@@ -546,17 +644,13 @@ export function handlePublicRunStreamEventV4(
   return accepted;
 }
 
-/** Call-ready v4 composition seam: validate, route gaps, then delegate once. */
-export function handlePublicRunStreamFrameV4({
-  frame,
-  adapterBinding,
-  messageId,
-  ctx,
-  binding,
-  currentGeneration,
-  onGap,
-  onCommitted,
-}: {
+export type V4FrameHandlingResult =
+  | { kind: "invalid" }
+  | { kind: "duplicate" }
+  | { kind: "applied" }
+  | { kind: "deferred"; reason: "terminal_hydration" };
+
+export interface PublicRunStreamFrameV4Args {
   frame: V4SseFrame;
   adapterBinding: V4AdapterBinding;
   messageId: string;
@@ -565,37 +659,64 @@ export function handlePublicRunStreamFrameV4({
   currentGeneration: number;
   onGap?: (event: V4PublicEvent) => void;
   onCommitted?: (semanticApplied: boolean) => void;
-}): boolean {
+  onTerminalSettled?: (accepted: boolean) => void;
+}
+
+/** Preserve frame outcomes at the connection boundary. */
+export function handlePublicRunStreamFrameV4Result(
+  args: PublicRunStreamFrameV4Args,
+): V4FrameHandlingResult {
   if (
-    !isStrictV4Binding(binding) ||
-    !Number.isSafeInteger(currentGeneration) ||
-    currentGeneration < 0 ||
-    currentGeneration !== binding.generation
+    !isStrictV4Binding(args.binding) ||
+    !Number.isSafeInteger(args.currentGeneration) ||
+    args.currentGeneration < 0 ||
+    args.currentGeneration !== args.binding.generation ||
+    args.adapterBinding.runId !== args.binding.runId ||
+    args.adapterBinding.generation !== args.binding.generation ||
+    args.adapterBinding.streamIncarnation !== args.binding.streamIncarnation ||
+    args.frame.generation !== args.binding.generation
   ) {
-    return false;
+    return { kind: "invalid" };
   }
-  if (
-    adapterBinding.runId !== binding.runId ||
-    adapterBinding.generation !== binding.generation ||
-    adapterBinding.streamIncarnation !== binding.streamIncarnation ||
-    frame.generation !== binding.generation
-  ) {
-    return false;
-  }
-  const event = adaptPublicRunStreamEventV4(frame, adapterBinding);
-  if (!event) return false;
+  const event = adaptPublicRunStreamEventV4(args.frame, args.adapterBinding);
+  if (!event) return { kind: "invalid" };
   if (event.eventType === "stream.gap") {
-    if (!isCurrentV4GapOwner(ctx, binding, event)) return false;
-    onGap?.(event);
-    return false;
+    if (!isCurrentV4GapOwner(args.ctx, args.binding, event)) {
+      return { kind: "invalid" };
+    }
+    args.onGap?.(event);
+    return { kind: "invalid" };
   }
-  return handlePublicRunStreamEventV4(
+  let committed: boolean | undefined;
+  let terminalSettled: boolean | undefined;
+  const accepted = handlePublicRunStreamEventV4(
     event,
-    messageId,
-    ctx,
-    binding,
-    onCommitted,
+    args.messageId,
+    args.ctx,
+    args.binding,
+    (semanticApplied) => {
+      committed = semanticApplied;
+      args.onCommitted?.(semanticApplied);
+    },
+    (settled) => {
+      terminalSettled = settled;
+      args.onTerminalSettled?.(settled);
+    },
   );
+  if (!accepted) {
+    if (committed === false) return { kind: "duplicate" };
+    if (committed === true) return { kind: "applied" };
+    return { kind: "invalid" };
+  }
+  if (
+    (event.eventType === "run.succeeded" ||
+      event.eventType === "run.failed" ||
+      event.eventType === "run.cancelled") &&
+    terminalSettled === undefined
+  ) {
+    return { kind: "deferred", reason: "terminal_hydration" };
+  }
+  return { kind: "applied" };
 }
 
 /**
@@ -610,12 +731,6 @@ export function handleStreamEvent(
   binding?: StreamEventBinding,
   onCommitted?: (semanticApplied: boolean) => void,
 ): boolean {
-  console.log("[handleStreamEvent] Received event:", {
-    eventType: event.event,
-    messageId,
-    eventId,
-  });
-
   // A bound SSE connection is the authority for both run ownership and
   // generation. Generic callers cannot bind runless terminal frames.
   if (
@@ -700,15 +815,6 @@ export function handleStreamEvent(
     return false;
   }
 
-  if (eventTimestamp && ctx.lastHistoryTimestampRef.current) {
-    const eventTime = parseDate(eventTimestamp);
-    const historyTime = ctx.lastHistoryTimestampRef.current;
-    if (eventTime <= historyTime) {
-      onCommitted?.(false);
-      return false;
-    }
-  }
-
   const sequencedPublicEvent = isSequencedPublicChatEvent(eventType, data);
   const progressSequence = sequencedPublicEvent ? runEventSequence(data) : null;
   const progressSessionId = binding?.sessionId ?? ctx.sessionIdRef.current;
@@ -734,6 +840,18 @@ export function handleStreamEvent(
       onCommitted?.(false);
     }
     return false;
+  }
+
+  // Wall-clock history filtering is only a legacy fallback. A sequenced
+  // public frame is ordered by its durable sequence, even when its timestamp
+  // overlaps history or the client clock moved backward.
+  if (!sequencedPublicEvent && eventTimestamp && ctx.lastHistoryTimestampRef.current) {
+    const eventTime = parseDate(eventTimestamp);
+    const historyTime = ctx.lastHistoryTimestampRef.current;
+    if (eventTime <= historyTime) {
+      onCommitted?.(false);
+      return false;
+    }
   }
 
   let committed = false;
@@ -826,7 +944,7 @@ export function handleStreamEvent(
       dismissQueueToast(ctx);
       const owner = presentationOwner(binding, messageId);
       if (owner) ctx.publicStreamPresentation?.flush(owner);
-      ctx.setMessages((prev) =>
+      setMessageSnapshot(ctx, (prev) =>
         prev.map((m) =>
           m.id === messageId
             ? {
@@ -918,15 +1036,15 @@ export function handleStreamEvent(
   const commitMessageEvent = (
     committedData: EventData = data,
     onApplied: () => void = commitAcceptedEvent,
-  ) => ctx.setMessages((prev) => {
-    if (binding) {
-      if (
-        ctx.streamVersionRef.current !== binding.streamVersion ||
+    publish = true,
+  ): boolean => {
+    if (
+      binding &&
+      (ctx.streamVersionRef.current !== binding.streamVersion ||
         ctx.sessionIdRef.current !== binding.sessionId ||
-        ctx.currentRunIdRef.current !== binding.runId
-      ) {
-        return prev;
-      }
+        ctx.currentRunIdRef.current !== binding.runId)
+    ) {
+      return false;
     }
     const acceptedCursor = ctx.acceptedStreamCursorRef?.current;
     if (
@@ -941,7 +1059,7 @@ export function handleStreamEvent(
       );
       if (cursorComparison !== null && cursorComparison <= 0) {
         commitTransportOnly();
-        return prev;
+        return false;
       }
     }
     const currentAcceptedProgress = ctx.acceptedRunEventSequenceRef?.current;
@@ -954,10 +1072,10 @@ export function handleStreamEvent(
       progressSequence <= currentAcceptedProgress.sequence
     ) {
       commitTransportOnly();
-      return prev;
+      return false;
     }
     let didApply = false;
-    const next = prev.map((m) => {
+    const next = ctx.messagesRef.current.map((m) => {
       if (m.id !== messageId) return m;
 
       const result = processMessageEvent(
@@ -996,19 +1114,14 @@ export function handleStreamEvent(
 
       return updated;
     });
-    if (didApply) onApplied();
-    return next;
-  });
+    if (!didApply) return false;
+    ctx.messagesRef.current = next;
+    onApplied();
+    if (publish) ctx.setMessages(next);
+    return true;
+  };
 
   const owner = presentationOwner(binding, messageId);
-  const assistantDelta =
-    eventType === "message:chunk" &&
-    isAssistantTextProjection(data) &&
-    data.projection_kind === "assistant_delta";
-  const assistantFinal =
-    eventType === "message:chunk" &&
-    isAssistantTextProjection(data) &&
-    data.projection_kind === "assistant_final";
   const executionEventType =
     eventType === "run_event" ? String(data.event_type || "") : eventType;
   const executionPhase =
@@ -1021,56 +1134,29 @@ export function handleStreamEvent(
           ? "terminal"
           : null;
 
-  if (owner && assistantFinal) {
-    ctx.publicStreamPresentation?.flush(owner);
-  }
-  if (owner && eventType === "error") {
-    ctx.publicStreamPresentation?.flush(owner);
-  }
-  if (owner && assistantDelta && data.content) {
-    const presentation = ctx.publicStreamPresentation;
-    if (presentation) {
-      const ownsPresentation = presentation.owns(owner);
-      if (presentation.enqueueAssistantDelta(
-        owner,
-        data.content,
-        (content, onApplied) =>
-          commitMessageEvent({ ...data, content }, onApplied),
-        {
-          onCommitted: commitAcceptedEvent,
-          semanticEventId,
-          sequence: progressSequence,
-        },
-      )) {
-        return true;
-      }
-      if (ownsPresentation) return false;
-    }
-  }
   if (
-    owner &&
     executionPhase &&
     isPublicExecutionEvent(executionEventType, data) &&
     typeof data.sequence === "number"
   ) {
-    const presentation = ctx.publicStreamPresentation;
-    if (presentation) {
-      const ownsPresentation = presentation.owns(owner);
-      if (presentation.enqueueExecutionUpdate(owner, {
+    if (!commitMessageEvent(data, commitAcceptedEvent, false)) return true;
+    if (
+      owner &&
+      ctx.publicStreamPresentation?.enqueueExecutionUpdate(owner, {
         stepId: data.step_id,
         sequence: data.sequence,
         phase: executionPhase,
-        commit: () => commitMessageEvent(),
-      })) {
-        return true;
-      }
-      if (ownsPresentation) return false;
+        commit: () => ctx.setMessages(ctx.messagesRef.current),
+      })
+    ) {
+      return true;
     }
+    ctx.setMessages(ctx.messagesRef.current);
+    return true;
   }
 
+  if (owner) ctx.publicStreamPresentation?.flush(owner);
   commitMessageEvent();
-
-  // Pop subagent stack after agent:result
   if (eventType === "agent:result") {
     const agentId = data.agent_id || "unknown";
     const stackIndex = subagentStack.findIndex(
@@ -1130,7 +1216,7 @@ function handleUserMessage(
   const userAttachments = convertAttachments(data.attachments) || [];
 
   if (userContent) {
-    ctx.setMessages((prev) => {
+    setMessageSnapshot(ctx, (prev) => {
       if (prev.length === 0) {
         const newUserMessage: Message = {
           id: resolvedMessageId,
@@ -1200,7 +1286,7 @@ function handleError(
     : i18n.t("chat.unknownError");
   const isCancelled = forceCancelled || data.type === "CancelledError";
 
-  ctx.setMessages((prev) =>
+  setMessageSnapshot(ctx, (prev) =>
     prev.map((m) => {
       if (m.id !== messageId) return m;
       if (isCancelled) {

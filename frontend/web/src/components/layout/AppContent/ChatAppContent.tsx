@@ -467,8 +467,13 @@ export function ChatAppContent({
     enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
   });
 
-  const { isPageDragging, pageDragAttachments, setPageDragAttachments } =
-    useDragAndDrop();
+  const {
+    isPageDragging,
+    pageDragAttachments,
+    setPageDragAttachments,
+    clearPageDragAttachments,
+    uploadControls,
+  } = useDragAndDrop();
 
   const {
     approvals,
@@ -595,6 +600,7 @@ export function ChatAppContent({
       }
       setAgentWorkspaceError(null);
       clearMessages();
+      clearPageDragAttachments();
       // A task Skill is scoped to the composer that selected it. A route or
       // workspace identity change clears the session, so it must also clear the
       // local selector before a later submit can create an unbound conversation.
@@ -1182,10 +1188,6 @@ export function ChatAppContent({
           submitMessage: async (createdSessionId, firstSendOptions) => {
             setAgentWorkspaceError(null);
             const submission = sendMessage(content, firstSendOptions, attachments, null);
-            navigate(
-              buildAgentMarketWorkspacePath(startProfile, createdSessionId),
-              { replace: true },
-            );
             onAgentWorkspaceSessionCreated?.(createdSessionId);
             return submission;
           },
@@ -1403,6 +1405,7 @@ export function ChatAppContent({
             <ChatView
             messages={visibleMessages}
             sessionId={visibleSessionId}
+            conversationIdentityKey={conversationIdentityKey}
             currentRunId={visibleCurrentRunId}
             isLoading={isLoading}
             isLoadingHistory={isLoadingHistory}
@@ -1481,6 +1484,7 @@ export function ChatAppContent({
             }
             attachments={pageDragAttachments}
             onAttachmentsChange={setPageDragAttachments}
+            uploadControls={uploadControls}
             externalNavigationToken={externalNavigationToken}
             externalNavigationTargetFile={externalNavigationTargetFile}
             externalNavigationTargetRunId={externalNavigationTargetRunId}

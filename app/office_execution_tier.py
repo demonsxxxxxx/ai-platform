@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 
-DOCUMENT_WORKER_SKILLS = {"baoyu-translate", "qa-file-reviewer"}
+DOCUMENT_WORKER_SKILLS = {"qa-file-reviewer"}
 HEAVY_SANDBOX_SIGNALS = {
     "browser",
     "playwright",
@@ -48,7 +48,7 @@ def route_office_execution_tier(
             "uses_sandbox_by_default": True,
             "reason": "explicit_sandbox_or_risky_tooling",
         }
-    if skill_id in DOCUMENT_WORKER_SKILLS or agent_id in {"qa-word-review", "document-review", "baoyu-translate"}:
+    if skill_id in DOCUMENT_WORKER_SKILLS or agent_id in {"qa-word-review", "document-review"}:
         return {
             "execution_tier": "document_worker",
             "uses_sandbox_by_default": False,

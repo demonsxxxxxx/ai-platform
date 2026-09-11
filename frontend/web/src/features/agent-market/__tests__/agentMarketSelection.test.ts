@@ -7,6 +7,7 @@ import {
   buildAgentMarketDetailPath,
   buildAgentMarketWorkspacePath,
   filterPublishedMarketProfiles,
+  filterPublishedMarketProfilesByTags,
   selectPublishedMarketProfile,
 } from "../agentMarketSelection";
 
@@ -24,6 +25,8 @@ const profile: AgentProfilePublicProjection = {
   permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
   avatar_ref: "builtin:assistant" as const,
   category: "support" as const,
+  market_tag: "客户支持",
+  market_tags: ["客户支持", "写作"],
   published_at: "2026-08-04T01:00:00Z",
 };
 
@@ -51,6 +54,34 @@ test("market workspace deep links preserve the immutable published revision", ()
   );
 });
 
+test("market tag filters select the union of all clicked tags", () => {
+  const profiles = [
+    profile,
+    {
+      ...profile,
+      agent_id: "agt_finance",
+      expected_revision: 2,
+      name: "财务助手",
+      market_tag: "财务",
+      market_tags: ["财务"],
+    },
+    {
+      ...profile,
+      agent_id: "agt_hr",
+      expected_revision: 3,
+      name: "人事助手",
+      market_tag: "人力资源",
+      market_tags: ["人力资源"],
+    },
+  ];
+
+  assert.deepEqual(
+    filterPublishedMarketProfilesByTags(profiles, ["客户支持", "财务"]),
+    [profile, profiles[1]],
+  );
+  assert.deepEqual(filterPublishedMarketProfilesByTags(profiles, []), profiles);
+});
+
 test("market search covers the safe public identity and use fields", () => {
   const profiles = [
     profile,
@@ -62,6 +93,8 @@ test("market search covers the safe public identity and use fields", () => {
       description: "核对报销材料",
       capability_summary: "核对企业财务单据。",
       recommended_tasks: ["报销材料核验"],
+      market_tag: "",
+      market_tags: [],
       avatar_ref: "builtin:document" as const,
       category: "operations" as const,
     },
@@ -71,5 +104,7 @@ test("market search covers the safe public identity and use fields", () => {
   assert.deepEqual(filterPublishedMarketProfiles(profiles, "报销"), [profiles[1]]);
   assert.deepEqual(filterPublishedMarketProfiles(profiles, "授权范围"), [profile]);
   assert.deepEqual(filterPublishedMarketProfiles(profiles, "支持请求分流"), [profile]);
+  assert.deepEqual(filterPublishedMarketProfiles(profiles, "客户支持"), [profile]);
+  assert.deepEqual(filterPublishedMarketProfiles(profiles, "写作"), [profile]);
   assert.deepEqual(filterPublishedMarketProfiles(profiles, ""), profiles);
 });

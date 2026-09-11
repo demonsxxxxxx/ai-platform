@@ -13,14 +13,21 @@ customer-selectable tenant and does not introduce tenant management.
 
 Department, role, and permission facts come from the existing company login and
 user-info authority. Ordinary clients cannot choose them. A trusted gateway may
-inject principal headers only when it presents the configured shared secret.
-Production configuration fails during startup when the secret is absent or the
-frontend POC header path is enabled. Company principals are revalidated against
-the current authority before worker dispatch. Browser and bearer principal
-snapshots preserve the policy version, authority source, and check timestamp;
-policy mismatch or authority facts older than the configured short freshness
-window (15 minutes by default) fail closed and require login refresh. This is
-intentionally shorter than the browser context's maximum lifetime.
+inject principal headers only with the configured shared secret. Production
+startup rejects an absent secret or the frontend POC header path.
+
+[ADR 0007](../adr/0007-fixed-browser-authentication-day.md) owns the browser
+authentication lifetime: signed token, server authentication context and company
+authority freshness use one absolute, non-sliding 86,400-second day. Policy/source
+metadata is retained; expiry and policy mismatch fail closed. The former
+15-minute browser freshness description is superseded. Company permissions in a
+valid authenticated snapshot may remain effective for that accepted window;
+Worker reauthorization does not imply instant upstream-company revocation.
+
+The per-connection SSE authorization lease is a separate mechanism described in
+[Streaming execution control](redis-streams-sse-execution-control.md). Its short
+frame-admission deadline is not the browser authentication lifetime and cannot
+by itself invalidate an unrefreshed upstream company snapshot.
 
 Successful login and run admission retain only the non-sensitive facts needed
 to explain an authorization decision: `department_id`, authorization policy
@@ -38,10 +45,24 @@ ACL and must never create a second department authority.
 | Queue entries, leases and bounded SSE transport | Redis | Ephemeral coordination only; it is not the terminal record. |
 | Uploaded files, generated artifacts and Skill packages | MinIO/S3 | Object bytes live here; PostgreSQL stores keys, digests, sizes, schemas and bounded summaries. |
 | Executor workspace | Sandbox filesystem | Attempt-scoped temporary copy; never a durable authority. |
-| `assistant_delta` | Redis/SSE projection | It is deliberately not re-persisted into PostgreSQL; durable messages and terminal events remain the source of truth. |
+| Canonical v4 `message.delta` | PostgreSQL public Run-event ledger | Persists as one safe committed event with semantic identity/sequence, then publishes through the bounded Redis transport. |
+| Legacy `assistant_delta` projection | Legacy ingress suppressed after V4 answer projection is accepted | It must not become a second durable answer producer. The ban on a PostgreSQL browser fallback does not forbid canonical v4 event persistence. |
 
-Full raw prompts, Claude transcripts, file bytes, and sandbox directories are
-not valid PostgreSQL payloads.
+Bounded user/assistant `messages` and authorized executor-private conversation
+materialization are legitimate business data under the owning message/context
+contracts. Arbitrary raw SDK transcripts, prompt/log dumps, file bytes and
+sandbox directories are not valid Run-event or public-manifest payloads. Keep
+message storage distinct from public projection and private operational logs.
+
+### Change Contract: persisted user profile metadata
+
+- **Owner:** Identity owns authenticated user profile metadata; Company Navigation owns only its `company_navigation_favorite_ids` value.
+- **Bounded paths:** this document, `app/schema.sql`, `app/schema_migrations.py`, `app/identity/api.py`, `app/identity/infrastructure/postgres.py`, the existing authenticated profile routes, Company Navigation frontend state, and their focused tests.
+- **Reached invariants:** company login remains identity authority; the returned employee `workId` remains `AuthPrincipal.user_id` and `users.id`; every metadata read and write binds both the authenticated `tenant_id` and user ID; client metadata cannot replace trusted principal fields; the final merged JSON value is bounded before write.
+- **Acceptance and regression proof:** focused backend tests prove tenant/user-scoped locked merge, rejection of oversized or reserved metadata, and route read-after-write behavior; focused frontend tests prove catalog-filtered server metadata and removal of browser-local favorite authority.
+- **Evidence ceiling:** source and local focused checks do not prove that a deployed PostgreSQL schema was migrated or that cross-browser persistence works on a packaged runtime.
+- **Migration and rollback:** add one non-null JSONB object column with an empty-object default and advance the schema ledger; rollback restores the previous application image while leaving the additive column installed and unused.
+- **Stop conditions:** stop if employee `workId` is not stably provisioned as the scoped local user, the migration becomes destructive, tenant/user predicates are absent, the final merged value cannot be bounded under lock, or Company Navigation would require Redis or browser storage as durable authority.
 
 ## Schema lifecycle and readiness
 
@@ -230,6 +251,7 @@ cannot bypass the bound. Oversized values fail before their write with a stable
 | Context snapshot payload | 256 KiB |
 | Artifact manifest | 64 KiB |
 | Audit payload | 32 KiB |
+| User profile metadata | 16 KiB |
 | Message content | 256 KiB |
 | Message metadata | 64 KiB |
 

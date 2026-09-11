@@ -97,6 +97,8 @@ class Settings(BaseSettings):
     stale_run_reconciliation_fence_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     sandbox_lease_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
     worker_concurrency: int = Field(default=10)
+    file_storage_quota_bytes: int = Field(default=10 * 1024 * 1024 * 1024, ge=1)
+    file_upload_max_active_sessions: int = Field(default=3, ge=1, le=100)
     memory_retention_worker_cleanup_enabled: bool = Field(default=True)
     memory_retention_worker_cleanup_interval_seconds: float = Field(default=300.0)
     memory_retention_worker_cleanup_limit: int = Field(default=200)

@@ -1,8 +1,7 @@
-"""Converge OpenSandbox and deploy the approved production subject."""
+"""Production OpenSandbox host helpers; application deployment uses the release package."""
 
 from __future__ import annotations
 
-import argparse
 from dataclasses import dataclass
 import hashlib
 from http.client import HTTPException
@@ -11,7 +10,6 @@ import json
 import os
 from pathlib import Path
 import re
-import signal
 import socket
 import stat
 import subprocess
@@ -25,17 +23,15 @@ from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, build_opener
 
 
-if __name__ == "__main__" and not sys.flags.isolated:
-    raise SystemExit("run production bootstrap through the approved deploy wrapper")
+if __name__ == "__main__":
+    raise SystemExit("application deployment uses the release package's deploy.py; this module contains host-preparation helpers only")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools import latest_main_quickstart as latest  # noqa: E402
 from tools import release_authority as authority  # noqa: E402
 from tools import s75_opensandbox_transition as transition  # noqa: E402
-from tools import sandbox_quickstart  # noqa: E402
 
 
 MANAGED_ROOT = Path("/data/ai-platform-prod")
@@ -79,24 +75,11 @@ APPLICATION_HOST_KEYS = frozenset(
         "OPENSANDBOX_API_KEY",
     }
 )
-EXPECTED_PROJECT_MEMBERSHIP = {
-    *(f"{name}|{service}" for service, name in transition.CONTAINERS.items()),
-    f"{transition.TARGET_BROKER_CONTAINER}|opensandbox-egress-proxy",
-}
-DIRECT_RELEASE_IDENTITIES = {
-    "api": (transition.CONTAINERS["api"], "api"),
-    "worker": (transition.CONTAINERS["worker"], "worker"),
-    "frontend": (transition.CONTAINERS["frontend"], "frontend"),
-    "opensandbox-egress-proxy": (
-        transition.TARGET_BROKER_CONTAINER,
-        "opensandbox-egress-proxy",
-    ),
-}
 MAX_CONFIG_BYTES = 1024 * 1024
 
 
 class BootstrapError(RuntimeError):
-    """A bounded production host or application bootstrap failure."""
+    """A bounded production host-preparation failure."""
 
 
 @dataclass(frozen=True)
@@ -113,12 +96,6 @@ class OpenSandboxHostConfig:
     config_sha256: str
 
 
-@dataclass(frozen=True)
-class CurrentRuntime:
-    repo_root: Path
-    commit: str
-
-
 class Runner:
     def __init__(self, environment: Mapping[str, str] | None = None) -> None:
         source = os.environ if environment is None else environment
@@ -128,7 +105,8 @@ class Runner:
             "LC_ALL",
             "HOME",
             "DOCKER_CONFIG",
-            *sandbox_quickstart.PROXY_ENVIRONMENT,
+            "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+            "http_proxy", "https_proxy", "no_proxy",
         )
         self.environment = {key: source[key] for key in allowed if key in source}
 
@@ -156,11 +134,6 @@ class Runner:
         if check and result.returncode != 0:
             raise BootstrapError("host command failed")
         return result
-
-
-def _require_root_posix() -> None:
-    if os.name != "posix" or os.geteuid() != 0:
-        raise BootstrapError("production bootstrap requires root on a POSIX host")
 
 
 def _validate_parent_chain(
@@ -1168,417 +1141,3 @@ class HostBootstrap:
                 raise BootstrapError("restored OpenSandbox host service is inactive")
             self._wait_ready(config, _unit_source_commit(previous))
         self._rollback_armed = False
-
-
-def _project_membership(docker: Sequence[str]) -> set[str]:
-    try:
-        result = transition._run(
-            [
-                *docker,
-                "container",
-                "ls",
-                "-a",
-                "--filter",
-                f"label=com.docker.compose.project={authority.COMPOSE_PROJECT}",
-                "--format",
-                '{{.Names}}|{{.Label "com.docker.compose.service"}}',
-            ],
-            timeout=30,
-        )
-    except transition.TransitionError as exc:
-        raise BootstrapError("production Compose membership is unavailable") from exc
-    return {line for line in result.stdout.splitlines() if line}
-
-
-def _require_direct_runtime_identity(
-    docker: Sequence[str],
-    commit: str,
-) -> None:
-    for service, (name, role) in DIRECT_RELEASE_IDENTITIES.items():
-        labels = transition._labels(transition._inspect_container(docker, name))
-        if (
-            labels.get("com.docker.compose.project") != authority.COMPOSE_PROJECT
-            or labels.get("com.docker.compose.service") != service
-            or labels.get("ai-platform.source-commit") != commit
-            or labels.get("ai-platform.source-dirty") != "false"
-            or labels.get("ai-platform.release-owner") != "repo-local-compose"
-            or labels.get("ai-platform.release-role") != role
-        ):
-            raise BootstrapError(
-                f"existing production release identity is invalid: {service}"
-            )
-
-
-def _current_runtime(
-    root: Path,
-    docker: Sequence[str],
-    *,
-    docker_cmd: str,
-) -> CurrentRuntime | None:
-    membership = _project_membership(docker)
-    if not membership:
-        return None
-    if membership != EXPECTED_PROJECT_MEMBERSHIP:
-        raise BootstrapError(
-            "existing Compose project is not the direct production contour"
-        )
-    try:
-        api = transition._inspect_container(docker, transition.CONTAINERS["api"])
-        commit = transition._labels(api).get("ai-platform.source-commit", "")
-        if COMMIT_RE.fullmatch(commit) is None:
-            raise BootstrapError("existing production runtime commit is invalid")
-        _require_direct_runtime_identity(docker, commit)
-        repo_root = root / "releases" / commit
-        authority.assert_managed_target_checkout(repo_root, commit, root / "releases")
-        transition._require_target_runtime(
-            docker,
-            target_repo_root=repo_root,
-            target_commit=commit,
-            docker_cmd=docker_cmd,
-        )
-    except BootstrapError:
-        raise
-    except (authority.ReleaseAuthorityError, transition.TransitionError) as exc:
-        raise BootstrapError("existing direct production runtime is invalid") from exc
-    return CurrentRuntime(repo_root=repo_root, commit=commit)
-
-
-def _compose_preflight(
-    checkout: Path,
-    commit: str,
-    env_file: Path,
-    docker: Sequence[str],
-) -> None:
-    selection = authority.resolve_compose_files(checkout, transition.TARGET_SELECTION)
-    with transition._acceptance_fence(), transition._workspace_root_environment():
-        authority._semantic_compose_config_preflight(
-            docker,
-            selection,
-            env_file,
-            commit=commit,
-        )
-
-
-def _deploy_checkout(
-    checkout: Path,
-    commit: str,
-    env_file: Path,
-    docker: Sequence[str],
-    *,
-    docker_cmd: str,
-) -> None:
-    with transition._acceptance_fence(), transition._workspace_root_environment():
-        authority.deploy_clean_commit(
-            checkout,
-            commit,
-            docker_cmd=docker_cmd,
-            env_file=env_file,
-            compose_files=transition.TARGET_SELECTION,
-            strategy="canonical",
-            replace_known_manual_frontend=False,
-        )
-        transition._require_target_runtime(
-            docker,
-            target_repo_root=checkout,
-            target_commit=commit,
-            docker_cmd=docker_cmd,
-        )
-
-
-def _stop_available_admission(docker: Sequence[str]) -> None:
-    try:
-        inventory = transition._run(
-            [*docker, "container", "ls", "-a", "--format", "{{.Names}}|{{.State}}"],
-            timeout=30,
-        )
-        states: dict[str, str] = {}
-        for raw_line in inventory.stdout.splitlines():
-            name, separator, state = raw_line.partition("|")
-            if not separator or not name or not state or name in states:
-                raise BootstrapError("Docker admission inventory is invalid")
-            states[name] = state
-        for name in transition.ADMISSION_CONTAINERS:
-            state = states.get(name)
-            if state in {"running", "paused", "restarting"}:
-                transition._run([*docker, "stop", name], timeout=90)
-        running = transition._run(
-            [*docker, "container", "ls", "--format", "{{.Names}}"],
-            timeout=30,
-        )
-        if set(running.stdout.splitlines()) & set(transition.ADMISSION_CONTAINERS):
-            raise BootstrapError("production admission remains active")
-    except BootstrapError:
-        raise
-    except transition.TransitionError as exc:
-        raise BootstrapError("failed to fence production admission") from exc
-
-
-def _cleanup_failed_cold_runtime(
-    checkout: Path,
-    subject: sandbox_quickstart.Subject,
-    env_file: Path,
-    docker: Sequence[str],
-) -> None:
-    try:
-        executor_image, executor_digest = _immutable_image(
-            subject.backend_image,
-            "cold production sandbox image",
-        )
-        selection = authority.resolve_compose_files(
-            checkout, transition.TARGET_SELECTION
-        )
-        command = transition._compose_command(
-            docker,
-            project=authority.COMPOSE_PROJECT,
-            env_file=env_file,
-            compose_files=selection.absolute_paths,
-            environment=(
-                f"AI_PLATFORM_IMAGE={subject.backend_image}",
-                f"AI_PLATFORM_FRONTEND_IMAGE={subject.frontend_image}",
-                f"SANDBOX_EXECUTOR_IMAGE={executor_image}",
-                f"OPENSANDBOX_EXECUTOR_IMAGE={executor_image}",
-                f"OPENSANDBOX_EXECUTOR_IMAGE_DIGEST={executor_digest}",
-                f"AI_PLATFORM_SOURCE_COMMIT={subject.commit}",
-                f"AI_PLATFORM_BUILD_COMMIT={subject.commit}",
-                "AI_PLATFORM_BUILD_DIRTY=false",
-            ),
-        )
-        transition._run([*command, "down", "--remove-orphans"], timeout=300)
-        if _project_membership(docker):
-            raise BootstrapError("failed cold production project remains present")
-    except BootstrapError:
-        raise
-    except (authority.ReleaseAuthorityError, transition.TransitionError) as exc:
-        raise BootstrapError("failed cold production cleanup did not converge") from exc
-
-
-def deploy_production_subject(
-    checkout: Path,
-    *,
-    root: Path = MANAGED_ROOT,
-    docker_cmd: str = "docker --context default",
-    host_bootstrap_factory: Callable[[Path], HostBootstrap] = HostBootstrap,
-) -> sandbox_quickstart.Subject:
-    _require_root_posix()
-    subject_path = root / "incoming" / "latest-main.json"
-    try:
-        subject = sandbox_quickstart._load_subject(subject_path, root)
-        if subject.env_file is None:
-            raise BootstrapError(
-                "production subject is missing the managed environment"
-            )
-        env_file = transition._require_safe_env_file(subject.env_file)
-        transition._require_workspace_root_env(env_file)
-        authority.assert_managed_target_checkout(
-            checkout,
-            subject.commit,
-            root / "releases",
-        )
-        docker = transition._docker_base(docker_cmd)
-        current = _current_runtime(root, docker, docker_cmd=docker_cmd)
-        if current is not None:
-            transition._require_quiescent(docker)
-            if current.commit != subject.commit:
-                transition._require_schema_compatibility(
-                    checkout,
-                    current.commit,
-                    subject.commit,
-                )
-        host_bootstrap = host_bootstrap_factory(checkout)
-        host_bootstrap.run(
-            subject.commit,
-            require_existing_unit=current is not None,
-            application_env_file=env_file,
-        )
-        try:
-            authority.prepare_packaged_release_images(
-                subject.commit,
-                backend_image=subject.backend_image,
-                frontend_image=subject.frontend_image,
-                docker_cmd=docker_cmd,
-            )
-            _compose_preflight(checkout, subject.commit, env_file, docker)
-        except BaseException:
-            if current is not None:
-                try:
-                    host_bootstrap.rollback()
-                except BaseException as host_rollback_error:
-                    raise BootstrapError(
-                        "production preflight failed and OpenSandbox host restore failed"
-                    ) from host_rollback_error
-            raise
-        if current is not None and current.commit == subject.commit:
-            print("production: already converged")
-            return subject
-        if current is not None:
-            try:
-                transition._stop_admission(docker)
-                try:
-                    transition._require_quiescent(docker)
-                except BaseException:
-                    transition._restore_admission(docker)
-                    raise
-            except BaseException:
-                try:
-                    host_bootstrap.rollback()
-                except BaseException as host_rollback_error:
-                    raise BootstrapError(
-                        "production stop failed and OpenSandbox host restore failed"
-                    ) from host_rollback_error
-                raise
-        try:
-            _deploy_checkout(
-                checkout,
-                subject.commit,
-                env_file,
-                docker,
-                docker_cmd=docker_cmd,
-            )
-        except BaseException as target_error:
-            if current is None:
-                try:
-                    _stop_available_admission(docker)
-                    _cleanup_failed_cold_runtime(
-                        checkout,
-                        subject,
-                        env_file,
-                        docker,
-                    )
-                except BaseException as cleanup_error:
-                    raise BootstrapError(
-                        "first production start failed and cleanup did not converge"
-                    ) from cleanup_error
-                raise BootstrapError(
-                    "first production start failed; admission was removed and data volumes were preserved"
-                ) from target_error
-            try:
-                _stop_available_admission(docker)
-                transition._require_quiescent(docker)
-            except BaseException as rollback_fence_error:
-                raise BootstrapError(
-                    "target deployment failed and rollback safety could not be proven"
-                ) from rollback_fence_error
-            try:
-                host_bootstrap.rollback()
-                _deploy_checkout(
-                    current.repo_root,
-                    current.commit,
-                    env_file,
-                    docker,
-                    docker_cmd=docker_cmd,
-                )
-            except BaseException as rollback_error:
-                raise BootstrapError(
-                    "target deployment and previous-runtime restore both failed"
-                ) from rollback_error
-            raise BootstrapError(
-                "target deployment failed; previous production runtime was restored"
-            ) from target_error
-    except BootstrapError:
-        raise
-    except (
-        authority.ReleaseAuthorityError,
-        transition.TransitionError,
-        sandbox_quickstart.QuickstartError,
-    ) as exc:
-        raise BootstrapError("production admission failed") from exc
-    print("production: deployment smoke and parity passed")
-    print("production: application-owned OpenSandbox acceptance is pending")
-    return subject
-
-
-def _retry_approved_subject(root: Path) -> sandbox_quickstart.Subject:
-    subject = sandbox_quickstart._load_subject(
-        root / "incoming" / "latest-main.json", root
-    )
-    checkout = root / "releases" / subject.commit
-    sandbox_quickstart.Quickstart(checkout, root)._verify_source(subject)
-    return deploy_production_subject(checkout, root=root)
-
-
-def _interrupt(*_args: object) -> None:
-    raise KeyboardInterrupt
-
-
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Bootstrap or update production from fully approved images."
-    )
-    parser.add_argument(
-        "--latest",
-        action="store_true",
-        help="wait for exact-main Actions evidence, resolve image digests, and deploy",
-    )
-    parser.add_argument(
-        "--env-file",
-        type=Path,
-        help="first-deployment root-owned 0600 env path under the managed config root",
-    )
-    parser.add_argument(
-        "--ci-timeout-seconds",
-        type=int,
-        default=latest.DEFAULT_CI_TIMEOUT_SECONDS,
-        help=argparse.SUPPRESS,
-    )
-    return parser
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
-    if not args.latest and (
-        args.env_file is not None
-        or args.ci_timeout_seconds != latest.DEFAULT_CI_TIMEOUT_SECONDS
-    ):
-        print(
-            "production bootstrap: failed: --env-file and CI timeout require --latest"
-        )
-        return 2
-    previous_handlers = {
-        signum: signal.signal(signum, _interrupt)
-        for signum in (signal.SIGINT, signal.SIGTERM)
-    }
-    try:
-        _require_root_posix()
-        with latest.deployment_lock(MANAGED_ROOT):
-            if args.latest:
-                selected_env = args.env_file
-                if selected_env is None and os.environ.get(latest.ENV_PATH_VARIABLE):
-                    selected_env = Path(os.environ.pop(latest.ENV_PATH_VARIABLE))
-                token = latest._claim_github_token(os.environ)
-                client = latest.GitHubClient(token)
-                latest.deploy_latest_main(
-                    root=MANAGED_ROOT,
-                    client=client,
-                    env_file=selected_env,
-                    ci_timeout_seconds=args.ci_timeout_seconds,
-                    deploy=lambda checkout: deploy_production_subject(
-                        checkout,
-                        root=MANAGED_ROOT,
-                    ),
-                )
-            else:
-                for key in latest.TOKEN_VARIABLES:
-                    os.environ.pop(key, None)
-                _retry_approved_subject(MANAGED_ROOT)
-    except (
-        BootstrapError,
-        latest.LatestMainError,
-        authority.ReleaseAuthorityError,
-        transition.TransitionError,
-        sandbox_quickstart.QuickstartError,
-    ) as exc:
-        print(f"production bootstrap: failed: {exc} (no data volumes were removed)")
-        return 2
-    except (OSError, subprocess.SubprocessError, KeyboardInterrupt):
-        print(
-            "production bootstrap: failed: command error (no data volumes were removed)"
-        )
-        return 2
-    finally:
-        for signum, handler in previous_handlers.items():
-            signal.signal(signum, handler)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

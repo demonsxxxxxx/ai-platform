@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 
 import { UploadRequestError } from "../../services/api/upload.ts";
@@ -9,6 +11,10 @@ import type {
 } from "../../types";
 import {
   cancelTemporaryUpload,
+  clearAttachmentResources,
+  createUploadScheduler,
+  isDuplicateFileUpload,
+  removeAttachmentFromUpload,
   settleUploadFailure,
   startFileUploadTask,
 } from "../useFileUpload.ts";
@@ -159,6 +165,54 @@ function uploadResult(): UploadResult {
   };
 }
 
+test("duplicate uploads require the same tracked File object", () => {
+  const file = new File(["fixture"], "fixture.txt", {
+    type: "text/plain",
+    lastModified: 10,
+  });
+  const distinctFileWithSameMetadata = new File(["fixture"], "fixture.txt", {
+    type: "text/plain",
+    lastModified: 10,
+  });
+  const tracked = new Map([["temp", file]]);
+
+  assert.equal(isDuplicateFileUpload(file, tracked), true);
+  assert.equal(isDuplicateFileUpload(distinctFileWithSameMetadata, tracked), false);
+  assert.equal(
+    isDuplicateFileUpload(
+      new File(["different"], "other.txt", { type: "text/plain" }),
+      new Map(),
+    ),
+    false,
+  );
+});
+
+test("upload scheduler starts bounded tasks in FIFO order", async () => {
+  const scheduler = createUploadScheduler(2);
+  const first = scheduler.reserve();
+  const second = scheduler.reserve();
+  const third = scheduler.reserve();
+  const fourth = scheduler.reserve();
+  const started: string[] = [];
+
+  assert.equal(first.waitFor, undefined);
+  assert.equal(second.waitFor, undefined);
+  assert.ok(third.waitFor);
+  assert.ok(fourth.waitFor);
+  void third.waitFor.then(() => started.push("third"));
+  void fourth.waitFor.then(() => started.push("fourth"));
+
+  first.release();
+  await third.waitFor;
+  assert.deepEqual(started, ["third"]);
+
+  second.release();
+  await fourth.waitFor;
+  assert.deepEqual(started, ["third", "fourth"]);
+  third.release();
+  fourth.release();
+});
+
 function createHarness() {
   const attachments: MessageAttachment[] = [];
   const abortMap = new Map<string, () => void>();
@@ -190,6 +244,243 @@ function createHarness() {
     onAttachmentsChange,
   };
 }
+
+test("queued uploads wait for a scheduler slot before preparing a file", async () => {
+  const harness = createHarness();
+  const firstStarted = deferred<void>();
+  const firstResult = deferred<UploadResult>();
+  let prepareCalls = 0;
+  let uploadCalls = 0;
+  const ids = ["first-temp", "second-temp", "first-final", "second-final"];
+  const scheduler = createUploadScheduler(1);
+  const firstReservation = scheduler.reserve();
+  const secondReservation = scheduler.reserve();
+
+  const first = startFileUploadTask({
+    file: harness.file,
+    fileCategory: "document",
+    t: translate,
+    onAttachmentsChange: harness.onAttachmentsChange,
+    abortMap: harness.abortMap,
+    cancelled: harness.cancelled,
+    waitFor: firstReservation.waitFor,
+    prepareFile: () => {
+      prepareCalls += 1;
+      return Promise.resolve(harness.file);
+    },
+    uploadClient: {
+      uploadFile: () => {
+        uploadCalls += 1;
+        firstStarted.resolve();
+        return { promise: firstResult.promise, abort: () => {} };
+      },
+    },
+    createId: () => ids.shift() ?? "unexpected",
+    notifyError: (message) => harness.toasts.push(message),
+    reportFailure: (error) => harness.reports.push(error),
+    onTaskSettled: firstReservation.release,
+  });
+  const second = startFileUploadTask({
+    file: new File(["second"], "second.txt", { type: "text/plain" }),
+    fileCategory: "document",
+    t: translate,
+    onAttachmentsChange: harness.onAttachmentsChange,
+    abortMap: harness.abortMap,
+    cancelled: harness.cancelled,
+    waitFor: secondReservation.waitFor,
+    prepareFile: () => {
+      prepareCalls += 1;
+      return Promise.resolve(harness.file);
+    },
+    uploadClient: {
+      uploadFile: () => {
+        uploadCalls += 1;
+        return { promise: Promise.resolve(uploadResult()), abort: () => {} };
+      },
+    },
+    createId: () => ids.shift() ?? "unexpected",
+    notifyError: (message) => harness.toasts.push(message),
+    reportFailure: (error) => harness.reports.push(error),
+    onTaskSettled: secondReservation.release,
+  });
+
+  await firstStarted.promise;
+  assert.equal(prepareCalls, 1);
+  assert.equal(uploadCalls, 1);
+  assert.equal(harness.attachments.length, 2);
+  assert.equal(
+    harness.attachments.find((attachment) => attachment.id === "temp-second-temp")
+      ?.uploadStatus,
+    "queued",
+  );
+
+  firstResult.resolve(uploadResult());
+  await first.done;
+  await second.done;
+
+  assert.equal(prepareCalls, 2);
+  assert.equal(uploadCalls, 2);
+  assert.equal(harness.attachments.length, 2);
+  assert.equal(harness.attachments.every((attachment) => !attachment.isUploading), true);
+  assert.deepEqual(harness.toasts, []);
+  assert.deepEqual(harness.reports, []);
+});
+
+test("upload capacity responses retry without dropping the attachment", async () => {
+  const harness = createHarness();
+  const delays: number[] = [];
+  let uploadCalls = 0;
+  const ids = ["retry-temp", "retry-final"];
+
+  const task = startFileUploadTask({
+    file: harness.file,
+    fileCategory: "document",
+    t: translate,
+    onAttachmentsChange: harness.onAttachmentsChange,
+    abortMap: harness.abortMap,
+    cancelled: harness.cancelled,
+    prepareFile: () => Promise.resolve(harness.file),
+    uploadClient: {
+      uploadFile: () => {
+        uploadCalls += 1;
+        return {
+          promise:
+            uploadCalls < 3
+              ? Promise.reject(
+                  new UploadRequestError(
+                    "capacity",
+                    429,
+                    "upload_session_limit_exceeded",
+                  ),
+                )
+              : Promise.resolve(uploadResult()),
+          abort: () => {},
+        };
+      },
+    },
+    retryDelay: async (attempt) => {
+      delays.push(attempt);
+    },
+    createId: () => ids.shift() ?? "unexpected",
+    notifyError: (message) => harness.toasts.push(message),
+    reportFailure: (error) => harness.reports.push(error),
+  });
+
+  await task.done;
+
+  assert.equal(uploadCalls, 3);
+  assert.deepEqual(delays, [0, 1]);
+  assert.equal(harness.attachments.length, 1);
+  assert.equal(harness.attachments[0]?.isUploading, undefined);
+  assert.deepEqual(harness.toasts, []);
+  assert.deepEqual(harness.reports, []);
+});
+
+test("removing a Composer attachment cancels pending uploads and deletes ready files", async () => {
+  const pending: MessageAttachment = {
+    id: "temp-pending",
+    key: "",
+    name: "pending.txt",
+    type: "document",
+    mimeType: "text/plain",
+    size: 1,
+    isUploading: true,
+  };
+  const ready: MessageAttachment = {
+    id: "ready-file",
+    key: "server-file",
+    name: "ready.txt",
+    type: "document",
+    mimeType: "text/plain",
+    size: 1,
+  };
+  let attachments = [pending, ready];
+  const cancelled: string[] = [];
+  const deleted: string[] = [];
+  const onAttachmentsChange = (
+    change:
+      | MessageAttachment[]
+      | ((previous: MessageAttachment[]) => MessageAttachment[]),
+  ) => {
+    attachments = typeof change === "function" ? change(attachments) : change;
+  };
+
+  removeAttachmentFromUpload(
+    pending,
+    (id) => {
+      cancelled.push(id);
+      onAttachmentsChange((previous) =>
+        previous.filter((attachment) => attachment.id !== id),
+      );
+    },
+    onAttachmentsChange,
+    async (key) => deleted.push(key),
+  );
+  removeAttachmentFromUpload(
+    ready,
+    (id) => cancelled.push(id),
+    onAttachmentsChange,
+    async (key) => deleted.push(key),
+  );
+  await Promise.resolve();
+
+  assert.deepEqual(cancelled, ["temp-pending"]);
+  assert.deepEqual(deleted, ["server-file"]);
+  assert.deepEqual(attachments, []);
+});
+
+test("page drops and Composer drops use the same upload controller", () => {
+  const source = (path: string) => readFileSync(join(process.cwd(), path), "utf8");
+  const dragAndDrop = source("src/components/layout/AppContent/useDragAndDrop.ts");
+  const appContent = source("src/components/layout/AppContent/ChatAppContent.tsx");
+  const chatView = source("src/components/layout/AppContent/ChatView.tsx");
+  const chatInput = source("src/components/chat/ChatInput.tsx");
+  const uploadHook = source("src/hooks/useFileUpload.ts");
+
+  assert.match(uploadHook, /sharedControls\?: FileUploadControls/);
+  assert.match(dragAndDrop, /const uploadControls: FileUploadControls = useFileUpload/);
+  assert.match(dragAndDrop, /uploadControls,\s*clearPageDragAttachments: uploadControls\.clearUploads/);
+  assert.match(appContent, /uploadControls=\{uploadControls\}/);
+  assert.match(chatView, /uploadControls: FileUploadControls/);
+  assert.match(chatView, /uploadControls,\s*\n\s*\};/);
+  assert.match(chatInput, /sharedControls: sharedUploadControls/);
+});
+
+test("clearing attachment resources cancels uploads and deletes completed unbound files", () => {
+  const cancelled: string[] = [];
+  const deleted: string[] = [];
+  const attachments: MessageAttachment[] = [
+    {
+      id: "temp-upload",
+      key: "",
+      name: "pending.txt",
+      type: "document",
+      mimeType: "text/plain",
+      size: 1,
+      isUploading: true,
+    },
+    {
+      id: "ready-upload",
+      key: "file-ready",
+      name: "ready.txt",
+      type: "document",
+      mimeType: "text/plain",
+      size: 1,
+    },
+  ];
+
+  clearAttachmentResources(
+    attachments,
+    (id) => cancelled.push(id),
+    (key) => {
+      deleted.push(key);
+      return Promise.resolve();
+    },
+  );
+
+  assert.deepEqual(cancelled, ["temp-upload"]);
+  assert.deepEqual(deleted, ["file-ready"]);
+});
 
 test("upload failures use bounded copy and remove only the matching temporary attachment", () => {
   const cases = [
@@ -300,6 +591,7 @@ test("active XHR cancellation is idempotent and fences stale progress and result
   const result = deferred<UploadResult>();
   let onProgress: ((progress: number) => void) | undefined;
   let aborts = 0;
+  const deleted: string[] = [];
   const task = startFileUploadTask({
     file: harness.file,
     fileCategory: "document",
@@ -319,6 +611,10 @@ test("active XHR cancellation is idempotent and fences stale progress and result
           },
         };
       },
+    },
+    deleteFile: (key) => {
+      deleted.push(key);
+      return Promise.resolve();
     },
     createId: (() => {
       const ids = ["active-temp", "active-final"];
@@ -351,6 +647,7 @@ test("active XHR cancellation is idempotent and fences stale progress and result
   assert.equal(harness.state.updates, updatesAfterCancel);
   assert.equal(harness.state.removals, 1);
   assert.equal(harness.attachments.length, 0);
+  assert.deepEqual(deleted, ["uploaded-key"]);
   assert.deepEqual(harness.toasts, []);
   assert.deepEqual(harness.reports, []);
   assert.equal(harness.abortMap.size, 0);

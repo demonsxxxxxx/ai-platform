@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request as HttpRequest
 from app import repositories
 from app.agent_apps import AgentProfileAuthority
-from app.agent_apps.api import normalize_market_tag
+from app.agent_apps.api import AgentProfileDraftDefinition, normalize_market_tag, normalize_market_tags
 from app.agent_profiles import (
     list_admin_profiles,
     publish_draft,
@@ -71,17 +71,21 @@ def _normalize_catalog_query(query: str | None) -> str | None:
     return normalized
 
 
-def _parse_draft_payload(payload: dict[str, Any]) -> AgentProfileDraftRequest:
+def _parse_draft_payload(payload: dict[str, Any]) -> AgentProfileDraftDefinition:
     definition_payload = dict(payload)
-    market_tag = definition_payload.pop("market_tag", None)
+    raw_market_tags = definition_payload.pop("market_tags", [])
     try:
-        definition = AgentProfileDraftRequest.model_validate(definition_payload)
-        if market_tag is not None:
-            definition.__dict__["market_tag"] = normalize_market_tag(market_tag)
-            definition.__pydantic_fields_set__.add("market_tag")
+        market_tags = normalize_market_tags(raw_market_tags)
+        if "market_tag" in definition_payload:
+            definition_payload["market_tag"] = normalize_market_tag(definition_payload["market_tag"])
+        legacy = AgentProfileDraftRequest.model_validate(definition_payload)
+        return AgentProfileDraftDefinition.from_legacy(
+            legacy,
+            market_tags=market_tags,
+            explicit_fields={"market_tags"} if "market_tags" in payload else set(),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return definition
 
 
 async def _submit_dedicated_agent_run(
@@ -155,7 +159,7 @@ async def list_agent_profiles(
                 query=normalized_query,
                 category=category,
             )
-    return {"agent_profiles": profiles}
+    return {"agent_profiles": list(profiles)}
 
 
 @router.get("/agent-profiles/{agent_id}")
@@ -278,7 +282,7 @@ async def admin_list_agent_profiles(
         raise HTTPException(status_code=403, detail="not_ai_admin")
     async with transaction() as conn:
         profiles = await list_admin_profiles(conn, principal=principal)
-    return {"agent_profiles": profiles}
+    return {"agent_profiles": [profile.model_dump(mode="json") for profile in profiles]}
 
 
 @router.get("/admin/agent-profiles/{agent_id}/history")
@@ -296,7 +300,7 @@ async def admin_agent_profile_history(
         raise HTTPException(status_code=400, detail="agent_id_invalid") from exc
     async with transaction() as conn:
         profiles = await _authority.list_history(conn, principal=principal, agent_id=safe_agent_id)
-    return {"agent_profiles": profiles}
+    return {"agent_profiles": [profile.model_dump(mode="json") for profile in profiles]}
 
 
 @router.post("/admin/agent-profiles")
@@ -318,7 +322,7 @@ async def create_agent_profile(
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
-    return {"agent_profile": profile, "audit_id": audit_id}
+    return {"agent_profile": profile.model_dump(mode="json"), "audit_id": audit_id}
 
 
 @router.put("/admin/agent-profiles/{agent_id}")
@@ -345,7 +349,7 @@ async def save_agent_profile_draft(
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
-    return {"agent_profile": profile, "audit_id": audit_id}
+    return {"agent_profile": profile.model_dump(mode="json"), "audit_id": audit_id}
 
 
 @router.post("/admin/agent-profiles/test", response_model=AgentProfileValidationResponse)
@@ -453,7 +457,7 @@ async def publish_agent_profile(
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
-    return {"agent_profile": profile, "audit_id": audit_id}
+    return {"agent_profile": profile.model_dump(mode="json"), "audit_id": audit_id}
 
 
 @router.post("/admin/agent-profiles/{agent_id}/unpublish")
@@ -480,4 +484,4 @@ async def unpublish_agent_profile(
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
-    return {"agent_profile": profile, "audit_id": audit_id}
+    return {"agent_profile": profile.model_dump(mode="json"), "audit_id": audit_id}

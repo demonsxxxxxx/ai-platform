@@ -193,6 +193,10 @@ class V4PublicationClaims(V4DuePublicationScopes, Protocol):
 
     async def mark_published(self, claim: V4PublicationClaim, *, redis_id: str) -> bool: ...
 
+    async def suppress_expired_terminal_without_attempt(
+        self, claim: V4PublicationClaim
+    ) -> bool: ...
+
     async def schedule_retry(
         self,
         claim: V4PublicationClaim,
@@ -240,19 +244,30 @@ async def publish_due_v4_events(
     if isinstance(event_limit, bool) or not 1 <= event_limit <= 256:
         raise ValueError("v4_publication_event_limit_invalid")
     total = 0
+    first_error: Exception | None = None
     for scope in await claims.list_due_scopes(limit=scope_limit):
-        total += await publish_claimed_v4_events(
-            claims,
-            transport,
-            tenant_id=scope.tenant_id,
-            run_id=scope.run_id,
-            attempt_id=scope.attempt_id,
-            stream_incarnation=scope.stream_incarnation,
-            limit=event_limit,
-            claim_ttl=DEFAULT_CLAIM_TTL,
-            retry_delay=DEFAULT_RETRY_DELAY,
-        )
+        try:
+            total += await publish_claimed_v4_events(
+                claims,
+                transport,
+                tenant_id=scope.tenant_id,
+                run_id=scope.run_id,
+                attempt_id=scope.attempt_id,
+                stream_incarnation=scope.stream_incarnation,
+                limit=event_limit,
+                claim_ttl=DEFAULT_CLAIM_TTL,
+                retry_delay=DEFAULT_RETRY_DELAY,
+            )
+        except Exception as exc:
+            if first_error is None:
+                first_error = exc
+    if first_error is not None:
+        raise first_error
     return total
+
+
+class V4PublicationStreamExpired(RuntimeError):
+    """The exact terminal Redis stream and its state have both expired."""
 
 
 class V4PublicationTransportUnavailable(RuntimeError):
@@ -338,6 +353,9 @@ async def publish_claimed_v4_events(
         try:
             redis_id = await transport.publish(claim.canonical_envelope_bytes)
             validate_v4_transport_receipt(redis_id)
+        except V4PublicationStreamExpired:
+            await claims.suppress_expired_terminal_without_attempt(claim)
+            continue
         except V4PublicationTransportUnavailable as exc:
             await claims.schedule_retry(
                 claim,
@@ -361,6 +379,7 @@ __all__ = [
     "V4DuePublicationScopes",
     "V4PublicationClaims",
     "V4PublicationTransport",
+    "V4PublicationStreamExpired",
     "V4PublicationTransportUnavailable",
     "publish_claimed_v4_events",
     "publish_pending_v4_admissions",

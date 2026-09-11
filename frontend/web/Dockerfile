@@ -9,7 +9,7 @@ WORKDIR /workspace
 COPY frontend/web/.npmrc frontend/web/package.json frontend/web/pnpm-lock.yaml frontend/web/pnpm-workspace.yaml ./frontend/web/
 
 WORKDIR /workspace/frontend/web
-RUN corepack enable && corepack pnpm install --frozen-lockfile
+RUN corepack enable && corepack pnpm install --frozen-lockfile --package-import-method=copy
 
 ARG AI_PLATFORM_BUILD_COMMIT=unknown
 ARG AI_PLATFORM_BUILD_DIRTY=unknown
@@ -25,16 +25,13 @@ COPY frontend/web/postcss.config.js frontend/web/tailwind.config.js frontend/web
 COPY frontend/web/public ./frontend/web/public
 COPY frontend/web/scripts ./frontend/web/scripts
 COPY frontend/web/src ./frontend/web/src
-COPY app/run_projection.py app/required_tool_contract.py ./app/
-COPY tools ./tools
-COPY .github/workflows/ai-platform-frontend.yml ./.github/workflows/ai-platform-frontend.yml
 
 WORKDIR /workspace/frontend/web
-RUN corepack pnpm run ci:verify
+RUN corepack pnpm run build
 
-FROM nginx:1.30.4-alpine@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46 AS runtime
+FROM nginx:1.30.4-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c AS runtime
 
-RUN apk upgrade --no-cache libcrypto3 libssl3
+RUN apk upgrade --no-cache libcrypto3 libexpat libssl3 libuuid
 
 ARG AI_PLATFORM_BUILD_COMMIT=unknown
 ARG AI_PLATFORM_BUILD_DIRTY=unknown

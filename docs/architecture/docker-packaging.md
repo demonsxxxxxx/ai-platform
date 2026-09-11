@@ -18,10 +18,12 @@ derive an unlocked requirements file from `pyproject.toml`. Keep index, proxy,
 and credential values out of Git, issue/PR text, and command output. The default
 CI and image build use only public package sources.
 
-The backend build and CI run Python 3.13.14. The frontend build and CI run Node
-22.23.2 with the `package.json` `pnpm@10.32.1` package-manager contract and the
-reviewed `pnpm-lock.yaml`. Focused tests reject version drift among declarations,
-Dockerfiles, and workflows.
+The backend build and CI run Python 3.13.14. The frontend build and CI use pinned
+Node 22.23.2 as their reproducible build baseline. `package.json` declares
+Node `>=22.13.0` as the supported runtime range, alongside the `pnpm@10.32.1`
+package-manager contract and the reviewed `pnpm-lock.yaml`. Focused tests keep
+the CI and Docker pins fixed while checking that the build baseline satisfies the
+runtime range.
 
 All external Dockerfile bases use a readable patch tag plus an immutable OCI
 index digest:
@@ -29,7 +31,7 @@ index digest:
 - `python:3.13.14-slim-bookworm@sha256:67a1e1f215ccda113cfc024e8639049257e88f273898f595b61476d128d387e8`
 - `ghcr.io/astral-sh/uv:0.12.1@sha256:cf4eedcaa81655197f625739489effcbe71b61ceb1506f332c3facae5deceded`
 - `node:22.23.2-bookworm@sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a`
-- `nginx:1.30.4-alpine@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46`
+- `nginx:1.30.4-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c`
 
 These are multi-platform index subjects verified from the official registries;
 Docker resolves a platform manifest at build time. The Phase 1 GitHub jobs
@@ -39,11 +41,13 @@ platforms, then update the Dockerfile, version declaration, lock when applicable
 and focused tests in one review.
 
 Pull requests and `main` run the stable `backend required` and `frontend required`
-checks. Those checks include real Docker builds. Backend acceptance verifies
-imports, HTTP startup, non-root identity, executable entrypoint, source markers,
-and existing OCI/release labels. Frontend acceptance verifies the built artifact,
-the same commit/label contract, and an HTTP health response from the temporary CI
-container. That standalone frontend container overrides its upstream with the
+checks. Those checks include real Docker builds. The frontend workflow owns the full
+`ci:verify` audit, test, lint, type-check, and build command; the frontend Dockerfile
+runs only the production `build` command so image packaging does not repeat the full
+suite. Backend acceptance verifies imports, HTTP startup, non-root identity, executable
+entrypoint, source markers, and existing OCI/release labels. Frontend acceptance verifies
+the built artifact, the same commit/label contract, and an HTTP health response from
+the temporary CI container. That standalone frontend container overrides its upstream with the
 numeric loopback address only for the health probe: the production image keeps
 its Compose-network `api:8020` default, while an isolated CI runner has no `api`
 DNS subject. On failure, both image jobs report only a bounded log-tail line count,
@@ -228,10 +232,60 @@ publish a reviewed later source commit through the same workflow. Do not retag
 or overwrite an existing source tag, delete evidence to conceal a failure, or
 fall back to a runner-local image ID.
 
-## Later phases
+## Phase 3 deployment package authority
 
-Phase 3 may add a root local Compose facade and split the existing production
-Compose consumers to reviewed `image@sha256` inputs. Only after real layer and
-runtime measurements may a later decision split API, worker, or executor images.
-Neither phase may rename or duplicate `deploy/ai-platform/docker-compose.yml`, and
-both remain separate from release authority and runtime acceptance.
+The protected Packaging workflow assembles the runtime-only package after the
+ready manifest is verified. `tools/release_compose_package.py` reuses the
+reviewed Compose and OpenSandbox templates and replaces every service image
+with the exact `repository@sha256:...` reference resolved by CI. The archive
+contains no source tree, Git history, real environment file, mutable image tag,
+or host-specific secret.
+
+`deploy/ai-platform/deploy.py` is the single normal host entry point. It reads
+only the extracted package and the owner-held environment file. Its checks are
+ordered as follows: package and configuration identity, immutable local image
+identity, activity admission, a second activity check after admission is
+stopped, persistent-service preservation, migration, workspace initialization,
+application recreation, API/readiness/OpenSandbox checks, and Worker-heartbeat
+acceptance. A project-wide lock prevents concurrent package deployments.
+
+The package entry never asks GitHub for Actions or Release state, materializes a
+source checkout, builds an image, or updates a legacy subject file. `--check`
+is a no-change preflight. `--offline` skips the network pull only after the
+operator has loaded the exact package-bound images; it does not weaken digest
+verification. A failure after migration retains the data and stops application
+admission because restoring an old image is not proof of schema compatibility.
+
+The package's immutable Release and manifest are release authority; the running
+container image and independent post-deployment runtime checks are deployment
+and runtime evidence. The old source-checkout shell entry points and implicit
+latest selection are retired rather than kept as a second operator workflow.
+
+The package guide and [release operations runbook](../operations/release-operations-runbook.md)
+own the operator procedure. The host preparation guide remains separate because
+OpenSandbox systemd, network policy, credentials, and `runsc` are host inputs,
+not application package contents.
+
+## Compatibility and deletion proof
+
+The latest-Release resolver, source-checkout quickstart, their shell wrappers,
+and their dedicated tests are removed. `production_bootstrap.py` no longer
+contains application deployment, subject management, image rollback, or a release
+CLI. Backend CI runs the package entry tests instead of the removed controllers.
+
+Retained non-package tools have separate owners and consumers:
+
+- `release_authority.py` and its build/parity helpers support controlled builds
+  through `deploy-main-commit`, mirror probes and parity verification. The s75
+  transition imports `deploy_clean_commit` directly for migration and recovery.
+  Normal application installs and upgrades use the package entry.
+- `production_bootstrap.HostBootstrap` retains the secure host configuration,
+  unit rendering, and host-service recovery for the production OpenSandbox
+  systemd contract. `opensandbox_unit_guard.py` is invoked directly by that unit.
+- `s75_opensandbox_transition.py` retains the separately authorized migration
+  from the legacy sandbox topology and its network-guard validation.
+
+These host/build tools are not shipped in the application package. Retire their
+code and owning tests only when the corresponding host provisioning or legacy
+migration consumer is removed or replaced; test existence alone is not a
+compatibility reason. Do not add an ordinary deployment caller for them.

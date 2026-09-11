@@ -142,7 +142,9 @@ concrete authority class. HTTP status and wire DTOs remain transport concerns.
 `starter_prompts`, `capability_summary`, `recommended_tasks`,
 `supported_input_types`, `expected_outputs`,
 `permissions_and_data_access_notice`, `avatar_ref`, `avatar_seed`, `category`,
-and `published_at`.
+`completed_tasks`, and `published_at`. `completed_tasks` is the tenant-scoped
+count of successful runs for the published profile; it is a display statistic,
+not an admission or authorization field.
 
 Unknown fields are forbidden. Construction must call the Agent Apps public
 projection policy; serializing a persistence record, admitted private
@@ -182,6 +184,14 @@ paths, executor-private payloads, or secrets.
 Both projection models are closed typed records (`extra="forbid"`). Adding,
 renaming, or exposing a field is a product/security behavior change, not a
 source replay.
+
+`revision` remains the immutable server snapshot and optimistic-concurrency
+binding. It is not the business release number: saving a draft may create a
+new snapshot without creating a release. Published history uses the existing
+non-null `published_at` marker and numbers only those publication snapshots
+sequentially for administrator-facing `v1`, `v2`, and later releases. A
+previously published snapshot keeps that marker when a later publication
+demotes its lifecycle status, so the release sequence remains stable.
 
 `agent_profile_revisions.model_id` remains a private, not-null compatibility
 column only. Active Profile requests, projections, admission, and execution never

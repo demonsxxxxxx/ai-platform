@@ -4,7 +4,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
-from app.persistence import file_deletions, object_deletions
+from app.persistence import artifacts, file_deletions, object_deletions
 from app.routes import files as files_routes
 
 
@@ -46,6 +46,76 @@ def file_row(*, lifecycle_state="active", storage_key="private/file-a"):
         "storage_key": storage_key,
         "lifecycle_state": lifecycle_state,
     }
+
+
+
+
+@pytest.mark.asyncio
+async def test_provisional_artifact_cleanup_is_reserved_then_promoted_atomically():
+    storage_key = "tenants/tenant-a/runs/run-a/reconciliations/claim-a/artifacts/1/result.txt"
+    provisional = {
+        "id": "art_cleanup_a",
+        "tenant_id": "tenant-a",
+        "run_id": None,
+        "storage_key": storage_key,
+        "lifecycle_state": "delete_pending",
+        "manifest_json": {
+            "provisional_reconciliation_cleanup": True,
+            "expected_run_id": "run-a",
+        },
+    }
+    outbox = {
+        "id": "objdel_art_cleanup_a",
+        "tenant_id": "tenant-a",
+        "artifact_id": "art_cleanup_a",
+        "storage_key": storage_key,
+        "state": "pending",
+    }
+    conn = ScriptedConnection(None, provisional, None, outbox, outbox, None, provisional)
+
+    artifact_id = await artifacts.reserve_provisional_artifact_cleanup(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        storage_key=storage_key,
+    )
+    promoted = await artifacts.promote_provisional_artifact_cleanup(
+        conn,
+        artifact_id=artifact_id,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        storage_key=storage_key,
+    )
+
+    assert artifact_id.startswith("art_cleanup_")
+    assert promoted is True
+    statements = [statement for statement, _params in conn.calls]
+    assert "lifecycle_state, delete_requested_at" in statements[0]
+    assert "values ( %s, %s, null" in statements[0]
+    assert "'expected_run_id', %s::text" in statements[0]
+    assert "run_id is null" in statements[1]
+    assert "insert into object_deletion_outbox" in statements[2]
+    assert "on conflict (tenant_id, artifact_id) do update" in statements[2]
+    assert "state in ('pending', 'failed', 'dead_letter', 'deleted')" in statements[2]
+    assert "outbox.state = 'pending'" in statements[4]
+    assert "artifacts.run_id is null" in statements[4]
+    assert statements[5].startswith("delete from object_deletion_outbox")
+    assert statements[6].startswith("delete from artifacts")
+    assert "run_id is null" in statements[6]
+
+
+@pytest.mark.asyncio
+async def test_provisional_artifact_promotion_rejects_cleanup_already_in_progress():
+    conn = ScriptedConnection(None)
+
+    assert not await artifacts.promote_provisional_artifact_cleanup(
+        conn,
+        artifact_id="art_cleanup_a",
+        tenant_id="tenant-a",
+        run_id="run-a",
+        storage_key="private/result.txt",
+    )
+    assert len(conn.calls) == 1
 
 
 def outbox_row(*, state="file_pending", storage_key="private/file-a"):
@@ -248,6 +318,9 @@ async def test_claim_and_receipt_queries_bind_a_monotonic_lease_generation():
         in conn.calls[0][0]
     )
     assert "then 'file_processing'" in conn.calls[2][0]
+    assert "state = 'deleted'" in conn.calls[2][0]
+    assert "provisional_reconciliation_cleanup" in conn.calls[2][0]
+    assert "when state = 'deleted' then 1" in conn.calls[2][0]
 
     completion = ScriptedConnection({"id": "out-a"})
     assert await object_deletions.complete_object_deletion(
@@ -259,6 +332,7 @@ async def test_claim_and_receipt_queries_bind_a_monotonic_lease_generation():
     complete_sql, complete_params = completion.calls[0]
     assert "and lease_generation = %s" in complete_sql
     assert "updated_artifact" in complete_sql and "updated_file" in complete_sql
+    assert "provisional_reconciliation_cleanup" in complete_sql
     assert "exists (select 1 from updated_target)" in complete_sql
     assert "then 'file_deleted'" in complete_sql
     assert complete_params == ("out-a", "tenant-a", 9)

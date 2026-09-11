@@ -6,7 +6,11 @@ project status report and does not establish deployed runtime state.
 
 The keywords **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 Existing paths that predate this contract are migration exceptions, not
-precedent for new code.
+precedent for new code. Target paths and decision-baseline inventories below
+are not claims that migration or deployment has completed. The
+[system overview](system-architecture.md) owns the concise process map, and
+[runtime convergence](runtime-convergence.md) proposes cross-component delivery
+slices. Exact progress and exception dispositions remain in issue/PR.
 
 CI, test classification, runtime readiness, historical evidence, and external
 acceptance are governed by
@@ -231,6 +235,13 @@ Moving code MUST preserve lock acquisition order, transaction scope, identity
 binding, and side-effect ordering. A source move that changes one of those is a
 behavior change and requires a separate design and concurrency evidence.
 
+For an external-I/O transaction migration, record the current lock-based
+mechanism and its replacement claim, remote-operation identity and fenced
+receipt before moving the call. Database CAS alone is not proof that an
+already-issued remote effect stopped. See [runtime convergence](runtime-convergence.md)
+and its TX/Sandbox acceptance cases; current temporary exceptions remain until
+the replacement passes the owning contract and integration gates.
+
 ## 4. Runtime and data ownership
 
 This section maps source placement; the business authority remains
@@ -384,6 +395,21 @@ The following MUST move out of `app/` or be deleted after the applicable proof:
 Zero production registration is strong evidence that an adapter is not a
 supported runtime, but deletion still requires checking configured entrypoints,
 packaging, deploy manifests, scripts, docs, and external imports.
+
+### Legacy root inventory retirement
+
+`approved_root_modules` is a legacy allowance set. Every app-root Python module
+present in the trusted authority must be covered, but a deleted module may leave
+an unused allowance until the next ordinary policy cleanup. Removing an
+unbridged, unused root module must not invalidate the next change's authority.
+An allowance does not authorize adding or restoring a module absent from the
+change's base tree; new code belongs in its owning package.
+
+This rule does not retire a declared migration bridge, compatibility facade,
+registry, public entrypoint, or persisted contract. Their existing removal proof
+still applies. Candidate policy cannot repair an invalid trusted authority or
+self-authorize new production paths. Broken authority requires explicit trusted
+recovery rather than a candidate-policy exception.
 
 ## 7. Compatibility contract
 
@@ -650,25 +676,11 @@ inherited inactive exception when they are otherwise performing an authority-onl
 cleanup. The gate itself MUST be introduced in a later PR so the candidate that
 defines it cannot certify its own correctness.
 
-The immutable authority rule has one fail-closed recovery case. If the exact
-base policy cannot validate only because `approved_root_modules` no longer
-matches the exact base Git tree, a candidate MAY restore that inventory without
-an administrator bypass. The trusted base checker accepts the candidate policy
-only when all of the following hold:
-
-- the authority commit equals the base commit;
-- the candidate modifies `architecture-policy.json` in place and optionally deletes
-  the stale `.architecture-governance-exception.json`;
-- every policy field except `approved_root_modules` is semantically unchanged;
-- the approved inventory exactly equals the unchanged base and candidate
-  `app/*.py` root-module inventory;
-- no candidate architecture exception remains; and
-- the candidate policy still validates against the authority schema and all
-  normal policy contracts.
-
-This recovery path cannot change source, workflows, schemas, architecture
-rules, exception scope, or any other policy value. Every broader repair remains
-blocked and requires the normal trusted governance process.
+The trusted authority must validate before candidate evaluation. A stale root
+allowance is permitted when its module has been deleted, but a candidate cannot
+use that allowance to add or restore root code. Any invalid authority remains
+blocked and requires an explicit trusted recovery process; a candidate policy
+cannot repair it.
 
 ## 13. Review checklist for every backend PR
 

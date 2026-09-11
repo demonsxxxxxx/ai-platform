@@ -1,8 +1,8 @@
 import type {
   AgentProfileAdminProjection,
   AgentProfileDraftRequest,
+  AgentProfileSkillReference,
   PublicSkillResponse,
-  SelectedSkillRequest,
   ToolState,
 } from "../../types";
 
@@ -20,6 +20,20 @@ export interface AgentBuilderCurrentCatalog {
   effectivePermissionsKnown: boolean;
 }
 
+function parseMarketTags(value: string): string[] {
+  return [...new Set(value.split(/[,，\n]/).map((tag) => tag.trim()).filter(Boolean))];
+}
+
+function serializeMarketTags(tags: readonly string[]): string {
+  return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].join("\n");
+}
+
+function profileMarketTags(profile: AgentProfileAdminProjection): string[] {
+  const tags = profile.market_tags?.map((tag) => tag.trim()).filter(Boolean) ?? [];
+  if (tags.length > 0) return [...new Set(tags)];
+  return profile.market_tag?.trim() ? [profile.market_tag.trim()] : [];
+}
+
 export interface AgentBuilderEditor {
   agentId: string | null;
   revision: number | null;
@@ -35,7 +49,7 @@ export interface AgentBuilderEditor {
   expectedOutputs: string[];
   permissionsAndDataAccessNotice: string;
   instructions: string;
-  selectedSkills: SelectedSkillRequest[];
+  selectedSkills: AgentProfileSkillReference[];
   selectedMcpToolIds: string[];
   avatarRef: AgentProfileDraftRequest["avatar_ref"];
   avatarSeed: string;
@@ -47,6 +61,20 @@ export interface AgentBuilderEditor {
   allowedRoles: string[];
   allowedUserIds: string[];
   materializedProfile: AgentProfileAdminProjection | null;
+}
+
+/** Number only snapshots that were actually published; draft saves are not releases. */
+export function listPublishedAgentProfileVersions(
+  profiles: readonly AgentProfileAdminProjection[],
+) {
+  return [...profiles]
+    .filter((profile) => Boolean(profile.published_at) || profile.status === "published")
+    .sort((left, right) => {
+      const leftPublishedAt = Date.parse(String(left.published_at ?? left.created_at ?? "")) || 0;
+      const rightPublishedAt = Date.parse(String(right.published_at ?? right.created_at ?? "")) || 0;
+      return leftPublishedAt - rightPublishedAt || left.revision - right.revision;
+    })
+    .map((profile, index) => ({ profile, version: index + 1 }));
 }
 
 export type AgentBuilderBlockCode =
@@ -163,13 +191,13 @@ export function hydrateAgentProfileEditor(
     selectedSkills: (profile.skill_set?.length
       ? profile.skill_set
       : [profile.selected_skill]
-    ).map((skill) => ({ ...skill })),
+    ).map((skill) => ({ skill_id: skill.skill_id })),
     selectedMcpToolIds: [...profile.mcp_tool_ids],
     avatarRef: profile.avatar_ref,
     avatarSeed: profile.avatar_seed?.trim() || profile.agent_id,
     avatarAssetId: profile.avatar_asset_id,
     category: profile.category,
-    marketTag: profile.market_tag ?? "",
+    marketTag: serializeMarketTags(profileMarketTags(profile)),
     visibility: profile.visibility,
     allowedDepartmentIds: [...profile.allowed_department_ids],
     allowedRoles: [...profile.allowed_roles],
@@ -177,11 +205,11 @@ export function hydrateAgentProfileEditor(
     materializedProfile: {
       ...profile,
       market_tag: profile.market_tag ?? "",
-      selected_skill: { ...profile.selected_skill },
+      selected_skill: { skill_id: profile.selected_skill.skill_id },
       skill_set: (profile.skill_set?.length
         ? profile.skill_set
         : [profile.selected_skill]
-      ).map((skill) => ({ ...skill })),
+      ).map((skill) => ({ skill_id: skill.skill_id })),
       mcp_tool_ids: [...profile.mcp_tool_ids],
       starter_prompts: [...profile.starter_prompts],
       recommended_tasks: [...profile.recommended_tasks],
@@ -207,13 +235,14 @@ function editorDefinition(editor: AgentBuilderEditor) {
     permissions_and_data_access_notice: editor.permissionsAndDataAccessNotice.trim(),
     instructions: editor.instructions,
     selected_skill: editor.selectedSkills[0] ?? null,
-    skill_set: editor.selectedSkills,
+    skill_set: editor.selectedSkills.map((skill) => ({ skill_id: skill.skill_id })),
     mcp_tool_ids: editor.selectedMcpToolIds,
     avatar_ref: editor.avatarRef,
     avatar_seed: editor.avatarSeed.trim(),
     avatar_asset_id: editor.avatarAssetId,
     category: editor.category,
-    market_tag: editor.marketTag.trim(),
+    market_tag: parseMarketTags(editor.marketTag)[0] ?? "",
+    market_tags: parseMarketTags(editor.marketTag),
     visibility: editor.visibility,
     allowed_department_ids: editor.allowedDepartmentIds,
     allowed_roles: editor.allowedRoles,
@@ -233,14 +262,18 @@ function profileDefinition(profile: AgentProfileAdminProjection) {
     expected_outputs: profile.expected_outputs,
     permissions_and_data_access_notice: profile.permissions_and_data_access_notice,
     instructions: profile.instructions,
-    selected_skill: profile.selected_skill,
-    skill_set: profile.skill_set?.length ? profile.skill_set : [profile.selected_skill],
+    selected_skill: { skill_id: profile.selected_skill.skill_id },
+    skill_set: (profile.skill_set?.length
+      ? profile.skill_set
+      : [profile.selected_skill]
+    ).map((skill) => ({ skill_id: skill.skill_id })),
     mcp_tool_ids: profile.mcp_tool_ids,
     avatar_ref: profile.avatar_ref,
     avatar_seed: profile.avatar_seed?.trim() || profile.agent_id,
     avatar_asset_id: profile.avatar_asset_id,
     category: profile.category,
-    market_tag: profile.market_tag ?? "",
+    market_tag: profileMarketTags(profile)[0] ?? "",
+    market_tags: profileMarketTags(profile),
     visibility: profile.visibility,
     allowed_department_ids: profile.allowed_department_ids,
     allowed_roles: profile.allowed_roles,
@@ -287,7 +320,7 @@ export function hasUnsavedAgentProfileEdits(editor: AgentBuilderEditor): boolean
   );
 }
 
-/** Find exact current catalog identities without replacing stale server pins. */
+/** Find current catalog Skill names without replacing their package hashes. */
 export function validateAgentProfileEditor(
   editor: AgentBuilderEditor,
   catalog: AgentBuilderCurrentCatalog,
@@ -310,8 +343,7 @@ export function validateAgentProfileEditor(
     return catalog.skills.some(
       (skill) =>
         skill.enabled &&
-        skill.name === selection.skill_id &&
-        skill.expected_version === selection.expected_version,
+        skill.name === selection.skill_id,
     );
   });
   if (!selectedSkillsAreCurrent) return { code: "selected_skill_stale" };
@@ -341,7 +373,7 @@ export function getAgentProfilePublishBlock(
   return validateAgentProfileEditor(editor, catalog);
 }
 
-/** Materialize the exact optimistic-lock request accepted by agentProfileApi. */
+/** Materialize the optimistic-lock request using Skill names, not package hashes. */
 export function buildAgentProfileDraftRequest(
   editor: AgentBuilderEditor,
 ): AgentProfileDraftRequest {
@@ -359,14 +391,15 @@ export function buildAgentProfileDraftRequest(
     expected_outputs: editor.expectedOutputs.map((item) => item.trim()).filter(Boolean),
     permissions_and_data_access_notice: editor.permissionsAndDataAccessNotice.trim(),
     instructions: editor.instructions,
-    selected_skill: { ...editor.selectedSkills[0] },
-    skill_set: editor.selectedSkills.map((skill) => ({ ...skill })),
+    selected_skill: { skill_id: editor.selectedSkills[0].skill_id },
+    skill_set: editor.selectedSkills.map((skill) => ({ skill_id: skill.skill_id })),
     mcp_tool_ids: [...editor.selectedMcpToolIds],
     avatar_ref: editor.avatarRef,
     avatar_seed: editor.avatarSeed.trim() || editor.name.trim(),
     avatar_asset_id: editor.avatarAssetId,
     category: editor.category,
-    market_tag: editor.marketTag.trim(),
+    market_tag: parseMarketTags(editor.marketTag)[0] ?? "",
+    market_tags: parseMarketTags(editor.marketTag),
     visibility: editor.visibility,
     allowed_department_ids: [...editor.allowedDepartmentIds],
     allowed_roles: [...editor.allowedRoles],
@@ -385,7 +418,7 @@ export function agentBuilderBlockReason(issue: AgentBuilderValidationIssue): str
     case "instructions_required":
       return "缺少 Agent.md 初始指令，请填写后再保存。";
     case "skill_required":
-      return "缺少 Skill，请至少选择一个已授权版本。";
+      return "缺少 Skill，请至少选择一个已授权 Skill。";
     case "skill_limit_exceeded":
       return "一位专家最多可选择 32 个 Skill，请移除多余项。";
     case "profile_revision_missing":

@@ -575,7 +575,9 @@ async def read_event_rows(
     """Read one incremental event page after a run-bound cursor."""
 
     _require_nonempty(tenant_id, field_name="tenant_id")
-    if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1):
+    if limit is not None and (
+        isinstance(limit, bool) or not isinstance(limit, int) or limit < 1
+    ):
         raise ValueError("run_event_page_limit_invalid")
     limit_clause = "limit %s" if limit is not None else ""
     params: tuple[object, ...] = (tenant_id, cursor.run_id, cursor.sequence)
@@ -583,12 +585,23 @@ async def read_event_rows(
         params += (limit,)
     result = await conn.execute(
         f"""
-        select id, trace_id, schema_version, sequence, event_type, stage, message, severity, visible_to_user,
-               error_code, latency_ms, input_token_count, output_token_count, total_token_count,
-               estimated_cost_minor, payload_json, created_at
-        from run_events
-        where tenant_id = %s and run_id = %s and sequence > %s
-        order by sequence asc, created_at asc
+        select event.id, event.tenant_id, event.run_id, event.trace_id,
+               event.schema_version, event.sequence, event.event_type, event.stage,
+               event.message, event.severity, event.visible_to_user,
+               event.error_code, event.latency_ms, event.input_token_count,
+               event.output_token_count, event.total_token_count,
+               event.estimated_cost_minor, event.payload_json,
+               event.stream_publication_state, event.created_at,
+               exists (
+                   select 1
+                   from run_attempts as attempt
+                   where attempt.tenant_id = event.tenant_id
+                     and attempt.run_id = event.run_id
+                     and attempt.id = event.payload_json -> '__stream_v4' ->> 'attempt_id'
+               ) as v4_attempt_authorized
+        from run_events as event
+        where event.tenant_id = %s and event.run_id = %s and event.sequence > %s
+        order by event.sequence asc, event.created_at asc
         {limit_clause}
         """,
         params,

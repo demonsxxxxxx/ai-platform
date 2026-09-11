@@ -19,7 +19,17 @@ def load_verify_multiuser_poc():
     return module
 
 
-def test_default_sample_docx_contains_translatable_text(tmp_path):
+def test_foundation_fixture_does_not_write_retired_inferred_skill_usage():
+    module = load_verify_multiuser_poc()
+    sql = module.build_foundation_runtime_fixture_sql(
+        [module.Account(label="user-a", username="user-a", password="pw", tenant_id="frc-test-user-a")]
+    )
+
+    assert "inferred_used" not in sql
+    assert "used_skills_source, inferred_used" not in sql
+
+
+def test_default_sample_docx_contains_review_text(tmp_path):
     module = load_verify_multiuser_poc()
     sample_path = tmp_path / "sample.docx"
 
@@ -29,7 +39,7 @@ def test_default_sample_docx_contains_translatable_text(tmp_path):
         document_xml = archive.read("word/document.xml").decode("utf-8")
 
     assert "This document contains text" in document_xml
-    assert "请将这段中文内容翻译为英文" in document_xml
+    assert "请审核这份文档并保留原始含义。" in document_xml
 
 
 def test_run_case_fetches_context_snapshot_public_projection(monkeypatch):
@@ -323,9 +333,9 @@ def test_main_fails_closed_when_context_pack_version_is_missing(monkeypatch, tmp
             "queue_position": 1,
             "status": "completed",
             "raw_status": "succeeded",
-            "artifact_ids": ["art_a"] if case_name in {"word-review", "word-translate"} else [],
+            "artifact_ids": ["art_a"] if case_name == "word-review" else [],
             "downloads": [{"artifact_id": "art_a", "owner_status": 200, "owner_bytes": 42}]
-            if case_name in {"word-review", "word-translate"}
+            if case_name == "word-review"
             else [],
             "has_tmp_path": False,
             "context_snapshot_public_projection": {
@@ -747,7 +757,7 @@ def test_foundation_runtime_fixture_agents_use_isolated_ids_and_workspaces():
     assert len(specs) == 12
     assert all(spec.workspace_id.startswith("frc_test_") for spec in specs)
     assert all(spec.agent_id.startswith("frc_agent_") for spec in specs)
-    assert {spec.skill_id for spec in specs} == {"general-chat", "qa-file-reviewer", "baoyu-translate"}
+    assert {spec.skill_id for spec in specs} == {"general-chat", "qa-file-reviewer"}
     assert {
         module.fixture_agent_id_for_skill(spec.account, spec.skill_id)
         for spec in specs

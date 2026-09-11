@@ -57,6 +57,8 @@ interface SessionSidebarProps {
   };
   /** Navigation-only shells expose Agent services without generic Chat history. */
   navigationOnly?: boolean;
+  /** Allow a navigation-only shell to show global history without chat actions. */
+  showSessionHistory?: boolean;
 }
 
 export interface SessionSidebarSessionSource {
@@ -96,6 +98,7 @@ export const SessionSidebar = forwardRef<
     sessionSource,
     agentWorkspace,
     navigationOnly = false,
+    showSessionHistory = false,
   },
   ref,
 ) {
@@ -144,7 +147,8 @@ export const SessionSidebar = forwardRef<
 
   const defaultSessionList = useSessionList(
     scrollEl,
-    sessionSource === undefined && !navigationOnly,
+    sessionSource === undefined &&
+      (!navigationOnly || showSessionHistory),
   );
   const sessionList = sessionSource ?? defaultSessionList;
   const { ref: agentLoadMoreRef, inView: agentLoadMoreVisible } = useInView({
@@ -358,6 +362,7 @@ export const SessionSidebar = forwardRef<
             agentWorkspace={agentWorkspace}
             hideSessionDiscovery={agentWorkspace !== undefined}
             navigationOnly={navigationOnly}
+            showSessionHistory={showSessionHistory}
           />
         ) : (
           <div className="flex-1" />
@@ -400,6 +405,7 @@ export const SessionSidebar = forwardRef<
               agentWorkspace={agentWorkspace}
               hideSessionDiscovery={agentWorkspace !== undefined}
               navigationOnly={navigationOnly}
+              showSessionHistory={showSessionHistory}
             />
           </div>
         ) : (

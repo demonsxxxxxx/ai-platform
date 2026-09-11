@@ -12,6 +12,7 @@ FRONTEND_WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-frontend.yml"
 
 PYTHON_VERSION = "3.13.14"
 NODE_VERSION = "22.23.2"
+NODE_MIN_VERSION = "22.13.0"
 PNPM_VERSION = "10.32.1"
 UV_VERSION = "0.12.1"
 
@@ -19,7 +20,7 @@ EXPECTED_BASES = {
     "python:3.13.14-slim-bookworm@sha256:67a1e1f215ccda113cfc024e8639049257e88f273898f595b61476d128d387e8",
     "ghcr.io/astral-sh/uv:0.12.1@sha256:cf4eedcaa81655197f625739489effcbe71b61ceb1506f332c3facae5deceded",
     "node:22.23.2-bookworm@sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a",
-    "nginx:1.30.4-alpine@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46",
+    "nginx:1.30.4-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c",
 }
 
 
@@ -72,7 +73,7 @@ def test_python_lock_is_the_install_authority_for_ci_and_the_backend_image():
     )
 
 
-def test_python_node_and_package_manager_versions_cannot_drift():
+def test_python_node_and_package_manager_versions_are_pinned_and_supported():
     backend_dockerfile = BACKEND_DOCKERFILE.read_text(encoding="utf-8")
     frontend_dockerfile = FRONTEND_DOCKERFILE.read_text(encoding="utf-8")
     backend_workflow = BACKEND_WORKFLOW.read_text(encoding="utf-8")
@@ -86,7 +87,10 @@ def test_python_node_and_package_manager_versions_cannot_drift():
     assert f'FRONTEND_PYTHON_VERSION: "{PYTHON_VERSION}"' in frontend_workflow
     assert f"node:{NODE_VERSION}-bookworm@sha256:" in frontend_dockerfile
     assert f'FRONTEND_NODE_VERSION: "{NODE_VERSION}"' in frontend_workflow
-    assert package["engines"]["node"] == NODE_VERSION
+    assert package["engines"]["node"] == f">={NODE_MIN_VERSION}"
+    assert tuple(map(int, NODE_VERSION.split("."))) >= tuple(
+        map(int, NODE_MIN_VERSION.split("."))
+    )
     assert package["packageManager"] == f"pnpm@{PNPM_VERSION}"
     assert f"ghcr.io/astral-sh/uv:{UV_VERSION}@sha256:" in backend_dockerfile
     assert f'UV_VERSION: "{UV_VERSION}"' in backend_workflow

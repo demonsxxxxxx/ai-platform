@@ -26,7 +26,13 @@ RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION = "2026.08.30.1"
 RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SCHEMA_VERSION = "2026.08.30.2"
 RUN_ATTEMPT_HEARTBEAT_CLOCK_SAFETY_SCHEMA_VERSION = "2026.08.30.3"
 EXPERT_MARKET_SCHEMA_VERSION = "2026.09.01.1"
-TARGET_SCHEMA_VERSION = EXPERT_MARKET_SCHEMA_VERSION
+AGENT_AVATAR_STYLE_SCHEMA_VERSION = "2026.09.01.2"
+USER_PROFILE_METADATA_SCHEMA_VERSION = "2026.09.02.1"
+FILE_UPLOAD_SESSION_SCHEMA_VERSION = "2026.09.03.1"
+EXPERT_SKILL_NAME_SCHEMA_VERSION = "2026.09.03.2"
+EXPERT_MARKET_MULTI_TAG_SCHEMA_VERSION = "2026.09.07.2"
+OBSOLETE_SKILL_CATALOG_CLEANUP_SCHEMA_VERSION = "2026.09.11.1"
+TARGET_SCHEMA_VERSION = OBSOLETE_SKILL_CATALOG_CLEANUP_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # Keeping this ledger stable preserves readiness for the saved rollback binary.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION
@@ -36,6 +42,7 @@ INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
     "schema_migrations",
     "schema_index_migrations",
+    "users",
     "runs",
     "model_gateway_revisions",
     "model_catalog_entries",
@@ -47,6 +54,7 @@ CRITICAL_RELATIONS = (
     "sse_stream_rebuild_items",
     "messages",
     "files",
+    "file_upload_sessions",
     "artifacts",
     "object_deletion_outbox",
     "audit_logs",
@@ -56,10 +64,13 @@ CRITICAL_RELATIONS = (
     "mcp_tools",
 )
 CRITICAL_COLUMNS = (
+    ("users", "metadata_json", "jsonb", True),
     ("sessions", "title_source", "text", True),
     ("agent_profile_revisions", "skill_set", "jsonb", True),
     ("agent_profile_revisions", "avatar_seed", "text", True),
+    ("agent_profile_revisions", "avatar_style_ref", "text", True),
     ("agent_profile_revisions", "market_tag", "text", True),
+    ("agent_profile_revisions", "market_tags", "jsonb", True),
     # Temporary physical compatibility for the previous binary; product DTOs ignore it.
     ("agent_profile_revisions", "supported_file_types", "jsonb", True),
     ("runs", "execution_kind", "text", True),
@@ -200,6 +211,7 @@ CRITICAL_COLUMNS = (
     ("mcp_server_credentials", "credential_envelope", "text", True),
 )
 CRITICAL_CONSTRAINTS = (
+    ("users", "chk_users_metadata_json_object"),
     ("runs", "fk_runs_model_gateway_revision"),
     ("model_gateway_revisions", "chk_model_gateway_revision_positive"),
     ("model_gateway_revisions", "chk_model_gateway_base_url"),
@@ -244,6 +256,7 @@ CRITICAL_CONSTRAINTS = (
     ("sse_stream_rebuild_items", "uq_sse_stream_rebuild_item_event"),
     ("files", "chk_files_lifecycle_state"),
     ("artifacts", "chk_artifacts_lifecycle_state"),
+    ("artifacts", "chk_artifacts_run_owner"),
     ("object_deletion_outbox", "chk_object_deletion_outbox_state"),
     ("object_deletion_outbox", "chk_object_deletion_outbox_target"),
     ("object_deletion_outbox", "chk_object_deletion_outbox_target_state"),
@@ -344,6 +357,12 @@ MODEL_CRITICAL_CONSTRAINT_DEFINITIONS = (
 )
 
 CRITICAL_CONSTRAINT_DEFINITIONS = (
+    (
+        "users",
+        "chk_users_metadata_json_object",
+        "c",
+        "CHECK ((jsonb_typeof(metadata_json) = 'object'::text))",
+    ),
     (
         "mcp_servers",
         "mcp_servers_endpoint_not_persisted",
@@ -586,6 +605,26 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "c",
         "CHECK (lifecycle_state = ANY (ARRAY["
         "'active'::text, 'delete_pending'::text, 'deleted'::text]))",
+    ),
+    (
+        "artifacts",
+        "chk_artifacts_lifecycle_state",
+        "c",
+        "CHECK (lifecycle_state = ANY (ARRAY["
+        "'active'::text, 'delete_pending'::text, 'deleted'::text]))",
+    ),
+    (
+        "artifacts",
+        "chk_artifacts_run_owner",
+        "c",
+        "CHECK (run_id IS NOT NULL AND lifecycle_state = 'active'::text OR "
+        "run_id IS NULL AND lifecycle_state = 'delete_pending'::text "
+        "AND manifest_json @> '{\"provisional_reconciliation_cleanup\": true}'::jsonb "
+        "AND NULLIF(manifest_json ->> 'expected_run_id'::text, ''::text) IS NOT NULL OR "
+        "run_id IS NULL AND (lifecycle_state = ANY (ARRAY["
+        "'delete_pending'::text, 'deleted'::text])) "
+        "AND manifest_json @> '{\"retention_artifact_cleanup\": true}'::jsonb "
+        "AND NULLIF(manifest_json ->> 'deletion_owner_run_id'::text, ''::text) IS NOT NULL)",
     ),
     (
         "object_deletion_outbox",

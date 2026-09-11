@@ -2,9 +2,10 @@ import base64
 import binascii
 import inspect
 import shutil
+import threading
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, Callable, ClassVar
 
 from app import control_plane_contracts as run_controls, repositories
 from app.capabilities import required_artifact_types_for_skill
@@ -48,11 +49,15 @@ from app.executors.claude_agent_sdk_runner import (
     run_claude_agent_sdk,
     sandbox_runtime_tool_policy_subjects as _sandbox_runtime_tool_policy_subjects,
 )
-from app.executors.claude.prompts import build_harness_chat_prompt
+from app.executors.claude.prompts import (
+    CurrentRequestTooLargeError,
+    build_harness_chat_prompt,
+)
 from app.execution.api import (
     SkillInvocationEvidenceBinder,
     claude_sdk_failure_code,
     claude_sdk_failure_message,
+    collect_workspace_artifacts,
     sandbox_reconciliation_payload,
 )
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
@@ -76,6 +81,7 @@ from app.runtime.sandbox.container_provider import (
 )
 from app.runtime.sandbox.contracts import ContextRetrievalScope, SandboxRuntimeRequest
 from app.runtime.sandbox.runtime import SandboxRuntime
+from app.sandbox.api import normalize_sdk_runtime_diagnostics
 from app.session_continuity import sdk_session_id_for_run
 from app.settings import get_settings
 from app.skills.catalog import (
@@ -90,11 +96,7 @@ from app.skills.pinning import (
 )
 from app.skills.registry import BuiltinSkill, BuiltinSkillRegistry, skill_content_hash
 from app.skills.stager import SkillStager
-from app.storage import ObjectStorage
-
-_MAX_WORKSPACE_ARTIFACT_FILES = 128
-_MAX_WORKSPACE_ARTIFACT_FILE_BYTES = 64 * 1024 * 1024
-_MAX_WORKSPACE_ARTIFACT_TOTAL_BYTES = 256 * 1024 * 1024
+from app.storage import ObjectStorage, ObjectStorageSizeLimitError, run_storage_io
 
 _SANDBOX_SUCCESS_TERMINAL_STATUSES = {"completed", "succeeded"}
 _TOOL_PERMISSION_POLL_INTERVAL_SECONDS = 0.25
@@ -122,7 +124,7 @@ async def _emit_public_progress_event(
 def _capability_completion_decision(
     plan: CapabilityExecutionPlan, *, binding: dict[str, object], evidence: object
 ) -> RequiredCapabilityDecision:
-    """Validate every observed invocation and each explicit requirement."""
+    """Validate every observed invocation against the authorized capability set."""
 
     mismatch = RequiredCapabilityDecision(False, "required_tool_completion_evidence_mismatch", "", "")
     if not isinstance(evidence, list):
@@ -153,18 +155,7 @@ def _capability_completion_decision(
         )
         if not decision.allowed:
             return decision
-    for declaration in plan.required:
-        match_count = sum(
-            key[:2] == (declaration.capability_kind, declaration.canonical_identity)
-            for key in groups
-        )
-        if not match_count:
-            return selected_capability_completion_decision(
-                declarations=[declaration], binding=binding, evidence=[]
-            )
-        if match_count != 1:
-            return mismatch
-    reason = "required_tool_completion_evidence_valid" if plan.required or groups else "required_capability_not_selected"
+    reason = "required_tool_completion_evidence_valid" if groups else "required_capability_not_selected"
     return RequiredCapabilityDecision(True, reason, "", "")
 
 
@@ -172,14 +163,12 @@ def _capability_execution_error(
     payload: RunPayload,
     evidence: object,
     *,
-    required_skill_identity: object = None,
     available_skill_identities: object = (),
 ) -> str | None:
     """Validate only the authorized capability invocations that actually occurred."""
 
     plan = CapabilityExecutionPlan.from_tool_policy_subjects(
         payload.input.get("_runtime_tool_policy_subjects"),
-        required_skill_identity=required_skill_identity,
         available_skill_identities=available_skill_identities,
     )
     decision = _capability_completion_decision(
@@ -1258,19 +1247,43 @@ class ClaudeAgentWorkerAdapter:
             "file_names": file_names,
             "context_pack": prompt_context_pack,
         }
-        prompt = (
-            build_harness_chat_prompt(**prompt_builder_kwargs)
-            if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
-            else build_skill_prompt(
-                skill_id=str(payload.skill_id),
-                authorized_skill_catalog=(
-                    authorized_catalog.snapshot
-                    if authorized_catalog is not None
-                    else None
-                ),
-                **prompt_builder_kwargs,
+        try:
+            prompt = (
+                build_harness_chat_prompt(**prompt_builder_kwargs)
+                if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
+                else build_skill_prompt(
+                    skill_id=str(payload.skill_id),
+                    authorized_skill_catalog=(
+                        authorized_catalog.snapshot
+                        if authorized_catalog is not None
+                        else None
+                    ),
+                    **prompt_builder_kwargs,
+                )
             )
-        )
+        except CurrentRequestTooLargeError:
+            return None, ExecutorResult(
+                status="failed",
+                adapter_version=self.adapter_version,
+                executor_type=self.executor_type,
+                executor_version=self.executor_version,
+                capabilities=self.capabilities,
+                result={
+                    "message": "Current request exceeds the execution limit",
+                    "error_code": "current_request_too_large",
+                    "sdk_used": False,
+                    "sdk_error": "current_request_too_large",
+                    "delegate_used": False,
+                    "worker_boundary": self.executor_type,
+                },
+                artifacts=[],
+                executor_payload={
+                    "sdk_used": False,
+                    "sdk_error": "current_request_too_large",
+                    "delegate_used": False,
+                    "worker_boundary": self.executor_type,
+                },
+            )
         return (
             PreparedSdkRun(
                 workspace=resolved_workspace,
@@ -1364,7 +1377,6 @@ class ClaudeAgentWorkerAdapter:
             context_retrieval_scope=self._context_retrieval_scope_for_payload(payload, context_pack),
             sdk_session_id=sdk_session_id_for_run(payload.run_id),
             governed_permission_wait=False,
-            require_selected_skill_invocation=False,
             reconciliation_context=reconciliation_context,
         )
         runtime = sandbox_runtime or SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
@@ -1484,19 +1496,37 @@ class ClaudeAgentWorkerAdapter:
                 if isinstance(value, dict)
             },
         )
+        storage_scope = str(adapter_context.get("_artifact_storage_scope") or "")
+        abandoned = adapter_context.get("_artifact_collection_abandoned")
+        if abandoned is not None and not isinstance(abandoned, threading.Event):
+            raise ValueError("artifact collection abandonment signal is invalid")
+        reserve_artifact_storage = adapter_context.get("_reserve_artifact_storage")
+        if reserve_artifact_storage is not None and not callable(reserve_artifact_storage):
+            raise ValueError("artifact storage reservation callback is invalid")
         runtime_result = _PersistedSandboxRuntimeResult(
             status=str(terminal_result.get("status") or ""),
             provider=provider,
             executor_response=dict(terminal_result),
             timings=dict(timings or {}),
         )
-        return self._executor_result_from_sandbox_runtime(payload, prepared, runtime_result)
+        return self._executor_result_from_sandbox_runtime(
+            payload,
+            prepared,
+            runtime_result,
+            storage_scope=storage_scope,
+            abandoned=abandoned,
+            reserve_storage=reserve_artifact_storage,
+        )
 
     def _executor_result_from_sandbox_runtime(
         self,
         payload: RunPayload,
         prepared: PreparedSdkRun | PreparedSandboxFinalization,
         runtime_result: object,
+        *,
+        storage_scope: str = "",
+        abandoned: threading.Event | None = None,
+        reserve_storage: Callable[[str], str] | None = None,
     ) -> ExecutorResult:
         executor_response = (
             dict(getattr(runtime_result, "executor_response", {}))
@@ -1528,17 +1558,9 @@ class ClaudeAgentWorkerAdapter:
                 "used_skills_source": executor_response.get("used_skills_source", ""),
             },
         )()
-        reported_used_skill_names = _sdk_used_skill_names(
-            runtime_sdk_result,
-            prepared.staged_skill_names,
-            allow_platform_controlled_runner=True,
-        )
         selected_capability_error = _capability_execution_error(
             payload,
             capability_evidence,
-            required_skill_identity=(
-                payload.skill_id if payload.skill_id in reported_used_skill_names else None
-            ),
             available_skill_identities=prepared.allowed_skill_names,
         )
         runtime_tool_evidence = validate_runtime_tool_evidence(
@@ -1561,7 +1583,6 @@ class ClaudeAgentWorkerAdapter:
             allow_platform_controlled_runner=selected_capability_error is None,
         )
         used_skills_source = _sdk_used_skills_source(runtime_sdk_result, used_skill_names)
-        inferred_used_skill_names = _inferred_used_skill_names(payload, prepared.staged_skill_names)
         skill_manifests = (
             _skill_manifests_from_catalog(
                 prepared.skill_manifests,
@@ -1588,7 +1609,6 @@ class ClaudeAgentWorkerAdapter:
             "staged_skills": prepared.staged_skill_names,
             "used_skills": used_skill_names,
             "used_skills_source": used_skills_source,
-            "inferred_used_skills": inferred_used_skill_names,
             "skill_manifests": skill_manifests,
             "sandbox_provider": sandbox_provider,
             "sandbox_runtime_used": True,
@@ -1596,6 +1616,19 @@ class ClaudeAgentWorkerAdapter:
             "sandbox_timings": sandbox_timings,
             "capability_evidence": capability_evidence,
             **runtime_tool_evidence.private_payload(),
+        }
+        runtime_diagnostics = normalize_sdk_runtime_diagnostics(
+            executor_response.get("runtime_diagnostics")
+        )
+        failure_result_context = {
+            "sdk_used": bool(executor_response.get("sdk_used")),
+            "sdk_session_id": executor_response.get("sdk_session_id"),
+            "delegate_used": False,
+            "worker_boundary": self.executor_type,
+            "allowed_skills": prepared.allowed_skill_names,
+            "staged_skills": prepared.staged_skill_names,
+            "used_skills": used_skill_names,
+            "runtime_diagnostics": runtime_diagnostics,
         }
         if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES and selected_capability_error is not None:
             turn_diagnostics = _public_sdk_turn_diagnostics(
@@ -1614,21 +1647,16 @@ class ClaudeAgentWorkerAdapter:
                 result={
                     "message": "Capability execution evidence was incomplete. Please retry.",
                     "error_code": selected_capability_error,
-                    "sdk_used": bool(executor_response.get("sdk_used")),
-                    "sdk_session_id": executor_response.get("sdk_session_id"),
                     "sdk_error": selected_capability_error,
-                    "delegate_used": False,
-                    "worker_boundary": self.executor_type,
-                    "allowed_skills": prepared.allowed_skill_names,
-                    "staged_skills": prepared.staged_skill_names,
-                    "used_skills": used_skill_names,
                     "sdk_turn_diagnostics": turn_diagnostics,
+                    **failure_result_context,
                 },
                 artifacts=[],
                 executor_payload={
                     **common_payload,
                     "sdk_error": selected_capability_error,
                     "sdk_turn_diagnostics": turn_diagnostics,
+                    "runtime_diagnostics": runtime_diagnostics,
                 },
             )
         if runtime_status == "accepted":
@@ -1650,21 +1678,16 @@ class ClaudeAgentWorkerAdapter:
                 result={
                     "message": message,
                     "error_code": error_code,
-                    "sdk_used": bool(executor_response.get("sdk_used")),
-                    "sdk_session_id": executor_response.get("sdk_session_id"),
                     "sdk_error": error_code,
-                    "delegate_used": False,
-                    "worker_boundary": self.executor_type,
-                    "allowed_skills": prepared.allowed_skill_names,
-                    "staged_skills": prepared.staged_skill_names,
-                    "used_skills": used_skill_names,
                     "sdk_turn_diagnostics": turn_diagnostics,
+                    **failure_result_context,
                 },
                 artifacts=[],
                 executor_payload={
                     **common_payload,
                     "sdk_error": error_code,
                     "sdk_turn_diagnostics": turn_diagnostics,
+                    "runtime_diagnostics": runtime_diagnostics,
                 },
             )
         if runtime_status not in _SANDBOX_SUCCESS_TERMINAL_STATUSES:
@@ -1697,25 +1720,26 @@ class ClaudeAgentWorkerAdapter:
                 result={
                     "message": message,
                     "error_code": error_code,
-                    "sdk_used": bool(executor_response.get("sdk_used")),
-                    "sdk_session_id": executor_response.get("sdk_session_id"),
                     "sdk_error": sdk_error,
-                    "delegate_used": False,
-                    "worker_boundary": self.executor_type,
-                    "allowed_skills": prepared.allowed_skill_names,
-                    "staged_skills": prepared.staged_skill_names,
-                    "used_skills": used_skill_names,
                     "sdk_turn_diagnostics": turn_diagnostics,
+                    **failure_result_context,
                 },
                 artifacts=[],
                 executor_payload={
                     **common_payload,
                     "sdk_error": sdk_error,
                     "sdk_turn_diagnostics": turn_diagnostics,
+                    "runtime_diagnostics": runtime_diagnostics,
                 },
             )
 
-        artifacts = self._collect_workspace_artifacts(payload, prepared.workspace)
+        artifacts = self._collect_workspace_artifacts(
+            payload,
+            prepared.workspace,
+            storage_scope=storage_scope,
+            abandoned=abandoned,
+            reserve_storage=reserve_storage,
+        )
         turn_diagnostics = _public_sdk_turn_diagnostics(
             payload,
             executor_response.get("sdk_turn_diagnostics"),
@@ -1797,10 +1821,28 @@ class ClaudeAgentWorkerAdapter:
             public_skill_metadata=prepared.public_skill_metadata,
         )
         if self._sdk_completed_normally(sdk_result):
-            artifacts = self._collect_workspace_artifacts(payload, prepared.workspace)
+            abandoned = threading.Event()
+            storage_scope = (
+                execution_owner.artifact_storage_scope
+                if execution_owner is not None
+                else ""
+            )
+            reserve_storage = (
+                execution_owner.reserve_artifact_storage
+                if execution_owner is not None
+                else None
+            )
+            artifacts = await run_storage_io(
+                self._collect_workspace_artifacts,
+                payload,
+                prepared.workspace,
+                storage_scope=storage_scope,
+                abandoned=abandoned,
+                reserve_storage=reserve_storage,
+                on_abandoned=abandoned.set,
+            )
             used_skill_names = _sdk_used_skill_names(sdk_result, prepared.staged_skill_names)
             used_skills_source = _sdk_used_skills_source(sdk_result, used_skill_names)
-            inferred_used_skill_names = _inferred_used_skill_names(payload, prepared.staged_skill_names)
             skill_manifests = _skill_manifests(
                 prepared.selected_skills,
                 used_skill_names=used_skill_names,
@@ -1809,9 +1851,6 @@ class ClaudeAgentWorkerAdapter:
             selected_skill_error = _capability_execution_error(
                 payload,
                 getattr(sdk_result, "capability_evidence", None),
-                required_skill_identity=(
-                    payload.skill_id if payload.skill_id in used_skill_names else None
-                ),
                 available_skill_identities=prepared.allowed_skill_names,
             )
             if selected_skill_error is not None:
@@ -1854,7 +1893,6 @@ class ClaudeAgentWorkerAdapter:
                         "staged_skills": prepared.staged_skill_names,
                         "used_skills": used_skill_names,
                         "used_skills_source": used_skills_source,
-                        "inferred_used_skills": inferred_used_skill_names,
                         "skill_manifests": skill_manifests,
                         "required_artifact_types": list(_required_artifact_types(payload)),
                         "capability_evidence": list(
@@ -1901,7 +1939,6 @@ class ClaudeAgentWorkerAdapter:
                     "staged_skills": prepared.staged_skill_names,
                     "used_skills": used_skill_names,
                     "used_skills_source": used_skills_source,
-                    "inferred_used_skills": inferred_used_skill_names,
                     "skill_manifests": skill_manifests,
                     "required_artifact_types": list(_required_artifact_types(payload)),
                     "capability_evidence": list(
@@ -1912,7 +1949,6 @@ class ClaudeAgentWorkerAdapter:
             )
         used_skill_names = _sdk_used_skill_names(sdk_result, prepared.staged_skill_names) if sdk_result else []
         used_skills_source = _sdk_used_skills_source(sdk_result, used_skill_names)
-        inferred_used_skill_names = _inferred_used_skill_names(payload, prepared.staged_skill_names)
         skill_manifests = _skill_manifests(
             prepared.selected_skills,
             used_skill_names=used_skill_names,
@@ -1958,7 +1994,6 @@ class ClaudeAgentWorkerAdapter:
                 "staged_skills": prepared.staged_skill_names,
                 "used_skills": used_skill_names,
                 "used_skills_source": used_skills_source,
-                "inferred_used_skills": inferred_used_skill_names,
                 "skill_manifests": skill_manifests,
                 "sdk_turn_diagnostics": turn_diagnostics,
             },
@@ -2163,7 +2198,6 @@ class ClaudeAgentWorkerAdapter:
                     payload,
                     _context_manifest_from_pack(context_pack),
                 ),
-                "require_selected_skill_invocation": False,
             }
             if system_prompt:
                 sdk_kwargs["system_prompt"] = system_prompt
@@ -2217,6 +2251,8 @@ class ClaudeAgentWorkerAdapter:
             transaction_factory=transaction,
             repository=repositories,
             storage=ObjectStorage(),
+            storage_io=run_storage_io,
+            storage_size_limit_error=ObjectStorageSizeLimitError,
             workspace=workspace,
             tenant_id=payload.tenant_id,
             workspace_id=payload.workspace_id,
@@ -2239,78 +2275,30 @@ class ClaudeAgentWorkerAdapter:
             materialized_file_names=list(result.materialized_file_names),
         )
 
-    def _collect_workspace_artifacts(self, payload: RunPayload, workspace: Path) -> list[ArtifactManifest]:
-        artifacts: list[ArtifactManifest] = []
-        storage = ObjectStorage()
-        candidates: list[Path] = []
-        seen_candidates: set[Path] = set()
-        total_bytes = 0
-        for output_dir in self._workspace_artifact_dirs(workspace):
-            for item in sorted(output_dir.rglob("*")):
-                if item.is_symlink():
-                    raise ValueError("workspace output must not contain symlinks")
-                if not item.is_file():
-                    continue
-                ensure_path_inside(output_dir, item, "workspace artifact must stay inside output directory")
-                resolved = item.resolve(strict=False)
-                if resolved in seen_candidates:
-                    continue
-                size_bytes = item.stat().st_size
-                if size_bytes > _MAX_WORKSPACE_ARTIFACT_FILE_BYTES:
-                    raise ValueError("workspace artifact exceeds the per-file byte limit")
-                total_bytes += size_bytes
-                if total_bytes > _MAX_WORKSPACE_ARTIFACT_TOTAL_BYTES:
-                    raise ValueError("workspace artifacts exceed the total byte limit")
-                if len(candidates) >= _MAX_WORKSPACE_ARTIFACT_FILES:
-                    raise ValueError("workspace artifacts exceed the file count limit")
-                seen_candidates.add(resolved)
-                candidates.append(item)
-        for index, path in enumerate(candidates, start=1):
-            content_type = _artifact_content_type(path.name)
-            artifact_type = _artifact_type(path.name)
-            storage_key = (
-                f"tenants/{payload.tenant_id}/workspaces/{payload.workspace_id}/"
-                f"sessions/{payload.session_id}/runs/{payload.run_id}/artifacts/{index}/{path.name}"
-            )
-            stored = storage.put_bytes(
-                storage_key=storage_key,
-                content=path.read_bytes(),
-                content_type=content_type,
-            )
-            artifacts.append(
-                ArtifactManifest(
-                    artifact_type=artifact_type,
-                    label=_artifact_label(path.name, artifact_type),
-                    content_type=content_type,
-                    storage_key=stored.storage_key,
-                    size_bytes=stored.size_bytes,
-                    manifest={
-                        "source_executor": self.executor_type,
-                        "workspace_output": path.relative_to(workspace).as_posix(),
-                    },
-                )
-            )
-        return artifacts
-
-    def _workspace_artifact_dirs(self, workspace: Path) -> list[Path]:
-        roots: list[Path] = []
-        legacy_output = workspace / "output"
-        if legacy_output.is_dir():
-            ensure_path_inside(workspace, legacy_output, "workspace output must stay inside the run workspace")
-            roots.append(legacy_output)
-
-        outputs_root = workspace / "outputs"
-        if not outputs_root.is_dir():
-            return roots
-        ensure_path_inside(workspace, outputs_root, "workspace output must stay inside the run workspace")
-        for delivery_dir in sorted(outputs_root.rglob("delivery")):
-            if delivery_dir.is_symlink():
-                raise ValueError("workspace output must not contain symlinks")
-            if not delivery_dir.is_dir():
-                continue
-            ensure_path_inside(outputs_root, delivery_dir, "workspace artifact must stay inside output directory")
-            roots.append(delivery_dir)
-        return roots
+    def _collect_workspace_artifacts(
+        self,
+        payload: RunPayload,
+        workspace: Path,
+        *,
+        storage_scope: str = "",
+        abandoned: threading.Event | None = None,
+        reserve_storage: Callable[[str], str] | None = None,
+    ) -> list[ArtifactManifest]:
+        return collect_workspace_artifacts(
+            tenant_id=payload.tenant_id,
+            workspace_id=payload.workspace_id,
+            session_id=payload.session_id,
+            run_id=payload.run_id,
+            source_executor=self.executor_type,
+            workspace=workspace,
+            required_artifact_types=_required_artifact_types(payload),
+            artifact_factory=ArtifactManifest,
+            storage_factory=ObjectStorage,
+            ensure_inside=ensure_path_inside,
+            storage_scope=storage_scope,
+            abandoned=abandoned,
+            reserve_storage=reserve_storage,
+        )
 
 
 def _file_skill_steps(input_payload: dict[str, object]) -> list[dict[str, object]]:
@@ -2394,22 +2382,6 @@ def _with_pinned_manifest_dependencies(selected: list[str], pins: dict[str, dict
     for skill_name in selected:
         add_skill(skill_name)
     return expanded
-
-
-def _inferred_used_skill_names(payload: RunPayload, staged_skill_names: list[str]) -> list[str]:
-    staged = set(staged_skill_names)
-    used: list[str] = []
-    if payload.skill_id and payload.skill_id in staged:
-        used.append(payload.skill_id)
-        pinned_manifests = _pinned_skill_manifests(payload)
-        if pinned_manifests and payload.skill_id in pinned_manifests:
-            dependency_ids = _string_list(pinned_manifests[payload.skill_id].get("dependency_ids"))
-        else:
-            dependency_ids = []
-        for dependency_id in dependency_ids:
-            if dependency_id in staged and dependency_id not in used:
-                used.append(dependency_id)
-    return used
 
 
 def _run_workspace(settings: object, payload: RunPayload) -> Path:
@@ -2668,51 +2640,6 @@ def _skill_manifests(selected_skills, *, used_skill_names: list[str], pins: dict
             }
         )
     return manifests
-
-
-def _artifact_content_type(filename: str) -> str:
-    lower = filename.lower()
-    explicit = {
-        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        ".pdf": "application/pdf",
-        ".csv": "text/csv; charset=utf-8",
-        ".json": "application/json",
-        ".txt": "text/plain; charset=utf-8",
-        ".md": "text/markdown; charset=utf-8",
-        ".zip": "application/zip",
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".gif": "image/gif",
-        ".webp": "image/webp",
-    }
-    for suffix, content_type in explicit.items():
-        if lower.endswith(suffix):
-            return content_type
-    return "application/octet-stream"
-
-
-def _artifact_type(filename: str) -> str:
-    lower = filename.lower()
-    if lower.endswith(".docx"):
-        return "result_docx"
-    if lower.endswith(".json"):
-        return "result_json"
-    if lower.endswith((".txt", ".md")):
-        return "report_txt"
-    return "runtime_file"
-
-
-def _artifact_label(filename: str, artifact_type: str) -> str:
-    if artifact_type == "result_docx":
-        return "Word 文件"
-    if artifact_type == "result_json":
-        return "结果 JSON"
-    if artifact_type == "report_txt":
-        return "详细报告"
-    return filename
 
 
 def _resume_completed_step_outputs(input_payload: dict[str, object]) -> dict[str, str]:

@@ -45,16 +45,24 @@ export interface AdminRunSummary {
   cancel_requested_at?: string | null;
   error_code?: string | null;
   error_message?: string | null;
+  model_output?: string;
   queue_position?: number | null;
   queue_insight?: AdminQueueInsight | null;
+  result?: {
+    runtime_diagnostics?: Record<string, unknown> | null;
+  } | null;
 }
 
 export interface AdminRunEvent {
   event_id?: string;
+  sequence?: number;
   type?: string;
   stage?: string | null;
   status?: string | null;
+  severity?: string | null;
   message?: string | null;
+  error_code?: string | null;
+  payload?: Record<string, unknown>;
   created_at?: string | null;
 }
 

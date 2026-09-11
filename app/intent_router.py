@@ -160,15 +160,6 @@ def confirm_capability(capability_id: str) -> IntentDecision:
             confirmed_by_user=True,
             execution_polarity="affirmative",
         )
-    if capability_id == "document_translation":
-        return _selected(
-            "document_translation",
-            capability_id,
-            1.0,
-            "用户确认按文档翻译处理",
-            confirmed_by_user=True,
-            execution_polarity="affirmative",
-        )
     if capability_id == "knowledge_answer":
         return _selected(
             "knowledge_answer",
@@ -220,7 +211,6 @@ def route_intent(
     text = (message or "").lower()
     has_docx = _has_docx(files)
     review_tokens = ("审核", "审查", "review", "qa")
-    translate_tokens = ("翻译", "translate", "英文", "中文", "english", "chinese")
     knowledge_tokens = (
         "sop",
         "知识库",
@@ -242,14 +232,6 @@ def route_intent(
             "document_review",
             0.92,
             "检测到 Word 文件和审核意图",
-            execution_polarity=polarity,
-        )
-    if has_docx and any(token in text for token in translate_tokens):
-        return _selected(
-            "document_translation",
-            "document_translation",
-            0.92,
-            "检测到 Word 文件和翻译意图",
             execution_polarity=polarity,
         )
     if (
@@ -277,14 +259,13 @@ def route_intent(
             status="needs_confirmation",
             intent="ambiguous_file_task",
             confidence=0.45,
-            reason="检测到 Word 文件，但未明确是审核、翻译还是普通分析",
+            reason="检测到 Word 文件，但未明确是审核还是普通分析",
             selected_capability=None,
             agent_id=None,
             skill_id=None,
             execution_polarity=polarity,
             suggestions=[
                 _suggestion("document_review", "审核这个 Word"),
-                _suggestion("document_translation", "翻译这个 Word"),
                 _suggestion("general_chat", "普通分析"),
             ],
         )

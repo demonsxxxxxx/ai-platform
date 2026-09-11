@@ -17,6 +17,7 @@ import signal
 import subprocess
 import sys
 import time
+import traceback
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -33,7 +34,6 @@ from app.control_plane_contracts import normalize_thinking_effort
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
-    _translation_target_language,
     run_claude_agent_sdk,
 )
 from app.public_execution import (
@@ -57,6 +57,11 @@ from app.required_tool_contract import (
 )
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.context_retrieval_client import PlatformContextRetrievalClient
+from app.sandbox.api import (
+    SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    normalize_sdk_runtime_diagnostics,
+    runtime_diagnostic_text,
+)
 from app.runtime.sandbox.contracts import (
     EXECUTOR_AUTH_HEADER,
     CallbackTargetValidationError,
@@ -110,6 +115,10 @@ class _CallbackDeliveryError(RuntimeError):
     def __init__(self, error_code: str) -> None:
         super().__init__(error_code)
         self.error_code = error_code
+
+
+class _ShutdownDeadlineExceeded(RuntimeError):
+    pass
 
 
 class _CallbackBatchIdFactory:
@@ -184,6 +193,247 @@ class _CallbackBatchDelivery:
             return
         self.state = "cancelled"
         self.error_code = "executor_cancelled"
+
+
+_MESSAGE_DELTA_FLUSH_SECONDS = 0.05
+_MESSAGE_DELTA_MAX_BATCH_BYTES = 8 * 1024
+_MESSAGE_DELTA_MAX_BATCH_EVENTS = 100
+_MESSAGE_DELTA_QUEUE_SIZE = 100
+_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS = 30.0
+
+
+def _message_delta_size(callback: ExecutorCallbackEvent) -> int | None:
+    if (
+        callback.status != "running"
+        or callback.new_message is not None
+        or callback.terminal_result is not None
+        or not callback.events
+        or len(callback.events) > _MESSAGE_DELTA_MAX_BATCH_EVENTS
+    ):
+        return None
+    size = 0
+    for event in callback.events:
+        delta = event.payload.get("delta")
+        if (
+            event.type != "message.delta"
+            or not event.event_id
+            or not event.run_id
+            or not event.message_id
+            or event.message
+            or not isinstance(delta, str)
+            or not delta
+        ):
+            return None
+        size += len(delta.encode("utf-8"))
+    return size if size <= _MESSAGE_DELTA_MAX_BATCH_BYTES else None
+
+
+def _merge_message_delta_callbacks(
+    current: ExecutorCallbackEvent,
+    incoming: ExecutorCallbackEvent,
+) -> ExecutorCallbackEvent | None:
+    current_size = _message_delta_size(current)
+    incoming_size = _message_delta_size(incoming)
+    if (
+        current_size is None
+        or incoming_size is None
+        or len(current.events) + len(incoming.events) > _MESSAGE_DELTA_MAX_BATCH_EVENTS
+        or current_size + incoming_size > _MESSAGE_DELTA_MAX_BATCH_BYTES
+        or current.model_dump(exclude={"batch_id", "events"})
+        != incoming.model_dump(exclude={"batch_id", "events"})
+    ):
+        return None
+    return current.model_copy(update={"events": [*current.events, *incoming.events]})
+
+
+class _QueuedCallback(NamedTuple):
+    callback: ExecutorCallbackEvent
+    enqueued_at: float
+    receipt: asyncio.Future[bool] | None = None
+
+
+class _MessageDeltaCallbackBuffer:
+    """Serialize runner callbacks in one worker; only adjacent deltas batch."""
+
+    def __init__(
+        self,
+        deliver: Callable[[ExecutorCallbackEvent], Awaitable[bool]],
+    ) -> None:
+        self._deliver = deliver
+        self._queue: asyncio.Queue[_QueuedCallback] = asyncio.Queue(
+            maxsize=_MESSAGE_DELTA_QUEUE_SIZE
+        )
+        self._failed = False
+        self._error: Exception | None = None
+        self._closed = False
+        self._wake = asyncio.Event()
+        self._flush_waiters = 0
+        self._barrier_receipt: asyncio.Future[bool] | None = None
+        self._worker = asyncio.create_task(self._run())
+
+    def _complete(self, item: _QueuedCallback, accepted: bool) -> None:
+        if item.receipt is not None and not item.receipt.done():
+            item.receipt.set_result(accepted)
+        self._queue.task_done()
+
+    def _discard_queued(self) -> None:
+        while not self._queue.empty():
+            self._complete(self._queue.get_nowait(), False)
+
+    async def _run(self) -> None:
+        carried: _QueuedCallback | None = None
+        try:
+            while True:
+                item = carried or await self._queue.get()
+                carried = None
+                callback = item.callback
+                consumed = [item]
+                accepted = False
+                try:
+                    if item.receipt is None and not self._failed:
+                        deadline = item.enqueued_at + _MESSAGE_DELTA_FLUSH_SECONDS
+                        while len(consumed) < _MESSAGE_DELTA_QUEUE_SIZE:
+                            try:
+                                candidate = self._queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                remaining = deadline - asyncio.get_running_loop().time()
+                                if (
+                                    remaining <= 0
+                                    or self._flush_waiters
+                                    or self._closed
+                                    or self._failed
+                                ):
+                                    break
+                                self._wake.clear()
+                                try:
+                                    await asyncio.wait_for(self._wake.wait(), remaining)
+                                except TimeoutError:
+                                    break
+                                continue
+                            merged = (
+                                _merge_message_delta_callbacks(callback, candidate.callback)
+                                if candidate.receipt is None
+                                else None
+                            )
+                            if merged is None:
+                                carried = candidate
+                                break
+                            callback = merged
+                            consumed.append(candidate)
+                    accepted = False if self._failed else await self._deliver(callback)
+                    self._failed = self._failed or not accepted
+                except asyncio.CancelledError:
+                    self._closed = self._failed = True
+                    raise
+                except Exception as exc:
+                    self._failed = True
+                    self._error = self._error or exc
+                finally:
+                    for consumed_item in consumed:
+                        self._complete(consumed_item, accepted)
+        finally:
+            if carried is not None:
+                self._complete(carried, False)
+            self._discard_queued()
+
+    async def enqueue(self, callback: ExecutorCallbackEvent) -> bool:
+        """Return local admission only; flush/send provide the receipt barrier."""
+        if self._closed or self._failed:
+            return False
+        if self._barrier_receipt is not None:
+            if not await asyncio.shield(self._barrier_receipt):
+                return False
+            self._barrier_receipt = None
+        if self._closed or self._failed:
+            return False
+        try:
+            await self._queue.put(
+                _QueuedCallback(callback, asyncio.get_running_loop().time())
+            )
+        except asyncio.CancelledError:
+            await asyncio.shield(self.cancel())
+            raise
+        self._wake.set()
+        return not self._failed
+
+    async def flush(self) -> bool:
+        self._flush_waiters += 1
+        self._wake.set()
+        try:
+            await self._queue.join()
+        finally:
+            self._flush_waiters -= 1
+        if self._error is not None:
+            raise self._error
+        return not self._failed
+
+    async def send(self, callback: ExecutorCallbackEvent) -> bool:
+        """Wait for a receipt from the same worker that sends queued deltas."""
+        if self._closed or not await self.flush():
+            return False
+        receipt = asyncio.get_running_loop().create_future()
+        self._barrier_receipt = receipt
+        await self._queue.put(
+            _QueuedCallback(callback, asyncio.get_running_loop().time(), receipt)
+        )
+        self._wake.set()
+        accepted = await asyncio.shield(receipt)
+        if self._error is not None:
+            raise self._error
+        return accepted
+
+    async def close(self) -> bool:
+        self._closed = True
+        try:
+            accepted = await self.flush()
+        except asyncio.CancelledError:
+            await asyncio.shield(self.cancel())
+            raise
+        except Exception:
+            await self.cancel()
+            raise
+        self._worker.cancel()
+        await asyncio.gather(self._worker, return_exceptions=True)
+        return accepted
+
+    async def cancel(self, *, deadline: float | None = None) -> bool:
+        self._closed = self._failed = True
+        self._wake.set()
+        self._discard_queued()
+        # Preserve an in-flight exact-batch outcome before terminal delivery.
+        drain = asyncio.create_task(self._queue.join())
+        if deadline is None:
+            deadline = (
+                asyncio.get_running_loop().time()
+                + _EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS
+            )
+        try:
+            remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+            done, _ = await asyncio.wait({drain}, timeout=remaining)
+            if drain not in done:
+                drain.cancel()
+                _observe_detached_task(drain)
+                self._worker.cancel()
+                await asyncio.sleep(0)
+                if self._worker.done():
+                    await asyncio.gather(self._worker, return_exceptions=True)
+                else:
+                    _observe_detached_task(self._worker)
+                return False
+            await drain
+        except asyncio.CancelledError:
+            drain.cancel()
+            _observe_detached_task(drain)
+            self._worker.cancel()
+            _observe_detached_task(self._worker)
+            raise
+        self._worker.cancel()
+        await asyncio.gather(self._worker, return_exceptions=True)
+        return True
+
+    @property
+    def delivery_task(self) -> asyncio.Task[None]:
+        return self._worker
 
 
 class _PrivateExecutionFact(NamedTuple):
@@ -288,6 +538,162 @@ _PUBLIC_TOOL_LIFECYCLE_NAMES = frozenset(
         "Adjust",
     }
 )
+_STRUCTURED_ERROR_CODE_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_SAFE_SDK_TERMINAL_REASONS = frozenset(
+    {
+        "aborted_streaming",
+        "aborted_tools",
+        "canceled",
+        "cancelled",
+        "completed",
+        "end_turn",
+        "max_turns",
+        "max_turns_exceeded",
+        "stop_sequence",
+    }
+)
+
+
+def _merge_runtime_diagnostics(
+    existing: object,
+    *,
+    error_code: str,
+    failure_source: str,
+    failure_stage: str,
+    exception: BaseException | None = None,
+    tool_lifecycles: list[dict[str, object]] | None = None,
+) -> dict[str, Any]:
+    merged = dict(existing) if isinstance(existing, dict) else {}
+    previous_error_code = merged.get("error_code")
+    if previous_error_code and previous_error_code != error_code:
+        merged.setdefault("runner_error_code", previous_error_code)
+    previous_failure_source = merged.get("failure_source")
+    if previous_failure_source and previous_failure_source != failure_source:
+        merged.setdefault("runner_failure_source", previous_failure_source)
+    merged.update(
+        {
+            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+            "error_code": error_code,
+            "failure_source": failure_source,
+            "failure_stage": failure_stage,
+        }
+    )
+    sdk = dict(merged.get("sdk")) if isinstance(merged.get("sdk"), dict) else {}
+    if exception is not None:
+        sdk.update(
+            {
+                "exception_type": type(exception).__name__,
+                "exception_message": runtime_diagnostic_text(exception),
+                "exception_traceback": runtime_diagnostic_text(
+                    "".join(
+                        traceback.format_exception(
+                            type(exception), exception, exception.__traceback__
+                        )
+                    )
+                ),
+            }
+        )
+    merged["sdk"] = sdk
+    merged.setdefault("tool_calls", [])
+    merged.setdefault("tool_policy_denials", [])
+    existing_lifecycles = (
+        merged.get("tool_lifecycles")
+        if isinstance(merged.get("tool_lifecycles"), list)
+        else []
+    )
+    if tool_lifecycles is not None:
+        lifecycle_by_key: dict[tuple[object, object, object], dict[str, object]] = {}
+        for item in [*existing_lifecycles, *tool_lifecycles]:
+            if not isinstance(item, dict):
+                continue
+            lifecycle_by_key[
+                (
+                    item.get("capability_kind"),
+                    item.get("tool_name"),
+                    item.get("invocation_id"),
+                )
+            ] = item
+        merged["tool_lifecycles"] = list(lifecycle_by_key.values())
+    else:
+        merged["tool_lifecycles"] = existing_lifecycles
+    return normalize_sdk_runtime_diagnostics(merged)
+
+
+def _log_sandbox_tool_lifecycle(
+    request: ExecutorTaskRequest,
+    *,
+    tool_name: str,
+    invocation_id: str,
+    lifecycle: str,
+    accepted: bool,
+    started_at: float | None = None,
+    reason: str | None = None,
+) -> None:
+    """Record tool lifecycle facts without retaining tool inputs or outputs."""
+
+    safe_tool_name = (
+        tool_name if tool_name in _PUBLIC_TOOL_LIFECYCLE_NAMES else "unknown"
+    )
+    extra: dict[str, object] = {
+        "sandbox_run_id": request.run_id,
+        "sandbox_attempt_id": request.attempt_id,
+        "sandbox_tool_name": safe_tool_name,
+        "sandbox_tool_call_digest": (
+            hashlib.sha256(invocation_id.encode("utf-8")).hexdigest()[:16]
+            if invocation_id
+            else None
+        ),
+        "sandbox_tool_lifecycle": lifecycle[:32],
+        "sandbox_tool_lifecycle_accepted": accepted,
+    }
+    if started_at is not None:
+        extra["sandbox_tool_duration_ms"] = max(
+            int((time.monotonic() - started_at) * 1000),
+            0,
+        )
+    if reason:
+        extra["sandbox_tool_lifecycle_reason"] = reason[:64]
+    _logger.log(
+        logging.INFO if accepted else logging.WARNING,
+        "sandbox_tool_lifecycle",
+        extra=extra,
+    )
+
+
+def _log_sandbox_execution_terminal(
+    request: ExecutorTaskRequest,
+    result: dict[str, Any],
+) -> None:
+    """Record the terminal classification without retaining exception text."""
+
+    status_value = str(result.get("status") or "failed").strip().lower()
+    raw_error_code = str(result.get("error_code") or "").strip()
+    error_code = (
+        raw_error_code
+        if _STRUCTURED_ERROR_CODE_PATTERN.fullmatch(raw_error_code)
+        else "unclassified"
+    )
+    raw_terminal_reason = str(result.get("sdk_terminal_reason") or "").strip()
+    terminal_reason = (
+        raw_terminal_reason
+        if raw_terminal_reason in _SAFE_SDK_TERMINAL_REASONS
+        else None
+    )
+    extra: dict[str, object] = {
+        "sandbox_run_id": request.run_id,
+        "sandbox_attempt_id": request.attempt_id,
+        "sandbox_execution_status": status_value,
+        "sandbox_error_code": error_code,
+    }
+    if terminal_reason:
+        extra["sandbox_terminal_reason"] = terminal_reason
+    _logger.log(
+        logging.INFO
+        if status_value in {"completed", "succeeded"}
+        else logging.WARNING,
+        "sandbox_execution_terminal",
+        extra=extra,
+    )
 
 
 def _callback_acknowledges_exact_batch(
@@ -344,31 +750,15 @@ def _private_capability_fact(
     )
 
 
-_CONTROLLED_FILE_SKILLS = {"baoyu-translate", "qa-file-reviewer"}
+_CONTROLLED_FILE_SKILLS = {"qa-file-reviewer"}
 _CONTROLLED_FILE_SKILL_CAPABILITIES = {
     # These exactly mirror the server-owned builtin declarations in skills.pinning.
-    "baoyu-translate": frozenset({"Bash", "Write"}),
     "qa-file-reviewer": frozenset({"Bash", "Write"}),
 }
 _CONTROLLED_RUNNER_TIMEOUT_SECONDS = 900.0
 _CONTROLLED_RUNNER_TERMINATION_GRACE_SECONDS = 5.0
 _EXECUTOR_CLEANUP_TIMEOUT_SECONDS = 5.0
 _ACTIVE_PROGRESS_INTERVAL_SECONDS = 12.0
-_SDK_PRESERVED_FAILURE_CODES = frozenset(
-    {
-        "claude_agent_sdk_disabled",
-        "claude_agent_sdk_unavailable",
-        "claude_agent_sdk_missing_structured_terminal",
-        "claude_agent_sdk_selected_skill_not_invoked",
-        "claude_agent_sdk_selected_skill_hook_failed",
-        "claude_agent_sdk_selected_skill_not_authorized",
-        "claude_agent_sdk_turn_limit_exceeded",
-        "claude_agent_sdk_timeout",
-        "claude_agent_sdk_public_projection_failed",
-        "claude_agent_sdk_tool_admission_failed",
-        "claude_agent_sdk_upstream_error",
-    }
-)
 _SDK_TURN_LIMIT_ERROR_PATTERN = re.compile(r"Reached maximum number of turns \(\d+\)")
 
 
@@ -506,26 +896,44 @@ def _expand_sdk_error_message(raw_error: str, sdk_result: object) -> str:
 
 
 def _canonical_sdk_failure_code(raw_error: str, *, used_sdk: bool) -> str:
-    """Keep known SDK terminal codes while classifying post-start SDK failures."""
+    """Preserve bounded structured codes while classifying free-form SDK failures."""
 
-    if raw_error in _SDK_PRESERVED_FAILURE_CODES:
-        return raw_error
     if raw_error.startswith("claude_agent_sdk_unavailable"):
         return "claude_agent_sdk_unavailable"
     if used_sdk and _SDK_TURN_LIMIT_ERROR_PATTERN.fullmatch(raw_error):
         return "claude_agent_sdk_turn_limit_exceeded"
-    if used_sdk:
-        return "claude_agent_sdk_runtime_error"
-    return raw_error
+    if _STRUCTURED_ERROR_CODE_PATTERN.fullmatch(raw_error):
+        return raw_error
+    return "claude_agent_sdk_runtime_error" if used_sdk else "executor_reported_failure"
+
+
+async def _post_callback(
+    client: httpx.AsyncClient,
+    url: str,
+    payload: CallbackPayload,
+    token: str,
+) -> CallbackResult:
+    headers = {"X-AI-Platform-Callback-Token": token}
+    response = await client.post(url, json=payload, headers=headers)
+    response.raise_for_status()
+    data = response.json()
+    return data if isinstance(data, dict) else {"accepted": True}
+
+
+class _SharedCallbackSender:
+    def __init__(self) -> None:
+        self._client = httpx.AsyncClient(timeout=10.0)
+
+    async def __call__(self, url: str, payload: CallbackPayload, token: str) -> CallbackResult:
+        return await _post_callback(self._client, url, payload, token)
+
+    async def close(self) -> None:
+        await self._client.aclose()
 
 
 async def _default_callback_sender(url: str, payload: CallbackPayload, token: str) -> CallbackResult:
-    headers = {"X-AI-Platform-Callback-Token": token}
     async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-    return data if isinstance(data, dict) else {"accepted": True}
+        return await _post_callback(client, url, payload, token)
 
 
 async def _dispatch_callback(
@@ -929,18 +1337,14 @@ def _controlled_file_skill_command(
         output_dir.resolve(strict=True).relative_to(workspace.resolve(strict=True))
     except (OSError, ValueError):
         return None, "controlled_skill_output_path_invalid"
-    script_name = "run_translation.py" if skill_id == "baoyu-translate" else "run_qa_review.py"
     script = _resolved_workspace_file(
         workspace,
-        workspace / ".claude" / "skills" / skill_id / "scripts" / script_name,
+        workspace / ".claude" / "skills" / skill_id / "scripts" / "run_qa_review.py",
     )
     if script is None:
         return None, "controlled_skill_runner_missing"
     command = [sys.executable, str(script), str(input_path), str(output_dir)]
-    if skill_id == "baoyu-translate":
-        command.extend(["--target-language", _translation_target_language(user_message)])
-    else:
-        command.append("--with-comments")
+    command.append("--with-comments")
     command.extend(["--original-filename", input_path.name])
     return command, None
 
@@ -1419,13 +1823,20 @@ async def _default_executor_runner(
     if controlled_result is not None:
         return controlled_result
     if getattr(get_settings(), "claude_agent_sdk_enabled", False) is not True:
+        error_code = "claude_agent_sdk_disabled"
         return {
             "status": "failed",
             "message": "Claude Agent SDK is disabled",
-            "error_code": "claude_agent_sdk_disabled",
+            "error_code": error_code,
             "error_message": "Claude Agent SDK is disabled",
             "sdk_used": False,
             "executor_mode": "claude_agent_sdk_disabled",
+            "runtime_diagnostics": _merge_runtime_diagnostics(
+                None,
+                error_code=error_code,
+                failure_source="sandbox_sdk_disabled",
+                failure_stage="model_wait",
+            ),
         }
 
     skill_ids = _task_skill_ids(request)
@@ -1455,6 +1866,7 @@ async def _default_executor_runner(
             "executor_mode": "required_capability_declaration_invalid",
         }
     required_tool_invocation_states: dict[tuple[str, str], str] = {}
+    tool_lifecycle_started_at: dict[tuple[str, str], float] = {}
     required_capability_evidence: dict[str, Any] | None = None
     tool_invocation_evidence: list[dict[str, Any]] = []
     bound_capability_evidence: list[dict[str, Any]] = []
@@ -1462,6 +1874,7 @@ async def _default_executor_runner(
     invocation_owners: dict[str, str] = {}
     capability_evidence_error = {"code": ""}
     capability_evidence_lock = asyncio.Lock()
+    v4_answer_stream_active = False
 
     def reject_capability_evidence(error_code: str) -> bool:
         capability_evidence_error["code"] = capability_evidence_error["code"] or error_code
@@ -1475,11 +1888,12 @@ async def _default_executor_runner(
         return True
 
     async def on_text(delta: str) -> None:
-        if not delta or capability_evidence_error["code"]:
+        if not delta or capability_evidence_error["code"] or v4_answer_stream_active:
             return
         await emit_event(AgentEvent(type="assistant_delta", message=delta, payload={"delta": delta}))
 
     async def on_agent_event(candidates: tuple[Any, ...]) -> bool:
+        nonlocal v4_answer_stream_active
         if capability_evidence_error["code"] or not candidates:
             return False
         try:
@@ -1510,6 +1924,8 @@ async def _default_executor_runner(
             if isinstance(emit_event, _SealableExecutorEventEmitter):
                 emit_event.seal_capability_failure()
             return False
+        if any(event.type == "message.delta" for event in events):
+            v4_answer_stream_active = True
         return True
 
     async def on_skill_use(skill_name: str, metadata: dict[str, Any]) -> None:
@@ -1628,12 +2044,61 @@ async def _default_executor_runner(
     async def on_tool_lifecycle(fact: dict[str, str]) -> bool:
         """Bind and forward a mapped lifecycle fact under the shared call-id fence."""
 
+        tool_name = str(fact.get("tool_name") or "")
+        invocation_id = canonical_tool_call_id(fact.get("invocation_id")) or ""
+        lifecycle = str(fact.get("lifecycle") or "")
+        lifecycle_key = (tool_name, invocation_id)
+        started_at = tool_lifecycle_started_at.get(lifecycle_key)
+        if (
+            lifecycle == "started"
+            and tool_name in _PUBLIC_TOOL_LIFECYCLE_NAMES
+            and invocation_id
+        ):
+            started_at = time.monotonic()
+            tool_lifecycle_started_at.setdefault(lifecycle_key, started_at)
+        accepted = False
+        cancelled = False
         try:
             async with capability_evidence_lock:
-                return await bind_tool_lifecycle(fact)
+                accepted = await bind_tool_lifecycle(fact)
+            return accepted
         except asyncio.CancelledError:
             poison_capability_evidence()
+            cancelled = True
             raise
+        finally:
+            if lifecycle in {"completed", "failed"} or cancelled:
+                tool_lifecycle_started_at.pop(lifecycle_key, None)
+            logged_lifecycle = "cancelled" if cancelled else (lifecycle or "unknown")
+            _log_sandbox_tool_lifecycle(
+                request,
+                tool_name=tool_name,
+                invocation_id=invocation_id,
+                lifecycle=logged_lifecycle,
+                accepted=accepted,
+                started_at=started_at
+                if logged_lifecycle in {"completed", "failed", "cancelled"}
+                else None,
+                reason=(
+                    "callback_cancelled"
+                    if cancelled
+                    else None if accepted else "lifecycle_rejected"
+                ),
+            )
+
+    def log_open_tool_lifecycles(reason: str) -> None:
+        for (tool_name, invocation_id), started_at in tuple(
+            tool_lifecycle_started_at.items()
+        ):
+            _log_sandbox_tool_lifecycle(
+                request,
+                tool_name=tool_name,
+                invocation_id=invocation_id,
+                lifecycle="incomplete",
+                accepted=False,
+                started_at=started_at,
+                reason=reason,
+            )
 
     def poison_capability_evidence() -> None:
         # No await: one event-loop turn invalidates a suspended lock owner before it can commit.
@@ -1740,9 +2205,6 @@ async def _default_executor_runner(
             "on_tool_lifecycle": on_tool_lifecycle,
             "tool_policy_subjects": _task_tool_policy_subjects(request),
             "execution_policy": "sandbox_brokered",
-            "require_selected_skill_invocation": request.config.get(
-                "require_selected_skill_invocation", True
-            ) is not False,
             "thinking_effort": normalize_thinking_effort(
                 request.config.get("thinking_effort")
             ),
@@ -1752,14 +2214,31 @@ async def _default_executor_runner(
         sdk_result = await run_claude_agent_sdk(
             **sdk_kwargs,
         )
-    except ClaudeAgentSdkNotAvailable:
+    except ClaudeAgentSdkNotAvailable as exc:
+        error_code = "claude_agent_sdk_unavailable"
+        log_open_tool_lifecycles("sdk_unavailable")
         await emit_event(_PlatformExecutionPhaseFact("model_wait", "failed"))
         return {
             "status": "failed",
-            "error_code": "claude_agent_sdk_unavailable",
+            "error_code": error_code,
             "error_message": "Claude Agent SDK is unavailable",
             "sdk_used": False,
+            "runtime_diagnostics": _merge_runtime_diagnostics(
+                None,
+                error_code=error_code,
+                failure_source="sandbox_sdk_unavailable",
+                failure_stage="model_wait",
+                exception=exc,
+            ),
         }
+    except asyncio.CancelledError:
+        log_open_tool_lifecycles("cancelled")
+        raise
+    except Exception:
+        log_open_tool_lifecycles("runner_exception")
+        raise
+
+    log_open_tool_lifecycles("sdk_terminal")
 
     used_sdk = bool(getattr(sdk_result, "used_sdk", False))
     error = getattr(sdk_result, "error", None)
@@ -1768,18 +2247,15 @@ async def _default_executor_runner(
     )
     if used_sdk and not error and not received_structured_terminal:
         error = "claude_agent_sdk_missing_structured_terminal"
-    if used_sdk and not error:
-        # Only a successful SDK run may be downgraded by missing completion
-        # evidence.  When the SDK already failed (timeout, cancelled, upstream
-        # error, ...) preserve that structured error so callers see the real
-        # terminal cause instead of a misleading evidence mismatch.
-        if required_capability_declaration is not None:
-            required_tool_states = set(required_tool_invocation_states.values())
-            if "started" in required_tool_states or "completed" not in required_tool_states:
-                required_capability_evidence = None
-                reject_capability_evidence("required_tool_completion_evidence_mismatch")
-        elif any(state == "started" for state in required_tool_invocation_states.values()):
-            reject_capability_evidence("tool_invocation_evidence_mismatch")
+    if used_sdk and required_capability_declaration is not None and received_structured_terminal:
+        required_tool_states = set(required_tool_invocation_states.values())
+        if "started" in required_tool_states or "completed" not in required_tool_states:
+            required_capability_evidence = None
+            reject_capability_evidence("required_tool_completion_evidence_mismatch")
+    elif used_sdk and not error and any(
+        state == "started" for state in required_tool_invocation_states.values()
+    ):
+        reject_capability_evidence("tool_invocation_evidence_mismatch")
     await emit_event(
         _PlatformExecutionPhaseFact(
             "model_wait",
@@ -1798,6 +2274,9 @@ async def _default_executor_runner(
         "used_skills": list(getattr(sdk_result, "used_skills", []) or []),
         "used_skills_source": str(getattr(sdk_result, "used_skills_source", "") or ""),
         "sdk_turn_diagnostics": dict(getattr(sdk_result, "turn_diagnostics", {}) or {}),
+        "runtime_diagnostics": dict(
+            getattr(sdk_result, "runtime_diagnostics", {}) or {}
+        ),
         "capability_evidence": bound_capability_evidence,
         TOOL_INVOCATION_EVIDENCE_KEY: tool_invocation_evidence,
     }
@@ -1820,6 +2299,34 @@ async def _default_executor_runner(
             response["error_message"] = "Required capability completion evidence is invalid"
         else:
             response["error_message"] = "Capability lifecycle sequence is invalid"
+        capability_lifecycles = [
+            {
+                "capability_kind": "builtin",
+                "tool_name": tool_name,
+                "invocation_id": invocation_id,
+                "state": state,
+            }
+            for (tool_name, invocation_id), state in required_tool_invocation_states.items()
+        ] + [
+            {
+                "capability_kind": capability_kind,
+                "tool_name": canonical_identity,
+                "invocation_id": invocation_id,
+                "state": state,
+            }
+            for (
+                capability_kind,
+                canonical_identity,
+                invocation_id,
+            ), state in invocation_states.items()
+        ]
+        response["runtime_diagnostics"] = _merge_runtime_diagnostics(
+            response.get("runtime_diagnostics"),
+            error_code=capability_evidence_error["code"],
+            failure_source="sandbox_capability_validation",
+            failure_stage="model_wait",
+            tool_lifecycles=capability_lifecycles,
+        )
         response["capability_evidence"] = []
         response[TOOL_INVOCATION_EVIDENCE_KEY] = []
         response.pop(REQUIRED_CAPABILITY_EVIDENCE_KEY, None)
@@ -1841,6 +2348,7 @@ def create_executor_app(
     nonterminal_callback_retry_policy: _CallbackRetryPolicy | None = None,
     callback_retry_sleep: CallbackRetrySleep | None = None,
 ) -> FastAPI:
+    resolved_callback_sender: CallbackSender = callback_sender or _default_callback_sender
     task_state: dict[str, Any] = {
         "status": "idle",
         "result": None,
@@ -1849,20 +2357,184 @@ def create_executor_app(
         "attempt_id": None,
         "delivery_error": None,
     }
+    shutdown_state: dict[str, float | bool | None] = {
+        "deadline": None,
+        "delivery_uncertain": False,
+        "publishing_closed": False,
+    }
+    uncertain_delivery_tasks: set[asyncio.Task[Any]] = set()
+    callback_delivery_tasks: set[asyncio.Task[Any]] = set()
+
+    def mark_delivery_uncertain(
+        error_code: str,
+        *,
+        active_task: asyncio.Task[Any] | None = None,
+    ) -> None:
+        shutdown_state["delivery_uncertain"] = True
+        shutdown_state["publishing_closed"] = True
+        if active_task is not None and not active_task.done():
+            uncertain_delivery_tasks.add(active_task)
+            active_task.add_done_callback(uncertain_delivery_tasks.discard)
+        task_state["delivery_error"] = error_code
+        if task_state["status"] != "idle":
+            task_state["status"] = "callback_failed"
+
+    def mark_shutdown_delivery_uncertain(
+        *,
+        active_task: asyncio.Task[Any] | None = None,
+    ) -> None:
+        mark_delivery_uncertain(
+            "executor_shutdown_delivery_uncertain",
+            active_task=active_task,
+        )
+
+    async def dispatch_owned_callback(
+        url: str,
+        payload: CallbackPayload,
+        token: str,
+    ) -> CallbackResult:
+        cancel_requested = False
+        clock = asyncio.get_running_loop().time
+        shutdown_deadline = shutdown_state["deadline"]
+        if isinstance(shutdown_deadline, float) and clock() >= shutdown_deadline:
+            shutdown_state["publishing_closed"] = True
+            raise _ShutdownDeadlineExceeded
+        attempt = asyncio.create_task(
+            _dispatch_callback(resolved_callback_sender, url, payload, token)
+        )
+        callback_delivery_tasks.add(attempt)
+        attempt.add_done_callback(callback_delivery_tasks.discard)
+        while True:
+            shutdown_deadline = shutdown_state["deadline"]
+            if not isinstance(shutdown_deadline, float):
+                try:
+                    result = await asyncio.shield(attempt)
+                except asyncio.CancelledError:
+                    if attempt.done():
+                        if not attempt.cancelled():
+                            exception = attempt.exception()
+                            if exception is not None:
+                                raise exception
+                        raise
+                    cancel_requested = True
+                    continue
+                if cancel_requested:
+                    raise asyncio.CancelledError
+                return result
+            remaining = max(0.0, shutdown_deadline - clock())
+            try:
+                done, _ = await asyncio.wait({attempt}, timeout=remaining)
+            except asyncio.CancelledError:
+                continue
+            if attempt in done:
+                if cancel_requested:
+                    if attempt.cancelled():
+                        raise asyncio.CancelledError
+                    exception = attempt.exception()
+                    if exception is not None:
+                        raise exception
+                    raise asyncio.CancelledError
+                return attempt.result()
+            attempt.cancel()
+            await asyncio.sleep(0)
+            _observe_detached_task(attempt)
+            mark_shutdown_delivery_uncertain(
+                active_task=attempt if not attempt.done() else None
+            )
+            raise _ShutdownDeadlineExceeded
+
+    def ensure_shutdown_deadline() -> float:
+        deadline = (
+            asyncio.get_running_loop().time()
+            + _EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS
+        )
+        current = shutdown_state["deadline"]
+        if isinstance(current, float):
+            deadline = min(deadline, current)
+        shutdown_state["deadline"] = deadline
+        return deadline
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        yield
-        task = task_state.get("task")
-        if not isinstance(task, asyncio.Task) or task.done():
-            return
-        task.cancel()
+        nonlocal resolved_callback_sender
+        shared_callback_sender = _SharedCallbackSender() if callback_sender is None else None
+        if shared_callback_sender is not None:
+            resolved_callback_sender = shared_callback_sender
         try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=30.0)
-        except asyncio.CancelledError:
-            pass
-        except TimeoutError:
-            task.cancel()
+            yield
+        finally:
+            deadline = ensure_shutdown_deadline()
+            task = task_state.get("task")
+            if isinstance(task, asyncio.Task) and not task.done():
+                task.cancel()
+                remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                done, _ = await asyncio.wait({task}, timeout=remaining)
+                if task in done:
+                    await asyncio.gather(task, return_exceptions=True)
+                else:
+                    task.cancel()
+                    await asyncio.sleep(0)
+                    mark_shutdown_delivery_uncertain(
+                        active_task=task if not task.done() else None
+                    )
+                    if task.done():
+                        await asyncio.gather(task, return_exceptions=True)
+                    else:
+                        _observe_detached_task(task)
+            active_callback_tasks = {
+                callback_task
+                for callback_task in callback_delivery_tasks
+                if not callback_task.done()
+            }
+            if active_callback_tasks:
+                for callback_task in active_callback_tasks:
+                    callback_task.cancel()
+                remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                if remaining:
+                    done, pending = await asyncio.wait(
+                        active_callback_tasks,
+                        timeout=remaining,
+                    )
+                else:
+                    await asyncio.sleep(0)
+                    done = {task for task in active_callback_tasks if task.done()}
+                    pending = active_callback_tasks - done
+                if done:
+                    await asyncio.gather(*done, return_exceptions=True)
+                if pending:
+                    for callback_task in pending:
+                        callback_task.cancel()
+                    await asyncio.sleep(0)
+                    for callback_task in pending:
+                        if callback_task.done():
+                            await asyncio.gather(
+                                callback_task,
+                                return_exceptions=True,
+                            )
+                        else:
+                            _observe_detached_task(callback_task)
+                            mark_shutdown_delivery_uncertain(
+                                active_task=callback_task
+                            )
+            if (
+                shared_callback_sender is not None
+                and not any(
+                    not task.done()
+                    for task in uncertain_delivery_tasks | callback_delivery_tasks
+                )
+            ):
+                close_task = asyncio.create_task(shared_callback_sender.close())
+                remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                if remaining:
+                    done, _ = await asyncio.wait({close_task}, timeout=remaining)
+                else:
+                    await asyncio.sleep(0)
+                    done = {close_task} if close_task.done() else set()
+                if close_task in done:
+                    await close_task
+                else:
+                    close_task.cancel()
+                    _observe_detached_task(close_task)
 
     app = FastAPI(
         title="AI Platform Sandbox Executor",
@@ -1871,7 +2543,6 @@ def create_executor_app(
     )
     app.state.dispatch_in_background = dispatch_in_background
     resolved_workspace_root = Path(workspace_root)
-    resolved_callback_sender = callback_sender or _default_callback_sender
     resolved_nonterminal_callback_retry_policy = nonterminal_callback_retry_policy or _CallbackRetryPolicy()
     resolved_callback_retry_sleep = callback_retry_sleep or asyncio.sleep
     configured_executor_auth_token = _configured_executor_auth_token(executor_auth_token)
@@ -2035,8 +2706,18 @@ def create_executor_app(
             runner_events_open["value"] = False
             stop_all_active_progress()
 
-        async def dispatch_callback_event(event: ExecutorCallbackEvent) -> bool:
-            if stream_delivery_failure["error_code"] is not None:
+        heartbeat_callback_retry_policy = _CallbackRetryPolicy(
+            max_attempts=1,
+            attempt_timeout_seconds=(
+                resolved_nonterminal_callback_retry_policy.attempt_timeout_seconds
+            ),
+        )
+
+        async def deliver_callback_event(event: ExecutorCallbackEvent) -> bool:
+            if (
+                shutdown_state["publishing_closed"]
+                or stream_delivery_failure["error_code"] is not None
+            ):
                 return False
             batch = _CallbackBatchDelivery(
                 content=_CallbackBatchContent.freeze(event.model_dump())
@@ -2047,7 +2728,11 @@ def create_executor_app(
                     request.callback_url,
                     batch,
                     request.callback_token,
-                    retry_policy=resolved_nonterminal_callback_retry_policy,
+                    retry_policy=(
+                        heartbeat_callback_retry_policy
+                        if event.state_patch.get("executor_heartbeat") is True
+                        else resolved_nonterminal_callback_retry_policy
+                    ),
                     retry_sleep=resolved_callback_retry_sleep,
                 )
             except asyncio.CancelledError:
@@ -2056,8 +2741,117 @@ def create_executor_app(
             except _CallbackDeliveryError as exc:
                 callback_errors.append(event.status)
                 seal_runner_events_after_delivery_failure(exc.error_code)
+                if exc.error_code == "stream_delivery_exhausted":
+                    mark_delivery_uncertain("executor_callback_delivery_uncertain")
                 return False
             return True
+
+        message_delta_callbacks = _MessageDeltaCallbackBuffer(deliver_callback_event)
+
+        async def cancel_message_delta_callbacks() -> None:
+            cleanup = asyncio.create_task(
+                message_delta_callbacks.cancel(
+                    deadline=shutdown_state["deadline"]
+                    if isinstance(shutdown_state["deadline"], float)
+                    else None
+                )
+            )
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    deadline = shutdown_state["deadline"]
+                    if not isinstance(deadline, float) or asyncio.get_running_loop().time() < deadline:
+                        continue
+                    cleanup.cancel()
+                    _observe_detached_task(cleanup)
+                    mark_shutdown_delivery_uncertain(
+                        active_task=message_delta_callbacks.delivery_task
+                    )
+                    return
+            if not await cleanup:
+                mark_shutdown_delivery_uncertain(
+                    active_task=message_delta_callbacks.delivery_task
+                )
+
+        async def await_with_callback_buffer_cleanup(
+            awaitable: Awaitable[Any],
+        ) -> Any:
+            try:
+                return await awaitable
+            except asyncio.CancelledError:
+                await cancel_message_delta_callbacks()
+                raise
+            except Exception:
+                await cancel_message_delta_callbacks()
+                raise
+
+        async def await_shutdown_task(task: asyncio.Task[Any]) -> None:
+            deadline = shutdown_state["deadline"]
+            if not isinstance(deadline, float):
+                await asyncio.gather(task, return_exceptions=True)
+                return
+            while not task.done():
+                remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                if remaining == 0:
+                    break
+                try:
+                    done, _ = await asyncio.wait({task}, timeout=remaining)
+                except asyncio.CancelledError:
+                    continue
+                if task in done:
+                    await asyncio.gather(task, return_exceptions=True)
+                    return
+            task.cancel()
+            await asyncio.sleep(0)
+            if task.done():
+                await asyncio.gather(task, return_exceptions=True)
+            else:
+                _observe_detached_task(task)
+                mark_shutdown_delivery_uncertain(active_task=task)
+
+        async def dispatch_callback_event(event: ExecutorCallbackEvent) -> bool:
+            nonlocal executor_first_token_latency_ms
+            if shutdown_state["publishing_closed"]:
+                return False
+            if executor_first_token_latency_ms is None and any(
+                item.type == "assistant_delta"
+                or (
+                    item.type == "message.delta"
+                    and isinstance(item.payload.get("delta"), str)
+                    and item.payload["delta"]
+                )
+                for item in event.events
+            ):
+                executor_first_token_latency_ms = _elapsed_ms(executor_started_at)
+            if len(event.events) != 1 or _message_delta_size(event) is None:
+                return await message_delta_callbacks.send(event)
+            return await message_delta_callbacks.enqueue(event)
+
+        async def send_supervisor_heartbeats() -> None:
+            while True:
+                await asyncio.sleep(heartbeat_interval_seconds)
+                try:
+                    accepted = await dispatch_callback_event(
+                        ExecutorCallbackEvent(
+                            session_id=request.session_id,
+                            run_id=request.run_id,
+                            attempt_id=request.attempt_id,
+                            callback_token_id=request.callback_token_id,
+                            batch_id=f"heartbeat-{uuid.uuid4().hex}",
+                            status="running",
+                            progress=5,
+                            state_patch={"executor_heartbeat": True},
+                        )
+                    )
+                    if not accepted:
+                        return
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # Heartbeats are best-effort liveness hints.
+                    continue
+
 
         def apply_stream_delivery_failure(result: dict[str, Any]) -> bool:
             error_code = stream_delivery_failure["error_code"]
@@ -2070,7 +2864,7 @@ def create_executor_app(
             return True
 
         async def emit_runner_event_locked(event: ExecutorEvent) -> bool:
-            nonlocal artifact_upload_latency_ms, executor_first_token_latency_ms, executor_tool_call_latency_ms
+            nonlocal artifact_upload_latency_ms, executor_tool_call_latency_ms
             if capability_callback_failed["value"] or not runner_events_open["value"]:
                 return False
             if isinstance(event, ExecutorCallbackEvent):
@@ -2116,8 +2910,6 @@ def create_executor_app(
                     causation_event_id=agent_event.causation_event_id,
                 )]
                 event_type = agent_event.type
-            if event_type == "assistant_delta" and executor_first_token_latency_ms is None:
-                executor_first_token_latency_ms = _elapsed_ms(executor_started_at)
             if event_type and event_type.startswith("tool_call") and executor_tool_call_latency_ms is None:
                 executor_tool_call_latency_ms = _elapsed_ms(executor_started_at)
 
@@ -2205,15 +2997,26 @@ def create_executor_app(
             seal_capability_failure=seal_runner_events_after_capability_failure,
         )
 
-        await emit_runner_event(
-            _PlatformExecutionPhaseFact("sandbox_preparation", "started")
+        await await_with_callback_buffer_cleanup(
+            emit_runner_event(
+                _PlatformExecutionPhaseFact("sandbox_preparation", "started")
+            )
         )
-        await dispatch_callback_event(running_event)
-        await emit_runner_event(
-            _PlatformExecutionPhaseFact("sandbox_preparation", "completed")
+        await await_with_callback_buffer_cleanup(dispatch_callback_event(running_event))
+        await await_with_callback_buffer_cleanup(
+            emit_runner_event(
+                _PlatformExecutionPhaseFact("sandbox_preparation", "completed")
+            )
         )
-        await emit_runner_event(
-            _PlatformExecutionPhaseFact("sandbox_submission", "started")
+        await await_with_callback_buffer_cleanup(
+            emit_runner_event(
+                _PlatformExecutionPhaseFact("sandbox_submission", "started")
+            )
+        )
+        heartbeat_task = (
+            asyncio.create_task(send_supervisor_heartbeats())
+            if app.state.dispatch_in_background
+            else None
         )
         runner_result: dict[str, Any] = {}
         try:
@@ -2253,20 +3056,49 @@ def create_executor_app(
                             "status": "failed",
                             "error_code": exc.error_code,
                             "error_message": exc.error_message,
+                            "runtime_diagnostics": _merge_runtime_diagnostics(
+                                None,
+                                error_code=exc.error_code,
+                                failure_source="executor_cleanup",
+                                failure_stage="sandbox_submission",
+                                exception=exc,
+                            ),
                         }
                     except Exception as exc:
+                        error_code = "executor_runner_failed"
                         runner_result = {
                             "status": "failed",
-                            "error_code": "executor_runner_failed",
+                            "error_code": error_code,
                             "error_message": str(exc),
+                            "runtime_diagnostics": _merge_runtime_diagnostics(
+                                None,
+                                error_code=error_code,
+                                failure_source="executor_runner_exception",
+                                failure_stage="sandbox_submission",
+                                exception=exc,
+                            ),
                         }
+        except asyncio.CancelledError:
+            await cancel_message_delta_callbacks()
+            raise
         finally:
-            await drain_active_progress()
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
+                await await_shutdown_task(heartbeat_task)
+            progress_cleanup = asyncio.create_task(drain_active_progress())
+            await await_shutdown_task(progress_cleanup)
 
         if capability_callback_failed["value"]:
+            error_code = "capability_callback_not_acknowledged"
+            runner_result["runtime_diagnostics"] = _merge_runtime_diagnostics(
+                runner_result.get("runtime_diagnostics"),
+                error_code=error_code,
+                failure_source="sandbox_capability_callback",
+                failure_stage="sandbox_submission",
+            )
             runner_result["status"] = "failed"
             runner_result["message"] = ""
-            runner_result["error_code"] = "capability_callback_not_acknowledged"
+            runner_result["error_code"] = error_code
             runner_result["error_message"] = "Capability lifecycle callback was not acknowledged"
             runner_result["capability_evidence"] = []
         else:
@@ -2276,14 +3108,20 @@ def create_executor_app(
         failed = timed_out or runner_status not in {"completed", "succeeded"}
         if runner_events_open["value"]:
             phase_lifecycle = "failed" if failed else "completed"
-            await emit_runner_event(
-                _PlatformExecutionPhaseFact("sandbox_submission", phase_lifecycle)
+            await await_with_callback_buffer_cleanup(
+                emit_runner_event(
+                    _PlatformExecutionPhaseFact("sandbox_submission", phase_lifecycle)
+                )
             )
-            await emit_runner_event(
-                _PlatformExecutionPhaseFact("artifact_validation", "started")
+            await await_with_callback_buffer_cleanup(
+                emit_runner_event(
+                    _PlatformExecutionPhaseFact("artifact_validation", "started")
+                )
             )
-            await emit_runner_event(
-                _PlatformExecutionPhaseFact("artifact_validation", phase_lifecycle)
+            await await_with_callback_buffer_cleanup(
+                emit_runner_event(
+                    _PlatformExecutionPhaseFact("artifact_validation", phase_lifecycle)
+                )
             )
         if apply_stream_delivery_failure(runner_result):
             runner_status = "failed"
@@ -2306,6 +3144,19 @@ def create_executor_app(
             if failed
             else None
         )
+        if failed:
+            existing_runtime_diagnostics = normalize_sdk_runtime_diagnostics(
+                runner_result.get("runtime_diagnostics")
+            )
+            if existing_runtime_diagnostics.get("error_code") == error_code:
+                runner_result["runtime_diagnostics"] = existing_runtime_diagnostics
+            else:
+                runner_result["runtime_diagnostics"] = _merge_runtime_diagnostics(
+                    runner_result.get("runtime_diagnostics"),
+                    error_code=error_code or "executor_failed",
+                    failure_source="sandbox_terminal_normalization",
+                    failure_stage="sandbox_submission",
+                )
         timeout_observation = (
             {
                 "requested_max_seconds": max_seconds,
@@ -2334,7 +3185,10 @@ def create_executor_app(
             error_message=error_message,
         )
 
-        await dispatch_callback_event(execution_observation)
+        await await_with_callback_buffer_cleanup(
+            dispatch_callback_event(execution_observation)
+        )
+        await await_with_callback_buffer_cleanup(message_delta_callbacks.close())
         if apply_stream_delivery_failure(runner_result):
             runner_status = "failed"
             failed = True
@@ -2368,6 +3222,7 @@ def create_executor_app(
             "used_skills",
             "used_skills_source",
             "sdk_turn_diagnostics",
+            "runtime_diagnostics",
             "capability_evidence",
             REQUIRED_CAPABILITY_EVIDENCE_KEY,
             TOOL_INVOCATION_EVIDENCE_KEY,
@@ -2410,86 +3265,101 @@ def create_executor_app(
             error_message=str(result.get("error_message") or "") or None,
             terminal_result=result,
         )
-        deadline = time.monotonic() + terminal_callback_retry_seconds
+
+        clock = asyncio.get_running_loop().time
+        retry_deadline = clock() + terminal_callback_retry_seconds
         delay = 0.5
         while True:
             try:
-                acknowledged = resolved_callback_sender(
+                shutdown_deadline = shutdown_state["deadline"]
+                if (
+                    isinstance(shutdown_deadline, float)
+                    and clock() >= shutdown_deadline
+                ):
+                    shutdown_state["publishing_closed"] = True
+                    task_state["delivery_error"] = (
+                        "executor_terminal_callback_not_acknowledged"
+                    )
+                    raise _ShutdownDeadlineExceeded
+                acknowledged = await dispatch_owned_callback(
                     request.callback_url,
                     callback.model_dump(exclude_none=True),
                     request.callback_token,
                 )
-                if inspect.isawaitable(acknowledged):
-                    acknowledged = await acknowledged
                 if isinstance(acknowledged, dict) and acknowledged.get("accepted") is True:
                     return
+            except _ShutdownDeadlineExceeded:
+                raise
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 task_state["delivery_error"] = (
                     f"{type(exc).__name__}: {str(exc)}"[:512]
                 )
-            if time.monotonic() >= deadline:
+            shutdown_deadline = shutdown_state["deadline"]
+            deadline = min(
+                retry_deadline,
+                shutdown_deadline,
+            ) if isinstance(shutdown_deadline, float) else retry_deadline
+            remaining = deadline - clock()
+            if remaining <= 0:
+                if isinstance(shutdown_deadline, float) and shutdown_deadline <= retry_deadline:
+                    mark_shutdown_delivery_uncertain()
+                    raise _ShutdownDeadlineExceeded
                 raise RuntimeError("executor_terminal_callback_not_acknowledged")
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, 10.0)
-
-    async def send_supervisor_heartbeats(request: ExecutorTaskRequest) -> None:
-        while True:
-            await asyncio.sleep(heartbeat_interval_seconds)
-            heartbeat = ExecutorCallbackEvent(
-                session_id=request.session_id,
-                run_id=request.run_id,
-                attempt_id=request.attempt_id,
-                callback_token_id=request.callback_token_id,
-                batch_id=f"heartbeat-{uuid.uuid4().hex}",
-                status="running",
-                progress=5,
-                state_patch={"executor_heartbeat": True},
-            )
             try:
-                acknowledged = resolved_callback_sender(
-                    request.callback_url,
-                    heartbeat.model_dump(exclude_none=True),
-                    request.callback_token,
-                )
-                if inspect.isawaitable(acknowledged):
-                    await acknowledged
+                await asyncio.sleep(min(delay, remaining))
             except asyncio.CancelledError:
-                raise
-            except Exception:
-                # Heartbeats are best-effort liveness hints. Runner events and
-                # terminal delivery keep their own acknowledgement semantics.
-                continue
+                if not isinstance(shutdown_state["deadline"], float):
+                    raise
+            delay = min(delay * 2, 10.0)
 
     async def supervise_task(request: ExecutorTaskRequest) -> None:
         task_state["status"] = "running"
-        heartbeat_task = asyncio.create_task(send_supervisor_heartbeats(request))
         try:
             result = await execute_claimed_task(request)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
+            error_code = "executor_cancelled"
             result = {
                 "status": "cancelled",
                 "run_id": request.run_id,
                 "message": "Task cancelled",
-                "error_code": "executor_cancelled",
+                "error_code": error_code,
                 "error_message": "Task cancelled",
+                "runtime_diagnostics": _merge_runtime_diagnostics(
+                    None,
+                    error_code=error_code,
+                    failure_source="sandbox_supervisor_cancelled",
+                    failure_stage="sandbox_submission",
+                    exception=exc,
+                ),
             }
-        except Exception:
+        except Exception as exc:
+            error_code = "executor_runner_failed"
             result = {
                 "status": "failed",
                 "run_id": request.run_id,
                 "message": "Executor failed",
-                "error_code": "executor_runner_failed",
+                "error_code": error_code,
                 "error_message": "Executor failed",
+                "runtime_diagnostics": _merge_runtime_diagnostics(
+                    None,
+                    error_code=error_code,
+                    failure_source="sandbox_supervisor_exception",
+                    failure_stage="sandbox_submission",
+                    exception=exc,
+                ),
             }
-        finally:
-            heartbeat_task.cancel()
-            await asyncio.gather(heartbeat_task, return_exceptions=True)
+        _log_sandbox_execution_terminal(request, result)
         task_state["result"] = result
         task_state["status"] = str(result.get("status") or "failed")
+        if shutdown_state["delivery_uncertain"]:
+            task_state["status"] = "callback_failed"
+            return
         try:
             await deliver_terminal_callback(request, result)
+        except _ShutdownDeadlineExceeded:
+            task_state["status"] = "callback_failed"
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -2528,6 +3398,7 @@ def create_executor_app(
         task_state["attempt_id"] = request.attempt_id
         if not app.state.dispatch_in_background:
             result = await execute_claimed_task(request)
+            _log_sandbox_execution_terminal(request, result)
             task_state["result"] = result
             task_state["status"] = str(result.get("status") or "failed")
             return result
@@ -2571,6 +3442,7 @@ def create_executor_app(
         validate_control_scope(run_id, attempt_id)
         task = task_state.get("task")
         if isinstance(task, asyncio.Task) and not task.done():
+            ensure_shutdown_deadline()
             task.cancel()
         return {"status": "cancel_requested", "run_id": run_id, "attempt_id": attempt_id}
 

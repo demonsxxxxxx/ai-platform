@@ -8,8 +8,8 @@ from app.executors.claude import prompts as claude_prompts
 from app.context.retrieval import (
     ContextRetrieval,
     ContextRetrievalAuthority,
-    InMemoryContextRetrievalRepository,
 )
+from tests.support.context_retrieval import InMemoryContextRetrievalRepository
 from app.executors.claude_agent_sdk_runner import (
     build_skill_prompt,
     internal_context_tool_policy_subjects,
@@ -132,27 +132,39 @@ def test_skill_prompt_injects_complete_ordered_conversation_once():
     assert prompt.count("current-needle") == 1
 
 
-def test_skill_prompt_caps_current_request_but_preserves_selected_history_body():
-    prompt = build_skill_prompt(
-        skill_id="general-chat",
-        user_message="~" * 20_000,
-        file_names=[],
-        context_pack={
-            "schema_version": "ai-platform.executor-context-pack.v1",
-            "prompt_summary": "summary",
-        },
-        conversation_context={
-            "schema_version": "ai-platform.executor-conversation-context.v1",
-            "messages": [
-                {"role": "user", "content": "prior"},
-                {"role": "assistant", "content": "🧪" * 1_000},
-            ],
-        },
-    )
+def test_prompt_builders_reject_oversized_current_request_without_truncation():
+    context_pack = {
+        "schema_version": "ai-platform.executor-context-pack.v1",
+        "prompt_summary": "summary",
+    }
 
-    assert prompt.count("~") == 16_384
-    assert prompt.count("🧪") == 1_000
-    assert len(prompt.encode("utf-8")) < 32_000
+    with pytest.raises(
+        claude_prompts.CurrentRequestTooLargeError,
+        match="current_request_too_large",
+    ):
+        build_skill_prompt(
+            skill_id="general-chat",
+            user_message="~" * 20_000,
+            file_names=[],
+            context_pack=context_pack,
+            conversation_context={
+                "schema_version": "ai-platform.executor-conversation-context.v1",
+                "messages": [
+                    {"role": "user", "content": "prior"},
+                    {"role": "assistant", "content": "🧪" * 1_000},
+                ],
+            },
+        )
+
+    with pytest.raises(
+        claude_prompts.CurrentRequestTooLargeError,
+        match="current_request_too_large",
+    ):
+        claude_prompts.build_harness_chat_prompt(
+            user_message="你" * 6_000,
+            file_names=[],
+            context_pack=context_pack,
+        )
 
 
 def test_conversation_history_is_json_serialized_and_rejects_historical_system_role():
@@ -332,7 +344,7 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
         query=query,
         tool=tool,
     )
-    retrieval = ContextRetrievalAuthority.in_memory_for_workspace(
+    retrieval = ContextRetrievalAuthority(
         InMemoryContextRetrievalRepository(
             messages=[
                 {
@@ -373,10 +385,12 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
                     "artifact_type": "translated_docx",
                     "label": "translated.docx",
                     "content": "artifact bytes",
+                    "size_bytes": len("artifact bytes".encode("utf-8")),
                 }
             ],
         ),
-        tmp_path,
+        _stage_delivery="local_workspace",
+        _workspace_root=tmp_path,
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)

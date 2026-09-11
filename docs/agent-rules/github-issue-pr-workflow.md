@@ -1,106 +1,73 @@
 # GitHub Pull Request Workflow
 
-This file owns pull-request scope, review, verification, and evidence language.
-Product and deployment invariants remain in their architecture documents and the
-release runbook.
+Read for delivery or review. Product contracts and release controls stay with
+[their owners](../README.md); this guide adds no separate approval system.
+
+## Issue and Pull Request Language
+
+Use Chinese for project discussion, PRs, reviews, and closure records. Preserve
+code symbols, commands, fixed template fields, and quoted errors as written.
 
 ## Ordinary changes
 
-A focused ordinary change may use its pull request as the complete durable
-record. It does not require a separate issue, hand-copied Git SHA, worktree
-inventory, structured review JSON, deployment placeholder, or runtime evidence.
+One coherent PR can hold the complete change record. Use the existing PR
+template: describe the outcome, scope, regression coverage, observed checks,
+and any remaining limits. A docs-only change reports document verification.
+A separate issue, copied SHA inventory, review JSON, or deployment placeholder
+is unnecessary. GitHub and CI record the source identity.
 
-The pull request states:
-
-- the problem and intended outcome;
-- changed behavior, owning modules, and explicit non-goals;
-- a falsifiable regression test and observed focused checks;
-- checks not run and why; and
-- only the risk boundaries the change actually reaches.
-
-The actual GitHub event supplies the base and head identities. CI and release
-workflows bind evidence to those identities automatically; authors do not copy
-SHAs into pull-request text.
+For retirement, complete every field in the template's `Retirement /
+Compatibility Disposition`: superseded production paths, tests/selectors,
+documentation/configuration, retained compatibility surfaces and removal proof,
+and a post-change absence or inventory command with its observed result. State
+what was removed, which callers and tests moved, and which compatibility
+consumers remain. Use `none` only after a current-source inventory proves that
+category has no superseded surface. Update the owning documentation in the
+same change; do not preserve obsolete code solely for an outdated test.
 
 ## High-risk changes
 
-Use a bounded Change Contract for goal-sized work or changes that reach any of
-these boundaries:
+Use a bounded Change Contract in the PR for changes to authentication,
+authorization, tenant/workspace isolation, secrets or public redaction,
+destructive lifecycle, retention, schema/data compatibility, Sandbox/Tool/Skill/
+MCP admission, public API/callback/stream protocols, or CI/release authority.
+Record the owner, reached invariants, falsifiable acceptance, evidence limits,
+stop conditions, and applicable migration/rollback. An ADR is needed only for
+a durable architectural decision or genuine alternative analysis.
 
-- authentication, authorization, tenant or workspace isolation;
-- secrets, credentials, or ordinary-user projection redaction;
-- destructive lifecycle, retention, schema migration, or irreversible data
-  compatibility;
-- sandbox, command, tool, Skill, MCP, or executor admission;
-- public API, callback, event, or streaming protocols; or
-- workflow, image, release, deployment, or rollback authority.
-
-The contract records the owner, bounded paths, reached invariants, acceptance,
-falsifiable regression proof, evidence ceiling, rollback or migration plan when
-relevant, and stop conditions. A separate ADR or design is required only when a
-durable architecture decision or genuine alternative analysis is needed.
-
-High-risk review uses real GitHub review or an independently produced trusted
-check. Pull-request text written by the author is not proof that another reviewer
-acted. Until an independent reviewer is available, do not claim formal approval;
-retain the risk-specific tests and owner authorization without inventing a
-review identity.
+Independent GitHub review or a trusted independent check remains required for
+these boundaries. Author-written approval claims are not review evidence.
+Missing review stays pending. Deferring a high-risk finding requires a human
+owner, independent confirmation, and an observable exit condition.
 
 ## Local readiness
 
-Before pushing, run the smallest checks that can falsify the change from the
-candidate worktree:
+Run `git diff --check`, relevant static checks, and affected regression tests.
+Use the [local test runner](local-test-execution.md) for pytest. Choose order
+and breadth by risk; avoid unrelated suites and detached authority checkouts.
 
-1. `git diff --check`;
-2. relevant compile, formatter, lint, type, schema, or generated-code checks;
-3. the owning regression test; and
-4. bounded compatibility or integration tests justified by the changed risk.
-
-Use `tools/run_test_stage.py` for ordinary local pytest execution. Local checks
-are developer feedback, not trusted merge authority. GitHub required checks run
-the accepted trusted-base governance and exact candidate tests; authors do not
-create detached authority worktrees before every push.
+When local infrastructure cannot run a required check, record the exact gap
+and available results. An authorized push to a draft PR may obtain CI evidence;
+it does not permit merging or mark the missing local result as passed. Product
+failures remain unresolved until repaired or formally dispositioned.
 
 ## Review and findings
 
-Review comments are the disposition record for ordinary changes. Resolve fixed
-findings in the pull request. A deferred or rejected high-risk finding requires
-an identifiable human owner, independent confirmation, and a falsifiable exit
-condition. Do not paste raw review transcripts, prompts, credentials, private
-local paths, or secret-bearing payloads into GitHub.
+Keep findings and disposition in the PR. Prefer a code fix and regression test
+to another repository rule. Add a rule only for a repeated defect class with an
+owner and a narrow, reliable detector; consolidate overlapping rules.
+Do not publish raw transcripts, private prompts, credentials, or sensitive paths.
 
-Promote a lesson only to its smallest durable owner:
+## Evidence
 
-- a one-off defect becomes a code fix;
-- a reproducible regression becomes an owning test; and
-- a repeated high-cost defect class may become a repository rule only when its
-  detector is deterministic, narrowly scoped, owned, and demonstrably low in
-  false positives.
-
-A new rule replaces or consolidates overlapping policy. Review wording and
-per-change JSON are not durable architecture artifacts.
-
-## Evidence levels
-
-Use precise evidence language:
-
-- `local`: named local checks passed on the candidate worktree;
-- `CI`: named required jobs passed for the GitHub subject;
-- `packaged`: an immutable image was built and verified;
-- `deployed`: that image and configuration were applied to a named environment;
-- `runtime verified`: the exact deployed subject passed its controlled runtime
-  checks; and
-- `external acceptance`: a documented actor completed the named end-to-end
-  workflow.
-
-Never promote source, local, CI, or historical evidence into a deployment or
-runtime claim. Runtime evidence is produced after merge by the release and
-controlled-host procedures, not prefilled in an ordinary pull request.
+Use the existing [evidence levels](../architecture/ci-test-readiness-governance.md).
+Link the observed result for its actual source. Local, CI, packaged, deployed,
+and end-user observations remain distinct; a later fix invalidates earlier
+fixed-source verification claims.
 
 ## Merge and release
 
-Merge only after the applicable required checks and review are complete. Keep
-one coherent pull request per independently acceptable change and prefer squash
-merge into the protected main branch. A merged source change is not a release:
-main packaging, immutable-digest promotion, deployment, runtime verification,
-and rollback remain separately observed states.
+Merge only after applicable required checks and review are complete. Prefer
+squash merge for an independently acceptable change. Source merge does not
+release the product: deployment and rollback follow the
+[release runbook](../operations/release-operations-runbook.md).

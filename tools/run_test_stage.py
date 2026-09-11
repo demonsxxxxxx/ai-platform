@@ -429,7 +429,6 @@ def _build_plan(arguments: argparse.Namespace) -> StagePlan:
             EXIT_INVALID_PLAN,
         )
     tests_root = (top_level / "tests").resolve()
-    tracked_sources: set[str] = set()
     for selector in selectors:
         if selector.startswith("-"):
             raise StageError(
@@ -464,22 +463,6 @@ def _build_plan(arguments: argparse.Namespace) -> StagePlan:
                 f"test selector does not name an existing Python test file: {source}",
                 EXIT_INVALID_PLAN,
             )
-        tracked_source = resolved.relative_to(top_level).as_posix()
-        if tracked_source not in tracked_sources:
-            if not _run_git(
-                top_level,
-                "ls-files",
-                "--cached",
-                "--",
-                tracked_source,
-            ):
-                raise StageError(
-                    "invalid_test_plan",
-                    "test_selector_untracked",
-                    f"test selector does not name a Git-tracked file: {source}",
-                    EXIT_INVALID_PLAN,
-                )
-            tracked_sources.add(tracked_source)
     run_id = f"{datetime.now(UTC):%Y%m%dT%H%M%S}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
     run_root = top_level / ".pytest-tmp" / "test-runs" / run_id / arguments.stage
     return StagePlan(

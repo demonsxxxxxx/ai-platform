@@ -2,11 +2,10 @@ import {
   Activity,
   AlertTriangle,
   CheckCircle2,
+  ChevronLeft,
   ChevronRight,
   CircleX,
   Clock3,
-  Pause,
-  Play,
   RadioTower,
   RefreshCw,
   ServerCog,
@@ -24,9 +23,13 @@ import {
   type AdminRunSummary,
 } from "../../services/api/adminRuns";
 import { formatDateTimeShort } from "../../utils/datetime";
+import {
+  buildAdminRunMonitorView,
+  type AdminRunTimelineItem,
+} from "./adminRunTimeline";
 
-const POLL_INTERVAL_MS = 5_000;
 const RUN_LIMIT = 50;
+const PAGE_SIZE = 10;
 
 const STATUS_FILTERS = [
   { value: "all", label: "全部" },
@@ -68,7 +71,7 @@ const QUEUE_REASON_LABELS: Record<string, string> = {
   workers_busy: "Worker 忙碌",
   worker_capacity_full: "Worker 容量已满",
   queued_behind_existing_work: "等待前序任务",
-  tenant_quota_full: "租户并发已满",
+  tenant_quota_full: "企业并发已满",
   user_quota_full: "用户并发已满",
   processing_lease_reclaimable: "存在可回收任务",
 };
@@ -161,6 +164,26 @@ function StatusBadge({ status }: { status: string | null | undefined }) {
       {statusLabel(status)}
     </span>
   );
+}
+
+function timelineStatusTone(status: AdminRunTimelineItem["status"]): string {
+  if (status === "failed" || status === "denied") {
+    return "bg-[var(--theme-danger-soft)] text-[var(--theme-danger)]";
+  }
+  if (status === "succeeded") {
+    return "bg-[var(--theme-success-soft)] text-[var(--theme-success)]";
+  }
+  if (status === "cancelled") {
+    return "bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]";
+  }
+  if (status === "running") {
+    return "bg-[var(--theme-info-soft)] text-[var(--theme-info)]";
+  }
+  return "bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]";
+}
+
+function timelineCountLabel(item: AdminRunTimelineItem): string {
+  return item.count > 1 ? ` · ${item.count} 次合并` : "";
 }
 
 function MetricTile({
@@ -294,6 +317,10 @@ function RunDetail({
     };
   }, [fallbackFocusRef]);
 
+  const monitorView = detail
+    ? buildAdminRunMonitorView(detail.run, detail.events)
+    : null;
+
   return (
     <aside
       ref={detailRef}
@@ -378,35 +405,77 @@ function RunDetail({
             ) : null}
           </section>
 
+          {detail.run.result?.runtime_diagnostics ? (
+            <section className="p-4" data-run-runtime-diagnostics>
+              <h3 className="text-xs font-semibold text-[var(--theme-text)]">
+                执行诊断
+              </h3>
+              <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--theme-bg-sidebar)] p-3 font-mono text-[11px] leading-5 text-[var(--theme-text-secondary)]">
+                {JSON.stringify(detail.run.result.runtime_diagnostics, null, 2)}
+              </pre>
+            </section>
+          ) : null}
+
           <section className="p-4">
-            <h3 className="text-xs font-semibold text-[var(--theme-text)]">
-              阶段事件 <span className="font-normal text-[var(--theme-text-tertiary)]">({detail.events.length})</span>
-            </h3>
-            {detail.events.length ? (
-              <ol className="mt-3 space-y-3">
-                {detail.events.map((event, index) => (
+            <h3 className="text-xs font-semibold text-[var(--theme-text)]">运行概览</h3>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-3">
+                <span className="text-[11px] text-[var(--theme-text-tertiary)]">当前状态</span>
+                <div className="mt-1.5">
+                  <StatusBadge status={monitorView?.currentStatus ?? detail.run.status} />
+                </div>
+              </div>
+              <div className="min-w-0 rounded-md bg-[var(--theme-bg-sidebar)] p-3">
+                <span className="text-[11px] text-[var(--theme-text-tertiary)]">当前动作</span>
+                <p className="mt-1.5 truncate text-xs font-medium text-[var(--theme-text)]" title={monitorView?.currentAction}>
+                  {monitorView?.currentAction}
+                </p>
+              </div>
+            </div>
+            <div className="mt-3 rounded-md border border-[var(--theme-border)] p-3">
+              <div className="flex items-center justify-between gap-2">
+                <h4 className="text-xs font-semibold text-[var(--theme-text)]">模型输出</h4>
+                {monitorView?.modelOutput ? (
+                  <span className="text-[11px] text-[var(--theme-text-tertiary)]">已聚合</span>
+                ) : null}
+              </div>
+              {monitorView?.modelOutput ? (
+                <p className="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-5 text-[var(--theme-text-secondary)]">
+                  {monitorView.modelOutput}
+                </p>
+              ) : (
+                <p className="mt-2 text-xs text-[var(--theme-text-tertiary)]">暂无模型输出</p>
+              )}
+            </div>
+          </section>
+
+          <section className="p-4">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h3 className="text-xs font-semibold text-[var(--theme-text)]">最近活动</h3>
+              <span className="text-[11px] text-[var(--theme-text-tertiary)]">
+                {monitorView?.recentActivity.length ?? 0} 条 · 已记录 {monitorView?.rawEventCount ?? detail.events.length} 个事件
+              </span>
+            </div>
+            {monitorView?.recentActivity.length ? (
+              <ol className="mt-3 space-y-2">
+                {monitorView.recentActivity.map((item) => (
                   <li
-                    key={event.event_id ?? `${event.type ?? "event"}-${index}`}
+                    key={item.id}
                     className="grid grid-cols-[10px_minmax(0,1fr)] gap-3"
                   >
-                    <span className="mt-1.5 size-2 rounded-full bg-[var(--theme-info)] ring-2 ring-[var(--theme-info-soft)]" />
-                    <div className="min-w-0">
+                    <span className={`mt-1.5 size-2 rounded-full ${timelineStatusTone(item.status)}`} />
+                    <div className="min-w-0 rounded-md bg-[var(--theme-bg-sidebar)] p-2.5">
                       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                        <span className="font-mono text-xs font-medium text-[var(--theme-text)]">
-                          {event.type ?? "event"}
+                        <span className="text-xs font-medium text-[var(--theme-text)]">
+                          {item.label}{timelineCountLabel(item)}
                         </span>
-                        {event.stage ? (
-                          <span className="text-[11px] text-[var(--theme-text-tertiary)]">
-                            {event.stage}
-                          </span>
-                        ) : null}
                         <time className="ml-auto text-[11px] text-[var(--theme-text-tertiary)]">
-                          {dateTime(event.created_at)}
+                          {dateTime(item.created_at)}
                         </time>
                       </div>
-                      {event.message ? (
-                        <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                          {event.message}
+                      {item.detail ? (
+                        <p className="mt-1 text-[11px] leading-5 text-[var(--theme-text-secondary)]">
+                          {item.detail}
                         </p>
                       ) : null}
                     </div>
@@ -414,9 +483,7 @@ function RunDetail({
                 ))}
               </ol>
             ) : (
-              <p className="mt-2 text-xs text-[var(--theme-text-tertiary)]">
-                暂无阶段事件
-              </p>
+              <p className="mt-2 text-xs text-[var(--theme-text-tertiary)]">暂无可展示的活动</p>
             )}
           </section>
 
@@ -642,8 +709,8 @@ export function RunMonitorPanel() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
+  const [page, setPage] = useState(1);
   const listRequestSequence = useRef(0);
   const detailRequestSequence = useRef(0);
   const selectedRunIdRef = useRef<string | null>(null);
@@ -700,20 +767,6 @@ export function RunMonitorPanel() {
     void loadRuns(true);
   }, [loadRuns]);
 
-  useEffect(() => {
-    if (!autoRefresh) return;
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") void loadRuns(false);
-    }, POLL_INTERVAL_MS);
-    const handleVisibility = () => {
-      if (document.visibilityState === "visible") void loadRuns(false);
-    };
-    document.addEventListener("visibilitychange", handleVisibility);
-    return () => {
-      window.clearInterval(interval);
-      document.removeEventListener("visibilitychange", handleVisibility);
-    };
-  }, [autoRefresh, loadRuns]);
 
   const selectRun = useCallback((runId: string) => {
     selectedRunIdRef.current = runId;
@@ -735,6 +788,18 @@ export function RunMonitorPanel() {
     () => filterAdminRuns(runs, statusFilter, searchQuery),
     [runs, searchQuery, statusFilter],
   );
+  const pageCount = Math.max(1, Math.ceil(filteredRuns.length / PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const visibleRuns = useMemo(
+    () => filteredRuns.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE),
+    [currentPage, filteredRuns],
+  );
+  useEffect(() => {
+    setPage(1);
+  }, [searchQuery, statusFilter]);
+  useEffect(() => {
+    setPage((current) => Math.min(current, pageCount));
+  }, [pageCount]);
   const summary = useMemo(() => summarizeAdminRuns(runs), [runs]);
   const queueInsight = useMemo(() => latestQueueInsight(runs), [runs]);
   const lastUpdatedLabel = lastUpdatedAt
@@ -742,29 +807,17 @@ export function RunMonitorPanel() {
     : "尚未刷新";
 
   const headerActions = (
-    <>
-      <button
-        type="button"
-        className="btn-icon flex size-9 items-center justify-center rounded-md"
-        onClick={() => setAutoRefresh((current) => !current)}
-        aria-pressed={autoRefresh}
-        aria-label={autoRefresh ? "暂停自动刷新" : "开启自动刷新"}
-        title={autoRefresh ? "暂停自动刷新" : "开启自动刷新"}
-      >
-        {autoRefresh ? <Pause size={16} /> : <Play size={16} />}
-      </button>
-      <button
-        ref={refreshButtonRef}
-        type="button"
-        className="btn-icon flex size-9 items-center justify-center rounded-md"
-        onClick={() => void loadRuns(false)}
-        disabled={isRefreshing}
-        aria-label="刷新最近运行"
-        title="刷新最近运行"
-      >
-        <RefreshCw size={16} className={isRefreshing ? "animate-spin" : ""} />
-      </button>
-    </>
+    <button
+      ref={refreshButtonRef}
+      type="button"
+      className="btn-icon flex size-9 items-center justify-center rounded-md"
+      onClick={() => void loadRuns(false)}
+      disabled={isRefreshing}
+      aria-label="刷新最近运行"
+      title="刷新最近运行"
+    >
+      <RefreshCw size={16} className={isRefreshing ? "animate-spin" : ""} />
+    </button>
   );
 
   if (isLoading && runs.length === 0) {
@@ -801,7 +854,7 @@ export function RunMonitorPanel() {
     >
       <PanelHeader
         title="运行监控"
-        subtitle="查看当前租户最近的 Chat、Run 与 Worker 生命周期状态"
+        subtitle="查看最近的 Chat、Run 与 Worker 生命周期状态"
         icon={<Activity size={20} />}
         actions={headerActions}
         searchValue={searchQuery}
@@ -809,7 +862,7 @@ export function RunMonitorPanel() {
         searchPlaceholder="搜索 Chat / Run / 用户 / 工作区"
         searchAccessory={
           <span className="hidden shrink-0 text-xs text-[var(--theme-text-tertiary)] sm:inline">
-            {autoRefresh ? "每 5 秒更新" : "自动刷新已暂停"} · {lastUpdatedLabel}
+            手动刷新 · {lastUpdatedLabel}
           </span>
         }
       />
@@ -828,7 +881,7 @@ export function RunMonitorPanel() {
           icon={<Clock3 size={17} />}
           value={summary.queued}
           label="正在排队"
-          detail={`租户队列 ${numericValue(queueInsight?.depths?.tenant_queued)}`}
+          detail={`企业队列 ${numericValue(queueInsight?.depths?.tenant_queued)}`}
         />
         <MetricTile
           icon={<ServerCog size={17} />}
@@ -863,7 +916,7 @@ export function RunMonitorPanel() {
           ))}
         </div>
         <p className="text-xs text-[var(--theme-text-tertiary)]" aria-live="polite">
-          显示 {filteredRuns.length} / {runs.length} 条
+          最近 {runs.length} 条 · 筛选后 {filteredRuns.length} 条
         </p>
       </div>
 
@@ -885,12 +938,12 @@ export function RunMonitorPanel() {
           {filteredRuns.length ? (
             <>
               <DesktopRunTable
-                runs={filteredRuns}
+                runs={visibleRuns}
                 selectedRunId={selectedRunId}
                 onSelect={selectRun}
               />
               <MobileRunList
-                runs={filteredRuns}
+                runs={visibleRuns}
                 selectedRunId={selectedRunId}
                 onSelect={selectRun}
               />
@@ -908,7 +961,7 @@ export function RunMonitorPanel() {
               <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
                 {searchQuery || statusFilter !== "all"
                   ? "调整状态筛选或搜索条件后重试。"
-                  : "新的 Chat 请求入队后会自动出现在这里。"}
+                  : "点击右上角刷新按钮后，新的 Chat 请求会出现在这里。"}
               </p>
             </div>
           )}
@@ -935,6 +988,40 @@ export function RunMonitorPanel() {
           </div>
         ) : null}
       </div>
+
+      {filteredRuns.length ? (
+        <nav
+          aria-label="运行分页"
+          className="flex items-center justify-between gap-3 px-4 pb-4 pt-2 text-xs text-[var(--theme-text-tertiary)]"
+        >
+          <span className="tabular-nums">
+            第 {currentPage} / {pageCount} 页 · 显示 {Math.min((currentPage - 1) * PAGE_SIZE + 1, filteredRuns.length)}-
+            {Math.min(currentPage * PAGE_SIZE, filteredRuns.length)} / {filteredRuns.length} 条
+          </span>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              className="btn-secondary inline-flex h-8 items-center gap-1 rounded-md px-2.5"
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              disabled={currentPage === 1}
+              aria-label="上一页"
+            >
+              <ChevronLeft size={14} />
+              <span>上一页</span>
+            </button>
+            <button
+              type="button"
+              className="btn-secondary inline-flex h-8 items-center gap-1 rounded-md px-2.5"
+              onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
+              disabled={currentPage === pageCount}
+              aria-label="下一页"
+            >
+              <span>下一页</span>
+              <ChevronRight size={14} />
+            </button>
+          </div>
+        </nav>
+      ) : null}
 
       <span className="sr-only" aria-live="polite">
         {isRefreshing ? "正在刷新运行状态" : `运行状态已更新，${lastUpdatedLabel}`}

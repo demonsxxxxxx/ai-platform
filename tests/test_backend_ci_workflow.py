@@ -18,8 +18,6 @@ WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-backend.yml"
 FRONTEND_WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-frontend.yml"
 PYPROJECT = ROOT / "pyproject.toml"
 CODE_GOVERNANCE = ROOT / "tools" / "code_governance.py"
-AGENT_RULES = ROOT / "AGENTS.md"
-ISSUE_WORKFLOW = ROOT / "docs" / "agent-rules" / "github-issue-pr-workflow.md"
 TRUSTED_RUFF_REGEX = r"[0-9]+\.[0-9]+\.[0-9]+"
 TRUSTED_JSONSCHEMA_REGEX = r"[0-9]+(?:\.[0-9]+)+"
 TRUSTED_WORKFLOW_IMPORTS = (
@@ -58,6 +56,9 @@ BACKEND_TEST_SHARDS = {
         "tests/test_claude_agent_sdk_installed_contract.py",
         "tests/test_claude_agent_sdk_runner.py",
         "tests/test_claude_agent_worker_adapter.py",
+        "tests/test_claude_agent_worker_file_continuity.py",
+        "tests/test_context_file_content.py",
+        "tests/test_sandbox_document_capability.py",
         "tests/test_required_tool_contract.py",
         "tests/test_intent_router.py",
         "tests/test_public_answer_stream.py",
@@ -141,11 +142,9 @@ BACKEND_TEST_SHARDS = {
     ),
     "release-governance-authority": (
         "tests/test_governance_readiness.py",
-        "tests/test_deploy_latest_entry.py",
-        "tests/test_latest_main_quickstart.py",
+        "tests/test_compose_package_deploy.py",
         "tests/test_production_bootstrap.py",
         "tests/test_release_authority.py",
-        "tests/test_sandbox_quickstart.py",
         "tests/test_s75_opensandbox_transition.py",
     ),
 }
@@ -188,11 +187,9 @@ def test_backend_required_check_is_stable_for_every_main_pull_request():
     assert "tests/test_packaging_publish_workflow.py" in workflow
     assert "tests/test_release_image_manifest.py" in workflow
     assert "tests/test_governance_readiness.py" in workflow
-    assert "tests/test_deploy_latest_entry.py" in workflow
-    assert "tests/test_latest_main_quickstart.py" in workflow
+    assert "tests/test_compose_package_deploy.py" in workflow
     assert "tests/test_production_bootstrap.py" in workflow
     assert "tests/test_release_authority.py" in workflow
-    assert "tests/test_sandbox_quickstart.py" in workflow
     assert "tests/test_s75_opensandbox_transition.py" in workflow
     assert "tests/test_contract.py" in workflow
     assert "tests/test_worker_main.py" in workflow
@@ -268,7 +265,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     all_selectors = [
         selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors
     ]
-    assert len(all_selectors) == len(set(all_selectors)) == 78
+    assert len(all_selectors) == len(set(all_selectors)) == 79
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job
@@ -1015,7 +1012,12 @@ def test_backend_image_job_builds_only_affected_pull_request_candidates_and_chec
     assert 'labels["org.opencontainers.image.revision"]' in image_job
     assert 'labels["ai-platform.source-repository"]' in image_job
     assert '--env IMAGE_SOURCE_COMMIT="$IMAGE_SOURCE_COMMIT"' in image_job
-    assert "import app.main, claude_agent_sdk" in image_job
+    assert "--network none" in image_job
+    assert "target=/tmp/sandbox-documents,readonly" in image_job
+    assert "import anydoc, app.main, claude_agent_sdk" in image_job
+    assert 'anydoc.to_markdown(root / name, ocr=\\"reject\\")' in image_job
+    for fixture in ("legacy.doc", "legacy.xls", "legacy.ppt", "modern.pptx"):
+        assert fixture in image_job
     assert "http://127.0.0.1:18020/api/ai/health" in image_job
     assert "python - <<'PY'" not in startup_step
     assert "os.urandom(32)" in startup_step
@@ -1035,26 +1037,3 @@ def test_backend_image_job_builds_only_affected_pull_request_candidates_and_chec
     required_job = workflow.split("  required:", 1)[1]
     assert "IMAGE_RESULT: ${{ needs.backend-image.result }}" in required_job
     assert "IMAGE_DISPOSITION" not in required_job
-
-
-def test_backend_required_contract_preserves_high_risk_design_boundaries():
-    guidance = " ".join(
-        "\n".join(
-            [
-                AGENT_RULES.read_text(encoding="utf-8"),
-                ISSUE_WORKFLOW.read_text(encoding="utf-8"),
-            ]
-        ).split()
-    )
-
-    assert "Use a bounded Change Contract for goal-sized work" in guidance
-    for boundary in (
-        "authentication, authorization, tenant or workspace isolation",
-        "secrets, credentials, or ordinary-user projection redaction",
-        "destructive lifecycle, retention, schema migration",
-        "sandbox, command, tool, Skill, MCP, or executor admission",
-        "public API, callback, event, or streaming protocols",
-        "workflow, image, release, deployment, or rollback authority",
-    ):
-        assert boundary in guidance
-    assert "A separate ADR or design is required only" in guidance

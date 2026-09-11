@@ -2,16 +2,10 @@
  * Upload API - 文件上传
  */
 
-import type { UploadConfig, UploadResult } from "../../types";
+import type { FileCategory, UploadConfig, UploadResult } from "../../types";
 import { API_BASE } from "./config";
-import { authFetch } from "./fetch";
+import { ApiRequestError, authFetch } from "./fetch";
 import { authenticatedRequest } from "./authenticatedRequest";
-import {
-  getValidAccessToken,
-  redirectToLogin,
-  refreshAccessToken,
-} from "./tokenManager";
-import { getRefreshToken } from "./token";
 
 interface SignedUrlItem {
   key: string;
@@ -32,10 +26,14 @@ export interface UploadHandle {
 export type UploadRequestErrorKind =
   | "file_too_large"
   | "unsupported_file_type"
+  | "capacity"
   | "recoverable"
   | "cancelled";
 
-type SafeUploadErrorCode = "file_too_large" | "unsupported_file_type";
+type SafeUploadErrorCode =
+  | "file_too_large"
+  | "unsupported_file_type"
+  | "upload_session_limit_exceeded";
 
 /** A bounded upload failure projection that never contains backend detail. */
 export class UploadRequestError extends Error {
@@ -49,37 +47,168 @@ export class UploadRequestError extends Error {
   }
 }
 
-function knownUploadErrorCode(
-  detail: unknown,
-): SafeUploadErrorCode | undefined {
-  const candidate =
-    typeof detail === "string"
-      ? detail
-      : detail !== null &&
-          typeof detail === "object" &&
-          !Array.isArray(detail) &&
-          Object.prototype.hasOwnProperty.call(detail, "code")
-        ? (detail as { code?: unknown }).code
-        : undefined;
-  if (candidate === "file_too_large" || candidate === "unsupported_file_type") {
-    return candidate;
-  }
-  return undefined;
+interface MultipartUploadResponse {
+  upload_session_id: string;
+  part_size_bytes: number;
+  parts: Array<{ part_number: number; url: string }>;
 }
 
-function uploadRequestErrorFromResponse(
-  status: number,
-  detail: unknown,
-): UploadRequestError {
-  const code = knownUploadErrorCode(detail);
-  if (status === 413 && code === "file_too_large") {
-    return new UploadRequestError("file_too_large", status, code);
-  }
-  if (status === 415 && code === "unsupported_file_type") {
-    return new UploadRequestError("unsupported_file_type", status, code);
-  }
-  return new UploadRequestError("recoverable", status);
+function fileCategory(file: File): FileCategory {
+  if (file.type.startsWith("image/")) return "image";
+  if (file.type.startsWith("video/")) return "video";
+  if (file.type.startsWith("audio/")) return "audio";
+  return "document";
 }
+
+function uploadResultFromMultipart(
+  raw: { file_id: string; name: string; sha256: string; size_bytes: number },
+  file: File,
+): UploadResult {
+  return {
+    key: raw.file_id,
+    url: `/api/ai/files/${raw.file_id}`,
+    name: raw.name,
+    type: fileCategory(file),
+    mimeType: file.type || "application/octet-stream",
+    size: raw.size_bytes,
+  };
+}
+
+function uploadMultipartFile(file: File, options: UploadOptions): UploadHandle {
+  const controller = new AbortController();
+  let aborted = false;
+  let uploadSessionId: string | null = null;
+  const promise = (async () => {
+    const start = await authFetch<MultipartUploadResponse>(
+      `${API_BASE}/api/ai/files/uploads`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: file.name,
+          content_type: file.type || "application/octet-stream",
+          size_bytes: file.size,
+        }),
+        signal: controller.signal,
+      },
+    );
+    uploadSessionId = start.upload_session_id;
+    const completedParts: Array<{ part_number: number; etag: string }> = [];
+    let nextPart = 0;
+    let loaded = 0;
+    const uploadPart = async () => {
+      while (nextPart < start.parts.length) {
+        const part = start.parts[nextPart++];
+        const startByte = (part.part_number - 1) * start.part_size_bytes;
+        const endByte = Math.min(startByte + start.part_size_bytes, file.size);
+        let response: Response | undefined;
+        let etag: string | null = null;
+        for (let attempt = 0; attempt <= 3; attempt += 1) {
+          try {
+            response = await fetch(part.url, {
+              method: "PUT",
+              body: file.slice(startByte, endByte),
+              credentials: "include",
+              headers: {
+                "Content-Type": "application/octet-stream",
+                "Accept-Language": "zh-CN",
+              },
+              signal: controller.signal,
+            });
+            if (!response.ok && response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status)) {
+              throw new UploadRequestError("recoverable", response.status);
+            }
+            const payload = (await response.json().catch(() => null)) as {
+              etag?: unknown;
+            } | null;
+            etag = typeof payload?.etag === "string" ? payload.etag : null;
+            if (response.ok && etag) break;
+            throw new UploadRequestError("recoverable", response.status);
+          } catch (error) {
+            if (
+              response &&
+              !response.ok &&
+              response.status >= 400 &&
+              response.status < 500 &&
+              ![408, 429].includes(response.status)
+            ) {
+              throw error;
+            }
+            if (attempt === 3 || controller.signal.aborted) throw error;
+            await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+          }
+        }
+        if (!response?.ok || !etag) {
+          throw new UploadRequestError("recoverable", response?.status ?? 503);
+        }
+        completedParts.push({ part_number: part.part_number, etag });
+        loaded += endByte - startByte;
+        options.onProgress?.(Math.round((loaded / file.size) * 100), loaded, file.size);
+      }
+    };
+    await Promise.all([uploadPart(), uploadPart(), uploadPart()]);
+    const completionBody = JSON.stringify({
+      parts: completedParts.sort((left, right) => left.part_number - right.part_number),
+    });
+    let completed:
+      | { file_id: string; name: string; sha256: string; size_bytes: number }
+      | undefined;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        completed = await authFetch<{
+          file_id: string;
+          name: string;
+          sha256: string;
+          size_bytes: number;
+        }>(`${API_BASE}/api/ai/files/uploads/${start.upload_session_id}/complete`, {
+          method: "POST",
+          body: completionBody,
+          signal: controller.signal,
+        });
+        break;
+      } catch (error) {
+        if (attempt === 2 || controller.signal.aborted) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+      }
+    }
+    if (!completed) throw new UploadRequestError("recoverable", 503);
+    return uploadResultFromMultipart(completed, file);
+  })().catch(async (error) => {
+    if (uploadSessionId) {
+      await authFetch(`${API_BASE}/api/ai/files/uploads/${uploadSessionId}/abort`, {
+        method: "POST",
+      }).catch(() => undefined);
+    }
+    if (aborted) {
+      throw new UploadRequestError("cancelled");
+    }
+    if (
+      error instanceof ApiRequestError &&
+      error.status === 429 &&
+      error.code === "upload_session_limit_exceeded"
+    ) {
+      throw new UploadRequestError("capacity", error.status, error.code);
+    }
+    if (
+      error instanceof ApiRequestError &&
+      (error.code === "file_too_large" || error.code === "unsupported_file_type")
+    ) {
+      throw new UploadRequestError(error.code, error.status, error.code);
+    }
+    if (error instanceof UploadRequestError) throw error;
+    throw new UploadRequestError(
+      "recoverable",
+      error instanceof ApiRequestError ? error.status : undefined,
+    );
+  });
+  return {
+    promise,
+    abort: () => {
+      aborted = true;
+      controller.abort();
+    },
+  };
+}
+
 
 let _configPromise: Promise<UploadConfig> | null = null;
 
@@ -99,106 +228,7 @@ export const uploadApi = {
         ? { folder: folderOrOptions }
         : folderOrOptions;
 
-    const folder = options.folder || "uploads";
-    const { onProgress } = options;
-
-    let xhr = new XMLHttpRequest();
-    let aborted = false;
-
-    const promise = new Promise<UploadResult>((resolve, reject) => {
-      const uploadOnce = async (retried: boolean) => {
-        const formData = new FormData();
-        formData.append("file", file);
-
-        const token = await getValidAccessToken();
-        if (aborted) {
-          reject(new UploadRequestError("cancelled"));
-          return;
-        }
-
-        xhr = new XMLHttpRequest();
-
-        if (onProgress) {
-          xhr.upload.addEventListener("progress", (event) => {
-            if (aborted) {
-              return;
-            }
-            if (event.lengthComputable) {
-              const progress = Math.round((event.loaded / event.total) * 100);
-              onProgress(progress, event.loaded, event.total);
-            }
-          });
-        }
-
-        xhr.addEventListener("load", async () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            try {
-              const raw = JSON.parse(xhr.responseText);
-              const result: UploadResult = {
-                key: raw.key,
-                url: raw.url,
-                name: raw.name,
-                type: raw.type,
-                mimeType: raw.mimeType ?? raw.mime_type ?? "",
-                size: raw.size,
-              };
-              resolve(result);
-            } catch {
-              reject(new Error("Failed to parse upload response"));
-            }
-            return;
-          }
-
-          if (xhr.status === 401 && !retried && getRefreshToken()) {
-            try {
-              await refreshAccessToken();
-              await uploadOnce(true);
-              return;
-            } catch {
-              redirectToLogin();
-            }
-          }
-
-          try {
-            const errorData = JSON.parse(xhr.responseText);
-            reject(uploadRequestErrorFromResponse(xhr.status, errorData.detail));
-          } catch {
-            reject(uploadRequestErrorFromResponse(xhr.status, undefined));
-          }
-        });
-
-        xhr.addEventListener("error", () => {
-          reject(new UploadRequestError("recoverable"));
-        });
-
-        xhr.addEventListener("abort", () => {
-          aborted = true;
-          reject(new UploadRequestError("cancelled"));
-        });
-
-        const url = `${API_BASE}/api/upload/file?folder=${encodeURIComponent(
-          folder,
-        )}`;
-        xhr.open("POST", url);
-        xhr.withCredentials = true;
-
-        if (token) {
-          xhr.setRequestHeader("Authorization", `Bearer ${token}`);
-        }
-
-        xhr.send(formData);
-      };
-
-      void uploadOnce(false);
-    });
-
-    return {
-      promise,
-      abort: () => {
-        aborted = true;
-        xhr.abort();
-      },
-    };
+    return uploadMultipartFile(file, options);
   },
 
   /**
@@ -231,7 +261,7 @@ export const uploadApi = {
    */
   async deleteFile(key: string): Promise<{ deleted: boolean; key: string }> {
     const response = await authenticatedRequest(
-      `${API_BASE}/api/upload/${encodeURIComponent(key)}`,
+      `${API_BASE}/api/ai/files/${encodeURIComponent(key)}`,
       {
         method: "DELETE",
         credentials: "include",

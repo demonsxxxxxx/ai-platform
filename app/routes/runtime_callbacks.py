@@ -16,6 +16,7 @@ from app.db import transaction
 from app.platform.public_payload import sanitize_public_reasoning_text
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.public_execution import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
+from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.kernel_contracts import CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE
 from app.runtime.sandbox.callback_tokens import (
@@ -23,25 +24,21 @@ from app.runtime.sandbox.callback_tokens import (
     callback_token_id_matches_binding,
     callback_token_matches,
 )
+from app.runtime.sandbox.container_provider import create_container_provider
 from app.runtime.sandbox.contracts import (
     ExecutorCallbackEvent,
     ExecutorContextRetrievalRequest,
     executor_callback_receipt_event_count,
 )
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
-from app.runtime.sandbox.executor_signals import (
-    ExecutorSignalUnavailable,
-    publish_executor_terminal_signal,
-)
+from app.runtime.sandbox.providers.opensandbox.startup import renew_opensandbox_lifetime
 from app.settings import get_settings
 from app.streaming.api import (
     V4ProjectionError,
     WorkerV4Capabilities,
-    admit_v4_stream,
     append_callback_v4_rows,
     callback_item_to_v4,
     callback_thinking_summary_to_v4,
-    publish_pending_v4_events,
 )
 from app.streaming.redis import get_stream_authority
 from app.storage import ObjectStorage
@@ -273,6 +270,7 @@ async def record_executor_callback(
                     detail="sandbox_executor_terminal_conflict",
                 ) from exc
         elif lease_id:
+            settings = get_settings()
             heartbeat = await sandbox_lease_repository.record_sandbox_executor_heartbeat(
                 conn,
                 tenant_id=tenant_id,
@@ -280,42 +278,40 @@ async def record_executor_callback(
                 attempt_id=callback.attempt_id,
                 lease_id=lease_id,
                 executor_status="running",
-                ttl_seconds=get_settings().sandbox_lease_ttl_seconds,
+                ttl_seconds=settings.sandbox_lease_ttl_seconds,
             )
             if heartbeat is None:
                 raise HTTPException(
                     status_code=409,
                     detail="sandbox_runtime_attempt_inactive",
                 )
+            if (
+                callback.state_patch.get("executor_heartbeat") is True
+                and isinstance(heartbeat, dict)
+                and str(heartbeat.get("provider") or "").strip().lower() == "opensandbox"
+            ):
+                try:
+                    persisted_lease = container_lease_from_persisted_row(heartbeat)
+                    if persisted_lease is None or persisted_lease.provider != "opensandbox":
+                        raise ValueError("sandbox_runtime_renewal_lease_unavailable")
+                    provider = create_container_provider(persisted_lease.provider)
+                    await renew_opensandbox_lifetime(
+                        provider,
+                        persisted_lease,
+                        settings,
+                        ttl_seconds=settings.sandbox_lease_ttl_seconds,
+                    )
+                except Exception as exc:  # noqa: BLE001 - renewal is one disclosure-safe failure boundary.
+                    raise HTTPException(
+                        status_code=503,
+                        detail="sandbox_runtime_renewal_failed",
+                    ) from exc
         await _require_current_runtime_attempt(
             conn,
             tenant_id=tenant_id,
             run_id=callback.run_id,
             attempt_id=callback.attempt_id,
         )
-    if v4_items:
-        try:
-            if v4_items:
-                await admit_v4_stream(
-                    capabilities,
-                    tenant_id=tenant_id,
-                    run_id=callback.run_id,
-                    attempt_id=callback.attempt_id,
-                )
-            await publish_pending_v4_events(
-                capabilities,
-                tenant_id=tenant_id,
-                run_id=callback.run_id,
-                attempt_id=callback.attempt_id,
-            )
-        except Exception:  # noqa: BLE001 - PostgreSQL remains the callback authority.
-            logger.warning("callback_v4_publication_deferred", exc_info=True)
-    if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES and lease_id:
-        try:
-            await publish_executor_terminal_signal()
-        except ExecutorSignalUnavailable:
-            # PostgreSQL is authoritative; the worker falls back to bounded polling.
-            logger.warning("executor_terminal_signal_unavailable")
     return _executor_callback_receipt(
         callback,
         deduplicated=callback_deduplicated,

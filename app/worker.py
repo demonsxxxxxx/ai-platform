@@ -46,9 +46,12 @@ from app.execution.api import (
     WorkerQueueLease,
     WorkerRunCancelled,
     bind_worker_attempt_lifecycle,
+    build_artifact_execution_owner,
+    build_artifact_records,
     fail_run_and_reconcile_worker_child as _fail_run_and_reconcile_worker_child,
     finalize_worker_child_parent as _finalize_worker_child_parent,
     locked_run_payload_candidate as _locked_run_payload_candidate,
+    promote_artifact_reservations,
     restored_executor_reconciliation_queue_payload as _restored_executor_reconciliation_queue_payload,
     submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
     time,
@@ -69,6 +72,7 @@ from app.executors.base import (
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.mcp import api as mcp_api
+from app.persistence.artifacts import promote_provisional_artifact_cleanup, reserve_provisional_artifact_cleanup
 from app.principal_authority import (
     CURRENT_PRINCIPAL_DENIAL_REASON,
     resolve_current_principal,
@@ -766,26 +770,12 @@ def _required_agent_skill_id(payload: QueueRunPayload) -> str | None:
     return None
 
 
-def _inferred_used_skills_from_result(result: ExecutorResult) -> list[str]:
-    source = {**result.result, **result.executor_payload}
-    raw = source.get("inferred_used_skills")
-    if not isinstance(raw, list):
-        return []
-    inferred: list[str] = []
-    for item in raw:
-        skill_name = str(item).strip()
-        if skill_name and skill_name not in inferred:
-            inferred.append(skill_name)
-    return inferred
-
-
 def _skill_manifests_from_result(result: ExecutorResult) -> list[dict[str, Any]]:
     source = {**result.executor_payload, **result.result}
     raw = source.get("skill_manifests")
     if not isinstance(raw, list):
         return []
     used_skills = set(_native_used_skills_from_result(result))
-    inferred_used_skills = set(_inferred_used_skills_from_result(result))
     used_skills_source = str(result.executor_payload.get("used_skills_source") or "").strip()
     manifests: list[dict[str, Any]] = []
     for item in raw:
@@ -796,10 +786,6 @@ def _skill_manifests_from_result(result: ExecutorResult) -> list[dict[str, Any]]
         manifest["used"] = bool(skill_id and skill_id in used_skills)
         if manifest["used"]:
             manifest["used_skills_source"] = used_skills_source
-            manifest["inferred_used"] = False
-        elif skill_id and skill_id in inferred_used_skills:
-            manifest["used_skills_source"] = "inferred"
-            manifest["inferred_used"] = True
         manifests.append(manifest)
     return manifests
 
@@ -2401,6 +2387,7 @@ async def process_run_payload(
                     },
                 )
                 return terminal_after_transaction.outcome
+            payload = payload.model_copy(update={"file_ids": context_ref["file_ids"]})
             try:
                 execution_spec = compile_execution_spec_for_dispatch(
                     run_identity=run_identity,
@@ -2545,12 +2532,16 @@ async def process_run_payload(
                         run_id=run_payload.run_id,
                     )
 
+            execution_owner = build_artifact_execution_owner(
+                run_payload, transaction_factory, reserve_provisional_artifact_cleanup, RunExecutionOwner
+            )
             started_at = time.monotonic()
             result = await _submit_run_until_cancelled(
                 adapter,
                 run_payload,
                 event_sink=event_sink,
                 cancel_requested=cancel_requested,
+                execution_owner=execution_owner,
             )
         if isinstance(result, ExecutorDispatchAccepted):
             if not result.lease_id:
@@ -2742,21 +2733,9 @@ async def process_run_payload(
     event_observability_kwargs = _event_observability_kwargs(observability, result.executor_payload)
     terminal_event_kwargs = {"trace_id": trace_id, **event_observability_kwargs} if event_observability_kwargs else {}
 
-    artifact_records = []
-    for artifact in result.artifacts:
-        artifact_id = repositories.new_id("art")
-        artifact_records.append(
-            {
-                "id": artifact_id,
-                "artifact_type": artifact.artifact_type,
-                "label": artifact.label,
-                "content_type": artifact.content_type,
-                "storage_key": artifact.storage_key,
-                "size_bytes": artifact.size_bytes,
-                "download_url": _artifact_download_url(artifact_id),
-                "manifest_json": artifact.manifest,
-            }
-        )
+    artifact_records = build_artifact_records(
+        result.artifacts, reconciliation is not None, repositories.new_id, _artifact_download_url
+    )
     skill_snapshot = _skill_snapshot_from_result(result)
     agent_capability_state = (
         project_agent_capability_state(
@@ -2934,6 +2913,9 @@ async def process_run_payload(
                             "count": agent_capability_state.optional_not_invoked_count,
                         },
                     )
+            await promote_artifact_reservations(
+                conn, artifact_records, payload, promote_provisional_artifact_cleanup
+            )
             for artifact in artifact_records:
                 manifest_json = artifact_manifest_contract(
                     artifact_type=artifact["artifact_type"],
@@ -2995,7 +2977,6 @@ async def process_run_payload(
                     staged=bool(item.get("staged")),
                     used=bool(item.get("used")),
                     used_skills_source=str(item.get("used_skills_source") or "").strip(),
-                    inferred_used=bool(item.get("inferred_used")),
                 )
             if result.status == "succeeded":
                 await _attach_multi_agent_result_summary(

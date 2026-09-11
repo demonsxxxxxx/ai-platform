@@ -10,6 +10,7 @@ function createContext(messages: Message[]): {
   getMessages: () => Message[];
 } {
   let currentMessages = messages;
+  const messagesRef = { current: messages };
 
   return {
     ctx: {
@@ -20,9 +21,11 @@ function createContext(messages: Message[]): {
       activeSubagentStackRef: { current: [] },
       streamVersionRef: { current: 0 },
       setSessionId: () => undefined,
+      messagesRef,
       setMessages: (updater: React.SetStateAction<Message[]>) => {
         currentMessages =
           typeof updater === "function" ? updater(currentMessages) : updater;
+        messagesRef.current = currentMessages;
       },
       setConnectionStatus: () => undefined,
       setIsInitializingSandbox: () => undefined,

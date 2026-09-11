@@ -12,14 +12,13 @@ PUBLIC_TERMINAL_DETAIL_MESSAGES = {
     "run_budget_exhausted": "任务已达到执行轮次上限。请缩小或拆分任务后重试。",
     "model_service_unavailable": "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
     "execution_service_unavailable": "AI 执行服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
-    "claude_agent_sdk_public_projection_failed": "模型执行已结束，但公开答案未通过安全投影。请重试；如问题持续，请联系管理员并提供任务编号。",
     "dependent_service_unavailable": "任务依赖的服务暂时不可用。请稍后重试。",
     "capability_not_authorized": "当前账号不能使用所选能力。请重新选择或联系管理员。",
     "tool_permission_denied": "任务所需工具未获授权。请调整请求或联系管理员。",
     "tool_invocation_evidence_mismatch": "工具调用证据未完整确认（tool_invocation_evidence_mismatch）。请重试；如问题持续，请联系管理员。",
     "required_capability_unavailable": "任务所需执行能力当前不可用。请调整请求或联系管理员。",
     "skill_sandbox_admission_failed": "所选 Skill 未能通过隔离沙箱准入。请调整 Skill 或联系管理员。",
-    "context_file_too_large": "文件超过 32 MB 处理上限。请选择更小的文件后重试。",
+    "context_file_too_large": "文件超过 128 MB，或文件总量超过 256 MB。请选择更小的文件或减少文件数量后重试。",
     "context_file_pdf_password_required": "PDF 文件需要密码。请先解除密码保护后重新上传。",
     "context_file_password_required": "文件受密码保护。请先解除密码保护后重新上传。",
     "context_file_unsafe_content": "文件包含不允许的活动内容、宏或外部引用。请导出安全副本后重试。",
@@ -35,11 +34,17 @@ PUBLIC_TERMINAL_DETAIL_MESSAGES = {
     "context_file_staging_unavailable": "文件暂存失败。请稍后重试；如问题持续，请联系管理员。",
     "context_file_parser_contract_invalid": "文件处理器未能验证输入。请重新上传；如问题持续，请联系管理员。",
     "context_file_preprocessing_failed": "文件预处理失败。请重新导出后上传；如问题持续，请联系管理员。",
+    "current_request_too_large": "当前请求超过 16 KB 执行上限。请缩短或拆分请求后重试。",
     "run_cancelled": "任务已取消。取消前已产生的公开内容仍会保留。",
 }
 
 PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "terminal_reconciliation_failed": "terminal_reconciliation_failed",
+    "capability_callback_not_acknowledged": "required_capability_unavailable",
+    "capability_lifecycle_sequence_invalid": "required_capability_unavailable",
+    "claude_agent_sdk_missing_structured_terminal": "execution_service_unavailable",
+    "claude_agent_sdk_tool_admission_failed": "required_capability_unavailable",
+    "claude_agent_sdk_upstream_error": "model_service_unavailable",
     "native_tool_admission_failed": "skill_sandbox_admission_failed",
     "attachment_materialized_fact_invalid": "context_file_identity_mismatch",
     "attachment_parser_file_mapping_invalid": "context_file_identity_mismatch",
@@ -87,14 +92,15 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "context_file_name_conflict": "context_file_name_conflict",
     "context_file_storage_unavailable": "context_file_storage_unavailable",
     "context_file_preprocessing_failed": "context_file_preprocessing_failed",
+    "current_request_too_large": "current_request_too_large",
     "executor_deadline_exceeded": "run_timeout",
     "executor_cleanup_timeout": "run_timeout",
     "claude_agent_sdk_turn_limit_exceeded": "run_budget_exhausted",
-    "claude_agent_sdk_runtime_error": "model_service_unavailable",
+    "claude_agent_sdk_runtime_error": "execution_service_unavailable",
+    "claude_agent_sdk_timeout": "run_timeout",
     "claude_agent_sdk_disabled": "execution_service_unavailable",
     "claude_agent_sdk_import_failed": "execution_service_unavailable",
     "claude_agent_sdk_unavailable": "execution_service_unavailable",
-    "claude_agent_sdk_public_projection_failed": "claude_agent_sdk_public_projection_failed",
     "docker_unavailable": "execution_service_unavailable",
     "executor_health_timeout": "execution_service_unavailable",
     "executor_runner_failed": "execution_service_unavailable",
@@ -116,43 +122,6 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
 
 CHAT_PUBLIC_PROJECTION_VERSION = "ai-platform.chat-public-projection.v1"
 
-PUBLIC_PROJECTION_FAILURE_REASONS = frozenset(
-    {
-        "answer_too_large",
-        "invalid_configuration",
-        "invalid_input",
-        "private_replacement_invalid",
-        "private_token_already_published",
-        "private_token_boundary_conflict",
-        "private_token_prefix_overflow",
-        "sanitizer_bound_exceeded",
-        "sanitizer_failed",
-        "sanitizer_rejected",
-        "terminal_text_mismatch",
-        "upstream_projection_failed",
-    }
-)
-
-
-def public_projection_failure_reason_from_result(
-    error_code: str,
-    result: object,
-) -> str | None:
-    if (
-        error_code != "claude_agent_sdk_public_projection_failed"
-        or not isinstance(result, dict)
-    ):
-        return None
-    diagnostics = result.get("sdk_turn_diagnostics")
-    if not isinstance(diagnostics, dict):
-        return None
-    reason = diagnostics.get("projection_failure_reason")
-    return (
-        reason
-        if isinstance(reason, str) and reason in PUBLIC_PROJECTION_FAILURE_REASONS
-        else None
-    )
-
 
 def public_terminal_projection(
     status: object,
@@ -160,6 +129,7 @@ def public_terminal_projection(
     result: object = None,
 ) -> dict[str, object] | None:
     """Build the sole ordinary-user projection for failed or cancelled terminals."""
+    del result
     normalized_status = normalize_run_status(str(status or ""))
     raw_error_code = str(error_code or "").strip()
     if normalized_status == "cancelled":
@@ -173,21 +143,6 @@ def public_terminal_projection(
     message = PUBLIC_TERMINAL_DETAIL_MESSAGES[detail_code]
     projected_result: dict[str, object] = {"message": message}
     event_payload: dict[str, object] = {}
-    projection_failure_reason = (
-        public_projection_failure_reason_from_result(raw_error_code, result)
-        if normalized_status == "failed"
-        else None
-    )
-    if projection_failure_reason is not None:
-        message = (
-            "模型执行已结束，但公开答案未通过安全投影"
-            f"（{projection_failure_reason}）。请重试；如问题持续，请联系管理员并提供任务编号。"
-        )
-        projected_result = {
-            "message": message,
-            "projection_failure_reason": projection_failure_reason,
-        }
-        event_payload = {"projection_failure_reason": projection_failure_reason}
     return {
         "detail_kind": detail_kind,
         "detail_code": detail_code,

@@ -4,26 +4,81 @@ from collections.abc import Callable
 from typing import Any
 
 
+class AssistantAnswerTimeline:
+    """Reconcile SDK delta/full-message pairs without merging distinct turns.
+
+    Each AssistantMessage closes its current delta source. ResultMessage is a
+    terminal supplement to the last source, not a replacement for earlier text.
+    A non-prefix complete message remains after an emitted delta because live
+    publication cannot retract the earlier source. Content remains executor-
+    private here and must pass the answer gate.
+    """
+
+    def __init__(self) -> None:
+        self._messages: list[str] = []
+        self._streamed = ""
+
+    @property
+    def text(self) -> str:
+        return "\n\n".join(self._messages + ([self._streamed] if self._streamed else []))
+
+    def accept_delta(self, text: str) -> str:
+        prefix = "\n\n" if self._messages and not self._streamed and text else ""
+        self._streamed += text
+        return prefix + text
+
+    def accept_assistant(self, text: str | None) -> str:
+        complete = text if text else self._streamed
+        missing = ""
+        if complete:
+            if not self._streamed:
+                missing = ("\n\n" if self._messages else "") + complete
+            elif complete.startswith(self._streamed):
+                missing = complete[len(self._streamed):]
+            else:
+                # The delta may already be visible in the live callback and
+                # cannot be retracted when the complete message differs.
+                self._messages.append(self._streamed)
+                missing = "\n\n" + complete
+            self._messages.append(complete)
+        self._streamed = ""
+        return missing
+
+    def accept_result(self, text: str) -> str:
+        if self._streamed:
+            self.accept_assistant(None)
+        if not text:
+            return ""
+        full = self.text
+        if full and text.startswith(full):
+            self._messages = [text]
+            return text[len(full):]
+        if self._messages and text.startswith(self._messages[-1]):
+            missing = text[len(self._messages[-1]):]
+            self._messages[-1] = text
+            return missing
+        missing = ("\n\n" if self._messages else "") + text
+        self._messages.append(text)
+        return missing
+
+
 class ClaudeStreamProjector:
     """Project one SDK raw event stream into safe publishable text.
 
     The interface accepts raw event dictionaries and returns only text with a
-    stable lexical boundary.  A trailing safety window remains the fallback for
-    a block without a stable boundary.  It never imports the SDK or publishes
-    callbacks; callers retain those adapter responsibilities.
+    stable lexical boundary. It never imports the SDK or publishes callbacks;
+    callers retain those adapter responsibilities.
     """
 
     def __init__(
         self,
         *,
         sanitizer: Callable[[object], object],
-        trailing_chars: int = 512,
         max_pending_chars: int = 4_096,
     ) -> None:
         """Create a bounded projector using the caller's public-text sanitizer."""
 
         self._sanitizer = sanitizer
-        self._trailing_chars = max(0, trailing_chars)
         self._max_pending_chars = max(1, max_pending_chars)
         self._active_text_index: int | None = None
         self._ignored_block_index: int | None = None
@@ -136,11 +191,7 @@ class ClaudeStreamProjector:
             self._disable()
             return ()
         text = delta.get("text")
-        if (
-            not isinstance(text, str)
-            or not text
-            or len(self._pending_text) + len(text) > self._max_pending_chars
-        ):
+        if not isinstance(text, str) or not text:
             self._disable()
             return ()
         self._pending_text += text
@@ -148,25 +199,25 @@ class ClaudeStreamProjector:
             self._disable()
             return ()
         stable_length = self._stable_prefix_length()
+        if len(self._pending_text) - stable_length > self._max_pending_chars:
+            self._disable()
+            return ()
         if stable_length <= 0:
             return ()
         chunk = self._pending_text[:stable_length]
-        if not self._is_safe(chunk):
-            self._disable()
-            return ()
         self._pending_text = self._pending_text[stable_length:]
         return self._emit(chunk)
 
     def _stable_prefix_length(self) -> int:
         """Return a prefix that later text cannot turn into private content."""
 
-        for index in range(len(self._pending_text) - 1, -1, -1):
+        minimum_index = max(0, len(self._pending_text) - self._max_pending_chars - 1)
+        for index in range(len(self._pending_text) - 1, minimum_index - 1, -1):
             if not self._is_stable_boundary(self._pending_text[index]):
                 continue
             candidate = self._pending_text[: index + 1]
-            if self._is_safe_prefix(candidate):
-                return len(candidate)
-        return max(0, len(self._pending_text) - self._trailing_chars)
+            return len(candidate) if self._is_safe_prefix(candidate) else 0
+        return 0
 
     @staticmethod
     def _is_stable_boundary(value: str) -> bool:

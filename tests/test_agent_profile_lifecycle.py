@@ -101,7 +101,10 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "avatar_seed": "agt_support",
         "category": "support",
         "market_tag": "",
+        "market_tags": [],
     }
+    assert profile_public_projection({**row, "completed_tasks": 12})["completed_tasks"] == 12
+    assert "completed_tasks" not in profile_public_projection(row)
 
 
 @pytest.mark.asyncio
@@ -112,7 +115,7 @@ async def test_profile_department_authority_accepts_only_current_selectable_dire
         normalize_department_directory,
         validate_profile_department_authorities,
     )
-    from app.models import AgentProfileDraftRequest, SelectedSkillRequest
+    from app.models import AgentProfileDraftRequest
 
     directory = normalize_department_directory(
         [
@@ -134,10 +137,7 @@ async def test_profile_department_authority_accepts_only_current_selectable_dire
         instructions="private instruction",
         visibility="restricted",
         allowed_department_ids=["药品注册"],
-        selected_skill=SelectedSkillRequest(
-            skill_id="general-chat",
-            expected_version="version-a",
-        ),
+        selected_skill={"skill_id": "general-chat"},
         expected_draft_revision=0,
     )
 
@@ -236,6 +236,16 @@ def _profile_row(
     return _seal_profile_row(row) if content_hash is None else row
 
 
+def test_admin_profile_revision_projection_preserves_market_tag():
+    from app.agent_apps.authority import _admin_projection, _draft_from_row
+
+    row = _profile_row()
+    row["market_tag"] = "客户服务"
+
+    assert _draft_from_row(row).market_tag == "客户服务"
+    assert _admin_projection(row).market_tag == "客户服务"
+
+
 def _seal_profile_row(row: dict[str, object]) -> dict[str, object]:
     from app.agent_apps.authority import _draft_from_row, _revision_hash
 
@@ -251,14 +261,23 @@ async def test_profile_definition_validates_stable_mcp_reference_and_server_exis
     row = _profile_row()
     row["mcp_tool_ids"] = ["gateway::search"]
     observed: list[tuple[str, str]] = []
+    observed_skill: dict[str, object] = {}
 
     async def authorize_skill(*_args, **_kwargs):
-        return {"skill_id": "general-chat", "skill_version": "version-a"}
+        observed_skill.update(_kwargs)
+        return {"skill_id": "general-chat", "skill_version": "version-b"}
+
+    async def resolve_skill(*_args, **_kwargs):
+        return {"skill_version": "version-b"}
 
     async def get_server(*_args, **kwargs):
         observed.append((kwargs["tenant_id"], kwargs["name"]))
         return {"name": kwargs["name"], "status": "disabled"}
 
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.resolve_selected_skill",
+        resolve_skill,
+    )
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.authorize_selected_run_capabilities",
         authorize_skill,
@@ -276,6 +295,9 @@ async def test_profile_definition_validates_stable_mcp_reference_and_server_exis
     )
 
     assert skills[0]["skill_id"] == "general-chat"
+    assert skills[0]["skill_version"] == "version-b"
+    assert observed_skill["expected_version"] == "version-b"
+    assert "allow_current_version" not in observed_skill
     assert observed == [("tenant-a", "gateway")]
 
 
@@ -288,6 +310,13 @@ async def test_profile_definition_preserves_repository_authorization_status(monk
     async def deny_skill(*_args, **_kwargs):
         raise repositories.RepositoryAuthorizationError("denied")
 
+    async def resolve_skill(*_args, **_kwargs):
+        return {"skill_version": "version-a"}
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.resolve_selected_skill",
+        resolve_skill,
+    )
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.authorize_selected_run_capabilities",
         deny_skill,
@@ -313,7 +342,7 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
 
     from app.agent_apps import AgentProfileAuthority
     from app.agent_apps.authority import _draft_from_row, _revision_hash
-    from app.models import AgentProfileDraftRequest, SelectedSkillRequest
+    from app.models import AgentProfileDraftRequest
 
     order: list[str] = []
     revision_writes: list[dict[str, object]] = []
@@ -330,11 +359,13 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
     async def append_revision(*_args, **kwargs):
         order.append("revision_append")
         revision_writes.append(kwargs)
-        return _profile_row(
+        row = _profile_row(
             status=kwargs["status"],
             revision=kwargs["expected_previous_revision"] + 1,
             content_hash=kwargs["content_hash"],
         )
+        row["skill_set"] = kwargs["skill_set"]
+        return row
 
     async def record_draft(*_args, **_kwargs):
         order.append("aggregate_update")
@@ -391,7 +422,7 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
         instructions="private instruction",
         visibility="restricted",
         allowed_department_ids=["药品注册"],
-        selected_skill=SelectedSkillRequest(skill_id="general-chat", expected_version="version-a"),
+        selected_skill={"skill_id": "general-chat"},
         expected_draft_revision=7,
     )
 
@@ -419,6 +450,8 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
     ]
     assert revision_writes[-1]["legacy_model_id"] == "platform-selected"
     assert "model_id" not in revision_writes[-1]
+    assert revision_writes[-1]["skill_version"] == ""
+    assert revision_writes[-1]["skill_set"] == [{"skill_id": "general-chat"}]
 
     order.clear()
     await authority.publish_draft(
@@ -446,6 +479,8 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
     ]
     assert revision_writes[-1]["legacy_model_id"] == "platform-selected"
     assert "model_id" not in revision_writes[-1]
+    assert revision_writes[-1]["skill_version"] == ""
+    assert revision_writes[-1]["skill_set"] == [{"skill_id": "general-chat"}]
 
     order.clear()
     await authority.validate_draft(
@@ -610,7 +645,7 @@ async def test_profile_authority_provisions_and_tenant_validates_admin_fk_identi
 @pytest.mark.asyncio
 async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit_empty(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
-    from app.models import AgentProfileDraftRequest, SelectedSkillRequest
+    from app.models import AgentProfileDraftRequest
 
     captured: list[dict[str, object]] = []
     prior = _profile_row(status="draft", revision=7)
@@ -653,7 +688,9 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
                     "instructions",
                     "skill_id",
                     "skill_version",
+                    "skill_set",
                     "mcp_tool_ids",
+                    "market_tag",
                     "avatar_ref",
                     "avatar_seed",
                     "category",
@@ -689,7 +726,7 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
     omitted = AgentProfileDraftRequest(
         name="Updated support assistant",
         instructions="updated private instruction",
-        selected_skill=SelectedSkillRequest(skill_id="general-chat", expected_version="version-a"),
+        selected_skill={"skill_id": "general-chat"},
         expected_draft_revision=7,
     )
     assert not {
@@ -765,7 +802,7 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
 @pytest.mark.asyncio
 async def test_draft_preview_uses_presence_aware_effective_existing_definition(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
-    from app.models import AgentProfileDraftRequest, SelectedSkillRequest
+    from app.models import AgentProfileDraftRequest
 
     prior = _profile_row(status="draft", revision=7)
     prior.update(
@@ -809,7 +846,7 @@ async def test_draft_preview_uses_presence_aware_effective_existing_definition(m
     omitted = AgentProfileDraftRequest(
         name="Updated support assistant",
         instructions="updated private instruction",
-        selected_skill=SelectedSkillRequest(skill_id="general-chat", expected_version="version-a"),
+        selected_skill={"skill_id": "general-chat"},
         expected_draft_revision=7,
     )
 
@@ -827,7 +864,7 @@ async def test_draft_preview_uses_presence_aware_effective_existing_definition(m
     explicit_empty = AgentProfileDraftRequest(
         name="Updated support assistant",
         instructions="updated private instruction",
-        selected_skill=SelectedSkillRequest(skill_id="general-chat", expected_version="version-a"),
+        selected_skill={"skill_id": "general-chat"},
         visibility="restricted",
         allowed_department_ids=[],
         allowed_roles=[],
@@ -849,7 +886,7 @@ async def test_draft_preview_uses_presence_aware_effective_existing_definition(m
 @pytest.mark.asyncio
 async def test_draft_preview_rejects_a_superseded_revision_before_validation_or_audit(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
-    from app.models import AgentProfileDraftRequest, SelectedSkillRequest
+    from app.models import AgentProfileDraftRequest
 
     order: list[str] = []
 
@@ -885,10 +922,7 @@ async def test_draft_preview_rejects_a_superseded_revision_before_validation_or_
             definition=AgentProfileDraftRequest(
                 name="Superseded draft",
                 instructions="private instructions",
-                selected_skill=SelectedSkillRequest(
-                    skill_id="general-chat",
-                    expected_version="version-a",
-                ),
+                selected_skill={"skill_id": "general-chat"},
                 expected_draft_revision=7,
             ),
             agent_id="agt_support",

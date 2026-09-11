@@ -3,17 +3,25 @@ import test from "node:test";
 import { getVisibleMessageParts } from "../../../components/chat/ChatMessage/messagePartVisibility.ts";
 import type { Message } from "../../../types";
 import {
-  handlePublicRunStreamFrameV4,
+  handlePublicRunStreamFrameV4Result,
   handleStreamEvent,
   rebindV4MessageOwner,
+  setMessageSnapshot,
 } from "../eventHandlers.ts";
+import { PublicStreamPresentation } from "../publicStreamPresentation.ts";
 import type { EventHandlerContext } from "../eventHandlers.ts";
 import type { HistoryEvent, StreamEvent } from "../types.ts";
 import {
   prepareMessagesForRunningRun,
   reconstructMessagesFromEvents,
 } from "../historyLoader.ts";
-import { PublicStreamPresentation } from "../publicStreamPresentation.ts";
+
+const handlePublicRunStreamFrameV4 = (
+  args: Parameters<typeof handlePublicRunStreamFrameV4Result>[0],
+) => {
+  const result = handlePublicRunStreamFrameV4Result(args);
+  return result.kind === "applied" || result.kind === "deferred";
+};
 
 function createContext(
   messages: Message[],
@@ -26,6 +34,7 @@ function createContext(
 } {
   let setMessagesCalls = 0;
   const connectionStatuses: string[] = [];
+  const messagesRef = { current: messages };
 
   return {
     sessionIdRef: { current: "session-1" },
@@ -38,18 +47,17 @@ function createContext(
       current: { sessionId: null, runId: null, eventId: null },
     },
     v4TerminalEventIdsRef: { current: new Set<string>() },
+    v4TerminalReservationsRef: { current: new Set<string>() },
     v4MessageCandidateRef: { current: null },
     lastHistoryTimestampRef: { current: lastHistoryTimestamp },
     activeSubagentStackRef: { current: [] },
     streamVersionRef: { current: 0 },
     setSessionId: () => undefined,
+    messagesRef,
     setMessages: (updater: React.SetStateAction<Message[]>) => {
       setMessagesCalls += 1;
-      if (typeof updater === "function") {
-        messages = updater(messages);
-      } else {
-        messages = updater;
-      }
+      messages = typeof updater === "function" ? updater(messages) : updater;
+      messagesRef.current = messages;
     },
     setConnectionStatus: (status: string) => {
       connectionStatuses.push(status);
@@ -326,6 +334,54 @@ test("skips replayed SSE events at the history timestamp boundary", () => {
   assert.equal(ctx.setMessagesCalls(), 0);
 });
 
+test("v4 control ordering ignores wall-clock history timestamps", () => {
+  const ctx = createContext([], new Date("2026-04-19T01:02:03.456Z"));
+  ctx.currentRunIdRef.current = "run-active";
+  const commits: boolean[] = [];
+  const accepted = handlePublicRunStreamFrameV4({
+    frame: {
+      eventHeader: "stream.open",
+      transportCursor: "run-active:2:1-0",
+      generation: 7,
+      value: {
+        schema: "ai-platform.public-run-stream-control.v4",
+        event_id: "stream-open-old-clock",
+        run_id: "run-active",
+        message_id: null,
+        seq: null,
+        event_type: "stream.open",
+        stream_incarnation: 2,
+        replayable: true,
+        trace_ref: null,
+        causation_event_id: null,
+        emitted_at: "2026-04-19T01:02:02.000Z",
+        payload: {
+          design_id: "ai-platform.redis-streams-sse-event-channel.v4",
+        },
+      },
+    },
+    adapterBinding: {
+      runId: "run-active",
+      streamIncarnation: 2,
+      generation: 7,
+    },
+    messageId: "assistant-1",
+    ctx,
+    binding: {
+      sessionId: "session-1",
+      runId: "run-active",
+      streamVersion: 0,
+      streamIncarnation: 2,
+      generation: 7,
+    },
+    currentGeneration: 7,
+    onCommitted: (semanticApplied) => commits.push(semanticApplied),
+  });
+
+  assert.equal(accepted, true);
+  assert.deepEqual(commits, [true]);
+});
+
 test("reports acceptance only after current-run validation and deduplication", () => {
   const ctx = createContext(
     [
@@ -417,7 +473,7 @@ test("reports acceptance only after current-run validation and deduplication", (
   );
 });
 
-test("does not acknowledge a transport cursor until the reducer updater commits", () => {
+test("commits protocol refs before publishing a value-only React snapshot", () => {
   const ctx = createContext(
     [
       {
@@ -432,11 +488,15 @@ test("does not acknowledge a transport cursor until the reducer updater commits"
     null,
   );
   ctx.currentRunIdRef.current = "run-active";
-  let deferredUpdater: React.SetStateAction<Message[]> | null = null;
-  ctx.setMessages = (updater) => {
-    deferredUpdater = updater;
-  };
   const commits: boolean[] = [];
+  let published: React.SetStateAction<Message[]> | null = null;
+  let publicationCount = 0;
+  ctx.setMessages = (snapshot) => {
+    publicationCount += 1;
+    published = snapshot;
+    assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 4);
+    assert.equal(ctx.processedEventIdsRef.current.has("semantic-delta-1"), true);
+  };
 
   const accepted = handleStreamEvent(
     {
@@ -447,7 +507,7 @@ test("does not acknowledge a transport cursor until the reducer updater commits"
         run_id: "run-active",
         event_id: "semantic-delta-1",
         sequence: 4,
-        content: "committed later",
+        content: "committed now",
       }),
     },
     "assistant-1",
@@ -459,21 +519,85 @@ test("does not acknowledge a transport cursor until the reducer updater commits"
   );
 
   assert.equal(accepted, true);
-  assert.deepEqual(commits, []);
-  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, null);
-  assert.equal(ctx.processedEventIdsRef.current.has("semantic-delta-1"), false);
-  const commitUpdater = deferredUpdater as React.SetStateAction<Message[]> | null;
-  assert.equal(typeof commitUpdater, "function");
-
-  if (typeof commitUpdater === "function") {
-    commitUpdater(ctx.messages());
-  }
   assert.deepEqual(commits, [true]);
-  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 4);
-  assert.equal(ctx.processedEventIdsRef.current.has("semantic-delta-1"), true);
+  assert.equal(Array.isArray(published), true);
+  ctx.sessionIdRef.current = "session-new";
+  ctx.currentRunIdRef.current = "run-new";
+  ctx.messagesRef.current = [{
+    id: "new-session-message",
+    role: "user",
+    content: "new session",
+    timestamp: new Date(),
+  }];
+  assert.equal(typeof published, "object");
+  assert.equal(
+    handleStreamEvent(
+      {
+        event: "message:chunk",
+        data: JSON.stringify({
+          projection_version: "ai-platform.chat-public-projection.v1",
+          projection_kind: "assistant_delta",
+          run_id: "run-active",
+          event_id: "semantic-delta-stale",
+          sequence: 5,
+          content: "must not publish",
+        }),
+      },
+      "assistant-1",
+      "run-active:1:2-0",
+      undefined,
+      ctx,
+      { sessionId: "session-1", runId: "run-active", streamVersion: 0 },
+    ),
+    false,
+  );
+  assert.equal(publicationCount, 1);
+  assert.equal(ctx.messagesRef.current[0]?.id, "new-session-message");
 });
 
-test("advances only transport for a newer cursor whose semantic updater became a duplicate", () => {
+test("preserves a terminal card across consecutive value snapshot publications", () => {
+  const published: React.SetStateAction<Message[]>[] = [];
+  const ctx = createContext(
+    [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "",
+        timestamp: new Date(),
+        parts: [],
+        isStreaming: true,
+      },
+    ],
+    null,
+  );
+  ctx.setMessages = (snapshot) => published.push(snapshot);
+
+  setMessageSnapshot(ctx, (messages) =>
+    messages.map((message) => ({
+      ...message,
+      parts: [
+        ...(message.parts || []),
+        {
+          type: "run_status" as const,
+          event_id: "terminal-card",
+          event_type: "run_failed",
+          stage: "agent",
+          message: "failed",
+          severity: "error" as const,
+        },
+      ],
+    })),
+  );
+  setMessageSnapshot(ctx, (messages) =>
+    messages.map((message) => ({ ...message, isStreaming: false })),
+  );
+
+  assert.equal(published.every((snapshot) => Array.isArray(snapshot)), true);
+  assert.equal(ctx.messagesRef.current[0]?.isStreaming, false);
+  assert.equal(ctx.messagesRef.current[0]?.parts?.[0]?.type, "run_status");
+});
+
+test("advances only transport for a newer cursor with an equal semantic sequence", () => {
   const ctx = createContext(
     [
       {
@@ -488,13 +612,7 @@ test("advances only transport for a newer cursor whose semantic updater became a
     null,
   );
   ctx.currentRunIdRef.current = "run-active";
-  const pending: Array<React.SetStateAction<Message[]>> = [];
-  ctx.setMessages = (updater) => pending.push(updater);
   const commits: boolean[] = [];
-  const applyCommit = (semanticApplied: boolean, cursor: string) => {
-    commits.push(semanticApplied);
-    ctx.acceptedStreamCursorRef!.current.eventId = cursor;
-  };
   const binding = {
     sessionId: "session-1",
     runId: "run-active",
@@ -511,44 +629,26 @@ test("advances only transport for a newer cursor whose semantic updater became a
       content: "duplicate body",
     }),
   });
-
-  assert.equal(
+  const accept = (cursor: string) =>
     handleStreamEvent(
       makeEvent(),
       "assistant-1",
-      "run-active:1:1-0",
+      cursor,
       undefined,
       ctx,
       binding,
-      (semanticApplied) => applyCommit(semanticApplied, "run-active:1:1-0"),
-    ),
-    true,
-  );
-  assert.equal(
-    handleStreamEvent(
-      makeEvent(),
-      "assistant-1",
-      "run-active:1:2-0",
-      undefined,
-      ctx,
-      binding,
-      (semanticApplied) => applyCommit(semanticApplied, "run-active:1:2-0"),
-    ),
-    true,
-  );
-  assert.equal(pending.length, 2);
+      (semanticApplied) => {
+        commits.push(semanticApplied);
+        ctx.acceptedStreamCursorRef!.current.eventId = cursor;
+      },
+    );
 
-  let messages = ctx.messages();
-  const firstUpdater = pending.shift();
-  assert.equal(typeof firstUpdater, "function");
-  if (typeof firstUpdater === "function") messages = firstUpdater(messages);
-  const secondUpdater = pending.shift();
-  assert.equal(typeof secondUpdater, "function");
-  if (typeof secondUpdater === "function") messages = secondUpdater(messages);
-
+  assert.equal(accept("run-active:1:1-0"), true);
+  assert.equal(accept("run-active:1:2-0"), false);
   assert.deepEqual(commits, [true, false]);
-  assert.equal(messages[0]?.content, "duplicate body");
+  assert.equal(ctx.messages()[0]?.content, "duplicate body");
   assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, "run-active:1:2-0");
+  assert.equal(ctx.setMessagesCalls(), 1);
 });
 
 test("advances only transport for an immediate equal semantic sequence", () => {
@@ -801,6 +901,86 @@ test("uses the existing cursor and event-id guard for public execution steps", (
   assert.equal(ctx.setMessagesCalls(), 1);
 });
 
+test("commits execution protocol state before a throttled React publication", () => {
+  let now = 0;
+  let deferredCommit: (() => void) | null = null;
+  const presentation = new PublicStreamPresentation({
+    now: () => now,
+    setTimeout: (callback) => {
+      deferredCommit = callback;
+      return 1 as unknown as ReturnType<typeof setTimeout>;
+    },
+    clearTimeout: () => {
+      deferredCommit = null;
+    },
+  });
+  const ctx = createContext(
+    [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "",
+        timestamp: new Date(),
+        parts: [],
+        isStreaming: true,
+      },
+    ],
+    null,
+  );
+  ctx.currentRunIdRef.current = "run-active";
+  ctx.publicStreamPresentation = presentation;
+  const binding = {
+    sessionId: "session-1",
+    runId: "run-active",
+    streamVersion: 0,
+  };
+  presentation.activate({ ...binding, assistantMessageId: "assistant-1" });
+  const progress = (sequence: number) =>
+    handleStreamEvent(
+      {
+        event: "execution_progress",
+        data: JSON.stringify({
+          schema_version: "ai-platform.public-execution-event.v1",
+          event_id: `evt-progress-${sequence}`,
+          run_id: "run-active",
+          sequence,
+          step_id: "step-1",
+          kind: "processing",
+          stage: "prepare",
+          status: "running",
+          title: "准备报告",
+          summary: "正在读取输入",
+          progress: { current: sequence, total: 4 },
+          safe_file_name: null,
+          artifact_public_id: null,
+          created_at: null,
+        }),
+      } as StreamEvent,
+      "assistant-1",
+      `run-active:1:${sequence}-0`,
+      undefined,
+      ctx,
+      binding,
+    );
+
+  assert.equal(progress(1), true);
+  assert.equal(progress(2), true);
+  assert.equal(ctx.setMessagesCalls(), 1);
+  assert.equal(ctx.acceptedRunEventSequenceRef?.current.sequence, 2);
+  assert.equal(ctx.messagesRef.current[0]?.parts?.[0]?.type, "execution_step");
+  assert.equal(
+    ctx.messagesRef.current[0]?.parts?.[0]?.type === "execution_step"
+      ? ctx.messagesRef.current[0].parts[0].sequence
+      : null,
+    2,
+  );
+
+  now = 250;
+  assert.notEqual(deferredCommit, null);
+  (deferredCommit as unknown as () => void)();
+  assert.equal(ctx.setMessagesCalls(), 2);
+});
+
 test("uses the durable sequence for assistant deltas and final replacement", () => {
   const ctx = createContext(
     [
@@ -826,26 +1006,6 @@ test("uses the durable sequence for assistant deltas and final replacement", () 
     runId: "run-active",
     streamVersion: 0,
   };
-  let frame: FrameRequestCallback | null = null;
-  const presentation = new PublicStreamPresentation({
-    now: () => 0,
-    requestAnimationFrame: (callback) => {
-      frame = callback;
-      return 1;
-    },
-    cancelAnimationFrame: () => {
-      frame = null;
-    },
-    setTimeout: () => 1 as unknown as ReturnType<typeof setTimeout>,
-    clearTimeout: () => undefined,
-  });
-  ctx.publicStreamPresentation = presentation;
-  presentation.activate({
-    sessionId: binding.sessionId,
-    runId: binding.runId,
-    assistantMessageId: "assistant-1",
-    streamVersion: binding.streamVersion,
-  });
 
   const acceptedDelta = handleStreamEvent(
     {
@@ -883,11 +1043,6 @@ test("uses the durable sequence for assistant deltas and final replacement", () 
     ctx,
     binding,
   );
-  // The accepted cursor stays at the last reducer commit while the delta is
-  // still buffered for the next presentation frame.
-  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 7);
-  assert.equal(ctx.messages()[0]?.content, "A");
-  assert.notEqual(frame, null);
   const acceptedFinal = handleStreamEvent(
     {
       event: "message:chunk",
@@ -945,26 +1100,6 @@ test("commits a public delta before a later execution state and keeps history se
     runId: "run-ordered",
     streamVersion: 0,
   };
-  let pendingFrame: FrameRequestCallback | null = null;
-  const presentation = new PublicStreamPresentation({
-    now: () => 0,
-    requestAnimationFrame: (callback) => {
-      pendingFrame = callback;
-      return 1;
-    },
-    cancelAnimationFrame: () => {
-      pendingFrame = null;
-    },
-    setTimeout: () => 1 as unknown as ReturnType<typeof setTimeout>,
-    clearTimeout: () => undefined,
-  });
-  presentation.activate({
-    sessionId: binding.sessionId,
-    runId: binding.runId,
-    assistantMessageId: "assistant-ordered",
-    streamVersion: binding.streamVersion,
-  });
-  ctx.publicStreamPresentation = presentation;
   const snapshots: Array<{ content: string; partTypes: string[] }> = [];
   const commit = ctx.setMessages;
   ctx.setMessages = (updater) => {
@@ -1018,7 +1153,6 @@ test("commits a public delta before a later execution state and keeps history se
     { content: "B", partTypes: ["text"] },
     { content: "B", partTypes: ["text", "execution_step"] },
   ]);
-  assert.equal(pendingFrame, null);
 
   const history = reconstructMessagesFromEvents(
     [
@@ -1056,6 +1190,85 @@ test("commits a public delta before a later execution state and keeps history se
     throw new Error("expected public execution steps");
   }
   assert.deepEqual(historyProcess.steps, [liveStep]);
+});
+
+test("commits public text before a later generic tool event", () => {
+  const ctx = createContext(
+    [{
+      id: "assistant-fallback-order",
+      role: "assistant",
+      content: "",
+      timestamp: new Date(),
+      parts: [],
+      isStreaming: true,
+    }],
+    null,
+  );
+  ctx.currentRunIdRef.current = "run-fallback-order";
+  ctx.acceptedRunEventSequenceRef!.current = {
+    sessionId: "session-1",
+    runId: "run-fallback-order",
+    sequence: 7,
+  };
+  const binding = {
+    sessionId: "session-1",
+    runId: "run-fallback-order",
+    streamVersion: 0,
+  };
+
+  assert.equal(
+    handleStreamEvent(
+      {
+        event: "message:chunk",
+        data: JSON.stringify({
+          projection_version: "ai-platform.chat-public-projection.v1",
+          projection_kind: "assistant_delta",
+          run_id: binding.runId,
+          event_id: "evt-delta-8",
+          sequence: 8,
+          content: "正文",
+        }),
+      },
+      "assistant-fallback-order",
+      "evt-delta-8",
+      undefined,
+      ctx,
+      binding,
+    ),
+    true,
+  );
+  assert.equal(
+    handleStreamEvent(
+      {
+        event: "run_event",
+        data: JSON.stringify({
+          projection_version: "ai-platform.chat-public-projection.v1",
+          projection_kind: "public_event",
+          event_id: "evt-tool-9",
+          run_id: binding.runId,
+          sequence: 9,
+          event_type: "public_tool_activity",
+          operation_id: "operation-1",
+          category: "read",
+          display_name: "Read project file",
+          status: "started",
+        }),
+      },
+      "assistant-fallback-order",
+      "evt-tool-9",
+      undefined,
+      ctx,
+      binding,
+    ),
+    true,
+  );
+
+  assert.equal(ctx.messages()[0]?.content, "正文");
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 9);
+  assert.deepEqual(ctx.messages()[0]?.parts?.map((part) => part.type), [
+    "text",
+    "tool",
+  ]);
 });
 
 test("creates a new streaming assistant for a running run after the latest user message", () => {
@@ -1551,9 +1764,9 @@ test("v4 history-covered message.started restores ownership before live delta", 
 
   assert.equal(
     accept("message.started", 1, "2026-01-01T00:00:00Z"),
-    false,
+    true,
   );
-  assert.equal(commits[0], false);
+  assert.equal(commits[0], true);
   assert.equal(
     ctx.v4MessageOwnerRef.current?.protocolMessageId,
     "protocol-message-1",
@@ -1576,11 +1789,6 @@ test("v4 message ownership survives reconnect and rejects a second protocol iden
   ], null);
   ctx.currentRunIdRef.current = "run-owner";
   ctx.v4MessageOwnerRef = { current: null };
-  const applyMessageUpdate = ctx.setMessages;
-  const deferredMessageUpdates: Array<() => void> = [];
-  ctx.setMessages = (updater) => {
-    deferredMessageUpdates.push(() => applyMessageUpdate(updater));
-  };
   const frame = (
     eventType: "message.started" | "message.delta",
     messageId: string,
@@ -1643,12 +1851,11 @@ test("v4 message ownership survives reconnect and rejects a second protocol iden
     protocolMessageId: "message-1",
     reducerMessageId: "run-owner",
   });
-  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, null);
+  assert.equal(
+    ctx.acceptedStreamCursorRef!.current.eventId,
+    "run-owner:2:1-0",
+  );
   assert.equal(accept(frame("message.delta", "message-1", 2, 8), 8), true);
-  assert.equal(ctx.messages()[0]?.content, "");
-  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, null);
-  assert.equal(deferredMessageUpdates.length, 2);
-  for (const apply of deferredMessageUpdates) apply();
   assert.equal(ctx.messages().length, 1);
   assert.equal(ctx.messages()[0]?.id, "run-owner");
   assert.equal(ctx.messages()[0]?.content, "accepted");
@@ -1709,10 +1916,10 @@ test("v4 stream.end is terminal-fenced and terminal recovery is exactly once", (
   ctx.v4TerminalFenceRef = { current: null };
   ctx.v4TerminalEventIdsRef = { current: new Set<string>() };
   let terminalCalls = 0;
-  let acceptTerminal: (() => void) | undefined;
-  ctx.onRunTerminal = (_runId, _status, _messageId, onAccepted) => {
+  let acceptTerminal: ((accepted: boolean) => void) | undefined;
+  ctx.onRunTerminal = (_runId, _status, _messageId, onSettled) => {
     terminalCalls += 1;
-    acceptTerminal = onAccepted;
+    acceptTerminal = onSettled;
     return true;
   };
   const terminal = {
@@ -1759,12 +1966,181 @@ test("v4 stream.end is terminal-fenced and terminal recovery is exactly once", (
   const commits: boolean[] = [];
   assert.equal(handlePublicRunStreamFrameV4({ frame: terminal, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => commits.push(semanticApplied) }), true);
   assert.deepEqual(commits, []);
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, null);
+  assert.equal(ctx.v4TerminalReservationsRef?.current.has("terminal-1"), true);
   assert.equal(handlePublicRunStreamFrameV4({ frame: terminal, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7 }), false);
   assert.equal(handlePublicRunStreamFrameV4({ frame: end, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7 }), false);
-  acceptTerminal?.();
+  acceptTerminal?.(true);
   assert.deepEqual(commits, [false]);
-  assert.equal(handlePublicRunStreamFrameV4({ frame: end, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7 }), true);
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 1);
+  assert.equal(ctx.v4TerminalReservationsRef?.current.size, 0);
+  assert.equal(ctx.v4TerminalEventIdsRef?.current.size, 0);
+  const lateCommits: boolean[] = [];
+  assert.equal(handlePublicRunStreamFrameV4({ frame: terminal, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => lateCommits.push(semanticApplied) }), false);
+  const higherSequenceTerminal = {
+    ...terminal,
+    transportCursor: "run-1:2:4-0",
+    value: { ...terminal.value, event_id: "event-terminal-replay", seq: 2 },
+  } as const;
+  assert.equal(handlePublicRunStreamFrameV4({ frame: higherSequenceTerminal, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => lateCommits.push(semanticApplied) }), false);
+  assert.equal(handlePublicRunStreamFrameV4({ frame: end, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => lateCommits.push(semanticApplied) }), true);
+  const duplicateEnd = {
+    ...end,
+    transportCursor: "run-1:2:3-0",
+    value: { ...end.value, event_id: "event-end-duplicate" },
+  } as const;
+  assert.equal(handlePublicRunStreamFrameV4({ frame: duplicateEnd, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => lateCommits.push(semanticApplied) }), false);
+  assert.deepEqual(lateCommits, [false, false, false, false]);
   assert.equal(terminalCalls, 1);
+});
+
+test("v4 terminal waits for committed text before sequence and cursor acceptance", () => {
+  const ctx = createContext(
+    [{
+      id: "assistant-terminal-order",
+      role: "assistant",
+      content: "",
+      timestamp: new Date(),
+      parts: [],
+      isStreaming: true,
+    }],
+    null,
+  );
+  ctx.currentRunIdRef.current = "run-terminal-order";
+  ctx.v4TerminalFenceRef = { current: null };
+  ctx.v4MessageOwnerRef = {
+    current: {
+      sessionId: "session-1",
+      runId: "run-terminal-order",
+      streamVersion: 0,
+      streamIncarnation: 2,
+      protocolMessageId: "message-terminal-order",
+      reducerMessageId: "assistant-terminal-order",
+    },
+  };
+  ctx.acceptedRunEventSequenceRef!.current = {
+    sessionId: "session-1",
+    runId: "run-terminal-order",
+    sequence: 7,
+  };
+  ctx.acceptedStreamCursorRef!.current = {
+    sessionId: "session-1",
+    runId: "run-terminal-order",
+    eventId: "run-terminal-order:2:0-0",
+    streamIncarnation: 2,
+  };
+  let settleTerminal: ((accepted: boolean) => boolean) | undefined;
+  ctx.onRunTerminal = (_runId, _status, _messageId, onSettled) => {
+    settleTerminal = onSettled;
+    return true;
+  };
+  const binding = {
+    sessionId: "session-1",
+    runId: "run-terminal-order",
+    streamVersion: 0,
+    streamIncarnation: 2,
+    generation: 7,
+  } as const;
+  const adapterBinding = {
+    runId: binding.runId,
+    streamIncarnation: binding.streamIncarnation,
+    generation: binding.generation,
+  } as const;
+  const delta = {
+    eventHeader: "message.delta",
+    transportCursor: "run-terminal-order:2:1-0",
+    generation: 7,
+    value: {
+      schema: "ai-platform.public-run-stream-event.v4",
+      event_id: "event-delta",
+      run_id: "run-terminal-order",
+      message_id: "message-terminal-order",
+      seq: 8,
+      event_type: "message.delta",
+      stream_incarnation: 2,
+      replayable: true,
+      trace_ref: null,
+      causation_event_id: null,
+      emitted_at: "2026-01-01T00:00:00Z",
+      payload: { delta: "正文" },
+    },
+  } as const;
+  const terminal = {
+    eventHeader: "run.succeeded",
+    transportCursor: "run-terminal-order:2:2-0",
+    generation: 7,
+    value: {
+      schema: "ai-platform.public-run-stream-event.v4",
+      event_id: "event-terminal",
+      run_id: "run-terminal-order",
+      message_id: null,
+      seq: 30,
+      event_type: "run.succeeded",
+      stream_incarnation: 2,
+      replayable: true,
+      trace_ref: null,
+      causation_event_id: null,
+      emitted_at: "2026-01-01T00:00:01Z",
+      payload: { terminal_event_id: "terminal-order", hydrate_required: true },
+    },
+  } as const;
+
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame: delta,
+    adapterBinding,
+    messageId: "assistant-terminal-order",
+    ctx,
+    binding,
+    currentGeneration: 7,
+    onCommitted: () => {
+      ctx.acceptedStreamCursorRef!.current.eventId = delta.transportCursor;
+    },
+  }), true);
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame: terminal,
+    adapterBinding,
+    messageId: "assistant-terminal-order",
+    ctx,
+    binding,
+    currentGeneration: 7,
+    onCommitted: () => {
+      ctx.acceptedStreamCursorRef!.current.eventId = terminal.transportCursor;
+    },
+  }), true);
+
+  assert.equal(ctx.messages()[0]?.content, "正文");
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 8);
+  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, delta.transportCursor);
+  settleTerminal?.(true);
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 30);
+  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, terminal.transportCursor);
+
+  const staleTerminal = {
+    ...terminal,
+    transportCursor: "run-terminal-order:2:3-0",
+    value: {
+      ...terminal.value,
+      event_id: "event-terminal-stale",
+      seq: 31,
+      payload: { terminal_event_id: "terminal-stale", hydrate_required: true },
+    },
+  } as const;
+  assert.equal(handlePublicRunStreamFrameV4({
+    frame: staleTerminal,
+    adapterBinding,
+    messageId: "assistant-terminal-order",
+    ctx,
+    binding,
+    currentGeneration: 7,
+    onCommitted: () => {
+      ctx.acceptedStreamCursorRef!.current.eventId = staleTerminal.transportCursor;
+    },
+  }), true);
+  ctx.currentRunIdRef.current = "run-replacement";
+  assert.equal(settleTerminal?.(true), false);
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 30);
+  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, terminal.transportCursor);
+  assert.equal(ctx.v4TerminalReservationsRef!.current.size, 0);
 });
 
 test("v4 frames fail closed without exact session, incarnation, and generation authority", () => {

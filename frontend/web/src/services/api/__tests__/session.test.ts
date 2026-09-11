@@ -8,6 +8,8 @@ import {
   buildRunResumeUrl,
   buildSessionListUrl,
   buildAuthoritativeChatSessionUrl,
+  buildAuthoritativeChatSessionListUrl,
+  projectAuthoritativeSessionList,
   buildSessionInputFilesUrl,
   buildSessionRunsUrl,
   buildChatSubmissionUrl,
@@ -46,6 +48,63 @@ test("builds the authoritative Agent Conversation recovery URL", () => {
   );
 });
 
+test("builds the authoritative Agent Conversation list URL", () => {
+  assert.equal(
+    buildAuthoritativeChatSessionListUrl(),
+    "/api/ai/chat/sessions",
+  );
+});
+
+test("projects the canonical session list into safe sidebar sessions", () => {
+  const [session] = projectAuthoritativeSessionList({
+    sessions: [
+      {
+        session_id: "session-agent",
+        workspace_id: "default",
+        agent_id: "agt_support",
+        title: "报销问题",
+        purpose: "conversation",
+        created_at: "2026-08-01T00:00:00Z",
+        updated_at: "2026-08-01T01:00:00Z",
+        agent_conversation: {
+          agent_id: "agt_support",
+          revision: 7,
+          name: "支持助手",
+          description: "处理已授权的支持请求。",
+          ...defaultEnterpriseProjection,
+          avatar_ref: "builtin:assistant",
+          category: "support",
+          selected_skill: { skill_id: "private-skill" },
+          mcp_tool_ids: ["private-mcp"],
+          content_hash: "private-hash",
+        },
+        runtime_path: "/private/runtime",
+      },
+    ],
+  });
+
+  assert.deepEqual(session, {
+    id: "session-agent",
+    agent_id: "agt_support",
+    created_at: "2026-08-01T00:00:00Z",
+    updated_at: "2026-08-01T01:00:00Z",
+    is_active: true,
+    name: "报销问题",
+    metadata: {},
+    purpose: "conversation",
+    agent_conversation: {
+      agent_id: "agt_support",
+      revision: 7,
+      name: "支持助手",
+      description: "处理已授权的支持请求。",
+      ...defaultEnterpriseProjection,
+      avatar_ref: "builtin:assistant",
+      avatar_seed: "agt_support",
+      category: "support",
+    },
+  });
+});
+
 test("preserves legacy session get while adding safe authoritative recovery", async () => {
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
@@ -76,6 +135,7 @@ test("preserves legacy session get while adding safe authoritative recovery", as
           revision: 7,
           name: "支持助手",
           description: "处理已授权的支持请求。",
+          ...defaultEnterpriseProjection,
           avatar_ref: "builtin:assistant",
           category: "support",
           selected_skill: { skill_id: "private-skill" },
@@ -98,6 +158,7 @@ test("preserves legacy session get while adding safe authoritative recovery", as
       name: "支持助手",
       description: "处理已授权的支持请求。",
       avatar_ref: "builtin:assistant",
+      avatar_seed: "agt_support",
       category: "support",
     });
     assert.equal("selected_skill" in authoritative.agent_conversation!, false);
@@ -527,16 +588,16 @@ test("uses the routed agent for same-tab session continuation", () => {
       trace_id: "trace-translation",
       status: "queued",
       intent_decision: {
-        agent_id: "baoyu-translate",
+        agent_id: "qa-file-reviewer",
       },
     },
     "general-agent",
   );
 
-  assert.equal(routedAgentId, "baoyu-translate");
+  assert.equal(routedAgentId, "qa-file-reviewer");
   assert.equal(
     buildSubmitChatUrl(routedAgentId),
-    "/api/chat/stream?agent_id=baoyu-translate",
+    "/api/chat/stream?agent_id=qa-file-reviewer",
   );
 });
 
@@ -549,9 +610,9 @@ test("keeps the current agent when the response has no authoritative routed agen
         trace_id: "trace-a",
         status: "queued",
       },
-      "baoyu-translate",
+      "general-agent",
     ),
-    "baoyu-translate",
+    "general-agent",
   );
 });
 

@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { APP_ROUTE_PATHS } from "../appRouteManifest.ts";
-import { launchpadTabs } from "../components/launchpad/catalog.ts";
 
 const root = process.cwd();
 
@@ -60,25 +59,27 @@ test("marketplace route is folded into admin skill management", () => {
   assert.match(state, /marketplace:admin/);
 });
 
-test("company navigation owns legacy webUI links without iframe embedding", () => {
+test("company navigation owns copied webUI links without iframe embedding", () => {
   const catalog = readSource("src/components/launchpad/catalog.ts");
   const panel = readSource("src/components/launchpad/LaunchpadPanel.tsx");
   const zh = readSource("src/i18n/locales/zh.json");
-  const lingxiTab = launchpadTabs.find((tab) => tab.key === "lingxi");
 
-  assert.equal(lingxiTab?.runtimeUrlKey, "lingxi");
   assert.match(panel, /data-company-navigation-shell/);
-  assert.match(panel, /openUrl\(tab\.url\)/);
-  assert.match(panel, /window\.open/);
-  assert.doesNotMatch(catalog, /"icon":/);
-  assert.doesNotMatch(catalog, /icon\?:/);
+  assert.match(panel, /href=\{entry\.url\}/);
+  assert.match(panel, /target="_blank"/);
+  assert.match(panel, /getLaunchpadIconUrl/);
+  assert.match(panel, /authApi[\s\S]{0,40}\.getProfile/);
+  assert.match(panel, /authApi\.updateMetadata/);
+  assert.match(panel, /LAUNCHPAD_FAVORITES_METADATA_KEY/);
+  assert.doesNotMatch(panel, /localStorage/);
+  assert.match(catalog, /icon: string/);
+  assert.doesNotMatch(catalog, /runtimeUrlKey/);
   assert.doesNotMatch(catalog, /systemKey/);
   assert.doesNotMatch(catalog, /VITE_LEGACY_WEBUI_FRAME_URL/);
   assert.doesNotMatch(catalog, /VITE_LEGACY_NONGMP_URL/);
   assert.doesNotMatch(catalog, /buildLegacySystemUrl/);
   assert.doesNotMatch(panel, /data-legacy-webui-frame/);
   assert.doesNotMatch(panel, /<iframe/);
-  assert.doesNotMatch(panel, /sandbox=/);
-  assert.doesNotMatch(panel, /allow="clipboard-read; clipboard-write"/);
+  assert.doesNotMatch(panel, /window\.open/);
   assert.match(zh, /"companyNavigation"/);
 });

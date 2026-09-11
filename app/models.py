@@ -20,9 +20,9 @@ from app.control_plane_contracts import (
     SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS, ThinkingEffort, validate_thinking_agent_options,
 )
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
-from app.agent_apps.api import discard_legacy_agent_profile_model_id
+from app.agent_apps.api import AgentProfileAvatarRef, discard_legacy_agent_profile_model_id
 from app.agent_apps.api import (
-    normalize_agent_avatar_seed, normalize_agent_profile_display_items, normalize_agent_skill_set,
+    AgentProfileSkillReference, normalize_agent_avatar_seed, normalize_agent_profile_display_items, normalize_agent_skill_set,
 )
 from app.skills.release_policy import (
     validate_release_decision_lock,
@@ -222,8 +222,6 @@ class SelectedAgentProfileRequest(BaseModel):
 
 
 class AgentProfileDraftRequest(BaseModel):
-    """Admin definition whose field presence governs create-versus-update defaults."""
-
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=160)
@@ -241,13 +239,14 @@ class AgentProfileDraftRequest(BaseModel):
     permissions_and_data_access_notice: str = Field(default="", max_length=4_000)
     instructions: str = Field(min_length=1, max_length=MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
     _legacy_model_id: str = PrivateAttr(default="platform-selected")
-    skill_set: list[SelectedSkillRequest] = Field(default_factory=list, max_length=32)
-    selected_skill: SelectedSkillRequest | None = None
+    skill_set: list[AgentProfileSkillReference] = Field(default_factory=list, max_length=32)
+    selected_skill: AgentProfileSkillReference | None = None
     mcp_tool_ids: list[str] = Field(default_factory=list)
-    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    avatar_ref: AgentProfileAvatarRef = "builtin:agent"
     avatar_asset_id: str | None = None
     avatar_seed: str = Field(default="", max_length=128)
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    market_tag: str = Field(default="", max_length=80)
     visibility: Literal["tenant", "restricted"] = "tenant"
     allowed_department_ids: list[str] = Field(default_factory=list)
     allowed_roles: list[str] = Field(default_factory=list)
@@ -414,7 +413,7 @@ class AgentProfilePublicProjection(BaseModel):
     supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text", "file"])
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
-    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    avatar_ref: AgentProfileAvatarRef = "builtin:agent"
     avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
     published_at: Any | None = None
@@ -433,8 +432,6 @@ class AgentProfileCatalogResponse(BaseModel):
 
 
 class AgentProfileAdminProjection(BaseModel):
-    """Admin-only revision projection, including server-owned instructions."""
-
     model_config = ConfigDict(extra="forbid")
 
     agent_id: str
@@ -451,13 +448,14 @@ class AgentProfileAdminProjection(BaseModel):
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
     instructions: str
-    skill_set: list[SelectedSkillRequest] = Field(default_factory=list)
-    selected_skill: SelectedSkillRequest
+    skill_set: list[AgentProfileSkillReference] = Field(default_factory=list)
+    selected_skill: AgentProfileSkillReference
     mcp_tool_ids: list[str] = Field(default_factory=list)
-    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    avatar_ref: AgentProfileAvatarRef = "builtin:agent"
     avatar_asset_id: str | None = None
     avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    market_tag: str = ""
     visibility: Literal["tenant", "restricted"] = "tenant"
     allowed_department_ids: list[str] = Field(default_factory=list)
     allowed_roles: list[str] = Field(default_factory=list)
@@ -544,7 +542,7 @@ class AgentConversationIdentity(BaseModel):
     supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text", "file"])
     expected_outputs: list[str] = Field(default_factory=list)
     permissions_and_data_access_notice: str = ""
-    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    avatar_ref: AgentProfileAvatarRef = "builtin:agent"
     avatar_seed: str = ""
     category: Literal["general", "support", "writing", "research", "operations"] = "general"
     published_at: Any | None = None
@@ -1420,7 +1418,7 @@ class ChatSubmissionResponse(BaseModel):
     submission_disposition: Literal["rejected_before_persist"] | None = None
     rejection_code: str | None = None
     outcome: ChatStreamResponse | None = None
-
+    run_status: Literal["queued", "running", "succeeded", "failed", "cancelled"] | None = None
 
 class ChatSubmissionPreLedgerAbsenceResponse(BaseModel):
     """Versioned proof that this principal has no durable submission ledger row."""
@@ -2232,8 +2230,8 @@ class AdminSkillSummaryResponse(BaseModel):
     skill_id: str
     name: str
     description: str = ""
-    lifecycle_status: str
-    distribution_status: str
+    lifecycle_status: Literal["active"]
+    distribution_status: Literal["active", "disabled"]
     visible_to_user: bool = False
     latest_version: str | None = None
     latest_version_status: str | None = None

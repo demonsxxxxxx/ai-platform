@@ -11,6 +11,7 @@ from app.streaming.application.callback_events_v4 import V4CallbackItem
 from app.streaming.application.durable_v4 import (
     V4PendingAdmission,
     V4PendingAdmissionPort,
+    V4PublicationStreamExpired,
     V4PublicationTransportUnavailable,
 )
 from app.streaming.application.worker_publication_v4 import (
@@ -19,6 +20,7 @@ from app.streaming.application.worker_publication_v4 import (
     WorkerEventPersistence,
 )
 from app.streaming.redis import (
+    StreamContractError,
     StreamTransportUnavailable,
     confirm_stream_admission,
     create_or_get_stream_admission_v4,
@@ -136,6 +138,14 @@ class RedisV4PublicationTransport:
         try:
             envelope = json.loads(canonical_envelope_bytes.decode("utf-8"))
             return await self._bridge.append(envelope)
+        except StreamContractError as exc:
+            if str(exc) == "stream_missing" and envelope.get("event_type") in {
+                "run.succeeded",
+                "run.failed",
+                "run.cancelled",
+            }:
+                raise V4PublicationStreamExpired from exc
+            raise
         except StreamTransportUnavailable as exc:
             raise V4PublicationTransportUnavailable(type(exc).__name__) from exc
 

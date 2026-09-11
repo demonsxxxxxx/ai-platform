@@ -100,6 +100,54 @@ export function buildOAuthLoginUrl(provider: string, state?: string): string {
   return `${API_BASE}/api/auth/oauth/${safeProvider}${suffix}`;
 }
 
+const COMPANY_AD_LOGIN_TIMEOUT_MS = 15_000;
+
+function withADLoginTimeout(signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(COMPANY_AD_LOGIN_TIMEOUT_MS);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+async function fetchCompanyADLogin(
+  loginUrl: string,
+  signal: AbortSignal,
+): Promise<{ workid: string; cnname: string; token: string }> {
+  const response = await fetch(loginUrl, {
+    credentials: "include",
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) throw new Error("ad_login_failed");
+
+  const payload: unknown = await response.json().catch(() => null);
+  const firstResult = Array.isArray(payload) ? payload[0] : null;
+  const workid =
+    firstResult && typeof firstResult === "object"
+      ? (firstResult as { workid?: unknown }).workid
+      : null;
+  const cnname =
+    firstResult && typeof firstResult === "object"
+      ? (firstResult as { cnname?: unknown }).cnname
+      : null;
+  const token =
+    firstResult && typeof firstResult === "object"
+      ? (firstResult as { token?: unknown }).token
+      : null;
+  if (
+    typeof workid !== "string" ||
+    !workid.trim() ||
+    typeof token !== "string" ||
+    !token.trim()
+  ) {
+    throw new Error("ad_login_failed");
+  }
+  return {
+    workid: workid.trim(),
+    cnname: typeof cnname === "string" && cnname.trim() ? cnname.trim() : workid.trim(),
+    token: token.trim(),
+  };
+}
+
 export const authApi = {
   /**
    * Establish the stable HttpOnly browser auth context before any mutation.
@@ -133,6 +181,36 @@ export const authApi = {
       },
     );
 
+  },
+
+  /** Read the canonical platform configuration for optional Windows login. */
+  async getADLoginConfig(signal?: AbortSignal): Promise<{
+    ad_login_url: string | null;
+  }> {
+    return authFetch<{ ad_login_url: string | null }>(
+      `${API_BASE}/api/ai/auth/ad-login/config`,
+      {
+        skipAuth: true,
+        signal: withADLoginTimeout(signal),
+      },
+    );
+  },
+
+  /** Exchange the browser's Windows-authenticated company JWT for a platform session. */
+  async loginWithAD(loginUrl: string, signal?: AbortSignal): Promise<void> {
+    const requestSignal = withADLoginTimeout(signal);
+    const companyLogin = await fetchCompanyADLogin(loginUrl, requestSignal);
+    await authFetch<PrincipalResponseWire>(
+      `${API_BASE}/api/ai/auth/ad-login`,
+      {
+        method: "POST",
+        skipAuth: true,
+        credentials: "include",
+        body: JSON.stringify(companyLogin),
+        headers: { "Content-Type": "application/json" },
+        signal: requestSignal,
+      },
+    );
   },
 
   /**
@@ -250,8 +328,10 @@ export const authApi = {
   /**
    * 获取用户个人资料
    */
-  async getProfile(): Promise<User> {
-    return authFetch<User>(`${API_BASE}/api/auth/profile`);
+  async getProfile(options: { signal?: AbortSignal } = {}): Promise<User> {
+    return authFetch<User>(`${API_BASE}/api/auth/profile`, {
+      signal: options.signal,
+    });
   },
 
   /**

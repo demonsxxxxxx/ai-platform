@@ -614,7 +614,16 @@ async def claim_sandbox_executor_reconciliations(
             and executor_terminal_json is not null
             and executor_reconciliation_context_json is not null
             and (
-              executor_reconciliation_status in ('pending', 'retry')
+              executor_reconciliation_status = 'pending'
+              or (
+                executor_reconciliation_status = 'retry'
+                and updated_at <= now() - make_interval(
+                  secs => least(
+                    30,
+                    greatest(1, executor_terminal_reconciliation_attempt_count)
+                  )
+                )
+              )
               or (
                 executor_reconciliation_status = 'claimed'
                 and executor_reconciliation_claimed_at < now() - make_interval(secs => %s)

@@ -114,3 +114,17 @@ test("chat help control uses the Chinese help-document translation", () => {
   assert.doesNotMatch(helpMenu, /aria-label="Help"/);
   assert.doesNotMatch(helpMenu, /AI Platform documentation/);
 });
+
+test("single-enterprise UI does not expose the internal tenant scope", () => {
+  const zh = read("i18n/locales/zh.json");
+  const roles = read("components/panels/RolesPanel.tsx");
+  const projections = read("components/workbench/WorkbenchProjectionPages.tsx");
+
+  assert.doesNotMatch(zh, /租户/);
+  assert.doesNotMatch(roles, /\{role\.scope\}|\{skill\.inherited_from\}/);
+  assert.doesNotMatch(
+    projections,
+    /user\.tenant_id|tenant:\s*governance\.tenant_id/,
+  );
+  assert.match(zh, /"tenant_admin": "企业管理员"/);
+});

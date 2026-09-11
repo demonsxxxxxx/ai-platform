@@ -28,6 +28,8 @@ export type AdminSkillVersionStatus =
   | "deprecated"
   | "active";
 
+export type AdminSkillLifecycleStatus = "active";
+
 /** Safe lifecycle projection. Package, storage, and source metadata stay private. */
 export interface AdminSkillVersionSummary {
   skillId: string;
@@ -53,7 +55,7 @@ export interface AdminSkillCatalogItem {
   skillId: string;
   name: string;
   description: string;
-  lifecycleStatus: "active" | "disabled";
+  lifecycleStatus: AdminSkillLifecycleStatus;
   distributionStatus: "active" | "disabled";
   visibleToUser: boolean;
   latestVersion: string | null;
@@ -218,6 +220,12 @@ export function normalizeAdminSkillReleasePolicy(
   };
 }
 
+function isAdminSkillLifecycleStatus(
+  value: unknown,
+): value is AdminSkillLifecycleStatus {
+  return value === "active";
+}
+
 function isNullableNonBlankString(value: unknown): value is string | null {
   return value === null || (typeof value === "string" && value.trim().length > 0);
 }
@@ -236,7 +244,7 @@ export function normalizeAdminSkillCatalogResponse(
       typeof item.name !== "string" ||
       item.name.trim().length === 0 ||
       typeof item.description !== "string" ||
-      (item.lifecycle_status !== "active" && item.lifecycle_status !== "disabled") ||
+      !isAdminSkillLifecycleStatus(item.lifecycle_status) ||
       (item.distribution_status !== "active" && item.distribution_status !== "disabled") ||
       typeof item.visible_to_user !== "boolean" ||
       !isNullableNonBlankString(item.latest_version) ||

@@ -1,3 +1,8 @@
+from app.execution.application.artifact_persistence import (
+    build_artifact_execution_owner,
+    build_artifact_records,
+    promote_artifact_reservations,
+)
 from app.execution.application.adapter_run import (
     WorkerRunCancelled,
     submit_run_until_cancelled,
@@ -36,10 +41,15 @@ from app.execution.application.claude_agent_events import (
 from app.execution.application.stale_terminalization import (
     stage_stale_run_reconciliation,
 )
+from app.execution.application.artifact_storage import (
+    artifact_content_type,
+    artifact_label,
+    artifact_type,
+    collect_workspace_artifacts,
+)
 from app.execution.domain.public_projection import (
     claude_sdk_failure_code,
     claude_sdk_failure_message,
-    projected_public_answer_failure_reason,
     public_answer_failure_reason,
 )
 
@@ -74,11 +84,17 @@ __all__ = [
     "RunModelSelection",
     "SkillInvocationEvidenceBinder",
     "WorkerRunCancelled",
+    "artifact_content_type",
+    "artifact_label",
+    "artifact_type",
+    "build_artifact_execution_owner",
+    "build_artifact_records",
     "claude_sdk_failure_code",
     "claude_sdk_failure_message",
     "context_file_failure_event_fields",
     "context_file_failure_event_payload",
     "context_file_failure_log_extra",
+    "collect_workspace_artifacts",
     "bind_worker_attempt_lifecycle",
     "fail_run_and_reconcile_worker_child",
     "finalize_worker_child_parent",
@@ -90,7 +106,7 @@ __all__ = [
     "list_public_models",
     "locked_run_payload_candidate",
     "parse_requested_model_selection",
-    "projected_public_answer_failure_reason",
+    "promote_artifact_reservations",
     "public_answer_failure_reason",
     "resolve_chat_model_selection",
     "time",

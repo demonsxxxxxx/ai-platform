@@ -178,7 +178,7 @@ function RootRedirect() {
   }
 
   return isAuthenticated ? (
-    <Navigate to={APP_ROUTE_PATHS.agentMarket} replace />
+    <Navigate to={APP_ROUTE_PATHS.apps} replace />
   ) : (
     <Navigate to="/auth/login" replace />
   );
@@ -311,7 +311,7 @@ function WorkbenchForbiddenPage({
   );
 }
 
-// Auth page wrapper - opens the Agent-first service catalog after login/register.
+// Auth page wrapper - opens Company Navigation after login/register.
 function AuthPageWrapper({
   initialMode,
 }: {
@@ -327,7 +327,7 @@ function AuthPageWrapper({
     <AuthPage
       initialMode={initialMode}
       onSuccess={(redirectPath) =>
-        navigate(redirectPath ?? APP_ROUTE_PATHS.agentMarket, { replace: true })
+        navigate(redirectPath ?? APP_ROUTE_PATHS.apps, { replace: true })
       }
     />
   );

@@ -19,7 +19,8 @@ from app.models import (
     PublicSkillImportPreviewResponse,
 )
 from app.settings import get_settings
-from app.skills.dependencies import skill_dependency_policy
+from app.skills.api import INTERNAL_DEPENDENCY_SKILL_IDS
+from app.skills.dependencies import PUBLIC_WORKBENCH_SKILL_IDS, skill_dependency_policy
 from app.skills.lifecycle import (
     SKILL_VERSION_DEPRECATED,
     SKILL_VERSION_DISABLED,
@@ -270,6 +271,7 @@ async def admin_list_skills(
             conn,
             tenant_id=principal.tenant_id,
         )
+    items = [item for item in items if item.get("lifecycle_status") == "active"]
     return AdminSkillListResponse(items=items)
 
 
@@ -287,8 +289,14 @@ async def admin_skill_detail(
             tenant_id=principal.tenant_id,
             skill_id=skill_id,
         )
-        if detail is not None:
+        if (
+            detail is not None
+            and isinstance(detail.get("skill"), dict)
+            and detail["skill"].get("lifecycle_status") == "active"
+        ):
             available_skill_ids = set(await repositories.list_skill_ids(conn))
+        else:
+            detail = None
     if detail is None:
         raise HTTPException(status_code=404, detail="skill_not_found")
     versions = detail.get("versions") if isinstance(detail.get("versions"), list) else []
@@ -315,7 +323,12 @@ async def admin_sync_builtin_skills(
     _require_admin(principal)
 
     registry = BuiltinSkillRegistry(get_settings().platform_skills_root)
-    builtins = registry.list_builtin_skills()
+    managed_builtin_ids = PUBLIC_WORKBENCH_SKILL_IDS | INTERNAL_DEPENDENCY_SKILL_IDS
+    builtins = [
+        skill
+        for skill in registry.list_builtin_skills()
+        if skill.name in managed_builtin_ids
+    ]
     available_skill_ids = {skill.name for skill in builtins}
     try:
         manifest_pins = build_skill_manifest_pins(

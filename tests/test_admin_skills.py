@@ -168,6 +168,32 @@ def test_admin_skill_detail_requires_admin(monkeypatch):
     assert response.json()["detail"] == "not_ai_admin"
 
 
+def test_admin_skill_detail_hides_retired_aggregate(monkeypatch):
+    async def fake_detail(conn, *, tenant_id, skill_id):
+        assert isinstance(conn, OpaqueConnection)
+        assert tenant_id == "default"
+        assert skill_id == "baoyu-translate"
+        return {
+            "skill": {
+                "skill_id": "baoyu-translate",
+                "name": "baoyu-translate",
+                "lifecycle_status": "inactive",
+            },
+            "versions": [],
+            "recent_snapshots": [],
+        }
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_admin_skill_detail", fake_detail)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/admin/skills/baoyu-translate", headers=admin_headers())
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "skill_not_found"
+
+
 def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(monkeypatch):
     async def fake_list_summaries(conn, *, tenant_id):
         assert isinstance(conn, OpaqueConnection)
@@ -177,14 +203,26 @@ def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(mon
                 "skill_id": "native-review",
                 "name": "native-review",
                 "description": "Review local files.",
-                "lifecycle_status": "released",
+                "lifecycle_status": "active",
                 "distribution_status": "active",
                 "visible_to_user": True,
                 "latest_version": "hash-current",
                 "latest_version_status": "released",
                 "current_version": "hash-current",
                 "rollout_percent": 100,
-            }
+            },
+            {
+                "skill_id": "baoyu-translate",
+                "name": "baoyu-translate",
+                "description": "Retired translator.",
+                "lifecycle_status": "inactive",
+                "distribution_status": "disabled",
+                "visible_to_user": False,
+                "latest_version": "hash-retired",
+                "latest_version_status": "released",
+                "current_version": None,
+                "rollout_percent": None,
+            },
         ]
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
@@ -204,7 +242,7 @@ def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(mon
                 "skill_id": "native-review",
                 "name": "native-review",
                 "description": "Review local files.",
-                "lifecycle_status": "released",
+                "lifecycle_status": "active",
                 "distribution_status": "active",
                 "visible_to_user": True,
                 "latest_version": "hash-current",
@@ -224,7 +262,11 @@ def test_admin_skill_detail_returns_skill_versions_and_snapshots(monkeypatch):
         assert tenant_id == "default"
         assert skill_id == "qa-file-reviewer"
         return {
-            "skill": {"skill_id": "qa-file-reviewer", "name": "QA File Reviewer"},
+            "skill": {
+                "skill_id": "qa-file-reviewer",
+                "name": "QA File Reviewer",
+                "lifecycle_status": "active",
+            },
             "release_policy": {
                 "skill_id": "qa-file-reviewer",
                 "channel": "stable",
@@ -253,7 +295,7 @@ def test_admin_skill_detail_returns_skill_versions_and_snapshots(monkeypatch):
 
     async def fake_list_skill_ids(conn):
         assert isinstance(conn, OpaqueConnection)
-        return ["baoyu-translate", "minimax-docx", "qa-file-reviewer"]
+        return ["minimax-docx", "qa-file-reviewer"]
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
@@ -291,7 +333,11 @@ def test_admin_skill_detail_returns_skill_versions_and_snapshots(monkeypatch):
 
 def test_admin_skill_detail_response_rejects_extra_dependency_policy_fields():
     payload = {
-        "skill": {"skill_id": "qa-file-reviewer", "name": "QA File Reviewer"},
+        "skill": {
+            "skill_id": "qa-file-reviewer",
+            "name": "QA File Reviewer",
+            "lifecycle_status": "active",
+        },
         "dependency_policy": {
             "skill_id": "qa-file-reviewer",
             "public": True,
@@ -371,17 +417,17 @@ def test_dependency_policy_allows_persisted_ctd_stability_reference_dependency()
 
 
 def test_dependency_policy_reports_persisted_public_dependency_without_allowing_it():
-    available = {"baoyu-translate", "minimax-docx", "qa-file-reviewer"}
+    available = {"ragflow-knowledge-search", "minimax-docx", "qa-file-reviewer"}
     policy = skill_dependency_policy(
         "qa-file-reviewer",
         available,
-        ["baoyu-translate"],
+        ["ragflow-knowledge-search"],
     )
 
-    assert policy["dependency_ids"] == ["baoyu-translate"]
+    assert policy["dependency_ids"] == ["ragflow-knowledge-search"]
     assert policy["dependency_details"] == [
         {
-            "skill_id": "baoyu-translate",
+            "skill_id": "ragflow-knowledge-search",
             "status": "blocked",
             "reason": "skill_dependency_not_internal",
             "public": True,
@@ -389,14 +435,18 @@ def test_dependency_policy_reports_persisted_public_dependency_without_allowing_
             "available": True,
         }
     ]
-    with pytest.raises(SkillDependencyPolicyError, match="skill_dependency_not_internal: baoyu-translate"):
-        validate_skill_dependency_ids("qa-file-reviewer", ["baoyu-translate"], available)
+    with pytest.raises(SkillDependencyPolicyError, match="skill_dependency_not_internal: ragflow-knowledge-search"):
+        validate_skill_dependency_ids("qa-file-reviewer", ["ragflow-knowledge-search"], available)
 
 
 def test_admin_skill_detail_does_not_infer_dependency_without_persisted_version(monkeypatch):
     async def fake_detail(conn, *, tenant_id, skill_id):
         return {
-            "skill": {"skill_id": skill_id, "name": "QA File Reviewer"},
+            "skill": {
+                "skill_id": skill_id,
+                "name": "QA File Reviewer",
+                "lifecycle_status": "active",
+            },
             "versions": [],
             "recent_snapshots": [],
         }
@@ -427,6 +477,7 @@ def test_admin_sync_builtin_skills_records_registry_versions_without_inferred_de
     minimax_dir = skills_root / "minimax-docx"
     qa_dir = skills_root / "qa-file-reviewer"
     ragflow_dir = skills_root / "ragflow-knowledge-search"
+    legacy_general_chat_dir = skills_root / "general-chat"
     minimax_dir.mkdir(parents=True)
     qa_dir.mkdir(parents=True)
     ragflow_dir.mkdir(parents=True)
@@ -458,6 +509,18 @@ def test_admin_sync_builtin_skills_records_registry_versions_without_inferred_de
 
         def list_builtin_skills(self):
             return [
+                FakeBuiltinSkill(
+                    name="general-chat",
+                    description="Legacy synthetic chat Skill",
+                    path=legacy_general_chat_dir,
+                    version="hash-general-chat",
+                    source={
+                        "kind": "builtin",
+                        "asset_dir": "general-chat",
+                        "version": "hash-general-chat",
+                    },
+                    entry={"kind": "filesystem", "path": str(legacy_general_chat_dir)},
+                ),
                 FakeBuiltinSkill(
                     name="minimax-docx",
                     description="Word document generation",
@@ -572,20 +635,14 @@ def test_admin_sync_builtin_skills_preserves_existing_immutable_dependency_manif
     skills_root = tmp_path / "skills"
     qa_dir = skills_root / "qa-file-reviewer"
     minimax_dir = skills_root / "minimax-docx"
-    translate_dir = skills_root / "baoyu-translate"
     qa_dir.mkdir(parents=True)
     minimax_dir.mkdir(parents=True)
-    translate_dir.mkdir(parents=True)
     (qa_dir / "SKILL.md").write_text(
         "---\nname: qa-file-reviewer\ndescription: QA review\n---\n\n# qa-file-reviewer\n",
         encoding="utf-8",
     )
     (minimax_dir / "SKILL.md").write_text(
         "---\nname: minimax-docx\ndescription: Word document generation\n---\n\n# minimax-docx\n",
-        encoding="utf-8",
-    )
-    (translate_dir / "SKILL.md").write_text(
-        "---\nname: baoyu-translate\ndescription: Translate documents\n---\n\n# baoyu-translate\n",
         encoding="utf-8",
     )
 

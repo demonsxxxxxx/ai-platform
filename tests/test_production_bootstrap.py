@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 import json
 from pathlib import Path
 import socket
 import stat
 import subprocess
-from types import SimpleNamespace
+import sys
 
 import pytest
 
@@ -17,8 +16,7 @@ from tools import production_bootstrap as bootstrap
 ROOT = Path(__file__).resolve().parents[1]
 COMMIT = "1" * 40
 OLD_COMMIT = "2" * 40
-BACKEND = bootstrap.sandbox_quickstart.BACKEND_REPOSITORY + "@sha256:" + "3" * 64
-FRONTEND = bootstrap.sandbox_quickstart.FRONTEND_REPOSITORY + "@sha256:" + "4" * 64
+BACKEND = "ghcr.io/example/backend@sha256:" + "3" * 64
 SERVER_IMAGE = "ghcr.io/example/opensandbox-server@sha256:" + "5" * 64
 EXECD_IMAGE = "ghcr.io/example/opensandbox-execd@sha256:" + "6" * 64
 EGRESS_IMAGE = "ghcr.io/example/opensandbox-egress@sha256:" + "8" * 64
@@ -986,475 +984,13 @@ def test_unit_restore_fails_closed_when_systemd_stop_fails(
         )
 
 
-def test_partial_or_legacy_compose_membership_blocks_before_runtime_inspection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        bootstrap,
-        "_project_membership",
-        lambda _docker: {"ai-platform-api|api"},
+def test_retired_application_cli_fails_before_host_preparation() -> None:
+    result = subprocess.run(
+        [sys.executable, "-I", str(ROOT / "tools/production_bootstrap.py"), "--latest"],
+        capture_output=True, text=True, check=False,
     )
-    monkeypatch.setattr(
-        bootstrap.transition,
-        "_inspect_container",
-        lambda *_: pytest.fail("partial runtime was inspected"),
-    )
-
-    with pytest.raises(
-        bootstrap.BootstrapError, match="not the direct production contour"
-    ):
-        bootstrap._current_runtime(tmp_path, ["docker"], docker_cmd="docker")
-
-
-def test_direct_runtime_identity_rejects_foreign_release_owner(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    containers: dict[str, dict[str, object]] = {}
-    for service, (name, role) in bootstrap.DIRECT_RELEASE_IDENTITIES.items():
-        containers[name] = {
-            "Config": {
-                "Labels": {
-                    "com.docker.compose.project": bootstrap.authority.COMPOSE_PROJECT,
-                    "com.docker.compose.service": service,
-                    "ai-platform.source-commit": COMMIT,
-                    "ai-platform.source-dirty": "false",
-                    "ai-platform.release-owner": "repo-local-compose",
-                    "ai-platform.release-role": role,
-                }
-            }
-        }
-    monkeypatch.setattr(
-        bootstrap.transition,
-        "_inspect_container",
-        lambda _docker, name: containers[name],
-    )
-
-    bootstrap._require_direct_runtime_identity(["docker"], COMMIT)
-    labels = containers[bootstrap.transition.CONTAINERS["worker"]]["Config"]
-    assert isinstance(labels, dict)
-    worker_labels = labels["Labels"]
-    assert isinstance(worker_labels, dict)
-    worker_labels["ai-platform.release-owner"] = "foreign"
-
-    with pytest.raises(bootstrap.BootstrapError, match="worker"):
-        bootstrap._require_direct_runtime_identity(["docker"], COMMIT)
-
-
-def test_rollback_fence_stops_only_available_admission(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    commands: list[list[str]] = []
-
-    def run(
-        command: list[str],
-        *,
-        timeout: int,
-    ) -> subprocess.CompletedProcess[str]:
-        del timeout
-        commands.append(command)
-        if command[-2:] == ["--format", "{{.Names}}|{{.State}}"]:
-            stdout = "ai-platform-frontend|running\nai-platform-api|exited\n"
-        else:
-            stdout = ""
-        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
-
-    monkeypatch.setattr(bootstrap.transition, "_run", run)
-
-    bootstrap._stop_available_admission(["docker"])
-
-    assert ["docker", "stop", "ai-platform-frontend"] in commands
-    assert ["docker", "stop", "ai-platform-api"] not in commands
-    assert ["docker", "stop", "ai-platform-worker"] not in commands
-
-
-def test_failed_cold_runtime_cleanup_uses_exact_overlay_and_preserves_volumes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    selection = SimpleNamespace(
-        absolute_paths=(tmp_path / "base.yml", tmp_path / "opensandbox.yml")
-    )
-    observed_environment: tuple[str, ...] = ()
-    commands: list[list[str]] = []
-    monkeypatch.setattr(
-        bootstrap.authority,
-        "resolve_compose_files",
-        lambda checkout, relative: selection,
-    )
-
-    def compose_command(
-        docker: list[str],
-        *,
-        project: str,
-        env_file: Path,
-        compose_files: tuple[Path, ...],
-        environment: tuple[str, ...],
-    ) -> list[str]:
-        nonlocal observed_environment
-        assert docker == ["docker"]
-        assert project == bootstrap.authority.COMPOSE_PROJECT
-        assert env_file == tmp_path / "production.env"
-        assert compose_files == selection.absolute_paths
-        observed_environment = environment
-        return ["docker", "compose", "exact"]
-
-    def run(
-        command: list[str],
-        *,
-        timeout: int,
-    ) -> subprocess.CompletedProcess[str]:
-        assert timeout == 300
-        commands.append(command)
-        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(bootstrap.transition, "_compose_command", compose_command)
-    monkeypatch.setattr(bootstrap.transition, "_run", run)
-    monkeypatch.setattr(bootstrap, "_project_membership", lambda _docker: set())
-
-    bootstrap._cleanup_failed_cold_runtime(
-        tmp_path / "checkout",
-        _subject(tmp_path / "production.env"),
-        tmp_path / "production.env",
-        ["docker"],
-    )
-
-    assert commands == [["docker", "compose", "exact", "down", "--remove-orphans"]]
-    assert f"AI_PLATFORM_IMAGE={BACKEND}" in observed_environment
-    assert f"AI_PLATFORM_FRONTEND_IMAGE={FRONTEND}" in observed_environment
-    assert f"SANDBOX_EXECUTOR_IMAGE={BACKEND}" in observed_environment
-    assert f"OPENSANDBOX_EXECUTOR_IMAGE={BACKEND}" in observed_environment
-    assert (
-        "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST=sha256:" + "3" * 64 in observed_environment
-    )
-    assert all("-v" not in argument for argument in commands[0])
-
-
-def _subject(
-    env_file: Path, commit: str = COMMIT
-) -> bootstrap.sandbox_quickstart.Subject:
-    return bootstrap.sandbox_quickstart.Subject(
-        commit,
-        BACKEND,
-        FRONTEND,
-        env_file,
-    )
-
-
-def _mock_production_admission(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    events: list[str],
-) -> Path:
-    env_file = tmp_path / "config" / ".env"
-    monkeypatch.setattr(bootstrap, "_require_root_posix", lambda: None)
-    monkeypatch.setattr(
-        bootstrap.sandbox_quickstart,
-        "_load_subject",
-        lambda *_: _subject(env_file),
-    )
-    monkeypatch.setattr(
-        bootstrap.transition, "_require_safe_env_file", lambda path: path
-    )
-    monkeypatch.setattr(
-        bootstrap.transition,
-        "_require_workspace_root_env",
-        lambda _path: events.append("env"),
-    )
-    monkeypatch.setattr(
-        bootstrap.authority,
-        "assert_managed_target_checkout",
-        lambda *_args, **_kwargs: COMMIT,
-    )
-    monkeypatch.setattr(bootstrap.transition, "_docker_base", lambda _cmd: ["docker"])
-
-    class Host:
-        def __init__(self, _checkout: Path) -> None:
-            pass
-
-        def run(
-            self,
-            commit: str,
-            *,
-            require_existing_unit: bool = False,
-            application_env_file: Path | None = None,
-        ) -> bootstrap.OpenSandboxHostConfig:
-            assert application_env_file == env_file
-            events.append(f"host:{commit}")
-            if require_existing_unit:
-                events.append("host-existing")
-            return _host_config()
-
-        def rollback(self) -> None:
-            events.append("host-rollback")
-
-    monkeypatch.setattr(
-        bootstrap.authority,
-        "prepare_packaged_release_images",
-        lambda *_args, **_kwargs: events.append("images"),
-    )
-    monkeypatch.setattr(
-        bootstrap,
-        "_compose_preflight",
-        lambda *_args, **_kwargs: events.append("preflight"),
-    )
-    monkeypatch.setattr(
-        bootstrap,
-        "_deploy_checkout",
-        lambda checkout, commit, *_args, **_kwargs: events.append(
-            f"deploy:{Path(checkout).name}:{commit}"
-        ),
-    )
-    monkeypatch.setattr(
-        bootstrap.transition,
-        "_require_quiescent",
-        lambda _docker: events.append("quiescent"),
-    )
-    monkeypatch.setattr(
-        bootstrap.transition,
-        "_require_schema_compatibility",
-        lambda *_args: events.append("schema"),
-    )
-    monkeypatch.setattr(
-        bootstrap.transition,
-        "_stop_admission",
-        lambda _docker: events.append("stop"),
-    )
-    monkeypatch.setattr(
-        bootstrap.transition,
-        "_restore_admission",
-        lambda _docker: events.append("restore-admission"),
-    )
-    monkeypatch.setattr(
-        bootstrap,
-        "_stop_available_admission",
-        lambda _docker: events.append("rollback-stop"),
-    )
-    monkeypatch.setattr(
-        bootstrap,
-        "_cleanup_failed_cold_runtime",
-        lambda *_args: events.append("cold-cleanup"),
-    )
-    monkeypatch.setattr(bootstrap, "HostBootstrap", Host)
-    return env_file
-
-
-def test_cold_production_bootstrap_uses_host_then_exact_production_deploy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    events: list[str] = []
-    _mock_production_admission(monkeypatch, tmp_path, events)
-    monkeypatch.setattr(bootstrap, "_current_runtime", lambda *_args, **_kwargs: None)
-    checkout = tmp_path / "releases" / COMMIT
-
-    result = bootstrap.deploy_production_subject(
-        checkout,
-        root=tmp_path,
-        host_bootstrap_factory=bootstrap.HostBootstrap,
-    )
-
-    assert result == _subject(tmp_path / "config" / ".env")
-    assert events == [
-        "env",
-        f"host:{COMMIT}",
-        "images",
-        "preflight",
-        f"deploy:{COMMIT}:{COMMIT}",
-    ]
-
-
-def test_cold_production_failure_removes_partial_admission_but_keeps_host(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[str] = []
-    _mock_production_admission(monkeypatch, tmp_path, events)
-    monkeypatch.setattr(bootstrap, "_current_runtime", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        bootstrap,
-        "_deploy_checkout",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            bootstrap.authority.ReleaseAuthorityError("target")
-        ),
-    )
-
-    with pytest.raises(bootstrap.BootstrapError, match="admission was removed"):
-        bootstrap.deploy_production_subject(
-            tmp_path / "releases" / COMMIT,
-            root=tmp_path,
-            host_bootstrap_factory=bootstrap.HostBootstrap,
-        )
-
-    assert events == [
-        "env",
-        f"host:{COMMIT}",
-        "images",
-        "preflight",
-        "rollback-stop",
-        "cold-cleanup",
-    ]
-
-
-def test_existing_production_preflight_failure_restores_the_host_unit(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[str] = []
-    _mock_production_admission(monkeypatch, tmp_path, events)
-    previous = bootstrap.CurrentRuntime(
-        repo_root=tmp_path / "releases" / OLD_COMMIT,
-        commit=OLD_COMMIT,
-    )
-    monkeypatch.setattr(
-        bootstrap, "_current_runtime", lambda *_args, **_kwargs: previous
-    )
-    monkeypatch.setattr(
-        bootstrap,
-        "_compose_preflight",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            bootstrap.authority.ReleaseAuthorityError("preflight")
-        ),
-    )
-
-    with pytest.raises(bootstrap.BootstrapError, match="production admission failed"):
-        bootstrap.deploy_production_subject(
-            tmp_path / "releases" / COMMIT,
-            root=tmp_path,
-            host_bootstrap_factory=bootstrap.HostBootstrap,
-        )
-
-    assert events == [
-        "env",
-        "quiescent",
-        "schema",
-        f"host:{COMMIT}",
-        "host-existing",
-        "images",
-        "host-rollback",
-    ]
-
-
-def test_existing_production_failure_restores_verified_previous_runtime(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    events: list[str] = []
-    _mock_production_admission(monkeypatch, tmp_path, events)
-    previous = bootstrap.CurrentRuntime(
-        repo_root=tmp_path / "releases" / OLD_COMMIT,
-        commit=OLD_COMMIT,
-    )
-    monkeypatch.setattr(
-        bootstrap, "_current_runtime", lambda *_args, **_kwargs: previous
-    )
-    deployments: list[str] = []
-
-    def deploy(checkout: Path, commit: str, *_args, **_kwargs) -> None:
-        deployments.append(f"{Path(checkout).name}:{commit}")
-        if commit == COMMIT:
-            raise bootstrap.authority.ReleaseAuthorityError("target")
-
-    monkeypatch.setattr(bootstrap, "_deploy_checkout", deploy)
-
-    with pytest.raises(
-        bootstrap.BootstrapError, match="previous production runtime was restored"
-    ):
-        bootstrap.deploy_production_subject(
-            tmp_path / "releases" / COMMIT,
-            root=tmp_path,
-            host_bootstrap_factory=bootstrap.HostBootstrap,
-        )
-
-    assert events == [
-        "env",
-        "quiescent",
-        "schema",
-        f"host:{COMMIT}",
-        "host-existing",
-        "images",
-        "preflight",
-        "stop",
-        "quiescent",
-        "rollback-stop",
-        "quiescent",
-        "host-rollback",
-    ]
-    assert deployments == [f"{COMMIT}:{COMMIT}", f"{OLD_COMMIT}:{OLD_COMMIT}"]
-
-
-def test_existing_production_does_not_restore_without_rollback_fence(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[str] = []
-    _mock_production_admission(monkeypatch, tmp_path, events)
-    previous = bootstrap.CurrentRuntime(
-        repo_root=tmp_path / "releases" / OLD_COMMIT,
-        commit=OLD_COMMIT,
-    )
-    monkeypatch.setattr(
-        bootstrap, "_current_runtime", lambda *_args, **_kwargs: previous
-    )
-    deployments: list[str] = []
-
-    def deploy(checkout: Path, commit: str, *_args, **_kwargs) -> None:
-        deployments.append(f"{Path(checkout).name}:{commit}")
-        raise bootstrap.authority.ReleaseAuthorityError("target")
-
-    monkeypatch.setattr(bootstrap, "_deploy_checkout", deploy)
-    monkeypatch.setattr(
-        bootstrap,
-        "_stop_available_admission",
-        lambda _docker: (_ for _ in ()).throw(bootstrap.BootstrapError("fence")),
-    )
-
-    with pytest.raises(bootstrap.BootstrapError, match="safety could not be proven"):
-        bootstrap.deploy_production_subject(
-            tmp_path / "releases" / COMMIT,
-            root=tmp_path,
-            host_bootstrap_factory=bootstrap.HostBootstrap,
-        )
-
-    assert deployments == [f"{COMMIT}:{COMMIT}"]
-
-
-def test_latest_main_token_is_claimed_then_removed_before_deployment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    observed: list[bool] = []
-
-    @contextmanager
-    def unlocked(_root: Path):
-        yield
-
-    monkeypatch.setattr(bootstrap, "_require_root_posix", lambda: None)
-    monkeypatch.setattr(bootstrap.latest, "deployment_lock", unlocked)
-    monkeypatch.setattr(bootstrap.latest, "GitHubClient", lambda token: token)
-    monkeypatch.setattr(
-        bootstrap.latest,
-        "deploy_latest_main",
-        lambda **_kwargs: observed.append("GH_TOKEN" not in bootstrap.os.environ),
-    )
-    monkeypatch.setenv("GH_TOKEN", "test-token")
-    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-
-    assert (
-        bootstrap.main(
-            [
-                "--latest",
-                "--env-file",
-                "/data/ai-platform-prod/config/production/.env",
-            ]
-        )
-        == 0
-    )
-    assert observed == [True]
-
-
-def test_shell_entry_is_isolated_and_targets_the_production_controller() -> None:
-    entry = (ROOT / "scripts/deploy-latest.sh").read_text(encoding="utf-8")
-    assert "python3 -I" in entry
-    assert "tools/production_bootstrap.py" in entry
-    assert "production)" in entry
-    assert '"$@"' in entry
+    assert result.returncode != 0
+    assert "release package's deploy.py" in result.stderr
 
 
 def test_production_unit_is_distinctly_managed_and_uses_host_network_guard() -> None:
@@ -1472,9 +1008,12 @@ def test_production_unit_is_distinctly_managed_and_uses_host_network_guard() -> 
     assert "KillMode=control-group" in unit
 
 
-def test_readme_runbook_and_examples_expose_the_production_profile() -> None:
+def test_readme_runbook_and_examples_expose_the_production_package() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     runbook = (ROOT / "docs/operations/release-operations-runbook.md").read_text(
+        encoding="utf-8"
+    )
+    production = (ROOT / "docs/operations/production-bootstrap.md").read_text(
         encoding="utf-8"
     )
     environment = (ROOT / "deploy/opensandbox/server-production.env.example").read_text(
@@ -1484,13 +1023,13 @@ def test_readme_runbook_and_examples_expose_the_production_profile() -> None:
         encoding="utf-8"
     )
 
-    command = "sudo -n ./scripts/deploy-latest.sh --profile production --latest"
-    assert command in readme and command in runbook
-    assert "/data/ai-platform-prod/config/production/.env" in readme
-    assert "root:<OPENSANDBOX_SERVER_GID> 0640" in readme
-    assert "application-owned OpenSandbox" in runbook
-    assert "acceptance as pending" in runbook
-    assert "Docker daemon authority" in runbook
+    command = "python3 deploy.py"
+    assert command in readme and command in runbook and command in production
+    assert "ai-platform-production.tar.gz" in readme
+    assert "/data/ai-platform-prod/config/production/.env" in production
+    assert "root:<OPENSANDBOX_SERVER_GID> 0640" in production
+    assert "application package" in production
+    assert "Docker daemon authority" in production
     declared = {
         line.partition("=")[0]
         for line in environment.splitlines()

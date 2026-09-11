@@ -782,7 +782,6 @@ class SandboxRuntime:
                 "tool_policy_subjects": request.tool_policy_subjects,
                 "input_files": request.file_ids,
                 "materialized_file_names": request.materialized_file_names,
-                "require_selected_skill_invocation": request.require_selected_skill_invocation,
             }
             if request.context_manifest:
                 task_config["context_manifest"] = dict(request.context_manifest)

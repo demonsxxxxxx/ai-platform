@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import { act, createElement, useEffect, useState, type ReactNode } from "react";
 import { adaptPublicRunStreamEventV4, projectV4EventToLegacyHandler } from "../publicEventAdapter";
-import { acceptV4TerminalFence, handlePublicRunStreamFrameV4, type EventHandlerContext } from "../../../../hooks/useAgent/eventHandlers";
+import { acceptV4TerminalFence, handlePublicRunStreamFrameV4Result, type EventHandlerContext } from "../../../../hooks/useAgent/eventHandlers";
 import { processMessageEvent } from "../../../../hooks/useAgent/eventProcessor";
 import { createRoot, type Root } from "react-dom/client";
 import { ThreadPrimitive } from "@assistant-ui/react";
@@ -14,6 +14,13 @@ import { AssistantUiMessageFrame } from "../MessageFrame";
 import { MessagePartRenderer } from "../../ChatMessage/MessagePartRenderer";
 import { closePersistentToolPanel, getPersistentToolPanelState } from "../../ChatMessage/items/persistentToolPanelState";
 import type { Message, MessagePart } from "../../../../types";
+
+const handlePublicRunStreamFrameV4 = (
+  args: Parameters<typeof handlePublicRunStreamFrameV4Result>[0],
+) => {
+  const result = handlePublicRunStreamFrameV4Result(args);
+  return result.kind === "applied" || result.kind === "deferred";
+};
 
 function setupDom(): { container: HTMLDivElement; root: Root; cleanup: () => void } {
   const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
@@ -252,7 +259,9 @@ test("mounted production fence owner accepts its matching end once and rejects a
   function ProductionFinalizationOwner() {
     const [accepted, setAccepted] = useState(0);
     useEffect(() => {
-      acceptV4TerminalFence(terminalEvent!, ctx, "terminal-1", () => setAccepted((value) => value + 1))();
+      acceptV4TerminalFence(terminalEvent!, ctx, "terminal-1", 3, () =>
+        setAccepted((value) => value + 1),
+      );
     }, []);
     return createElement("div", { "data-terminal-state": String(accepted) }, "terminal");
   }

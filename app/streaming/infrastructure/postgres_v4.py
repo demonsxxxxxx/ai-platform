@@ -324,6 +324,145 @@ class PostgresV4PublicationClaims:
             )
             return await result.fetchone() is not None
 
+    async def suppress_expired_terminal_without_attempt(
+        self, claim: V4PublicationClaim
+    ) -> bool:
+        _claim_scope(claim)
+        envelope = validate_internal_envelope_v4(
+            json.loads(claim.canonical_envelope_bytes.decode("utf-8"))
+        )
+        event_type = str(envelope["event_type"])
+        expected_status = {
+            "run.succeeded": "succeeded",
+            "run.failed": "failed",
+            "run.cancelled": "cancelled",
+        }.get(event_type)
+        if expected_status is None:
+            raise ValueError("v4_expired_terminal_event_invalid")
+
+        async with self._transaction_factory() as conn:
+            if not await _lock_claim_authority(conn, claim):
+                return False
+            fact_cursor = await conn.execute(
+                """
+                select run.status as run_status, authority.state as authority_state,
+                       exists (
+                         select 1 from run_attempts as attempt
+                         where attempt.tenant_id = run.tenant_id
+                           and attempt.run_id = run.id
+                           and attempt.id = %s
+                       ) as attempt_exists,
+                       exists (
+                         select 1 from sandbox_leases as lease
+                         where lease.tenant_id = run.tenant_id
+                           and lease.run_id = run.id
+                           and coalesce(
+                             lease.attempt_id,
+                             lease.lease_payload_json ->> 'attempt_id'
+                           ) = %s
+                           and lease.status = 'active'
+                       ) as active_lease_exists
+                from runs as run
+                join sse_stream_authorities as authority
+                  on authority.tenant_id = run.tenant_id
+                 and authority.run_id = run.id
+                where run.tenant_id = %s and run.id = %s
+                """,
+                (
+                    claim.attempt_id,
+                    claim.attempt_id,
+                    claim.tenant_id,
+                    claim.run_id,
+                ),
+            )
+            fact = await fact_cursor.fetchone()
+            if (
+                fact is None
+                or fact.get("run_status") != expected_status
+                or fact.get("authority_state") != "terminal"
+                or fact.get("attempt_exists") is not False
+                or fact.get("active_lease_exists") is not False
+            ):
+                raise V4PublicationAuthorityError(
+                    "v4_expired_terminal_authority_unavailable"
+                )
+            result = await conn.execute(
+                """
+                update run_events as event
+                set stream_publication_state = 'suppressed',
+                    stream_publication_attempts = coalesce(event.stream_publication_attempts, 0) + 1,
+                    stream_publication_redis_id = null,
+                    stream_publication_next_attempt_at = null,
+                    stream_publication_last_error = 'terminal_stream_expired',
+                    stream_publication_claim_token = null,
+                    stream_publication_claim_expires_at = null,
+                    payload_json = jsonb_set(
+                      jsonb_set(
+                        jsonb_set(
+                          event.payload_json,
+                          '{__stream_v4,publication_state}',
+                          to_jsonb('suppressed'::text),
+                          true
+                        ),
+                        '{__stream_v4,publication_attempts}',
+                        to_jsonb(coalesce((event.payload_json -> '__stream_v4' ->> 'publication_attempts')::integer, 0) + 1),
+                        true
+                      ),
+                      '{__stream_v4,suppression_reason}',
+                      to_jsonb('terminal_stream_expired'::text),
+                      true
+                    )
+                where event.id = %s
+                  and event.tenant_id = %s
+                  and event.run_id = %s
+                  and event.sequence = %s
+                  and event.event_type = %s
+                  and event.payload_json ->> 'terminal_event_id' = %s
+                  and event.visible_to_user = true
+                  and event.payload_json ? '__stream_v4'
+                  and event.stream_publication_state = 'pending'
+                  and event.stream_publication_claim_token = %s
+                  and event.stream_publication_claim_expires_at = %s
+                  and event.stream_publication_claim_expires_at > clock_timestamp()
+                  and event.payload_json -> '__stream_v4' ->> 'attempt_id' = %s
+                  and event.payload_json -> '__stream_v4' ->> 'stream_incarnation' = %s
+                  and event.payload_json -> '__stream_v4' ->> 'authorization_epoch' = %s
+                  and not exists (
+                    select 1 from run_attempts as attempt
+                    where attempt.tenant_id = event.tenant_id
+                      and attempt.run_id = event.run_id
+                      and attempt.id = %s
+                  )
+                  and not exists (
+                    select 1 from sandbox_leases as lease
+                    where lease.tenant_id = event.tenant_id
+                      and lease.run_id = event.run_id
+                      and coalesce(
+                        lease.attempt_id,
+                        lease.lease_payload_json ->> 'attempt_id'
+                      ) = %s
+                      and lease.status = 'active'
+                  )
+                returning event.id
+                """,
+                (
+                    claim.event_id,
+                    claim.tenant_id,
+                    claim.run_id,
+                    claim.sequence,
+                    event_type,
+                    claim.event_id,
+                    claim.claim_token,
+                    claim.claim_expires_at,
+                    claim.attempt_id,
+                    str(claim.stream_incarnation),
+                    str(claim.authorization_epoch),
+                    claim.attempt_id,
+                    claim.attempt_id,
+                ),
+            )
+            return await result.fetchone() is not None
+
     async def schedule_retry(
         self,
         claim: V4PublicationClaim,

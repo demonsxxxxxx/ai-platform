@@ -30,7 +30,6 @@ V4_PUBLICATION_OWNER_MANIFEST = frozenset(
         ("app/executor_reconciler.py", "_terminalize_reconciliation_failure"),
         ("app/routes/admin_runs.py", "admin_run_cancel"),
         ("app/routes/runs.py", "cancel_run"),
-        ("app/routes/runtime_callbacks.py", "record_executor_callback"),
         ("app/streaming/application/durable_v4.py", "publish_claimed_v4_events"),
         ("app/streaming/application/durable_v4.py", "publish_due_v4_events"),
         ("app/streaming/application/durable_v4.py", "publish_pending_v4_admissions"),
@@ -57,7 +56,7 @@ V4_PUBLICATION_OWNER_MANIFEST = frozenset(
         ),
         ("app/worker.py", "process_run_payload"),
         ("app/worker_main.py", "_terminalize_escaped_process_exception"),
-        ("app/worker_main.py", "run_worker_maintenance"),
+        ("app/worker_main.py", "run_worker_publication_maintenance"),
     }
 )
 
@@ -560,7 +559,7 @@ def _frontend_cursor_commit_failures(frontend: str) -> list[str]:
     connect = _typescript_function_body(frontend, "export async function connectToSSE")
     handle_calls = _typescript_call_arguments(
         connect,
-        "handlePublicRunStreamFrameV4",
+        "handlePublicRunStreamFrameV4Result",
     )
     commit = _typescript_function_body(
         connect,
@@ -671,7 +670,7 @@ def check() -> list[str]:
     if connect.count('headers["Last-Event-ID"] = acceptedCursor.eventId') != 1:
         failures.append("sseConnection.ts:last_event_id_not_from_accepted_cursor")
     failures.extend(_frontend_cursor_commit_failures(frontend))
-    if connect.count("handlePublicRunStreamFrameV4(") != 1:
+    if connect.count("handlePublicRunStreamFrameV4Result(") != 1:
         failures.append("sseConnection.ts:v4_handler_not_unique")
     active_frontend_paths = (
         "frontend/web/src/hooks/useAgent/sseConnection.ts",

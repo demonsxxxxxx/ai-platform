@@ -1,6 +1,17 @@
-import type { SelectedSkillRequest } from "./skill";
-
-export const AGENT_PROFILE_AVATAR_REFS = ["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] as const;
+export const AGENT_PROFILE_AVATAR_REFS = [
+  "builtin:agent",
+  "builtin:assistant",
+  "builtin:document",
+  "builtin:research",
+  "builtin:cartoon",
+  "builtin:emoji",
+  "builtin:pixel",
+  "builtin:portrait",
+  "builtin:abstract",
+  "builtin:planet",
+  "builtin:clay",
+  "builtin:icon",
+] as const;
 
 export type AgentProfileAvatarRef = (typeof AGENT_PROFILE_AVATAR_REFS)[number];
 
@@ -38,7 +49,9 @@ export interface AgentProfilePublicProjection extends SelectedAgentProfileReques
   avatar_ref: AgentProfileAvatarRef;
   avatar_seed?: string;
   category: AgentProfileCategory;
+  market_tags?: string[];
   market_tag?: string;
+  completed_tasks?: number;
   is_favorite?: boolean;
   published_at: string | null;
 }
@@ -99,6 +112,11 @@ function projectAvatarSeed(record: Record<string, unknown>, code: string): strin
 
 function requirePositiveRevision(value: unknown, code: string): number {
   if (!Number.isInteger(value) || (value as number) < 1) throw new Error(code);
+  return value as number;
+}
+
+function requireNonNegativeInteger(value: unknown, code: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) throw new Error(code);
   return value as number;
 }
 
@@ -186,9 +204,18 @@ export function projectAgentProfilePublicProjection(value: unknown): AgentProfil
     avatar_ref: requireOneOf(record.avatar_ref, AGENT_PROFILE_AVATAR_REFS, PROFILE_ERROR),
     avatar_seed: projectAvatarSeed(record, PROFILE_ERROR),
     category: requireOneOf(record.category, AGENT_PROFILE_CATEGORIES, PROFILE_ERROR),
+    market_tags:
+      record.market_tags === undefined
+        ? record.market_tag === undefined || record.market_tag === ""
+          ? []
+          : [requireString(record.market_tag, PROFILE_ERROR, true)]
+        : requireStringList(record.market_tags, PROFILE_ERROR),
     market_tag: record.market_tag === undefined
       ? ""
       : requireString(record.market_tag, PROFILE_ERROR, true),
+    ...(record.completed_tasks === undefined
+      ? {}
+      : { completed_tasks: requireNonNegativeInteger(record.completed_tasks, PROFILE_ERROR) }),
     is_favorite: record.is_favorite === true,
   };
 }
@@ -225,6 +252,12 @@ export function projectAgentConversationSession(value: unknown): AgentConversati
   };
 }
 
+export interface AgentProfileSkillReference {
+  skill_id: string;
+  /** Legacy response field; profile writes omit it and resolve the current Skill by name. */
+  expected_version?: string;
+}
+
 export interface AgentProfileDraftRequest {
   name: string;
   description: string;
@@ -236,14 +269,15 @@ export interface AgentProfileDraftRequest {
   expected_outputs: string[];
   permissions_and_data_access_notice: string;
   instructions: string;
-  selected_skill: SelectedSkillRequest;
-  skill_set: SelectedSkillRequest[];
+  selected_skill: AgentProfileSkillReference;
+  skill_set: AgentProfileSkillReference[];
   mcp_tool_ids: string[];
   avatar_ref: AgentProfileAvatarRef;
   avatar_seed: string;
   avatar_asset_id: string | null;
   category: AgentProfileCategory;
   market_tag?: string;
+  market_tags?: string[];
   visibility: "tenant" | "restricted";
   allowed_department_ids: string[];
   allowed_roles: string[];
@@ -258,7 +292,7 @@ export interface AgentProfileAdminProjection extends Omit<
 > {
   supported_input_types: UniversalAgentInputTypes;
   avatar_seed?: string;
-  skill_set?: SelectedSkillRequest[];
+  skill_set?: AgentProfileSkillReference[];
   agent_id: string;
   revision: number;
   /** Current aggregate publication; absent only while talking to a rolling old API. */

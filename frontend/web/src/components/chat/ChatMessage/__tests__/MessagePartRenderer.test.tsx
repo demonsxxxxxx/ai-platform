@@ -203,6 +203,6 @@ test("renders a specific safe file-size failure instead of a generic failure", (
   );
 
   assert.match(markup, /文件超过处理上限/);
-  assert.match(markup, /文件超过 32 MB 处理上限/);
+  assert.match(markup, /文件超过 128 MB，或文件总量超过 256 MB/);
   assert.doesNotMatch(markup, /private|token-bearing|storage stage/);
 });

@@ -8,6 +8,7 @@ import type {
   AgentOption,
   MessageAttachment,
 } from "../../types";
+import type { FileUploadControls } from "../../hooks/useFileUpload";
 import type {
   StopGenerationResult,
   SubmissionOutcome,
@@ -35,6 +36,8 @@ export interface ChatInputProps {
   /** INTERNAL: preserves local draft across existing layout remounts. */
   draftSnapshotRef?: { current: ChatInputDraftSnapshot };
   draftScopeKey?: string | null;
+  /** Identity scope for clearing unsent attachments during route transitions. */
+  attachmentScopeKey?: string;
   draftScopeHandoffKey?: string | null;
   onSend: (
     message: string,
@@ -83,6 +86,8 @@ export interface ChatInputProps {
       | MessageAttachment[]
       | ((prev: MessageAttachment[]) => MessageAttachment[]),
   ) => void;
+  /** Optional shared controller used by page-level and Composer drops. */
+  uploadControls?: FileUploadControls;
   pendingInput?: string | null;
   onPendingInputConsumed?: () => void;
   className?: string;

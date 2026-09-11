@@ -35,6 +35,26 @@ test("passes the message list session key into the scroll hook as a bottom-lock 
   );
 });
 
+test("keeps the assistant-ui message component stable across streaming updates", () => {
+  assert.match(
+    chatViewSource,
+    /const ASSISTANT_UI_MESSAGE_COMPONENTS = \{\s*Message: AssistantUiProjectedMessage,\s*\};/,
+  );
+  assert.match(
+    chatViewSource,
+    /useContext\(AssistantUiMessageContentContext\)/,
+  );
+  assert.match(
+    chatViewSource,
+    /<AssistantUiMessageContentContext\.Provider[\s\S]*?<ThreadPrimitive\.Unstable_MessageById[\s\S]*?<\/AssistantUiMessageContentContext\.Provider>/,
+  );
+  assert.match(
+    chatViewSource,
+    /components=\{ASSISTANT_UI_MESSAGE_COMPONENTS\}/,
+  );
+  assert.doesNotMatch(chatViewSource, /components=\{\{\s*Message:/);
+});
+
 test("passes an authenticated session scope through virtualized message rows", () => {
   assert.match(chatViewSource, /createArtifactDownloadScopeContext/);
   assert.match(

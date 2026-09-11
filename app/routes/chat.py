@@ -31,6 +31,10 @@ from app.capability_distribution import (
     CapabilityAuthorizationDenial,
 )
 from app.chat_session_projection import session_response
+from app.conversations.api import (
+    resolve_chat_submission,
+    submission_resolution_projection,
+)
 from app.context_builder import record_initial_context_snapshot
 from app.context.file_continuity import select_authorized_run_file_snapshot
 from app.control_plane_contracts import (
@@ -69,6 +73,7 @@ from app.models import (
 from app.runs.api import bind_run_model
 from app.product_events import initial_run_event_specs, intent_event_specs
 from app.projection_redaction import (
+    RETIRED_INTERNAL_AGENT_IDS,
     capability_id_from_skill,
     default_skill_id_for_public_agent,
     internal_agent_id_for_request,
@@ -349,18 +354,7 @@ def _chat_submission_resolution(row: dict[str, Any]) -> ChatSubmissionResponse:
             status_code=409,
             detail=str(row.get("rejection_code") or PLATFORM_MULTI_AGENT_NOT_SUPPORTED),
         )
-    outcome = row.get("outcome_json")
-    return ChatSubmissionResponse(
-        submission_id=str(row["submission_id"]),
-        state=str(row.get("state") or "accepted_pending_enqueue"),
-        submission_disposition=(
-            "rejected_before_persist"
-            if row.get("submission_disposition") == "rejected_before_persist"
-            else None
-        ),
-        rejection_code=str(row["rejection_code"]) if row.get("rejection_code") else None,
-        outcome=ChatStreamResponse.model_validate(outcome) if isinstance(outcome, dict) and outcome else None,
-    )
+    return ChatSubmissionResponse(**submission_resolution_projection(row))
 
 
 def _require_chat_submission_admitted(resolution: ChatSubmissionResponse) -> ChatSubmissionResponse:
@@ -380,15 +374,22 @@ async def _resolve_chat_submission(
     """Read one principal-scoped durable ledger row without changing it."""
 
     async with transaction() as conn:
-        submission = await repositories.get_chat_submission(
+        projection = await resolve_chat_submission(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
             submission_id=submission_id,
+            get_submission=repositories.get_chat_submission,
+            get_authorized_run=repositories.get_authorized_run,
         )
-    if submission is None:
+    if projection is None:
         return None
-    return _chat_submission_resolution(submission)
+    if projection["state"] == "admission_rejected":
+        raise HTTPException(
+            status_code=409,
+            detail=projection["rejection_code"] or PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
+        )
+    return ChatSubmissionResponse(**projection)
 
 
 def _preledger_recovery_fingerprint(principal: AuthPrincipal) -> str:
@@ -1182,18 +1183,6 @@ def _explicit_intent_payload(agent_id: str, skill_id: str | None) -> dict[str, o
             "confirmed_by_user": True,
             "suggestions": [],
         }
-    if skill_id == "baoyu-translate" or agent_id == "baoyu-translate":
-        return {
-            "status": "selected",
-            "intent": "document_translation",
-            "confidence": 1.0,
-            "reason": "请求指定了文档翻译能力",
-            "selected_capability": "document_translation",
-            "agent_id": agent_id,
-            "skill_id": skill_id or "baoyu-translate",
-            "confirmed_by_user": True,
-            "suggestions": [],
-        }
     if skill_id == "ragflow-knowledge-search" or agent_id == "sop-assistant":
         return {
             "status": "selected",
@@ -1270,10 +1259,19 @@ async def create_chat_session(
     request: ChatSessionRequest,
     principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
 ) -> ChatSessionResponse:
+    resolved_agent_id = internal_agent_id_for_request(request.agent_id) or request.agent_id
+    if resolved_agent_id in RETIRED_INTERNAL_AGENT_IDS:
+        raise HTTPException(status_code=409, detail="agent_inactive")
     async with transaction() as conn:
+        agent = await repositories.get_agent(
+            conn,
+            tenant_id=principal.tenant_id,
+            agent_id=resolved_agent_id,
+        )
+        if agent is None:
+            raise HTTPException(status_code=409, detail="agent_inactive")
         await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
         await repositories.ensure_user(conn, tenant_id=principal.tenant_id, user_id=principal.user_id, display_name=principal.display_name)
-        resolved_agent_id = internal_agent_id_for_request(request.agent_id) or request.agent_id
         session_id = await repositories.create_session(
             conn,
             tenant_id=principal.tenant_id,

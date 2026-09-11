@@ -74,6 +74,7 @@ test("composer exposes first-phase command, file, and Thinking affordances", () 
   assert.match(toolbarSource, /agentOptions\?\.enable_thinking/);
   assert.match(chatInputSource, /chat\.fileReferenceChip/);
   assert.match(chatInputSource, /referenceId:\s*attachment\.id/);
+  assert.match(chatInputSource, /data-disable-global-file-drop="true"/);
 });
 
 test("feature menu exposes file and enhancement capabilities without redundant settings", () => {

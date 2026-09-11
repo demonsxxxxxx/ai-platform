@@ -19,7 +19,76 @@ from tools.release_image_manifest import (
     validate_manifest,
 )
 from tools import release_image_manifest
+from tools.release_compose_package import DATA_IMAGES, build_package
 from tools.oci_image_manifest import MAX_OCI_DOCUMENT_BYTES
+
+
+@pytest.mark.parametrize("profile", ["internal-test", "production"])
+def test_compose_package_contains_only_runtime_files_with_fixed_images(tmp_path, profile):
+    import tarfile
+    import yaml
+
+    manifest = _manifest()
+    output = tmp_path / "deployment.tar.gz"
+    data_images = {service: tag.rsplit(":", 1)[0] + "@sha256:" + "d" * 64 for service, tag in DATA_IMAGES.items()}
+    build_package(ROOT, manifest, profile, output, data_images)
+    with tarfile.open(output) as archive:
+        expected = {"compose.yaml", "compose.override.yaml", ".env.example", "release-image-manifest.json", "deploy.py", "README.md"}
+        if profile == "production":
+            expected.add("opensandbox-egress-nginx.conf.template")
+        assert set(archive.getnames()) == expected
+        base = yaml.safe_load(archive.extractfile("compose.yaml").read())
+        # BaseLoader preserves scalars without interpreting Compose's !reset tag.
+        overlay = yaml.load(archive.extractfile("compose.override.yaml").read(), Loader=yaml.BaseLoader)
+        assert base["name"] == "ai-platform-internal"
+        images = {item["role"]: item["image"] for item in manifest["subjects"]}
+        for service in ("api", "worker", "migrate", "workspace-init"):
+            assert base["services"][service]["image"] == images["backend"]["immutable_ref"]
+        assert base["services"]["frontend"]["image"] == images["frontend"]["immutable_ref"]
+        for service, reference in data_images.items():
+            assert base["services"][service]["image"] == reference
+        for service in ("api", "worker"):
+            env = overlay["services"][service]["environment"]
+            assert env["OPENSANDBOX_EXECUTOR_IMAGE"] == images["backend"]["immutable_ref"]
+            assert env["OPENSANDBOX_EXECUTOR_IMAGE_DIGEST"] == images["backend"]["manifest_digest"]
+        assert json.load(archive.extractfile("release-image-manifest.json")) == manifest
+        script = archive.extractfile("deploy.py").read().decode()
+        assert manifest["source_commit"] in script
+        assert "@@SOURCE_COMMIT@@" not in script
+        compile(script, "deploy.py", "exec")
+        env_example = archive.extractfile(".env.example").read().decode()
+        env_keys = {line.partition("=")[0] for line in env_example.splitlines() if "=" in line}
+        assert not env_keys.intersection({
+            "AI_PLATFORM_IMAGE", "AI_PLATFORM_FRONTEND_IMAGE", "AI_PLATFORM_SOURCE_COMMIT",
+            "OPENSANDBOX_EXECUTOR_IMAGE", "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
+            "DEPLOYMENT_ENVIRONMENT", "SANDBOX_CONTAINER_PROVIDER", "SANDBOX_SECURITY_PROFILE",
+            "SANDBOX_EGRESS_POLICY_ENABLED", "OPENSANDBOX_USE_SERVER_PROXY",
+            "OPENSANDBOX_EXPECTED_NETWORK_MODE", "DOCKER_SOCKET_GID",
+            "OPENSANDBOX_ALLOWED_EGRESS_HOSTS", "AI_PLATFORM_BUILD_COMMIT", "AI_PLATFORM_BUILD_DIRTY",
+        })
+        assert {"POSTGRES_PASSWORD", "MODEL_CONNECTION_ENCRYPTION_KEY", "OPENSANDBOX_API_KEY"} <= env_keys
+        expected_profile = "governed" if profile == "production" else "internal-test"
+        for service in ("api", "worker"):
+            env = {**base["services"][service]["environment"], **overlay["services"][service]["environment"]}
+            assert env["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
+            assert env["SANDBOX_SECURITY_PROFILE"] == expected_profile
+            assert env["SANDBOX_EGRESS_POLICY_ENABLED"] == ("true" if profile == "production" else "false")
+            assert env["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
+            assert env["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == ("ai-platform-opensandbox-egress-internal-v1" if profile == "production" else "bridge")
+        assert ("OPENSANDBOX_EGRESS_PROXY_URL" in env_keys) == (profile == "internal-test")
+        source_env = (ROOT / "deploy/ai-platform/.env.example").read_text()
+        for line in env_example.splitlines():
+            if line and not line.startswith("#"):
+                assert line in source_env.splitlines()
+    before = output.read_bytes()
+    with pytest.raises(FileExistsError):
+        build_package(ROOT, manifest, profile, output, data_images)
+    assert output.read_bytes() == before
+    manifest["subjects"][0]["image"]["immutable_ref"] = "untrusted:latest"
+    rejected = tmp_path / "rejected.tar.gz"
+    with pytest.raises(ValueError):
+        build_package(ROOT, manifest, profile, rejected, data_images)
+    assert not rejected.exists()
 
 
 ROOT = Path(__file__).resolve().parents[1]

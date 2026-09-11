@@ -80,6 +80,13 @@ create table agents (
   constraint uq_agents_tenant_id unique (tenant_id, id)
 );
 
+create table runs (
+  id text primary key,
+  tenant_id text not null,
+  agent_id text not null,
+  status text not null
+);
+
 create table agent_profile_revisions (
   tenant_id text not null references tenants(id),
   agent_id text not null,
@@ -105,11 +112,18 @@ create table agent_profile_revisions (
   content_hash text not null,
   avatar_ref text not null
     check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research')),
+  avatar_style_ref text not null default ''
+    check (avatar_style_ref = '' or avatar_style_ref in (
+      'builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research',
+      'builtin:cartoon', 'builtin:emoji', 'builtin:pixel', 'builtin:portrait',
+      'builtin:abstract', 'builtin:planet', 'builtin:clay', 'builtin:icon'
+    )),
   avatar_asset_id text,
   avatar_seed text not null default '',
   category text not null
     check (category in ('general', 'support', 'writing', 'research', 'operations')),
   market_tag text not null default '',
+  market_tags jsonb not null default '[]'::jsonb,
   visibility text not null,
   allowed_department_ids jsonb not null,
   allowed_roles jsonb not null,
@@ -150,8 +164,12 @@ create table agent_profile_favorites (
 
 
 PRE_701_PROFILE_DOWNGRADE_SQL = """
+drop trigger if exists trg_agent_profile_aa_name_only_skill_set_prepare on agent_profile_revisions;
+drop trigger if exists trg_agent_profile_zz_name_only_skill_set_finalize on agent_profile_revisions;
 drop trigger if exists trg_agent_profile_legacy_insert_reconcile on agent_profile_revisions;
 drop trigger if exists trg_agent_profile_legacy_insert_compatibility on agent_profile_revisions;
+drop function if exists agent_profile_name_only_skill_set_prepare();
+drop function if exists agent_profile_name_only_skill_set_finalize();
 drop function if exists agent_profile_legacy_insert_reconcile();
 drop function if exists agent_profile_legacy_insert_compatibility();
 drop table if exists agent_profiles;
@@ -160,8 +178,10 @@ drop index if exists idx_agent_profile_revisions_published_from_draft;
 alter table agent_profile_revisions drop constraint if exists uq_agent_profile_revision_publication;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_status_check;
 alter table agent_profile_revisions drop column if exists revision_status;
+alter table agent_profile_revisions drop column if exists avatar_style_ref;
 alter table agent_profile_revisions drop column if exists avatar_ref;
 alter table agent_profile_revisions drop column if exists category;
+alter table agent_profile_revisions drop column if exists market_tags;
 alter table agent_profile_revisions drop column if exists visibility;
 alter table agent_profile_revisions drop column if exists allowed_department_ids;
 alter table agent_profile_revisions drop column if exists allowed_roles;
@@ -490,6 +510,8 @@ async def test_create_agent_profile_revision_persists_draft_and_publish_in_postg
                 published_by=None,
                 expected_previous_revision=0,
                 published_from_revision=None,
+                avatar_ref="builtin:agent",
+                avatar_style_ref="builtin:planet",
             )
 
         async with conn.transaction():
@@ -517,6 +539,8 @@ async def test_create_agent_profile_revision_persists_draft_and_publish_in_postg
         assert draft["revision"] == 1
         assert draft["status"] == "draft"
         assert draft["mcp_tool_ids"] == ["mcp-draft"]
+        assert draft["avatar_ref"] == "builtin:agent"
+        assert draft["avatar_style_ref"] == "builtin:planet"
         assert draft["content_hash"] == "a" * 64
         assert draft["published_at"] is None
         assert published["revision"] == 2
@@ -527,7 +551,7 @@ async def test_create_agent_profile_revision_persists_draft_and_publish_in_postg
 
         rows_cursor = await conn.execute(
             """
-            select revision, status, mcp_tool_ids, content_hash, created_by,
+            select revision, status, mcp_tool_ids, avatar_ref, avatar_style_ref, content_hash, created_by,
                    published_by, published_at, published_from_revision
             from agent_profile_revisions
             where tenant_id = %s and agent_id = %s
@@ -541,6 +565,8 @@ async def test_create_agent_profile_revision_persists_draft_and_publish_in_postg
                 "revision": 1,
                 "status": "draft",
                 "mcp_tool_ids": ["mcp-draft"],
+                "avatar_ref": "builtin:agent",
+                "avatar_style_ref": "builtin:planet",
                 "content_hash": "a" * 64,
                 "created_by": "creator-a",
                 "published_by": None,
@@ -551,6 +577,8 @@ async def test_create_agent_profile_revision_persists_draft_and_publish_in_postg
                 "revision": 2,
                 "status": "published",
                 "mcp_tool_ids": ["mcp-published"],
+                "avatar_ref": "builtin:agent",
+                "avatar_style_ref": "",
                 "content_hash": "b" * 64,
                 "created_by": "creator-a",
                 "published_by": "publisher-a",
@@ -842,6 +870,95 @@ async def test_postgres_agent_history_projects_only_legacy_default_titles():
                 sql.SQL("drop schema if exists {} cascade").format(
                     sql.Identifier(schema_name)
                 )
+            )
+        finally:
+            await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_name_only_profile_trigger_path_preserves_legacy_defaults():
+    dsn = _postgres_dsn()
+    schema_name = f"agent_profile_skill_names_{uuid.uuid4().hex}"
+    conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    try:
+        await conn.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await _set_search_path(conn, schema_name)
+        await conn.execute(Path("app/schema.sql").read_text(encoding="utf-8"))
+        await conn.execute("insert into tenants(id, name) values (%s, %s)", ("tenant-skill", "Skill tenant"))
+        await conn.execute(
+            "insert into users(id, tenant_id, display_name) values (%s, %s, %s)",
+            ("user-skill", "tenant-skill", "Skill user"),
+        )
+        await conn.execute(
+            "insert into skills(id, name, version, executor_type) values (%s, %s, %s, %s)",
+            ("profile-skill", "Profile skill", "version-a", "claude-agent-worker"),
+        )
+        await conn.execute(
+            """
+            insert into agents(id, tenant_id, name, agent_type, default_skill_id)
+            values (%s, %s, %s, 'profile', %s)
+            """,
+            ("agent-skill", "tenant-skill", "Skill profile", "profile-skill"),
+        )
+        await conn.execute(
+            """
+            insert into agent_profile_revisions(
+              tenant_id, agent_id, revision, status, revision_status, name, instructions,
+              model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
+              avatar_ref, category, visibility, allowed_department_ids, allowed_roles,
+              allowed_user_ids, created_by
+            ) values (
+              %s, %s, 1, 'draft', 'draft', 'Skill profile', 'Private instructions',
+              'platform-selected', %s, '', %s::jsonb, '[]'::jsonb, %s,
+              'builtin:agent', 'general', 'tenant', '[]'::jsonb, '[]'::jsonb,
+              '[]'::jsonb, %s
+            )
+            """,
+            (
+                "tenant-skill",
+                "agent-skill",
+                "profile-skill",
+                '[{"skill_id": "profile-skill"}]',
+                "a" * 64,
+                "user-skill",
+            ),
+        )
+        stored = await conn.execute(
+            """
+            select skill_set, skill_version, legacy_compatibility_write
+            from agent_profile_revisions
+            where tenant_id = %s and agent_id = %s and revision = 1
+            """,
+            ("tenant-skill", "agent-skill"),
+        )
+        assert await stored.fetchone() == {
+            "skill_set": [{"skill_id": "profile-skill"}],
+            "skill_version": "",
+            "legacy_compatibility_write": False,
+        }
+        trigger_rows = await conn.execute(
+            """
+            select triggers.tgname
+            from pg_trigger triggers
+            join pg_class relations on relations.oid = triggers.tgrelid
+            where relations.relname = 'agent_profile_revisions'
+              and triggers.tgname in (
+                'trg_agent_profile_aa_name_only_skill_set_prepare',
+                'trg_agent_profile_legacy_insert_compatibility',
+                'trg_agent_profile_zz_name_only_skill_set_finalize'
+              )
+            order by triggers.tgname
+            """
+        )
+        assert [row["tgname"] for row in await trigger_rows.fetchall()] == [
+            "trg_agent_profile_aa_name_only_skill_set_prepare",
+            "trg_agent_profile_legacy_insert_compatibility",
+            "trg_agent_profile_zz_name_only_skill_set_finalize",
+        ]
+    finally:
+        try:
+            await conn.execute(
+                sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name))
             )
         finally:
             await conn.close()
@@ -1153,7 +1270,7 @@ async def test_postgres_profile_lock_is_held_through_queue_admission(monkeypatch
         async def validate_definition(_self, _conn, *, principal, agent_id, definition):
             assert principal.tenant_id == "tenant-profile"
             assert agent_id == "agt_profile"
-            assert definition.selected_skill.skill_id == "profile-skill"
+            assert definition.selected_skill["skill_id"] == "profile-skill"
             return ({
                 "skill_id": "profile-skill",
                 "skill_version": locked_skill_version,

@@ -3188,8 +3188,8 @@ def test_queue_payload_rejects_missing_executor_type():
                 "user_id": "user_1",
                 "session_id": "ses_1",
                 "run_id": "run_1",
-                "agent_id": "translate",
-                "skill_id": "baoyu-translate",
+                "agent_id": "general-agent",
+                "skill_id": "general-chat",
             }
         )
     except ValidationError as exc:
@@ -3206,8 +3206,8 @@ def test_queue_payload_rejects_missing_user_id():
                 "workspace_id": "default",
                 "session_id": "ses_1",
                 "run_id": "run_1",
-                "agent_id": "translate",
-                "skill_id": "baoyu-translate",
+                "agent_id": "general-agent",
+                "skill_id": "general-chat",
                 "executor_type": "fake",
             }
         )

@@ -159,6 +159,7 @@ def test_real_sandbox_replaces_local_tool_authority_once():
         "head_limit",
         "offset",
         "context",
+        "-n",
     ]
     assert grep_subject["required_parameter_keys"] == ["pattern"]
 

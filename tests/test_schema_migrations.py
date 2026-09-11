@@ -449,11 +449,15 @@ async def test_successor_activation_schema_advances_to_concurrent_due_index_sche
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.01.1"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.EXPERT_MARKET_SCHEMA_VERSION
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.11.1"
+    assert (
+        schema_migrations.TARGET_SCHEMA_VERSION
+        == schema_migrations.OBSOLETE_SKILL_CATALOG_CLEANUP_SCHEMA_VERSION
+    )
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
+        "users",
         "runs",
         "model_gateway_revisions",
         "model_catalog_entries",
@@ -465,6 +469,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "sse_stream_rebuild_items",
         "messages",
         "files",
+        "file_upload_sessions",
         "artifacts",
         "object_deletion_outbox",
         "audit_logs",
@@ -473,6 +478,16 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "mcp_server_credentials",
         "mcp_tools",
     )
+    assert (
+        "users",
+        "metadata_json",
+        "jsonb",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "users",
+        "chk_users_metadata_json_object",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert (
         "sessions",
         "title_source",
@@ -493,8 +508,20 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     ) in schema_migrations.CRITICAL_COLUMNS
     assert (
         "agent_profile_revisions",
+        "avatar_style_ref",
+        "text",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "agent_profile_revisions",
         "market_tag",
         "text",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "agent_profile_revisions",
+        "market_tags",
+        "jsonb",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
     assert (
@@ -634,6 +661,14 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "chk_files_lifecycle_state",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert (
+        "artifacts",
+        "chk_artifacts_lifecycle_state",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "artifacts",
+        "chk_artifacts_run_owner",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
         "object_deletion_outbox",
         "chk_object_deletion_outbox_target",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
@@ -685,6 +720,12 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert all(item[4].endswith("end ") for item in trigger_contract)
     assert all("\n" in item[4] for item in trigger_contract)
     assert schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS == (
+        (
+            "users",
+            "chk_users_metadata_json_object",
+            "c",
+            "CHECK ((jsonb_typeof(metadata_json) = 'object'::text))",
+        ),
         (
             "mcp_servers",
             "mcp_servers_endpoint_not_persisted",
@@ -927,6 +968,26 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "'active'::text, 'delete_pending'::text, 'deleted'::text]))",
         ),
         (
+            "artifacts",
+            "chk_artifacts_lifecycle_state",
+            "c",
+            "CHECK (lifecycle_state = ANY (ARRAY["
+            "'active'::text, 'delete_pending'::text, 'deleted'::text]))",
+        ),
+        (
+            "artifacts",
+            "chk_artifacts_run_owner",
+            "c",
+            "CHECK (run_id IS NOT NULL AND lifecycle_state = 'active'::text OR "
+            "run_id IS NULL AND lifecycle_state = 'delete_pending'::text "
+            "AND manifest_json @> '{\"provisional_reconciliation_cleanup\": true}'::jsonb "
+            "AND NULLIF(manifest_json ->> 'expected_run_id'::text, ''::text) IS NOT NULL OR "
+            "run_id IS NULL AND (lifecycle_state = ANY (ARRAY["
+            "'delete_pending'::text, 'deleted'::text])) "
+            "AND manifest_json @> '{\"retention_artifact_cleanup\": true}'::jsonb "
+            "AND NULLIF(manifest_json ->> 'deletion_owner_run_id'::text, ''::text) IS NOT NULL)",
+        ),
+        (
             "object_deletion_outbox",
             "chk_object_deletion_outbox_state",
             "c",
@@ -1065,11 +1126,22 @@ def test_every_critical_run_attempt_constraint_has_an_exact_definition():
     assert defined == critical
 
 
+def test_profile_avatar_style_keeps_legacy_avatar_ref_rollback_compatible():
+    schema = " ".join(schema_migrations.schema_sql().split()).lower()
+
+    assert (
+        "alter table agent_profile_revisions add column if not exists "
+        "avatar_style_ref text not null default ''"
+    ) in schema
+    assert "check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research'))" in schema
+    assert "avatar_style_ref = '' or avatar_style_ref in" in schema
+
+
 def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
     assert schema_migrations.schema_checksum() == (
-        "7deb225fe43a0e36d9cd7c84722b401a578d8d7ce57a6da7e4c945d84c64cbaf"
+        "479e2169ffd2a319940be0d9eb2bb794497d7640cdf3fa46f36d3bce80fe6fb2"
     )
     assert (
         "alter table agent_profile_revisions add column if not exists "
