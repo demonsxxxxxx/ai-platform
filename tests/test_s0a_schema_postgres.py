@@ -565,6 +565,9 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
 ):
     """Exercise cleanup, recovery, and terminalization against the real schema."""
 
+    from app.bootstrap.run_attempt_lifecycle import (
+        build_run_attempt_lifecycle_service,
+    )
     from app.executor_reconciler import reconcile_pending_executor_terminals_once
     from app.platform.postgres import sandbox_leases as sandbox_lease_repository
     from app.routes.sandbox_runtime_cleanup import (
@@ -781,7 +784,13 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
             ignore_terminal_publish,
         )
 
-        assert await reconcile_pending_executor_terminals_once(worker_id="worker-a") == 1
+        assert (
+            await reconcile_pending_executor_terminals_once(
+                worker_id="worker-a",
+                attempt_lifecycle=build_run_attempt_lifecycle_service(),
+            )
+            == 1
+        )
         run = await (
             await conn.execute(
                 "select status, error_code, result_json from runs where id = 'run-a'"

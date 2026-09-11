@@ -11,7 +11,8 @@ from app.main import create_app
 from app.queue import QueueAdmissionMetadata
 from app.repositories import RepositoryAuthorizationError, RepositoryConflictError
 from app.routes import sandbox_runtime_cleanup
-from app.runs.api import RunTerminalizationProgress
+from app.runs.api import RunAttemptLifecycleService, RunTerminalizationProgress
+from app.runs.infrastructure import postgres as run_attempt_persistence
 from app.runs.application.cancellation import RunCancellationUseCase
 from app.runs.infrastructure.postgres import PostgresRunCancellationPersistence
 from app.skills.pinning import build_skill_manifest_ref
@@ -71,6 +72,9 @@ async def _request_owner_cancel(conn, *, tenant_id, user_id, run_id):
     use_case = RunCancellationUseCase(
         transaction_factory=transaction_factory,
         persistence=PostgresRunCancellationPersistence(
+            attempt_lifecycle=RunAttemptLifecycleService(
+                persistence=run_attempt_persistence
+            ),
             append_event=repository_module.append_event,
             append_audit_log=repository_module.append_audit_log,
             list_active_sandbox_leases=repository_module.list_active_sandbox_leases_for_run,
@@ -94,6 +98,9 @@ async def _request_admin_cancel(conn, *, tenant_id, admin_user_id, run_id):
     use_case = RunCancellationUseCase(
         transaction_factory=transaction_factory,
         persistence=PostgresRunCancellationPersistence(
+            attempt_lifecycle=RunAttemptLifecycleService(
+                persistence=run_attempt_persistence
+            ),
             append_event=repository_module.append_event,
             append_audit_log=repository_module.append_audit_log,
             list_active_sandbox_leases=repository_module.list_active_sandbox_leases_for_run,

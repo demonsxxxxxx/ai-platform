@@ -78,6 +78,7 @@ async def test_drain_propagates_typed_partial_then_final_and_stops(monkeypatch):
         run_id="run-a",
         transaction_factory=tx,
         capabilities=SimpleNamespace(event_persistence=TerminalEventPersistence()),
+        attempt_lifecycle=SimpleNamespace(),
     )
     assert result.completed is True and result.did_transition is True and result.needs_reconcile is True
     assert results == []
@@ -90,7 +91,13 @@ async def test_post_commit_reconcile_is_noop_unless_final_transition(monkeypatch
         yield object()
 
     partial = RunTerminalizationProgress(False, "failed")
-    assert await reconcile_terminalized_permission_run(tenant_id="tenant-a", run_id="run-a", progress=partial, transaction_factory=tx) is None
+    assert await reconcile_terminalized_permission_run(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        progress=partial,
+        transaction_factory=tx,
+        attempt_lifecycle=SimpleNamespace(),
+    ) is None
 
 
 @pytest.mark.asyncio
@@ -124,20 +131,22 @@ async def test_post_commit_reconcile_loads_durable_child_and_rolls_up_once(monke
 
     monkeypatch.setattr(repositories, "get_run", get_run)
     monkeypatch.setattr(repositories, "reconcile_multi_agent_child_run_terminal_state", reconcile)
-    monkeypatch.setattr(
-        "app.tool_permission_lifecycle.terminalize_latest_run_attempt",
-        terminalize_latest,
-    )
+    attempt_lifecycle = SimpleNamespace(terminalize_latest=terminalize_latest)
     final = RunTerminalizationProgress(True, "cancelled", True, True)
 
     result = await reconcile_terminalized_permission_run(
-        tenant_id="tenant-a", run_id="child-a", progress=final, transaction_factory=tx
+        tenant_id="tenant-a",
+        run_id="child-a",
+        progress=final,
+        transaction_factory=tx,
+        attempt_lifecycle=attempt_lifecycle,
     )
     retry = await reconcile_terminalized_permission_run(
         tenant_id="tenant-a",
         run_id="child-a",
         progress=RunTerminalizationProgress(True, "cancelled"),
         transaction_factory=tx,
+        attempt_lifecycle=attempt_lifecycle,
     )
 
     assert result == {"parent_run_id": "parent-a", "status": "cancelled"}

@@ -462,32 +462,20 @@ async def fail_run_and_reconcile_worker_child(
     error_code: str,
     error_message: str,
     capabilities: Any,
-    fail_run: AsyncPort,
     reconcile_child: AsyncPort,
-    attempt_lifecycle: WorkerAttemptLifecycle | None = None,
+    attempt_lifecycle: WorkerAttemptLifecycle,
     result_json: dict[str, Any] | None = None,
     is_multi_agent_child: bool | None = None,
 ) -> tuple[bool, Any | None]:
     """Fail one Run and project a child terminal fact when this is a child."""
 
-    if attempt_lifecycle is not None:
-        terminal_written = await attempt_lifecycle.fail(
-            conn,
-            capabilities=capabilities,
-            error_code=error_code,
-            error_message=error_message,
-            result_json=result_json,
-        )
-    else:
-        terminal_written = await fail_run(
-            conn,
-            capabilities=capabilities,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            error_code=error_code,
-            error_message=error_message,
-            result_json=result_json,
-        )
+    terminal_written = await attempt_lifecycle.fail(
+        conn,
+        capabilities=capabilities,
+        error_code=error_code,
+        error_message=error_message,
+        result_json=result_json,
+    )
     if not terminal_written:
         return False, None
     if tenant_id == payload.tenant_id and run_id == payload.run_id:

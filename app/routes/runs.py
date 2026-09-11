@@ -1706,6 +1706,7 @@ async def cancel_run(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlResponse:
     runtime = request.app.state.run_stream_runtime
+    attempt_lifecycle = request.app.state.run_attempt_lifecycle
     cancellation = await _require_run_cancellation_use_case(request).request_owner_cancel(
         tenant_id=principal.tenant_id,
         owner_user_id=principal.user_id,
@@ -1736,12 +1737,14 @@ async def cancel_run(
                 run_id=run_id,
                 progress=initial_progress,
                 transaction_factory=transaction,
+                attempt_lifecycle=attempt_lifecycle,
             )
         progress = await drain_run_tool_permission_terminalization(
             tenant_id=principal.tenant_id,
             run_id=run_id,
             capabilities=runtime.worker_capabilities,
             transaction_factory=transaction,
+            attempt_lifecycle=attempt_lifecycle,
             attempt_id=cancellation.attempt_id if cancellation is not None else None,
         )
         if progress is not None and progress.is_terminal():
@@ -1756,6 +1759,7 @@ async def cancel_run(
             run_id=run_id,
             progress=progress,
             transaction_factory=transaction,
+            attempt_lifecycle=attempt_lifecycle,
         )
     if cancellation is not None and cancellation.attempt_id:
         try:

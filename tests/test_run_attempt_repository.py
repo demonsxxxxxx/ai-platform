@@ -5,6 +5,7 @@ import pytest
 
 import app.runs.infrastructure.postgres as run_attempt_repository
 from app.platform.postgres.errors import RepositoryConflictError
+from app.runs.api import RunAttemptLifecycleService
 from app.runs.domain.attempt_lifecycle import RunAttemptTransitionError
 from app.runs.domain.execution_spec import (
     EXECUTION_SPEC_SCHEMA_VERSION,
@@ -607,12 +608,13 @@ async def test_owner_cancel_does_not_transfer_attempt_execution_owner(monkeypatc
                 }
             )
 
-    async def get_latest(*_args, **_kwargs):
-        return {"id": "rat-a", "status": "running"}
+    class AttemptPersistence:
+        async def get_latest_run_attempt(self, *_args, **_kwargs):
+            return {"id": "rat-a", "status": "running"}
 
-    async def request_cancel(*_args, **kwargs):
-        cancel_calls.append(kwargs)
-        return {"id": kwargs["attempt_id"], "status": "cancel_requested"}
+        async def request_run_attempt_cancel(self, *_args, **kwargs):
+            cancel_calls.append(kwargs)
+            return {"id": kwargs["attempt_id"], "status": "cancel_requested"}
 
     async def stage(*_args, **_kwargs):
         return None
@@ -626,18 +628,15 @@ async def test_owner_cancel_does_not_transfer_attempt_execution_owner(monkeypatc
     async def list_leases(*_args, **_kwargs):
         return []
 
-    monkeypatch.setattr(run_attempt_repository, "get_latest_run_attempt", get_latest)
-    monkeypatch.setattr(
-        run_attempt_repository,
-        "request_run_attempt_cancel",
-        request_cancel,
-    )
     monkeypatch.setattr(
         run_attempt_repository,
         "_stage_run_tool_permission_terminalization",
         stage,
     )
     persistence = run_attempt_repository.PostgresRunCancellationPersistence(
+        attempt_lifecycle=RunAttemptLifecycleService(
+            persistence=AttemptPersistence()
+        ),
         append_event=append_event,
         append_audit_log=append_audit,
         list_active_sandbox_leases=list_leases,
