@@ -40,13 +40,17 @@ remain excluded. Authentication, tenant/workspace/session authorization, Tool
 admission and browser rendering safety are unchanged by this content policy.
 
 Live delivery, committed history and terminal hydration use the same content
-policy. Full Assistant messages reconcile their own streamed fragments by source
-identity. A distinct final answer must not be discarded because it is not a
-prefix extension of earlier narration. Repeated delivery of the same source
-must not duplicate content; equal text from distinct sources is not a duplicate.
-The hydrated fold includes the accepted narration and final answer, not only the
-last successful fragment. Missing or ambiguous source evidence is reported, not
-silently converted to an empty answer.
+policy. The frontend adapter maps metadata-only `message.completed` to a public
+activity rather than a final text chunk, and builds Assistant text from accepted
+`message.delta` frames. Full Assistant messages reconcile their own streamed
+fragments by stable source identity. A distinct final answer must not be
+discarded because it is not a prefix extension of earlier narration; absent or
+ambiguous source identity fails closed instead. Repeated delivery of the same
+source must not duplicate content; equal text from distinct sources is not a
+duplicate. Terminal hydrate reconciles the same Run segment, preserving
+intervening narration, Tool/process parts, artifacts, Todo state, permission
+requests, and other actionable statuses. The hydrated fold includes accepted
+narration and final answer, not only the last successful fragment.
 
 ## Queue-to-processing presentation
 
@@ -65,8 +69,26 @@ does not determine the Run's execution state.
 ## Terminal and content facts
 
 Run outcome, transport end and final-content synchronization are distinct.
-Keep accepted safe partial text while a terminal status is displayed. Final
-hydration replaces the provisional fold; it does not append the answer again.
+Keep accepted safe partial text while a terminal status is displayed. Terminal
+hydrate reconciles the same Run segment rather than appending a second answer or
+replacing unrelated sources. For a streamed Sandbox answer, the terminal carries
+only a versioned `AssistantAnswerReceipt`; the Worker accepts only current-Attempt,
+strictly ordered v4 rows whose database and canonical metadata publication states
+are both `published`. `pending` remains retryable, while inconsistent or
+`suppressed` publication fails closed. Receipt, identity, sequence, count, or
+length mismatch also fails closed. For streamed answers, short compatibility
+content remains inline only when message/result persistence limits permit;
+otherwise history stores a bounded `run_events_v4` reference. Legacy
+non-streaming bounded terminal messages use the same stable-source
+`assistant_delta` compatibility shape only when no streamed answer exists;
+obsolete `assistant_final` is retired.
+
+Public execution process parts stay expanded while the Run is active. On
+terminal convergence the renderer folds completed public execution steps into
+one collapsed process summary, optionally showing elapsed time only from
+trusted bounded timestamps; the user can manually reopen it. Final text,
+narration, artifacts, failures, cancellation, permission requests, and Todo
+state remain visible outside that presentation fold.
 
 `result_unavailable` is backend-confirmed absence of a displayable terminal
 answer. `terminal_result_unavailable` is a frontend condition where a known

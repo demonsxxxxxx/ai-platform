@@ -152,7 +152,6 @@ _SDK_TURN_LIMIT_EXCEEDED = "claude_agent_sdk_turn_limit_exceeded"
 _SDK_CANCELLED = "claude_agent_sdk_cancelled"
 _SDK_TIMEOUT = "claude_agent_sdk_timeout"
 _SDK_MISSING_STRUCTURED_TERMINAL = "claude_agent_sdk_missing_structured_terminal"
-_MAX_REQUIRED_ANSWER_TEXT_CHARS = 262_144
 _MAX_PUBLIC_DELTA_CHARS = 8_192
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
@@ -207,6 +206,7 @@ def _sdk_run_timeout_seconds(
 class ClaudeAgentSdkRunResult:
     used_sdk: bool
     message: str = ""
+    answer_receipt: dict[str, Any] | None = None
     session_id: str | None = None
     usage: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
@@ -1465,7 +1465,6 @@ async def run_claude_agent_sdk(
     answer_stream_gate = PublicAnswerStreamGate(
         private_replacements=private_replacements,
         sanitizer=sanitize_public_answer_text,
-        max_sealed_chars=_MAX_REQUIRED_ANSWER_TEXT_CHARS,
     )
 
     def replacement_for_private_token(token: str) -> str:
@@ -2350,7 +2349,7 @@ async def run_claude_agent_sdk(
     terminal_result_message: object | None = None
     received_structured_terminal = False
     stream_projector = (
-        ClaudeStreamProjector(sanitizer=lambda value: value)
+        ClaudeStreamProjector()
         if sandbox_partial_streaming
         else None
     )
@@ -2656,33 +2655,27 @@ async def run_claude_agent_sdk(
             release=True,
         )
         if not answer_stream_gate.failed and isinstance(terminal_result_message, ResultMessage):
-            terminal_candidates: list[Any] = []
+            terminal_text_acknowledged = True
             for public_text in finished_answer.chunks:
-                for offset in range(0, len(public_text), _MAX_PUBLIC_DELTA_CHARS):
-                    terminal_candidates.extend(
-                        agent_event_adapter.accept_answer_text(
-                            public_text[offset : offset + _MAX_PUBLIC_DELTA_CHARS],
-                            already_gated=True,
-                        )
-                        if agent_event_adapter is not None
-                        else ()
-                    )
-            if agent_event_adapter is not None:
-                terminal_candidates.extend(
+                if not await publish_terminal_text(public_text):
+                    terminal_text_acknowledged = False
+                    terminal_error = "agent_event_callback_not_acknowledged"
+                    break
+            if terminal_text_acknowledged and agent_event_adapter is not None:
+                if not await publish_agent_candidates(
                     agent_event_adapter.accept_result(
                         terminal_result_message,
                         final_content=finished_answer.final_text,
                     )
-                )
-                if not await publish_agent_candidates(tuple(terminal_candidates)):
+                ):
                     terminal_error = "agent_event_callback_not_acknowledged"
-            if on_text is not None:
-                for public_text in finished_answer.chunks:
-                    callback_result = on_text(public_text)
-                    if isawaitable(callback_result):
-                        await callback_result
         if terminal_error is not None:
             seal_agent_candidates(terminal_error)
+        answer_receipt = (
+            agent_event_adapter.answer_receipt
+            if terminal_error is None and sandbox_brokered and agent_event_adapter is not None
+            else None
+        )
         public_structured_result_text = (
             ""
             if terminal_error == "agent_event_callback_not_acknowledged"
@@ -2690,7 +2683,8 @@ async def run_claude_agent_sdk(
         )
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
-            message=public_structured_result_text,
+            message="" if answer_receipt is not None else public_structured_result_text,
+            answer_receipt=answer_receipt,
             session_id=result_session_id,
             usage=usage,
             error=terminal_error,

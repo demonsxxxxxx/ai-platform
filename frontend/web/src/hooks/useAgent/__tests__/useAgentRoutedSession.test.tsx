@@ -3866,7 +3866,7 @@ test("useAgent retains final answer and artifact frames that precede a succeeded
         timestamp: "2026-08-21T00:00:01Z",
         data: {
           projection_version: "ai-platform.chat-public-projection.v1",
-          projection_kind: "assistant_final",
+          projection_kind: "assistant_delta",
           event_id: "run-final-success:answer",
           sequence: 2,
           run_id: "run-final-success",
@@ -4674,7 +4674,7 @@ test("useAgent releases the active state for succeeded and cancelled terminals",
               timestamp: "2026-08-21T00:00:01Z",
               data: {
                 projection_version: "ai-platform.chat-public-projection.v1",
-                projection_kind: "assistant_final",
+                projection_kind: "assistant_delta",
                 event_id: `${terminal.runId}:answer`,
                 run_id: terminal.runId,
                 content: "终态任务已完成",
@@ -6243,7 +6243,6 @@ test("useAgent presents a safe local card when terminal history hydration fails"
           part.event_id ===
             "terminal-result-unavailable:run-terminal-hydrate-failure",
       );
-    assert.equal(eventQueries, 2);
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.isLoading, false);
     assert.equal(cards.length, 1);

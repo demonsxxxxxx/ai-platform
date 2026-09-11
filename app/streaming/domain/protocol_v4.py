@@ -71,7 +71,8 @@ class MessageDeltaEventV4Payload(TypedDict):
 
 
 class MessageCompletedEventV4Payload(TypedDict):
-    content: str
+    delta_count: int
+    text_length: int
 
 
 class ThinkingStartedEventV4Payload(TypedDict):

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import threading
 import time
 import zipfile
@@ -841,6 +842,128 @@ def test_executor_rejects_invalid_thinking_effort():
 
     with pytest.raises(ValueError, match="thinking_effort_invalid"):
         ExecutorTaskRequest.model_validate(raw)
+
+
+@pytest.mark.asyncio
+async def test_sandbox_terminal_only_answer_batches_executor_callback_events(
+    monkeypatch,
+    tmp_path,
+):
+    answer = ("0123456789abcdef" * ((101 * 8_192 + 15) // 16))[: 101 * 8_192]
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class HookMatcher:
+        def __init__(self, *, matcher, hooks):
+            self.matcher = matcher
+            self.hooks = hooks
+
+    class AssistantMessage:
+        pass
+
+    class StreamEvent:
+        pass
+
+    class TextBlock:
+        pass
+
+    class ThinkingBlock:
+        pass
+
+    class ResultMessage:
+        session_id = "sdk-session-a"
+        usage = {}
+        model_usage = None
+        result = answer
+        is_error = False
+        errors = None
+        stop_reason = "end_turn"
+        terminal_reason = None
+        subtype = "success"
+        num_turns = 1
+        duration_ms = 1
+        permission_denials = None
+
+    async def query(*, prompt, options):
+        del prompt, options
+        yield ResultMessage()
+
+    fake_sdk = SimpleNamespace(
+        AssistantMessage=AssistantMessage,
+        ClaudeAgentOptions=ClaudeAgentOptions,
+        HookMatcher=HookMatcher,
+        ResultMessage=ResultMessage,
+        StreamEvent=StreamEvent,
+        TextBlock=TextBlock,
+        ThinkingBlock=ThinkingBlock,
+        query=query,
+    )
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+    settings = SimpleNamespace(
+        claude_agent_sdk_enabled=True,
+        claude_agent_sdk_max_turns=4,
+        claude_agent_sdk_timeout_seconds=10,
+        claude_agent_sdk_skills="",
+        claude_agent_permission_mode="dontAsk",
+        claude_agent_allowed_tools="",
+        claude_agent_disallowed_tools="",
+        claude_agent_model="model-a",
+        anthropic_model="",
+        anthropic_base_url="",
+        anthropic_auth_token="",
+        openai_api_key="",
+    )
+    monkeypatch.setattr(executor_app, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        lambda: settings,
+    )
+
+    request = ExecutorTaskRequest.model_validate(task_payload())
+    emitted = []
+
+    async def emit_event(event):
+        emitted.append(event)
+        return True
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    callbacks = [
+        event for event in emitted if isinstance(event, ExecutorCallbackEvent)
+    ]
+    assert result["status"] == "completed"
+    assert result["message"] == ""
+    assert len(callbacks) > 1
+    assert all(len(callback.events) <= 100 for callback in callbacks)
+
+    events = [event for callback in callbacks for event in callback.events]
+    deltas = [event for event in events if event.type == "message.delta"]
+    assert len(deltas) == 101
+    assert "".join(event.payload["delta"] for event in deltas) == answer
+    assert sum(len(event.payload["delta"]) for event in deltas) == len(answer)
+    assert all(len(event.payload["delta"]) <= 8_192 for event in deltas)
+    assert len({event.message_id for event in events}) == 1
+
+    final_events = callbacks[-1].events
+    assert [event.type for event in final_events] == [
+        "message.completed",
+        "model.completed",
+    ]
+    completion = final_events[0]
+    assert completion.payload == {
+        "delta_count": len(deltas),
+        "text_length": len(answer),
+    }
+    assert completion.causation_event_id == deltas[-1].event_id
+    assert result["answer_receipt"] == {
+        "schema_version": "ai-platform.assistant-answer-receipt.v1",
+        "message_id": deltas[0].message_id,
+        "delta_count": len(deltas),
+        "text_length": len(answer),
+        "last_delta_event_id": deltas[-1].event_id,
+    }
 
 
 @pytest.mark.asyncio

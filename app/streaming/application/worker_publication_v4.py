@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import timedelta
@@ -34,6 +34,23 @@ class V4StreamAuthorityLookup(Protocol):
     async def get(self, *, tenant_id: str, run_id: str) -> V4StreamAuthority | None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class ReconstructedAssistantAnswer:
+    """Complete public answer reconstructed from durable v4 deltas."""
+
+    text: str
+
+
+class AssistantAnswerReceiptError(ValueError):
+    """A terminal answer receipt cannot be reconciled with durable v4 rows."""
+
+    code = "assistant_answer_receipt_invalid"
+
+    def __init__(self, *, retryable: bool = False) -> None:
+        self.retryable = retryable
+        super().__init__(self.code)
+
+
 class WorkerEventPersistence(Protocol):
     async def append_terminal_row(
         self,
@@ -55,6 +72,16 @@ class WorkerEventPersistence(Protocol):
         authority: Any,
         execution_lease_id: str,
     ) -> tuple[Any, ...]: ...
+
+    async def load_answer_by_receipt(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_id: str,
+        attempt_id: str,
+        receipt: Mapping[str, object],
+    ) -> ReconstructedAssistantAnswer: ...
 
     async def persist_event_and_check_cancel(
         self,
@@ -273,20 +300,25 @@ async def publish_pending_run_terminal(
     )
     if authority is None:
         return False
-    try:
-        return bool(
-            await publish_pending_v4_events(
+    published = 0
+    while True:
+        try:
+            batch_published = await publish_pending_v4_events(
                 capabilities,
                 tenant_id=tenant_id,
                 run_id=run_id,
                 attempt_id=authority.attempt_id,
             )
-        )
-    except V4PublicationTransportUnavailable:
-        return False
+        except V4PublicationTransportUnavailable:
+            return bool(published)
+        published += batch_published
+        if batch_published == 0:
+            return bool(published)
 
 
 __all__ = [
+    "AssistantAnswerReceiptError",
+    "ReconstructedAssistantAnswer",
     "V4PendingAdmission",
     "V4PendingAdmissionPort",
     "V4StreamAuthority",

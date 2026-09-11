@@ -91,7 +91,7 @@ _MESSAGE_EVENT_TYPES = {
 _REQUIRED_PAYLOAD_KEYS: dict[str, frozenset[str]] = {
     "message.started": frozenset(),
     "message.delta": frozenset({"delta"}),
-    "message.completed": frozenset({"content"}),
+    "message.completed": frozenset({"delta_count", "text_length"}),
     "thinking.started": frozenset(),
     "thinking.delta": frozenset({"thinking_id", "delta"}),
     "thinking.completed": frozenset(),
@@ -325,7 +325,7 @@ _AGENT_PROGRESS_MESSAGES = {
 _PAYLOAD_FIELDS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "message.started": (frozenset(), frozenset()),
     "message.delta": (frozenset({"delta"}), frozenset({"delta"})),
-    "message.completed": (frozenset({"content"}), frozenset({"content"})),
+    "message.completed": (frozenset({"delta_count", "text_length"}), frozenset({"delta_count", "text_length"})),
     "thinking.started": (
         frozenset(),
         frozenset({"thinking_id", "public_summary"}),
@@ -762,8 +762,8 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
                 maximum=MAX_PUBLIC_THINKING_DELTA_CODEPOINTS,
                 minimum=1,
             )
-        elif key == "content":
-            _bounded_string(value, name=key, maximum=262144)
+        elif key in {"delta_count", "text_length"}:
+            _positive_int(value, name=key)
         elif key == "public_summary":
             expected_summary = {
                 "thinking.started": "Analyzing the request",

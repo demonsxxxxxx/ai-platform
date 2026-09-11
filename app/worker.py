@@ -1,4 +1,5 @@
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from functools import partial as _partial
@@ -92,6 +93,11 @@ from app.required_tool_contract import (
 )
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+from app.persistence_limits import (
+    MESSAGE_CONTENT_MAX_BYTES,
+    RUN_RESULT_MAX_BYTES,
+    json_size_bytes,
+)
 from app.runtime.sandbox.executor_client import (
     SandboxExecutorHttpError,
     canonical_executor_reported_failure_code,
@@ -100,11 +106,13 @@ from app.runtime.sandbox.executor_client import (
 )
 from app.settings import get_settings
 from app.streaming.api import (
+    AssistantAnswerReceiptError,
     WorkerV4Capabilities,
     admit_v4_stream,
     finalize_parent_and_publish,
     persist_and_publish_worker_event,
     publish_pending_run_terminal,
+    publish_pending_v4_events,
 )
 from app.streaming.worker_projection import persist_worker_failure_event
 from app.skills.api import restore_admitted_skill_manifest_authority
@@ -456,6 +464,43 @@ async def append_user_event(
         message=message,
         payload=merged,
         **event_kwargs,
+    )
+
+
+_ANSWER_BODY_REFERENCE = "The complete assistant response is available in the run history."
+
+
+def _bounded_answer_persistence(
+    result_payload: Mapping[str, Any],
+    *,
+    message: str,
+    answer_receipt: Mapping[str, Any],
+) -> tuple[dict[str, Any], str, dict[str, Any]]:
+    """Keep inline compatibility while making v4 deltas the long-answer authority."""
+
+    receipt_json = dict(answer_receipt)
+    metadata = {
+        "answer_receipt": receipt_json,
+        "answer_body_source": "run_events_v4",
+    }
+    full_result_payload = {
+        **result_payload,
+        "message": message,
+        "answer_receipt": receipt_json,
+    }
+    if len(message.encode("utf-8")) <= MESSAGE_CONTENT_MAX_BYTES and json_size_bytes(
+        full_result_payload
+    ) <= RUN_RESULT_MAX_BYTES:
+        return full_result_payload, message, metadata
+    return (
+        {
+            **result_payload,
+            "message": _ANSWER_BODY_REFERENCE,
+            "answer_receipt": receipt_json,
+            "answer_body_source": "run_events_v4",
+        },
+        message if len(message.encode("utf-8")) <= MESSAGE_CONTENT_MAX_BYTES else _ANSWER_BODY_REFERENCE,
+        metadata,
     )
 
 
@@ -2783,6 +2828,17 @@ async def process_run_payload(
         result_payload["skills"] = skill_snapshot
     if agent_capability_state is not None:
         result_payload["capability_state"] = agent_capability_state.public_projection()
+    assistant_message_for_persistence: str | None = None
+    assistant_message_metadata: dict[str, Any] = {}
+    answer_receipt = result.executor_payload.get("answer_receipt")
+    if result.status == "succeeded" and answer_receipt is not None:
+        while await publish_pending_v4_events(
+            v4_capabilities,
+            tenant_id=payload.tenant_id,
+            run_id=payload.run_id,
+            attempt_id=attempt_id,
+        ):
+            pass
     reconciled_parent = None
     try:
         async with transaction_factory() as conn:
@@ -2848,6 +2904,54 @@ async def process_run_payload(
                     "error_code": error_code,
                     "artifacts": [],
                 }
+            answer_receipt = result.executor_payload.get("answer_receipt")
+            if result.status == "succeeded" and answer_receipt is not None:
+                try:
+                    reconstructed = await v4_capabilities.event_persistence.load_answer_by_receipt(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        attempt_id=attempt_id,
+                        receipt=answer_receipt,
+                    )
+                except AssistantAnswerReceiptError as exc:
+                    if exc.retryable:
+                        raise
+                    error_code = AssistantAnswerReceiptError.code
+                    error_message = "The assistant response could not be verified."
+                    result = replace(
+                        result,
+                        status="failed",
+                        artifacts=[],
+                        result={
+                            **result.result,
+                            "message": error_message,
+                            "error_code": error_code,
+                        },
+                    )
+                    artifact_records = []
+                    assistant_message_for_persistence = None
+                    assistant_message_metadata = {}
+                    result_payload = {
+                        **result_payload,
+                        "message": error_message,
+                        "error_code": error_code,
+                        "artifacts": [],
+                    }
+                else:
+                    reconstructed_message = _append_artifact_links(
+                        reconstructed.text,
+                        artifact_records,
+                    )
+                    (
+                        result_payload,
+                        assistant_message_for_persistence,
+                        assistant_message_metadata,
+                    ) = _bounded_answer_persistence(
+                        result_payload,
+                        message=reconstructed_message,
+                        answer_receipt=answer_receipt,
+                    )
             cancel_requested = await repositories.is_cancel_requested(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
             if result.status == "succeeded" and cancel_requested:
                 result_payload = {
@@ -2992,11 +3096,16 @@ async def process_run_payload(
                     session_id=payload.session_id,
                     run_id=payload.run_id,
                     role="assistant",
-                    content=str(result_payload.get("message") or ""),
+                    content=(
+                        assistant_message_for_persistence
+                        if assistant_message_for_persistence is not None
+                        else str(result_payload.get("message") or "")
+                    ),
                     metadata_json={
                         "artifact_count": len(result.artifacts),
                         "executor_type": result.executor_type,
                         "adapter_version": result.adapter_version,
+                        **assistant_message_metadata,
                         **(
                             {"capability_state": agent_capability_state.public_projection()}
                             if agent_capability_state is not None

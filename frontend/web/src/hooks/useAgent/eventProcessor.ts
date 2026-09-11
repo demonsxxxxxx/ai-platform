@@ -28,6 +28,7 @@ import {
   projectPublicThinkingActivity,
   upsertPublicExecutionStep,
   upsertPublicThinkingActivity,
+  validPublicExecutionTimestamp,
 } from "./publicStreamPresentation";
 import {
   publicTerminalPresentation,
@@ -142,14 +143,9 @@ function stableTextLogicalId(
   messageId: string | undefined,
   depth: number,
   agentId: string | undefined,
-  segmentOrdinal: number,
 ): string {
   const owner = data.message_id || messageId || "assistant";
-  return `${owner}:text:${segmentOrdinal}:${depth}:${agentId || "root"}`;
-}
-
-function rootTextSegmentCount(parts: MessagePart[]): number {
-  return parts.filter((part) => part.type === "text" && !part.depth).length;
+  return `${owner}:text:0:${depth}:${agentId || "root"}`;
 }
 
 export function normalizeMessageTextLogicalIds(
@@ -330,79 +326,26 @@ export function processMessageEvent(
       const chunkContent = data.content || "";
       if (!chunkContent) break;
 
-      if (
-        assistantProjection &&
-        data.projection_kind === "assistant_final"
-      ) {
-        if (depth > 0) break;
-        result.parts = replaceAssistantTextWithFinal(
-          parts,
-          chunkContent,
-          stableTextLogicalId(
-            data,
-            messageId,
-            depth,
-            agentId,
-            rootTextSegmentCount(parts),
-          ),
-        );
-        result.content = chunkContent;
-        break;
-      }
-
-      if (depth > 0) {
-        const textPart = {
-          type: "text" as const,
-          content: chunkContent,
-          logical_id: stableTextLogicalId(
-            data,
-            messageId,
-            depth,
-            agentId,
-            0,
-          ),
-          depth,
-          agent_id: agentId,
-        };
-        result.parts = addPartToDepth(
-          parts,
-          textPart,
-          depth,
-          subagentStack,
-          agentId,
+      const textPart = {
+        type: "text" as const,
+        content: chunkContent,
+        logical_id: stableTextLogicalId(
+          data,
           messageId,
-        );
-      } else {
-        const newParts = [...parts];
-        const lastPart = newParts[newParts.length - 1];
-        if (lastPart?.type === "text" && !lastPart.depth) {
-          newParts[newParts.length - 1] = {
-            ...lastPart,
-            content: lastPart.content + chunkContent,
-            logical_id:
-              lastPart.logical_id ||
-              stableTextLogicalId(
-                data,
-                messageId,
-                depth,
-                agentId,
-                Math.max(0, rootTextSegmentCount(parts) - 1),
-              ),
-          };
-        } else {
-          newParts.push({
-            type: "text" as const,
-            content: chunkContent,
-            logical_id: stableTextLogicalId(
-              data,
-              messageId,
-              depth,
-              agentId,
-              rootTextSegmentCount(parts),
-            ),
-          });
-        }
-        result.parts = newParts;
+          depth,
+          agentId,
+        ),
+        ...(depth > 0 ? { depth, agent_id: agentId } : {}),
+      };
+      result.parts = addPartToDepth(
+        parts,
+        textPart,
+        depth,
+        subagentStack,
+        agentId,
+        messageId,
+      );
+      if (depth === 0) {
         result.content = content + chunkContent;
       }
       break;
@@ -1074,6 +1017,11 @@ function createExecutionTimelinePart(
   if (!publicEvent) {
     return null;
   }
+  const timestamp =
+    validPublicExecutionTimestamp(publicEvent.created_at) ||
+    validPublicExecutionTimestamp(data.timestamp);
+  const isTerminal =
+    publicEvent.status === "completed" || publicEvent.status === "failed";
   return {
     type: "execution_step",
     sequence: publicEvent.sequence,
@@ -1091,6 +1039,8 @@ function createExecutionTimelinePart(
     safe_file_name: safePublicExecutionFileName(
       publicEvent.safe_file_name ?? null,
     ),
+    ...(timestamp ? { started_at: timestamp } : {}),
+    ...(isTerminal && timestamp ? { completed_at: timestamp } : {}),
   };
 }
 
@@ -1197,37 +1147,6 @@ function shouldProjectRunStatus(data: EventData): boolean {
     data.projection_version === CHAT_PUBLIC_PROJECTION_VERSION &&
     CHAT_PUBLIC_STATUS_EVENT_TYPES.has(eventType)
   );
-}
-
-function replaceAssistantTextWithFinal(
-  parts: MessagePart[],
-  content: string,
-  logicalId?: string,
-): MessagePart[] {
-  let replacedText = false;
-  const converged = parts.flatMap((part): MessagePart[] => {
-    if (
-      part.type === "run_status" &&
-      part.severity === "info" &&
-      CHAT_PUBLIC_PROGRESS_EVENT_TYPES.has(part.event_type)
-    ) {
-      return [];
-    }
-    if (part.type !== "text" || part.depth) {
-      return [part];
-    }
-    if (replacedText) {
-      return [];
-    }
-    replacedText = true;
-    return [{ ...part, content }];
-  });
-  return replacedText
-    ? converged
-    : [
-        ...converged,
-        { type: "text", content, logical_id: logicalId },
-      ];
 }
 
 /** Replace an existing platform artifact card by artifact id. */

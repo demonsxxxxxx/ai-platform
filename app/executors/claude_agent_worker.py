@@ -1603,6 +1603,7 @@ class ClaudeAgentWorkerAdapter:
             "sdk_session_id": executor_response.get("sdk_session_id"),
             "sdk_usage": executor_response.get("sdk_usage", {}) or {},
             "runtime_terminal_status": runtime_status,
+            "answer_receipt": executor_response.get("answer_receipt"),
             "delegate_used": False,
             "worker_boundary": self.executor_type,
             "allowed_skills": prepared.allowed_skill_names,

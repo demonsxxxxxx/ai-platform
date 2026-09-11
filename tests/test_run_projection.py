@@ -468,7 +468,11 @@ def test_public_chat_terminal_projection_owns_versioned_terminal_payloads():
         "event_type": "message:chunk",
         "payload": {
             "projection_version": "ai-platform.chat-public-projection.v1",
-            "projection_kind": "assistant_final",
+            "projection_kind": "assistant_delta",
+            "event_id": "run-a:final",
+            "message_id": "run-a:assistant",
+            "run_id": "run-a",
+            "source": "worker_answer_delta_v1",
             "content": "当前（general-agent），没有 Bash 工具，无法执行。",
         },
         "message": "当前（general-agent），没有 Bash 工具，无法执行。",
@@ -809,9 +813,16 @@ def test_live_delta_and_terminal_final_converge_to_same_public_text():
     final = public_chat_terminal_projection(
         {**run, "result_json": {"message": full_answer}}
     )
-    assert final is not None
     assert final["event_type"] == "message:chunk"
-    assert final["payload"]["projection_kind"] == "assistant_final"
+    assert final["payload"] == {
+        "projection_version": "ai-platform.chat-public-projection.v1",
+        "projection_kind": "assistant_delta",
+        "event_id": "run-a:final",
+        "message_id": "run-a:assistant",
+        "run_id": "run-a",
+        "source": "worker_answer_delta_v1",
+        "content": "general-agent 已处理该文档，document-review 审核通过。",
+    }
 
     assembled = (
         public_chat_answer_text(run, delta_fragment)

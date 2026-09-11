@@ -33,6 +33,8 @@ from app.streaming.application.live_fanout import (
     RunStreamHub,
 )
 from app.streaming.application.worker_publication_v4 import (
+    AssistantAnswerReceiptError,
+    ReconstructedAssistantAnswer,
     WorkerV4Capabilities,
     admit_v4_stream,
     append_callback_v4_rows,
@@ -120,6 +122,8 @@ __all__ = [
     "V4SuccessorRebuildReceipt",
     "V4SuccessorRebuildTransport",
     "V4SuccessorRebuilds",
+    "AssistantAnswerReceiptError",
+    "ReconstructedAssistantAnswer",
     "WorkerV4Capabilities",
     "activate_v4_successor_rebuild",
     "admit_v4_stream",
