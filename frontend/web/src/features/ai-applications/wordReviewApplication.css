@@ -594,9 +594,15 @@
   display: flex;
   align-items: center;
   gap: 5px;
+  padding: 0;
+  border: 0;
   color: #19766e;
+  background: transparent;
+  font: inherit;
   font-size: 11px;
+  text-align: left;
   text-decoration: underline;
+  cursor: pointer;
 }
 
 .history-tools {

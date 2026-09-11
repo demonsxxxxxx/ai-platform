@@ -77,6 +77,71 @@ const categoryTones = [
 const allEntries = launchpadGroups.flatMap((group) => group.entries);
 const entryIds = new Set(allEntries.map((entry) => entry.id));
 const entriesById = new Map(allEntries.map((entry) => [entry.id, entry]));
+const DOCUMENT_TRANSLATOR_ENTRY_ID = "AI:Word文档翻译";
+const DOCUMENT_TRANSLATOR_ORIGIN = "http://10.56.0.210:8000";
+const DOCUMENT_TRANSLATOR_HANDOFF_TIMEOUT_MS = 10_000;
+const DOCUMENT_TRANSLATOR_NONCE = /^[A-Za-z0-9-]{16,128}$/;
+
+function openDocumentTranslator(href: string): void {
+  let destination: URL;
+  try {
+    destination = new URL(href);
+  } catch {
+    toast.error("文档翻译地址无效，请联系管理员。");
+    return;
+  }
+  if (destination.origin !== DOCUMENT_TRANSLATOR_ORIGIN) {
+    toast.error("文档翻译地址不受信任，请联系管理员。");
+    return;
+  }
+
+  let childWindow: Window | null = null;
+  let readyAccepted = false;
+  const cleanup = () => {
+    window.removeEventListener("message", handleMessage);
+    window.clearTimeout(timeoutId);
+  };
+  const fail = () => {
+    cleanup();
+    childWindow?.close();
+    toast.error("文档翻译登录交接失败，请重新登录后重试。");
+  };
+  const handleMessage = (event: MessageEvent) => {
+    if (event.origin !== DOCUMENT_TRANSLATOR_ORIGIN || event.source !== childWindow) return;
+    const data = event.data;
+    if (
+      readyAccepted ||
+      !data ||
+      typeof data !== "object" ||
+      Array.isArray(data) ||
+      (data as { type?: unknown }).type !== "doctrans:ready"
+    ) {
+      return;
+    }
+    const nonce = (data as { nonce?: unknown }).nonce;
+    if (typeof nonce !== "string" || !DOCUMENT_TRANSLATOR_NONCE.test(nonce)) return;
+    readyAccepted = true;
+    cleanup();
+
+    void authApi
+      .getCompanyCredentialForHandoff(
+        AbortSignal.timeout(DOCUMENT_TRANSLATOR_HANDOFF_TIMEOUT_MS),
+      )
+      .then((credential) => {
+        if (!childWindow || childWindow.closed) throw new Error("document_translator_closed");
+        childWindow.postMessage(
+          { type: "doctrans:auth", nonce, token: credential },
+          DOCUMENT_TRANSLATOR_ORIGIN,
+        );
+      })
+      .catch(fail);
+  };
+
+  window.addEventListener("message", handleMessage);
+  const timeoutId = window.setTimeout(fail, DOCUMENT_TRANSLATOR_HANDOFF_TIMEOUT_MS);
+  childWindow = window.open(destination.href, "_blank");
+  if (!childWindow) fail();
+}
 
 interface DirectorySectionProps {
   id: string;
@@ -132,6 +197,8 @@ function DirectorySection({
           const isFeaturedPlatform = entry.id === "内网登录:灵犀平台";
           const destination = resolveLaunchpadDestination(entry);
           const unavailable = destination.kind === "unavailable";
+          const requiresDocumentTranslatorHandoff =
+            entry.id === DOCUMENT_TRANSLATOR_ENTRY_ID;
           const EntryIcon =
             entry.name === "Word文档翻译"
               ? Languages
@@ -189,7 +256,7 @@ function DirectorySection({
               data-launchpad-entry
               className="group flex min-h-[68px] min-w-0 items-center overflow-hidden rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] transition-[border-color,box-shadow] hover:border-[var(--section-tone)] hover:shadow-sm"
             >
-              {destination.kind === "url" ? (
+              {destination.kind === "url" && !requiresDocumentTranslatorHandoff ? (
                 <a
                   href={destination.href}
                   target="_blank"
@@ -354,7 +421,16 @@ export function LaunchpadPanel() {
 
   const openEntry = (entry: LaunchpadEntry) => {
     const destination = resolveLaunchpadDestination(entry);
-    if (destination.kind === "internal") navigate(destination.path);
+    if (destination.kind === "internal") {
+      navigate(destination.path);
+      return;
+    }
+    if (
+      entry.id === DOCUMENT_TRANSLATOR_ENTRY_ID &&
+      destination.kind === "url"
+    ) {
+      openDocumentTranslator(destination.href);
+    }
   };
 
   const favoritesDisabled =
