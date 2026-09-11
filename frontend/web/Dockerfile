@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.10
+
 ARG AI_PLATFORM_BUILD_COMMIT=unknown
 ARG AI_PLATFORM_BUILD_DIRTY=unknown
 ARG AI_PLATFORM_BUILD_REPOSITORY=unknown
@@ -27,7 +29,9 @@ COPY frontend/web/scripts ./frontend/web/scripts
 COPY frontend/web/src ./frontend/web/src
 
 WORKDIR /workspace/frontend/web
-RUN corepack pnpm run build
+RUN --mount=type=secret,id=VITE_RAGFLOW_SOP_SHARE_URL \
+      VITE_RAGFLOW_SOP_SHARE_URL="$(cat /run/secrets/VITE_RAGFLOW_SOP_SHARE_URL 2>/dev/null || true)" \
+      corepack pnpm run build
 
 FROM nginx:1.30.4-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c AS runtime
 
