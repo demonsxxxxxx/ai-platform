@@ -568,6 +568,7 @@ def build_sdk_env(*, cwd: Path | None = None) -> dict[str, str]:
         if value:
             env[key] = value
     if cwd is not None:
+        env["AI_PLATFORM_WORK_DIR"] = str(cwd)
         home = cwd / ".home"
         env["HOME"] = str(home)
         env["USERPROFILE"] = str(home)
