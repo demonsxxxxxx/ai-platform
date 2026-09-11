@@ -3022,6 +3022,7 @@ def test_authority_rejects_reused_bridge_alias_within_one_source(
         "app.identity.infrastructure.postgres",
         "app.platform.postgres.errors",
         "app.runs.infrastructure.postgres",
+        "app.skills.infrastructure.legacy_workbench",
         "app.skills.infrastructure.postgres",
     }
     bridges[1]["module_alias"] = bridges[0]["module_alias"]
@@ -3052,6 +3053,7 @@ def test_authority_rejects_reused_bridge_symbol_within_one_source(
         "app.identity.infrastructure.postgres",
         "app.platform.postgres.errors",
         "app.runs.infrastructure.postgres",
+        "app.skills.infrastructure.legacy_workbench",
         "app.skills.infrastructure.postgres",
     }
     duplicate_symbol = bridges[0]["symbols"][0]
