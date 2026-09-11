@@ -304,11 +304,11 @@ async def test_real_postgres_upgrade_installs_run_attempt_heartbeat_monotonicity
 
 
 @pytest.mark.asyncio
-async def test_real_postgres_candidate_preserves_exact_base_schema_readiness(
+async def test_real_postgres_candidate_hard_cuts_exact_base_agent_profile_contract(
     tmp_path: Path,
 ):
     dsn = _postgres_dsn()
-    schema_name = f"schema_exact_base_compatibility_{uuid.uuid4().hex}"
+    schema_name = f"schema_agent_profile_hard_cut_{uuid.uuid4().hex}"
     exact_base = _load_exact_base_schema_migrations(tmp_path)
     admin = await psycopg.AsyncConnection.connect(
         dsn,
@@ -335,8 +335,9 @@ async def test_real_postgres_candidate_preserves_exact_base_schema_readiness(
         async with factory() as conn:
             assert (await schema_migrations.schema_status(conn))["ready"] is True
             exact_base_status = await exact_base.schema_status(conn)
-        assert exact_base_status["ready"] is True
-        assert exact_base_status["triggers_current"] is True
+        assert exact_base_status["ready"] is False
+        assert exact_base_status["columns_current"] is False
+        assert exact_base_status["triggers_current"] is False
         assert exact_base_status["index_ledger_current"] is True
         ledger_versions = await (
             await admin.execute(

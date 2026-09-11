@@ -2206,7 +2206,6 @@ async def test_get_session_recovers_safe_agent_conversation_identity(monkeypatch
         "published_at": None,
         "avatar_ref": "builtin:assistant",
         "avatar_seed": "agt_support",
-        "category": "support",
     }
 
 

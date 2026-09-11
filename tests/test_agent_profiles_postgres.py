@@ -192,7 +192,6 @@ async def test_canonical_profile_lifecycle_persists_and_queries_exact_publicatio
             tenant_id="tenant-a",
             agent_id="agt_support",
             revision=1,
-            expected_previous_revision=0,
         )
         assert draft["revision"] == 1
         assert await profile_repository.get_current_published_agent_profile(

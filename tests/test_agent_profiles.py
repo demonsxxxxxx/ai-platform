@@ -20,9 +20,7 @@ from app.agent_apps.api import (
 from app.agent_apps.application.skill_set_pinning import pin_agent_skill_set
 from app.auth import AuthPrincipal
 from app.models import (
-    AgentConversationIdentity,
     AgentProfileAdminProjection,
-    AgentProfilePublicProjection,
     AgentProfileDraftRequest,
     ChatSessionResponse,
     ChatStreamRequest,
