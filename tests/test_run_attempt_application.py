@@ -32,6 +32,78 @@ class AttemptPersistenceStub:
 
 
 @pytest.mark.asyncio
+async def test_two_lifecycle_instances_keep_their_persistence_dependencies_isolated():
+    first_persistence = AttemptPersistenceStub({"id": "rat-a", "status": "running"})
+    second_persistence = AttemptPersistenceStub({"id": "rat-b", "status": "running"})
+    first_service = RunAttemptLifecycleService(persistence=first_persistence)
+    second_service = RunAttemptLifecycleService(persistence=second_persistence)
+    first_connection = object()
+    second_connection = object()
+
+    first = await first_service.get_latest(
+        first_connection,
+        tenant_id="tenant-a",
+        run_id="run-a",
+    )
+    second = await second_service.get_latest(
+        second_connection,
+        tenant_id="tenant-b",
+        run_id="run-b",
+    )
+    await first_service.request_cancel(
+        first_connection,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="rat-a",
+    )
+    await second_service.terminalize(
+        second_connection,
+        tenant_id="tenant-b",
+        run_id="run-b",
+        attempt_id="rat-b",
+        status="succeeded",
+        terminal_reason="completed",
+    )
+
+    assert first == {"id": "rat-a", "status": "running"}
+    assert second == {"id": "rat-b", "status": "running"}
+    assert first_persistence.calls == [
+        (
+            "get_latest",
+            first_connection,
+            {"tenant_id": "tenant-a", "run_id": "run-a"},
+        ),
+        (
+            "request_cancel",
+            first_connection,
+            {
+                "tenant_id": "tenant-a",
+                "run_id": "run-a",
+                "attempt_id": "rat-a",
+            },
+        ),
+    ]
+    assert second_persistence.calls == [
+        (
+            "get_latest",
+            second_connection,
+            {"tenant_id": "tenant-b", "run_id": "run-b"},
+        ),
+        (
+            "terminalize",
+            second_connection,
+            {
+                "tenant_id": "tenant-b",
+                "run_id": "run-b",
+                "attempt_id": "rat-b",
+                "status": "succeeded",
+                "terminal_reason": "completed",
+            },
+        ),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_terminalize_latest_run_attempt_projects_failed_run_authority():
     persistence = AttemptPersistenceStub(
         {"id": "rat-a", "status": "running"}

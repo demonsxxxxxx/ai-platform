@@ -130,7 +130,7 @@ def chat_submission_client(monkeypatch):
     )
     monkeypatch.setattr(
         "app.main.build_run_cancellation_use_case",
-        object,
+        lambda **_kwargs: object(),
     )
     with TestClient(create_app(), raise_server_exceptions=False) as client:
         yield client

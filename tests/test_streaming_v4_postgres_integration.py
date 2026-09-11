@@ -17,6 +17,7 @@ from redis.asyncio import Redis
 
 from app import repositories, schema_migrations
 from app.bootstrap import run_lifecycle
+from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
 from app.run_admission_terminalization import terminalize_enqueue_failure_with_v4
 from app.runs.infrastructure.postgres import load_current_terminal_event_fact
 from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
@@ -140,7 +141,9 @@ def _production_cancellation_use_case(conn):
         patch.object(run_lifecycle, "transaction", transaction_factory),
         patch.object(run_lifecycle, "get_settings", return_value=settings),
     ):
-        return run_lifecycle.build_run_cancellation_use_case()
+        return run_lifecycle.build_run_cancellation_use_case(
+            attempt_lifecycle=build_run_attempt_lifecycle_service()
+        )
 
 
 async def _clear_seeded_stream_authority_for_cancellation(
