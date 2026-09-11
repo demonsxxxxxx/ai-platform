@@ -2595,13 +2595,3 @@ async def reclaim_expired_leases(
         return {"reclaimed": reclaimed, "dead_lettered": dead_lettered}
     finally:
         await redis.aclose()
-
-
-async def dequeue_run(timeout_seconds: int = 5) -> dict[str, Any] | None:
-    message = await lease_run(timeout_seconds=timeout_seconds)
-    if message is None:
-        return None
-    outcome = await ack_run(message.raw, message_id=message.message_id)
-    if not outcome.succeeded:
-        raise RuntimeError("queue lease acknowledgment was rejected")
-    return message.payload

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -15,6 +17,14 @@ REDIS_ID_PATTERN = re.compile(r"^(0|[1-9][0-9]*)-(0|[1-9][0-9]*)$")
 
 class StreamContractError(ValueError):
     pass
+
+
+def tenant_scope(tenant_id: str, *, secret: str) -> str:
+    if not tenant_id or not secret:
+        raise StreamContractError("stream_tenant_scope_authority_missing")
+    return hmac.new(secret.encode(), tenant_id.encode(), hashlib.sha256).hexdigest()[
+        :32
+    ]
 
 
 class LiveEnvelope(Protocol):

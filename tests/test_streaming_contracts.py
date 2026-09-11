@@ -11,7 +11,7 @@ from app.streaming import api as streaming_api
 from app.streaming.domain import transport as domain_transport
 
 
-def test_redis_module_reexports_wire_contracts_without_duplicate_types() -> None:
+def test_contract_ownership_and_transport_compatibility_exports() -> None:
     assert domain_transport.StreamCursor is streaming_api.StreamCursor
     assert streaming_api.StreamCursor is contracts.StreamCursor
     assert redis_transport.StreamCursor is contracts.StreamCursor
@@ -26,10 +26,8 @@ def test_redis_module_reexports_wire_contracts_without_duplicate_types() -> None
     assert streaming_api.canonical_json_bytes is contracts.canonical_json_bytes
     assert redis_transport.canonical_json_bytes is contracts.canonical_json_bytes
     assert domain_transport.STREAM_GAP_SCHEMA == contracts.STREAM_GAP_SCHEMA
-    assert (
-        redis_transport.committed_public_stream_event
-        is contracts.committed_public_stream_event
-    )
+    assert callable(contracts.committed_public_stream_event)
+    assert not hasattr(redis_transport, "committed_public_stream_event")
 
 
 def test_domain_transport_preserves_cursor_gap_and_canonical_json_contracts() -> None:
