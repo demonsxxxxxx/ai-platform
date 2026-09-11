@@ -508,25 +508,13 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     ) in schema_migrations.CRITICAL_COLUMNS
     assert (
         "agent_profile_revisions",
-        "avatar_style_ref",
-        "text",
-        True,
-    ) in schema_migrations.CRITICAL_COLUMNS
-    assert (
-        "agent_profile_revisions",
-        "market_tag",
+        "avatar_ref",
         "text",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
     assert (
         "agent_profile_revisions",
         "market_tags",
-        "jsonb",
-        True,
-    ) in schema_migrations.CRITICAL_COLUMNS
-    assert (
-        "agent_profile_revisions",
-        "supported_file_types",
         "jsonb",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
@@ -700,18 +688,6 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "trg_run_attempt_transition_guard",
             "ai_platform_guard_run_attempt_transition",
             23,
-        ),
-        (
-            "agent_profile_revisions",
-            "trg_agent_profile_legacy_insert_compatibility",
-            "agent_profile_legacy_insert_compatibility",
-            7,
-        ),
-        (
-            "agent_profile_revisions",
-            "trg_agent_profile_legacy_insert_reconcile",
-            "agent_profile_legacy_insert_reconcile",
-            5,
         ),
     )
     trigger_contract = schema_migrations._critical_trigger_contract()
@@ -1126,30 +1102,30 @@ def test_every_critical_run_attempt_constraint_has_an_exact_definition():
     assert defined == critical
 
 
-def test_profile_avatar_style_keeps_legacy_avatar_ref_rollback_compatible():
+def test_agent_profile_schema_hard_cuts_retired_storage_and_triggers():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
-    assert (
-        "alter table agent_profile_revisions add column if not exists "
-        "avatar_style_ref text not null default ''"
-    ) in schema
-    assert "check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research'))" in schema
-    assert "avatar_style_ref = '' or avatar_style_ref in" in schema
-
-
-def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
-    schema = " ".join(schema_migrations.schema_sql().split()).lower()
-
-    assert schema_migrations.schema_checksum() == (
-        "479e2169ffd2a319940be0d9eb2bb794497d7640cdf3fa46f36d3bce80fe6fb2"
-    )
-    assert (
-        "alter table agent_profile_revisions add column if not exists "
-        "supported_file_types jsonb not null default '[]'::jsonb"
-    ) in schema
-    assert "rename column supported_file_types" not in schema
-    assert "drop column supported_file_types" not in schema
-    assert "legacy_supported_file_types" not in schema
+    assert len(schema_migrations.schema_checksum()) == 64
+    for column in (
+        "welcome_message",
+        "capability_summary",
+        "recommended_tasks",
+        "supported_input_types",
+        "supported_file_types",
+        "expected_outputs",
+        "permissions_and_data_access_notice",
+        "model_id",
+        "skill_id",
+        "skill_version",
+        "avatar_style_ref",
+        "avatar_asset_id",
+        "category",
+        "market_tag",
+        "legacy_compatibility_write",
+    ):
+        assert f"drop column if exists {column}" in schema
+    assert "create trigger trg_agent_profile_legacy_insert_compatibility" not in schema
+    assert "create trigger trg_agent_profile_legacy_insert_reconcile" not in schema
 
 
 def test_v4_publication_schema_is_additive_and_index_is_concurrent_only():

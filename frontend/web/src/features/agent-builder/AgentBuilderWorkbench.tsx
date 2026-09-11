@@ -184,11 +184,7 @@ export function AgentBuilderWorkbench({
   const marketTagSuggestions = useMemo(
     () => [...new Set(
       workbench.profiles
-        .flatMap((profile) => profile.market_tags?.length
-          ? profile.market_tags
-          : profile.market_tag
-            ? [profile.market_tag]
-            : [])
+        .flatMap((profile) => profile.market_tags)
         .map((tag) => tag.trim())
         .filter(Boolean),
     )].sort((left, right) => left.localeCompare(right, "zh-CN")),

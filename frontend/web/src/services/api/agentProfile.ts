@@ -9,7 +9,6 @@ import {
   projectAgentProfilePublicProjection,
   validateAgentProfileAdminProjection,
   type AgentConversationSessionProjection,
-  type AgentProfileCategory,
   type SelectedAgentProfileRequest,
 } from "../../types/agentProfile";
 import { API_BASE } from "./config";
@@ -21,7 +20,6 @@ export interface AgentProfileCatalogResponse {
 
 export interface AgentProfileCatalogQuery {
   query?: string;
-  category?: AgentProfileCategory;
 }
 
 export interface AgentConversationPage {
@@ -47,7 +45,6 @@ export function buildAgentProfileCatalogUrl(query: AgentProfileCatalogQuery = {}
   const searchParams = new URLSearchParams();
   const normalizedQuery = query.query?.trim();
   if (normalizedQuery) searchParams.set("query", normalizedQuery);
-  if (query.category) searchParams.set("category", query.category);
   const search = searchParams.toString();
   return `${API_BASE}/api/ai/agent-profiles${search ? `?${search}` : ""}`;
 }

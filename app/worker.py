@@ -14,7 +14,7 @@ from app.bootstrap.worker_attempt_lifecycle import (
 from app.agent_apps.capability_state import (
     bind_validated_controlled_skill_evidence, exact_invoked_skills, project_agent_capability_state,
 )
-from app.agent_profiles import reauthorize_bound_profile_for_worker_dispatch
+from app.agent_apps.api import reauthorize_bound_profile_for_worker_dispatch
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.capabilities import required_artifact_types_for_skill
 from app.capability_distribution import (

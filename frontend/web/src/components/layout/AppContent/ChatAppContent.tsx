@@ -62,10 +62,9 @@ import { openPersistentToolPanel } from "../../chat/ChatMessage/items/persistent
 import { agentProfileApi } from "../../../services/api/agentProfile";
 import { sessionApi } from "../../../services/api/session";
 import { uuid } from "../../../utils/uuid";
-import {
-  AGENT_PROFILE_CATEGORY_LABELS,
-  type AgentConversationIdentity,
-  type AgentProfilePublicProjection,
+import type {
+  AgentConversationIdentity,
+  AgentProfilePublicProjection,
 } from "../../../types/agentProfile";
 import {
   buildAgentMarketDetailPath,
@@ -355,12 +354,7 @@ export function AgentConversationIdentityBanner({
           size="sm"
         />
         <span className="min-w-0 flex-1">
-          <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-            <strong className="text-sm font-semibold sm:text-base">{identity.name}</strong>
-            <span className="text-xs text-[var(--theme-text-secondary)]">
-              {AGENT_PROFILE_CATEGORY_LABELS[identity.category]}
-            </span>
-          </span>
+          <strong className="text-sm font-semibold sm:text-base">{identity.name}</strong>
           {identity.description ? (
             <span className="mt-1 block line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)] sm:text-sm">
               {identity.description}

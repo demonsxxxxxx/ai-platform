@@ -528,7 +528,7 @@ ledger. It names the target owner for future bounded migrations.
 | --- | --- |
 | `app/main.py`, global settings and resource construction | `bootstrap.api`, `bootstrap.settings`, and `platform` clients |
 | `app/auth.py`, `app/auth_sessions.py`, role governance | `identity` |
-| `app/agent_apps/**`, `app/agent_profiles.py`, Agent Profile routes | `agent_apps`; old import/route surfaces become explicit `compat` only when needed |
+| `app/agent_apps/**`, Agent Profile routes | `agent_apps` |
 | `app/skills/**`, Skill marketplace/distribution/release code | `skills` |
 | Chat/session routes, `app/agent_conversation_repository.py`, message/session persistence | `conversations` |
 | Run routes, retry/resume/copy/cancel, tool-permission and run lifecycle persistence | `runs` |

@@ -20,6 +20,7 @@ from app.files.api import (
     is_direct_file_upload_session,
     retry_expired_file_upload_session,
 )
+from app.bootstrap.agent_profiles import configure_agent_profile_runtime
 from app.bootstrap.files import configure_file_upload_services
 from app.bootstrap.mcp import configure_mcp_runtime
 from app.bootstrap.model_services import configure_model_services
@@ -996,6 +997,7 @@ async def run_once(
     attempt_lifecycle: RunAttemptLifecycleService,
 ) -> WorkerOutcome:
     configure_mcp_runtime()
+    configure_agent_profile_runtime()
     resolved_worker_id = worker_id or default_worker_id()
     settings = get_settings()
     if run_initial_maintenance:
