@@ -396,47 +396,25 @@ create table if not exists agent_profile_revisions (
   tenant_id text not null references tenants(id),
   agent_id text not null,
   revision bigint not null check (revision > 0),
-  -- ``status`` is the pre-#701 rollback visibility mirror and deliberately
-  -- retains that binary's draft|published enum. Current code uses immutable
-  -- ``revision_status`` and never derives lifecycle from this field.
-  status text not null check (status in ('draft', 'published')),
   revision_status text not null check (revision_status in ('draft', 'published', 'withdrawn')),
   name text not null,
   description text not null default '',
-  welcome_message text not null default '',
   starter_prompts jsonb not null default '[]'::jsonb,
-  capability_summary text not null default '',
-  recommended_tasks jsonb not null default '[]'::jsonb,
-  supported_input_types jsonb not null default '["text"]'::jsonb,
-  supported_file_types jsonb not null default '[]'::jsonb,
-  expected_outputs jsonb not null default '[]'::jsonb,
-  permissions_and_data_access_notice text not null default '',
   instructions text not null,
-  model_id text not null,
-  skill_id text not null references skills(id),
-  skill_version text not null,
-  skill_set jsonb not null default '[]'::jsonb,
+  skill_set jsonb not null,
   mcp_tool_ids jsonb not null default '[]'::jsonb,
   content_hash text not null,
-  avatar_ref text not null
-    check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research')),
-  avatar_style_ref text not null default ''
-    check (avatar_style_ref = '' or avatar_style_ref in (
-      'builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research',
-      'builtin:cartoon', 'builtin:emoji', 'builtin:pixel', 'builtin:portrait',
-      'builtin:abstract', 'builtin:planet', 'builtin:clay', 'builtin:icon'
-    )),
-  avatar_asset_id text,
-  avatar_seed text not null default '',
-  category text not null
-    check (category in ('general', 'support', 'writing', 'research', 'operations')),
-  market_tag text not null default '',
+  avatar_ref text not null check (avatar_ref in (
+    'builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research',
+    'builtin:cartoon', 'builtin:emoji', 'builtin:pixel', 'builtin:portrait',
+    'builtin:abstract', 'builtin:planet', 'builtin:clay', 'builtin:icon'
+  )),
+  avatar_seed text not null,
   market_tags jsonb not null default '[]'::jsonb,
   visibility text not null,
   allowed_department_ids jsonb not null,
   allowed_roles jsonb not null,
   allowed_user_ids jsonb not null,
-  legacy_compatibility_write boolean not null default false,
   created_by text references users(id),
   created_at timestamptz not null default now(),
   published_by text references users(id),
@@ -462,7 +440,6 @@ create table if not exists agent_profiles (
   latest_revision bigint not null check (latest_revision > 0),
   published_revision bigint,
   published_hash text,
-  published_status text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint fk_agent_profiles_tenant_agent
@@ -474,13 +451,11 @@ create table if not exists agent_profiles (
         lifecycle_status = 'published'
         and published_revision is not null
         and published_hash is not null
-        and published_status = 'published'
       )
       or (
         lifecycle_status <> 'published'
         and published_revision is null
         and published_hash is null
-        and published_status is null
       )
     )
 );
@@ -942,36 +917,16 @@ alter table runs add column if not exists model_value text;
 alter table runs add column if not exists model_gateway_revision bigint;
 alter table agent_profile_revisions add column if not exists published_from_revision bigint;
 alter table agent_profile_revisions add column if not exists withdrawn_from_revision bigint;
-alter table agent_profile_revisions add column if not exists revision_status text;
-alter table agent_profile_revisions add column if not exists avatar_ref text;
-alter table agent_profile_revisions add column if not exists avatar_style_ref text not null default '';
-alter table agent_profile_revisions add column if not exists avatar_asset_id text;
-alter table agent_profile_revisions add column if not exists avatar_seed text not null default '';
-alter table agent_profile_revisions add column if not exists skill_set jsonb not null default '[]'::jsonb;
-alter table agent_profile_revisions add column if not exists category text;
-alter table agent_profile_revisions add column if not exists market_tag text not null default '';
-alter table agent_profile_revisions add column if not exists market_tags jsonb not null default '[]'::jsonb;
-update agent_profile_revisions
-set market_tags = jsonb_build_array(btrim(market_tag))
-where btrim(market_tag) <> ''
-  and (
-    jsonb_typeof(market_tags) <> 'array'
-    or jsonb_array_length(market_tags) = 0
-  );
-alter table agent_profile_revisions add column if not exists visibility text;
-alter table agent_profile_revisions add column if not exists allowed_department_ids jsonb;
-alter table agent_profile_revisions add column if not exists allowed_roles jsonb;
-alter table agent_profile_revisions add column if not exists allowed_user_ids jsonb;
-alter table agent_profile_revisions add column if not exists welcome_message text not null default '';
+alter table agent_profile_revisions add column if not exists revision_status text not null default 'withdrawn';
 alter table agent_profile_revisions add column if not exists starter_prompts jsonb not null default '[]'::jsonb;
-alter table agent_profile_revisions add column if not exists capability_summary text not null default '';
-alter table agent_profile_revisions add column if not exists recommended_tasks jsonb not null default '[]'::jsonb;
-alter table agent_profile_revisions add column if not exists supported_input_types jsonb not null default '["text"]'::jsonb;
-alter table agent_profile_revisions add column if not exists supported_file_types jsonb not null default '[]'::jsonb;
-alter table agent_profile_revisions add column if not exists expected_outputs jsonb not null default '[]'::jsonb;
-alter table agent_profile_revisions add column if not exists permissions_and_data_access_notice text not null default '';
-alter table agent_profile_revisions add column if not exists legacy_compatibility_write boolean not null default false;
-alter table agent_profiles add column if not exists published_status text;
+alter table agent_profile_revisions add column if not exists skill_set jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists avatar_ref text not null default 'builtin:agent';
+alter table agent_profile_revisions add column if not exists avatar_seed text not null default '';
+alter table agent_profile_revisions add column if not exists market_tags jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists visibility text not null default 'restricted';
+alter table agent_profile_revisions add column if not exists allowed_department_ids jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists allowed_roles jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists allowed_user_ids jsonb not null default '[]'::jsonb;
 
 alter table agent_profiles drop constraint if exists fk_agent_profiles_published_revision;
 alter table agent_profiles drop constraint if exists fk_agent_profiles_current_publication;
@@ -982,732 +937,36 @@ alter table agent_profiles drop constraint if exists chk_agent_profiles_lifecycl
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_status_check;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_revision_status_check;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_avatar_ref_check;
-alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_avatar_style_ref_check;
-alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_category_check;
 alter table agent_profile_revisions drop constraint if exists chk_agent_profile_revisions_visibility;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_visibility_check;
 alter table agent_profile_revisions drop constraint if exists uq_agent_profile_revision_publication;
 
--- A NULL canonical status identifies a row created before #701. Preserve its
--- old tenant-visible behavior before repairing any explicit malformed value.
-update agent_profile_revisions
-set legacy_compatibility_write = true
-where revision_status is null and visibility is null;
-
-update agent_profile_revisions
-set revision_status = case
-  when status in ('draft', 'published', 'withdrawn') then status
-  else 'withdrawn'
-end
-where revision_status is null
-   or revision_status not in ('draft', 'published', 'withdrawn');
-
-update agent_profile_revisions
-set status = 'draft'
-where status is null or status not in ('draft', 'published');
-
-update agent_profile_revisions
-set visibility = 'tenant'
-where visibility is null;
-
-update agent_profile_revisions
-set visibility = 'restricted'
-where visibility is not null and visibility not in ('tenant', 'restricted');
-
-update agent_profile_revisions
-set avatar_ref = 'builtin:agent'
-where avatar_ref is null
-   or avatar_ref not in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research');
-update agent_profile_revisions
-set avatar_style_ref = ''
-where avatar_style_ref is null
-   or avatar_style_ref not in (
-     '', 'builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research',
-     'builtin:cartoon', 'builtin:emoji', 'builtin:pixel', 'builtin:portrait',
-     'builtin:abstract', 'builtin:planet', 'builtin:clay', 'builtin:icon'
-   );
-update agent_profile_revisions
-set category = 'general'
-where category is null
-   or category not in ('general', 'support', 'writing', 'research', 'operations');
-update agent_profile_revisions
-set allowed_department_ids = '[]'::jsonb
-where allowed_department_ids is null or jsonb_typeof(allowed_department_ids) <> 'array';
-update agent_profile_revisions
-set allowed_roles = '[]'::jsonb
-where allowed_roles is null or jsonb_typeof(allowed_roles) <> 'array';
-update agent_profile_revisions
-set allowed_user_ids = '[]'::jsonb
-where allowed_user_ids is null or jsonb_typeof(allowed_user_ids) <> 'array';
-
--- Legacy single-Skill revisions become one-member Agent Skill Sets. The first
--- item remains shadowed in skill_id/skill_version for rollback compatibility.
-update agent_profile_revisions
-set skill_set = jsonb_build_array(
-  jsonb_build_object('skill_id', skill_id, 'expected_version', skill_version)
-)
-where legacy_compatibility_write
-  and (
-    jsonb_typeof(skill_set) <> 'array'
-    or jsonb_array_length(skill_set) = 0
-  );
-
-update agent_profile_revisions
-set skill_set = jsonb_build_array(
-  jsonb_build_object('skill_id', skill_id, 'expected_version', skill_version)
-)
-where legacy_compatibility_write
-  and (
-  exists (
-    select 1
-    from jsonb_array_elements(skill_set) item
-    where jsonb_typeof(item) <> 'object'
-       or coalesce(item->>'skill_id', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
-       or coalesce(item->>'expected_version', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
-  )
-   or exists (
-    select 1
-    from jsonb_array_elements(skill_set) item
-    group by item->>'skill_id'
-    having count(*) > 1
-  )
-   or skill_set->0->>'skill_id' is distinct from skill_id
-   or skill_set->0->>'expected_version' is distinct from skill_version
-  );
-
--- No metadata defaults: omission is how the compatibility trigger recognizes
--- an old writer and inherits the existing ACL without broadening it.
+alter table agent_profile_revisions alter column revision_status drop default;
+alter table agent_profile_revisions alter column skill_set drop default;
 alter table agent_profile_revisions alter column avatar_ref drop default;
-alter table agent_profile_revisions alter column category drop default;
+alter table agent_profile_revisions alter column avatar_seed drop default;
 alter table agent_profile_revisions alter column visibility drop default;
 alter table agent_profile_revisions alter column allowed_department_ids drop default;
 alter table agent_profile_revisions alter column allowed_roles drop default;
 alter table agent_profile_revisions alter column allowed_user_ids drop default;
-alter table agent_profile_revisions alter column revision_status set not null;
-alter table agent_profile_revisions alter column avatar_ref set not null;
-alter table agent_profile_revisions alter column category set not null;
-alter table agent_profile_revisions alter column visibility set not null;
-alter table agent_profile_revisions alter column allowed_department_ids set not null;
-alter table agent_profile_revisions alter column allowed_roles set not null;
-alter table agent_profile_revisions alter column allowed_user_ids set not null;
 
-alter table agent_profile_revisions add constraint agent_profile_revisions_status_check
-  check (status in ('draft', 'published'));
 alter table agent_profile_revisions add constraint agent_profile_revisions_revision_status_check
   check (revision_status in ('draft', 'published', 'withdrawn'));
 alter table agent_profile_revisions add constraint agent_profile_revisions_avatar_ref_check
-  check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research'));
-alter table agent_profile_revisions add constraint agent_profile_revisions_avatar_style_ref_check
-  check (avatar_style_ref = '' or avatar_style_ref in (
+  check (avatar_ref in (
     'builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research',
     'builtin:cartoon', 'builtin:emoji', 'builtin:pixel', 'builtin:portrait',
     'builtin:abstract', 'builtin:planet', 'builtin:clay', 'builtin:icon'
   ));
-alter table agent_profile_revisions add constraint agent_profile_revisions_category_check
-  check (category in ('general', 'support', 'writing', 'research', 'operations'));
 alter table agent_profile_revisions add constraint chk_agent_profile_revisions_visibility
   check (visibility in ('tenant', 'restricted'));
 alter table agent_profile_revisions add constraint uq_agent_profile_revision_publication
   unique (tenant_id, agent_id, revision, content_hash, revision_status);
 
--- Repair corrupt aggregate state before deterministic reconciliation. Invalid
--- pointers withdraw fail closed; a later compatibility write cannot revive one.
-update agent_profiles profiles
-set published_status = 'published'
-where profiles.lifecycle_status = 'published'
-  and profiles.published_status is distinct from 'published'
-  and exists (
-    select 1
-    from agent_profile_revisions revisions
-    where revisions.tenant_id = profiles.tenant_id
-      and revisions.agent_id = profiles.agent_id
-      and revisions.revision = profiles.published_revision
-      and revisions.content_hash = profiles.published_hash
-      and revisions.revision_status = 'published'
-  );
-
-update agent_profiles profiles
-set lifecycle_status = 'withdrawn',
-    published_revision = null,
-    published_hash = null,
-    published_status = null,
-    updated_at = now()
-where profiles.lifecycle_status is null
-   or profiles.lifecycle_status not in ('draft', 'published', 'withdrawn')
-   or (
-     profiles.lifecycle_status = 'published'
-     and not exists (
-       select 1
-       from agent_profile_revisions revisions
-       where revisions.tenant_id = profiles.tenant_id
-         and revisions.agent_id = profiles.agent_id
-         and revisions.revision = profiles.published_revision
-         and revisions.content_hash = profiles.published_hash
-         and revisions.revision_status = 'published'
-     )
-   );
-
-update agent_profiles
-set published_revision = null,
-    published_hash = null,
-    published_status = null,
-    updated_at = now()
-where lifecycle_status <> 'published'
-  and (published_revision is not null or published_hash is not null or published_status is not null);
-
--- Reconcile missing aggregates and later old-backend appends on every deploy.
--- Withdrawn aggregates stay withdrawn. Existing current pointers move only to
--- a later compatibility publication that inherited tenant visibility.
-with revision_facts as (
-  select
-    tenant_id,
-    agent_id,
-    max(revision) as latest_revision,
-    max(revision) filter (where revision_status = 'published') as latest_published_revision,
-    max(revision) filter (where revision_status = 'withdrawn') as latest_withdrawn_revision
-  from agent_profile_revisions
-  group by tenant_id, agent_id
-), reconciliation as (
-  select
-    facts.tenant_id,
-    facts.agent_id,
-    facts.latest_revision,
-    facts.latest_published_revision,
-    facts.latest_withdrawn_revision,
-    candidate.revision as published_revision,
-    candidate.content_hash as published_hash
-  from revision_facts facts
-  left join agent_profiles existing
-    on existing.tenant_id = facts.tenant_id and existing.agent_id = facts.agent_id
-  left join lateral (
-    select revision, content_hash
-    from agent_profile_revisions candidate_row
-    where candidate_row.tenant_id = facts.tenant_id
-      and candidate_row.agent_id = facts.agent_id
-      and candidate_row.revision_status = 'published'
-      and not exists (
-        select 1
-        from agent_profile_revisions withdrawal
-        where withdrawal.tenant_id = candidate_row.tenant_id
-          and withdrawal.agent_id = candidate_row.agent_id
-          and withdrawal.revision_status = 'withdrawn'
-          and withdrawal.revision > candidate_row.revision
-      )
-      and (
-        existing.agent_id is null
-        or (
-          existing.lifecycle_status <> 'withdrawn'
-          and candidate_row.legacy_compatibility_write
-          and candidate_row.revision > existing.latest_revision
-          and candidate_row.visibility = 'tenant'
-        )
-      )
-    order by candidate_row.revision desc
-    limit 1
-  ) candidate on true
-)
-insert into agent_profiles(
-  tenant_id, agent_id, lifecycle_status, latest_revision, published_revision,
-  published_hash, published_status
-)
-select
-  tenant_id,
-  agent_id,
-  case
-    when latest_withdrawn_revision is not null
-      and (
-        latest_published_revision is null
-        or latest_withdrawn_revision > latest_published_revision
-      ) then 'withdrawn'
-    when published_revision is not null then 'published'
-    else 'draft'
-  end,
-  latest_revision,
-  case
-    when latest_withdrawn_revision is not null
-      and (
-        latest_published_revision is null
-        or latest_withdrawn_revision > latest_published_revision
-      ) then null
-    else published_revision
-  end,
-  case
-    when latest_withdrawn_revision is not null
-      and (
-        latest_published_revision is null
-        or latest_withdrawn_revision > latest_published_revision
-      ) then null
-    else published_hash
-  end,
-  case
-    when published_revision is not null
-      and not (
-        latest_withdrawn_revision is not null
-        and (
-          latest_published_revision is null
-          or latest_withdrawn_revision > latest_published_revision
-        )
-      ) then 'published'
-    else null
-  end
-from reconciliation
-on conflict (tenant_id, agent_id) do update
-set latest_revision = greatest(agent_profiles.latest_revision, excluded.latest_revision),
-    lifecycle_status = case
-      when agent_profiles.lifecycle_status = 'withdrawn'
-        or excluded.lifecycle_status = 'withdrawn' then 'withdrawn'
-      when excluded.published_revision is not null then 'published'
-      else agent_profiles.lifecycle_status
-    end,
-    published_revision = case
-      when agent_profiles.lifecycle_status = 'withdrawn'
-        or excluded.lifecycle_status = 'withdrawn' then null
-      when excluded.published_revision is not null then excluded.published_revision
-      else agent_profiles.published_revision
-    end,
-    published_hash = case
-      when agent_profiles.lifecycle_status = 'withdrawn'
-        or excluded.lifecycle_status = 'withdrawn' then null
-      when excluded.published_revision is not null then excluded.published_hash
-      else agent_profiles.published_hash
-    end,
-    published_status = case
-      when agent_profiles.lifecycle_status = 'withdrawn'
-        or excluded.lifecycle_status = 'withdrawn' then null
-      when excluded.published_revision is not null then 'published'
-      else agent_profiles.published_status
-    end,
-    updated_at = now()
-where row(
-    agent_profiles.latest_revision,
-    agent_profiles.lifecycle_status,
-    agent_profiles.published_revision,
-    agent_profiles.published_hash,
-    agent_profiles.published_status
-  ) is distinct from row(
-    greatest(agent_profiles.latest_revision, excluded.latest_revision),
-    case
-      when agent_profiles.lifecycle_status = 'withdrawn'
-        or excluded.lifecycle_status = 'withdrawn' then 'withdrawn'
-      when excluded.published_revision is not null then 'published'
-      else agent_profiles.lifecycle_status
-    end,
-    case
-      when agent_profiles.lifecycle_status = 'withdrawn'
-        or excluded.lifecycle_status = 'withdrawn' then null
-      when excluded.published_revision is not null then excluded.published_revision
-      else agent_profiles.published_revision
-    end,
-    case
-      when agent_profiles.lifecycle_status = 'withdrawn'
-        or excluded.lifecycle_status = 'withdrawn' then null
-      when excluded.published_revision is not null then excluded.published_hash
-      else agent_profiles.published_hash
-    end,
-    case
-      when agent_profiles.lifecycle_status = 'withdrawn'
-        or excluded.lifecycle_status = 'withdrawn' then null
-      when excluded.published_revision is not null then 'published'
-      else agent_profiles.published_status
-    end
-  );
-
--- Synchronize the old-reader mirror after every reconciliation. Exactly the
--- current tenant-visible publication remains status='published'.
-with desired as (
-  select
-    revisions.tenant_id,
-    revisions.agent_id,
-    revisions.revision,
-    case
-      when revisions.revision_status = 'published'
-        and revisions.visibility = 'tenant'
-        and exists (
-          select 1
-          from agent_profiles profiles
-          where profiles.tenant_id = revisions.tenant_id
-            and profiles.agent_id = revisions.agent_id
-            and profiles.lifecycle_status = 'published'
-            and profiles.published_revision = revisions.revision
-            and profiles.published_hash = revisions.content_hash
-            and profiles.published_status = 'published'
-        ) then 'published'
-      else 'draft'
-    end as desired_status
-  from agent_profile_revisions revisions
-)
-update agent_profile_revisions revisions
-set status = desired.desired_status
-from desired
-where revisions.tenant_id = desired.tenant_id
-  and revisions.agent_id = desired.agent_id
-  and revisions.revision = desired.revision
-  and revisions.status is distinct from desired.desired_status;
-
-alter table agent_profiles add constraint chk_agent_profiles_lifecycle_status
-  check (lifecycle_status in ('draft', 'published', 'withdrawn'));
-alter table agent_profiles add constraint chk_agent_profiles_publication
-  check (
-    (
-      lifecycle_status = 'published'
-      and published_revision is not null
-      and published_hash is not null
-      and published_status = 'published'
-    )
-    or (
-      lifecycle_status <> 'published'
-      and published_revision is null
-      and published_hash is null
-      and published_status is null
-    )
-  );
-
-alter table agent_profiles add constraint fk_agent_profiles_current_publication
-  foreign key (tenant_id, agent_id, published_revision, published_hash, published_status)
-  references agent_profile_revisions(tenant_id, agent_id, revision, content_hash, revision_status);
-
 drop index if exists idx_agent_profile_revisions_published;
 create index idx_agent_profile_revisions_published
   on agent_profile_revisions(tenant_id, agent_id, revision desc)
   where revision_status = 'published';
-
--- Supported rollback keeps this migrated schema in place while a pre-#701
--- application binary runs. Removing these columns/triggers requires database
--- restore authority; it is not an in-place application rollback. The BEFORE
--- trigger recognizes the old INSERT signature, serializes with current
--- lifecycle writers, inherits the existing ACL, and mints max(revision)+1
--- instead of overwriting a colliding history row.
-create or replace function agent_profile_legacy_insert_compatibility()
-returns trigger
-language plpgsql
-as $$
-declare
-  source_row agent_profile_revisions%rowtype;
-  aggregate_lifecycle text;
-  next_revision bigint;
-  legacy_publication_allowed boolean := false;
-begin
-  if new.revision_status is null
-     and (jsonb_typeof(new.skill_set) <> 'array' or jsonb_array_length(new.skill_set) = 0) then
-    new.skill_set := jsonb_build_array(
-      jsonb_build_object('skill_id', new.skill_id, 'expected_version', new.skill_version)
-    );
-  end if;
-  if exists (
-      select 1
-      from jsonb_array_elements(new.skill_set) item
-      where jsonb_typeof(item) <> 'object'
-         or coalesce(item->>'skill_id', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
-         or coalesce(item->>'expected_version', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
-    )
-     or exists (
-      select 1
-      from jsonb_array_elements(new.skill_set) item
-      group by item->>'skill_id'
-      having count(*) > 1
-    )
-     or new.skill_set->0->>'skill_id' is distinct from new.skill_id
-     or new.skill_set->0->>'expected_version' is distinct from new.skill_version then
-    raise exception 'agent_profile_skill_set_invalid' using errcode = '23514';
-  end if;
-  if new.revision_status is not null then
-    return new;
-  end if;
-
-  perform pg_advisory_xact_lock(
-    hashtextextended('agent-profile:' || new.tenant_id || ':' || new.agent_id, 0)
-  );
-  new.revision_status := case
-    when new.status in ('draft', 'published', 'withdrawn') then new.status
-    else 'withdrawn'
-  end;
-  new.legacy_compatibility_write := true;
-
-  if exists (
-    select 1
-    from agent_profile_revisions existing
-    where existing.tenant_id = new.tenant_id
-      and existing.agent_id = new.agent_id
-      and existing.revision = new.revision
-  ) then
-    select coalesce(max(existing.revision), 0) + 1
-    into next_revision
-    from agent_profile_revisions existing
-    where existing.tenant_id = new.tenant_id and existing.agent_id = new.agent_id;
-    new.revision := next_revision;
-  end if;
-
-  select existing.*
-  into source_row
-  from agent_profile_revisions existing
-  where existing.tenant_id = new.tenant_id and existing.agent_id = new.agent_id
-  order by existing.revision desc
-  limit 1;
-
-  new.avatar_ref := coalesce(new.avatar_ref, source_row.avatar_ref, 'builtin:agent');
-  if new.avatar_ref not in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research') then
-    new.avatar_ref := 'builtin:agent';
-  end if;
-  new.category := coalesce(new.category, source_row.category, 'general');
-  if new.category not in ('general', 'support', 'writing', 'research', 'operations') then
-    new.category := 'general';
-  end if;
-  new.visibility := coalesce(new.visibility, source_row.visibility, 'tenant');
-  if new.visibility not in ('tenant', 'restricted') then
-    new.visibility := 'restricted';
-  end if;
-  new.allowed_department_ids := coalesce(
-    new.allowed_department_ids,
-    source_row.allowed_department_ids,
-    '[]'::jsonb
-  );
-  if jsonb_typeof(new.allowed_department_ids) <> 'array' then
-    new.allowed_department_ids := '[]'::jsonb;
-  end if;
-  new.allowed_roles := coalesce(new.allowed_roles, source_row.allowed_roles, '[]'::jsonb);
-  if jsonb_typeof(new.allowed_roles) <> 'array' then
-    new.allowed_roles := '[]'::jsonb;
-  end if;
-  new.allowed_user_ids := coalesce(new.allowed_user_ids, source_row.allowed_user_ids, '[]'::jsonb);
-  if jsonb_typeof(new.allowed_user_ids) <> 'array' then
-    new.allowed_user_ids := '[]'::jsonb;
-  end if;
-
-  select profiles.lifecycle_status
-  into aggregate_lifecycle
-  from agent_profiles profiles
-  where profiles.tenant_id = new.tenant_id and profiles.agent_id = new.agent_id;
-  if aggregate_lifecycle is null then
-    select case
-      when max(history.revision) filter (where history.revision_status = 'withdrawn') is not null
-        and (
-          max(history.revision) filter (where history.revision_status = 'published') is null
-          or max(history.revision) filter (where history.revision_status = 'withdrawn')
-            > max(history.revision) filter (where history.revision_status = 'published')
-        ) then 'withdrawn'
-      when max(history.revision) filter (where history.revision_status = 'published') is not null
-        then 'published'
-      else 'draft'
-    end
-    into aggregate_lifecycle
-    from agent_profile_revisions history
-    where history.tenant_id = new.tenant_id and history.agent_id = new.agent_id;
-  end if;
-  legacy_publication_allowed := (
-    new.revision_status = 'published'
-    and new.visibility = 'tenant'
-    and aggregate_lifecycle <> 'withdrawn'
-  );
-  if new.revision_status = 'published' and not legacy_publication_allowed then
-    new.revision_status := 'draft';
-  end if;
-  new.status := case
-    when legacy_publication_allowed then 'published'
-    else 'draft'
-  end;
-
-  if new.revision_status = 'published'
-     and new.published_from_revision is not null
-     and exists (
-       select 1
-       from agent_profile_revisions existing
-       where existing.tenant_id = new.tenant_id
-         and existing.agent_id = new.agent_id
-         and existing.revision_status = 'published'
-         and existing.published_from_revision = new.published_from_revision
-     ) then
-    new.published_from_revision := null;
-  end if;
-  return new;
-end $$;
-
-create or replace function agent_profile_legacy_insert_reconcile()
-returns trigger
-language plpgsql
-as $$
-declare
-  fallback_lifecycle text;
-  fallback_published_revision bigint;
-  fallback_published_hash text;
-begin
-  if not new.legacy_compatibility_write then
-    return null;
-  end if;
-
-  if new.revision_status = 'published' and new.status = 'published' then
-    insert into agent_profiles(
-      tenant_id, agent_id, lifecycle_status, latest_revision,
-      published_revision, published_hash, published_status
-    )
-    values (
-      new.tenant_id, new.agent_id, 'published', new.revision,
-      new.revision, new.content_hash, 'published'
-    )
-    on conflict (tenant_id, agent_id) do update
-    set lifecycle_status = 'published',
-        latest_revision = greatest(agent_profiles.latest_revision, excluded.latest_revision),
-        published_revision = excluded.published_revision,
-        published_hash = excluded.published_hash,
-        published_status = 'published',
-        updated_at = now()
-    where agent_profiles.lifecycle_status <> 'withdrawn';
-
-    if exists (
-      select 1
-      from agent_profiles profiles
-      where profiles.tenant_id = new.tenant_id
-        and profiles.agent_id = new.agent_id
-        and profiles.lifecycle_status = 'published'
-        and profiles.published_revision = new.revision
-        and profiles.published_hash = new.content_hash
-    ) then
-      update agent_profile_revisions revisions
-      set status = case when revisions.revision = new.revision then 'published' else 'draft' end
-      where revisions.tenant_id = new.tenant_id
-        and revisions.agent_id = new.agent_id
-        and revisions.revision_status = 'published';
-    else
-      update agent_profile_revisions
-      set status = 'draft'
-      where tenant_id = new.tenant_id and agent_id = new.agent_id and revision = new.revision;
-    end if;
-  else
-    select history.revision, history.content_hash
-    into fallback_published_revision, fallback_published_hash
-    from agent_profile_revisions history
-    where history.tenant_id = new.tenant_id
-      and history.agent_id = new.agent_id
-      and history.revision_status = 'published'
-      and not exists (
-        select 1
-        from agent_profile_revisions withdrawal
-        where withdrawal.tenant_id = history.tenant_id
-          and withdrawal.agent_id = history.agent_id
-          and withdrawal.revision_status = 'withdrawn'
-          and withdrawal.revision > history.revision
-      )
-    order by history.revision desc
-    limit 1;
-    if fallback_published_revision is not null then
-      fallback_lifecycle := 'published';
-    elsif exists (
-      select 1
-      from agent_profile_revisions history
-      where history.tenant_id = new.tenant_id
-        and history.agent_id = new.agent_id
-        and history.revision_status = 'withdrawn'
-    ) then
-      fallback_lifecycle := 'withdrawn';
-    else
-      fallback_lifecycle := 'draft';
-    end if;
-    insert into agent_profiles(
-      tenant_id, agent_id, lifecycle_status, latest_revision,
-      published_revision, published_hash, published_status
-    )
-    values (
-      new.tenant_id, new.agent_id, fallback_lifecycle, new.revision,
-      fallback_published_revision, fallback_published_hash,
-      case when fallback_published_revision is not null then 'published' else null end
-    )
-    on conflict (tenant_id, agent_id) do update
-    set lifecycle_status = case
-          when excluded.lifecycle_status = 'withdrawn' then 'withdrawn'
-          else agent_profiles.lifecycle_status
-        end,
-        latest_revision = greatest(agent_profiles.latest_revision, excluded.latest_revision),
-        published_revision = case
-          when excluded.lifecycle_status = 'withdrawn' then null
-          else agent_profiles.published_revision
-        end,
-        published_hash = case
-          when excluded.lifecycle_status = 'withdrawn' then null
-          else agent_profiles.published_hash
-        end,
-        published_status = case
-          when excluded.lifecycle_status = 'withdrawn' then null
-          else agent_profiles.published_status
-        end,
-        updated_at = now();
-  end if;
-  return null;
-end $$;
-
-drop trigger if exists trg_agent_profile_legacy_insert_compatibility on agent_profile_revisions;
-create trigger trg_agent_profile_legacy_insert_compatibility
-before insert on agent_profile_revisions
-for each row execute function agent_profile_legacy_insert_compatibility();
-
--- New Agent Apps writers persist name-only Skill references. These triggers keep
--- the legacy trigger's contract unchanged for rollback binaries: the prepare
--- trigger supplies a private validation marker, and the finalize trigger removes
--- it before the row is stored.
-create or replace function agent_profile_name_only_skill_set_prepare()
-returns trigger
-language plpgsql
-as $$
-declare
-  normalized_skill_set jsonb;
-begin
-  if new.revision_status is not null
-     and jsonb_typeof(new.skill_set) = 'array'
-     and jsonb_array_length(new.skill_set) > 0
-     and not exists (
-       select 1
-       from jsonb_array_elements(new.skill_set) item
-       where jsonb_typeof(item) <> 'object' or item ? 'expected_version'
-     ) then
-    select jsonb_agg(
-      item || jsonb_build_object('expected_version', 'profile-current')
-      order by ordinal
-    )
-    into normalized_skill_set
-    from jsonb_array_elements(new.skill_set) with ordinality as elements(item, ordinal);
-    new.skill_set := normalized_skill_set;
-    new.skill_version := 'profile-current';
-  end if;
-  return new;
-end $$;
-
-drop trigger if exists trg_agent_profile_aa_name_only_skill_set_prepare on agent_profile_revisions;
-create trigger trg_agent_profile_aa_name_only_skill_set_prepare
-before insert on agent_profile_revisions
-for each row execute function agent_profile_name_only_skill_set_prepare();
-
-create or replace function agent_profile_name_only_skill_set_finalize()
-returns trigger
-language plpgsql
-as $$
-declare
-  normalized_skill_set jsonb;
-begin
-  if new.revision_status is not null
-     and new.skill_version = 'profile-current'
-     and jsonb_typeof(new.skill_set) = 'array'
-     and jsonb_array_length(new.skill_set) > 0
-     and not exists (
-       select 1
-       from jsonb_array_elements(new.skill_set) item
-       where item->>'expected_version' is distinct from 'profile-current'
-     ) then
-    select jsonb_agg(item - 'expected_version' order by ordinal)
-    into normalized_skill_set
-    from jsonb_array_elements(new.skill_set) with ordinality as elements(item, ordinal);
-    new.skill_set := normalized_skill_set;
-    new.skill_version := '';
-  end if;
-  return new;
-end $$;
-
-drop trigger if exists trg_agent_profile_zz_name_only_skill_set_finalize on agent_profile_revisions;
-create trigger trg_agent_profile_zz_name_only_skill_set_finalize
-before insert on agent_profile_revisions
-for each row execute function agent_profile_name_only_skill_set_finalize();
-
-drop trigger if exists trg_agent_profile_legacy_insert_reconcile on agent_profile_revisions;
-create trigger trg_agent_profile_legacy_insert_reconcile
-after insert on agent_profile_revisions
-for each row execute function agent_profile_legacy_insert_reconcile();
 
 -- Add composite tenant+agent authority and profile-pin constraints for existing
 -- installations after all referenced tables and columns are present.
@@ -3219,3 +2478,82 @@ where capability_kind = 'skill' and capability_id = 'baoyu-translate';
 update skills
 set status = 'inactive'
 where id = 'baoyu-translate';
+
+-- Agent Profile hard cut: consolidate the authoring/public contract and retire
+-- every physical compatibility field and trigger in one release transaction.
+drop trigger if exists trg_agent_profile_legacy_insert_compatibility on agent_profile_revisions;
+drop trigger if exists trg_agent_profile_aa_name_only_skill_set_prepare on agent_profile_revisions;
+drop trigger if exists trg_agent_profile_zz_name_only_skill_set_finalize on agent_profile_revisions;
+drop trigger if exists trg_agent_profile_legacy_insert_reconcile on agent_profile_revisions;
+drop function if exists agent_profile_legacy_insert_compatibility();
+drop function if exists agent_profile_name_only_skill_set_prepare();
+drop function if exists agent_profile_name_only_skill_set_finalize();
+drop function if exists agent_profile_legacy_insert_reconcile();
+
+alter table agent_profiles drop constraint if exists fk_agent_profiles_current_publication;
+alter table agent_profiles drop constraint if exists chk_agent_profiles_publication;
+alter table agent_profiles drop column if exists published_status;
+alter table agent_profiles add constraint chk_agent_profiles_publication
+check (
+  (lifecycle_status = 'published' and published_revision is not null and published_hash is not null)
+  or
+  (lifecycle_status <> 'published' and published_revision is null and published_hash is null)
+);
+
+alter table agent_profile_revisions drop constraint if exists uq_agent_profile_revision_publication;
+alter table agent_profile_revisions drop constraint if exists uq_agent_profile_revision_content;
+alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_status_check;
+alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_avatar_ref_check;
+alter table agent_profile_revisions drop constraint if exists chk_agent_profile_revisions_skill_set;
+alter table agent_profile_revisions drop constraint if exists chk_agent_profile_revisions_lists;
+alter table agent_profile_revisions drop constraint if exists chk_agent_profile_revisions_avatar_seed;
+alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_avatar_style_ref_check;
+alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_category_check;
+alter table agent_profile_revisions
+  drop column if exists status,
+  drop column if exists welcome_message,
+  drop column if exists capability_summary,
+  drop column if exists recommended_tasks,
+  drop column if exists supported_input_types,
+  drop column if exists supported_file_types,
+  drop column if exists expected_outputs,
+  drop column if exists permissions_and_data_access_notice,
+  drop column if exists model_id,
+  drop column if exists skill_id,
+  drop column if exists skill_version,
+  drop column if exists avatar_style_ref,
+  drop column if exists avatar_asset_id,
+  drop column if exists category,
+  drop column if exists market_tag,
+  drop column if exists legacy_compatibility_write;
+
+alter table agent_profile_revisions
+  alter column skill_set drop default,
+  alter column avatar_seed drop default;
+alter table agent_profile_revisions
+  add constraint agent_profile_revisions_avatar_ref_check
+  check (avatar_ref in (
+    'builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research',
+    'builtin:cartoon', 'builtin:emoji', 'builtin:pixel', 'builtin:portrait',
+    'builtin:abstract', 'builtin:planet', 'builtin:clay', 'builtin:icon'
+  )),
+  add constraint chk_agent_profile_revisions_skill_set
+  check (jsonb_typeof(skill_set) = 'array' and jsonb_array_length(skill_set) > 0),
+  add constraint chk_agent_profile_revisions_lists
+  check (
+    jsonb_typeof(starter_prompts) = 'array'
+    and jsonb_typeof(mcp_tool_ids) = 'array'
+    and jsonb_typeof(market_tags) = 'array'
+    and jsonb_typeof(allowed_department_ids) = 'array'
+    and jsonb_typeof(allowed_roles) = 'array'
+    and jsonb_typeof(allowed_user_ids) = 'array'
+  ),
+  add constraint chk_agent_profile_revisions_avatar_seed
+  check (btrim(avatar_seed) <> '');
+alter table agent_profile_revisions
+  add constraint uq_agent_profile_revision_content
+  unique (tenant_id, agent_id, revision, content_hash);
+alter table agent_profiles
+  add constraint fk_agent_profiles_current_publication
+  foreign key (tenant_id, agent_id, published_revision, published_hash)
+  references agent_profile_revisions(tenant_id, agent_id, revision, content_hash);

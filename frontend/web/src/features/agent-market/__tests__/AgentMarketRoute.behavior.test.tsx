@@ -5,41 +5,18 @@ import test from "node:test";
 import React from "react";
 
 import { Permission } from "../../../types/auth.ts";
-import {
-  AGENT_PROFILE_CATEGORIES,
-  AGENT_PROFILE_CATEGORY_LABELS,
-  type AgentProfilePublicProjection,
-} from "../../../types/agentProfile.ts";
+import type { AgentProfilePublicProjection } from "../../../types/agentProfile.ts";
 
 const enterpriseProfileFields = {
-  welcome_message: "欢迎使用企业专家。",
   starter_prompts: ["帮我处理企业任务"] as string[],
-  capability_summary: "在授权范围内处理企业任务。",
-  recommended_tasks: ["企业任务处理"] as string[],
-  supported_input_types: ["text", "file"] as ["text", "file"],
-  expected_outputs: ["处理建议"] as string[],
-  permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
+  avatar_seed: "enterprise-profile",
+  market_tags: ["企业服务"] as string[],
+  is_favorite: false,
   published_at: "2026-08-04T01:00:00Z",
 };
 
 register(new URL("./frontendAssetLoader.mjs", import.meta.url), import.meta.url);
 await new Promise<void>((resolve) => setImmediate(resolve));
-
-test("Agent Profile category labels cover the canonical category contract", () => {
-  assert.deepEqual(
-    AGENT_PROFILE_CATEGORIES.map((category) => [
-      category,
-      AGENT_PROFILE_CATEGORY_LABELS[category],
-    ]),
-    [
-      ["general", "通用专家"],
-      ["support", "支持服务"],
-      ["writing", "内容写作"],
-      ["research", "研究分析"],
-      ["operations", "运营效率"],
-    ],
-  );
-});
 
 type Listener = (event: Record<string, unknown>) => void;
 
@@ -674,7 +651,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       description: "已发布的支持服务。",
       avatar_ref: "builtin:assistant",
       category: "support",
-      market_tag: "客户服务",
+      market_tags: ["客户服务"],
     },
     {
       ...enterpriseProfileFields,
@@ -684,7 +661,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       description: "核对报销材料。",
       avatar_ref: "builtin:document",
       category: "operations",
-      market_tag: "财务",
+      market_tags: ["财务"],
       completed_tasks: 7,
       model_id: "private-model",
       mcp_tool_ids: ["private-mcp"],
@@ -936,7 +913,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     assert.match(container.textContent, /核对报销材料/);
     assert.match(container.textContent, /企业已发布/);
     assert.doesNotMatch(container.textContent, /版本 2/);
-    assert.match(container.textContent, /适合处理/);
+    assert.match(container.textContent, /已发布的 Skill Set/);
     assert.doesNotMatch(
       container.textContent,
       /PRIVATE_PROMPT|private-model|private-mcp|private-skill|private-version/,
@@ -1166,7 +1143,7 @@ test("Agent starter prompts draft before explicit first-message submission", asy
 
     assert.equal(currentPath, "/agent-market/agt_support/4/chat");
     assert.deepEqual(selections, []);
-    assert.match(container.textContent, /欢迎使用企业专家/);
+    assert.match(container.textContent, /处理企业内部支持请求/);
     assert.ok(container.querySelector("[data-agent-starter-prompts]"));
     assert.ok(container.querySelector("textarea"));
 

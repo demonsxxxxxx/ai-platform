@@ -1018,9 +1018,9 @@ export function ChatView({
                     <h1 className="mt-3 text-2xl font-semibold text-[var(--theme-text)]">
                       {agentEmptyProfile.name}
                     </h1>
-                    {agentEmptyProfile.welcome_message ? (
+                    {agentEmptyProfile.description ? (
                       <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)]">
-                        {agentEmptyProfile.welcome_message}
+                        {agentEmptyProfile.description}
                       </p>
                     ) : null}
                   </div>

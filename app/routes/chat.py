@@ -19,11 +19,7 @@ from starlette.responses import JSONResponse
 
 from app import repositories
 from app.mcp.api import authorize_selected_chat_mcp_tools
-from app.agent_profiles import (
-    reauthorize_pinned_run_for_replay,
-    resolve_bound_profile_for_submission,
-    resolve_profile_for_admission,
-)
+from app.agent_apps import AgentProfileAuthority
 from app.agent_apps.api import pin_agent_skill_set
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capability_distribution import (
@@ -119,6 +115,7 @@ from app.skills.release_policy import (
 from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
+_agent_profile_authority = AgentProfileAuthority()
 
 logger = logging.getLogger(__name__)
 _MISSING = object()
@@ -650,7 +647,7 @@ async def _admit_chat_submission(
             # Run creation committed before this fresh authority transaction.
             # Keep its run/profile locks through Redis admission so workers can
             # see the run but lifecycle writers cannot overtake admission.
-            await reauthorize_pinned_run_for_replay(
+            await _agent_profile_authority.reauthorize_pinned_run_for_replay(
                 conn,
                 principal=principal,
                 run_id=run_id,
@@ -1682,7 +1679,7 @@ async def chat_stream(
 
             if selected_agent_profile is not None:
                 if request.session_id and isinstance(session_profile_revision, int):
-                    admitted_agent_profile = await resolve_bound_profile_for_submission(
+                    admitted_agent_profile = await _agent_profile_authority.resolve_bound_for_submission(
                         conn,
                         principal=principal,
                         agent_id=selected_agent_profile.agent_id,
@@ -1692,7 +1689,7 @@ async def chat_stream(
                         query_agent_id=query_agent_id,
                     )
                 else:
-                    admitted_agent_profile = await resolve_profile_for_admission(
+                    admitted_agent_profile = await _agent_profile_authority.resolve_for_admission(
                         conn,
                         principal=principal,
                         selection=selected_agent_profile,

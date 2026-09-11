@@ -957,7 +957,7 @@ def default_cancel_not_requested(monkeypatch):
         validate_materialized_locked_agent_profile,
     )
     monkeypatch.setattr(
-        "app.worker.reauthorize_bound_profile_for_worker_dispatch",
+        "app.worker._agent_profile_authority.resolve_bound_for_worker_dispatch",
         reauthorize_test_profile,
     )
 
@@ -2674,7 +2674,7 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr(
-        "app.worker.reauthorize_bound_profile_for_worker_dispatch",
+        "app.worker._agent_profile_authority.resolve_bound_for_worker_dispatch",
         reauthorize,
     )
 
@@ -2801,7 +2801,7 @@ async def test_worker_reauthorizes_pinned_profile_before_adapter(
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr(
-        "app.worker.reauthorize_bound_profile_for_worker_dispatch",
+        "app.worker._agent_profile_authority.resolve_bound_for_worker_dispatch",
         reauthorize,
     )
     v4_capabilities = _FAKE_WORKER_V4_CAPABILITIES

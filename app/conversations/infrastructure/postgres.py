@@ -140,20 +140,12 @@ async def list_authorized_sessions(
                sessions.admitted_agent_profile_revision, sessions.admitted_agent_profile_hash,
                sessions.created_at, sessions.updated_at,
                session_agent.default_skill_id as agent_default_skill_id,
-               profile.skill_id as agent_profile_skill_id,
                (profile.skill_set @> '[{"skill_id": "baoyu-translate"}]'::jsonb) as agent_profile_has_retired_skill,
                profile.name as agent_profile_name,
                profile.description as agent_profile_description,
-               profile.welcome_message as agent_profile_welcome_message,
                profile.starter_prompts as agent_profile_starter_prompts,
-               profile.capability_summary as agent_profile_capability_summary,
-               profile.recommended_tasks as agent_profile_recommended_tasks,
-               profile.supported_input_types as agent_profile_supported_input_types,
-               profile.expected_outputs as agent_profile_expected_outputs,
-               profile.permissions_and_data_access_notice as agent_profile_permissions_and_data_access_notice,
-               coalesce(nullif(profile.avatar_style_ref, ''), profile.avatar_ref) as agent_profile_avatar_ref,
+               profile.avatar_ref as agent_profile_avatar_ref,
                profile.avatar_seed as agent_profile_avatar_seed,
-               profile.category as agent_profile_category,
                profile.published_at as agent_profile_published_at
         from sessions
         left join agents session_agent
@@ -190,20 +182,12 @@ async def get_authorized_session_projection(
                sessions.admitted_agent_profile_revision, sessions.admitted_agent_profile_hash,
                sessions.created_at, sessions.updated_at,
                session_agent.default_skill_id as agent_default_skill_id,
-               profile.skill_id as agent_profile_skill_id,
                (profile.skill_set @> '[{"skill_id": "baoyu-translate"}]'::jsonb) as agent_profile_has_retired_skill,
                profile.name as agent_profile_name,
                profile.description as agent_profile_description,
-               profile.welcome_message as agent_profile_welcome_message,
                profile.starter_prompts as agent_profile_starter_prompts,
-               profile.capability_summary as agent_profile_capability_summary,
-               profile.recommended_tasks as agent_profile_recommended_tasks,
-               profile.supported_input_types as agent_profile_supported_input_types,
-               profile.expected_outputs as agent_profile_expected_outputs,
-               profile.permissions_and_data_access_notice as agent_profile_permissions_and_data_access_notice,
-               coalesce(nullif(profile.avatar_style_ref, ''), profile.avatar_ref) as agent_profile_avatar_ref,
+               profile.avatar_ref as agent_profile_avatar_ref,
                profile.avatar_seed as agent_profile_avatar_seed,
-               profile.category as agent_profile_category,
                profile.published_at as agent_profile_published_at
         from sessions
         left join agents session_agent
@@ -237,7 +221,6 @@ async def get_authorized_lambchat_session(
         select sessions.id, sessions.workspace_id, sessions.agent_id, sessions.title,
                sessions.title_source, sessions.status, sessions.created_at, sessions.updated_at,
                session_agent.default_skill_id as agent_default_skill_id,
-               profile.skill_id as agent_profile_skill_id,
                (profile.skill_set @> '[{"skill_id": "baoyu-translate"}]'::jsonb) as agent_profile_has_retired_skill
         from sessions
         left join agents session_agent
@@ -497,20 +480,12 @@ async def list_authorized_agent_conversations(
                coalesce(legacy_first_user.title, sessions.title) as title, sessions.purpose,
                sessions.admitted_agent_profile_revision, sessions.admitted_agent_profile_hash,
                sessions.created_at, sessions.updated_at,
-               profile.skill_id as agent_profile_skill_id,
                (profile.skill_set @> '[{{"skill_id": "baoyu-translate"}}]'::jsonb) as agent_profile_has_retired_skill,
                profile.name as agent_profile_name,
                profile.description as agent_profile_description,
-               profile.welcome_message as agent_profile_welcome_message,
                profile.starter_prompts as agent_profile_starter_prompts,
-               profile.capability_summary as agent_profile_capability_summary,
-               profile.recommended_tasks as agent_profile_recommended_tasks,
-               profile.supported_input_types as agent_profile_supported_input_types,
-               profile.expected_outputs as agent_profile_expected_outputs,
-               profile.permissions_and_data_access_notice as agent_profile_permissions_and_data_access_notice,
-               coalesce(nullif(profile.avatar_style_ref, ''), profile.avatar_ref) as agent_profile_avatar_ref,
+               profile.avatar_ref as agent_profile_avatar_ref,
                profile.avatar_seed as agent_profile_avatar_seed,
-               profile.category as agent_profile_category,
                profile.published_at as agent_profile_published_at
         from sessions
         join agent_profile_revisions profile

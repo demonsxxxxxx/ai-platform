@@ -155,7 +155,7 @@ async def _request_admin_cancel(conn, *, tenant_id, admin_user_id, run_id):
     return result.as_route_result() if result is not None else None
 
 
-def test_repository_facade_binds_agent_profiles_to_one_canonical_module():
+def test_global_repository_has_no_agent_profile_persistence_facade():
     canonical_names = (
         "acquire_agent_profile_lifecycle_lock",
         "create_agent_profile_revision",
@@ -172,9 +172,8 @@ def test_repository_facade_binds_agent_profiles_to_one_canonical_module():
         "record_agent_profile_withdrawal",
     )
 
-    for name in canonical_names:
-        assert getattr(repositories, name) is getattr(agent_profile_persistence, name)
-
+    assert all(not hasattr(repositories, name) for name in canonical_names)
+    assert all(callable(getattr(agent_profile_persistence, name)) for name in canonical_names)
     assert RepositoryConflictError is PlatformRepositoryConflictError
 
 
@@ -482,12 +481,11 @@ class SingleRowConnection:
         "published_by",
         "published_from_revision",
         "expected_published_at",
-        "expected_legacy_status",
     ),
     [
-        ("draft", None, None, None, "draft"),
-        ("published", "publisher-a", 7, "database-timestamp", "published"),
-        ("withdrawn", None, None, None, "draft"),
+        ("draft", None, None, None),
+        ("published", "publisher-a", 7, "database-timestamp"),
+        ("withdrawn", None, None, None),
     ],
 )
 async def test_create_agent_profile_revision_preserves_typed_publication_bindings(
@@ -495,7 +493,6 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
     published_by,
     published_from_revision,
     expected_published_at,
-    expected_legacy_status,
 ):
     class Connection:
         def __init__(self):
@@ -508,23 +505,25 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
                 return SingleRowCursor({"current_revision": 7})
             if "insert into agent_profile_revisions" in normalized:
                 return SingleRowCursor(
-                    {"published_at": None if params[35] is None else "database-timestamp"}
+                    {"published_at": None if params[20] is None else "database-timestamp"}
                 )
             return SingleRowCursor(None)
 
     conn = Connection()
-    saved = await repositories.create_agent_profile_revision(
+    saved = await agent_profile_persistence.create_agent_profile_revision(
         conn,
         tenant_id="tenant-a",
         agent_id="agt_support",
         status=status,
         name="Support assistant",
         description="Approved support helper.",
+        starter_prompts=[],
         instructions="Private instruction",
-        legacy_model_id="model-a",
-        skill_id="general-chat",
-        skill_version="version-a",
+        skill_set=[{"skill_id": "general-chat"}],
         mcp_tool_ids=["mcp-a", "mcp-b"],
+        avatar_ref="builtin:agent",
+        avatar_seed="support-assistant",
+        market_tags=["support"],
         content_hash="a" * 64,
         created_by="creator-a",
         published_by=published_by,
@@ -533,46 +532,36 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
     )
 
     insert_sql, params = conn.calls[2]
-    assert insert_sql == " ".join(
-        """
-        insert into agent_profile_revisions(
-          tenant_id, agent_id, revision, status, revision_status, name, description, instructions,
-          model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
-          avatar_ref, avatar_style_ref, avatar_seed, category, market_tag, market_tags, visibility, allowed_department_ids, allowed_roles,
-          allowed_user_ids, welcome_message, starter_prompts, capability_summary,
-          recommended_tasks, supported_input_types, supported_file_types, expected_outputs,
-          permissions_and_data_access_notice, avatar_asset_id,
-          created_by, published_by, published_at,
-          published_from_revision, withdrawn_from_revision
-        )
-        values (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s::jsonb,
-                %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s,
-                %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s,
-                %s, %s, case when %s::text is null then null else now() end,
-                %s, %s)
-        returning tenant_id, agent_id, revision, revision_status as status, name, description, instructions,
-                  model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
-                  avatar_ref, avatar_style_ref, avatar_seed, category, market_tag, market_tags, visibility, allowed_department_ids, allowed_roles,
-                  allowed_user_ids, welcome_message, starter_prompts, capability_summary,
-                  recommended_tasks, supported_input_types,
-                  supported_file_types as legacy_supported_file_types, expected_outputs,
-                  permissions_and_data_access_notice, avatar_asset_id,
-                  created_at, published_at
-        """.split()
+    assert "revision_status" in insert_sql
+    assert "starter_prompts" in insert_sql
+    assert "skill_set" in insert_sql
+    assert "market_tags" in insert_sql
+    for retired_column in (
+        " welcome_message",
+        " capability_summary",
+        " recommended_tasks",
+        " supported_input_types",
+        " supported_file_types",
+        " expected_outputs",
+        " permissions_and_data_access_notice",
+        " model_id",
+        " skill_id",
+        " skill_version",
+        " avatar_style_ref",
+        " avatar_asset_id",
+        " category",
+        " market_tag,",
+    ):
+        assert retired_column not in insert_sql
+    assert len(params) == insert_sql.count("%s") == 23
+    assert params[0:6] == (
+        "tenant-a", "agt_support", 8, status, "Support assistant", "Approved support helper."
     )
-    assert len(params) == insert_sql.count("%s") == 38
-    assert params == (
-        "tenant-a", "agt_support", 8, expected_legacy_status, status,
-        "Support assistant", "Approved support helper.",
-        "Private instruction", "model-a", "general-chat", "version-a",
-        '[{"skill_id": "general-chat", "expected_version": "version-a"}]',
-        '["mcp-a", "mcp-b"]',
-        "a" * 64, "builtin:agent", "", "", "general", "", "[]", "tenant", "[]", "[]", "[]",
-        "", "[]", "", "[]", '["text"]', "[]", "[]", "", None,
-        "creator-a", published_by, published_by, published_from_revision, None,
-    )
+    assert params[7] == "Private instruction"
+    assert params[8] == '[{"skill_id": "general-chat"}]'
+    assert params[9] == '["mcp-a", "mcp-b"]'
+    assert params[11:15] == ("builtin:agent", "support-assistant", '["support"]', "tenant")
+    assert params[19:23] == (published_by, published_by, published_from_revision, None)
     assert saved["published_at"] == expected_published_at
 
 
@@ -593,33 +582,28 @@ async def test_list_published_agent_profiles_searches_safe_public_use_fields():
             return RowsCursor()
 
     conn = Connection()
-    rows = await repositories.list_current_published_agent_profiles(
+    rows = await agent_profile_persistence.list_current_published_agent_profiles(
         conn,
         tenant_id="company-default",
         query="内部通知润色",
-        category="writing",
         limit=500,
     )
 
     assert rows == []
     assert "normalize(agent_profile_revisions.name, NFKC) ilike %s" in conn.sql
     assert "normalize(agent_profile_revisions.description, NFKC) ilike %s" in conn.sql
-    assert "normalize(agent_profile_revisions.capability_summary, NFKC) ilike %s" in conn.sql
     assert "jsonb_array_elements_text" in conn.sql
-    assert "jsonb_typeof(agent_profile_revisions.recommended_tasks) = 'array'" in conn.sql
-    assert "normalize(recommended_task.value, NFKC) ilike %s" in conn.sql
+    assert "normalize(tag.value, NFKC) ilike %s" in conn.sql
     assert "select count(*)" in conn.sql
     assert "runs.tenant_id = agent_profile_revisions.tenant_id" in conn.sql
     assert "runs.agent_id = agent_profile_revisions.agent_id" in conn.sql
     assert "runs.status = 'succeeded'" in conn.sql
-    assert conn.sql.count("escape E'\\\\'") == 4
+    assert conn.sql.count("escape E'\\\\'") == 3
     assert conn.params == (
         "company-default",
         "%内部通知润色%",
         "%内部通知润色%",
         "%内部通知润色%",
-        "%内部通知润色%",
-        "writing",
         200,
     )
 
@@ -639,7 +623,7 @@ async def test_list_published_agent_profiles_escapes_like_metacharacters():
             return RowsCursor()
 
     conn = Connection()
-    await repositories.list_current_published_agent_profiles(
+    await agent_profile_persistence.list_current_published_agent_profiles(
         conn,
         tenant_id="company-default",
         query="%_\\",
@@ -647,7 +631,6 @@ async def test_list_published_agent_profiles_escapes_like_metacharacters():
 
     assert conn.params == (
         "company-default",
-        "%\\%\\_\\\\%",
         "%\\%\\_\\\\%",
         "%\\%\\_\\\\%",
         "%\\%\\_\\\\%",

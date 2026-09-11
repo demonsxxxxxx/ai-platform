@@ -28,34 +28,7 @@ async def fake_transaction():
     yield object()
 
 
-def test_retired_agent_apps_route_requires_principal():
-    client = TestClient(create_app())
-
-    response = client.get("/api/ai/agent-apps")
-
-    assert response.status_code == 401
-
-
-def test_retired_agent_apps_route_points_authenticated_clients_to_profiles(monkeypatch):
-    monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    client = TestClient(create_app())
-
-    response = client.get(
-        "/api/ai/agent-apps",
-        headers={
-            "x-ai-user-id": "user-a",
-            "x-ai-user-name": "User A",
-            "x-ai-tenant-id": "default",
-            "x-ai-roles": "user",
-            "x-ai-gateway-secret": "test-secret",
-        },
-    )
-
-    assert response.status_code == 410
-    assert response.json()["detail"] == "agent_apps_retired_use_agent_profiles"
-
-
-def test_agent_apps_public_profile_detail_uses_safe_authority_projection(monkeypatch):
+def test_agent_profiles_public_detail_uses_safe_authority_projection(monkeypatch):
     async def public_profile(_conn, *, principal, agent_id):
         assert (principal.tenant_id, agent_id) == ("default", "agt_support")
         return {
@@ -63,18 +36,11 @@ def test_agent_apps_public_profile_detail_uses_safe_authority_projection(monkeyp
             "expected_revision": 7,
             "name": "Support assistant",
             "description": "Approved support help.",
-            "welcome_message": "",
             "starter_prompts": [],
-            "capability_summary": "",
-            "recommended_tasks": [],
-            "supported_input_types": ["text", "file"],
-            "expected_outputs": [],
-            "permissions_and_data_access_notice": "",
             "published_at": None,
             "avatar_ref": "builtin:assistant",
-            "avatar_seed": "",
-            "category": "support",
-            "market_tag": "",
+            "avatar_seed": "agt-support",
+            "market_tags": ["support"],
             "is_favorite": False,
         }
 
@@ -100,18 +66,11 @@ def test_agent_apps_public_profile_detail_uses_safe_authority_projection(monkeyp
         "expected_revision": 7,
         "name": "Support assistant",
         "description": "Approved support help.",
-        "welcome_message": "",
         "starter_prompts": [],
-        "capability_summary": "",
-        "recommended_tasks": [],
-        "supported_input_types": ["text", "file"],
-        "expected_outputs": [],
-        "permissions_and_data_access_notice": "",
         "published_at": None,
         "avatar_ref": "builtin:assistant",
-        "avatar_seed": "",
-        "category": "support",
-        "market_tag": "",
+        "avatar_seed": "agt-support",
+        "market_tags": ["support"],
         "is_favorite": False,
     }
 
@@ -126,9 +85,11 @@ def test_agent_profile_favorite_uses_authenticated_principal_and_safe_projection
             "expected_revision": 7,
             "name": "Support assistant",
             "description": "Approved support help.",
+            "starter_prompts": [],
             "avatar_ref": "builtin:assistant",
-            "category": "support",
-            "market_tag": "客户服务",
+            "avatar_seed": "agt-support",
+            "market_tags": ["客户服务"],
+            "published_at": None,
             "is_favorite": True,
         }
 
@@ -145,7 +106,7 @@ def test_agent_profile_favorite_uses_authenticated_principal_and_safe_projection
 
     assert response.status_code == 200
     assert observed["request"] == ("default", "user-a", "agt_support", True)
-    assert response.json()["market_tag"] == "客户服务"
+    assert response.json()["market_tags"] == ["客户服务"]
     assert response.json()["is_favorite"] is True
 
     observed: dict[str, object] = {}

@@ -1448,7 +1448,7 @@ async def test_profile_retry_admission_uses_fresh_authority_transaction_for_comm
     monkeypatch.setattr(repository_module, "get_chat_submission", get_submission)
     monkeypatch.setattr(repository_module, "get_authorized_run", get_run)
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
-    monkeypatch.setattr("app.routes.chat.reauthorize_pinned_run_for_replay", reauthorize)
+    monkeypatch.setattr("app.routes.chat._agent_profile_authority.reauthorize_pinned_run_for_replay", reauthorize)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", no_existing)
     monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
     monkeypatch.setattr(repository_module, "append_event", append_event)
@@ -1550,7 +1550,7 @@ async def test_profile_postcommit_lost_ack_is_recoverable_and_duplicate_retry_do
     monkeypatch.setattr(repository_module, "get_chat_submission", get_submission)
     monkeypatch.setattr(repository_module, "get_authorized_run", get_run)
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
-    monkeypatch.setattr("app.routes.chat.reauthorize_pinned_run_for_replay", reauthorize)
+    monkeypatch.setattr("app.routes.chat._agent_profile_authority.reauthorize_pinned_run_for_replay", reauthorize)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", read_admission)
     monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
     monkeypatch.setattr(repository_module, "append_event", append_event)
@@ -2188,7 +2188,7 @@ async def test_get_session_recovers_safe_agent_conversation_identity(monkeypatch
             "agent_profile_name": "Support assistant",
             "agent_profile_description": "Approved support help.",
             "agent_profile_avatar_ref": "builtin:assistant",
-            "agent_profile_category": "support",
+            "agent_profile_avatar_seed": "agt_support",
         }
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
@@ -2202,13 +2202,7 @@ async def test_get_session_recovers_safe_agent_conversation_identity(monkeypatch
         "revision": 7,
         "name": "Support assistant",
         "description": "Approved support help.",
-        "welcome_message": "",
         "starter_prompts": [],
-        "capability_summary": "",
-        "recommended_tasks": [],
-        "supported_input_types": ["text", "file"],
-        "expected_outputs": [],
-        "permissions_and_data_access_notice": "",
         "published_at": None,
         "avatar_ref": "builtin:assistant",
         "avatar_seed": "agt_support",
@@ -4545,7 +4539,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
                 agent_id="agt_support",
                 revision=7,
                 name="Support assistant",
-                supported_input_types=["text", "file"],
+                avatar_seed="agt_support",
             ),
         )
 
@@ -4733,8 +4727,8 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         raising=False,
     )
     monkeypatch.setattr("app.routes.chat.repositories.ensure_user", late_ensure_user)
-    monkeypatch.setattr("app.routes.chat.resolve_profile_for_admission", profile_admission)
-    monkeypatch.setattr("app.routes.chat.resolve_bound_profile_for_submission", profile_admission)
+    monkeypatch.setattr("app.routes.chat._agent_profile_authority.resolve_for_admission", profile_admission)
+    monkeypatch.setattr("app.routes.chat._agent_profile_authority.resolve_bound_for_submission", profile_admission)
     monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", owned_session)
     monkeypatch.setattr(
         "app.routes.chat.repositories.authorize_selected_run_capabilities",
@@ -4762,7 +4756,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
     monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
     monkeypatch.setattr("app.routes.chat.authorize_selected_chat_mcp_tools", noop)
-    monkeypatch.setattr("app.routes.chat.reauthorize_pinned_run_for_replay", reauthorize)
+    monkeypatch.setattr("app.routes.chat._agent_profile_authority.reauthorize_pinned_run_for_replay", reauthorize)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", existing_queue_admission)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
     monkeypatch.setattr(
@@ -4981,7 +4975,7 @@ async def test_concurrent_profile_submits_serialize_on_user_lock_before_profile_
         admission_lock,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.chat.resolve_profile_for_admission", profile_admission)
+    monkeypatch.setattr("app.routes.chat._agent_profile_authority.resolve_for_admission", profile_admission)
     request = ChatStreamRequest(
         message="run the selected Agent",
         selected_agent_profile=SelectedAgentProfileRequest(
@@ -5045,7 +5039,7 @@ async def test_profile_secondary_skill_denial_is_audited_after_transaction_rollb
         admission_lock,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.chat.resolve_profile_for_admission", deny_profile)
+    monkeypatch.setattr("app.routes.chat._agent_profile_authority.resolve_for_admission", deny_profile)
     monkeypatch.setattr("app.routes.chat._audit_capability_denial", record_audit)
 
     with pytest.raises(HTTPException) as caught:
@@ -5151,7 +5145,7 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
         ensure_principal,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.chat.resolve_bound_profile_for_submission", bound_profile)
+    monkeypatch.setattr("app.routes.chat._agent_profile_authority.resolve_bound_for_submission", bound_profile)
     monkeypatch.setattr(
         "app.routes.chat.authorize_selected_chat_mcp_tools",
         authorize_transport_mcp_defaults,

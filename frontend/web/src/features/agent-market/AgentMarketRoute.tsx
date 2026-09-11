@@ -275,22 +275,8 @@ function ExpertMarketCard({
           </div>
 
           <p className="mt-4 line-clamp-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
-            {profile.capability_summary || profile.description || "已由管理员发布，可直接开始企业任务。"}
+            {profile.description || "已由管理员发布。"}
           </p>
-
-          {profile.recommended_tasks.length > 0 ? (
-            <div className="mt-4 flex flex-wrap gap-1.5" aria-label="推荐任务">
-              {profile.recommended_tasks.slice(0, 3).map((task) => (
-                <span
-                  className="max-w-full truncate rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs text-[var(--theme-text-secondary)]"
-                  key={task}
-                  title={task}
-                >
-                  {task}
-                </span>
-              ))}
-            </div>
-          ) : null}
 
           <div className="mt-5 flex items-center gap-3 border-t border-[var(--theme-border)] pt-3 text-xs">
             <span className="text-[var(--theme-text-secondary)]">已完成任务</span>
@@ -533,7 +519,7 @@ function AgentMarketCatalog({
                   setSearchInput(query);
                   handleSearch(query);
                 }}
-                placeholder="搜索专家名称、能力或任务…"
+                placeholder="搜索专家名称、说明或标签…"
                 type="search"
                 value={searchInput}
               />
@@ -854,13 +840,8 @@ function AgentMarketDetail({
               </div>
               <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">{profile.name}</h1>
               <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)] sm:text-base">
-                {profile.capability_summary || profile.description}
+                {profile.description}
               </p>
-              {profile.description && profile.description !== profile.capability_summary ? (
-                <p className="mt-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
-                  {profile.description}
-                </p>
-              ) : null}
               {profile.published_at ? (
                 <p className="mt-4 text-xs text-[var(--theme-text-secondary)]">
                   企业发布时间 {profile.published_at.slice(0, 10)}
@@ -873,47 +854,16 @@ function AgentMarketDetail({
           </div>
         </section>
 
-        <section className="grid border-b border-[var(--theme-border)] py-7 sm:grid-cols-2 sm:gap-x-10">
-          {profile.recommended_tasks.length ? (
-            <div className="pb-6 sm:pb-7">
-              <h2 className="text-sm font-semibold">适合处理</h2>
-              <ul className="mt-3 space-y-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
-                {profile.recommended_tasks.map((task) => (
-                  <li className="border-l-2 border-emerald-500 pl-3" key={task}>
-                    {task}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-          {profile.starter_prompts.length ? (
-            <div className="border-t border-[var(--theme-border)] py-6 sm:border-0 sm:py-0">
-              <h2 className="text-sm font-semibold">可以直接开始的任务</h2>
-              <ul className="mt-3 space-y-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
-                {profile.starter_prompts.map((prompt) => (
-                  <li key={prompt}>{prompt}</li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-          <div className="border-t border-[var(--theme-border)] py-6">
-            <h2 className="text-sm font-semibold">输入与输出</h2>
-            <dl className="mt-3 grid grid-cols-[5rem_1fr] gap-x-3 gap-y-2 text-sm leading-6">
-              <dt className="text-[var(--theme-text-secondary)]">输入</dt>
-              <dd>文本，可按任务附加文件</dd>
-              <dt className="text-[var(--theme-text-secondary)]">文件</dt>
-              <dd>附件可选，不由专家限定格式</dd>
-              <dt className="text-[var(--theme-text-secondary)]">输出</dt>
-              <dd>{profile.expected_outputs.join("、") || "对话答复"}</dd>
-            </dl>
-          </div>
-          <div className="border-t border-[var(--theme-border)] py-6">
-            <h2 className="text-sm font-semibold">权限与数据访问</h2>
-            <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-[var(--theme-text-secondary)]">
-              {profile.permissions_and_data_access_notice || "遵循企业当前授权策略。"}
-            </p>
-          </div>
-        </section>
+        {profile.starter_prompts.length ? (
+          <section className="border-b border-[var(--theme-border)] py-7">
+            <h2 className="text-sm font-semibold">可以直接开始的问题</h2>
+            <ul className="mt-3 space-y-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
+              {profile.starter_prompts.map((prompt) => (
+                <li key={prompt}>{prompt}</li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
 
         <div className="flex flex-col gap-3 pt-6 sm:flex-row sm:items-center sm:justify-end">
           <button
