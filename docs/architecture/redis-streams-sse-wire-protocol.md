@@ -38,10 +38,24 @@ batch items. The v4 platform adapter validates every item before receipt,
 assigns deterministic safe identities, and commits canonical public `run_events`
 plus the receipt atomically. Exact retries reuse the same rows and identities;
 a conflicting receipt fails closed. The callback response acknowledges that
-PostgreSQL commit without waiting for Redis publication or a terminal wake;
-dedicated Worker loops retry publication and terminal reconciliation from the
-durable rows. Callback transport fields and engine SDK objects are never
-browser wire fields.
+PostgreSQL commit without waiting for Redis publication or a terminal wake.
+The Worker drains publication work outside the terminal PostgreSQL transaction
+and retries terminal reconciliation from durable rows. Callback transport fields
+and engine SDK objects are never browser wire fields.
+
+Streaming body contract is explicit: each public `message.delta` frame is at
+most 8,192 code points, and this per-frame bound never becomes a cumulative
+answer cutoff. `message.completed` is metadata-only with
+`{delta_count,text_length}`; its `causation_event_id` identifies the last delta
+and the completion never carries full text.
+
+After callback v4 rows are staged, the same PostgreSQL transaction sends a
+payload-free `pg_notify` wake on `ai_platform_stream_publication`. The Worker
+LISTENs before its startup scan, drains pending rows repeatedly while work
+remains, scans after reconnect, and retains periodic fallback recovery. The
+notification is only a scheduling hint: it contains no event or answer body
+and does not replace durable rows, callback receipts, publication claims, or
+Run/Attempt authority.
 
 The Sandbox may enqueue only single-item callbacks containing one adjacent,
 already-projected `message.delta` event before this boundary. The worker batches
@@ -365,8 +379,9 @@ Reducer or hydrate failure leaves the previous cursor unchanged so reconnect
 replays the event. Missing IDs fail closed; no UUID transport fallback exists.
 Durable PostgreSQL sequence/history/status values cannot become a Redis cursor,
 reset a reconnect budget, or enter the live reducer. Reconnect sends only the
-last accepted cursor in `Last-Event-ID`. Final hydrate replaces rather than
-appends the live answer.
+last accepted cursor in `Last-Event-ID`. Terminal hydrate reconciles the same
+Run segment and accepted source identities; it does not append duplicate answer
+text or replace unrelated narration, Tool, process, or actionable status parts.
 
 ## Required focused tests
 
@@ -382,7 +397,7 @@ appends the live answer.
   activation;
 - schema-valid v4 gap, semantic duplicate transport acceptance, accepted cursor
   only after reducer or terminal-hydrate commit, matching `stream.end` fence,
-  incarnation rejection, and final hydrate replacement.
+  incarnation rejection, and terminal-hydrate reconciliation;
 
 ## Change Contract: progressive public Run timeline
 
@@ -416,7 +431,8 @@ appends the live answer.
   to its catalog-authorized public name, with ASCII characters converted to
   non-colliding full-width forms; opaque and dynamic identities use a generic
   non-ASCII marker. Exact invocation-interval text is not a public Assistant
-  source. Stateful cross-chunk sanitization, cumulative bounds, strict callback
+    source. `message.delta` uses stateful cross-chunk sanitization and bounded
+  per-frame validation; it has no cumulative answer shutdown. Strict callback
   validation, tool admission, capability receipts, and platform-owned
   terminalization remain fail closed.
 - **Ordering invariant:** public Tool lifecycle events bracket the actual
@@ -434,14 +450,28 @@ appends the live answer.
   successor-incarnation creation remain terminal-only recovery until the
   Run/Attempt owner defines a separate active-successor contract; the frontend
   never synthesizes one.
-- **Single-body invariant:** V4 `message.delta` is the public incremental body
-  authority. Complete SDK messages are fallback or reconciliation inputs. A
-  successful Result body must byte-exactly extend the selected streamed or
-  complete Assistant body; only its unsent suffix may enter the same stateful
-  public gate, and any conflict fails closed. Terminal results cannot duplicate
-  already committed text. Failed and cancelled durable history reconstructs the
-  same accepted V4 body and never trusts an unmanaged metadata marker as
-  publication authority.
+- **Single-body invariant:** v4 `message.delta` is the public incremental body
+  authority and accepted deltas remain the durable source for streamed answers.
+  `message.completed` closes the sequence with counts only and carries no answer
+  text. Terminal-only answers are split into per-frame deltas and may span
+  multiple callback batches; each batch respects the callback event-count bound,
+  and the receipt exists only after every delta batch and the final completion
+  batch are acknowledged. A successful streamed Sandbox terminal carries
+  only a versioned `AssistantAnswerReceipt` containing `schema_version`,
+  `message_id`, `delta_count`, `text_length`, and `last_delta_event_id`; its
+  legacy `message` field is exactly empty, and failed or cancelled terminals
+  cannot carry an answer receipt. The Worker
+  accepts only current-Attempt, strictly ordered v4 rows whose database and
+  canonical metadata publication states are both `published`; `pending` remains
+  retryable, while inconsistent or `suppressed` publication fails closed. Receipt,
+  identity, sequence, or length mismatch also fails closed. For streamed answers,
+  short compatibility content remains inline when persistence limits allow,
+  otherwise history stores a bounded `run_events_v4` reference, without
+  truncating the answer. Legacy non-streaming bounded terminal messages use the
+  same stable-source `assistant_delta` compatibility shape only when no streamed
+  answer exists; obsolete `assistant_final` is retired. Terminal hydrate uses the
+  same Run segment and source-local reconciliation, preserving unrelated accepted
+  sources and actionable parts.
 - **Acceptance:** focused tests prove text-only, read-only Tool, effectful local
   Tool, Skill, MCP, sequential capability, denial/failure, terminal race,
   reconnect, and failed-history behavior. Tests delay both animation-frame and
@@ -463,3 +493,16 @@ appends the live answer.
   authority, requires same-incarnation Redis reconstruction, or depends on a
   product choice not fixed above. Active successor-incarnation recovery is a
   stop condition for this Change Contract.
+
+## Retirement and compatibility disposition
+
+Removed from the active streaming path: punctuation-based withholding; the
+4,096 and 262,144 cumulative answer shutdowns; aggregate
+`message.completed.content`; the streamed Sandbox terminal full-body path;
+obsolete `assistant_final`; and obsolete frontend final-text replacement.
+Retained: bounded per-frame and queue limits, legacy non-streaming bounded
+terminal messages projected as the stable-source `assistant_delta`
+compatibility shape only when no streamed answer exists, and current history
+compatibility projection. PostgreSQL, Redis Streams/Pub/Sub,
+Run/Attempt, lease, callback-receipt, and publication-claim authorities remain
+unchanged. This source disposition is not deployment or real-latency evidence.

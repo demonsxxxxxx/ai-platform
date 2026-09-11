@@ -80,7 +80,7 @@ export function isV4MessageCorrelatedEventType(
 const PAYLOAD_KEYS: Record<string, readonly string[]> = {
   "message.started": [],
   "message.delta": ["delta"],
-  "message.completed": ["content"],
+  "message.completed": ["delta_count", "text_length"],
   "thinking.started": ["thinking_id", "public_summary"],
   "thinking.delta": ["thinking_id", "delta"],
   "thinking.completed": ["thinking_id", "public_summary"],
@@ -113,7 +113,7 @@ const PAYLOAD_KEYS: Record<string, readonly string[]> = {
 
 const REQUIRED_PAYLOAD_KEYS: Record<string, readonly string[]> = {
   "message.delta": ["delta"],
-  "message.completed": ["content"],
+  "message.completed": ["delta_count", "text_length"],
   "thinking.delta": ["thinking_id", "delta"],
   "agent.progress": ["schema_version", "step_id", "phase", "lifecycle", "message"],
   "model.completed": ["duration_ms", "turn_count", "stop_category"],
@@ -226,6 +226,8 @@ const PAYLOAD_STRING_MAX: Record<string, number> = {
 };
 const NON_EMPTY_PAYLOAD_STRINGS = new Set(["delta", "display_name", "public_summary", "message", "media_type", "code", "default_message"]);
 const PAYLOAD_NUMBER_MAX: Record<string, number> = {
+  delta_count: Number.MAX_SAFE_INTEGER,
+  text_length: Number.MAX_SAFE_INTEGER,
   duration_ms: 86400000, turn_count: 10000, progress_percent: 100, size_bytes: 1099511627776,
 };
 
@@ -334,6 +336,11 @@ function payloadIsValid(eventType: string, payload: unknown, _runId: string, inc
     const numberMax = PAYLOAD_NUMBER_MAX[key];
     if (numberMax !== undefined && !safeInteger(value, 0, numberMax)) return false;
     if (key === "hydrate_required" && value !== true) return false;
+    if (
+      eventType === "message.completed" &&
+      (key === "delta_count" || key === "text_length") &&
+      !safeInteger(value, 1, Number.MAX_SAFE_INTEGER)
+    ) return false;
     if (["requested_event_id", "earliest_available_event_id", "latest_available_event_id"].includes(key)) {
       if (value !== null && typeof value !== "string") return false;
     }
@@ -522,7 +529,22 @@ export function projectV4EventToLegacyHandler(event: V4PublicEvent, fallbackMess
     case "message.delta":
       return { streamEvent: { event: "message:chunk", data: JSON.stringify({ ...base, content: payload.delta, projection_version: "ai-platform.chat-public-projection.v1", projection_kind: "assistant_delta" }) }, messageId: messageTarget };
     case "message.completed":
-      return { streamEvent: { event: "message:chunk", data: JSON.stringify({ ...base, content: payload.content, projection_version: "ai-platform.chat-public-projection.v1", projection_kind: "assistant_final" }) }, messageId: messageTarget };
+      return {
+        streamEvent: {
+          event: "run_event",
+          data: JSON.stringify({
+            ...base,
+            event_type: "public_activity",
+            projection_version: "ai-platform.chat-public-projection.v1",
+            stage: "message_completed",
+            status: "completed",
+            severity: "info",
+            message: "Assistant response complete",
+            payload,
+          }),
+        },
+        messageId: messageTarget,
+      };
     case "thinking.started":
       return { streamEvent: activity("thinking_started", typeof payload.public_summary === "string" ? payload.public_summary : "", "info", payload), messageId: messageTarget };
     case "thinking.delta":

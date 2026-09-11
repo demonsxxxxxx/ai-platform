@@ -981,15 +981,15 @@ test("commits execution protocol state before a throttled React publication", ()
   assert.equal(ctx.setMessagesCalls(), 2);
 });
 
-test("uses the durable sequence for assistant deltas and final replacement", () => {
+test("uses the durable sequence for assistant deltas", () => {
   const ctx = createContext(
     [
       {
         id: "assistant-1",
         role: "assistant",
-        content: "A",
+        content: "",
         timestamp: new Date(),
-        parts: [{ type: "text", content: "A" }],
+        parts: [],
         isStreaming: true,
       },
     ],
@@ -1016,7 +1016,7 @@ test("uses the durable sequence for assistant deltas and final replacement", () 
         run_id: "run-active",
         event_id: "evt-delta-8",
         sequence: 8,
-        content: "B",
+        content: "A",
       }),
     },
     "assistant-1",
@@ -1034,7 +1034,7 @@ test("uses the durable sequence for assistant deltas and final replacement", () 
         run_id: "run-active",
         event_id: "evt-delta-8-replayed",
         sequence: 8,
-        content: "B",
+        content: "A",
       }),
     },
     "assistant-1",
@@ -1043,18 +1043,42 @@ test("uses the durable sequence for assistant deltas and final replacement", () 
     ctx,
     binding,
   );
-  const acceptedFinal = handleStreamEvent(
+  const acceptedArtifact = handleStreamEvent(
+    {
+      event: "artifact_card",
+      data: JSON.stringify({
+        projection_version: "ai-platform.chat-public-projection.v1",
+        event_id: "evt-artifact-9",
+        sequence: 9,
+        run_id: "run-active",
+        artifact_id: "artifact-9",
+        artifact_type: "document",
+        label: "report.txt",
+        content_type: "text/plain",
+        size_bytes: 12,
+        status: "ready",
+      }),
+    },
+    "assistant-1",
+    "evt-artifact-9",
+    undefined,
+    ctx,
+    binding,
+  );
+  const acceptedContinuation = handleStreamEvent(
     {
       event: "message:chunk",
       data: JSON.stringify({
         projection_version: "ai-platform.chat-public-projection.v1",
-        projection_kind: "assistant_final",
+        projection_kind: "assistant_delta",
         run_id: "run-active",
-        content: "AB!",
+        event_id: "evt-delta-10",
+        sequence: 10,
+        content: "B",
       }),
     },
     "assistant-1",
-    "run-active:final",
+    "evt-delta-10",
     undefined,
     ctx,
     binding,
@@ -1062,17 +1086,35 @@ test("uses the durable sequence for assistant deltas and final replacement", () 
 
   assert.equal(acceptedDelta, true);
   assert.equal(rejectedReplay, false);
-  assert.equal(acceptedFinal, true);
-  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 8);
-  assert.equal(ctx.messages()[0]?.content, "AB!");
+  assert.equal(acceptedArtifact, true);
+  assert.equal(acceptedContinuation, true);
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 10);
+  assert.equal(ctx.messages()[0]?.content, "AB");
   assert.deepEqual(ctx.messages()[0]?.parts, [
     {
       type: "text",
-      content: "AB!",
+      content: "A",
       logical_id: "assistant-1:text:0:0:root",
     },
+    {
+      type: "artifact",
+      artifact_id: "artifact-9",
+      artifact_type: "document",
+      label: "report.txt",
+      content_type: "text/plain",
+      size_bytes: 12,
+      download_url: undefined,
+      preview_url: undefined,
+      status: "ready",
+      created_at: undefined,
+    },
+    {
+      type: "text",
+      content: "B",
+      logical_id: "assistant-1:text:1:0:root",
+    },
   ]);
-  assert.equal(ctx.setMessagesCalls(), 2);
+  assert.equal(ctx.setMessagesCalls(), 3);
 });
 
 test("commits a public delta before a later execution state and keeps history semantically coherent", () => {
@@ -1541,7 +1583,7 @@ test("sandbox error side effects never expose unknown backend diagnostics", () =
   );
 });
 
-test("v4 assistant final and artifact events share the run-local sequence fence", () => {
+test("v4 assistant deltas and artifact events share the run-local sequence fence", () => {
   const ctx = createContext([
     {
       id: "assistant-sequence",
@@ -1560,8 +1602,9 @@ test("v4 assistant final and artifact events share the run-local sequence fence"
       run_id: "run-sequence",
       sequence: 20,
       projection_version: "ai-platform.chat-public-projection.v1",
-      projection_kind: "assistant_final",
-      content: "accepted final",
+      projection_kind: "assistant_delta",
+      event_id: "evt-sequence-20",
+      content: "accepted answer",
     }),
   } as StreamEvent, "assistant-sequence", "cursor-20", undefined, ctx), true);
   assert.equal(handleStreamEvent({
@@ -1583,8 +1626,9 @@ test("v4 assistant final and artifact events share the run-local sequence fence"
       run_id: "run-sequence",
       sequence: 19,
       projection_version: "ai-platform.chat-public-projection.v1",
-      projection_kind: "assistant_final",
-      content: "stale final",
+      projection_kind: "assistant_delta",
+      event_id: "evt-sequence-19",
+      content: "stale answer",
     }),
   } as StreamEvent, "assistant-sequence", "cursor-22", undefined, ctx), false);
   assert.equal(handleStreamEvent({
@@ -1600,7 +1644,7 @@ test("v4 assistant final and artifact events share the run-local sequence fence"
       status: "available",
     }),
   } as StreamEvent, "assistant-sequence", "cursor-23", undefined, ctx), false);
-  assert.match(ctx.messages()[0]?.content || "", /accepted final/);
+  assert.match(ctx.messages()[0]?.content || "", /accepted answer/);
   assert.deepEqual(ctx.messages()[0]?.parts?.map((part) => part.type), ["text", "artifact"]);
 });
 

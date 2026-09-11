@@ -3,19 +3,14 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request as HttpRequest
 from app import repositories
-from app.agent_apps import AgentProfileAuthority
-from app.agent_apps.api import AgentProfileDraftDefinition, normalize_market_tag, normalize_market_tags
-from app.agent_profiles import (
-    list_admin_profiles,
-    publish_draft,
-    save_draft,
-)
+from app.agent_apps.api import AgentProfileAuthority
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
 from app.department_directory import validate_profile_department_authorities
 from app.models import (
     AgentAppRunRequest,
     AgentProfileDraftRequest,
+    AgentProfileDraftTestRequest,
     AgentProfilePublishRequest,
     AgentProfileTrialRunRequest,
     AgentProfileTrialRunResponse,
@@ -71,23 +66,6 @@ def _normalize_catalog_query(query: str | None) -> str | None:
     return normalized
 
 
-def _parse_draft_payload(payload: dict[str, Any]) -> AgentProfileDraftDefinition:
-    definition_payload = dict(payload)
-    raw_market_tags = definition_payload.pop("market_tags", [])
-    try:
-        market_tags = normalize_market_tags(raw_market_tags)
-        if "market_tag" in definition_payload:
-            definition_payload["market_tag"] = normalize_market_tag(definition_payload["market_tag"])
-        legacy = AgentProfileDraftRequest.model_validate(definition_payload)
-        return AgentProfileDraftDefinition.from_legacy(
-            legacy,
-            market_tags=market_tags,
-            explicit_fields={"market_tags"} if "market_tags" in payload else set(),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
 async def _submit_dedicated_agent_run(
     *,
     agent_id: str,
@@ -131,34 +109,20 @@ async def _submit_dedicated_agent_run(
     )
 
 
-@router.get("/agent-apps", include_in_schema=False)
-async def retired_agent_apps(
-    _principal: AuthPrincipal = Depends(require_principal),
-) -> None:
-    """Retire the legacy hard-coded Agent App catalog without a second projection authority."""
-
-    raise HTTPException(status_code=410, detail="agent_apps_retired_use_agent_profiles")
-
-
 @router.get("/agent-profiles")
 async def list_agent_profiles(
     query: str | None = Query(default=None, min_length=1, max_length=160),
-    category: str | None = Query(default=None, pattern="^(general|support|writing|research|operations)$"),
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, list[dict[str, Any]]]:
     """Return only current-principal-safe published Agent Profile market cards."""
 
     normalized_query = _normalize_catalog_query(query)
     async with transaction() as conn:
-        if normalized_query is None and category is None:
-            profiles = await _authority.list_public(conn, principal=principal)
-        else:
-            profiles = await _authority.list_public(
-                conn,
-                principal=principal,
-                query=normalized_query,
-                category=category,
-            )
+        profiles = await _authority.list_public(
+            conn,
+            principal=principal,
+            query=normalized_query,
+        )
     return {"agent_profiles": list(profiles)}
 
 
@@ -281,7 +245,7 @@ async def admin_list_agent_profiles(
     if not is_ai_admin(principal):
         raise HTTPException(status_code=403, detail="not_ai_admin")
     async with transaction() as conn:
-        profiles = await list_admin_profiles(conn, principal=principal)
+        profiles = await _authority.list_admin(conn, principal=principal)
     return {"agent_profiles": [profile.model_dump(mode="json") for profile in profiles]}
 
 
@@ -305,7 +269,7 @@ async def admin_agent_profile_history(
 
 @router.post("/admin/agent-profiles")
 async def create_agent_profile(
-    request: dict[str, Any],
+    request: AgentProfileDraftRequest,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, Any]:
     """Save the first immutable draft revision with a server-generated Agent identity."""
@@ -314,10 +278,10 @@ async def create_agent_profile(
         raise HTTPException(status_code=403, detail="not_ai_admin")
     try:
         async with transaction() as conn:
-            profile, audit_id = await save_draft(
+            profile, audit_id = await _authority.save_draft(
                 conn,
                 principal=principal,
-                definition=_parse_draft_payload(request),
+                definition=request,
                 agent_id=None,
             )
     except repositories.RepositoryConflictError as exc:
@@ -328,7 +292,7 @@ async def create_agent_profile(
 @router.put("/admin/agent-profiles/{agent_id}")
 async def save_agent_profile_draft(
     agent_id: str,
-    request: dict[str, Any],
+    request: AgentProfileDraftRequest,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, Any]:
     """Append a later immutable draft revision for the same profile identity."""
@@ -341,10 +305,10 @@ async def save_agent_profile_draft(
         raise HTTPException(status_code=400, detail="agent_id_invalid") from exc
     try:
         async with transaction() as conn:
-            profile, audit_id = await save_draft(
+            profile, audit_id = await _authority.save_draft(
                 conn,
                 principal=principal,
-                definition=_parse_draft_payload(request),
+                definition=request,
                 agent_id=safe_agent_id,
             )
     except repositories.RepositoryConflictError as exc:
@@ -354,24 +318,20 @@ async def save_agent_profile_draft(
 
 @router.post("/admin/agent-profiles/test", response_model=AgentProfileValidationResponse)
 async def validate_agent_profile_draft(
-    request: dict[str, Any],
+    request: AgentProfileDraftTestRequest,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> AgentProfileValidationResponse:
     """Validate a saved or unsaved definition without creating an execution run."""
 
     if not is_ai_admin(principal):
         raise HTTPException(status_code=403, detail="not_ai_admin")
-    definition_payload = request.get("definition")
-    agent_id = request.get("agent_id")
-    if not isinstance(definition_payload, dict) or (agent_id is not None and not isinstance(agent_id, str)):
-        raise HTTPException(status_code=422, detail="agent_profile_draft_invalid")
     try:
         async with transaction() as conn:
             audit_id = await _authority.validate_draft(
                 conn,
                 principal=principal,
-                definition=_parse_draft_payload(definition_payload),
-                agent_id=agent_id,
+                definition=request.definition,
+                agent_id=request.agent_id,
             )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
@@ -449,7 +409,7 @@ async def publish_agent_profile(
         raise HTTPException(status_code=400, detail="agent_id_invalid") from exc
     try:
         async with transaction() as conn:
-            profile, audit_id = await publish_draft(
+            profile, audit_id = await _authority.publish_draft(
                 conn,
                 principal=principal,
                 agent_id=safe_agent_id,

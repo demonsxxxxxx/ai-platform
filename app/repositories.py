@@ -46,7 +46,6 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.error_taxonomy import summarize_error_categories
-from app.file_type_validation import profile_file_type_allowed
 from app.persistence import (
     RepositoryNotFoundError,
     artifacts,
@@ -56,7 +55,6 @@ from app.persistence import (
     retention,
 )
 import app.agent_apps.infrastructure.catalog_postgres as agent_catalog_persistence
-import app.agent_apps.infrastructure.postgres as agent_profile_persistence
 import app.context.infrastructure.postgres as memory_persistence
 import app.context.infrastructure.snapshot_postgres as context_snapshot_persistence
 import app.context.infrastructure.sources_postgres as context_sources_persistence
@@ -124,31 +122,6 @@ get_tenant_profile_validation_agent = (
     agent_catalog_persistence.get_tenant_profile_validation_agent
 )
 list_lambchat_agents = agent_catalog_persistence.list_lambchat_agents
-acquire_agent_profile_lifecycle_lock = (
-    agent_profile_persistence.acquire_agent_profile_lifecycle_lock
-)
-create_agent_profile_revision = agent_profile_persistence.create_agent_profile_revision
-ensure_agent_profile_identity = agent_profile_persistence.ensure_agent_profile_identity
-get_agent_profile_aggregate = agent_profile_persistence.get_agent_profile_aggregate
-get_agent_profile_revision = agent_profile_persistence.get_agent_profile_revision
-get_bound_published_agent_profile = (
-    agent_profile_persistence.get_bound_published_agent_profile
-)
-get_current_published_agent_profile = (
-    agent_profile_persistence.get_current_published_agent_profile
-)
-list_agent_profile_revision_history = (
-    agent_profile_persistence.list_agent_profile_revision_history
-)
-list_current_published_agent_profiles = (
-    agent_profile_persistence.list_current_published_agent_profiles
-)
-list_latest_agent_profile_revisions = (
-    agent_profile_persistence.list_latest_agent_profile_revisions
-)
-record_agent_profile_draft = agent_profile_persistence.record_agent_profile_draft
-record_agent_profile_publication = agent_profile_persistence.record_agent_profile_publication
-record_agent_profile_withdrawal = agent_profile_persistence.record_agent_profile_withdrawal
 append_message = conversation_persistence.append_message
 create_session = conversation_persistence.create_session
 ensure_workspace_belongs_to_tenant = (
@@ -7564,8 +7537,6 @@ async def authorize_files_for_run(
     file_ids: list[str],
     reusable_file_ids: list[str] | None = None,
     input_modes: list[object] | None = None,
-    agent_profile_supported_input_types: list[str] | None = None,
-    agent_profile_supported_file_types: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Lock and validate run input files before any run creation side effect."""
 
@@ -7629,28 +7600,11 @@ async def authorize_files_for_run(
             if row["run_id"] and row["run_id"] != run_id:
                 raise RepositoryConflictError("file_already_bound")
         rows.append(dict(row))
-    if agent_profile_supported_input_types is not None:
-        if rows and "file" not in agent_profile_supported_input_types:
-            raise RepositoryConflictError("agent_profile_file_input_not_supported")
-        allowed_file_types = agent_profile_supported_file_types or []
-        if rows and not all(
-            profile_file_type_allowed(row, allowed_file_types=allowed_file_types)
-            for row in rows
-        ):
-            raise RepositoryConflictError("agent_profile_file_type_not_supported")
     if input_modes is not None and has_file_input_mode(input_modes):
         compatible_ids = compatible_reusable_file_ids(rows, input_modes=input_modes)
         if len(compatible_ids) != len(rows):
             raise RepositoryConflictError("file_required_for_skill")
     return rows
-
-
-def _agent_profile_file_type_allowed(
-    row: dict[str, Any],
-    *,
-    allowed_file_types: list[str],
-) -> bool:
-    return profile_file_type_allowed(row, allowed_file_types=allowed_file_types)
 
 
 async def bind_files_to_run(

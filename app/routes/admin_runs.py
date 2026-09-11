@@ -147,6 +147,7 @@ async def admin_run_cancel(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     runtime = request.app.state.run_stream_runtime
+    attempt_lifecycle = request.app.state.run_attempt_lifecycle
     cancellation = await _require_run_cancellation_use_case(request).request_admin_cancel(
         tenant_id=principal.tenant_id,
         admin_user_id=principal.user_id,
@@ -177,12 +178,14 @@ async def admin_run_cancel(
                 run_id=run_id,
                 progress=initial_progress,
                 transaction_factory=transaction,
+                attempt_lifecycle=attempt_lifecycle,
             )
         progress = await drain_run_tool_permission_terminalization(
             tenant_id=principal.tenant_id,
             run_id=run_id,
             capabilities=runtime.worker_capabilities,
             transaction_factory=transaction,
+            attempt_lifecycle=attempt_lifecycle,
             attempt_id=cancellation.attempt_id if cancellation is not None else None,
         )
         if progress is not None and progress.is_terminal():
@@ -197,6 +200,7 @@ async def admin_run_cancel(
             run_id=run_id,
             progress=progress,
             transaction_factory=transaction,
+            attempt_lifecycle=attempt_lifecycle,
         )
     if cancellation is not None and cancellation.attempt_id:
         try:

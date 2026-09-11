@@ -145,6 +145,28 @@ interface AuthContextType extends AuthState {
 // 创建认证上下文
 const AuthContext = createContext<AuthContextType | null>(null);
 
+const DEV_AUTH_PREVIEW_USER: User = {
+  id: "dev-preview-user",
+  tenant_id: "dev-preview-tenant",
+  username: "ZX2834",
+  email: "dev-preview@localhost",
+  roles: ["admin"],
+  permissions: Object.values(Permission),
+  is_admin: true,
+  is_active: true,
+  metadata: { display_name: "ZX2834", source: "dev-preview" },
+  created_at: "",
+  updated_at: "",
+};
+
+function isDevAuthPreviewRequested(): boolean {
+  return (
+    import.meta.env?.DEV === true &&
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("dev-auth") === "1"
+  );
+}
+
 interface AuthOperationOwner {
   generation: number;
   abortController: AbortController;
@@ -378,6 +400,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // 初始化：检查现有 token 并获取用户信息
   useEffect(() => {
     mountedRef.current = true;
+    if (isDevAuthPreviewRequested() && !getAccessToken()) {
+      setToken("dev-auth-preview");
+      setUser(DEV_AUTH_PREVIEW_USER);
+      setDynamicPermissions(Object.values(Permission));
+      setIsLoading(false);
+      return () => {
+        mountedRef.current = false;
+        invalidateAuthOperation();
+      };
+    }
+
     const owner = beginAuthOperation();
     if (isCurrentAuthOperation(owner)) {
       migrateLegacyBearerStorage();

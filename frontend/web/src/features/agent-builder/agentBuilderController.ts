@@ -129,12 +129,10 @@ export function projectAgentBuilderError(
 function cloneProfile(profile: AgentProfileAdminProjection): AgentProfileAdminProjection {
   return {
     ...profile,
-    selected_skill: { ...profile.selected_skill },
+    skill_set: profile.skill_set.map((skill) => ({ ...skill })),
     mcp_tool_ids: [...profile.mcp_tool_ids],
     starter_prompts: [...profile.starter_prompts],
-    recommended_tasks: [...profile.recommended_tasks],
-    supported_input_types: [...profile.supported_input_types],
-    expected_outputs: [...profile.expected_outputs],
+    market_tags: [...profile.market_tags],
     allowed_department_ids: [...profile.allowed_department_ids],
     allowed_roles: [...profile.allowed_roles],
     allowed_user_ids: [...profile.allowed_user_ids],

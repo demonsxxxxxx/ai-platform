@@ -57,17 +57,11 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "revision": 7,
         "name": "Support assistant",
         "description": "Approved support help.",
-        "welcome_message": "",
         "starter_prompts": [],
-        "capability_summary": "",
-        "recommended_tasks": [],
-        "supported_input_types": ["text"],
-        "expected_outputs": [],
-        "permissions_and_data_access_notice": "",
         "published_at": None,
         "avatar_ref": "builtin:assistant",
         "avatar_seed": "agt_support",
-        "category": "support",
+        "market_tags": [],
         "visibility": "restricted",
         "allowed_department_ids": ["研发一部"],
         "allowed_roles": ["user"],
@@ -89,18 +83,10 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "expected_revision": 7,
         "name": "Support assistant",
         "description": "Approved support help.",
-        "welcome_message": "",
         "starter_prompts": [],
-        "capability_summary": "",
-        "recommended_tasks": [],
-        "supported_input_types": ["text", "file"],
-        "expected_outputs": [],
-        "permissions_and_data_access_notice": "",
         "published_at": None,
         "avatar_ref": "builtin:assistant",
         "avatar_seed": "agt_support",
-        "category": "support",
-        "market_tag": "",
         "market_tags": [],
     }
     assert profile_public_projection({**row, "completed_tasks": 12})["completed_tasks"] == 12
@@ -137,7 +123,7 @@ async def test_profile_department_authority_accepts_only_current_selectable_dire
         instructions="private instruction",
         visibility="restricted",
         allowed_department_ids=["药品注册"],
-        selected_skill={"skill_id": "general-chat"},
+        skill_set=[{"skill_id": "general-chat"}],
         expected_draft_revision=0,
     )
 
@@ -175,7 +161,7 @@ async def test_unpublished_profile_is_not_admitted_to_an_existing_agent_conversa
         return None
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
+        "app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile",
         no_current_publication,
     )
     authority = AgentProfileAuthority()
@@ -196,54 +182,36 @@ def _profile_row(
     revision: int = 7,
     content_hash: str | None = None,
 ) -> dict[str, object]:
-    from app.agent_apps.authority import _ROLLING_LEGACY_SUPPORTED_FILE_TYPES
-
     row: dict[str, object] = {
         "agent_id": "agt_support",
         "revision": revision,
         "status": status,
         "name": "Support assistant",
         "description": "Approved support help.",
-        "welcome_message": "",
         "starter_prompts": [],
-        "capability_summary": "",
-        "recommended_tasks": [],
-        "supported_input_types": ["text", "file"],
-        "legacy_supported_file_types": list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
-        "expected_outputs": [],
-        "permissions_and_data_access_notice": "",
         "avatar_ref": "builtin:assistant",
-        "avatar_asset_id": None,
         "avatar_seed": "agt_support",
-        "category": "support",
+        "market_tags": ["support"],
         "visibility": "tenant",
         "allowed_department_ids": [],
         "allowed_roles": [],
         "allowed_user_ids": [],
         "instructions": "private instruction",
-        "model_id": "model-a",
-        "skill_id": "general-chat",
-        "skill_version": "version-a",
-        "skill_set": [
-            {
-                "skill_id": "general-chat",
-                "expected_version": "version-a",
-            }
-        ],
+        "skill_set": [{"skill_id": "general-chat"}],
         "mcp_tool_ids": [],
         "content_hash": content_hash or "",
     }
     return _seal_profile_row(row) if content_hash is None else row
 
 
-def test_admin_profile_revision_projection_preserves_market_tag():
+def test_admin_profile_revision_projection_preserves_market_tags():
     from app.agent_apps.authority import _admin_projection, _draft_from_row
 
     row = _profile_row()
-    row["market_tag"] = "客户服务"
+    row["market_tags"] = ["客户服务"]
 
-    assert _draft_from_row(row).market_tag == "客户服务"
-    assert _admin_projection(row).market_tag == "客户服务"
+    assert _draft_from_row(row).market_tags == ["客户服务"]
+    assert _admin_projection(row).market_tags == ["客户服务"]
 
 
 def _seal_profile_row(row: dict[str, object]) -> dict[str, object]:
@@ -397,20 +365,20 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
         return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock",
+        "app.agent_apps.authority.agent_profile_repository.acquire_agent_profile_lifecycle_lock",
         lock_profile,
         raising=False,
     )
     monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", ensure_user)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_agent_profile_identity", ensure_identity)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.create_agent_profile_revision", append_revision)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.record_agent_profile_draft", record_draft)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_revision", read_draft)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.ensure_agent_profile_identity", ensure_identity)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.create_agent_profile_revision", append_revision)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.record_agent_profile_draft", record_draft)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_agent_profile_revision", read_draft)
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.get_tenant_profile_validation_agent",
         validation_agent,
     )
-    monkeypatch.setattr("app.agent_apps.authority.repositories.record_agent_profile_publication", record_publication)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.record_agent_profile_publication", record_publication)
     monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
     authority = AgentProfileAuthority(
         department_authority_validator=validate_departments,
@@ -422,7 +390,7 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
         instructions="private instruction",
         visibility="restricted",
         allowed_department_ids=["药品注册"],
-        selected_skill={"skill_id": "general-chat"},
+        skill_set=[{"skill_id": "general-chat"}],
         expected_draft_revision=7,
     )
 
@@ -435,23 +403,8 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
     assert order.index("user") < order.index("advisory_lock") < order.index("revision_append")
     assert order.index("advisory_lock") < order.index("department_validation") < order.index("revision_append")
     assert order.index("advisory_lock") < order.index("aggregate_update")
-    assert revision_writes[-1]["supported_input_types"] == ["text", "file"]
-    assert revision_writes[-1]["legacy_supported_file_types"] == [
-        "application/*",
-        "audio/*",
-        "chemical/*",
-        "font/*",
-        "image/*",
-        "message/*",
-        "model/*",
-        "multipart/*",
-        "text/*",
-        "video/*",
-    ]
-    assert revision_writes[-1]["legacy_model_id"] == "platform-selected"
-    assert "model_id" not in revision_writes[-1]
-    assert revision_writes[-1]["skill_version"] == ""
     assert revision_writes[-1]["skill_set"] == [{"skill_id": "general-chat"}]
+    assert revision_writes[-1]["market_tags"] == []
 
     order.clear()
     await authority.publish_draft(
@@ -464,23 +417,8 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
     assert order.index("revision_read") < order.index("department_validation") < order.index("revision_append")
     assert order.index("user") < order.index("advisory_lock") < order.index("revision_append")
     assert order.index("advisory_lock") < order.index("aggregate_update")
-    assert revision_writes[-1]["supported_input_types"] == ["text", "file"]
-    assert revision_writes[-1]["legacy_supported_file_types"] == [
-        "application/*",
-        "audio/*",
-        "chemical/*",
-        "font/*",
-        "image/*",
-        "message/*",
-        "model/*",
-        "multipart/*",
-        "text/*",
-        "video/*",
-    ]
-    assert revision_writes[-1]["legacy_model_id"] == "platform-selected"
-    assert "model_id" not in revision_writes[-1]
-    assert revision_writes[-1]["skill_version"] == ""
     assert revision_writes[-1]["skill_set"] == [{"skill_id": "general-chat"}]
+    assert revision_writes[-1]["market_tags"] == ["support"]
 
     order.clear()
     await authority.validate_draft(
@@ -517,15 +455,15 @@ async def test_publish_rejects_a_tampered_draft_before_validation_or_append(monk
         noop,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock",
+        "app.agent_apps.authority.agent_profile_repository.acquire_agent_profile_lifecycle_lock",
         noop,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_agent_profile_revision",
+        "app.agent_apps.authority.agent_profile_repository.get_agent_profile_revision",
         read_draft,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.create_agent_profile_revision",
+        "app.agent_apps.authority.agent_profile_repository.create_agent_profile_revision",
         forbidden,
     )
     monkeypatch.setattr(
@@ -575,15 +513,15 @@ async def test_publish_rejects_an_unsigned_multi_skill_draft(monkeypatch, invali
         noop,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock",
+        "app.agent_apps.authority.agent_profile_repository.acquire_agent_profile_lifecycle_lock",
         noop,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_agent_profile_revision",
+        "app.agent_apps.authority.agent_profile_repository.get_agent_profile_revision",
         read_draft,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.create_agent_profile_revision",
+        "app.agent_apps.authority.agent_profile_repository.create_agent_profile_revision",
         forbidden,
     )
     monkeypatch.setattr(
@@ -643,7 +581,7 @@ async def test_profile_authority_provisions_and_tenant_validates_admin_fk_identi
 
 
 @pytest.mark.asyncio
-async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit_empty(monkeypatch):
+async def test_profile_update_persists_the_submitted_canonical_definition(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
     from app.models import AgentProfileDraftRequest
 
@@ -685,22 +623,19 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
                 for field in (
                     "name",
                     "description",
+                    "starter_prompts",
                     "instructions",
-                    "skill_id",
-                    "skill_version",
                     "skill_set",
                     "mcp_tool_ids",
-                    "market_tag",
                     "avatar_ref",
                     "avatar_seed",
-                    "category",
+                    "market_tags",
                     "visibility",
                     "allowed_department_ids",
                     "allowed_roles",
                     "allowed_user_ids",
                 )
             }
-            | {"model_id": kwargs["legacy_model_id"]}
         )
         rows[revision] = row
         return row
@@ -708,13 +643,13 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
     async def audit(*_args, **_kwargs):
         return "aud_profile"
 
-    monkeypatch.setattr("app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock", noop)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.acquire_agent_profile_lifecycle_lock", noop)
     monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", noop)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_agent_profile_identity", noop)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_revision", read_prior)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.create_agent_profile_revision", append_revision)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.record_agent_profile_draft", noop)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.record_agent_profile_publication", noop)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.ensure_agent_profile_identity", noop)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_agent_profile_revision", read_prior)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.create_agent_profile_revision", append_revision)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.record_agent_profile_draft", noop)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.record_agent_profile_publication", noop)
     monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
     authority = AgentProfileAuthority(department_authority_validator=noop)
 
@@ -726,13 +661,13 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
     omitted = AgentProfileDraftRequest(
         name="Updated support assistant",
         instructions="updated private instruction",
-        selected_skill={"skill_id": "general-chat"},
+        skill_set=[{"skill_id": "general-chat"}],
         expected_draft_revision=7,
     )
     assert not {
         "avatar_ref",
         "avatar_seed",
-        "category",
+        "market_tags",
         "visibility",
         "allowed_department_ids",
         "allowed_roles",
@@ -746,13 +681,13 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
         agent_id="agt_support",
     )
 
-    assert captured[-1]["avatar_ref"] == "builtin:research"
-    assert captured[-1]["avatar_seed"] == "support-custom-seed"
-    assert captured[-1]["category"] == "research"
-    assert captured[-1]["visibility"] == "restricted"
-    assert captured[-1]["allowed_department_ids"] == ["research"]
-    assert captured[-1]["allowed_roles"] == ["analyst"]
-    assert captured[-1]["allowed_user_ids"] == ["user-special"]
+    assert captured[-1]["avatar_ref"] == "builtin:agent"
+    assert captured[-1]["avatar_seed"] == "agt_support"
+    assert captured[-1]["market_tags"] == []
+    assert captured[-1]["visibility"] == "tenant"
+    assert captured[-1]["allowed_department_ids"] == []
+    assert captured[-1]["allowed_roles"] == []
+    assert captured[-1]["allowed_user_ids"] == []
 
     await authority.publish_draft(
         object(),
@@ -761,10 +696,10 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
         expected_revision=8,
     )
     assert captured[-1]["status"] == "published"
-    assert captured[-1]["visibility"] == "restricted"
-    assert captured[-1]["allowed_department_ids"] == ["research"]
-    assert captured[-1]["allowed_roles"] == ["analyst"]
-    assert captured[-1]["allowed_user_ids"] == ["user-special"]
+    assert captured[-1]["visibility"] == "tenant"
+    assert captured[-1]["allowed_department_ids"] == []
+    assert captured[-1]["allowed_roles"] == []
+    assert captured[-1]["allowed_user_ids"] == []
 
     explicit_empty = omitted.model_copy(
         update={
@@ -800,7 +735,7 @@ async def test_profile_update_preserves_omitted_acl_metadata_but_honors_explicit
 
 
 @pytest.mark.asyncio
-async def test_draft_preview_uses_presence_aware_effective_existing_definition(monkeypatch):
+async def test_draft_preview_validates_the_submitted_canonical_definition(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
     from app.models import AgentProfileDraftRequest
 
@@ -837,16 +772,16 @@ async def test_draft_preview_uses_presence_aware_effective_existing_definition(m
         return "aud_preview"
 
     monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", noop)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock", noop)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_aggregate", read_aggregate)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_revision", read_prior)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.acquire_agent_profile_lifecycle_lock", noop)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_agent_profile_aggregate", read_aggregate)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_agent_profile_revision", read_prior)
     monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
     authority = AgentProfileAuthority(department_authority_validator=noop)
     monkeypatch.setattr(authority, "_validate_definition", validate)
     omitted = AgentProfileDraftRequest(
         name="Updated support assistant",
         instructions="updated private instruction",
-        selected_skill={"skill_id": "general-chat"},
+        skill_set=[{"skill_id": "general-chat"}],
         expected_draft_revision=7,
     )
 
@@ -856,15 +791,15 @@ async def test_draft_preview_uses_presence_aware_effective_existing_definition(m
         definition=omitted,
         agent_id="agt_support",
     )
-    assert validated[-1].visibility == "restricted"
-    assert validated[-1].allowed_department_ids == ["research"]
-    assert validated[-1].allowed_roles == ["analyst"]
-    assert validated[-1].allowed_user_ids == ["user-special"]
+    assert validated[-1].visibility == "tenant"
+    assert validated[-1].allowed_department_ids == []
+    assert validated[-1].allowed_roles == []
+    assert validated[-1].allowed_user_ids == []
 
     explicit_empty = AgentProfileDraftRequest(
         name="Updated support assistant",
         instructions="updated private instruction",
-        selected_skill={"skill_id": "general-chat"},
+        skill_set=[{"skill_id": "general-chat"}],
         visibility="restricted",
         allowed_department_ids=[],
         allowed_roles=[],
@@ -906,11 +841,11 @@ async def test_draft_preview_rejects_a_superseded_revision_before_validation_or_
 
     monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", ensure_user)
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock",
+        "app.agent_apps.authority.agent_profile_repository.acquire_agent_profile_lifecycle_lock",
         lifecycle_lock,
     )
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_aggregate", aggregate)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_revision", forbidden)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_agent_profile_aggregate", aggregate)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_agent_profile_revision", forbidden)
     monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", forbidden)
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "_validate_definition", forbidden)
@@ -922,7 +857,7 @@ async def test_draft_preview_rejects_a_superseded_revision_before_validation_or_
             definition=AgentProfileDraftRequest(
                 name="Superseded draft",
                 instructions="private instructions",
-                selected_skill={"skill_id": "general-chat"},
+                skill_set=[{"skill_id": "general-chat"}],
                 expected_draft_revision=7,
             ),
             agent_id="agt_support",
@@ -949,8 +884,8 @@ async def test_public_detail_uses_the_same_acl_as_catalog(monkeypatch):
     async def list_favorite_ids(*_args, **_kwargs):
         return set()
 
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_current_published_agent_profile", get_current)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.list_current_published_agent_profiles", list_current)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile", get_current)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.list_current_published_agent_profiles", list_current)
     authority = AgentProfileAuthority(favorite_ids_loader=list_favorite_ids)
 
     async def validate(*_args, **_kwargs):
@@ -996,7 +931,7 @@ async def test_favorite_does_not_bypass_public_profile_acl(monkeypatch):
         return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
     monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", ensure_user)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_current_published_agent_profile", get_current)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile", get_current)
     authority = AgentProfileAuthority(favorite_setter=set_favorite)
     monkeypatch.setattr(authority, "_validate_definition", validate)
 
@@ -1033,11 +968,11 @@ async def test_public_catalog_and_admission_reject_a_tampered_publication(monkey
         raise AssertionError("integrity rejection must happen before capability validation")
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
+        "app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile",
         get_current,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.list_current_published_agent_profiles",
+        "app.agent_apps.authority.agent_profile_repository.list_current_published_agent_profiles",
         list_current,
     )
     authority = AgentProfileAuthority(favorite_ids_loader=list_favorite_ids)
@@ -1094,8 +1029,8 @@ async def test_bound_profile_uses_current_acl_while_executing_the_pinned_revisio
     async def forbidden_validation(*_args, **_kwargs):
         raise AssertionError("current ACL denial must happen before capability validation")
 
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_bound_published_agent_profile", get_bound)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_current_published_agent_profile", get_current)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_bound_published_agent_profile", get_bound)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile", get_current)
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "_validate_definition", forbidden_validation)
 
@@ -1136,11 +1071,11 @@ async def test_bound_profile_rejects_a_tampered_current_acl(monkeypatch):
         raise AssertionError("current ACL integrity must fail before capability validation")
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
+        "app.agent_apps.authority.agent_profile_repository.get_bound_published_agent_profile",
         get_bound,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
+        "app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile",
         get_current,
     )
     authority = AgentProfileAuthority()
@@ -1201,7 +1136,7 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
         observed["audit"] = kwargs
         return "aud_conversation"
 
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_current_published_agent_profile", get_current)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile", get_current)
     monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_workspace", remember_workspace)
     monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", remember_user)
     monkeypatch.setattr("app.agent_apps.authority.repositories.create_session", create_session)
@@ -1244,17 +1179,10 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
             "revision": 7,
             "name": "Support assistant",
             "description": "Approved support help.",
-            "welcome_message": "",
             "starter_prompts": [],
-            "capability_summary": "",
-            "recommended_tasks": [],
-            "supported_input_types": ["text", "file"],
-            "expected_outputs": [],
-            "permissions_and_data_access_notice": "",
-            "published_at": None,
             "avatar_ref": "builtin:assistant",
             "avatar_seed": "agt_support",
-            "category": "support",
+            "published_at": None,
         },
         "created_at": None,
         "updated_at": None,
@@ -1298,15 +1226,9 @@ async def test_agent_conversation_operation_replay_returns_one_pinned_session_wi
             "admitted_agent_profile_hash": profile_row["content_hash"],
             "agent_profile_name": "Support assistant",
             "agent_profile_description": "Approved support help.",
-            "agent_profile_welcome_message": "",
             "agent_profile_starter_prompts": [],
-            "agent_profile_capability_summary": "",
-            "agent_profile_recommended_tasks": [],
-            "agent_profile_supported_input_types": ["text"],
-            "agent_profile_expected_outputs": [],
-            "agent_profile_permissions_and_data_access_notice": "",
             "agent_profile_avatar_ref": "builtin:assistant",
-            "agent_profile_category": "support",
+            "agent_profile_avatar_seed": "agt_support",
             "agent_profile_published_at": None,
         }
         return session_id, True
@@ -1318,7 +1240,7 @@ async def test_agent_conversation_operation_replay_returns_one_pinned_session_wi
     async def noop(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_current_published_agent_profile", get_current)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile", get_current)
     monkeypatch.setattr("app.agent_apps.authority.repositories.get_authorized_session_projection", get_session)
     monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_workspace", noop)
     monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", noop)
@@ -1395,15 +1317,9 @@ async def test_agent_conversation_operation_replay_rejects_exact_title_mismatch(
         "admitted_agent_profile_hash": "a" * 64,
         "agent_profile_name": "Support assistant",
         "agent_profile_description": "Approved support help.",
-        "agent_profile_welcome_message": "",
         "agent_profile_starter_prompts": [],
-        "agent_profile_capability_summary": "",
-        "agent_profile_recommended_tasks": [],
-        "agent_profile_supported_input_types": ["text"],
-        "agent_profile_expected_outputs": [],
-        "agent_profile_permissions_and_data_access_notice": "",
         "agent_profile_avatar_ref": "builtin:assistant",
-        "agent_profile_category": "support",
+        "agent_profile_avatar_seed": "agt_support",
         "agent_profile_published_at": None,
     }
 
@@ -1483,9 +1399,9 @@ async def test_revision_bound_conversations_stay_on_their_publication_until_unpu
     async def audit(*_args, **_kwargs):
         return "aud_conversation"
 
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_current_published_agent_profile", get_current)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile", get_current)
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
+        "app.agent_apps.authority.agent_profile_repository.get_bound_published_agent_profile",
         get_bound,
         raising=False,
     )
@@ -1582,11 +1498,11 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
         return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
+        "app.agent_apps.authority.agent_profile_repository.get_bound_published_agent_profile",
         get_bound,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
+        "app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile",
         get_current,
     )
     authority = AgentProfileAuthority()
@@ -1612,55 +1528,6 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
     }
     assert [name for name, _ in calls] == ["bound", "validate"]
     assert calls[0][1]["for_update"] is True
-
-
-@pytest.mark.asyncio
-async def test_worker_dispatch_accepts_only_the_exact_legacy_one_skill_hash(monkeypatch):
-    from app.agent_apps import AgentProfileAuthority
-    from app.agent_apps.authority import _draft_from_row, _legacy_revision_hash
-
-    row = _profile_row()
-    row["avatar_seed"] = ""
-    row["legacy_supported_file_types"] = []
-    row["content_hash"] = _legacy_revision_hash(_draft_from_row(row))
-
-    async def get_bound(*_args, **_kwargs):
-        return row
-
-    async def get_current(*_args, **_kwargs):
-        return row
-
-    async def validate(*_args, **_kwargs):
-        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
-
-    monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
-        get_bound,
-    )
-    monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
-        get_current,
-    )
-    authority = AgentProfileAuthority()
-    monkeypatch.setattr(authority, "_validate_definition", validate)
-
-    admission = await authority.resolve_bound_for_worker_dispatch(
-        object(),
-        principal=_principal(),
-        agent_id="agt_support",
-        revision=7,
-        content_hash=str(row["content_hash"]),
-    )
-    assert admission is not None
-
-    row["instructions"] = "tampered"
-    assert await authority.resolve_bound_for_worker_dispatch(
-        object(),
-        principal=_principal(),
-        agent_id="agt_support",
-        revision=7,
-        content_hash=str(row["content_hash"]),
-    ) is None
 
 
 @pytest.mark.parametrize("denial", ["withdrawn", "hash_mismatch", "acl", "capability"])
@@ -1700,11 +1567,11 @@ async def test_worker_dispatch_profile_reauthorization_fails_closed(monkeypatch,
         return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
+        "app.agent_apps.authority.agent_profile_repository.get_bound_published_agent_profile",
         get_bound,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
+        "app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile",
         get_current,
     )
     authority = AgentProfileAuthority()
@@ -1873,9 +1740,9 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
     monkeypatch.setattr(repositories, "authorize_files_for_run", noop)
     monkeypatch.setattr(repositories, "claim_chat_submission", claim_submission)
     monkeypatch.setattr("app.routes.chat.pin_agent_skill_set", lock_profile_skills)
-    monkeypatch.setattr("app.routes.chat.resolve_bound_profile_for_submission", bound_profile)
+    monkeypatch.setattr("app.routes.chat._agent_profile_authority.resolve_bound_for_submission", bound_profile)
     monkeypatch.setattr(
-        "app.routes.chat.resolve_profile_for_admission",
+        "app.routes.chat._agent_profile_authority.resolve_for_admission",
         AsyncMock(side_effect=AssertionError("a continuation must not resolve the current publication")),
     )
 
@@ -1938,7 +1805,6 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
     from app.agent_apps import AgentProfileAuthority
     from app.agent_apps.authority import (
         _draft_from_row,
-        _pre_avatar_seed_skill_set_revision_hash,
         _revision_hash,
         _revision_hash_matches,
     )
@@ -1965,22 +1831,14 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
             row = _profile_row(status="draft", revision=8)
             row["name"] = "Unpublished authoring changes"
             row["instructions"] = "new draft instructions"
-            row["avatar_seed"] = ""
-        if row["avatar_seed"]:
-            row["content_hash"] = _revision_hash(_draft_from_row(row))
-        else:
-            row["content_hash"] = _pre_avatar_seed_skill_set_revision_hash(
-                _draft_from_row(row),
-                legacy_supported_input_types=row["supported_input_types"],
-                legacy_supported_file_types=row["legacy_supported_file_types"],
-            )
+            row["avatar_seed"] = "agt-support-draft"
+        row["content_hash"] = _revision_hash(_draft_from_row(row))
         return row
 
     async def append_revision(*_args, **kwargs):
         observed["append"] = kwargs
         row = {
             **kwargs,
-            "model_id": kwargs["legacy_model_id"],
             "agent_id": "agt_support",
             "revision": 9,
             "published_at": None,
@@ -1997,15 +1855,15 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
         return "aud_profile_withdrawn"
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.acquire_agent_profile_lifecycle_lock",
+        "app.agent_apps.authority.agent_profile_repository.acquire_agent_profile_lifecycle_lock",
         lock_profile,
         raising=False,
     )
     monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", ensure_user)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_aggregate", aggregate)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_agent_profile_revision", get_revision)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.create_agent_profile_revision", append_revision)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.record_agent_profile_withdrawal", record_withdrawal)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_agent_profile_aggregate", aggregate)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_agent_profile_revision", get_revision)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.create_agent_profile_revision", append_revision)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.record_agent_profile_withdrawal", record_withdrawal)
     monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
 
     profile, audit_id = await AgentProfileAuthority().unpublish(
@@ -2022,7 +1880,7 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
     assert observed["append"]["withdrawn_from_revision"] == 7
     assert observed["append"]["name"] == "Unpublished authoring changes"
     assert observed["append"]["instructions"] == "new draft instructions"
-    assert observed["append"]["avatar_seed"] == ""
+    assert observed["append"]["avatar_seed"] == "agt-support-draft"
     assert observed["append"]["content_hash"] != "a" * 64
     assert _revision_hash_matches(
         observed["appended_row"],
@@ -2085,11 +1943,11 @@ async def test_profile_authority_accepts_the_exact_canonical_frontend_transport_
         return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
+        "app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile",
         get_current,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
+        "app.agent_apps.authority.agent_profile_repository.get_bound_published_agent_profile",
         get_bound,
     )
     authority = AgentProfileAuthority()
@@ -2166,7 +2024,7 @@ async def test_profile_authority_rejects_nonempty_client_mcp_selector_even_when_
         return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
+        "app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile",
         get_current,
     )
     authority = AgentProfileAuthority()
@@ -2209,11 +2067,9 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
     from app.models import ChatStreamRequest, SelectedAgentProfileRequest
 
     profile_row = _profile_row()
-    profile_row["skill_id"] = "skill-a"
-    profile_row["skill_version"] = "version-a"
     profile_row["skill_set"] = [
-        {"skill_id": "skill-a", "expected_version": "version-a"},
-        {"skill_id": "skill-b", "expected_version": "version-b"},
+        {"skill_id": "skill-a"},
+        {"skill_id": "skill-b"},
     ]
     _seal_profile_row(profile_row)
 
@@ -2237,7 +2093,7 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
         )
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
+        "app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile",
         get_current,
     )
     authority = AgentProfileAuthority()
@@ -2354,11 +2210,11 @@ async def test_profile_authority_rejects_incompatible_client_selectors_after_pro
         return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_current_published_agent_profile",
+        "app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile",
         get_current,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_bound_published_agent_profile",
+        "app.agent_apps.authority.agent_profile_repository.get_bound_published_agent_profile",
         get_bound,
     )
     request = ChatStreamRequest.model_validate(
@@ -2411,7 +2267,7 @@ def test_session_recovery_projects_only_safe_agent_conversation_identity():
             "agent_profile_name": "Support assistant",
             "agent_profile_description": "Approved support help.",
             "agent_profile_avatar_ref": "builtin:assistant",
-            "agent_profile_category": "support",
+            "agent_profile_avatar_seed": "agt_support",
             "instructions": "must never be projected",
             "model_id": "private-model",
             "skill_id": "private-skill",
@@ -2424,17 +2280,10 @@ def test_session_recovery_projects_only_safe_agent_conversation_identity():
         "revision": 7,
         "name": "Support assistant",
         "description": "Approved support help.",
-        "welcome_message": "",
         "starter_prompts": [],
-        "capability_summary": "",
-        "recommended_tasks": [],
-        "supported_input_types": ["text", "file"],
-        "expected_outputs": [],
-        "permissions_and_data_access_notice": "",
-        "published_at": None,
         "avatar_ref": "builtin:assistant",
         "avatar_seed": "agt_support",
-        "category": "support",
+        "published_at": None,
     }
     serialized = str(response)
     for forbidden in ("must never be projected", "private-model", "private-skill", "private-tool", "a" * 64):

@@ -67,30 +67,24 @@ function profile(
   return {
     agent_id: "agt_document_review",
     revision: 7,
+    published_revision: null,
     status: "draft",
     name: "文档审阅助手",
-    description: "审阅授权文档。",
-    welcome_message: "欢迎使用企业专家。",
+    description: "在授权范围内审阅企业文档。",
     starter_prompts: ["请审阅这份材料"],
-    capability_summary: "在授权范围内审阅企业文档。",
-    recommended_tasks: ["文档审阅"],
-    supported_input_types: ["text", "file"],
-    expected_outputs: ["审阅意见"],
-    permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
     avatar_ref: "builtin:document",
-    avatar_asset_id: null,
-    category: "operations",
+    avatar_seed: "agt-document-review",
+    market_tags: ["文档"],
     visibility: "tenant",
     allowed_department_ids: [],
     allowed_roles: [],
     allowed_user_ids: [],
     instructions: "仅使用已授权资料。",
-    selected_skill: {
-      skill_id: "document-review",
-      expected_version: "2026.07.28",
-    },
+    skill_set: [{ skill_id: "document-review" }],
     mcp_tool_ids: ["gateway::knowledge.search"],
     content_hash: "a".repeat(64),
+    created_at: "2026-08-01T00:00:00Z",
+    published_at: null,
     ...overrides,
   };
 }
@@ -145,10 +139,7 @@ test("maps only complete authorized Skill and safe MCP identities", () => {
 
 test("hydrates Skill names without catalog fallback", () => {
   const serverProfile = profile({
-    selected_skill: {
-      skill_id: "removed-skill",
-      expected_version: "sha256:removed",
-    },
+    skill_set: [{ skill_id: "removed-skill" }],
     mcp_tool_ids: ["gateway::removed"],
   });
   const editor = hydrateAgentProfileEditor(serverProfile);
@@ -162,7 +153,7 @@ test("hydrates Skill names without catalog fallback", () => {
   assert.deepEqual(editor.selectedMcpToolIds, ["gateway::removed"]);
   assert.equal(isAgentProfileEditorDirty(editor), false);
 
-  serverProfile.selected_skill.skill_id = "mutated-after-hydration";
+  serverProfile.skill_set[0].skill_id = "mutated-after-hydration";
   serverProfile.mcp_tool_ids.push("mutated-after-hydration");
   assert.equal(editor.selectedSkills[0]?.skill_id, "removed-skill");
   assert.deepEqual(editor.selectedMcpToolIds, ["gateway::removed"]);
@@ -172,13 +163,8 @@ test("materializes create and update requests with the exact optimistic revision
   const created = {
     ...createUnsavedAgentEditor(),
     name: " 新智能体 ",
-    description: " 简介 ",
-    welcomeMessage: " 欢迎使用 ",
+    description: " 统一说明 ",
     starterPrompts: [" 示例问题 "],
-    capabilitySummary: " 企业能力 ",
-    recommendedTasks: [" 推荐任务 "],
-    expectedOutputs: [" 审阅意见 "],
-    permissionsAndDataAccessNotice: " 仅访问授权数据 ",
     instructions: "Keep trailing space. ",
     selectedSkills: [{
       skill_id: "document-review",
@@ -190,27 +176,15 @@ test("materializes create and update requests with the exact optimistic revision
   };
   assert.deepEqual(buildAgentProfileDraftRequest(created), {
     name: "新智能体",
-    description: "简介",
-    welcome_message: "欢迎使用",
+    description: "统一说明",
     starter_prompts: ["示例问题"],
-    capability_summary: "企业能力",
-    recommended_tasks: ["推荐任务"],
-    supported_input_types: ["text", "file"],
-    expected_outputs: ["审阅意见"],
-    permissions_and_data_access_notice: "仅访问授权数据",
     instructions: "Keep trailing space. ",
-    selected_skill: {
-      skill_id: "document-review",
-    },
     skill_set: [{
       skill_id: "document-review",
     }],
     mcp_tool_ids: ["gateway::knowledge.search"],
     avatar_ref: "builtin:agent",
     avatar_seed: "新智能体",
-    avatar_asset_id: null,
-    category: "general",
-    market_tag: "客户服务",
     market_tags: ["客户服务", "人力资源"],
     visibility: "tenant",
     allowed_department_ids: ["药品注册"],
@@ -229,10 +203,6 @@ test("reports precise missing data and revision reasons", () => {
   const withoutInstructions = {
     ...empty,
     name: "Agent",
-    capabilitySummary: "Enterprise capability",
-    recommendedTasks: ["Review"],
-    expectedOutputs: ["Decision"],
-    permissionsAndDataAccessNotice: "Authorized data only",
   };
   assert.equal(
     validateAgentProfileEditor(withoutInstructions, catalog())?.code,
@@ -286,7 +256,7 @@ test("blocks stale Skill versions but preserves stable MCP references outside th
   assert.deepEqual(editor.selectedSkills, [{ skill_id: "document-review" }]);
 });
 
-test("persists Skill names while keeping the primary compatibility shadow", () => {
+test("persists only the Skill Set name references", () => {
   const secondSkill = skill({ name: "fact-extraction", expected_version: "sha256:facts" });
   const editor = {
     ...hydrateAgentProfileEditor(profile()),
@@ -301,7 +271,6 @@ test("persists Skill names while keeping the primary compatibility shadow", () =
     null,
   );
   const request = buildAgentProfileDraftRequest(editor);
-  assert.deepEqual(request.selected_skill, { skill_id: "document-review" });
   assert.deepEqual(request.skill_set, [
     { skill_id: "document-review" },
     { skill_id: "fact-extraction" },

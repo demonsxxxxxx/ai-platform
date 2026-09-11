@@ -42,12 +42,9 @@ export function buildAgentMarketWorkspacePath(
 }
 
 export function marketTagsForProfile(
-  profile: Pick<AgentProfilePublicProjection, "market_tag" | "market_tags">,
+  profile: Pick<AgentProfilePublicProjection, "market_tags">,
 ): string[] {
-  const tags = profile.market_tags?.map((tag) => tag.trim()).filter(Boolean) ?? [];
-  if (tags.length > 0) return [...new Set(tags)];
-  const legacyTag = profile.market_tag?.trim();
-  return legacyTag ? [legacyTag] : [];
+  return [...new Set(profile.market_tags.map((tag) => tag.trim()).filter(Boolean))];
 }
 
 /** Search only the safe current public projection. */
@@ -61,9 +58,8 @@ export function filterPublishedMarketProfiles(
     const searchableProjection = [
       profile.name,
       profile.description,
-      profile.capability_summary,
       ...marketTagsForProfile(profile),
-      ...profile.recommended_tasks,
+      ...profile.starter_prompts,
     ].join("\n");
     return searchableProjection
       .normalize("NFKC")

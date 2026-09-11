@@ -29,9 +29,7 @@ function serializeMarketTags(tags: readonly string[]): string {
 }
 
 function profileMarketTags(profile: AgentProfileAdminProjection): string[] {
-  const tags = profile.market_tags?.map((tag) => tag.trim()).filter(Boolean) ?? [];
-  if (tags.length > 0) return [...new Set(tags)];
-  return profile.market_tag?.trim() ? [profile.market_tag.trim()] : [];
+  return [...new Set(profile.market_tags.map((tag) => tag.trim()).filter(Boolean))];
 }
 
 export interface AgentBuilderEditor {
@@ -41,20 +39,12 @@ export interface AgentBuilderEditor {
   status: AgentProfileAdminProjection["status"] | null;
   name: string;
   description: string;
-  welcomeMessage: string;
   starterPrompts: string[];
-  capabilitySummary: string;
-  recommendedTasks: string[];
-  supportedInputTypes: Array<"text" | "file">;
-  expectedOutputs: string[];
-  permissionsAndDataAccessNotice: string;
   instructions: string;
   selectedSkills: AgentProfileSkillReference[];
   selectedMcpToolIds: string[];
   avatarRef: AgentProfileDraftRequest["avatar_ref"];
   avatarSeed: string;
-  avatarAssetId: string | null;
-  category: AgentProfileDraftRequest["category"];
   marketTag: string;
   visibility: AgentProfileDraftRequest["visibility"];
   allowedDepartmentIds: string[];
@@ -144,20 +134,12 @@ export function createUnsavedAgentEditor(): AgentBuilderEditor {
     status: null,
     name: "",
     description: "",
-    welcomeMessage: "",
     starterPrompts: [],
-    capabilitySummary: "",
-    recommendedTasks: [],
-    supportedInputTypes: ["text", "file"],
-    expectedOutputs: [],
-    permissionsAndDataAccessNotice: "",
     instructions: "",
     selectedSkills: [],
     selectedMcpToolIds: [],
     avatarRef: "builtin:agent",
     avatarSeed: "",
-    avatarAssetId: null,
-    category: "general",
     marketTag: "",
     visibility: "tenant",
     allowedDepartmentIds: [],
@@ -180,23 +162,12 @@ export function hydrateAgentProfileEditor(
     status: profile.status,
     name: profile.name,
     description: profile.description,
-    welcomeMessage: profile.welcome_message,
     starterPrompts: [...profile.starter_prompts],
-    capabilitySummary: profile.capability_summary,
-    recommendedTasks: [...profile.recommended_tasks],
-    supportedInputTypes: [...profile.supported_input_types],
-    expectedOutputs: [...profile.expected_outputs],
-    permissionsAndDataAccessNotice: profile.permissions_and_data_access_notice,
     instructions: profile.instructions,
-    selectedSkills: (profile.skill_set?.length
-      ? profile.skill_set
-      : [profile.selected_skill]
-    ).map((skill) => ({ skill_id: skill.skill_id })),
+    selectedSkills: profile.skill_set.map((skill) => ({ skill_id: skill.skill_id })),
     selectedMcpToolIds: [...profile.mcp_tool_ids],
     avatarRef: profile.avatar_ref,
-    avatarSeed: profile.avatar_seed?.trim() || profile.agent_id,
-    avatarAssetId: profile.avatar_asset_id,
-    category: profile.category,
+    avatarSeed: profile.avatar_seed.trim() || profile.agent_id,
     marketTag: serializeMarketTags(profileMarketTags(profile)),
     visibility: profile.visibility,
     allowedDepartmentIds: [...profile.allowed_department_ids],
@@ -204,17 +175,10 @@ export function hydrateAgentProfileEditor(
     allowedUserIds: [...profile.allowed_user_ids],
     materializedProfile: {
       ...profile,
-      market_tag: profile.market_tag ?? "",
-      selected_skill: { skill_id: profile.selected_skill.skill_id },
-      skill_set: (profile.skill_set?.length
-        ? profile.skill_set
-        : [profile.selected_skill]
-      ).map((skill) => ({ skill_id: skill.skill_id })),
+      skill_set: profile.skill_set.map((skill) => ({ skill_id: skill.skill_id })),
       mcp_tool_ids: [...profile.mcp_tool_ids],
       starter_prompts: [...profile.starter_prompts],
-      recommended_tasks: [...profile.recommended_tasks],
-      supported_input_types: [...profile.supported_input_types],
-      expected_outputs: [...profile.expected_outputs],
+      market_tags: [...profile.market_tags],
       allowed_department_ids: [...profile.allowed_department_ids],
       allowed_roles: [...profile.allowed_roles],
       allowed_user_ids: [...profile.allowed_user_ids],
@@ -226,22 +190,12 @@ function editorDefinition(editor: AgentBuilderEditor) {
   return {
     name: editor.name.trim(),
     description: editor.description.trim(),
-    welcome_message: editor.welcomeMessage.trim(),
     starter_prompts: editor.starterPrompts.map((item) => item.trim()).filter(Boolean),
-    capability_summary: editor.capabilitySummary.trim(),
-    recommended_tasks: editor.recommendedTasks.map((item) => item.trim()).filter(Boolean),
-    supported_input_types: editor.supportedInputTypes,
-    expected_outputs: editor.expectedOutputs.map((item) => item.trim()).filter(Boolean),
-    permissions_and_data_access_notice: editor.permissionsAndDataAccessNotice.trim(),
     instructions: editor.instructions,
-    selected_skill: editor.selectedSkills[0] ?? null,
     skill_set: editor.selectedSkills.map((skill) => ({ skill_id: skill.skill_id })),
     mcp_tool_ids: editor.selectedMcpToolIds,
     avatar_ref: editor.avatarRef,
     avatar_seed: editor.avatarSeed.trim(),
-    avatar_asset_id: editor.avatarAssetId,
-    category: editor.category,
-    market_tag: parseMarketTags(editor.marketTag)[0] ?? "",
     market_tags: parseMarketTags(editor.marketTag),
     visibility: editor.visibility,
     allowed_department_ids: editor.allowedDepartmentIds,
@@ -254,25 +208,12 @@ function profileDefinition(profile: AgentProfileAdminProjection) {
   return {
     name: profile.name,
     description: profile.description,
-    welcome_message: profile.welcome_message,
     starter_prompts: profile.starter_prompts,
-    capability_summary: profile.capability_summary,
-    recommended_tasks: profile.recommended_tasks,
-    supported_input_types: profile.supported_input_types,
-    expected_outputs: profile.expected_outputs,
-    permissions_and_data_access_notice: profile.permissions_and_data_access_notice,
     instructions: profile.instructions,
-    selected_skill: { skill_id: profile.selected_skill.skill_id },
-    skill_set: (profile.skill_set?.length
-      ? profile.skill_set
-      : [profile.selected_skill]
-    ).map((skill) => ({ skill_id: skill.skill_id })),
+    skill_set: profile.skill_set.map((skill) => ({ skill_id: skill.skill_id })),
     mcp_tool_ids: profile.mcp_tool_ids,
     avatar_ref: profile.avatar_ref,
-    avatar_seed: profile.avatar_seed?.trim() || profile.agent_id,
-    avatar_asset_id: profile.avatar_asset_id,
-    category: profile.category,
-    market_tag: profileMarketTags(profile)[0] ?? "",
+    avatar_seed: profile.avatar_seed.trim() || profile.agent_id,
     market_tags: profileMarketTags(profile),
     visibility: profile.visibility,
     allowed_department_ids: profile.allowed_department_ids,
@@ -296,22 +237,12 @@ export function hasUnsavedAgentProfileEdits(editor: AgentBuilderEditor): boolean
   return Boolean(
     editor.name.trim() ||
     editor.description.trim() ||
-    editor.welcomeMessage.trim() ||
     editor.starterPrompts.length > 0 ||
-    editor.capabilitySummary.trim() ||
-    editor.recommendedTasks.length > 0 ||
-    editor.supportedInputTypes.length !== 2 ||
-    editor.supportedInputTypes[0] !== "text" ||
-    editor.supportedInputTypes[1] !== "file" ||
-    editor.expectedOutputs.length > 0 ||
-    editor.permissionsAndDataAccessNotice.trim() ||
     editor.instructions.trim() ||
     editor.selectedSkills.length > 0 ||
     editor.selectedMcpToolIds.length > 0 ||
     editor.avatarRef !== "builtin:agent" ||
     editor.avatarSeed !== "" ||
-    editor.avatarAssetId !== null ||
-    editor.category !== "general" ||
     editor.marketTag.trim() ||
     editor.visibility !== "tenant" ||
     editor.allowedDepartmentIds.length > 0 ||
@@ -383,22 +314,12 @@ export function buildAgentProfileDraftRequest(
   return {
     name: editor.name.trim(),
     description: editor.description.trim(),
-    welcome_message: editor.welcomeMessage.trim(),
     starter_prompts: editor.starterPrompts.map((item) => item.trim()).filter(Boolean),
-    capability_summary: editor.capabilitySummary.trim(),
-    recommended_tasks: editor.recommendedTasks.map((item) => item.trim()).filter(Boolean),
-    supported_input_types: [...editor.supportedInputTypes],
-    expected_outputs: editor.expectedOutputs.map((item) => item.trim()).filter(Boolean),
-    permissions_and_data_access_notice: editor.permissionsAndDataAccessNotice.trim(),
     instructions: editor.instructions,
-    selected_skill: { skill_id: editor.selectedSkills[0].skill_id },
     skill_set: editor.selectedSkills.map((skill) => ({ skill_id: skill.skill_id })),
     mcp_tool_ids: [...editor.selectedMcpToolIds],
     avatar_ref: editor.avatarRef,
     avatar_seed: editor.avatarSeed.trim() || editor.name.trim(),
-    avatar_asset_id: editor.avatarAssetId,
-    category: editor.category,
-    market_tag: parseMarketTags(editor.marketTag)[0] ?? "",
     market_tags: parseMarketTags(editor.marketTag),
     visibility: editor.visibility,
     allowed_department_ids: [...editor.allowedDepartmentIds],

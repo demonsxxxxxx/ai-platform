@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Data Formulator">
+  <rect width="128" height="128" rx="24" fill="#245c5a"/>
+  <path d="M28 84h72M28 84V35" stroke="#fff" stroke-width="6" stroke-linecap="round"/>
+  <path d="m36 73 16-19 14 10 24-27" fill="none" stroke="#f2c14e" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="52" cy="54" r="5" fill="#fff"/><circle cx="66" cy="64" r="5" fill="#fff"/><circle cx="90" cy="37" r="5" fill="#fff"/>
+</svg>

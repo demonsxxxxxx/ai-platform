@@ -2,8 +2,9 @@ export interface LaunchpadEntry {
   id: string;
   name: string;
   description: string;
-  icon: string;
-  url: string;
+  icon?: string;
+  url?: string;
+  internalPath?: string;
 }
 
 export interface LaunchpadGroup {
@@ -11,6 +12,11 @@ export interface LaunchpadGroup {
   name: string;
   entries: LaunchpadEntry[];
 }
+
+export type LaunchpadDestination =
+  | { kind: "internal"; path: string }
+  | { kind: "url"; href: string }
+  | { kind: "unavailable"; reason: string };
 
 type SiteRow = readonly [
   category: string,
@@ -166,6 +172,61 @@ for (const [category, name, url, icon, description] of siteRows) {
     icon,
     url,
   });
+}
+
+groupsByName.get("AI")?.entries.push(
+  {
+    id: "AI:SOP问询助手",
+    name: "SOP问询助手",
+    description: "通过公司知识库支持制度、流程、SOP问答。",
+    icon: "sop-qa-assistant.png",
+    internalPath: "/ai-apps/sop-assistant",
+  },
+  {
+    id: "AI:Word文档翻译",
+    name: "Word文档翻译",
+    description: "支持 Word 文档中英互译，格式原样保留。",
+    icon: "word-document-translate.svg",
+    url: "http://10.56.0.210:8000",
+  },
+  {
+    id: "AI:Word文档审核",
+    name: "Word文档审核",
+    description: "上传 Word 文档后执行审核，并生成批注版文档。",
+    internalPath: "/ai-apps/word-review",
+  },
+  {
+    id: "AI:ai-draw",
+    name: "ai-draw",
+    description: "在线 AI 绘图工具。",
+    icon: "ai-draw.svg",
+    url: "http://10.56.1.57:3000/zh",
+  },
+  {
+    id: "AI:data-formulator",
+    name: "data-formulator",
+    description: "数据整理与可视化工具。",
+    icon: "data-formulator.svg",
+    url: "http://10.56.1.57:5567/",
+  },
+  {
+    id: "AI:pdf-translate",
+    name: "pdf-translate",
+    description: "PDF 文档翻译工具。",
+    icon: "pdf-translate.svg",
+    url: "http://10.56.1.57:7860/",
+  },
+);
+
+export function resolveLaunchpadDestination(
+  entry: LaunchpadEntry,
+): LaunchpadDestination {
+  if (entry.internalPath) return { kind: "internal", path: entry.internalPath };
+  if (entry.url) return { kind: "url", href: entry.url };
+  return {
+    kind: "unavailable",
+    reason: "待接入",
+  };
 }
 
 export function getLaunchpadIconUrl(icon: string): string {

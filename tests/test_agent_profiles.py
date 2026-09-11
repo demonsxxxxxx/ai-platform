@@ -6,22 +6,12 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app.agent_profiles import (
-    profile_public_projection,
-    reject_profile_selector_conflicts,
-    resolve_profile_for_admission,
-)
 from app.agent_apps.authority import (
-    _ROLLING_LEGACY_SUPPORTED_FILE_TYPES,
     AgentProfileAuthority,
-    _legacy_revision_hash,
-    _legacy_skill_set_revision_hash,
-    _lifecycle_revision_hash,
-    _mvp_revision_hash,
-    _omitted_file_type_skill_set_revision_hash,
-    _pre_avatar_seed_skill_set_revision_hash,
     _revision_hash,
     _revision_hash_matches,
+    profile_public_projection,
+    reject_profile_selector_conflicts,
 )
 from app.agent_apps.api import (
     AgentProfileAdminProjection as AgentAppsAdminProjection,
@@ -30,9 +20,7 @@ from app.agent_apps.api import (
 from app.agent_apps.application.skill_set_pinning import pin_agent_skill_set
 from app.auth import AuthPrincipal
 from app.models import (
-    AgentConversationIdentity,
     AgentProfileAdminProjection,
-    AgentProfilePublicProjection,
     AgentProfileDraftRequest,
     ChatSessionResponse,
     ChatStreamRequest,
@@ -53,56 +41,22 @@ def test_agent_profile_draft_accepts_extended_builtin_avatar_style():
     assert definition.avatar_ref == "builtin:planet"
 
 
-def test_agent_profile_draft_rejects_retired_supported_file_types():
-    with pytest.raises(ValueError):
-        AgentProfileDraftRequest.model_validate(
-            {
-                "name": "Support expert",
-                "instructions": "Use the configured Skills autonomously.",
-                "skill_set": [
-                    {"skill_id": "general-chat", "expected_version": "version-a"}
-                ],
-                "supported_file_types": ["application/pdf"],
-                "expected_draft_revision": 0,
-            }
-        )
-
-
-@pytest.mark.parametrize(
-    ("model", "payload"),
-    [
-        (
-            AgentProfilePublicProjection,
-            {"agent_id": "agt_public", "expected_revision": 1, "name": "Public"},
-        ),
-        (
-            AgentProfileAdminProjection,
-            {
-                "agent_id": "agt_admin",
-                "revision": 1,
-                "status": "draft",
-                "name": "Admin",
-                "instructions": "Private",
-                "skill_set": [
-                    {"skill_id": "general-chat", "expected_version": "version-a"}
-                ],
-                "selected_skill": {
-                    "skill_id": "general-chat",
-                    "expected_version": "version-a",
-                },
-                "content_hash": "a" * 64,
-            },
-        ),
-        (
-            AgentConversationIdentity,
-            {"agent_id": "agt_conversation", "revision": 1, "name": "Conversation"},
-        ),
-    ],
-)
-def test_agent_profile_projections_require_universal_text_and_file_input(model, payload):
-    assert model.model_validate(payload).supported_input_types == ["text", "file"]
-    with pytest.raises(ValueError, match="universal text/file"):
-        model.model_validate({**payload, "supported_input_types": ["text"]})
+def test_agent_profile_models_reject_retired_fields():
+    payload = profile_draft_payload("Private instruction")
+    for field, value in (
+        ("welcome_message", "Welcome"),
+        ("capability_summary", "Summary"),
+        ("recommended_tasks", ["Task"]),
+        ("supported_input_types", ["text", "file"]),
+        ("expected_outputs", ["Answer"]),
+        ("permissions_and_data_access_notice", "Notice"),
+        ("selected_skill", {"skill_id": "general-chat"}),
+        ("avatar_asset_id", "file-avatar"),
+        ("category", "support"),
+        ("market_tag", "support"),
+    ):
+        with pytest.raises(ValueError):
+            AgentProfileDraftRequest.model_validate({**payload, field: value})
 
 
 def test_agent_profile_authority_keeps_extended_builtin_avatar_style():
@@ -208,19 +162,21 @@ def profile_draft_payload(instructions: str, *, expected_draft_revision: int = 0
     return {
         "name": "Support assistant",
         "description": "Approved support helper.",
+        "starter_prompts": ["Help with a support request"],
         "instructions": instructions,
-        "selected_skill": {"skill_id": "general-chat", "expected_version": "version-a"},
+        "skill_set": [{"skill_id": "general-chat"}],
         "mcp_tool_ids": [],
+        "avatar_ref": "builtin:agent",
+        "avatar_seed": "support-assistant",
+        "market_tags": ["support"],
         "expected_draft_revision": expected_draft_revision,
     }
 
 
-def historical_profile_definition() -> AgentProfileDraftRequest:
-    definition = AgentProfileDraftRequest.model_validate(
+def canonical_profile_definition() -> AgentProfileDraftRequest:
+    return AgentProfileDraftRequest.model_validate(
         profile_draft_payload("Private instruction")
-    ).model_copy(update={"avatar_seed": "agt_support"})
-    definition._legacy_model_id = "model-a"
-    return definition
+    )
 
 
 def test_profile_public_projection_never_exposes_private_execution_definition():
@@ -231,10 +187,11 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
             "name": "Support assistant",
             "description": "Helps employees with approved support requests.",
             "instructions": "Never expose this private instruction.",
-            "model_id": "internal-model",
-            "skill_id": "support-skill",
-            "skill_version": "sha256-pinned",
+            "skill_set": [{"skill_id": "support-skill"}],
             "mcp_tool_ids": ["internal-tool"],
+            "avatar_ref": "builtin:agent",
+            "avatar_seed": "agt_support",
+            "market_tags": ["support"],
             "content_hash": "profile-hash",
             "status": "published",
         }
@@ -247,16 +204,8 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         "description": "Helps employees with approved support requests.",
         "avatar_ref": "builtin:agent",
         "avatar_seed": "agt_support",
-        "category": "general",
-        "market_tags": [],
-        "market_tag": "",
-        "welcome_message": "",
+        "market_tags": ["support"],
         "starter_prompts": [],
-        "capability_summary": "",
-        "recommended_tasks": [],
-        "supported_input_types": ["text", "file"],
-        "expected_outputs": [],
-        "permissions_and_data_access_notice": "",
         "published_at": None,
     }
     assert not {
@@ -272,17 +221,19 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("welcome_message", "Welcome to the expert workspace."),
+        ("description", "Reviews approved requests."),
         ("starter_prompts", ["Review this request"]),
-        ("capability_summary", "Reviews approved requests."),
-        ("recommended_tasks", ["Policy review"]),
-        ("expected_outputs", ["Review memo"]),
-        ("permissions_and_data_access_notice", "Uses tenant-authorized files only."),
-        ("avatar_asset_id", "file-avatar-a"),
+        ("instructions", "Updated private instructions"),
+        ("skill_set", [{"skill_id": "document-review"}]),
+        ("mcp_tool_ids", ["mcp:search"]),
+        ("avatar_ref", "builtin:planet"),
         ("avatar_seed", "stable-expert-avatar"),
+        ("market_tags", ["review"]),
+        ("visibility", "restricted"),
+        ("allowed_department_ids", ["department-a"]),
     ],
 )
-def test_every_enterprise_profile_field_changes_the_immutable_revision_hash(field, value):
+def test_every_canonical_profile_field_changes_the_immutable_revision_hash(field, value):
     definition = AgentProfileDraftRequest.model_validate(profile_draft_payload("Private instruction"))
 
     changed = definition.model_copy(update={field: value})
@@ -290,31 +241,13 @@ def test_every_enterprise_profile_field_changes_the_immutable_revision_hash(fiel
     assert _revision_hash(changed) != _revision_hash(definition)
 
 
-def test_agent_profile_normalizes_legacy_primary_skill_into_an_exact_skill_set():
-    definition = AgentProfileDraftRequest.model_validate(
-        profile_draft_payload("Private instruction")
-    )
-
-    assert definition.skill_set == [definition.selected_skill]
-
-
-def test_agent_profile_accepts_multiple_executable_skills_and_keeps_primary_shadow():
+def test_agent_profile_uses_only_the_canonical_skill_set():
     definition = AgentProfileDraftRequest.model_validate(
         {
             **profile_draft_payload("Private instruction"),
-            "selected_skill": {
-                "skill_id": "document-review",
-                "expected_version": "sha256:review",
-            },
             "skill_set": [
-                {
-                    "skill_id": "document-review",
-                    "expected_version": "sha256:review",
-                },
-                {
-                    "skill_id": "workflow-automation",
-                    "expected_version": "sha256:workflow",
-                },
+                {"skill_id": "document-review"},
+                {"skill_id": "workflow-automation"},
             ],
         }
     )
@@ -323,7 +256,6 @@ def test_agent_profile_accepts_multiple_executable_skills_and_keeps_primary_shad
         "document-review",
         "workflow-automation",
     ]
-    assert definition.selected_skill == definition.skill_set[0]
 
 
 @pytest.mark.parametrize("skill_id", ["minimax-docx", "reference-fact-extraction"])
@@ -332,259 +264,40 @@ def test_agent_profile_rejects_internal_dependency_skill_as_root(skill_id):
         AgentProfileDraftRequest.model_validate(
             {
                 **profile_draft_payload("Private instruction"),
-                "selected_skill": {
-                    "skill_id": skill_id,
-                    "expected_version": "sha256:internal",
-                },
-                "skill_set": [
-                    {
-                        "skill_id": skill_id,
-                        "expected_version": "sha256:internal",
-                    }
-                ],
+                "skill_set": [{"skill_id": skill_id}],
             }
         )
 
 
-@pytest.mark.parametrize(
-    "skill_set",
-    [
-        [
-            {"skill_id": "document-review", "expected_version": "sha256:a"},
-            {"skill_id": "document-review", "expected_version": "sha256:b"},
-        ],
-        [
-            {"skill_id": "general-chat", "expected_version": "version-a"},
-            {"skill_id": "document-review", "expected_version": "sha256:a"},
-        ],
-    ],
-)
-def test_agent_profile_rejects_ambiguous_skill_sets(skill_set):
+def test_agent_profile_rejects_duplicate_skill_names():
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
         AgentProfileDraftRequest.model_validate(
             {
                 **profile_draft_payload("Private instruction"),
-                "selected_skill": skill_set[0],
-                "skill_set": skill_set,
+                "skill_set": [
+                    {"skill_id": "document-review"},
+                    {"skill_id": "document-review"},
+                ],
             }
         )
 
 
-def test_agent_profile_normalizes_legacy_input_mode_to_universal_attachment_access():
-    definition = AgentProfileDraftRequest.model_validate(
-        {
-            **profile_draft_payload("Private instruction"),
-            "supported_input_types": ["text"],
-        }
-    )
-
-    assert definition.supported_input_types == ["text", "file"]
-
-
-def test_legacy_profile_file_type_material_only_verifies_historical_hash():
-    definition = historical_profile_definition()
-    legacy_hash = _legacy_skill_set_revision_hash(
-        definition,
-        legacy_supported_file_types=["word"],
-    )
-    row = {
-        **definition.model_dump(mode="json"),
-        "model_id": definition._legacy_model_id,
-        "agent_id": "agt_support",
-        "revision": 7,
-        "legacy_supported_file_types": ["word"],
-    }
-
-    assert _revision_hash_matches(row, legacy_hash)
-    assert _revision_hash(definition) != legacy_hash
-    assert "supported_file_types" not in definition.model_dump(mode="json")
-
-
-def test_new_profile_hash_is_accepted_by_the_rolling_worker_contract():
+def test_current_profile_hash_accepts_only_the_current_canonical_shape():
     definition = AgentProfileDraftRequest.model_validate(
         profile_draft_payload("Private instruction")
-    ).model_copy(update={"avatar_seed": "agt_support"})
-
-    assert _revision_hash(definition) == _legacy_skill_set_revision_hash(
-        definition,
-        legacy_supported_file_types=_ROLLING_LEGACY_SUPPORTED_FILE_TYPES,
     )
-
-
-def test_profile_integrity_accepts_each_exact_historical_hash_schema_only_for_untampered_data():
-    definition = historical_profile_definition()
-    current_row = {
-        **definition.model_dump(mode="json"),
-        "model_id": definition._legacy_model_id,
-        "agent_id": "agt_support",
-        "revision": 7,
-        "legacy_supported_file_types": list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
-    }
-    legacy_skill_set_row = {
-        **current_row,
-        "supported_input_types": ["text"],
-        "legacy_supported_file_types": ["application/pdf"],
-    }
-    pre_avatar_row = {
-        **legacy_skill_set_row,
-        "avatar_seed": "",
-        "supported_input_types": ["text"],
-    }
-    lifecycle_row = {
-        **pre_avatar_row,
-        "legacy_supported_file_types": [],
-    }
-    expected_hashes = {
-        "mvp": "be497d2fe2c215f93754ed81bf71381716ed327f7929ffc0247160dba436261b",
-        "lifecycle": "8a7f56cc8fa02a34766a2a92d8191506c41f073a40729e0e66ae25e16e4411b5",
-        "enterprise": "738787e259c84d722bcd6f67d5b79c48c6a44fbd09d65d45219b4316970f3e55",
-        "pre_avatar": "fafc5e59592db25119f09339c91fd1ba8513fe3a88dbfbf50185363800cc82b0",
-        "legacy_skill_set": "af5557ab47e5308b0045df18146100853adf4578455e99331db813d592767868",
-        "omitted_file_type": "8a44048869a0b50df4f742ee00cc63e0c2ba366591d23b8c67cb91ed156b5c14",
-        "current": "e1726cfffa53cf6ec393543e144ef98ca3c7e47d0ca6665c01b5108bfd65e147",
-    }
-    generated_hashes = {
-        "mvp": _mvp_revision_hash(definition),
-        "lifecycle": _lifecycle_revision_hash(definition),
-        "enterprise": _legacy_revision_hash(
-            definition,
-            legacy_supported_input_types=["text"],
-            legacy_supported_file_types=["application/pdf"],
-        ),
-        "pre_avatar": _pre_avatar_seed_skill_set_revision_hash(
-            definition,
-            legacy_supported_input_types=["text"],
-            legacy_supported_file_types=["application/pdf"],
-        ),
-        "legacy_skill_set": _legacy_skill_set_revision_hash(
-            definition,
-            legacy_supported_input_types=["text"],
-            legacy_supported_file_types=["application/pdf"],
-        ),
-        "omitted_file_type": _omitted_file_type_skill_set_revision_hash(definition),
-        "current": _revision_hash(definition),
-    }
-    rows_by_schema = {
-        "mvp": lifecycle_row,
-        "lifecycle": lifecycle_row,
-        "enterprise": pre_avatar_row,
-        "pre_avatar": pre_avatar_row,
-        "legacy_skill_set": legacy_skill_set_row,
-        "omitted_file_type": current_row,
-        "current": current_row,
-    }
-
-    assert generated_hashes == expected_hashes
-    assert all(
-        _revision_hash_matches(rows_by_schema[schema], content_hash)
-        for schema, content_hash in expected_hashes.items()
-    )
-
-    assert all(
-        not _revision_hash_matches(
-            {
-                **rows_by_schema[schema],
-                "instructions": "changed without a new immutable hash",
-            },
-            content_hash,
-        )
-        for schema, content_hash in expected_hashes.items()
-    )
-
-
-@pytest.mark.parametrize(
-    ("supported_input_types", "avatar_seed", "expected_hash"),
-    [
-        (
-            ["text"],
-            "agt_support",
-            "4b119840182fd953bfb78e2e7724bb6d05ce949dcf915c38baeb5cbb4d10203a",
-        ),
-        (
-            ["file"],
-            "agt_support",
-            "673256a00512ac265b80d3fb3b2f4f227d9a8f442526ae24d3d16dd47015c9b8",
-        ),
-        (
-            ["text", "file"],
-            "agt_support",
-            "8a44048869a0b50df4f742ee00cc63e0c2ba366591d23b8c67cb91ed156b5c14",
-        ),
-        (
-            ["text"],
-            "",
-            "1c1ec2a973d36f0d3905b944eca7a075d15a3845435ff08015f1c6a28899fca4",
-        ),
-    ],
-)
-def test_omitted_file_type_hash_uses_exact_historical_input_and_avatar_values(
-    supported_input_types,
-    avatar_seed,
-    expected_hash,
-):
-    definition = historical_profile_definition()
     row = {
         **definition.model_dump(mode="json"),
-        "model_id": definition._legacy_model_id,
         "agent_id": "agt_support",
         "revision": 7,
-        "supported_input_types": supported_input_types,
-        "legacy_supported_file_types": list(_ROLLING_LEGACY_SUPPORTED_FILE_TYPES),
-        "avatar_seed": avatar_seed,
     }
 
-    assert (
-        _omitted_file_type_skill_set_revision_hash(
-            definition,
-            legacy_supported_input_types=supported_input_types,
-            legacy_avatar_seed=avatar_seed,
-        )
-        == expected_hash
-    )
-    assert _revision_hash_matches(row, expected_hash)
-
-
-def test_early_profile_hashes_cannot_authorize_fields_their_schema_did_not_cover():
-    definition = historical_profile_definition()
-    row = {
-        **definition.model_dump(mode="json"),
-        "model_id": definition._legacy_model_id,
-        "agent_id": "agt_support",
-        "revision": 7,
-        "avatar_seed": "",
-        "supported_input_types": ["text"],
-        "legacy_supported_file_types": [],
-    }
-
-    mvp_hash = _mvp_revision_hash(definition)
-    lifecycle_hash = _lifecycle_revision_hash(definition)
-    enterprise_hash = _legacy_revision_hash(
-        definition,
-        legacy_supported_input_types=["text"],
-    )
-    skill_set_hash = _pre_avatar_seed_skill_set_revision_hash(
-        definition,
-        legacy_supported_input_types=["text"],
-    )
-    assert all(
-        _revision_hash_matches(row, content_hash)
-        for content_hash in (mvp_hash, lifecycle_hash, enterprise_hash, skill_set_hash)
-    )
-
-    assert not _revision_hash_matches({**row, "visibility": "restricted"}, mvp_hash)
+    assert _revision_hash_matches(row, _revision_hash(definition))
     assert not _revision_hash_matches(
-        {**row, "welcome_message": "not covered by lifecycle hash"},
-        lifecycle_hash,
-    )
-    assert not _revision_hash_matches(
-        {**row, "avatar_seed": "not-covered-by-enterprise-hash"},
-        enterprise_hash,
-    )
-    assert not _revision_hash_matches(
-        {**row, "avatar_seed": "not-covered-by-skill-set-hash"},
-        skill_set_hash,
+        {**row, "instructions": "changed without a new immutable hash"},
+        _revision_hash(definition),
     )
 
 
@@ -597,26 +310,21 @@ def test_early_profile_hashes_cannot_authorize_fields_their_schema_did_not_cover
         ("skill_set", None),
         ("mcp_tool_ids", {"malformed": "tool-list"}),
         ("starter_prompts", [{}]),
-        ("recommended_tasks", [17]),
-        ("supported_input_types", {"malformed": "input-list"}),
-        ("expected_outputs", [False]),
+        ("market_tags", [17]),
         ("allowed_department_ids", [17]),
         ("allowed_roles", [False]),
         ("allowed_user_ids", [{}]),
         ("avatar_ref", "malformed-avatar"),
-        ("category", "malformed-category"),
+        ("avatar_seed", ""),
         ("visibility", "malformed-visibility"),
     ],
 )
-def test_revision_integrity_normalizes_malformed_historical_json(field, value):
-    definition = historical_profile_definition()
+def test_revision_integrity_rejects_malformed_canonical_fields(field, value):
+    definition = canonical_profile_definition()
     row = {
         **definition.model_dump(mode="json"),
-        "model_id": definition._legacy_model_id,
         "agent_id": "agt_support",
         "revision": 7,
-        "skill_id": "general-chat",
-        "skill_version": "version-a",
         "content_hash": _revision_hash(definition),
         field: value,
     }
@@ -692,8 +400,9 @@ def test_agent_profile_market_requires_authenticated_principal():
 
 
 def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
-    async def profiles(_conn, *, principal):
+    async def profiles(_conn, *, principal, query):
         assert principal.tenant_id == "tenant-a"
+        assert query is None
         return [
             {
                 "agent_id": "agt_support",
@@ -701,17 +410,10 @@ def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
                 "name": "Support assistant",
                 "description": "Approved support helper.",
                 "avatar_ref": "builtin:agent",
-                "avatar_seed": "",
-                "category": "general",
-                "market_tag": "",
-                "market_tags": [],
-                "welcome_message": "",
+                "avatar_seed": "agt-support",
+                "market_tags": ["support"],
                 "starter_prompts": [],
-                "capability_summary": "",
-                "recommended_tasks": [],
-                "supported_input_types": ["text", "file"],
-                "expected_outputs": [],
-                "permissions_and_data_access_notice": "",
+                "is_favorite": False,
                 "published_at": None,
             }
         ]
@@ -731,17 +433,10 @@ def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
                 "name": "Support assistant",
                     "description": "Approved support helper.",
                     "avatar_ref": "builtin:agent",
-                    "avatar_seed": "",
-                    "category": "general",
-                    "market_tag": "",
-                    "market_tags": [],
-                    "welcome_message": "",
+                    "avatar_seed": "agt-support",
+                    "market_tags": ["support"],
                     "starter_prompts": [],
-                    "capability_summary": "",
-                    "recommended_tasks": [],
-                    "supported_input_types": ["text", "file"],
-                    "expected_outputs": [],
-                    "permissions_and_data_access_notice": "",
+                    "is_favorite": False,
                     "published_at": None,
                 }
         ]
@@ -749,11 +444,11 @@ def test_agent_profile_market_returns_only_safe_projection(monkeypatch):
 
 
 def test_agent_profile_market_normalizes_unicode_search_before_repository_query(monkeypatch):
-    observed: list[tuple[str | None, str | None]] = []
+    observed: list[str | None] = []
 
-    async def profiles(_conn, *, principal, query, category):
+    async def profiles(_conn, *, principal, query):
         assert principal.tenant_id == "tenant-a"
-        observed.append((query, category))
+        observed.append(query)
         return []
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
@@ -763,12 +458,12 @@ def test_agent_profile_market_normalizes_unicode_search_before_repository_query(
     response = TestClient(create_app()).get(
         "/api/ai/agent-profiles",
         headers=ordinary_headers(),
-        params={"query": "Ａｕｄｉｔ", "category": "general"},
+        params={"query": "Ａｕｄｉｔ"},
     )
 
     assert response.status_code == 200
     assert response.json() == {"agent_profiles": []}
-    assert observed == [("Audit", "general")]
+    assert observed == ["Audit"]
 
 
 def test_agent_profile_market_rejects_query_that_expands_past_limit_after_normalization(monkeypatch):
@@ -794,7 +489,7 @@ def test_agent_profile_market_rejects_query_that_expands_past_limit_after_normal
     assert not called
 
 
-def test_agent_profile_admin_wire_never_projects_retired_file_type_field(monkeypatch):
+def test_agent_profile_admin_wire_projects_only_the_canonical_contract(monkeypatch):
     profile = AgentProfileAdminProjection(
         agent_id="agt_support",
         revision=4,
@@ -802,10 +497,17 @@ def test_agent_profile_admin_wire_never_projects_retired_file_type_field(monkeyp
         status="published",
         name="Support assistant",
         description="Approved support helper.",
+        starter_prompts=[],
         instructions="Keep answers concise.",
-        selected_skill={
-            "skill_id": "general-chat",
-        },
+        skill_set=[{"skill_id": "general-chat"}],
+        mcp_tool_ids=[],
+        avatar_ref="builtin:agent",
+        avatar_seed="agt-support",
+        market_tags=["support"],
+        visibility="tenant",
+        allowed_department_ids=[],
+        allowed_roles=[],
+        allowed_user_ids=[],
         content_hash="a" * 64,
     )
 
@@ -815,30 +517,35 @@ def test_agent_profile_admin_wire_never_projects_retired_file_type_field(monkeyp
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.agent_profiles.list_admin_profiles", profiles)
+    monkeypatch.setattr("app.routes.agent_profiles._authority.list_admin", profiles)
     client = TestClient(create_app())
 
-    legacy_response = client.get(
+    response = client.get(
         "/api/ai/admin/agent-profiles",
         headers=admin_headers(),
     )
-    current_response = client.get(
-        "/api/ai/admin/agent-profiles",
-        headers={**admin_headers(), "x-ai-agent-profile-schema": "2"},
-    )
 
-    assert legacy_response.status_code == 200
-    assert legacy_response.json()["agent_profiles"][0]["agent_id"] == "agt_support"
-    assert "supported_file_types" not in legacy_response.json()["agent_profiles"][0]
-    assert current_response.status_code == 200
-    assert "supported_file_types" not in current_response.json()["agent_profiles"][0]
-    admin_projection = AgentProfileAdminProjection.model_fields
-    draft_request = AgentProfileDraftRequest.model_fields
-    assert "supported_file_types" not in admin_projection
-    assert "model_id" not in admin_projection
-    assert "model_id" not in draft_request
-    assert "model_id" not in current_response.json()["agent_profiles"][0]
-    assert current_response.json()["agent_profiles"][0]["published_revision"] == 4
+    assert response.status_code == 200
+    projected = response.json()["agent_profiles"][0]
+    assert projected["agent_id"] == "agt_support"
+    assert projected["published_revision"] == 4
+    for retired_field in (
+        "welcome_message",
+        "capability_summary",
+        "recommended_tasks",
+        "supported_input_types",
+        "supported_file_types",
+        "expected_outputs",
+        "permissions_and_data_access_notice",
+        "selected_skill",
+        "avatar_asset_id",
+        "category",
+        "market_tag",
+        "model_id",
+    ):
+        assert retired_field not in projected
+        assert retired_field not in AgentProfileAdminProjection.model_fields
+        assert retired_field not in AgentProfileDraftRequest.model_fields
 
 
 def test_agent_profile_admin_write_requires_admin(monkeypatch):
@@ -846,21 +553,14 @@ def test_agent_profile_admin_write_requires_admin(monkeypatch):
     response = TestClient(create_app()).post(
         "/api/ai/admin/agent-profiles",
         headers=ordinary_headers(),
-        json={
-            "name": "Support assistant",
-            "description": "Approved support helper.",
-            "instructions": "Keep answers concise.",
-            "selected_skill": {"skill_id": "general-chat", "expected_version": "version-a"},
-            "mcp_tool_ids": [],
-            "expected_draft_revision": 0,
-        },
+        json=profile_draft_payload("Keep answers concise."),
     )
 
     assert response.status_code == 403
     assert response.json()["detail"] == "not_ai_admin"
 
 
-def test_agent_profile_admin_write_accepts_and_discards_legacy_model_field(monkeypatch):
+def test_agent_profile_admin_write_rejects_retired_fields(monkeypatch):
     saved_definitions = []
 
     async def save_profile(_conn, *, definition, **_kwargs):
@@ -870,13 +570,24 @@ def test_agent_profile_admin_write_accepts_and_discards_legacy_model_field(monke
                 {
                     "agent_id": "agt_support",
                     "revision": 1,
+                    "published_revision": None,
                     "status": "draft",
                     "name": definition.name,
+                    "description": definition.description,
+                    "starter_prompts": definition.starter_prompts,
                     "instructions": definition.instructions,
-                    "selected_skill": definition.selected_skill,
-                    "market_tag": definition.market_tag,
+                    "skill_set": definition.skill_set,
+                    "mcp_tool_ids": definition.mcp_tool_ids,
+                    "avatar_ref": definition.avatar_ref,
+                    "avatar_seed": definition.avatar_seed,
                     "market_tags": definition.market_tags,
+                    "visibility": definition.visibility,
+                    "allowed_department_ids": definition.allowed_department_ids,
+                    "allowed_roles": definition.allowed_roles,
+                    "allowed_user_ids": definition.allowed_user_ids,
                     "content_hash": "a" * 64,
+                    "created_at": None,
+                    "published_at": None,
                 }
             ),
             "audit_profile_save",
@@ -884,42 +595,26 @@ def test_agent_profile_admin_write_accepts_and_discards_legacy_model_field(monke
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.agent_profiles.save_draft", save_profile)
-    response = TestClient(create_app()).post(
+    monkeypatch.setattr("app.routes.agent_profiles._authority.save_draft", save_profile)
+    client = TestClient(create_app())
+    valid_response = client.post(
         "/api/ai/admin/agent-profiles",
         headers=admin_headers(),
-        json={
-            "name": "Support assistant",
-            "instructions": "Keep answers concise.",
-            "model_id": "legacy-model",
-            "market_tag": " 客户服务 ",
-            "market_tags": [" 客户服务 ", "写作 "],
-            "selected_skill": {"skill_id": "general-chat", "expected_version": "version-a"},
-            "expected_draft_revision": 0,
-        },
+        json=profile_draft_payload("Keep answers concise."),
     )
-    unknown_field_response = TestClient(create_app()).post(
+    retired_response = client.post(
         "/api/ai/admin/agent-profiles",
         headers=admin_headers(),
         json={
-            "name": "Support assistant",
-            "instructions": "Keep answers concise.",
-            "unknown_field": "still-forbidden",
-            "selected_skill": {"skill_id": "general-chat", "expected_version": "version-a"},
-            "expected_draft_revision": 0,
+            **profile_draft_payload("Keep answers concise."),
+            "model_id": "legacy-model",
         },
     )
 
-    assert response.status_code == 200
-    assert unknown_field_response.status_code == 422
-    assert "model_id" not in response.json()["agent_profile"]
-    assert response.json()["agent_profile"]["market_tag"] == "客户服务"
-    assert response.json()["agent_profile"]["market_tags"] == ["客户服务", "写作"]
+    assert valid_response.status_code == 200
+    assert retired_response.status_code == 422
     assert len(saved_definitions) == 1
     assert not hasattr(saved_definitions[0], "model_id")
-    assert saved_definitions[0]._legacy_model_id == "platform-selected"
-    assert saved_definitions[0].market_tag == "客户服务"
-    assert saved_definitions[0].market_tags == ["客户服务", "写作"]
 
 
 def test_agent_profile_admin_publish_requires_admin(monkeypatch):
@@ -944,12 +639,21 @@ def test_profile_instruction_length_is_rejected_by_the_admin_api_before_runtime(
             AgentProfileAdminProjection(
                 agent_id="agt_support",
                 revision=1,
+                published_revision=None,
                 status="draft",
                 name=definition.name,
                 description=definition.description,
+                starter_prompts=definition.starter_prompts,
                 instructions=definition.instructions,
-                selected_skill=definition.selected_skill,
+                skill_set=definition.skill_set,
                 mcp_tool_ids=definition.mcp_tool_ids,
+                avatar_ref=definition.avatar_ref,
+                avatar_seed=definition.avatar_seed,
+                market_tags=definition.market_tags,
+                visibility=definition.visibility,
+                allowed_department_ids=definition.allowed_department_ids,
+                allowed_roles=definition.allowed_roles,
+                allowed_user_ids=definition.allowed_user_ids,
                 content_hash="a" * 64,
             ),
             "audit_profile_save",
@@ -957,7 +661,7 @@ def test_profile_instruction_length_is_rejected_by_the_admin_api_before_runtime(
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.agent_profiles.save_draft", save_profile)
+    monkeypatch.setattr("app.routes.agent_profiles._authority.save_draft", save_profile)
     client = TestClient(create_app())
     max_length_instructions = "界" * MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
@@ -984,8 +688,8 @@ def test_agent_profile_mutation_routes_map_repository_conflicts_to_one_safe_stal
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.agent_profiles.save_draft", conflict)
-    monkeypatch.setattr("app.routes.agent_profiles.publish_draft", conflict)
+    monkeypatch.setattr("app.routes.agent_profiles._authority.save_draft", conflict)
+    monkeypatch.setattr("app.routes.agent_profiles._authority.publish_draft", conflict)
     client = TestClient(create_app())
 
     responses = [
@@ -1131,7 +835,7 @@ def test_agent_conversation_creation_rejects_non_v4_operation_identity(monkeypat
 
 
 async def test_agent_profile_repository_list_is_tenant_scoped():
-    from app.repositories import list_latest_agent_profile_revisions
+    from app.agent_apps.infrastructure.postgres import list_latest_agent_profile_revisions
 
     class Cursor:
         async def fetchall(self):
@@ -1154,92 +858,41 @@ async def test_agent_profile_repository_list_is_tenant_scoped():
     assert params == ("tenant-a", "published")
 
 
-async def test_agent_profile_compatibility_admission_delegates_to_authority(monkeypatch):
-    observed: dict[str, object] = {}
-    sentinel = object()
-
-    async def resolve_from_authority(conn, *, principal, selection):
-        observed.update({"conn": conn, "principal": principal, "selection": selection})
-        return sentinel
-
-    monkeypatch.setattr(
-        "app.agent_profiles._authority.resolve_for_admission",
-        resolve_from_authority,
-    )
-    principal = AuthPrincipal(
-        user_id="user-a",
-        display_name="User A",
-        tenant_id="tenant-a",
-        roles=["user"],
-    )
-    conn = object()
-    selection = SelectedAgentProfileRequest(agent_id="agt_other_tenant", expected_revision=4)
-
-    result = await resolve_profile_for_admission(
-        conn,
-        principal=principal,
-        selection=selection,
-    )
-
-    assert result is sentinel
-    assert observed == {
-        "conn": conn,
-        "principal": principal,
-        "selection": selection,
-    }
-
-
-def test_agent_profile_schema_is_idempotent_and_legacy_rows_can_remain_unpinned():
+def test_agent_profile_schema_has_one_current_storage_contract():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
-    normalized_schema = " ".join(schema.split())
 
     assert "create table if not exists agent_profile_revisions" in schema
-    assert "create index idx_agent_profile_revisions_published" in schema
-    for statement in (
-        "alter table sessions add column if not exists admitted_agent_profile_revision bigint;",
-        "alter table sessions add column if not exists admitted_agent_profile_hash text;",
-        "alter table runs add column if not exists admitted_agent_profile_revision bigint;",
-        "alter table runs add column if not exists admitted_agent_profile_hash text;",
-    ):
-        assert statement in schema
-    assert "admitted_agent_profile_revision bigint not null" not in schema
-    assert "admitted_agent_profile_hash text not null" not in schema
-    assert "constraint uq_agents_tenant_id unique (tenant_id, id)" in schema
+    assert "create table if not exists agent_profiles" in schema
+    assert "revision_status text not null" in schema
+    assert "skill_set jsonb not null" in schema
+    assert "market_tags jsonb not null" in schema
     assert "fk_agent_profile_revisions_tenant_agent" in schema
     assert "fk_sessions_agent_profile_pin" in schema
     assert "fk_runs_agent_profile_pin" in schema
-    assert "published_from_revision bigint" in schema
-    assert "idx_agent_profile_revisions_published_from_draft" in schema
-    assert "create table if not exists agent_profiles" in schema
-    assert "lifecycle_status text not null check (lifecycle_status in ('draft', 'published', 'withdrawn'))" in schema
-    assert "published_revision bigint" in schema
-    assert "published_status text" in schema
-    assert "revision_status text" in schema
-    assert "status text not null check (status in ('draft', 'published'))" in schema
-    assert "agent_profile_legacy_insert_compatibility" in schema
-    assert "agent_profile_legacy_insert_reconcile" in schema
-    assert "uq_agent_profile_revision_publication" in schema
-    assert "fk_agent_profiles_current_publication" in schema
-    assert "published_revision, published_hash, published_status" in schema
-    assert "revision, content_hash, revision_status" in schema
-    assert "on conflict (tenant_id, agent_id) do nothing;" not in schema
-    legacy_visibility_repair = "set visibility = 'tenant'"
-    visibility_repair = "set visibility = 'restricted'"
-    visibility_check = "constraint chk_agent_profile_revisions_visibility"
-    assert legacy_visibility_repair in schema
-    assert visibility_repair in schema
-    assert visibility_check in schema
-    assert schema.index(legacy_visibility_repair) < schema.index(visibility_repair)
-    assert schema.index(visibility_repair) < schema.rindex(visibility_check)
-    assert "withdrawn_from_revision bigint" in schema
-    assert "profiles.published_status is distinct from 'published'" in normalized_schema
-    assert "where row( agent_profiles.latest_revision" in normalized_schema
-    assert "is distinct from row( greatest(agent_profiles.latest_revision" in normalized_schema
-    assert "and revisions.status is distinct from desired.desired_status" in normalized_schema
+    assert "create trigger trg_agent_profile_legacy_insert_compatibility" not in schema
+    assert "create trigger trg_agent_profile_legacy_insert_reconcile" not in schema
+    for retired_column in (
+        "welcome_message",
+        "capability_summary",
+        "recommended_tasks",
+        "supported_input_types",
+        "supported_file_types",
+        "expected_outputs",
+        "permissions_and_data_access_notice",
+        "model_id",
+        "skill_id",
+        "skill_version",
+        "avatar_style_ref",
+        "avatar_asset_id",
+        "category",
+        "market_tag",
+        "legacy_compatibility_write",
+    ):
+        assert f"drop column if exists {retired_column}" in schema
 
 
 async def test_bound_profile_repository_uses_the_session_revision_and_hash_but_requires_live_agent():
-    from app.repositories import get_bound_published_agent_profile
+    from app.agent_apps.infrastructure.postgres import get_bound_published_agent_profile
 
     class Cursor:
         async def fetchone(self):
@@ -1760,15 +1413,19 @@ def _draft(*, expected_draft_revision: int) -> AgentProfileDraftRequest:
     return AgentProfileDraftRequest(
         name="Support assistant",
         description="Approved support helper.",
+        starter_prompts=[],
         instructions="Private instruction",
-        selected_skill={"skill_id": "general-chat"},
+        skill_set=[{"skill_id": "general-chat"}],
         mcp_tool_ids=[],
+        avatar_ref="builtin:agent",
+        avatar_seed="support-assistant",
+        market_tags=["support"],
         expected_draft_revision=expected_draft_revision,
     )
 
 
 async def test_profile_draft_save_requires_explicit_create_or_update_precondition():
-    from app.agent_profiles import save_draft
+    authority = AgentProfileAuthority()
 
     principal = AuthPrincipal(
         user_id="admin-a",
@@ -1777,12 +1434,12 @@ async def test_profile_draft_save_requires_explicit_create_or_update_preconditio
         roles=["admin"],
     )
     with pytest.raises(HTTPException) as create_error:
-        await save_draft(object(), principal=principal, definition=_draft(expected_draft_revision=2), agent_id=None)
+        await authority.save_draft(object(), principal=principal, definition=_draft(expected_draft_revision=2), agent_id=None)
     assert create_error.value.status_code == 409
     assert create_error.value.detail == "agent_profile_create_revision_invalid"
 
     with pytest.raises(HTTPException) as update_error:
-        await save_draft(
+        await authority.save_draft(
             object(),
             principal=principal,
             definition=_draft(expected_draft_revision=0),
@@ -1793,7 +1450,7 @@ async def test_profile_draft_save_requires_explicit_create_or_update_preconditio
 
 
 async def test_mock_profile_revision_fence_allows_one_concurrent_publish_from_the_same_draft():
-    from app.repositories import create_agent_profile_revision
+    from app.agent_apps.infrastructure.postgres import create_agent_profile_revision
 
     class Cursor:
         def __init__(self, row=None):
@@ -1825,12 +1482,18 @@ async def test_mock_profile_revision_fence_allows_one_concurrent_publish_from_th
                         "status": params[3],
                         "name": params[4],
                         "description": params[5],
-                        "instructions": params[6],
-                        "model_id": params[7],
-                        "skill_id": params[8],
-                        "skill_version": params[9],
+                        "starter_prompts": [],
+                        "instructions": params[7],
+                        "skill_set": [{"skill_id": "general-chat"}],
                         "mcp_tool_ids": [],
-                        "content_hash": params[11],
+                        "content_hash": params[10],
+                        "avatar_ref": params[11],
+                        "avatar_seed": params[12],
+                        "market_tags": [],
+                        "visibility": params[14],
+                        "allowed_department_ids": [],
+                        "allowed_roles": [],
+                        "allowed_user_ids": [],
                     }
                 )
             raise AssertionError(normalized)
@@ -1843,11 +1506,13 @@ async def test_mock_profile_revision_fence_allows_one_concurrent_publish_from_th
             status="published",
             name="Support assistant",
             description="Approved support helper.",
+            starter_prompts=[],
             instructions="Private instruction",
-            legacy_model_id="model-a",
-            skill_id="general-chat",
-            skill_version="version-a",
+            skill_set=[{"skill_id": "general-chat"}],
             mcp_tool_ids=[],
+            avatar_ref="builtin:agent",
+            avatar_seed="support-assistant",
+            market_tags=["support"],
             content_hash="a" * 64,
             created_by="admin-a",
             published_by="admin-a",

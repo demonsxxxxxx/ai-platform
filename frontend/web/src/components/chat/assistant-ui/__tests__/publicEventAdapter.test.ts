@@ -40,6 +40,64 @@ test("v4 adapter accepts generated message delta and retains transport identity"
   assert.equal(adapted?.transportCursor, "run-1:2:1-0");
 });
 
+test("v4 delta projection keeps semantic identity and completion is metadata-only activity", () => {
+  const delta = adaptPublicRunStreamEventV4(
+    frame("message.delta", { delta: "hello" }, 7),
+    { runId: "run-1", streamIncarnation: 2 },
+  );
+  assert.ok(delta);
+  assert.equal(delta.eventId, "event-7");
+  assert.equal(delta.messageId, "message-1");
+  assert.equal(delta.sequence, 7);
+  const projectedDelta = projectV4EventToLegacyHandler(delta, "message-1");
+  assert.ok(projectedDelta);
+  const deltaData = JSON.parse(projectedDelta.streamEvent.data) as Record<string, unknown>;
+  assert.equal(projectedDelta.streamEvent.event, "message:chunk");
+  assert.equal(deltaData.event_id, "event-7");
+  assert.equal(deltaData.message_id, "message-1");
+  assert.equal(deltaData.sequence, 7);
+  assert.equal(deltaData.projection_kind, "assistant_delta");
+  assert.equal(deltaData.content, "hello");
+
+  const completedFrame = frame(
+    "message.completed",
+    { delta_count: 2, text_length: 10 },
+    8,
+  );
+  completedFrame.value = {
+    ...(completedFrame.value as Record<string, unknown>),
+    causation_event_id: "event-7",
+  };
+  const completed = adaptPublicRunStreamEventV4(completedFrame, {
+    runId: "run-1",
+    streamIncarnation: 2,
+  });
+  assert.ok(completed);
+  const projectedCompleted = projectV4EventToLegacyHandler(completed, "message-1");
+  assert.ok(projectedCompleted);
+  assert.equal(projectedCompleted.streamEvent.event, "run_event");
+  const completedData = JSON.parse(
+    projectedCompleted.streamEvent.data,
+  ) as Record<string, unknown>;
+  assert.equal(completedData.event_type, "public_activity");
+  assert.equal(completedData.stage, "message_completed");
+  assert.equal(completedData.status, "completed");
+  assert.equal(completedData.projection_kind, undefined);
+  assert.equal(completedData.content, undefined);
+  assert.deepEqual(completedData.payload, {
+    delta_count: 2,
+    text_length: 10,
+  });
+  assert.equal(completedData.causation_event_id, "event-7");
+  assert.equal(
+    adaptPublicRunStreamEventV4(
+      frame("message.completed", { content: "legacy full answer" }, 9),
+      { runId: "run-1", streamIncarnation: 2 },
+    ),
+    null,
+  );
+});
+
 test("v4 adapter rejects unknown payload fields and foreign run/incarnation", () => {
   assert.equal(
     adaptPublicRunStreamEventV4(frame("message.delta", { delta: "hi", secret: "no" }), { runId: "run-1" }),
@@ -80,7 +138,7 @@ test("v4 adapter enforces generated run, date-time, nullable, and exact payload 
   const projected = projectV4EventToLegacyHandler(adapted, "message-1");
   assert.ok(projected);
   assert.ok(projected);
-  assert.doesNotMatch(projected.streamEvent.data, /projection_failure_reason|answer_too_large/);
+  assert.doesNotMatch(projected.streamEvent.data, /projection_failure_reason/);
   const invalidRun = { ...valid, value: { ...(valid.value as Record<string, unknown>), run_id: `x${"a".repeat(128)}` } };
   assert.equal(adaptPublicRunStreamEventV4(invalidRun, { runId: `x${"a".repeat(128)}` }), null);
   const invalidDate = { ...valid, value: { ...(valid.value as Record<string, unknown>), emitted_at: "2026-02-30T00:00:00Z" } };

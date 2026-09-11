@@ -10,6 +10,23 @@ import {
   type EventData,
 } from "./types";
 
+const PUBLIC_EXECUTION_MAX_ELAPSED_MS = 24 * 60 * 60 * 1000;
+
+/** Keep only timestamps that can safely participate in a public duration. */
+export function validPublicExecutionTimestamp(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0 || value !== value.trim()) {
+    return undefined;
+  }
+  return Number.isFinite(Date.parse(value)) ? value : undefined;
+}
+
+function executionEventTimestamp(data: EventData): string | undefined {
+  return (
+    validPublicExecutionTimestamp(data.created_at) ||
+    validPublicExecutionTimestamp(data.timestamp)
+  );
+}
+
 const PUBLIC_AGENT_PROGRESS_KINDS: Readonly<Record<string, ExecutionTimelineKind>> = {
   attachment_materialization: "file_read",
   skill_staging: "capability",
@@ -47,6 +64,13 @@ export function projectPublicAgentProgress(
   const lifecycle = String(payload.lifecycle);
   const kind = PUBLIC_AGENT_PROGRESS_KINDS[phase];
   if (!kind) return null;
+  const status =
+    lifecycle === "completed"
+      ? "completed"
+      : lifecycle === "failed"
+        ? "failed"
+        : "running";
+  const timestamp = executionEventTimestamp(data);
   return {
     type: "execution_step",
     sequence: data.sequence,
@@ -54,17 +78,16 @@ export function projectPublicAgentProgress(
     kind,
     stage: phase,
     title: String(payload.message),
-    status:
-      lifecycle === "completed"
-        ? "completed"
-        : lifecycle === "failed"
-          ? "failed"
-          : "running",
+    status,
     progress: {
-      current: lifecycle === "completed" ? 1 : 0,
+      current: status === "completed" ? 1 : 0,
       total: 1,
     },
     safe_file_name: null,
+    ...(timestamp ? { started_at: timestamp } : {}),
+    ...(status !== "running" && timestamp
+      ? { completed_at: timestamp }
+      : {}),
   };
 }
 
@@ -354,15 +377,63 @@ export class PublicStreamPresentation {
   }
 }
 
+function isTerminalExecutionStatus(
+  status: ExecutionTimelinePart["status"],
+): boolean {
+  return status === "completed" || status === "failed";
+}
+
+function mergeExecutionStep(
+  existing: ExecutionTimelinePart | undefined,
+  step: ExecutionTimelinePart,
+): ExecutionTimelinePart {
+  const startedAt =
+    validPublicExecutionTimestamp(existing?.started_at) ||
+    validPublicExecutionTimestamp(step.started_at);
+  const completedAt = isTerminalExecutionStatus(step.status)
+    ? validPublicExecutionTimestamp(step.completed_at) ||
+      validPublicExecutionTimestamp(existing?.completed_at)
+    : validPublicExecutionTimestamp(existing?.completed_at);
+  const merged = { ...step };
+  if (startedAt) merged.started_at = startedAt;
+  else delete merged.started_at;
+  if (completedAt) merged.completed_at = completedAt;
+  else delete merged.completed_at;
+  return merged;
+}
+
 function updateExecutionStep(
   steps: ExecutionTimelinePart[],
   step: ExecutionTimelinePart,
 ): ExecutionTimelinePart[] {
   const existing = steps.find((candidate) => candidate.step_id === step.step_id);
   if (existing && step.sequence <= existing.sequence) return steps;
-  if (!existing) return [...steps, step];
+  const nextStep = mergeExecutionStep(existing, step);
+  if (!existing) return [...steps, nextStep];
   return steps.map((candidate) =>
-    candidate.step_id === step.step_id ? step : candidate,
+    candidate.step_id === step.step_id ? nextStep : candidate,
+  );
+}
+
+function parseExecutionTimestamp(value: string | undefined): number | undefined {
+  const timestamp = validPublicExecutionTimestamp(value);
+  if (!timestamp) return undefined;
+  const milliseconds = Date.parse(timestamp);
+  return Number.isFinite(milliseconds) ? milliseconds : undefined;
+}
+
+function executionElapsedMs(steps: ExecutionTimelinePart[]): number | undefined {
+  const starts = steps
+    .map((step) => parseExecutionTimestamp(step.started_at))
+    .filter((value): value is number => value !== undefined);
+  const terminals = steps
+    .filter((step) => isTerminalExecutionStatus(step.status))
+    .map((step) => parseExecutionTimestamp(step.completed_at))
+    .filter((value): value is number => value !== undefined);
+  if (starts.length === 0 || terminals.length === 0) return undefined;
+  return Math.min(
+    PUBLIC_EXECUTION_MAX_ELAPSED_MS,
+    Math.max(0, Math.max(...terminals) - Math.min(...starts)),
   );
 }
 
@@ -377,22 +448,26 @@ export function upsertPublicExecutionStep(
   );
   if (process) {
     const nextSteps = updateExecutionStep(process.steps, step);
-    return nextSteps === process.steps
-      ? parts
-      : parts.map((part) =>
-          part.type === "execution_process"
-            ? { ...part, steps: nextSteps }
-            : part,
-        );
+    if (nextSteps === process.steps) return parts;
+    const elapsedMs = executionElapsedMs(nextSteps);
+    const nextProcess = { ...process, steps: nextSteps };
+    if (elapsedMs === undefined) delete nextProcess.elapsed_ms;
+    else nextProcess.elapsed_ms = elapsedMs;
+    return parts.map((part) =>
+      part.type === "execution_process" ? nextProcess : part,
+    );
   }
   const existing = parts.find(
     (part): part is ExecutionTimelinePart =>
       part.type === "execution_step" && part.step_id === step.step_id,
   );
   if (existing && step.sequence <= existing.sequence) return parts;
-  if (!existing) return [...parts, step];
+  const nextStep = mergeExecutionStep(existing, step);
+  if (!existing) return [...parts, nextStep];
   return parts.map((part) =>
-    part.type === "execution_step" && part.step_id === step.step_id ? step : part,
+    part.type === "execution_step" && part.step_id === step.step_id
+      ? nextStep
+      : part,
   );
 }
 
@@ -406,9 +481,12 @@ export function collapsePublicExecutionSteps(parts: MessagePart[]): MessagePart[
         : [],
   );
   if (steps.length === 0) return parts;
-  const process = {
-    type: "execution_process" as const,
-    steps: steps.reduce(updateExecutionStep, [] as ExecutionTimelinePart[]),
+  const processSteps = steps.reduce(updateExecutionStep, [] as ExecutionTimelinePart[]);
+  const elapsedMs = executionElapsedMs(processSteps);
+  const process: Extract<MessagePart, { type: "execution_process" }> = {
+    type: "execution_process",
+    steps: processSteps,
+    ...(elapsedMs === undefined ? {} : { elapsed_ms: elapsedMs }),
   };
   let inserted = false;
   return parts.flatMap((part): MessagePart[] => {

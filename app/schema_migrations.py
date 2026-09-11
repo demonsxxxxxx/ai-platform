@@ -31,6 +31,7 @@ USER_PROFILE_METADATA_SCHEMA_VERSION = "2026.09.02.1"
 FILE_UPLOAD_SESSION_SCHEMA_VERSION = "2026.09.03.1"
 EXPERT_SKILL_NAME_SCHEMA_VERSION = "2026.09.03.2"
 EXPERT_MARKET_MULTI_TAG_SCHEMA_VERSION = "2026.09.07.2"
+AGENT_PROFILE_CONSOLIDATION_SCHEMA_VERSION = "2026.09.08.1"
 OBSOLETE_SKILL_CATALOG_CLEANUP_SCHEMA_VERSION = "2026.09.11.1"
 TARGET_SCHEMA_VERSION = OBSOLETE_SKILL_CATALOG_CLEANUP_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
@@ -68,11 +69,8 @@ CRITICAL_COLUMNS = (
     ("sessions", "title_source", "text", True),
     ("agent_profile_revisions", "skill_set", "jsonb", True),
     ("agent_profile_revisions", "avatar_seed", "text", True),
-    ("agent_profile_revisions", "avatar_style_ref", "text", True),
-    ("agent_profile_revisions", "market_tag", "text", True),
+    ("agent_profile_revisions", "avatar_ref", "text", True),
     ("agent_profile_revisions", "market_tags", "jsonb", True),
-    # Temporary physical compatibility for the previous binary; product DTOs ignore it.
-    ("agent_profile_revisions", "supported_file_types", "jsonb", True),
     ("runs", "execution_kind", "text", True),
     ("runs", "skill_id", "text", False),
     ("runs", "authz_policy_version", "int4", True),
@@ -278,18 +276,6 @@ CRITICAL_TRIGGERS = (
         "trg_run_attempt_transition_guard",
         "ai_platform_guard_run_attempt_transition",
         23,
-    ),
-    (
-        "agent_profile_revisions",
-        "trg_agent_profile_legacy_insert_compatibility",
-        "agent_profile_legacy_insert_compatibility",
-        7,
-    ),
-    (
-        "agent_profile_revisions",
-        "trg_agent_profile_legacy_insert_reconcile",
-        "agent_profile_legacy_insert_reconcile",
-        5,
     ),
 )
 MODEL_CRITICAL_CONSTRAINT_DEFINITIONS = (

@@ -57,8 +57,23 @@ generation, timestamps, and reconciliation ownership in one migration.
 3. Callback authority is the HMAC-bound `(run_id, attempt_id)` token plus exactly
    one current active lease. A callback batch is persisted through the durable
    `(tenant_id, run_id, attempt_id, batch_id)` receipt when the executor supplies
-   `batch_id`. Missing-batch compatibility requests remain a migration gap and
-   must be removed only after every deployed executor sends batch identities.
+   `batch_id`. Terminal-only answer deltas may span multiple bounded callback
+   batches; the receipt is created only after every delta batch and the final
+   completion batch are acknowledged. Missing-batch compatibility requests
+   remain a migration gap and must be removed only after every deployed executor
+   sends batch identities.
+   A successful streamed answer returns a versioned `AssistantAnswerReceipt`
+   containing only `schema_version`, `message_id`, `delta_count`, `text_length`,
+   and `last_delta_event_id`. Its legacy `message` is exactly empty, and failed
+   or cancelled terminals cannot carry a receipt. It never carries the full
+   answer body. The Worker
+   accepts only current-Attempt, strictly ordered v4 rows whose database and
+   canonical metadata publication states are both `published`; `pending` remains
+   retryable, while inconsistent or `suppressed` publication fails closed. Receipt,
+   identity, sequence, count, or length mismatch also fails closed. Legacy
+   non-streaming bounded terminal messages use the same stable-source
+   `assistant_delta` compatibility shape only when no streamed answer exists;
+   obsolete `assistant_final` is retired.
 4. A real-provider release takes the scoped lease row lock, calls provider stop,
    and marks released in that transaction. Concurrent release waits and then
    observes the terminal row instead of issuing a duplicate stop. Stop failure

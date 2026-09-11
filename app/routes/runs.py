@@ -8,7 +8,7 @@ from pydantic import UUID4
 
 from app import repositories
 from app.mcp.api import authorize_selected_chat_mcp_tools
-from app.agent_profiles import reauthorize_pinned_run_for_replay
+from app.agent_apps.api import AgentProfileAuthority
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capabilities import get_capability
 from app.context_builder import record_initial_context_snapshot
@@ -117,6 +117,7 @@ from app.skills.registry import BuiltinSkillRegistry
 from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
+_agent_profile_authority = AgentProfileAuthority()
 logger = logging.getLogger(__name__)
 
 
@@ -693,7 +694,7 @@ async def prepare_copied_run_for_queue(
         if isinstance(profile_snapshot, dict) and isinstance(
             profile_snapshot.get("skill_set"), list
         ):
-            await reauthorize_pinned_run_for_replay(
+            await _agent_profile_authority.reauthorize_pinned_run_for_replay(
                 conn,
                 principal=effective_principal,
                 run_id=str(copied["run_id"]),
@@ -1179,7 +1180,7 @@ async def copy_run(
     try:
         async with transaction() as conn:
             await enforce_user_active_run_limit(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
-            await reauthorize_pinned_run_for_replay(
+            await _agent_profile_authority.reauthorize_pinned_run_for_replay(
                 conn,
                 principal=principal,
                 run_id=run_id,
@@ -1222,7 +1223,7 @@ async def copy_run(
         raise HTTPException(status_code=404, detail="run_not_found")
     try:
         async with transaction() as conn:
-            await reauthorize_pinned_run_for_replay(
+            await _agent_profile_authority.reauthorize_pinned_run_for_replay(
                 conn,
                 principal=principal,
                 run_id=str(copied["run_id"]),
@@ -1289,7 +1290,7 @@ async def _ensure_run_control_queue_admission(
     """Recover or idempotently admit one immutable committed control child."""
 
     async with transaction() as conn:
-        await reauthorize_pinned_run_for_replay(
+        await _agent_profile_authority.reauthorize_pinned_run_for_replay(
             conn,
             principal=principal,
             run_id=str(queue_payload["run_id"]),
@@ -1391,7 +1392,7 @@ async def _mutate_run_control_child(
                     tenant_id=principal.tenant_id,
                     user_id=principal.user_id,
                 )
-                await reauthorize_pinned_run_for_replay(
+                await _agent_profile_authority.reauthorize_pinned_run_for_replay(
                     conn,
                     principal=principal,
                     run_id=run_id,
@@ -1706,6 +1707,7 @@ async def cancel_run(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlResponse:
     runtime = request.app.state.run_stream_runtime
+    attempt_lifecycle = request.app.state.run_attempt_lifecycle
     cancellation = await _require_run_cancellation_use_case(request).request_owner_cancel(
         tenant_id=principal.tenant_id,
         owner_user_id=principal.user_id,
@@ -1736,12 +1738,14 @@ async def cancel_run(
                 run_id=run_id,
                 progress=initial_progress,
                 transaction_factory=transaction,
+                attempt_lifecycle=attempt_lifecycle,
             )
         progress = await drain_run_tool_permission_terminalization(
             tenant_id=principal.tenant_id,
             run_id=run_id,
             capabilities=runtime.worker_capabilities,
             transaction_factory=transaction,
+            attempt_lifecycle=attempt_lifecycle,
             attempt_id=cancellation.attempt_id if cancellation is not None else None,
         )
         if progress is not None and progress.is_terminal():
@@ -1756,6 +1760,7 @@ async def cancel_run(
             run_id=run_id,
             progress=progress,
             transaction_factory=transaction,
+            attempt_lifecycle=attempt_lifecycle,
         )
     if cancellation is not None and cancellation.attempt_id:
         try:

@@ -235,7 +235,10 @@ def test_committed_run_control_recovery_terminalizes_retired_snapshot_without_en
     monkeypatch.setattr("app.routes.runs.repositories.enforce_user_active_run_admission", forbidden)
     monkeypatch.setattr(f"app.routes.runs.repositories.{action}_run_as_new_task", forbidden)
     monkeypatch.setattr("app.routes.runs.repositories.record_run_control_operation", forbidden)
-    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", forbidden)
+    monkeypatch.setattr(
+        "app.routes.runs._agent_profile_authority.reauthorize_pinned_run_for_replay",
+        forbidden,
+    )
     monkeypatch.setattr("app.routes.runs.read_queue_admission", forbidden)
     monkeypatch.setattr("app.routes.runs.enqueue_run", forbidden)
     monkeypatch.setattr("app.routes.runs.remove_queued_run", forbidden)

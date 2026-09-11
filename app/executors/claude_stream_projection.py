@@ -1,6 +1,5 @@
-"""Fail-closed projection of Claude SDK raw stream events."""
+"""Validate Claude SDK text framing before the separate public-answer gate."""
 
-from collections.abc import Callable
 from typing import Any
 
 
@@ -63,27 +62,17 @@ class AssistantAnswerTimeline:
 
 
 class ClaudeStreamProjector:
-    """Project one SDK raw event stream into safe publishable text.
+    """Validate one SDK stream and forward text without lexical buffering.
 
-    The interface accepts raw event dictionaries and returns only text with a
-    stable lexical boundary. It never imports the SDK or publishes callbacks;
-    callers retain those adapter responsibilities.
+    Returned text is executor-private, NOT approved for public delivery. Every
+    caller must pass it through PublicAnswerStreamGate before publishing. This
+    parser owns only block framing; punctuation and text length are not framing.
     """
 
-    def __init__(
-        self,
-        *,
-        sanitizer: Callable[[object], object],
-        max_pending_chars: int = 4_096,
-    ) -> None:
-        """Create a bounded projector using the caller's public-text sanitizer."""
-
-        self._sanitizer = sanitizer
-        self._max_pending_chars = max(1, max_pending_chars)
+    def __init__(self) -> None:
         self._active_text_index: int | None = None
         self._ignored_block_index: int | None = None
         self._ignored_block_type: str | None = None
-        self._pending_text = ""
         self._disabled = False
         self._partial_emitted = False
 
@@ -100,7 +89,7 @@ class ClaudeStreamProjector:
         return self._partial_emitted
 
     def accept(self, event: object) -> tuple[str, ...]:
-        """Consume one raw event and return zero or more safe text chunks.
+        """Consume one raw event and return zero or more validated text chunks.
 
         Any malformed event or active-text sequence conflict permanently disables
         further output.  Valid non-text activity before a text block is ignored.
@@ -158,13 +147,8 @@ class ClaudeStreamProjector:
         if not self._is_active_index(index):
             self._disable()
             return ()
-        if not self._is_safe(self._pending_text):
-            self._disable()
-            return ()
-        chunk = self._pending_text
-        self._pending_text = ""
         self._active_text_index = None
-        return self._emit(chunk)
+        return ()
 
     def _accept_delta(self, event: dict[str, Any]) -> tuple[str, ...]:
         index = event.get("index")
@@ -194,50 +178,7 @@ class ClaudeStreamProjector:
         if not isinstance(text, str) or not text:
             self._disable()
             return ()
-        self._pending_text += text
-        if not self._is_safe(self._pending_text):
-            self._disable()
-            return ()
-        stable_length = self._stable_prefix_length()
-        if len(self._pending_text) - stable_length > self._max_pending_chars:
-            self._disable()
-            return ()
-        if stable_length <= 0:
-            return ()
-        chunk = self._pending_text[:stable_length]
-        self._pending_text = self._pending_text[stable_length:]
-        return self._emit(chunk)
-
-    def _stable_prefix_length(self) -> int:
-        """Return a prefix that later text cannot turn into private content."""
-
-        minimum_index = max(0, len(self._pending_text) - self._max_pending_chars - 1)
-        for index in range(len(self._pending_text) - 1, minimum_index - 1, -1):
-            if not self._is_stable_boundary(self._pending_text[index]):
-                continue
-            candidate = self._pending_text[: index + 1]
-            return len(candidate) if self._is_safe_prefix(candidate) else 0
-        return 0
-
-    @staticmethod
-    def _is_stable_boundary(value: str) -> bool:
-        return value.isspace() or value in "!?;。！？"
-
-    def _is_safe_prefix(self, value: str) -> bool:
-        if not self._is_safe(value):
-            return False
-        # A sensitive key may legally include whitespace before its assignment.
-        # Reject a boundary whose already-published bytes would be rewritten by
-        # the public sanitizer after the next fragment arrives.
-        for continuation in ("= synthetic-value", ': "synthetic-value"'):
-            sanitized = self._sanitizer(value + continuation)
-            if not isinstance(sanitized, str) or not sanitized.startswith(value):
-                return False
-        return True
-
-    def _is_safe(self, value: str) -> bool:
-        sanitized = self._sanitizer(value)
-        return isinstance(sanitized, str) and sanitized == value
+        return self._emit(text)
 
     def _emit(self, value: str) -> tuple[str, ...]:
         if not value:
@@ -247,7 +188,6 @@ class ClaudeStreamProjector:
 
     def _disable(self) -> None:
         self._disabled = True
-        self._pending_text = ""
         self._active_text_index = None
         self._ignored_block_index = None
         self._ignored_block_type = None

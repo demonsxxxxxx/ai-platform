@@ -2,7 +2,6 @@ from __future__ import annotations
 
 PUBLIC_ANSWER_FAILURE_REASONS = frozenset(
     {
-        "answer_too_large",
         "invalid_configuration",
         "invalid_input",
         "private_replacement_invalid",

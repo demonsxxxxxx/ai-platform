@@ -1926,13 +1926,10 @@ def test_lambchat_terminal_history_projects_identifier_split_across_deltas():
         for payload in answer_payloads
         if payload["projection_kind"] == "assistant_delta"
     ]
-    final = next(
-        payload
-        for payload in answer_payloads
-        if payload["projection_kind"] == "assistant_final"
-    )
 
-    assert "".join(deltas) == final["content"] == "已开始，general-agent 完成。"
+    assert len(answer_payloads) == 1
+    assert [payload["event_id"] for payload in answer_payloads] == ["evt-split-b"]
+    assert "".join(deltas) == "已开始，general-agent 完成。"
     assert "general-chat" not in str(answer_payloads)
     assert "qa-word-review" not in str(answer_payloads)
 
@@ -2011,13 +2008,10 @@ def test_lambchat_history_fold_preserves_split_identifier_across_pages():
         for payload in answer_payloads
         if payload["projection_kind"] == "assistant_delta"
     ]
-    final = next(
-        payload
-        for payload in answer_payloads
-        if payload["projection_kind"] == "assistant_final"
-    )
 
-    assert "".join(deltas) == final["content"] == "已开始，general-agent 完成。"
+    assert len(answer_payloads) == 1
+    assert [payload["event_id"] for payload in answer_payloads] == ["evt-page-b"]
+    assert "".join(deltas) == "已开始，general-agent 完成。"
     assert "general-chat" not in str(answer_payloads)
     assert "qa-word-review" not in str(answer_payloads)
 
@@ -3325,7 +3319,10 @@ def test_lambchat_session_answer_event_uses_g2_envelope(monkeypatch):
     assert event["payload"] == {
         "run_id": "run_a",
         "projection_version": "ai-platform.chat-public-projection.v1",
-        "projection_kind": "assistant_final",
+        "projection_kind": "assistant_delta",
+        "event_id": "run_a:final",
+        "message_id": "run_a:assistant",
+        "source": "worker_answer_delta_v1",
         "content": "hello",
     }
     assert event["data"] == event["payload"]

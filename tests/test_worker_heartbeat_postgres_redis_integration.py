@@ -15,8 +15,6 @@ from redis.asyncio import Redis
 from app import queue, schema_migrations
 from app.models import QueueRunPayload
 from app.platform.postgres.errors import RepositoryConflictError
-from app.runs.api import heartbeat_worker_run_attempt
-from app.runs.application import attempt_lifecycle as attempt_lifecycle_application
 from app.runs.application.attempt_lifecycle import RunAttemptLifecycleService
 from app.runs.domain.execution_spec import (
     EXECUTION_SPEC_SCHEMA_VERSION,
@@ -596,10 +594,8 @@ async def test_real_worker_heartbeat_fails_closed_then_converges_after_postgres_
             "_now",
             lambda: initial_heartbeat_at.timestamp() + 86_400,
         )
-        monkeypatch.setattr(
-            attempt_lifecycle_application,
-            "_service",
-            RunAttemptLifecycleService(persistence=run_attempt_persistence),
+        attempt_lifecycle = RunAttemptLifecycleService(
+            persistence=run_attempt_persistence,
         )
         keys = queue.get_queue_keys()
         redis_keys = tuple(getattr(keys, field.name) for field in fields(keys))
@@ -666,6 +662,7 @@ async def test_real_worker_heartbeat_fails_closed_then_converges_after_postgres_
             0,
             visibility_timeout_seconds,
             ownership_lost,
+            attempt_lifecycle=attempt_lifecycle,
         )
         heartbeat_after = await _redis_epoch(redis)
 
@@ -766,7 +763,7 @@ async def test_real_worker_heartbeat_fails_closed_then_converges_after_postgres_
             tz=timezone.utc,
         )
         async with transaction_factory() as conn:
-            await heartbeat_worker_run_attempt(
+            await attempt_lifecycle.heartbeat_worker(
                 conn,
                 tenant_id=tenant_id,
                 run_id=run_id,
@@ -897,7 +894,7 @@ async def test_real_worker_heartbeat_fails_closed_then_converges_after_postgres_
             match="run_attempt_worker_heartbeat_conflict",
         ):
             async with transaction_factory() as conn:
-                await heartbeat_worker_run_attempt(
+                await attempt_lifecycle.heartbeat_worker(
                     conn,
                     tenant_id=tenant_id,
                     run_id=run_id,

@@ -21,6 +21,10 @@ from app.streaming.application.callback_events_v4 import (
     V4CallbackItem,
     callback_item_to_v4,
 )
+from app.streaming.application.worker_publication_v4 import (
+    AssistantAnswerReceiptError,
+    ReconstructedAssistantAnswer,
+)
 from app.streaming.domain.live import redis_id_tuple as _redis_id_tuple
 from app.streaming.domain.live import stream_key
 from app.streaming.domain.public_events_v4 import (
@@ -54,6 +58,7 @@ from app.streaming.domain.transport import (
     StreamGap,
     canonical_json_bytes,
 )
+from app.streaming.infrastructure.publication_wakeup import PUBLICATION_CHANNEL
 from app.streaming.redis import (
     RedisStreamBridge,
     StreamContractError,
@@ -458,7 +463,153 @@ async def append_callback_v4_rows(
                 source_run_id=item.source_run_id,
             )
         )
+    if rows:
+        await conn.execute("select pg_notify(%s, '')", (PUBLICATION_CHANNEL,))
     return tuple(rows)
+
+
+async def load_answer_by_receipt(
+    conn: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    receipt: Mapping[str, object],
+) -> ReconstructedAssistantAnswer:
+    """Reconstruct one complete answer from the current attempt's v4 rows."""
+
+    try:
+        if not isinstance(receipt, Mapping):
+            raise V4ProjectionError("receipt")
+        if receipt.get("schema_version") != "ai-platform.assistant-answer-receipt.v1":
+            raise V4ProjectionError("receipt_schema_version")
+        message_id = _safe_ref(receipt.get("message_id"), name="message_id")
+        last_delta_event_id = _safe_ref(
+            receipt.get("last_delta_event_id"), name="last_delta_event_id"
+        )
+        delta_count = receipt.get("delta_count")
+        text_length = receipt.get("text_length")
+        if (
+            isinstance(delta_count, bool)
+            or not isinstance(delta_count, int)
+            or delta_count < 1
+            or isinstance(text_length, bool)
+            or not isinstance(text_length, int)
+            or text_length < 1
+        ):
+            raise V4ProjectionError("receipt_count")
+        _safe_ref(attempt_id, name="attempt_id")
+    except V4ProjectionError as exc:
+        raise AssistantAnswerReceiptError() from exc
+
+    authority = await get_stream_authority(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+    )
+    if authority is None or authority.attempt_id != attempt_id:
+        raise AssistantAnswerReceiptError()
+
+    cursor = await conn.execute(
+        """
+        select id, tenant_id, run_id, sequence, event_type, visible_to_user,
+               payload_json, stream_publication_state, created_at
+        from run_events
+        where tenant_id = %s
+          and run_id = %s
+          and event_type in ('message.started', 'message.delta', 'message.completed')
+          and visible_to_user = true
+          and payload_json ? '__stream_v4'
+          and payload_json -> '__stream_v4' ->> 'attempt_id' = %s
+        order by sequence asc, id asc
+        for update
+        """,
+        (tenant_id, run_id, attempt_id),
+    )
+    rows = await cursor.fetchall()
+    if not rows:
+        raise AssistantAnswerReceiptError()
+
+    projected_rows: list[dict[str, object]] = []
+    row_metadata: list[Mapping[str, object]] = []
+    try:
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise V4ProjectionError("row")
+            publication_state = row.get("stream_publication_state")
+            payload = row.get("payload_json")
+            metadata = payload.get(V4_METADATA_KEY) if isinstance(payload, Mapping) else None
+            if not isinstance(metadata, Mapping):
+                raise V4ProjectionError("publication_state")
+            metadata_state = metadata.get("publication_state")
+            if publication_state == "pending" and metadata_state == "pending":
+                raise AssistantAnswerReceiptError(retryable=True)
+            if publication_state != "published" or metadata_state != "published":
+                raise V4ProjectionError("publication_state")
+            projected = project_public_v4(row, authority=authority)
+            if projected is None:
+                raise V4ProjectionError("projection")
+            projected_rows.append(projected)
+            row_metadata.append(metadata)
+
+        if any(item.get("message_id") != message_id for item in projected_rows):
+            raise V4ProjectionError("message_id")
+        event_types = [str(item.get("event_type") or "") for item in projected_rows]
+        if (
+            event_types[0] != "message.started"
+            or event_types[-1] != "message.completed"
+            or event_types.count("message.started") != 1
+            or event_types.count("message.completed") != 1
+            or any(event_type != "message.delta" for event_type in event_types[1:-1])
+        ):
+            raise V4ProjectionError("event_order")
+        sequences = [item.get("seq") for item in projected_rows]
+        if any(
+            isinstance(sequence, bool)
+            or not isinstance(sequence, int)
+            or next_sequence <= sequence
+            for sequence, next_sequence in zip(sequences, sequences[1:])
+        ):
+            raise V4ProjectionError("sequence")
+        deltas = projected_rows[1:-1]
+        delta_metadata = row_metadata[1:-1]
+        if len(deltas) != delta_count:
+            raise V4ProjectionError("delta_count")
+        delta_source_ids = []
+        for metadata in delta_metadata:
+            source_event_id = metadata.get("source_event_id")
+            delta_source_ids.append(_safe_ref(source_event_id, name="source_event_id"))
+        if (
+            not delta_source_ids
+            or len(set(delta_source_ids)) != len(delta_source_ids)
+            or delta_source_ids[-1] != last_delta_event_id
+        ):
+            raise V4ProjectionError("last_delta_event_id")
+        completed = projected_rows[-1]
+        completed_metadata = row_metadata[-1]
+        if completed.get("causation_event_id") != last_delta_event_id:
+            raise V4ProjectionError("causation_event_id")
+        if completed_metadata.get("causation_event_id") != last_delta_event_id:
+            raise V4ProjectionError("causation_event_id")
+        completed_payload = completed.get("payload")
+        if not isinstance(completed_payload, Mapping):
+            raise V4ProjectionError("completed_payload")
+        if (
+            completed_payload.get("delta_count") != delta_count
+            or completed_payload.get("text_length") != text_length
+        ):
+            raise V4ProjectionError("completed_receipt")
+        text = "".join(
+            str(item["payload"]["delta"])
+            for item in deltas
+            if isinstance(item.get("payload"), Mapping)
+            and isinstance(item["payload"].get("delta"), str)
+        )
+        if len(text) != text_length:
+            raise V4ProjectionError("text_length")
+    except (KeyError, TypeError, V4ProjectionError) as exc:
+        raise AssistantAnswerReceiptError() from exc
+    return ReconstructedAssistantAnswer(text=text)
 
 
 async def list_pending_v4_rows(
@@ -1013,6 +1164,7 @@ __all__ = [
     "build_public_v4_control",
     "build_v4_control",
     "callback_item_to_v4",
+    "load_answer_by_receipt",
     "list_pending_v4_rows",
     "mark_v4_attempt",
     "mark_v4_published",

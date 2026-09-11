@@ -46,17 +46,11 @@ function historicalProfile(
     expected_revision: identity.revision,
     name: identity.name,
     description: identity.description,
-    welcome_message: identity.welcome_message,
     starter_prompts: identity.starter_prompts,
-    capability_summary: identity.capability_summary,
-    recommended_tasks: identity.recommended_tasks,
-    supported_input_types: identity.supported_input_types,
-    expected_outputs: identity.expected_outputs,
-    permissions_and_data_access_notice:
-      identity.permissions_and_data_access_notice,
     avatar_ref: identity.avatar_ref,
-    avatar_seed: identity.avatar_seed ?? identity.agent_id,
-    category: identity.category,
+    avatar_seed: identity.avatar_seed,
+    market_tags: [],
+    is_favorite: false,
     published_at: identity.published_at,
   };
 }

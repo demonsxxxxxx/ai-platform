@@ -7,6 +7,7 @@ import {
   filterLaunchpadGroups,
   getLaunchpadIconUrl,
   launchpadGroups,
+  resolveLaunchpadDestination,
 } from "../catalog.ts";
 
 function findCatalogMetadataKeyPaths(
@@ -33,13 +34,16 @@ function findCatalogMetadataKeyPaths(
   );
 }
 
-test("launchpad contains only the copied web-navigation catalog", () => {
+test("launchpad keeps the copied web catalog and AI application entries", () => {
   const entries = launchpadGroups.flatMap((group) => group.entries);
 
   assert.equal(launchpadGroups.length, 13);
-  assert.equal(entries.length, 121);
-  assert.equal(new Set(entries.map((entry) => entry.id)).size, 121);
-  assert.equal(new Set(entries.map((entry) => entry.icon)).size, 84);
+  assert.equal(entries.length, 127);
+  assert.equal(new Set(entries.map((entry) => entry.id)).size, 127);
+  assert.equal(
+    new Set(entries.flatMap((entry) => (entry.icon ? [entry.icon] : []))).size,
+    89,
+  );
   assert.deepEqual(
     launchpadGroups.map((group) => group.name),
     [
@@ -70,19 +74,56 @@ test("launchpad contains only the copied web-navigation catalog", () => {
       url: "http://10.56.0.25:8189/#/TaskManagement/indexSpace",
     },
   );
-  assert.ok(!entries.some((entry) => entry.name === "公司规章制度"));
-  assert.ok(!entries.some((entry) => entry.name === "SOP问询助手"));
-  assert.ok(!entries.some((entry) => entry.name === "Word文档翻译"));
+  assert.ok(entries.some((entry) => entry.name === "SOP问询助手"));
+  assert.ok(entries.some((entry) => entry.name === "Word文档翻译"));
+  assert.ok(entries.some((entry) => entry.name === "Word文档审核"));
+});
+
+test("AI applications keep internal routes and direct external URLs", () => {
+  const entries = launchpadGroups.flatMap((group) => group.entries);
+  const sopAssistant = entries.find((entry) => entry.name === "SOP问询助手");
+  const wordTranslate = entries.find((entry) => entry.name === "Word文档翻译");
+  const wordReview = entries.find((entry) => entry.name === "Word文档审核");
+  const aiDraw = entries.find((entry) => entry.name === "ai-draw");
+  const dataFormulator = entries.find((entry) => entry.name === "data-formulator");
+  const pdfTranslate = entries.find((entry) => entry.name === "pdf-translate");
+
+  assert.deepEqual(resolveLaunchpadDestination(sopAssistant!), {
+    kind: "internal",
+    path: "/ai-apps/sop-assistant",
+  });
+  assert.deepEqual(resolveLaunchpadDestination(wordReview!), {
+    kind: "internal",
+    path: "/ai-apps/word-review",
+  });
+  assert.deepEqual(resolveLaunchpadDestination(wordTranslate!), {
+    kind: "url",
+    href: "http://10.56.0.210:8000",
+  });
+  assert.deepEqual(resolveLaunchpadDestination(aiDraw!), {
+    kind: "url",
+    href: "http://10.56.1.57:3000/zh",
+  });
+  assert.deepEqual(resolveLaunchpadDestination(dataFormulator!), {
+    kind: "url",
+    href: "http://10.56.1.57:5567/",
+  });
+  assert.deepEqual(resolveLaunchpadDestination(pdfTranslate!), {
+    kind: "url",
+    href: "http://10.56.1.57:7860/",
+  });
 });
 
 test("copied launchpad icons exist in the frontend public directory", () => {
   const entries = launchpadGroups.flatMap((group) => group.entries);
 
   for (const entry of entries) {
-    assert.ok(
-      existsSync(join(process.cwd(), "public", "launchpad-icons", entry.icon)),
-      `missing copied icon for ${entry.name}: ${entry.icon}`,
-    );
+    if (entry.icon) {
+      assert.ok(
+        existsSync(join(process.cwd(), "public", "launchpad-icons", entry.icon)),
+        `missing copied icon for ${entry.name}: ${entry.icon}`,
+      );
+    }
   }
   assert.equal(
     getLaunchpadIconUrl("满意度调研.jpg"),
@@ -90,16 +131,11 @@ test("copied launchpad icons exist in the frontend public directory", () => {
   );
 });
 
-test("launchpad catalog removes obsolete tab and runtime metadata", () => {
-  for (const key of [
-    "tab",
-    "runtimeUrlKey",
-    "unavailableReason",
-    "systemKey",
-    "color",
-  ]) {
+test("launchpad catalog keeps destination metadata limited to current behavior", () => {
+  for (const key of ["tab", "systemKey", "color"]) {
     assert.deepEqual(findCatalogMetadataKeyPaths(launchpadGroups, key), []);
   }
+  assert.equal(findCatalogMetadataKeyPaths(launchpadGroups, "runtimeUrlKey").length, 0);
 });
 
 test("search filters by website name, description, and category", () => {
@@ -121,8 +157,10 @@ test("search filters by website name, description, and category", () => {
 });
 
 test("every copied web-navigation entry has a direct destination and icon", () => {
-  for (const entry of launchpadGroups.flatMap((group) => group.entries)) {
-    assert.match(entry.url, /^https?:\/\//);
-    assert.match(entry.icon, /\.(?:png|jpe?g)$/i);
+  for (const entry of launchpadGroups
+    .flatMap((group) => group.entries)
+    .filter((entry) => !entry.internalPath)) {
+    assert.match(entry.url || "", /^https?:\/\//);
+    assert.match(entry.icon || "", /\.(?:png|jpe?g|svg)$/i);
   }
 });

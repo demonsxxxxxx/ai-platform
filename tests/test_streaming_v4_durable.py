@@ -58,6 +58,7 @@ from app.streaming.infrastructure.postgres_v4 import (
     PostgresV4PublicationClaims,
     V4PublicationAuthorityError,
 )
+from app.streaming.infrastructure.publication_wakeup import PUBLICATION_CHANNEL
 from app.streaming.infrastructure.v4 import (
     V4RedisStreamBridge,
     list_pending_v4_rows,
@@ -198,7 +199,7 @@ async def test_terminal_row_uses_streaming_intent_attempt_identity(monkeypatch):
     ]
 
 
-def _callback_conn():
+def _callback_conn(*, notify_error=None):
     class Cursor:
         def __init__(self, row):
             self.row = row
@@ -207,13 +208,19 @@ def _callback_conn():
             return self.row
 
     class Connection:
-        def __init__(self):
+        def __init__(self, *, notify_error=None):
             self.rows = {}
             self.statements = []
+            self.notify_error = notify_error
 
         async def execute(self, statement, params):
             self.statements.append((statement, params))
             normalized = " ".join(statement.lower().split())
+            if normalized == "select pg_notify(%s, '')":
+                assert params == (PUBLICATION_CHANNEL,)
+                if self.notify_error is not None:
+                    raise self.notify_error
+                return Cursor(None)
             event_id = params[-1]
             row = self.rows.get(event_id)
             if normalized.startswith("select id"):
@@ -248,7 +255,45 @@ def _callback_conn():
                 return Cursor({"id": event_id})
             raise AssertionError(statement)
 
-    return Connection()
+    return Connection(notify_error=notify_error)
+
+
+@pytest.mark.asyncio
+async def test_callback_pg_notify_failure_propagates_before_caller_commit(monkeypatch):
+    from app.streaming.infrastructure import v4
+
+    conn = _callback_conn(notify_error=RuntimeError("notify failed"))
+    authority = _authority()
+    item = v4.V4CallbackItem(
+        callback_index=0,
+        batch_index=0,
+        event_type="message.delta",
+        payload={"delta": "hello"},
+        message_id=opaque_message_id("tenant-a", "run-a"),
+    )
+
+    async def append_event(conn, *, tenant_id, run_id, event, event_id):
+        conn.rows[event_id] = {"id": event_id}
+        return EventReceipt(event_id, RunCursor(run_id, 9), "2026-01-01T00:00:00Z")
+
+    monkeypatch.setattr(v4.postgres, "append_event", append_event)
+    receipt = None
+    with pytest.raises(RuntimeError, match="notify failed"):
+        receipt = await v4.append_callback_v4_rows(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            batch_id="batch-notify-failure",
+            items=(item,),
+            authority=authority,
+            execution_lease_id="lease-a",
+        )
+    assert receipt is None
+    assert conn.statements[-1] == (
+        "select pg_notify(%s, '')",
+        (PUBLICATION_CHANNEL,),
+    )
 
 
 @pytest.mark.asyncio
@@ -311,6 +356,10 @@ async def test_callback_v4_rows_are_atomic_and_idempotent_per_batch_item(monkeyp
     first, second = await exercise()
     assert first[0]["id"] == second[0]["id"]
     assert len(append_calls) == 1
+    assert conn.statements[-1] == (
+        "select pg_notify(%s, '')",
+        (PUBLICATION_CHANNEL,),
+    )
     assert (
         sum(
             "update run_events" in statement.lower() for statement, _ in conn.statements
@@ -2047,7 +2096,7 @@ def test_v4_projection_rejects_event_specific_code_combinations() -> None:
                 "code": "failed",
                 "default_message": "Run failed",
                 "detail": None,
-                "projection_failure_reason": "answer_too_large",
+                "projection_failure_reason": "retired_projection_reason",
             },
         )
 
@@ -2230,6 +2279,33 @@ async def test_worker_v4_admission_prepares_before_transport_and_confirms_receip
         ("publish", payload),
         ("confirm", pending, "1-0"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_publish_pending_run_terminal_drains_each_batch_without_answer_row_cap(monkeypatch):
+    from types import SimpleNamespace
+    from app.streaming.application import worker_publication_v4
+
+    batches = []
+
+    async def publish_pending(_capabilities, **kwargs):
+        batches.append(kwargs)
+        return 64 if len(batches) < 3 else 0
+
+    monkeypatch.setattr(worker_publication_v4, "publish_pending_v4_events", publish_pending)
+
+    class Authority:
+        async def get(self, **kwargs):
+            return SimpleNamespace(attempt_id="attempt-a")
+
+    capabilities = SimpleNamespace(authority=Authority())
+    assert await worker_publication_v4.publish_pending_run_terminal(
+        capabilities,
+        tenant_id="tenant-a",
+        run_id="run-a",
+    ) is True
+    assert len(batches) == 3
+    assert all(batch["attempt_id"] == "attempt-a" for batch in batches)
 
 
 @pytest.mark.asyncio
