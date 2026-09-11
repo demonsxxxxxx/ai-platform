@@ -7,13 +7,11 @@ import { resolveInternalAiApplication } from "../aiApplicationCatalog.ts";
 
 const routeSource = readFileSync(resolve(import.meta.dirname, "../AgentApplicationRoute.tsx"), "utf8");
 
-test("internal AI application aliases bind to the governed published Agents", () => {
+test("internal AI application aliases resolve their dedicated pages", () => {
   assert.deepEqual(resolveInternalAiApplication("sop-assistant"), {
-    agentId: "sop-assistant",
     name: "知识库问答",
   });
   assert.deepEqual(resolveInternalAiApplication("word-review"), {
-    agentId: "qa-word-review",
     name: "文档审核",
   });
   assert.equal(resolveInternalAiApplication("unknown"), undefined);
@@ -29,7 +27,12 @@ test("application routes render task-specific surfaces and use the independent W
   assert.match(routeSource, /累计审核文档/);
   assert.match(routeSource, /当前任务/);
   assert.match(routeSource, /历史记录/);
-  assert.match(routeSource, /sendMessage\(/);
+  assert.match(routeSource, /SOP_RAGFLOW_API_BASE = "http:\/\/10\.56\.0\.211:8080"/);
+  assert.match(routeSource, /VITE_RAGFLOW_SOP_SHARE_URL/);
+  assert.match(routeSource, /\/api\/v1\/chatbots\/\$\{encodeURIComponent\(config\.chatId\)\}\/completions/);
+  assert.match(routeSource, /Authorization: `Bearer \$\{config\.apiKey\}`/);
+  assert.match(routeSource, /Accept: "text\/event-stream"/);
+  assert.doesNotMatch(routeSource, /useAgent\(|getPublished\(|agentProfileApi|sendMessage\(/);
   assert.match(routeSource, /VITE_WORD_REVIEW_API_TARGET/);
   assert.match(routeSource, /http:\/\/10\.56\.0\.211:8014/);
   assert.match(routeSource, /\/api\/upload/);
