@@ -69,6 +69,14 @@ function parseDepartmentIds(value: string): string[] {
   return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))];
 }
 
+function toHeaderDrafts(headers?: Record<string, string>): KeyValuePair[] {
+  return Object.entries(headers ?? {}).map(([key, value]) => ({
+    id: uuid(),
+    key,
+    value,
+  }));
+}
+
 export function MCPServerForm({
   server,
   onSave,
@@ -120,8 +128,10 @@ export function MCPServerForm({
   const [enabled, setEnabled] = useState(server?.enabled ?? true);
 
   // HTTP fields
-  const [url, setUrl] = useState("");
-  const [headers, setHeaders] = useState<KeyValuePair[]>([]);
+  const [url, setUrl] = useState(server?.url ?? "");
+  const [headers, setHeaders] = useState<KeyValuePair[]>(
+    () => toHeaderDrafts(server?.headers),
+  );
 
   // Sandbox fields
   const [command, setCommand] = useState("");
@@ -144,8 +154,8 @@ export function MCPServerForm({
       setName(server.name);
       setTransport(server.transport);
       setEnabled(server.enabled);
-      setUrl("");
-      setHeaders([]);
+      setUrl(server.url ?? "");
+      setHeaders(toHeaderDrafts(server.headers));
       setCommand("");
       setEnvKeys([]);
       setAllowedRoles(server.allowed_roles ?? []);

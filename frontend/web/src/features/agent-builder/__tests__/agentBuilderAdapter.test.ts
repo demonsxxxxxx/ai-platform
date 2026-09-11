@@ -75,7 +75,7 @@ function profile(
       skill_id: "document-review",
       expected_version: "2026.07.28",
     },
-    mcp_tool_ids: ["mcp:knowledge:search"],
+    mcp_tool_ids: ["gateway::knowledge.search"],
     content_hash: "a".repeat(64),
     ...overrides,
   };
@@ -88,7 +88,7 @@ function catalog(
     skills: [skill()],
     mcpTools: [
       {
-        id: "mcp:knowledge:search",
+        id: "gateway::knowledge.search",
         label: "Knowledge search",
         description: "Search the authorized knowledge base.",
       },
@@ -111,7 +111,7 @@ test("maps only complete authorized Skill and safe MCP identities", () => {
   );
   const tools: Array<ToolState & { label?: string }> = [
     {
-      name: "mcp:knowledge:search",
+      name: "gateway::knowledge.search",
       label: "Knowledge search",
       description: "Search the authorized knowledge base.",
       category: "mcp",
@@ -122,7 +122,7 @@ test("maps only complete authorized Skill and safe MCP identities", () => {
   ];
   assert.deepEqual(mapSafeBuilderMcpTools(tools), [
     {
-      id: "mcp:knowledge:search",
+      id: "gateway::knowledge.search",
       label: "Knowledge search",
       description: "Search the authorized knowledge base.",
     },
@@ -135,7 +135,7 @@ test("hydrates every exact server identity without catalog fallback", () => {
       skill_id: "removed-skill",
       expected_version: "sha256:removed",
     },
-    mcp_tool_ids: ["mcp:removed"],
+    mcp_tool_ids: ["gateway::removed"],
   });
   const editor = hydrateAgentProfileEditor(serverProfile);
 
@@ -146,13 +146,13 @@ test("hydrates every exact server identity without catalog fallback", () => {
     skill_id: "removed-skill",
     expected_version: "sha256:removed",
   }]);
-  assert.deepEqual(editor.selectedMcpToolIds, ["mcp:removed"]);
+  assert.deepEqual(editor.selectedMcpToolIds, ["gateway::removed"]);
   assert.equal(isAgentProfileEditorDirty(editor), false);
 
   serverProfile.selected_skill.skill_id = "mutated-after-hydration";
   serverProfile.mcp_tool_ids.push("mutated-after-hydration");
   assert.equal(editor.selectedSkills[0]?.skill_id, "removed-skill");
-  assert.deepEqual(editor.selectedMcpToolIds, ["mcp:removed"]);
+  assert.deepEqual(editor.selectedMcpToolIds, ["gateway::removed"]);
 });
 
 test("materializes create and update requests with the exact optimistic revision", () => {
@@ -171,7 +171,7 @@ test("materializes create and update requests with the exact optimistic revision
       skill_id: "document-review",
       expected_version: "2026.07.28",
     }],
-    selectedMcpToolIds: ["mcp:knowledge:search"],
+    selectedMcpToolIds: ["gateway::knowledge.search"],
     marketTag: " 客户服务 ",
     allowedDepartmentIds: ["药品注册"],
   };
@@ -194,7 +194,7 @@ test("materializes create and update requests with the exact optimistic revision
       skill_id: "document-review",
       expected_version: "2026.07.28",
     }],
-    mcp_tool_ids: ["mcp:knowledge:search"],
+    mcp_tool_ids: ["gateway::knowledge.search"],
     avatar_ref: "builtin:agent",
     avatar_seed: "新智能体",
     avatar_asset_id: null,
@@ -254,16 +254,23 @@ test("reports precise missing data and revision reasons", () => {
   );
 });
 
-test("preserves and blocks stale Skill version and MCP identities", () => {
-  const editor = hydrateAgentProfileEditor(profile());
+test("blocks stale Skill versions but preserves stable MCP references outside the live catalog", () => {
+  const editor = hydrateAgentProfileEditor(profile({
+    mcp_tool_ids: ["gateway::previously-authorized"],
+  }));
   assert.equal(
     validateAgentProfileEditor(editor, catalog({ skills: [skill({ expected_version: "new" })] }))?.code,
     "selected_skill_stale",
   );
-  const mcpIssue = validateAgentProfileEditor(editor, catalog({ mcpTools: [] }));
-  assert.equal(mcpIssue?.code, "selected_mcp_tool_unavailable");
-  assert.deepEqual(mcpIssue?.unavailableMcpToolIds, ["mcp:knowledge:search"]);
-  assert.deepEqual(editor.selectedMcpToolIds, ["mcp:knowledge:search"]);
+  assert.equal(validateAgentProfileEditor(editor, catalog({ mcpTools: [] })), null);
+  assert.equal(
+    validateAgentProfileEditor(
+      editor,
+      catalog({ mcpTools: [], mcpToolsResolved: false }),
+    ),
+    null,
+  );
+  assert.deepEqual(editor.selectedMcpToolIds, ["gateway::previously-authorized"]);
   assert.equal(editor.selectedSkills[0]?.expected_version, "2026.07.28");
 });
 
@@ -310,14 +317,10 @@ test("rejects more than 32 Skills and duplicate Skill identities across versions
   );
 });
 
-test("fails closed while selected catalogs are unresolved", () => {
+test("fails closed while the selected Skill catalog is unresolved", () => {
   const editor = hydrateAgentProfileEditor(profile());
   assert.equal(
     validateAgentProfileEditor(editor, catalog({ skillsResolved: false }))?.code,
-    "catalog_unavailable",
-  );
-  assert.equal(
-    validateAgentProfileEditor(editor, catalog({ mcpToolsResolved: false }))?.code,
     "catalog_unavailable",
   );
 });

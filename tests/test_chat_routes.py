@@ -605,7 +605,16 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
     async def noop(*_args, **_kwargs):
         return None
 
+    async def resolve_model(*_args, **kwargs):
+        assert kwargs["selection"] is None
+        return RunModelSelection(
+            model_id="test-model",
+            model_value="provider/test-model",
+            connection_revision=None,
+        )
+
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", resolve_model)
     monkeypatch.setattr(repository_module, "authorize_run_capabilities", authorize_run)
     monkeypatch.setattr(
         "app.routes.chat.authorize_selected_chat_mcp_tools",
@@ -836,6 +845,14 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
         assert kwargs["tool_ids"] == ["locked-search"]
         return [{"tool_id": "locked-search"}]
 
+    async def resolve_model(*_args, **kwargs):
+        assert kwargs["selection"] is None
+        return RunModelSelection(
+            model_id="test-model",
+            model_value="provider/test-model",
+            connection_revision=None,
+        )
+
     async def claim_submission(*_args, **kwargs):
         calls.append(("claim", kwargs["request_fingerprint_sha256"]))
         fingerprint_request = request.model_dump(mode="json", exclude={"submission_id"})
@@ -860,6 +877,7 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
         )
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", resolve_model)
     monkeypatch.setattr(repository_module, "get_chat_submission", no_existing_submission)
     monkeypatch.setattr(repository_module, "ensure_submission_principal", provision_principal)
     monkeypatch.setattr(repository_module, "get_authorized_session", owned_session)
@@ -4410,6 +4428,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     published_payloads: list[dict[str, object]] = []
     profile_manifest = snapshot_manifest("profile-specialist")
     secondary_profile_manifest = snapshot_manifest("profile-reference-search")
+    profile_mcp_reference = "gateway::ProjectInfoMCPServer_get_project"
 
     class TransactionState:
         def __init__(self) -> None:
@@ -4479,7 +4498,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
                     "input_modes": [],
                 },
             ),
-            mcp_tool_ids=(),
+            mcp_tool_ids=(profile_mcp_reference,),
             private_execution_input={
                 "agent_id": "agt_support",
                 "revision": 7,
@@ -4514,6 +4533,9 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         }
 
     async def authorize_profile_skill(*_args, **_kwargs):
+        assert _kwargs["normalized_input"]["mcp_tool_ids"] == [
+            profile_mcp_reference
+        ]
         calls.append("skill_auth")
         return {
             "skill_id": "profile-specialist",
@@ -4563,6 +4585,9 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         return kwargs["session_id"]
 
     async def create_run(conn, **kwargs):
+        assert kwargs["input_json"]["input"]["mcp_tool_ids"] == [
+            profile_mcp_reference
+        ]
         calls.append("create_run")
         persisted["run"] = kwargs
         conn.run = {
@@ -4650,6 +4675,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         assert committed_run is not None
         assert committed_submission is not None
         assert committed_submission["state"] == "accepted_pending_enqueue"
+        assert payload["input"]["mcp_tool_ids"] == [profile_mcp_reference]
         calls.append("enqueue")
         enqueue_payloads.append(dict(payload))
         if enqueue_failure_mode == "definitive_rejection":
@@ -4669,6 +4695,18 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     async def noop(*_args, **_kwargs):
         return None
 
+    async def authorize_empty_client_mcp_selection(*_args, **kwargs):
+        assert kwargs["tool_ids"] == []
+        return []
+
+    async def fixed_profile_model(*_args, **kwargs):
+        assert kwargs["selection"] is None
+        return RunModelSelection(
+            model_id="profile-model",
+            model_value="provider/profile-model",
+            connection_revision=None,
+        )
+
     monkeypatch.setattr("app.routes.chat.transaction", tracked_transaction)
     monkeypatch.setattr(
         "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
@@ -4683,6 +4721,14 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     monkeypatch.setattr("app.routes.chat.repositories.ensure_user", late_ensure_user)
     monkeypatch.setattr("app.routes.chat.resolve_profile_for_admission", profile_admission)
     monkeypatch.setattr("app.routes.chat.resolve_bound_profile_for_submission", profile_admission)
+    monkeypatch.setattr(
+        "app.routes.chat.authorize_selected_chat_mcp_tools",
+        authorize_empty_client_mcp_selection,
+    )
+    monkeypatch.setattr(
+        "app.routes.chat.resolve_chat_model_selection",
+        fixed_profile_model,
+    )
     monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", owned_session)
     monkeypatch.setattr(
         "app.routes.chat.repositories.authorize_selected_run_capabilities",

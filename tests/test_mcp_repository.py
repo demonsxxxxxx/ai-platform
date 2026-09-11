@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -145,6 +146,32 @@ async def test_dynamic_server_credential_persists_only_encrypted_envelope():
 
 
 @pytest.mark.asyncio
+async def test_dynamic_server_credential_can_be_loaded_for_admin_detail_read():
+    class Connection:
+        async def execute(self, query, params):
+            assert "select credential_fingerprint" in query
+            assert "from mcp_server_credentials" in query
+            assert params == ("tenant-a", "gateway")
+            return _Cursor(
+                {
+                    "credential_fingerprint": "credential-sha",
+                    "metadata_json": {"endpoint_configured": True},
+                    "credential_envelope": "sealed-envelope",
+                }
+            )
+
+    assert await mcp_repository.get_mcp_server_credential(
+        Connection(),
+        tenant_id="tenant-a",
+        server_name="gateway",
+    ) == {
+        "credential_fingerprint": "credential-sha",
+        "metadata_json": {"endpoint_configured": True},
+        "credential_envelope": "sealed-envelope",
+    }
+
+
+@pytest.mark.asyncio
 async def test_dynamic_tool_reference_resolves_only_registered_server():
     class Connection:
         async def execute(self, query, params):
@@ -287,3 +314,18 @@ def test_only_code_owned_ragflow_has_legacy_mcp_tools_authority():
     assert not mcp_repository.is_trusted_builtin_mcp_tool(
         {**builtin, "server_id": "forged"}
     )
+
+
+def test_gateway_catalog_persistence_implementation_is_removed():
+    root = Path(__file__).parents[1]
+    sources = [
+        (root / "app" / "mcp" / "repository.py").read_text(encoding="utf-8"),
+        (root / "app" / "repositories.py").read_text(encoding="utf-8"),
+    ]
+
+    for source in sources:
+        for operation in ("from", "join", "insert into", "update"):
+            assert f"{operation} mcp_tool_catalog_entries" not in source.lower()
+        assert "catalog_generation" not in source
+        assert "class PostgresMcpCatalogStore" not in source
+    assert not (root / "app" / "mcp" / "catalog.py").exists()

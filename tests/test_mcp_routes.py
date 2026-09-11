@@ -293,6 +293,7 @@ def install_mcp_route_fakes(
 
     calls: list[tuple[str, dict[str, object]]] = []
     servers: dict[str, dict[str, object]] = {}
+    credentials: dict[str, dict[str, object]] = {}
     if seed_registry_ragflow:
         servers["ragflow"] = {
             "name": "ragflow",
@@ -452,6 +453,16 @@ def install_mcp_route_fakes(
         servers[kwargs["name"]] = server
         return dict(server)
 
+    async def fake_get_credential(conn, *, tenant_id, server_name):
+        calls.append(
+            (
+                "get_credential",
+                {"tenant_id": tenant_id, "server_name": server_name},
+            )
+        )
+        record = credentials.get(server_name)
+        return dict(record) if record is not None else None
+
     async def fake_upsert_distribution(conn, **kwargs):
         calls.append(("upsert_distribution", dict(kwargs)))
         row = {
@@ -521,6 +532,11 @@ def install_mcp_route_fakes(
 
     async def fake_record_credential(conn, **kwargs):
         calls.append(("record_credential", dict(kwargs)))
+        credentials[kwargs["server_name"]] = {
+            "credential_fingerprint": kwargs["credential_fingerprint"],
+            "metadata_json": dict(kwargs["metadata"]),
+            "credential_envelope": kwargs["credential_envelope"] or "",
+        }
         if kwargs["server_name"] in servers:
             server = dict(servers[kwargs["server_name"]])
             server["credential_state"] = "configured" if kwargs["credential_fingerprint"] else "not_configured"
@@ -602,6 +618,7 @@ def install_mcp_route_fakes(
     monkeypatch.setattr(mcp.repositories, "delete_mcp_server_registry", fake_delete_server, raising=False)
     monkeypatch.setattr(mcp.repositories, "record_mcp_server_credential", fake_record_credential, raising=False)
     monkeypatch.setattr(mcp.mcp_repository, "list_mcp_server_registry", fake_list_servers)
+    monkeypatch.setattr(mcp.mcp_repository, "get_mcp_server_credential", fake_get_credential)
     monkeypatch.setattr(mcp.mcp_repository, "upsert_mcp_server_registry", fake_upsert_server)
     monkeypatch.setattr(mcp.mcp_repository, "toggle_mcp_server_registry", fake_toggle_server)
     monkeypatch.setattr(mcp.mcp_repository, "delete_mcp_server_registry", fake_delete_server)
@@ -1526,6 +1543,46 @@ def test_mcp_lifecycle_delete_and_empty_credential_update_clear_public_state(mon
     list_response = client.get("/api/mcp/", headers=headers())
     assert list_response.status_code == 200
     assert "clearable" not in {server["name"] for server in list_response.json()["servers"]}
+
+
+def test_mcp_admin_detail_returns_decrypted_credentials_only_to_admin(monkeypatch):
+    install_mcp_route_fakes(monkeypatch, seed_registry_ragflow=False)
+    monkeypatch.setattr(
+        "app.routes.mcp.open_mcp_server_credentials",
+        lambda **_kwargs: ("http://gateway.example/mcp", {"X-MCP-Username": "svc", "X-MCP-Password": "secret"}),
+    )
+    client = TestClient(create_app())
+
+    create_response = client.post(
+        "/api/admin/mcp/",
+        json={
+            "name": "revealable",
+            "transport": "streamable_http",
+            "url": "http://gateway.example/mcp",
+            "headers": {"X-MCP-Username": "svc", "X-MCP-Password": "secret"},
+        },
+        headers=headers(roles="admin"),
+    )
+    assert create_response.status_code == 200
+
+    admin_detail = client.get(
+        "/api/mcp/revealable",
+        headers=headers(roles="admin"),
+    )
+    assert admin_detail.status_code == 200
+    assert admin_detail.json()["url"] == "http://gateway.example/mcp"
+    assert admin_detail.json()["headers"] == {
+        "X-MCP-Username": "svc",
+        "X-MCP-Password": "secret",
+    }
+
+    ordinary_detail = client.get(
+        "/api/mcp/revealable",
+        headers=headers(),
+    )
+    assert ordinary_detail.status_code == 200
+    assert "url" not in ordinary_detail.json()
+    assert "headers" not in ordinary_detail.json()
 
 
 def test_mcp_lifecycle_route_matrix_fails_closed_after_admin_gate(monkeypatch):

@@ -257,7 +257,7 @@ async def test_profile_definition_validates_stable_mcp_reference_and_server_exis
 
     async def get_server(*_args, **kwargs):
         observed.append((kwargs["tenant_id"], kwargs["name"]))
-        return {"name": kwargs["name"], "status": "active"}
+        return {"name": kwargs["name"], "status": "disabled"}
 
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.authorize_selected_run_capabilities",

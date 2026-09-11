@@ -209,6 +209,26 @@ async def record_mcp_server_credential(
     )
 
 
+async def get_mcp_server_credential(
+    conn: Any,
+    *,
+    tenant_id: str,
+    server_name: str,
+) -> dict[str, Any] | None:
+    """Return one server's private credential record for an authorized detail read."""
+
+    cursor = await conn.execute(
+        """
+        select credential_fingerprint, metadata_json, credential_envelope
+        from mcp_server_credentials
+        where tenant_id = %s and server_name = %s
+        """,
+        (tenant_id, server_name),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
 async def get_mcp_server_runtime_target(
     conn: Any,
     *,

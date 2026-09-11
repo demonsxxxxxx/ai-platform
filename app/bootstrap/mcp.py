@@ -159,6 +159,7 @@ class _McpRuntimeServices:
             return await self._get_tool(conn, **kwargs)
         operations = {
             "delete_mcp_server_registry": mcp_postgres.delete_mcp_server_registry,
+            "get_mcp_server_credential": mcp_postgres.get_mcp_server_credential,
             "get_mcp_server_registry_entry": mcp_postgres.get_mcp_server_registry_entry,
             "get_mcp_server_runtime_target": mcp_postgres.get_mcp_server_runtime_target,
             "list_mcp_server_registry": mcp_postgres.list_mcp_server_registry,

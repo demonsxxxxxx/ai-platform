@@ -99,6 +99,10 @@ async def get_mcp_server_runtime_target(conn: Any, **kwargs: Any) -> dict[str, A
     return await _repository_call("get_mcp_server_runtime_target", conn, **kwargs)
 
 
+async def get_mcp_server_credential(conn: Any, **kwargs: Any) -> dict[str, Any] | None:
+    return await _repository_call("get_mcp_server_credential", conn, **kwargs)
+
+
 async def get_mcp_tool_registry_entry(conn: Any, **kwargs: Any) -> dict[str, Any] | None:
     return await _repository_call("get_mcp_tool_registry_entry", conn, **kwargs)
 
@@ -137,6 +141,7 @@ __all__ = [
     "get_live_mcp_catalog",
     "get_mcp_principal_jwt_store",
     "get_mcp_server_registry_entry",
+    "get_mcp_server_credential",
     "get_mcp_server_runtime_target",
     "get_mcp_tool_registry_entry",
     "is_safe_mcp_id",

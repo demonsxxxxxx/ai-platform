@@ -26,6 +26,7 @@ from app.mcp.api import (
     get_live_mcp_catalog,
     get_mcp_principal_jwt_store,
     normalize_static_mcp_headers,
+    open_mcp_server_credentials,
     seal_mcp_server_credentials,
 )
 from app.validation import assert_safe_id
@@ -210,6 +211,7 @@ def _server_response(
     *,
     distribution: dict[str, Any] | None,
     can_edit: bool = False,
+    credentials: tuple[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     distribution_status = str((distribution or {}).get("status") or "disabled")
     enabled = distribution_status == "active"
@@ -230,6 +232,9 @@ def _server_response(
         "updated_at": row.get("updated_at"),
         "contract_version": MCP_LIFECYCLE_CONTRACT_VERSION,
     }
+    if credentials is not None:
+        response["url"] = credentials[0]
+        response["headers"] = dict(credentials[1])
     return response
 
 
@@ -379,6 +384,32 @@ async def _public_server_access(
             raise HTTPException(status_code=404, detail="mcp_server_not_found")
         await _audit_mcp_admin_bypass(conn, principal=principal, name=name, decision=decision)
     return row, distribution or {}, decision
+
+
+async def _admin_mcp_credentials(
+    principal: AuthPrincipal,
+    *,
+    server_name: str,
+) -> tuple[str, dict[str, str]]:
+    """Load decrypted connection material only for an administrator detail read."""
+
+    async with transaction() as conn:
+        record = await mcp_repository.get_mcp_server_credential(
+            conn,
+            tenant_id=principal.tenant_id,
+            server_name=server_name,
+        )
+    envelope = str((record or {}).get("credential_envelope") or "")
+    if not envelope:
+        return "", {}
+    try:
+        return open_mcp_server_credentials(
+            tenant_id=principal.tenant_id,
+            server_id=server_name,
+            envelope=envelope,
+        )
+    except McpRuntimeContextError as exc:
+        raise _mcp_runtime_http_error(exc) from exc
 
 
 async def _public_projected_servers(principal: AuthPrincipal) -> list[dict[str, Any]]:
@@ -718,11 +749,22 @@ async def get_mcp_server(
 
     safe_name = _safe_name(name)
     row, distribution, _ = await _public_server_access(principal=principal, name=safe_name)
-    return _server_read_response(
+    response = _server_read_response(
         row,
         distribution=distribution,
         principal=principal,
     )
+    if is_ai_admin(principal):
+        response = _server_response(
+            row,
+            distribution=distribution,
+            can_edit=True,
+            credentials=await _admin_mcp_credentials(
+                principal,
+                server_name=safe_name,
+            ),
+        )
+    return response
 
 
 @router.put("/mcp/{name}")
