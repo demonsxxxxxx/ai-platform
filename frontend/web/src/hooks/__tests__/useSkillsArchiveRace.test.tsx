@@ -7,6 +7,18 @@ import { installTestDom } from "../useAgent/__tests__/testDom.ts";
 
 const dom = installTestDom();
 
+test("admin lifecycle contract errors render a user-facing catalog message", async () => {
+  const { resolveSkillOperationError } = await import("../useSkills.ts");
+
+  assert.equal(
+    resolveSkillOperationError(
+      new Error("admin_skill_lifecycle_invalid"),
+      "skills.loadFailed",
+    ),
+    "Skill 管理目录与当前服务版本不一致，请刷新页面；问题持续时请检查前后端部署版本。",
+  );
+});
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((accept) => {

@@ -3219,3 +3219,15 @@ where capability_kind = 'skill' and capability_id = 'baoyu-translate';
 update skills
 set status = 'inactive'
 where id = 'baoyu-translate';
+
+update tenant_workbench_skills
+set status = 'disabled', visible_to_user = false
+where skill_id = 'general-chat';
+
+update tenant_capability_distributions
+set status = 'disabled', visible_to_user = false
+where capability_kind = 'skill' and capability_id = 'general-chat';
+
+update skills
+set status = 'inactive'
+where id = 'general-chat';

@@ -65,6 +65,7 @@ import app.identity.infrastructure.postgres as identity_persistence
 import app.platform.postgres.errors as postgres_errors
 import app.runs.api as runs_api
 import app.runs.infrastructure.postgres as run_persistence
+import app.skills.infrastructure.legacy_workbench as legacy_workbench_persistence
 import app.skills.infrastructure.postgres as skill_persistence
 from app.platform.postgres.errors import RepositoryConflictError
 from app.persistence_limits import (
@@ -230,6 +231,8 @@ canonical_builtin_tool_identities = skill_persistence.canonical_builtin_tool_ide
 get_skill_version = skill_persistence.get_skill_version
 run_skill_snapshot_source_json = skill_persistence.run_skill_snapshot_source_json
 validate_replay_skill_manifests = skill_persistence.validate_replay_skill_manifests
+list_workbench_capabilities = legacy_workbench_persistence.list_workbench_capabilities
+list_workbench_skills = legacy_workbench_persistence.list_workbench_skills
 # Preserve the established repository facade used by Chat callers while making
 # the cross-module ownership explicit to Ruff.
 chat_submission_fingerprint = chat_submissions.chat_submission_fingerprint
@@ -656,43 +659,6 @@ async def list_principal_lambchat_agents(
             )
         authorized_rows.append(projected)
     return authorized_rows
-
-
-async def list_workbench_skills(conn: AsyncConnection, *, tenant_id: str, include_disabled: bool = False) -> list[dict[str, Any]]:
-    await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
-    cursor = await conn.execute(
-        """
-        select
-          skills.id as skill_id,
-          skills.name,
-          skills.version,
-          skills.description,
-          skills.input_modes,
-          skills.output_modes,
-          skills.executor_type,
-          skills.status as lifecycle_status,
-          coalesce(tenant_capability_distributions.status, 'disabled') as status,
-          coalesce(tenant_capability_distributions.visible_to_user, false) as visible_to_user
-        from skills
-        left join tenant_capability_distributions
-          on tenant_capability_distributions.tenant_id = %s
-         and tenant_capability_distributions.capability_kind = 'skill'
-         and tenant_capability_distributions.capability_id = skills.id
-        where skills.id in ('qa-file-reviewer', 'baoyu-translate', 'ragflow-knowledge-search')
-          and (%s or (
-            skills.status = 'active'
-            and tenant_capability_distributions.status = 'active'
-          ))
-        order by case skills.id
-          when 'qa-file-reviewer' then 1
-          when 'baoyu-translate' then 2
-          when 'ragflow-knowledge-search' then 3
-          else 99
-        end
-        """,
-        (tenant_id, include_disabled),
-    )
-    return list(await cursor.fetchall())
 
 
 async def get_skill(conn: AsyncConnection, *, skill_id: str) -> dict[str, Any] | None:
@@ -2955,98 +2921,6 @@ async def upsert_admin_tool_policy(
     if row is None:
         raise RepositoryNotFoundError("mcp_tool_not_found")
     return _tool_policy_projection(dict(row), tenant_id=tenant_id)
-
-
-async def list_workbench_capabilities(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    include_admin_fields: bool = False,
-) -> list[dict[str, Any]]:
-    await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
-    cursor = await conn.execute(
-        """
-        select
-          case agents.id
-            when 'general-agent' then 'general_chat'
-            when 'qa-word-review' then 'document_review'
-            when 'baoyu-translate' then 'document_translation'
-            when 'sop-assistant' then 'knowledge_answer'
-            else agents.id
-          end as capability_id,
-          agents.name as label,
-          agents.description,
-          case
-            when agents.agent_type = 'chat' and agents.default_skill_id is null then 'active'
-            when skills.status <> 'active'
-              or coalesce(tenant_capability_distributions.status, 'disabled') <> 'active'
-              or coalesce(tenant_capability_distributions.visible_to_user, false) = false
-            then 'disabled'
-            when skills.id = 'ragflow-knowledge-search'
-             and (
-               coalesce(mcp_tools.status, 'disabled') <> 'active'
-               or coalesce(tool_policies.status, 'disabled') <> 'active'
-               or coalesce(mcp_tools.visible_to_user, false) = false
-               or coalesce(tool_policies.visible_to_user, false) = false
-             )
-            then 'disabled'
-            else 'active'
-          end as status,
-          case when agents.agent_type = 'chat' and agents.default_skill_id is null then '["chat"]'::jsonb else skills.input_modes end as input_modes,
-          case when agents.agent_type = 'chat' and agents.default_skill_id is null then '["answer"]'::jsonb else skills.output_modes end as output_modes,
-          agents.id as agent_id,
-          skills.id as skill_id,
-          skills.version as skill_version,
-          case when agents.agent_type = 'chat' and agents.default_skill_id is null then 'claude-agent-worker' else skills.executor_type end as executor_type,
-          case when skills.id = 'ragflow-knowledge-search' then mcp_tools.server_id else null end as mcp_server_id,
-          case when skills.id = 'ragflow-knowledge-search' then mcp_tools.id else null end as mcp_tool_id,
-          case
-            when skills.id <> 'ragflow-knowledge-search' then null
-            when mcp_tools.risk_level = 'high' or tool_policies.risk_level = 'high' then 'high'
-            when mcp_tools.risk_level = 'medium' or tool_policies.risk_level = 'medium' then 'medium'
-            else coalesce(mcp_tools.risk_level, 'low')
-          end as risk_level,
-          0 as recent_failures
-        from agents
-        left join skills on skills.id = agents.default_skill_id
-        left join tenant_capability_distributions
-          on tenant_capability_distributions.tenant_id = %s
-         and tenant_capability_distributions.capability_kind = 'skill'
-         and tenant_capability_distributions.capability_id = skills.id
-        left join mcp_tools
-          on mcp_tools.id = skills.id
-        left join tool_policies
-          on tool_policies.tenant_id = agents.tenant_id
-         and tool_policies.tool_id = mcp_tools.id
-        where agents.tenant_id = %s
-          and agents.id in ('general-agent', 'qa-word-review', 'baoyu-translate', 'sop-assistant')
-          and agents.status = 'active'
-        order by case agents.id
-          when 'general-agent' then 1
-          when 'qa-word-review' then 2
-          when 'baoyu-translate' then 3
-          when 'sop-assistant' then 4
-          else 99
-        end
-        """,
-        (tenant_id, tenant_id),
-    )
-    rows = list(await cursor.fetchall())
-    if include_admin_fields:
-        return rows
-    redacted = []
-    for row in rows:
-        item = dict(row)
-        item["agent_id"] = None
-        item["skill_id"] = None
-        item["skill_version"] = None
-        item["executor_type"] = None
-        item["mcp_server_id"] = None
-        item["mcp_tool_id"] = None
-        item["risk_level"] = None
-        item["recent_failures"] = None
-        redacted.append(item)
-    return redacted
 
 
 async def ensure_workspace(conn: AsyncConnection, *, tenant_id: str, workspace_id: str) -> None:

@@ -2230,8 +2230,8 @@ class AdminSkillSummaryResponse(BaseModel):
     skill_id: str
     name: str
     description: str = ""
-    lifecycle_status: str
-    distribution_status: str
+    lifecycle_status: Literal["active"]
+    distribution_status: Literal["active", "disabled"]
     visible_to_user: bool = False
     latest_version: str | None = None
     latest_version_status: str | None = None

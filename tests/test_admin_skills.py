@@ -168,6 +168,32 @@ def test_admin_skill_detail_requires_admin(monkeypatch):
     assert response.json()["detail"] == "not_ai_admin"
 
 
+def test_admin_skill_detail_hides_retired_aggregate(monkeypatch):
+    async def fake_detail(conn, *, tenant_id, skill_id):
+        assert isinstance(conn, OpaqueConnection)
+        assert tenant_id == "default"
+        assert skill_id == "baoyu-translate"
+        return {
+            "skill": {
+                "skill_id": "baoyu-translate",
+                "name": "baoyu-translate",
+                "lifecycle_status": "inactive",
+            },
+            "versions": [],
+            "recent_snapshots": [],
+        }
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_admin_skill_detail", fake_detail)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/admin/skills/baoyu-translate", headers=admin_headers())
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "skill_not_found"
+
+
 def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(monkeypatch):
     async def fake_list_summaries(conn, *, tenant_id):
         assert isinstance(conn, OpaqueConnection)
@@ -177,14 +203,26 @@ def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(mon
                 "skill_id": "native-review",
                 "name": "native-review",
                 "description": "Review local files.",
-                "lifecycle_status": "released",
+                "lifecycle_status": "active",
                 "distribution_status": "active",
                 "visible_to_user": True,
                 "latest_version": "hash-current",
                 "latest_version_status": "released",
                 "current_version": "hash-current",
                 "rollout_percent": 100,
-            }
+            },
+            {
+                "skill_id": "baoyu-translate",
+                "name": "baoyu-translate",
+                "description": "Retired translator.",
+                "lifecycle_status": "inactive",
+                "distribution_status": "disabled",
+                "visible_to_user": False,
+                "latest_version": "hash-retired",
+                "latest_version_status": "released",
+                "current_version": None,
+                "rollout_percent": None,
+            },
         ]
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
@@ -204,7 +242,7 @@ def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(mon
                 "skill_id": "native-review",
                 "name": "native-review",
                 "description": "Review local files.",
-                "lifecycle_status": "released",
+                "lifecycle_status": "active",
                 "distribution_status": "active",
                 "visible_to_user": True,
                 "latest_version": "hash-current",
@@ -224,7 +262,11 @@ def test_admin_skill_detail_returns_skill_versions_and_snapshots(monkeypatch):
         assert tenant_id == "default"
         assert skill_id == "qa-file-reviewer"
         return {
-            "skill": {"skill_id": "qa-file-reviewer", "name": "QA File Reviewer"},
+            "skill": {
+                "skill_id": "qa-file-reviewer",
+                "name": "QA File Reviewer",
+                "lifecycle_status": "active",
+            },
             "release_policy": {
                 "skill_id": "qa-file-reviewer",
                 "channel": "stable",
@@ -291,7 +333,11 @@ def test_admin_skill_detail_returns_skill_versions_and_snapshots(monkeypatch):
 
 def test_admin_skill_detail_response_rejects_extra_dependency_policy_fields():
     payload = {
-        "skill": {"skill_id": "qa-file-reviewer", "name": "QA File Reviewer"},
+        "skill": {
+            "skill_id": "qa-file-reviewer",
+            "name": "QA File Reviewer",
+            "lifecycle_status": "active",
+        },
         "dependency_policy": {
             "skill_id": "qa-file-reviewer",
             "public": True,
@@ -396,7 +442,11 @@ def test_dependency_policy_reports_persisted_public_dependency_without_allowing_
 def test_admin_skill_detail_does_not_infer_dependency_without_persisted_version(monkeypatch):
     async def fake_detail(conn, *, tenant_id, skill_id):
         return {
-            "skill": {"skill_id": skill_id, "name": "QA File Reviewer"},
+            "skill": {
+                "skill_id": skill_id,
+                "name": "QA File Reviewer",
+                "lifecycle_status": "active",
+            },
             "versions": [],
             "recent_snapshots": [],
         }
@@ -427,6 +477,7 @@ def test_admin_sync_builtin_skills_records_registry_versions_without_inferred_de
     minimax_dir = skills_root / "minimax-docx"
     qa_dir = skills_root / "qa-file-reviewer"
     ragflow_dir = skills_root / "ragflow-knowledge-search"
+    legacy_general_chat_dir = skills_root / "general-chat"
     minimax_dir.mkdir(parents=True)
     qa_dir.mkdir(parents=True)
     ragflow_dir.mkdir(parents=True)
@@ -458,6 +509,18 @@ def test_admin_sync_builtin_skills_records_registry_versions_without_inferred_de
 
         def list_builtin_skills(self):
             return [
+                FakeBuiltinSkill(
+                    name="general-chat",
+                    description="Legacy synthetic chat Skill",
+                    path=legacy_general_chat_dir,
+                    version="hash-general-chat",
+                    source={
+                        "kind": "builtin",
+                        "asset_dir": "general-chat",
+                        "version": "hash-general-chat",
+                    },
+                    entry={"kind": "filesystem", "path": str(legacy_general_chat_dir)},
+                ),
                 FakeBuiltinSkill(
                     name="minimax-docx",
                     description="Word document generation",

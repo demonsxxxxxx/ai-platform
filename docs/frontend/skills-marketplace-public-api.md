@@ -110,6 +110,14 @@ authority for immutable version upload, review, promote, rollout policy, and
 rollback. Marketplace routes remain projections and tenant-distribution
 controls; they cannot create an active version or redirect a release policy.
 
+`GET /api/ai/admin/skills` and its detail route expose the current management
+catalog only. Every returned aggregate has `lifecycle_status: "active"`;
+distribution and version lifecycle remain separate fields. Retired global rows
+stay in PostgreSQL for historical Run, Session, snapshot, and audit references,
+while the management catalog excludes them. Built-in synchronization is bounded
+to Skills classified as public workbench capabilities or internal dependencies,
+so historical synthetic identities such as `general-chat` cannot be republished.
+
 ## MCP Routes
 
 Backed read and server lifecycle routes:
