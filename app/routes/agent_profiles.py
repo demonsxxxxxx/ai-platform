@@ -3,7 +3,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request as HttpRequest
 from app import repositories
-from app.agent_apps import AgentProfileAuthority
+from app.agent_apps.api import AgentProfileAuthority
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
 from app.department_directory import validate_profile_department_authorities

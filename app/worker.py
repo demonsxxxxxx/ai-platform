@@ -10,7 +10,7 @@ from app import repositories
 from app.agent_apps.capability_state import (
     bind_validated_controlled_skill_evidence, exact_invoked_skills, project_agent_capability_state,
 )
-from app.agent_apps import AgentProfileAuthority
+from app.agent_apps.api import reauthorize_bound_profile_for_worker_dispatch
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.capabilities import required_artifact_types_for_skill
 from app.capability_distribution import (
@@ -158,9 +158,6 @@ def _worker_attempt_lifecycle_ports() -> WorkerAttemptLifecyclePorts:
         terminalize_attempt=run_attempts.terminalize_run_attempt,
         conflict_error=repositories.RepositoryConflictError,
     )
-
-
-_agent_profile_authority = AgentProfileAuthority()
 
 
 @dataclass(frozen=True)
@@ -2213,7 +2210,7 @@ async def process_run_payload(
             if locked_payload.agent_profile and current_principal is not None:
                 pinned_revision = int(locked_payload.agent_profile["revision"])
                 pinned_hash = str(locked_payload.agent_profile["content_hash"])
-                profile_admission = await _agent_profile_authority.resolve_bound_for_worker_dispatch(
+                profile_admission = await reauthorize_bound_profile_for_worker_dispatch(
                     conn,
                     principal=current_principal,
                     agent_id=run_identity["agent_id"],

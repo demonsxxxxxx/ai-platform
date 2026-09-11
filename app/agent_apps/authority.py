@@ -20,8 +20,8 @@ from app.agent_apps.api import (
     normalize_agent_skill_reference,
     safe_agent_avatar_ref,
     safe_agent_avatar_seed,
+    agent_profile_repository,
 )
-from app.agent_apps.infrastructure import postgres as agent_profile_repository
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id

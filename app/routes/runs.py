@@ -8,7 +8,7 @@ from pydantic import UUID4
 
 from app import repositories
 from app.mcp.api import authorize_selected_chat_mcp_tools
-from app.agent_apps import AgentProfileAuthority
+from app.agent_apps.api import AgentProfileAuthority
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capabilities import get_capability
 from app.context_builder import record_initial_context_snapshot

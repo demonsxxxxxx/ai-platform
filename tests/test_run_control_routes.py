@@ -332,7 +332,7 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.runs.reauthorize_pinned_run_for_replay",
+        "app.routes.runs._agent_profile_authority.reauthorize_pinned_run_for_replay",
         reauthorize_pinned_run,
         raising=False,
     )
@@ -528,7 +528,11 @@ def test_copy_run_reauthorizes_exact_pinned_profile_before_child_persistence(mon
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
     monkeypatch.setattr("app.routes.runs.enforce_user_active_run_limit", admit)
-    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", reauthorize, raising=False)
+    monkeypatch.setattr(
+        "app.routes.runs._agent_profile_authority.reauthorize_pinned_run_for_replay",
+        reauthorize,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", copy)
     monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", prepare)
     monkeypatch.setattr("app.routes.runs.enqueue_run", enqueue)
@@ -599,7 +603,10 @@ async def test_run_control_queue_admission_keeps_profile_lock_transaction_open(
         return 3
 
     monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
-    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", reauthorize)
+    monkeypatch.setattr(
+        "app.routes.runs._agent_profile_authority.reauthorize_pinned_run_for_replay",
+        reauthorize,
+    )
     monkeypatch.setattr("app.routes.runs.read_queue_admission", read_admission)
     monkeypatch.setattr("app.routes.runs.enqueue_run", enqueue)
     principal = AuthPrincipal(
@@ -652,7 +659,11 @@ def test_copy_run_profile_reauthorization_denials_have_no_child_side_effect(
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.enforce_user_active_run_limit", admit)
-    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", deny, raising=False)
+    monkeypatch.setattr(
+        "app.routes.runs._agent_profile_authority.reauthorize_pinned_run_for_replay",
+        deny,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", forbidden_copy)
 
     response = TestClient(create_app(), raise_server_exceptions=False).post(
@@ -694,7 +705,10 @@ def test_copy_run_audits_wrapped_capability_denial_after_transaction_rollback(mo
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
     monkeypatch.setattr("app.routes.runs.enforce_user_active_run_limit", admit)
-    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", deny)
+    monkeypatch.setattr(
+        "app.routes.runs._agent_profile_authority.reauthorize_pinned_run_for_replay",
+        deny,
+    )
     monkeypatch.setattr("app.routes.runs._audit_capability_denial", audit)
     monkeypatch.setattr(repository_module, "copy_run_as_new_task", forbidden_copy)
 
@@ -746,7 +760,10 @@ def test_run_control_audits_wrapped_capability_denial_after_transaction_rollback
     monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", noop)
     monkeypatch.setattr(repository_module, "get_run_control_operation", absent)
     monkeypatch.setattr("app.routes.runs.enforce_user_active_run_limit", noop)
-    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", deny)
+    monkeypatch.setattr(
+        "app.routes.runs._agent_profile_authority.reauthorize_pinned_run_for_replay",
+        deny,
+    )
     monkeypatch.setattr("app.routes.runs._audit_capability_denial", audit)
 
     response = TestClient(create_app(), raise_server_exceptions=False).post(
@@ -793,7 +810,11 @@ def test_copy_run_reauthorizes_committed_child_before_external_queue_admission(m
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.enforce_user_active_run_limit", admit)
-    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", reauthorize, raising=False)
+    monkeypatch.setattr(
+        "app.routes.runs._agent_profile_authority.reauthorize_pinned_run_for_replay",
+        reauthorize,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", copy)
     monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", prepare)
     monkeypatch.setattr("app.routes.runs.enqueue_run", forbidden_enqueue)
@@ -1234,7 +1255,11 @@ def test_retry_operation_replays_resolve_the_same_child_without_duplicate_creati
     monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", acquire_lock, raising=False)
     monkeypatch.setattr(repository_module, "get_run_control_operation", resolve_operation, raising=False)
     monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", admit, raising=False)
-    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", reauthorize, raising=False)
+    monkeypatch.setattr(
+        "app.routes.runs._agent_profile_authority.reauthorize_pinned_run_for_replay",
+        reauthorize,
+        raising=False,
+    )
     monkeypatch.setattr(repository_module, "retry_run_as_new_task", retry, raising=False)
     monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", prepare)
     monkeypatch.setattr(repository_module, "record_run_control_operation", record, raising=False)
@@ -1315,7 +1340,11 @@ def test_existing_retry_operation_recovers_missing_queue_admission_without_dupli
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", acquire_lock, raising=False)
     monkeypatch.setattr(repository_module, "get_run_control_operation", resolve_operation, raising=False)
-    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", reauthorize, raising=False)
+    monkeypatch.setattr(
+        "app.routes.runs._agent_profile_authority.reauthorize_pinned_run_for_replay",
+        reauthorize,
+        raising=False,
+    )
     monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", forbidden, raising=False)
     monkeypatch.setattr(repository_module, "retry_run_as_new_task", forbidden, raising=False)
     monkeypatch.setattr(repository_module, "record_run_control_operation", forbidden, raising=False)
@@ -1897,7 +1926,11 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
         fake_enforce_user_active_run_admission,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", reauthorize, raising=False)
+    monkeypatch.setattr(
+        "app.routes.runs._agent_profile_authority.reauthorize_pinned_run_for_replay",
+        reauthorize,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.resume_run_as_new_task", fake_resume_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs.inherit_run_model", fake_inherit_run_model)
     monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)

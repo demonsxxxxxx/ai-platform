@@ -19,8 +19,7 @@ from starlette.responses import JSONResponse
 
 from app import repositories
 from app.mcp.api import authorize_selected_chat_mcp_tools
-from app.agent_apps import AgentProfileAuthority
-from app.agent_apps.api import pin_agent_skill_set
+from app.agent_apps.api import AgentProfileAuthority, pin_agent_skill_set
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capability_distribution import (
     CapabilityAccessDecision,

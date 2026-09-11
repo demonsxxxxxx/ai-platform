@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Literal, TypedDict
+from typing import Any, Callable, Literal, TypedDict
 
 from app.agent_apps.application.skill_set_pinning import pin_agent_skill_set
 from app.agent_apps.domain.profile_definition import (
@@ -10,6 +10,59 @@ from app.agent_apps.domain.profile_definition import (
     safe_agent_avatar_seed,
 )
 from app.skills.api import is_internal_dependency_skill
+
+
+class _ConfiguredProxy:
+    def __init__(self, name: str) -> None:
+        self._name = name
+        self._target: Any | None = None
+
+    def configure(self, target: Any) -> None:
+        self._target = target
+
+    def __getattr__(self, name: str) -> Callable[..., Any]:
+        def invoke(*args: Any, **kwargs: Any) -> Any:
+            if self._target is None:
+                raise RuntimeError(f"{self._name}_not_configured")
+            return getattr(self._target, name)(*args, **kwargs)
+
+        return invoke
+
+
+agent_profile_repository = _ConfiguredProxy("agent_profile_repository")
+_authority_factory: Callable[..., Any] | None = None
+
+
+def configure_agent_profile_persistence(repository: Any) -> None:
+    agent_profile_repository.configure(repository)
+
+
+def configure_agent_profile_authority(factory: Callable[..., Any]) -> None:
+    global _authority_factory
+    _authority_factory = factory
+
+
+class AgentProfileAuthority:
+    """Public context proxy; bootstrap supplies the concrete authority."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        self._authority_kwargs = kwargs
+        self._authority: Any | None = None
+
+    def __getattr__(self, name: str) -> Callable[..., Any]:
+        def invoke(*args: Any, **kwargs: Any) -> Any:
+            if self._authority is None:
+                if _authority_factory is None:
+                    raise RuntimeError("agent_profile_authority_not_configured")
+                self._authority = _authority_factory(**self._authority_kwargs)
+            return getattr(self._authority, name)(*args, **kwargs)
+
+        return invoke
+
+
+async def reauthorize_bound_profile_for_worker_dispatch(conn, **kwargs: Any) -> Any:
+    return await AgentProfileAuthority().resolve_bound_for_worker_dispatch(conn, **kwargs)
+
 
 
 AgentProfileAvatarRef = Literal[
@@ -78,14 +131,19 @@ def safe_agent_avatar_ref(value: object, *, fallback: str = "builtin:agent") -> 
 __all__ = [
     "AGENT_PROFILE_AVATAR_REFS",
     "AgentProfileAdminProjection",
+    "AgentProfileAuthority",
     "AgentProfileAvatarRef",
     "AgentProfilePublicProjection",
     "AgentProfileSkillReference",
+    "agent_profile_repository",
+    "configure_agent_profile_authority",
+    "configure_agent_profile_persistence",
     "normalize_agent_avatar_seed",
     "normalize_agent_profile_display_items",
     "normalize_agent_skill_reference",
     "normalize_agent_skill_set",
     "pin_agent_skill_set",
+    "reauthorize_bound_profile_for_worker_dispatch",
     "safe_agent_avatar_ref",
     "safe_agent_avatar_seed",
 ]
