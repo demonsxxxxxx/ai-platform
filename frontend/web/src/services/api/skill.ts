@@ -28,7 +28,7 @@ export type AdminSkillVersionStatus =
   | "deprecated"
   | "active";
 
-export type AdminSkillLifecycleStatus = "active" | "disabled" | "released";
+export type AdminSkillLifecycleStatus = "active";
 
 /** Safe lifecycle projection. Package, storage, and source metadata stay private. */
 export interface AdminSkillVersionSummary {
@@ -223,7 +223,7 @@ export function normalizeAdminSkillReleasePolicy(
 function isAdminSkillLifecycleStatus(
   value: unknown,
 ): value is AdminSkillLifecycleStatus {
-  return value === "active" || value === "disabled" || value === "released";
+  return value === "active";
 }
 
 function isNullableNonBlankString(value: unknown): value is string | null {

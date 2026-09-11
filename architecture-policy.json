@@ -469,6 +469,18 @@
     },
     {
       "source_path": "app/repositories.py",
+      "target_module": "app.skills.infrastructure.legacy_workbench",
+      "module_alias": "legacy_workbench_persistence",
+      "symbols": [
+        "list_workbench_capabilities",
+        "list_workbench_skills"
+      ],
+      "owner": "skills",
+      "reason": "The frozen global repository may replace the obsolete hardcoded Workbench Skill and capability catalog implementations with exact identity aliases while their retirement behavior moves to the Skills adapter.",
+      "removal_condition": "After repository-wide import inventory proves no supported caller uses either legacy Workbench catalog symbol, remove this bridge in an authority-only change before deleting the aliases from repositories.py."
+    },
+    {
+      "source_path": "app/repositories.py",
       "target_module": "app.skills.infrastructure.postgres",
       "module_alias": "skill_persistence",
       "symbols": [

@@ -449,12 +449,11 @@ async def test_successor_activation_schema_advances_to_concurrent_due_index_sche
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.08.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.11.1"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.AGENT_PROFILE_CONSOLIDATION_SCHEMA_VERSION
+        == schema_migrations.OBSOLETE_SKILL_CATALOG_CLEANUP_SCHEMA_VERSION
     )
-    assert schema_migrations.BAOYU_TRANSLATE_RETIREMENT_SCHEMA_VERSION == "2026.09.07.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
