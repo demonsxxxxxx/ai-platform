@@ -65,6 +65,7 @@ def public_text_or_fallback(value: object, fallback: object = "") -> str:
 
 
 RESULT_UNAVAILABLE_MESSAGE = "本次执行未能生成可展示的回复内容。"
+CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
 
 
 def _chat_identifier_token_pattern(identifier: str) -> re.Pattern[str]:
@@ -210,18 +211,25 @@ def public_chat_terminal_projection(run: dict[str, object]) -> dict[str, object]
     status = normalize_run_status(str(run.get("status") or ""))
     if status == "succeeded":
         content = public_chat_answer_text(run, _chat_terminal_answer_candidate(run))
-        if content:
+        run_id = str(run.get("id") or "")
+        if content and run_id:
             return {
                 "event_type": "message:chunk",
                 "payload": {
                     "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
-                    "projection_kind": "assistant_final",
+                    "projection_kind": "assistant_delta",
+                    "event_id": f"{run_id}:final",
+                    "message_id": f"{run_id}:assistant",
+                    "run_id": run_id,
+                    "source": CHAT_ASSISTANT_DELTA_SOURCE,
                     "content": content,
                 },
                 "message": content,
                 "event_payload": {},
                 "severity": "info",
             }
+        if content:
+            return None
         return {
             "event_type": "final_detail",
             "payload": {

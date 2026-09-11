@@ -92,6 +92,7 @@ class Settings(BaseSettings):
     queue_dead_letter_max_entries: int = Field(default=1000, ge=1, le=100000)
     worker_heartbeat_ttl_seconds: float = Field(default=60.0)
     worker_maintenance_interval_seconds: float = Field(default=30.0)
+    worker_publication_interval_seconds: float = Field(default=1.0, gt=0)
     stale_run_reconciliation_seconds: int = Field(default=900, ge=60, le=86400)
     stale_run_reconciliation_limit: int = Field(default=20, ge=1, le=50)
     stale_run_reconciliation_fence_ttl_seconds: int = Field(default=300, ge=30, le=3600)

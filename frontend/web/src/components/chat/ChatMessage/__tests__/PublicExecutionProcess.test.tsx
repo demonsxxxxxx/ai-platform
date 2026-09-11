@@ -35,17 +35,50 @@ test("renders one expandable generic process summary without private execution f
   ] as unknown as ExecutionTimelinePart[];
 
   const markup = renderToStaticMarkup(
-    createElement(PublicExecutionProcess, { steps, isStreaming: false }),
+    createElement(PublicExecutionProcess, {
+      steps,
+      isStreaming: false,
+      elapsedMs: 125_000,
+    }),
   );
 
   assert.equal((markup.match(/data-public-execution-process/g) || []).length, 1);
   assert.match(markup, /<details/);
+  assert.doesNotMatch(markup, /<details[^>]*\bopen(?:=|\s|>)/);
+  assert.match(markup, /<summary/);
   assert.match(markup, /处理过程/);
   assert.match(markup, /处理/);
   assert.match(markup, /验证/);
+  assert.match(markup, /耗时 2 分钟 5 秒/);
   assert.match(markup, /report\.xlsx/);
   assert.doesNotMatch(
     markup,
     /private-step-id|private-stage|evt-private|run-private|rm -rf|stdout|reasoning|C:\\private/i,
   );
+});
+
+
+test("keeps active execution rows visibly expanded", () => {
+  const markup = renderToStaticMarkup(
+    createElement(PublicExecutionProcess, {
+      steps: [
+        {
+          type: "execution_step",
+          step_id: "active-step",
+          sequence: 1,
+          kind: "processing",
+          status: "running",
+          progress: { current: 0, total: 1 },
+          safe_file_name: null,
+          started_at: "2026-08-27T00:00:00.000Z",
+        },
+      ],
+      isStreaming: true,
+      expandable: false,
+    }),
+  );
+
+  assert.doesNotMatch(markup, /<details/);
+  assert.match(markup, /处理/);
+  assert.match(markup, /进行中/);
 });

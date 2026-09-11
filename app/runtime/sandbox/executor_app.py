@@ -2265,6 +2265,7 @@ async def _default_executor_runner(
     response = {
         "status": "completed" if used_sdk and not error else "failed",
         "message": str(getattr(sdk_result, "message", "") or ""),
+        "answer_receipt": getattr(sdk_result, "answer_receipt", None),
         "sdk_session_id": getattr(sdk_result, "session_id", None),
         "sdk_usage": getattr(sdk_result, "usage", {}) or {},
         "sdk_used": used_sdk,
@@ -3213,6 +3214,7 @@ def create_executor_app(
         }
         for key in (
             "message",
+            "answer_receipt",
             "sdk_session_id",
             "sdk_usage",
             "sdk_used",

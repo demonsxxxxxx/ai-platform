@@ -685,6 +685,9 @@ async def test_publication_maintenance_progresses_while_cleanup_is_blocked(monke
 
     monkeypatch.setattr(worker_main, "run_worker_cleanup_maintenance", blocked_cleanup)
     monkeypatch.setattr(worker_main, "run_worker_publication_maintenance", publish)
+    # This test owns task independence; the listener lifecycle is covered by
+    # test_streaming_publication_wakeup without opening a database connection.
+    monkeypatch.setattr(worker_main, "publication_until_done", worker_main.maintenance_until_done)
     cleanup_task = asyncio.create_task(
         worker_main._maintenance_until_done(
             object(), 0.001, _TEST_V4_CAPABILITIES
@@ -2873,6 +2876,7 @@ async def test_run_worker_pool_starts_configured_parallel_workers(monkeypatch):
     calls = []
 
     class Settings:
+        database_url = "postgresql+asyncpg://fixture:fixture@127.0.0.1:5432/fixture"
         worker_maintenance_interval_seconds = 60.0
 
     async def fake_run_worker_maintenance(settings, *, v4_capabilities=None):

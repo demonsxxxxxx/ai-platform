@@ -40,6 +40,26 @@ def _adapter():
     )
 
 
+def _assert_sandbox_answer_receipt(result, candidates, answer):
+    delta_candidates = [
+        candidate
+        for candidate in candidates
+        if isinstance(candidate, ClaudeAgentEventCandidate)
+        and candidate.event_type == "message.delta"
+    ]
+    assert result.message == ""
+    assert "".join(candidate.payload["delta"] for candidate in delta_candidates) == answer
+    assert result.answer_receipt == {
+        "schema_version": "ai-platform.assistant-answer-receipt.v1",
+        "message_id": delta_candidates[0].message_id,
+        "delta_count": len(delta_candidates),
+        "text_length": len(answer),
+        "last_delta_event_id": delta_candidates[-1].event_id,
+    }
+    assert delta_candidates
+    assert all(len(candidate.payload["delta"]) <= 8_192 for candidate in delta_candidates)
+
+
 def test_v4_callback_bridge_rejects_private_strings_even_when_shape_is_valid():
     safe = AgentEvent(
         type="message.delta",
@@ -135,6 +155,8 @@ def test_answer_candidates_are_gated_and_have_one_stable_message_identity():
     ]
     assert len({event.message_id for event in events}) == 1
     assert all("attempt-1" not in str(event.as_dict()["payload"]) for event in events)
+    assert events[-1].payload == {"delta_count": 1, "text_length": len("safe answer")}
+    assert events[-1].causation_event_id == events[1].event_id
 
 
 def test_policy_decision_emits_checking_then_terminal_and_denial_tool_event():
@@ -415,9 +437,8 @@ def test_task_parent_causation_requires_an_accepted_parent_event():
     assert event.causation_event_id is None
 
 
-def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
-    delta = "d" * 8192
-    final = "f" * 262144
+def test_candidate_validation_enforces_delta_bounds_and_completion_receipt_shape():
+    delta = "d" * 8_192
     ClaudeAgentEventCandidate(
         run_id="run-1187",
         event_id="evt_delta",
@@ -432,8 +453,8 @@ def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
         event_id="evt_final",
         event_type="message.completed",
         message_id="msg_1",
-        causation_event_id=None,
-        payload={"content": final},
+        causation_event_id="evt_delta",
+        payload={"delta_count": 1, "text_length": len(delta)},
         payload_sanitizer=sanitize_public_payload,
     )
     with pytest.raises(ValueError):
@@ -450,13 +471,13 @@ def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
         ClaudeAgentEventCandidate(
             run_id="run-1187",
             event_id="evt_extra",
-            event_type="message.delta",
+            event_type="message.completed",
             message_id="msg_1",
-            causation_event_id=None,
-            payload={"delta": "ok", "extra": "private"},
+            causation_event_id="evt_delta",
+            payload={"delta_count": 1, "text_length": 1, "content": "private"},
             payload_sanitizer=sanitize_public_payload,
         )
-    multibyte_delta = "é" * 8_192
+    multibyte_delta = "界" * 8_192
     ClaudeAgentEventCandidate(
         run_id="run-1187",
         event_id="evt_multibyte_delta",
@@ -464,16 +485,6 @@ def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
         message_id="msg_1",
         causation_event_id=None,
         payload={"delta": multibyte_delta},
-        payload_sanitizer=sanitize_public_payload,
-    )
-    multibyte_content = "界" * 262_144
-    ClaudeAgentEventCandidate(
-        run_id="run-1187",
-        event_id="evt_multibyte_content",
-        event_type="message.completed",
-        message_id="msg_1",
-        causation_event_id=None,
-        payload={"content": multibyte_content},
         payload_sanitizer=sanitize_public_payload,
     )
     with pytest.raises(ValueError):
@@ -825,7 +836,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         and candidate.event_type == "message.delta"
     ]
     assert deltas == ["safe ", "answer"]
-    assert "".join(deltas) == result.message
+    _assert_sandbox_answer_receipt(result, candidates, "safe answer")
     assert tool_lifecycle == [("Read", "started"), ("Read", "completed")]
     summaries = [
         candidate.summary
@@ -844,7 +855,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
 
 
 @pytest.mark.asyncio
-async def test_runner_stops_ordinary_stream_at_cumulative_publication_bound(monkeypatch):
+async def test_runner_continues_ordinary_stream_past_previous_publication_bound(monkeypatch):
     import claude_agent_sdk as sdk
 
     monkeypatch.setattr(
@@ -924,14 +935,84 @@ async def test_runner_stops_ordinary_stream_at_cumulative_publication_bound(monk
     )
 
     assert result.error is None
+    _assert_sandbox_answer_receipt(result, candidates, answer)
     assert "projection_failure_reason" not in result.turn_diagnostics
-    assert result.message == ""
-    assert published
-    assert answer.startswith("".join(published))
-    assert len("".join(published).encode("utf-8")) == 262_144
+    assert "".join(published) == answer
+    delta_values = [
+        candidate.payload["delta"]
+        for candidate in candidates
+        if candidate.event_type == "message.delta"
+    ]
+    assert "".join(delta_values) == answer
+    assert delta_values and all(len(delta) <= 8_192 for delta in delta_values)
+    event_types = [candidate.event_type for candidate in candidates]
+    assert event_types[0] == "message.started"
+    assert event_types[-2:] == ["message.completed", "model.completed"]
+    assert event_types[1:-2] == ["message.delta"] * len(delta_values)
+
+
+@pytest.mark.asyncio
+async def test_runner_keeps_legacy_inline_message_outside_sandbox(monkeypatch):
+    import claude_agent_sdk as sdk
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        lambda: SimpleNamespace(
+            claude_agent_sdk_enabled=True,
+            claude_agent_sdk_max_turns=4,
+            claude_agent_sdk_timeout_seconds=10,
+            claude_agent_sdk_skills="",
+            claude_agent_permission_mode="dontAsk",
+            claude_agent_allowed_tools="Read",
+            claude_agent_disallowed_tools="",
+            claude_agent_model="model-a",
+            anthropic_model="",
+            anthropic_base_url="",
+            anthropic_auth_token="",
+            openai_api_key="",
+        ),
+    )
+    answer = "legacy inline answer"
+    published: list[str] = []
+    candidates = []
+
+    async def query_fn(*, prompt, options):
+        del prompt, options
+        yield sdk.ResultMessage(
+            subtype="success",
+            duration_ms=12,
+            duration_api_ms=10,
+            is_error=False,
+            num_turns=1,
+            session_id="sdk-session",
+            stop_reason="end_turn",
+            result=answer,
+        )
+
+    async def on_text(value: str):
+        published.append(value)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=Path("tests"),
+        skill_id=None,
+        query_fn=query_fn,
+        on_text=on_text,
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
+        run_id="run-1187",
+        attempt_id="attempt-1",
+        execution_policy="worker_local_legacy",
+    )
+
+    assert result.error is None
+    assert result.message == answer
+    assert result.answer_receipt is None
+    assert published == [answer]
     assert [candidate.event_type for candidate in candidates] == [
         "message.started",
-        *["message.delta"] * 64,
+        "message.delta",
+        "message.completed",
+        "model.completed",
     ]
 
 
@@ -999,8 +1080,6 @@ async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch, 
     assert [candidate.event_type for candidate in callback_batches[0]] == [
         "message.started",
         "message.delta",
-        "message.completed",
-        "model.completed",
     ]
 
 
@@ -1063,6 +1142,92 @@ async def test_outer_cancellation_propagates_while_agent_callback_waits(monkeypa
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "target_batch"),
+    [("reject", 2), ("reject", 3), ("cancel", 2), ("cancel", 3)],
+    ids=["later-delta-rejected", "completion-rejected", "later-delta-cancelled", "completion-cancelled"],
+)
+async def test_terminal_answer_later_callback_failure_or_cancellation(
+    monkeypatch, mode, target_batch
+):
+    import claude_agent_sdk as sdk
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        lambda: SimpleNamespace(
+            claude_agent_sdk_enabled=True,
+            claude_agent_sdk_max_turns=4,
+            claude_agent_sdk_timeout_seconds=10,
+            claude_agent_sdk_skills="",
+            claude_agent_permission_mode="dontAsk",
+            claude_agent_allowed_tools="Read",
+            claude_agent_disallowed_tools="",
+            claude_agent_model="model-a",
+            anthropic_model="",
+            anthropic_base_url="",
+            anthropic_auth_token="",
+            openai_api_key="",
+        ),
+    )
+    answer = "a" * 8_193
+    callback_batches = []
+    callback_waiting = asyncio.Event()
+    never_release = asyncio.Event()
+
+    async def callback(batch):
+        callback_batches.append(batch)
+        if len(callback_batches) != target_batch:
+            return True
+        if mode == "reject":
+            return False
+        callback_waiting.set()
+        await never_release.wait()
+        return True
+
+    async def query_fn(*, prompt, options):
+        del prompt, options
+        yield sdk.ResultMessage(
+            subtype="success",
+            duration_ms=12,
+            duration_api_ms=10,
+            is_error=False,
+            num_turns=1,
+            session_id="sdk-session",
+            stop_reason="end_turn",
+            result=answer,
+        )
+
+    task = asyncio.create_task(
+        run_claude_agent_sdk(
+            prompt="answer",
+            cwd=Path("tests"),
+            skill_id=None,
+            query_fn=query_fn,
+            on_agent_event=callback,
+            run_id="run-1187",
+            attempt_id="attempt-1",
+            execution_policy="sandbox_brokered",
+        )
+    )
+    if mode == "cancel":
+        await asyncio.wait_for(callback_waiting.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return
+
+    result = await task
+    assert result.error == "agent_event_callback_not_acknowledged"
+    assert result.answer_receipt is None
+    assert len(callback_batches) == target_batch
+    assert [candidate.event_type for candidate in callback_batches[-1]] == (
+        ["message.delta"]
+        if target_batch == 2
+        else ["message.completed", "model.completed"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -1152,23 +1317,26 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
         execution_policy="sandbox_brokered",
     )
 
-    deltas = [candidate.payload["delta"] for candidate in candidates if candidate.event_type == "message.delta"]
-    if len(answer) > 262_144:
-        assert result.error is None
-        assert "projection_failure_reason" not in result.turn_diagnostics
-        assert result.message == ""
-        assert candidates == []
-        assert callback_batches == []
-        assert published == []
-        return
     assert result.error is None
-    assert result.message == answer
-    assert len(callback_batches) == 1
+    _assert_sandbox_answer_receipt(result, candidates, answer)
+    delta_count = (len(answer) + 8_191) // 8_192
+    assert len(callback_batches) == delta_count + 1
+    assert all(len(batch) <= 100 for batch in callback_batches)
     assert callback_batches[0][0].event_type == "message.started"
-    assert callback_batches[0][-2].event_type == "message.completed"
-    assert callback_batches[0][-1].event_type == "model.completed"
+    assert [candidate.event_type for candidate in callback_batches[-1]] == [
+        "message.completed",
+        "model.completed",
+    ]
     assert published == [answer]
-    assert "".join(deltas) == answer
-    assert deltas and all(len(delta) <= 8_192 for delta in deltas)
-    assert candidates[-2].event_type == "message.completed"
-    assert len(candidates[-2].payload["content"]) == 262_144
+    deltas = [
+        candidate.payload["delta"]
+        for candidate in candidates
+        if isinstance(candidate, ClaudeAgentEventCandidate)
+        and candidate.event_type == "message.delta"
+    ]
+    completion = candidates[-2]
+    assert completion.event_type == "message.completed"
+    assert completion.payload == {
+        "delta_count": len(deltas),
+        "text_length": len(answer),
+    }

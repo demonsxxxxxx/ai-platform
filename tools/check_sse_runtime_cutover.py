@@ -36,6 +36,10 @@ V4_PUBLICATION_OWNER_MANIFEST = frozenset(
         ("app/streaming/application/worker_publication_v4.py", "admit_v4_stream"),
         (
             "app/streaming/application/worker_publication_v4.py",
+            "drain_pending_v4_events",
+        ),
+        (
+            "app/streaming/application/worker_publication_v4.py",
             "finalize_parent_and_publish",
         ),
         (

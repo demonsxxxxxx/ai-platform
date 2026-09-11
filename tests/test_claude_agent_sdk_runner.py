@@ -1103,8 +1103,8 @@ async def test_failed_answer_projection_keeps_skill_and_bash_receipts(
     ] == [("qa-review", "invocation_requested"), ("qa-review", "completed")]
     assert result.used_skills == ["qa-review"]
     assert result.error is None
-    assert result.message == ""
-    assert deltas == []
+    assert result.message == oversized_text
+    assert "".join(deltas) == oversized_text
     assert result.turn_diagnostics["counters"]["tool_lifecycle_denials"] == 0
 
 
@@ -2356,7 +2356,7 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
         on_capability_evidence=None if outcome == "missing" else acknowledge,
     )
 
-    if outcome in {"overflow", "stale", "duplicate"}:
+    if outcome in {"stale", "duplicate"}:
         assert sealed_probe == []
     else:
         assert sealed_probe
@@ -2388,7 +2388,12 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
             if outcome == "overflow"
             else "required_tool_completion_evidence_mismatch"
         )
-        if outcome in {"overflow", "stale", "duplicate"}:
+        if outcome == "overflow":
+            assert result.error is None
+            assert result.message == text
+            assert "".join(deltas) == text
+            assert "".join(sealed_probe) == text
+        elif outcome in {"stale", "duplicate"}:
             assert (result.error, result.message, deltas) == (expected, "", [])
         else:
             assert result.error == expected
@@ -3848,34 +3853,40 @@ async def test_sdk_keeps_successful_terminal_body_after_stream_failure(
 
     assert captured["include_partial_messages"] is True
     assert result.error is None
-    assert result.message == "safe partial must \n\nterminal final"
+    assert result.message == "safe partial must finish\n\nterminal final"
     assert "".join(deltas) == result.message
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "events",
+    "events, expected",
     [
-        [
-            {
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "text"},
-            }
-        ],
-        [
-            {
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "text"},
-            },
-            {
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "text_delta", "text": "short"},
-            },
-        ],
-        ["malformed"],
+        (
+            [
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text"},
+                }
+            ],
+            "terminal fallback",
+        ),
+        (
+            [
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text"},
+                },
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "short"},
+                },
+            ],
+            "short\n\nterminal fallback",
+        ),
+        (["malformed"], "terminal fallback"),
     ],
     ids=("start-only", "short-unfinished", "malformed-first-event"),
 )
@@ -3883,6 +3894,7 @@ async def test_stream_failure_before_publication_recovers_terminal_body(
     monkeypatch,
     tmp_path,
     events,
+    expected,
 ):
     captured, deltas = {}, []
     steps = [("stream", event) for event in events]
@@ -3906,9 +3918,9 @@ async def test_stream_failure_before_publication_recovers_terminal_body(
     )
 
     assert captured["include_partial_messages"] is True
-    assert "".join(deltas) == "terminal fallback"
+    assert "".join(deltas) == expected
     assert result.error is None
-    assert result.message == "terminal fallback"
+    assert result.message == expected
 
 
 @pytest.mark.asyncio

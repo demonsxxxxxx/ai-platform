@@ -146,7 +146,8 @@ export type MessageDeltaEventV4 = PublicMessageApplicationEnvelopeV4 & {
 export type MessageCompletedEventV4 = PublicMessageApplicationEnvelopeV4 & {
   "event_type": "message.completed";
   "payload": {
-  "content": string;
+  "delta_count": number;
+  "text_length": number;
 };
 };
 

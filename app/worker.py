@@ -43,14 +43,14 @@ from app.execution.api import (
     WorkerAttemptLifecycle,
     WorkerAttemptLifecyclePorts,
     WorkerExecutorReconciliation,
-    WorkerQueueLease,
-    WorkerRunCancelled,
+    WorkerQueueLease, WorkerRunCancelled, AnswerPersistenceLimits, append_artifact_links,
     bind_worker_attempt_lifecycle,
     build_artifact_execution_owner,
     build_artifact_records,
     fail_run_and_reconcile_worker_child as _fail_run_and_reconcile_worker_child,
     finalize_worker_child_parent as _finalize_worker_child_parent,
     locked_run_payload_candidate as _locked_run_payload_candidate,
+    materialize_worker_answer,
     promote_artifact_reservations,
     restored_executor_reconciliation_queue_payload as _restored_executor_reconciliation_queue_payload,
     submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
@@ -72,6 +72,7 @@ from app.executors.base import (
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.mcp import api as mcp_api
+from app.persistence_limits import MESSAGE_CONTENT_MAX_BYTES, RUN_RESULT_MAX_BYTES, json_size_bytes
 from app.persistence.artifacts import promote_provisional_artifact_cleanup, reserve_provisional_artifact_cleanup
 from app.principal_authority import (
     CURRENT_PRINCIPAL_DENIAL_REASON,
@@ -101,7 +102,7 @@ from app.runtime.sandbox.executor_client import (
 from app.settings import get_settings
 from app.streaming.api import (
     WorkerV4Capabilities,
-    admit_v4_stream,
+    admit_v4_stream, drain_pending_v4_events,
     finalize_parent_and_publish,
     persist_and_publish_worker_event,
     publish_pending_run_terminal,
@@ -132,6 +133,9 @@ from app.worker_principal_authority import (
     _payload_identity,
     _resolve_current_principal_before_dispatch,
 )
+
+
+_ANSWER_PERSISTENCE_LIMITS = AnswerPersistenceLimits(MESSAGE_CONTENT_MAX_BYTES, RUN_RESULT_MAX_BYTES, json_size_bytes)
 
 
 _submit_run_until_cancelled = _partial(
@@ -356,16 +360,6 @@ async def _fail_run_and_reconcile_with_write(
     )
 
 
-def _strip_local_output_paths(message: str) -> str:
-    lines = []
-    for line in message.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(("详细报告:", "批注文档:")) and "/tmp/" in stripped:
-            continue
-        lines.append(line)
-    return "\n".join(lines).strip()
-
-
 def _artifact_download_url(artifact_id: str) -> str:
     return f"/api/ai/artifacts/{artifact_id}/download"
 
@@ -457,15 +451,6 @@ async def append_user_event(
         payload=merged,
         **event_kwargs,
     )
-
-
-def _append_artifact_links(message: str, artifact_records: list[dict[str, Any]]) -> str:
-    base = _strip_local_output_paths(message)
-    if not artifact_records:
-        return base
-    links = [f"- {item['label']}: {item['download_url']}" for item in artifact_records]
-    suffix = "输出文件:\n" + "\n".join(links)
-    return f"{base}\n\n{suffix}" if base else suffix
 
 
 def _int_payload_value(payload: dict[str, Any], key: str, default: int = 0) -> int:
@@ -2759,7 +2744,7 @@ async def process_run_payload(
     result_payload = {
         **public_result,
         **observability,
-        "message": _append_artifact_links(str(result.result.get("message") or ""), artifact_records),
+        "message": append_artifact_links(str(result.result.get("message") or ""), artifact_records),
         "artifacts": [
             {
                 "id": item["id"],
@@ -2783,6 +2768,8 @@ async def process_run_payload(
         result_payload["skills"] = skill_snapshot
     if agent_capability_state is not None:
         result_payload["capability_state"] = agent_capability_state.public_projection()
+    assistant_message_for_persistence, assistant_message_metadata, answer_receipt = None, {}, result.executor_payload.get("answer_receipt")
+    await drain_pending_v4_events(v4_capabilities, tenant_id=payload.tenant_id, run_id=payload.run_id, attempt_id=attempt_id) if result.status == "succeeded" and answer_receipt is not None else None
     reconciled_parent = None
     try:
         async with transaction_factory() as conn:
@@ -2848,6 +2835,14 @@ async def process_run_payload(
                     "error_code": error_code,
                     "artifacts": [],
                 }
+            answer_receipt = result.executor_payload.get("answer_receipt")
+            if result.status == "succeeded" and answer_receipt is not None:
+                materialized = await materialize_worker_answer(v4_capabilities, conn, result=result, result_payload=result_payload, artifact_records=artifact_records, tenant_id=payload.tenant_id, run_id=payload.run_id, attempt_id=attempt_id, answer_receipt=answer_receipt, limits=_ANSWER_PERSISTENCE_LIMITS)
+                result = materialized.result
+                result_payload = materialized.result_payload
+                artifact_records = materialized.artifact_records
+                assistant_message_for_persistence = materialized.assistant_message_for_persistence
+                assistant_message_metadata = materialized.assistant_message_metadata
             cancel_requested = await repositories.is_cancel_requested(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
             if result.status == "succeeded" and cancel_requested:
                 result_payload = {
@@ -2992,11 +2987,16 @@ async def process_run_payload(
                     session_id=payload.session_id,
                     run_id=payload.run_id,
                     role="assistant",
-                    content=str(result_payload.get("message") or ""),
+                    content=(
+                        assistant_message_for_persistence
+                        if assistant_message_for_persistence is not None
+                        else str(result_payload.get("message") or "")
+                    ),
                     metadata_json={
                         "artifact_count": len(result.artifacts),
                         "executor_type": result.executor_type,
                         "adapter_version": result.adapter_version,
+                        **assistant_message_metadata,
                         **(
                             {"capability_state": agent_capability_state.public_projection()}
                             if agent_capability_state is not None

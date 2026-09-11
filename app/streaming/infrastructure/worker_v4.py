@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import Any
 
@@ -15,6 +15,7 @@ from app.streaming.application.durable_v4 import (
     V4PublicationTransportUnavailable,
 )
 from app.streaming.application.worker_publication_v4 import (
+    ReconstructedAssistantAnswer,
     V4StreamAuthority,
     V4StreamAuthorityLookup,
     WorkerEventPersistence,
@@ -86,6 +87,23 @@ class PostgresWorkerEventPersistence(WorkerEventPersistence):
             items=items,
             authority=authority,
             execution_lease_id=execution_lease_id,
+        )
+
+    async def load_answer_by_receipt(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_id: str,
+        attempt_id: str,
+        receipt: Mapping[str, object],
+    ) -> ReconstructedAssistantAnswer:
+        return await _v4.load_answer_by_receipt(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            receipt=receipt,
         )
 
     async def persist_event_and_check_cancel(
