@@ -115,15 +115,15 @@ test("AI applications keep internal routes and direct external URLs", () => {
   });
   assert.deepEqual(resolveLaunchpadDestination(aiDraw!), {
     kind: "url",
-    href: "http://10.56.1.57:3000/zh",
+    href: "http://10.56.1.57:21465/zh",
   });
   assert.deepEqual(resolveLaunchpadDestination(dataFormulator!), {
     kind: "url",
-    href: "http://10.56.1.57:5567/",
+    href: "http://10.56.1.57:21463/",
   });
   assert.deepEqual(resolveLaunchpadDestination(pdfTranslate!), {
     kind: "url",
-    href: "http://10.56.1.57:7860/",
+    href: "http://10.56.1.57:21464/",
   });
 });
 
