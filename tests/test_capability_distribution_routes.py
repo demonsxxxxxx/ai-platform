@@ -84,6 +84,11 @@ def patch_repository(monkeypatch, route_module, name, replacement):
         monkeypatch.setattr(route_module.repositories, name, replacement, raising=False)
 
 
+def patch_mcp_api(monkeypatch, route_module, name, replacement):
+    if route_module is not None:
+        monkeypatch.setattr(route_module.mcp_api, name, replacement)
+
+
 def test_admin_lists_and_filters_capability_distributions(monkeypatch):
     calls = []
 
@@ -273,16 +278,16 @@ def test_admin_updates_mcp_distribution_only_for_tenant_registry_server(monkeypa
         return "aud-capdist-mcp"
 
     route_module = configure_admin_route(monkeypatch)
-    patch_repository(
+    patch_mcp_api(
         monkeypatch,
         route_module,
         "list_mcp_server_registry_names",
         fake_list_names,
     )
-    patch_repository(
+    patch_mcp_api(
         monkeypatch,
         route_module,
-        "upsert_capability_distribution_row",
+        "upsert_mcp_server_distribution",
         fake_upsert,
     )
     patch_repository(monkeypatch, route_module, "append_audit_log", fake_append_audit_log)

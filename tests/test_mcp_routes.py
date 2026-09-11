@@ -464,10 +464,18 @@ def install_mcp_route_fakes(
         return dict(record) if record is not None else None
 
     async def fake_upsert_distribution(conn, **kwargs):
-        calls.append(("upsert_distribution", dict(kwargs)))
+        capability_kind = str(kwargs.get("capability_kind") or "mcp_server")
+        capability_id = str(kwargs.get("capability_id") or kwargs.get("server_name") or "")
+        payload = {
+            **kwargs,
+            "capability_kind": capability_kind,
+            "capability_id": capability_id,
+        }
+        payload.pop("server_name", None)
+        calls.append(("upsert_distribution", payload))
         row = {
-            "capability_kind": kwargs["capability_kind"],
-            "capability_id": kwargs["capability_id"],
+            "capability_kind": capability_kind,
+            "capability_id": capability_id,
             "status": kwargs["status"],
             "visible_to_user": kwargs["visible_to_user"],
             "scope_mode": kwargs["scope_mode"],
@@ -475,7 +483,7 @@ def install_mcp_route_fakes(
             "allowed_roles": list(kwargs["allowed_roles"]),
             "metadata_json": dict(kwargs["metadata_json"]),
         }
-        distributions[kwargs["capability_id"]] = row
+        distributions[capability_id] = row
         return dict(row)
 
     async def fake_set_distribution_status(conn, **kwargs):
@@ -620,6 +628,11 @@ def install_mcp_route_fakes(
     monkeypatch.setattr(mcp.mcp_repository, "list_mcp_server_registry", fake_list_servers)
     monkeypatch.setattr(mcp.mcp_repository, "get_mcp_server_credential", fake_get_credential)
     monkeypatch.setattr(mcp.mcp_repository, "upsert_mcp_server_registry", fake_upsert_server)
+    monkeypatch.setattr(
+        mcp.mcp_repository,
+        "upsert_mcp_server_distribution",
+        fake_upsert_distribution,
+    )
     monkeypatch.setattr(mcp.mcp_repository, "toggle_mcp_server_registry", fake_toggle_server)
     monkeypatch.setattr(mcp.mcp_repository, "delete_mcp_server_registry", fake_delete_server)
     monkeypatch.setattr(mcp.mcp_repository, "record_mcp_server_credential", fake_record_credential)

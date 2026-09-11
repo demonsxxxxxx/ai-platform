@@ -566,11 +566,10 @@ async def _write_server(
                 credential_fingerprint=fingerprint,
                 updated_by=principal.user_id,
             )
-            distribution = await repositories.upsert_capability_distribution_row(
+            distribution = await mcp_repository.upsert_mcp_server_distribution(
                 conn,
                 tenant_id=principal.tenant_id,
-                capability_kind="mcp_server",
-                capability_id=name,
+                server_name=name,
                 status="active" if request.enabled else "disabled",
                 visible_to_user=bool(
                     existing_distribution.get("visible_to_user")

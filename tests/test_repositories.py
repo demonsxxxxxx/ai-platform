@@ -2991,13 +2991,14 @@ async def test_invalid_archive_marker_does_not_block_distribution_status_update(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("enabled", "distribution_status"),
-    [(True, "active"), (False, "disabled")],
+    ("enabled", "distribution_status", "expected_catalog_status"),
+    [(True, "active", "refresh_required"), (False, "disabled", "disabled")],
 )
-async def test_mcp_distribution_toggle_validates_parent_without_catalog_state(
+async def test_mcp_distribution_toggle_invalidates_server_catalog(
     monkeypatch,
     enabled,
     distribution_status,
+    expected_catalog_status,
 ):
     async def no_backfill(conn, *, tenant_id):
         assert tenant_id == "tenant-a"
@@ -3044,9 +3045,12 @@ async def test_mcp_distribution_toggle_validates_parent_without_catalog_state(
                         "metadata_json": {},
                     }
                 )
-            if compact.startswith("select name from mcp_servers"):
-                assert "catalog_" not in compact
-                assert params == ("tenant-a", "qa-mcp")
+            if compact.startswith("update mcp_servers"):
+                assert "catalog_generation = catalog_generation + 1" in compact
+                assert "catalog_discovered_count = 0" in compact
+                assert "catalog_selectable_count = 0" in compact
+                assert params == (enabled, enabled, "tenant-a", "qa-mcp")
+                assert expected_catalog_status in compact
                 return Cursor({"name": "qa-mcp"})
             raise AssertionError(compact)
 
@@ -3393,202 +3397,6 @@ async def test_capability_distribution_authorization_allows_same_department_skil
         ("tool", "tenant-a", "qa-search"),
         ("distribution", "mcp_server", "qa-mcp"),
     ]
-
-
-@pytest.mark.asyncio
-async def test_selected_run_authorizes_gateway_reference_without_local_tool_catalog(monkeypatch):
-    reference = "gateway::ProjectInfoMCPServer_get_project"
-    queries = []
-
-    class Cursor:
-        async def fetchone(self):
-            return {
-                "name": "gateway",
-                "transport": "streamable_http",
-                "status": "active",
-            }
-
-    class Connection:
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            queries.append((normalized, params))
-            assert "from mcp_servers" in normalized
-            assert "mcp_tools" not in normalized
-            assert "mcp_tool_catalog_entries" not in normalized
-            assert params == ("tenant-a", "gateway")
-            return Cursor()
-
-    async def resolve_selected(conn, *, tenant_id, agent_id, skill_id):
-        return {
-            "agent_id": agent_id,
-            "skill_id": skill_id,
-            "skill_status": "active",
-            "skill_version": "hash-v1",
-            "skill_content_hash": "hash-v1",
-            "release_policy_version": None,
-            "executor_type": "claude-agent-worker",
-            "input_modes": [],
-        }
-
-    async def distribution(conn, *, tenant_id, capability_kind, capability_id):
-        assert tenant_id == "tenant-a"
-        assert (capability_kind, capability_id) in {
-            ("skill", "qa-file-reviewer"),
-            ("mcp_server", "gateway"),
-        }
-        return {
-            "status": "active",
-            "visible_to_user": True,
-            "scope_mode": "allowlist",
-            "department_ids": ["qa"],
-            "allowed_roles": ["reviewer"],
-        }
-
-    monkeypatch.setattr(repositories, "resolve_selected_skill", resolve_selected)
-    monkeypatch.setattr(repositories, "get_capability_distribution_row", distribution)
-
-    skill = await repositories.authorize_selected_run_capabilities(
-        Connection(),
-        tenant_id="tenant-a",
-        agent_id="agt-test",
-        skill_id="qa-file-reviewer",
-        expected_version="hash-v1",
-        rollout_key="user-a",
-        normalized_input={"mcp_tool_ids": [reference]},
-        principal_department_id="qa",
-        principal_roles=["reviewer"],
-        is_admin=False,
-        permissions=[],
-    )
-
-    assert skill["skill_id"] == "qa-file-reviewer"
-    assert queries == [
-        (
-            "select name, transport, status from mcp_servers where tenant_id = %s and name = %s and status <> 'deleted'",
-            ("tenant-a", "gateway"),
-        )
-    ]
-
-
-@pytest.mark.asyncio
-async def test_chat_authorizer_accepts_gateway_reference_without_local_tool_catalog(monkeypatch):
-    reference = "gateway::ProjectInfoMCPServer_get_project"
-
-    class Cursor:
-        async def fetchone(self):
-            return {
-                "name": "gateway",
-                "transport": "streamable_http",
-                "status": "active",
-            }
-
-    class Connection:
-        async def execute(self, sql, params):
-            assert "from mcp_servers" in sql
-            assert "mcp_tools" not in sql
-            assert "mcp_tool_catalog_entries" not in sql
-            assert params == ("tenant-a", "gateway")
-            return Cursor()
-
-    async def distribution(conn, *, tenant_id, capability_kind, capability_id):
-        assert (tenant_id, capability_kind, capability_id) == (
-            "tenant-a",
-            "mcp_server",
-            "gateway",
-        )
-        return {
-            "status": "active",
-            "visible_to_user": True,
-            "scope_mode": "allowlist",
-            "department_ids": [],
-            "allowed_roles": [],
-        }
-
-    monkeypatch.setattr(repositories, "get_capability_distribution_row", distribution)
-
-    authorized = await repositories.authorize_selected_chat_mcp_tools(
-        Connection(),
-        tenant_id="tenant-a",
-        tool_ids=[reference],
-        principal_department_id="",
-        principal_roles=["user"],
-        is_admin=False,
-        permissions=[],
-    )
-
-    assert [entry["tool_id"] for entry in authorized] == [reference]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "failure",
-    ["malformed", "missing", "cross_tenant", "server_disabled", "distribution_denied"],
-)
-async def test_chat_authorizer_fails_closed_for_invalid_gateway_parent_state(
-    monkeypatch,
-    failure,
-):
-    reference = (
-        "unqualified-tool"
-        if failure == "malformed"
-        else "gateway::ProjectInfoMCPServer_get_project"
-    )
-    queries = []
-
-    class Cursor:
-        async def fetchone(self):
-            if failure in {"missing", "cross_tenant"}:
-                return None
-            return {
-                "name": "gateway",
-                "transport": "streamable_http",
-                "status": "disabled" if failure == "server_disabled" else "active",
-            }
-
-    class Connection:
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            queries.append((normalized, params))
-            assert "from mcp_servers" in normalized
-            assert "mcp_tools" not in normalized
-            assert "mcp_tool_catalog_entries" not in normalized
-            assert params == ("tenant-a", "gateway")
-            return Cursor()
-
-    async def distribution(conn, *, tenant_id, capability_kind, capability_id):
-        assert (tenant_id, capability_kind, capability_id) == (
-            "tenant-a",
-            "mcp_server",
-            "gateway",
-        )
-        return {
-            "status": "disabled" if failure == "distribution_denied" else "active",
-            "visible_to_user": True,
-            "scope_mode": "allowlist",
-            "department_ids": [],
-            "allowed_roles": [],
-        }
-
-    monkeypatch.setattr(repositories, "get_capability_distribution_row", distribution)
-
-    with pytest.raises(
-        repositories.RepositoryAuthorizationError,
-        match="capability_not_authorized",
-    ):
-        await repositories.authorize_selected_chat_mcp_tools(
-            Connection(),
-            tenant_id="tenant-a",
-            tool_ids=[reference],
-            principal_department_id="",
-            principal_roles=["user"],
-            is_admin=False,
-            permissions=[],
-        )
-
-    if failure == "malformed":
-        assert queries == []
-    elif failure == "cross_tenant":
-        assert queries[0][1] == ("tenant-a", "gateway")
 
 
 @pytest.mark.asyncio
@@ -7044,7 +6852,7 @@ async def test_list_mcp_server_registry_filters_by_tenant_department_and_redacts
                     "tenant_id": "tenant-a",
                     "name": "qa-mcp",
                     "transport": "streamable_http",
-                    "endpoint_redacted": "",
+                    "endpoint_redacted": "https://mcp.example/sse",
                     "status": "active",
                     "is_system": False,
                     "allowed_roles": ["qa"],
@@ -7086,7 +6894,7 @@ async def test_list_mcp_server_registry_filters_by_tenant_department_and_redacts
             "tenant_id": "tenant-a",
             "name": "qa-mcp",
             "transport": "streamable_http",
-            "endpoint_redacted": "",
+            "endpoint_redacted": "https://mcp.example/sse",
             "status": "active",
             "is_system": False,
             "allowed_roles": ["qa"],
@@ -7094,6 +6902,13 @@ async def test_list_mcp_server_registry_filters_by_tenant_department_and_redacts
             "department_ids": ["qa"],
             "credential_state": "configured",
             "credential_metadata": {"header_names": ["Authorization"]},
+            "catalog_generation": 0,
+            "catalog_revision": 0,
+            "catalog_status": "legacy",
+            "catalog_unavailable_reason": "",
+            "catalog_discovered_count": 0,
+            "catalog_selectable_count": 0,
+            "catalog_last_synced_at": None,
             "created_at": "2026-06-23T00:00:00Z",
             "updated_at": "2026-06-23T00:00:00Z",
         }
@@ -7109,7 +6924,7 @@ async def test_upsert_mcp_server_registry_persists_only_redacted_endpoint_and_cr
                 "tenant_id": "tenant-a",
                 "name": "qa-mcp",
                 "transport": "streamable_http",
-                "endpoint_redacted": "",
+                "endpoint_redacted": "https://mcp.example/sse",
                 "status": "active",
                 "is_system": False,
                 "allowed_roles": ["qa"],
@@ -7153,10 +6968,8 @@ async def test_upsert_mcp_server_registry_persists_only_redacted_endpoint_and_cr
     assert "existing.is_system <> %s" in sql
     assert "where mcp_servers.is_system = excluded.is_system returning *" in sql
     assert "credential_fingerprint" in sql
-    assert "catalog_" not in sql
     assert "credential-sha" in params
     assert params[:3] == ("tenant-a", "qa-mcp", False)
-    assert "https://mcp.example/sse" not in params
     assert "raw-secret" not in str(params)
     assert row["name"] == "qa-mcp"
     assert row["credential_state"] == "configured"
@@ -7188,13 +7001,23 @@ async def test_list_mcp_server_registry_names_excludes_deleted_registry_override
 
 
 @pytest.mark.asyncio
-async def test_get_mcp_tool_registry_entry_resolves_lightweight_reference_through_parent_server():
+async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_tenant():
     class RegistryCursor:
         async def fetchone(self):
             return {
-                "name": "qa-mcp",
-                "transport": "streamable_http",
-                "status": "active",
+                "tool_id": "qa-search",
+                "server_id": "qa-mcp",
+                "name": "QA Search",
+                "description": "Search QA records.",
+                "registry_status": "active",
+                "server_status": "active",
+                "registry_write_capable": False,
+                "registry_risk_level": "low",
+                "registry_visible_to_user": True,
+                "policy_status": "active",
+                "policy_write_capable": False,
+                "policy_risk_level": "low",
+                "policy_visible_to_user": True,
             }
 
     class RegistryConnection:
@@ -7210,17 +7033,20 @@ async def test_get_mcp_tool_registry_entry_resolves_lightweight_reference_throug
     row = await repositories.get_mcp_tool_registry_entry(
         conn,
         tenant_id="tenant-a",
-        tool_id="qa-mcp::qa.search",
+        tool_id="qa-search",
     )
 
     sql, params = conn.calls[0]
-    assert "from mcp_servers" in sql
-    assert "tenant_id = %s" in sql
-    assert "name = %s" in sql
-    assert "mcp_tools" not in sql
-    assert "mcp_tool_catalog_entries" not in sql
+    assert "join mcp_servers" in sql
+    assert "mcp_servers.tenant_id = %s" in sql
+    assert "mcp_servers.name = mcp_tools.server_id" in sql
+    assert "mcp_tools.id = %s" in sql
+    assert "catalog_entry.tenant_id = %s" in sql
+    assert "catalog_entry.catalog_generation = catalog_server.catalog_generation" in sql
+    assert "catalog_server.catalog_status = 'available'" in sql
+    assert "catalog_any" not in sql
     assert sql.count("%s") == len(params)
-    assert params == ("tenant-a", "qa-mcp")
+    assert params == ("tenant-a", "qa-search", "tenant-a")
     assert row is not None
     assert {
         key: row[key]
@@ -7235,24 +7061,25 @@ async def test_get_mcp_tool_registry_entry_resolves_lightweight_reference_throug
             "risk_level",
             "visible_to_user",
             "effective_status",
+            "source",
         )
     } == {
-        "tool_id": "qa-mcp::qa.search",
+        "tool_id": "qa-search",
         "server_id": "qa-mcp",
-        "name": "qa.search",
-        "description": "",
+        "name": "QA Search",
+        "description": "Search QA records.",
         "registry_status": "active",
         "server_status": "active",
-        "write_capable": True,
-        "risk_level": "high",
+        "write_capable": False,
+        "risk_level": "low",
         "visible_to_user": True,
         "effective_status": "active",
+        "source": "tenant",
     }
-    assert repositories.mcp_runtime_metadata_usable(row)
 
 
 @pytest.mark.asyncio
-async def test_local_chat_catalog_query_accepts_only_the_known_builtin():
+async def test_chat_catalog_query_accepts_only_the_known_builtin_or_current_tenant_catalog():
     class Cursor:
         async def fetchall(self):
             return []
@@ -7271,7 +7098,8 @@ async def test_local_chat_catalog_query_accepts_only_the_known_builtin():
     assert await repositories.list_chat_mcp_tool_catalog_entries(conn, tenant_id="tenant-a") == []
 
     assert "ragflow-knowledge-search" in conn.sql
-    assert "mcp_tool_catalog_entries" not in conn.sql
+    assert "catalog_entry.tenant_id = %s" in conn.sql
+    assert "catalog_any" not in conn.sql
     assert conn.params == ("tenant-a", "tenant-a")
 
 

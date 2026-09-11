@@ -163,8 +163,11 @@ class _McpRuntimeServices:
             "get_mcp_server_registry_entry": mcp_postgres.get_mcp_server_registry_entry,
             "get_mcp_server_runtime_target": mcp_postgres.get_mcp_server_runtime_target,
             "list_mcp_server_registry": mcp_postgres.list_mcp_server_registry,
+            "list_mcp_server_registry_names": mcp_postgres.list_mcp_server_registry_names,
             "record_mcp_server_credential": mcp_postgres.record_mcp_server_credential,
+            "toggle_mcp_server_distribution": mcp_postgres.toggle_mcp_server_distribution,
             "toggle_mcp_server_registry": mcp_postgres.toggle_mcp_server_registry,
+            "upsert_mcp_server_distribution": mcp_postgres.upsert_mcp_server_distribution,
             "upsert_mcp_server_registry": mcp_postgres.upsert_mcp_server_registry,
         }
         try:

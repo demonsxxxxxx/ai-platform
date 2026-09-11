@@ -4,12 +4,7 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
-from app.mcp.domain.tool_references import (
-    build_mcp_tool_reference,
-    is_valid_mcp_public_tool_name,
-    mcp_runtime_metadata_usable as _mcp_runtime_metadata_usable,
-    parse_mcp_tool_reference,
-)
+from app.mcp import api as mcp_api
 
 
 TRUSTED_BUILTIN_MCP_TOOL_ID = "ragflow-knowledge-search"
@@ -57,7 +52,7 @@ def is_trusted_builtin_mcp_tool(tool: dict[str, Any]) -> bool:
 def mcp_runtime_metadata_usable(tool: dict[str, Any]) -> bool:
     """Accept the code-owned builtin or one lightweight Server-qualified reference."""
 
-    return _mcp_runtime_metadata_usable(tool)
+    return mcp_api.mcp_runtime_metadata_usable(tool)
 
 
 async def list_workbench_mcp_tools(
@@ -111,7 +106,7 @@ async def get_mcp_tool_registry_entry(
 
     if tool_id != TRUSTED_BUILTIN_MCP_TOOL_ID:
         try:
-            server_id, public_tool_name = parse_mcp_tool_reference(tool_id)
+            server_id, public_tool_name = mcp_api.parse_mcp_tool_reference(tool_id)
         except ValueError:
             return None
         cursor = await conn.execute(
@@ -130,7 +125,7 @@ async def get_mcp_tool_registry_entry(
         server = dict(row)
         server_status = str(server.get("status") or "disabled")
         return {
-            "tool_id": build_mcp_tool_reference(server_id, public_tool_name),
+            "tool_id": mcp_api.build_mcp_tool_reference(server_id, public_tool_name),
             "server_id": server_id,
             "name": public_tool_name,
             "description": "",
@@ -184,7 +179,7 @@ async def get_mcp_tool_registry_entry(
     entry["auth_mode"] = str(record.get("auth_mode") or "")
     allowed_tools = record.get("allowed_tools")
     entry["allowed_tools"] = (
-        [item for item in allowed_tools if is_valid_mcp_public_tool_name(item)]
+        [item for item in allowed_tools if mcp_api.is_valid_mcp_public_tool_name(item)]
         if isinstance(allowed_tools, list)
         else []
     )

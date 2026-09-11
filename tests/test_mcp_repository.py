@@ -5,6 +5,7 @@ import pytest
 
 from app import repositories
 from app.mcp.infrastructure import postgres as mcp_repository
+from app.platform.postgres.errors import RepositoryConflictError, RepositoryNotFoundError
 
 
 class _Cursor:
@@ -116,6 +117,100 @@ async def test_dynamic_server_upsert_persists_no_endpoint_material():
 
     assert result["endpoint_redacted"] == ""
     assert result["name"] == "gateway"
+
+
+@pytest.mark.asyncio
+async def test_mcp_distribution_upsert_does_not_mutate_catalog_state():
+    queries: list[str] = []
+    distribution = {
+        "id": "capdist_gateway",
+        "tenant_id": "tenant-a",
+        "capability_kind": "mcp_server",
+        "capability_id": "gateway",
+        "status": "active",
+        "visible_to_user": True,
+        "scope_mode": "allowlist",
+        "department_ids": ["qa"],
+        "allowed_roles": ["reviewer"],
+        "metadata_json": {},
+        "updated_by": "admin-a",
+        "created_at": "2026-09-11T00:00:00Z",
+        "updated_at": "2026-09-11T00:00:00Z",
+    }
+
+    class Connection:
+        async def execute(self, query, params):
+            queries.append(query)
+            if "from mcp_servers" in query:
+                assert params == ("tenant-a", "gateway")
+                return _Cursor({"name": "gateway"})
+            if "pg_advisory_xact_lock" in query:
+                return _Cursor()
+            if "select metadata_json" in query:
+                assert params == ("tenant-a", "gateway")
+                return _Cursor()
+            if "insert into tenant_capability_distributions" in query:
+                assert params[1:4] == ("tenant-a", "mcp_server", "gateway")
+                return _Cursor(distribution)
+            raise AssertionError("unexpected MCP distribution query")
+
+    result = await mcp_repository.upsert_mcp_server_distribution(
+        Connection(),
+        tenant_id="tenant-a",
+        server_name="gateway",
+        status="active",
+        visible_to_user=True,
+        scope_mode="allowlist",
+        department_ids=["qa"],
+        allowed_roles=["reviewer"],
+        metadata_json={},
+        updated_by="admin-a",
+    )
+
+    assert result["capability_id"] == "gateway"
+    assert result["allowed_roles"] == ["reviewer"]
+    assert all("catalog_" not in query for query in queries)
+
+
+@pytest.mark.asyncio
+async def test_mcp_distribution_mutations_preserve_archive_and_missing_guards():
+    class Connection:
+        def __init__(self, metadata):
+            self.metadata = metadata
+
+        async def execute(self, query, params):
+            if "from mcp_servers" in query:
+                return _Cursor({"name": "gateway"})
+            if "pg_advisory_xact_lock" in query:
+                return _Cursor()
+            if "select metadata_json" in query:
+                return _Cursor(
+                    None if self.metadata is None else {"metadata_json": self.metadata}
+                )
+            raise AssertionError("guarded mutation must stop before its write")
+
+    with pytest.raises(RepositoryConflictError, match="capability_distribution_archived"):
+        await mcp_repository.upsert_mcp_server_distribution(
+            Connection({"archived_at": "2026-09-11T00:00:00.000Z"}),
+            tenant_id="tenant-a",
+            server_name="gateway",
+            status="active",
+            visible_to_user=True,
+            scope_mode="allowlist",
+            department_ids=[],
+            allowed_roles=[],
+            metadata_json={},
+            updated_by="admin-a",
+        )
+
+    with pytest.raises(RepositoryNotFoundError, match="capability_distribution_not_found"):
+        await mcp_repository.toggle_mcp_server_distribution(
+            Connection(None),
+            tenant_id="tenant-a",
+            server_name="gateway",
+            enabled=True,
+            updated_by="admin-a",
+        )
 
 
 @pytest.mark.asyncio
@@ -316,16 +411,22 @@ def test_only_code_owned_ragflow_has_legacy_mcp_tools_authority():
     )
 
 
-def test_gateway_catalog_persistence_implementation_is_removed():
+def test_active_gateway_paths_do_not_use_catalog_persistence():
     root = Path(__file__).parents[1]
-    sources = [
-        (root / "app" / "mcp" / "repository.py").read_text(encoding="utf-8"),
-        (root / "app" / "repositories.py").read_text(encoding="utf-8"),
+    source_paths = [
+        root / "app" / "mcp" / "api.py",
+        root / "app" / "mcp" / "application" / "live_catalog.py",
+        root / "app" / "mcp" / "application" / "runtime_registry.py",
+        root / "app" / "mcp" / "infrastructure" / "catalog.py",
+        root / "app" / "mcp" / "infrastructure" / "postgres.py",
+        root / "app" / "mcp" / "infrastructure" / "runtime.py",
+        root / "app" / "routes" / "mcp.py",
     ]
 
-    for source in sources:
+    for source_path in source_paths:
+        source = source_path.read_text(encoding="utf-8").lower()
         for operation in ("from", "join", "insert into", "update"):
-            assert f"{operation} mcp_tool_catalog_entries" not in source.lower()
+            assert f"{operation} mcp_tool_catalog_entries" not in source
         assert "catalog_generation" not in source
         assert "class PostgresMcpCatalogStore" not in source
     assert not (root / "app" / "mcp" / "catalog.py").exists()
