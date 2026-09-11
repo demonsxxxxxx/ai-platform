@@ -103,6 +103,36 @@ function parseSopSseBlock(block: string): Record<string, unknown> | null {
   }
 }
 
+async function createSopSession(
+  config: SopRagflowConfig,
+  signal: AbortSignal,
+): Promise<string> {
+  const response = await fetch(
+    `${SOP_RAGFLOW_API_BASE}/api/v1/chatbots/${encodeURIComponent(config.chatId)}/completions`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "text/event-stream",
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.auth}`,
+      },
+      body: JSON.stringify({ question: "初始化会话", stream: true }),
+      signal,
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`公司知识库会话创建失败：${response.status}`);
+  }
+  const blocks = (await response.text()).split(/\n\n|\r\n\r\n/);
+  for (const block of blocks) {
+    const payload = parseSopSseBlock(block);
+    if (typeof payload?.session_id === "string" && payload.session_id) {
+      return payload.session_id;
+    }
+  }
+  throw new Error("公司知识库未返回会话 ID。");
+}
+
 async function streamSopAnswer(
   question: string,
   sessionId: string,
@@ -117,6 +147,8 @@ async function streamSopAnswer(
     SOP_REQUEST_TIMEOUT,
   );
   try {
+    const activeSessionId =
+      sessionId || (await createSopSession(config, controller.signal));
     const response = await fetch(
       `${SOP_RAGFLOW_API_BASE}/api/v1/chatbots/${encodeURIComponent(config.chatId)}/completions`,
       {
@@ -129,7 +161,7 @@ async function streamSopAnswer(
         body: JSON.stringify({
           question,
           stream: true,
-          session_id: sessionId || undefined,
+          session_id: activeSessionId,
           quote: true,
           reference_metadata: {
             include: true,
@@ -153,7 +185,7 @@ async function streamSopAnswer(
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let answer = "";
-    let nextSessionId = sessionId;
+    let nextSessionId = activeSessionId;
     let buffer = "";
     const acceptBlock = (block: string) => {
       const payload = parseSopSseBlock(block);
