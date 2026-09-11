@@ -67,6 +67,10 @@ from app.platform.sandbox.docker_governed_network import (
     governed_egress_proof_key_id as _governed_egress_proof_key_id,
     runtime_release_commit as _runtime_release_commit,
 )
+from app.platform.sandbox.workspace_artifacts import (
+    workspace_directory_allowed,
+    workspace_file_allowed,
+)
 from app.platform.sandbox.errors import (
     ContainerCleanupFailedError,
     ContainerStartFailedError,
@@ -5109,7 +5113,7 @@ class OpenSandboxContainerProvider:
         request: SandboxRuntimeRequest,
         workspace: WorkspaceLease,
     ) -> None:
-        """Publish only bounded legacy and delivery outputs from remote OpenSandbox."""
+        """Publish bounded user files from the platform-assigned workspace."""
 
         staging_root: Path | None = None
         try:
@@ -5118,21 +5122,14 @@ class OpenSandboxContainerProvider:
             filesystem = getattr(sandbox, "files", None)
             if filesystem is None:
                 raise ContainerStartFailedError("OpenSandbox workspace collection is unavailable")
-            root_entries = await self._list_remote_workspace_directory(filesystem, workspace, "")
-            pending: list[tuple[str, bool, bool]] = []
+            pending: list[str] = [""]
             seen_directories: set[str] = set()
-            for relative_path, entry_type, _size in root_entries:
-                if relative_path not in {"output", "outputs"}:
-                    continue
-                if entry_type != "directory":
-                    raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
-                pending.append((relative_path, relative_path == "output", False))
-                seen_directories.add(relative_path)
+            seen_directories.add("")
 
             selected_files: list[tuple[str, int]] = []
             selected_file_paths: set[str] = set()
             while pending:
-                relative_directory, legacy_output, delivery_output = pending.pop()
+                relative_directory = pending.pop()
                 if len(seen_directories) > _OPENSANDBOX_COLLECT_MAX_DIRECTORIES:
                     raise ContainerStartFailedError("workspace artifacts exceed the directory limit")
                 for relative_path, entry_type, size in await self._list_remote_workspace_directory(
@@ -5140,31 +5137,27 @@ class OpenSandboxContainerProvider:
                     workspace,
                     relative_directory,
                 ):
-                    name = PurePosixPath(relative_path).name
                     if entry_type == "directory":
+                        if not workspace_directory_allowed(relative_path):
+                            continue
                         if relative_path in seen_directories:
                             raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
                         if len(seen_directories) >= _OPENSANDBOX_COLLECT_MAX_DIRECTORIES:
                             raise ContainerStartFailedError("workspace artifacts exceed the directory limit")
                         seen_directories.add(relative_path)
-                        pending.append(
-                            (
-                                relative_path,
-                                legacy_output,
-                                delivery_output or (not legacy_output and name == "delivery"),
-                            )
-                        )
+                        pending.append(relative_path)
                         continue
-                    if legacy_output or delivery_output:
-                        if size > _OPENSANDBOX_COLLECT_MAX_FILE_BYTES:
-                            raise ContainerStartFailedError("workspace artifacts exceed the per-file byte limit")
-                        if (
-                            relative_path in selected_file_paths
-                            or len(selected_files) >= _OPENSANDBOX_COLLECT_MAX_FILES
-                        ):
-                            raise ContainerStartFailedError("workspace artifacts exceed the file count limit")
-                        selected_file_paths.add(relative_path)
-                        selected_files.append((relative_path, size))
+                    if not workspace_file_allowed(relative_path):
+                        continue
+                    if size > _OPENSANDBOX_COLLECT_MAX_FILE_BYTES:
+                        raise ContainerStartFailedError("workspace artifacts exceed the per-file byte limit")
+                    if (
+                        relative_path in selected_file_paths
+                        or len(selected_files) >= _OPENSANDBOX_COLLECT_MAX_FILES
+                    ):
+                        raise ContainerStartFailedError("workspace artifacts exceed the file count limit")
+                    selected_file_paths.add(relative_path)
+                    selected_files.append((relative_path, size))
             declared_total = sum(size for _relative_path, size in selected_files)
             if declared_total > _OPENSANDBOX_COLLECT_MAX_TOTAL_BYTES:
                 raise ContainerStartFailedError("workspace artifacts exceed the total byte limit")

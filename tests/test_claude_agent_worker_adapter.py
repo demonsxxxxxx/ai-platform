@@ -958,6 +958,38 @@ def test_collect_workspace_artifacts_includes_delivery_outputs(monkeypatch, tmp_
     ]
 
 
+def test_collect_workspace_artifacts_scans_platform_workspace_and_excludes_internals(
+    monkeypatch, tmp_path
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    document = Document()
+    document.add_paragraph("filled")
+    document.save(workspace / "report.docx")
+    (workspace / "inputs").mkdir()
+    (workspace / "inputs" / "source.docx").write_bytes(b"input")
+    (workspace / ".claude" / "skills").mkdir(parents=True)
+    (workspace / ".claude" / "skills" / "SKILL.md").write_text("internal", encoding="utf-8")
+    (workspace / "outputs" / "job" / "_debug").mkdir(parents=True)
+    (workspace / "outputs" / "job" / "_debug" / "trace.txt").write_text("debug", encoding="utf-8")
+    stored = []
+
+    class FakeStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            stored.append((storage_key, content, content_type))
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+
+    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
+        payload(skill_id=None, skill_manifests=[], execution_kind="harness_chat", schema_version="ai-platform.run-payload.v2"),
+        workspace,
+    )
+
+    assert [artifact.manifest["workspace_output"] for artifact in artifacts] == ["report.docx"]
+    assert len(stored) == 1
+
+
 def test_collect_workspace_artifacts_assigns_safe_mime_types_and_keeps_unknown_files_generic(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     delivery = workspace / "outputs" / "delivery"
@@ -4555,6 +4587,7 @@ def test_build_sdk_env_overrides_untrusted_inherited_environment(monkeypatch, tm
     assert env["ANTHROPIC_AUTH_TOKEN"] == "settings-token"
     assert env["HOME"] == str(tmp_path / "run-workspace" / ".home")
     assert env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "run-workspace" / ".claude-config")
+    assert env["AI_PLATFORM_WORK_DIR"] == str(tmp_path / "run-workspace")
     assert env["AI_PLATFORM_SECRET"] == ""
 
 
