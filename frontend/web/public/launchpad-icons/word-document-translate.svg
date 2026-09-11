@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Word Translate">
+  <rect width="128" height="128" rx="24" fill="#2f5e9e"/>
+  <path d="M29 25h48l22 22v56H29z" fill="#fff"/>
+  <path d="M77 25v25h22" fill="#dbe8fb"/>
+  <text x="39" y="78" font-family="Arial,sans-serif" font-size="36" font-weight="700" fill="#2f5e9e">W</text>
+  <path d="M39 91h48" stroke="#ef8354" stroke-width="6" stroke-linecap="round"/>
+</svg>

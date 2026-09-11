@@ -5,6 +5,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
+import { useNavigate } from "react-router-dom";
 import toast from "react-hot-toast";
 import { useTranslation } from "react-i18next";
 import {
@@ -13,6 +14,7 @@ import {
   Building2,
   ChevronRight,
   Database,
+  FileCheck2,
   FileSearch,
   FlaskConical,
   Globe2,
@@ -38,6 +40,7 @@ import {
   filterLaunchpadGroups,
   getLaunchpadIconUrl,
   launchpadGroups,
+  resolveLaunchpadDestination,
   type LaunchpadEntry,
 } from "./catalog";
 import {
@@ -82,6 +85,7 @@ interface DirectorySectionProps {
   tone: string;
   favoriteIds: ReadonlySet<string>;
   favoritesDisabled: boolean;
+  onOpen: (entry: LaunchpadEntry) => void;
   onToggleFavorite: (entryId: string) => void;
 }
 
@@ -93,6 +97,7 @@ function DirectorySection({
   tone,
   favoriteIds,
   favoritesDisabled,
+  onOpen,
   onToggleFavorite,
 }: DirectorySectionProps) {
   const { t } = useTranslation();
@@ -124,33 +129,28 @@ function DirectorySection({
         {entries.map((entry) => {
           const isFavorite = favoriteIds.has(entry.id);
           const isFeaturedPlatform = entry.id === "内网登录:灵犀平台";
-
-          return (
-            <div
-              key={entry.id}
-              data-launchpad-entry
-              className="group flex min-h-[68px] min-w-0 items-center overflow-hidden rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] transition-[border-color,box-shadow] hover:border-[var(--section-tone)] hover:shadow-sm"
-            >
-              <a
-                href={entry.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label={t("companyNavigation.openEntry", {
-                  name: entry.name,
-                })}
-                className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pl-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-ring)]"
+          const destination = resolveLaunchpadDestination(entry);
+          const unavailable = destination.kind === "unavailable";
+          const EntryIcon =
+            entry.name === "Word文档翻译"
+              ? Languages
+              : entry.name === "Word文档审核"
+                ? FileCheck2
+                : Globe2;
+          const entryContent = (
+            <>
+              <span
+                className={`relative flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-[var(--theme-border)] bg-white shadow-sm ${
+                  isFeaturedPlatform
+                    ? "motion-safe:animate-pulse shadow-[0_0_14px_rgba(139,92,246,0.42)]"
+                    : ""
+                }`}
               >
-                <span
-                  className={`relative flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-[var(--theme-border)] bg-white shadow-sm ${
-                    isFeaturedPlatform
-                      ? "motion-safe:animate-pulse shadow-[0_0_14px_rgba(139,92,246,0.42)]"
-                      : ""
-                  }`}
-                >
-                  <Globe2
-                    aria-hidden="true"
-                    className="size-4 text-[var(--theme-text-secondary)]"
-                  />
+                <EntryIcon
+                  aria-hidden="true"
+                  className="size-4 text-[var(--theme-text-secondary)]"
+                />
+                {entry.icon ? (
                   <img
                     src={getLaunchpadIconUrl(entry.icon)}
                     alt=""
@@ -160,25 +160,60 @@ function DirectorySection({
                       event.currentTarget.hidden = true;
                     }}
                   />
-                </span>
+                ) : null}
+              </span>
 
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-semibold text-[var(--theme-text)] sm:text-sm">
-                    {entry.name}
-                  </span>
-                  <span
-                    className="mt-0.5 block truncate text-[11px] text-[var(--theme-text-secondary)] sm:text-xs"
-                    title={entry.description || undefined}
-                  >
-                    {entry.description || t("launchpad.visitWebsite")}
-                  </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] font-semibold text-[var(--theme-text)] sm:text-sm">
+                  {entry.name}
                 </span>
+                <span
+                  className="mt-0.5 block truncate text-[11px] text-[var(--theme-text-secondary)] sm:text-xs"
+                  title={entry.description || undefined}
+                >
+                  {entry.description || t("launchpad.visitWebsite")}
+                </span>
+              </span>
 
-                <ChevronRight
-                  aria-hidden="true"
-                  className="size-4 shrink-0 text-[var(--theme-text-tertiary)] transition-transform group-hover:translate-x-0.5"
-                />
-              </a>
+              <ChevronRight
+                aria-hidden="true"
+                className="size-4 shrink-0 text-[var(--theme-text-tertiary)] transition-transform group-hover:translate-x-0.5"
+              />
+            </>
+          );
+
+          return (
+            <div
+              key={entry.id}
+              data-launchpad-entry
+              className="group flex min-h-[68px] min-w-0 items-center overflow-hidden rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] transition-[border-color,box-shadow] hover:border-[var(--section-tone)] hover:shadow-sm"
+            >
+              {destination.kind === "url" ? (
+                <a
+                  href={destination.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={t("companyNavigation.openEntry", {
+                    name: entry.name,
+                  })}
+                  className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pl-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-ring)]"
+                >
+                  {entryContent}
+                </a>
+              ) : (
+                <button
+                  type="button"
+                  disabled={unavailable}
+                  onClick={() => onOpen(entry)}
+                  title={unavailable ? destination.reason : undefined}
+                  aria-label={t("companyNavigation.openEntry", {
+                    name: entry.name,
+                  })}
+                  className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pl-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-ring)] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {entryContent}
+                </button>
+              )}
 
               <button
                 type="button"
@@ -214,6 +249,7 @@ function DirectorySection({
 export function LaunchpadPanel() {
   const { t } = useTranslation();
   const { user } = useAuth();
+  const navigate = useNavigate();
   const currentUserIdRef = useRef(user?.id);
   currentUserIdRef.current = user?.id;
   const [query, setQuery] = useState("");
@@ -313,6 +349,11 @@ export function LaunchpadPanel() {
         setFavoritesSaving(false);
       }
     }
+  };
+
+  const openEntry = (entry: LaunchpadEntry) => {
+    const destination = resolveLaunchpadDestination(entry);
+    if (destination.kind === "internal") navigate(destination.path);
   };
 
   const favoritesDisabled =
@@ -436,6 +477,7 @@ export function LaunchpadPanel() {
             tone="#d28a17"
             favoriteIds={favoriteIdSet}
             favoritesDisabled={favoritesDisabled}
+            onOpen={openEntry}
             onToggleFavorite={toggleFavorite}
           />
         ) : null}
@@ -463,6 +505,7 @@ export function LaunchpadPanel() {
                 tone={categoryTones[Math.max(sourceIndex, 0) % categoryTones.length]}
                 favoriteIds={favoriteIdSet}
                 favoritesDisabled={favoritesDisabled}
+                onOpen={openEntry}
                 onToggleFavorite={toggleFavorite}
               />
             );
