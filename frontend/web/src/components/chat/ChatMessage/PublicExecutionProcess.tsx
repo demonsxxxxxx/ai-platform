@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import type { ExecutionTimelinePart } from "../../../types/message";
 import { clsx } from "clsx";
 
+const MAX_EXECUTION_ELAPSED_MS = 24 * 60 * 60 * 1000;
+
 function safePublicBasename(value: string | null): string | null {
   if (
     typeof value !== "string" ||
@@ -102,26 +104,59 @@ function StepRow({
   );
 }
 
-/** Renders only versioned allowlisted public execution process fields. */
 export function PublicExecutionProcess({
   steps,
   isStreaming,
   expandable = true,
+  elapsedMs,
 }: {
   steps: ExecutionTimelinePart[];
   isStreaming: boolean;
   expandable?: boolean;
+  elapsedMs?: number;
 }) {
   const { t } = useTranslation();
   if (steps.length === 0) return null;
 
   const completed = steps.filter((step) => step.status === "completed").length;
   const failed = steps.filter((step) => step.status === "failed").length;
-  const summary = t("chat.publicExecutionProcess.summary", {
+  const baseSummary = t("chat.publicExecutionProcess.summary", {
     completed,
     failed,
     total: steps.length,
   });
+  const durationSeconds =
+    !isStreaming &&
+    typeof elapsedMs === "number" &&
+    Number.isInteger(elapsedMs) &&
+    elapsedMs >= 0 &&
+    elapsedMs <= MAX_EXECUTION_ELAPSED_MS
+      ? Math.round(elapsedMs / 1000)
+      : null;
+  const duration =
+    durationSeconds === null
+      ? null
+      : durationSeconds < 60
+        ? t("chat.publicExecutionProcess.durationSeconds", {
+            count: durationSeconds,
+          })
+        : (() => {
+            const minutes = Math.floor(durationSeconds / 60);
+            const seconds = durationSeconds % 60;
+            return seconds === 0
+              ? t("chat.publicExecutionProcess.durationMinutes", {
+                  count: minutes,
+                })
+              : t("chat.publicExecutionProcess.durationMinutesSeconds", {
+                  minutes,
+                  seconds,
+                });
+          })();
+  const summary = duration
+    ? `${baseSummary}${t("chat.publicExecutionProcess.durationSuffix", {
+        duration,
+      })}`
+    : baseSummary;
   const rows = steps.map((step) => (
     <StepRow key={step.step_id} step={step} isStreaming={isStreaming} />
   ));

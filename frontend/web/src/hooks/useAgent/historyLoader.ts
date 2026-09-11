@@ -132,9 +132,21 @@ function processHistoryEvent(
   const depth = eventData.depth || 0;
   const agentId = eventData.agent_id;
 
-  // Track processed event IDs
-  if (event.id) {
-    processedEventIds.add(event.id.toString());
+  // Track processed event IDs using the durable outer id when present, or the
+  // public event identity carried by compatibility history.
+  const usesProtocolTextIdentity =
+    eventType === "message:chunk" &&
+    eventData.projection_kind === "assistant_delta";
+  const eventIdentity =
+    usesProtocolTextIdentity &&
+    typeof eventData.event_id === "string" &&
+    eventData.event_id
+      ? eventData.event_id
+      : event.id !== undefined && event.id !== null
+        ? event.id.toString()
+        : undefined;
+  if (eventIdentity) {
+    processedEventIds.add(eventIdentity);
   }
 
   // Handle user message
@@ -188,12 +200,15 @@ function processHistoryEvent(
 
   // Use unified event processor
   const eventDataWithEnvelope = {
-    event_id: eventData.event_id || (event.id ? event.id.toString() : undefined),
+    ...eventData,
+    event_id:
+      event.id !== undefined && event.id !== null
+        ? event.id.toString()
+        : eventData.event_id,
     run_id: eventData.run_id || event.run_id,
     event_type: eventData.event_type || event.event_type,
     sequence: event.sequence ?? eventData.sequence,
     timestamp: eventData.timestamp || event.timestamp,
-    ...eventData,
   } as EventData;
 
   const result = processMessageEvent(
@@ -257,10 +272,20 @@ export function reconstructMessagesFromEvents(
   // from scratch and may legitimately contain events already seen live.
   const seenHistoryEventIds = new Set<string>();
   const uniqueEvents = events.filter((event) => {
-    if (event.id === undefined || event.id === null) return true;
-    const eventId = event.id.toString();
-    if (seenHistoryEventIds.has(eventId)) return false;
-    seenHistoryEventIds.add(eventId);
+    const eventData = event.data as HistoryEventData;
+    const usesProtocolTextIdentity =
+      event.event_type === "message:chunk" &&
+      eventData?.projection_kind === "assistant_delta";
+    const eventIdentity =
+      usesProtocolTextIdentity &&
+      typeof eventData?.event_id === "string" &&
+      eventData.event_id
+        ? eventData.event_id
+        : event.id !== undefined && event.id !== null
+          ? event.id.toString()
+          : undefined;
+    if (eventIdentity && seenHistoryEventIds.has(eventIdentity)) return false;
+    if (eventIdentity) seenHistoryEventIds.add(eventIdentity);
     return true;
   });
   const runOrder = new Map<string, number>();
@@ -282,17 +307,15 @@ export function reconstructMessagesFromEvents(
     const eventA = a.event;
     const eventB = b.event;
     if (eventA.run_id && eventA.run_id === eventB.run_id) {
+      const sequenceA = typeof eventA.sequence === "number" ? eventA.sequence : null;
+      const sequenceB = typeof eventB.sequence === "number" ? eventB.sequence : null;
+      if (sequenceA !== null && sequenceB !== null && sequenceA !== sequenceB) {
+        return sequenceA - sequenceB;
+      }
       const rankA = compatibilityHistoryRank(eventA);
       const rankB = compatibilityHistoryRank(eventB);
       if (rankA !== rankB) {
         return rankA - rankB;
-      }
-      if (rankA === 0) {
-        const sequenceA = typeof eventA.sequence === "number" ? eventA.sequence : null;
-        const sequenceB = typeof eventB.sequence === "number" ? eventB.sequence : null;
-        if (sequenceA !== null && sequenceB !== null && sequenceA !== sequenceB) {
-          return sequenceA - sequenceB;
-        }
       }
     }
     const timeA = parseEventTimestamp(eventA.timestamp, 0).getTime();

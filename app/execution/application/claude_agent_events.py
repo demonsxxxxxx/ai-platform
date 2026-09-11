@@ -14,6 +14,8 @@ from collections.abc import Mapping
 from dataclasses import InitVar, dataclass, field
 from typing import Any, Callable
 
+from app.runtime.sandbox.contracts import AssistantAnswerReceipt
+
 from app.streaming.events import PUBLIC_APPLICATION_EVENT_TYPES_V4
 
 _APPLICATION_EVENT_TYPES = PUBLIC_APPLICATION_EVENT_TYPES_V4
@@ -77,6 +79,7 @@ _ALLOWED_CATEGORIES = frozenset({"skill", "mcp", "read", "write", "edit", "searc
 _ALLOWED_STOP_CATEGORIES = frozenset({"completed", "max_turns", "cancelled", "failed", "unknown"})
 _ALLOWED_FAILURE_CATEGORIES = frozenset({"invalid_input", "not_found", "permission_denied", "timeout", "unavailable", "execution_failed"})
 _ALLOWED_TASK_REASON_CODES = frozenset({"user_cancelled", "run_cancelled", "timeout"})
+
 
 
 _SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$")
@@ -321,7 +324,7 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
     required: dict[str, set[str]] = {
         "message.started": set(),
         "message.delta": {"delta"},
-        "message.completed": {"content"},
+        "message.completed": {"delta_count", "text_length"},
         "thinking.started": {"thinking_id"},
         "thinking.delta": {"thinking_id", "delta"},
         "thinking.completed": {"thinking_id"},
@@ -364,7 +367,6 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
 
     string_bounds = {
         "delta": (1, _MAX_DELTA),
-        "content": (0, _MAX_TEXT),
         "display_name": (1, _MAX_DISPLAY),
         "public_summary": (1, _MAX_SUMMARY),
         "input_summary": (0, _MAX_SUMMARY),
@@ -380,6 +382,8 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
         "turn_count": (0, _MAX_TURNS),
         "progress_percent": (0, 100),
         "size_bytes": (0, _MAX_SIZE_BYTES),
+        "delta_count": (1, 2**63 - 1),
+        "text_length": (1, 2**63 - 1),
     }
     ref_fields = {"thinking_id", "operation_id", "subagent_id", "artifact_id", "decision_id", "terminal_event_id", "evidence_ref"}
     array_fields = {"evidence_refs", "artifact_refs"}
@@ -496,7 +500,11 @@ class ClaudeSdkAgentEventAdapter:
         self._sealed = False
         self._message_id = _opaque("msg", run_id, "assistant", attempt_id)
         self._answer_started = False
-        self._answer_content = ""
+        self._answer_delta_count = 0
+        self._answer_text_length = 0
+        self._last_delta_identity: str | None = None
+        self._last_delta_event_id: str | None = None
+        self._answer_completed = False
         self._thinking_indices: set[tuple[object, object]] = set()
         self._task_progress_seen: set[tuple[str, str]] = set()
         self._accepted_event_ids: dict[str, str] = {}
@@ -516,6 +524,18 @@ class ClaudeSdkAgentEventAdapter:
     @property
     def message_id(self) -> str:
         return self._message_id
+
+    @property
+    def answer_receipt(self) -> dict[str, object] | None:
+        if not self._answer_completed or self._last_delta_event_id is None:
+            return None
+        return AssistantAnswerReceipt(
+            schema_version="ai-platform.assistant-answer-receipt.v1",
+            message_id=self._message_id,
+            delta_count=self._answer_delta_count,
+            text_length=self._answer_text_length,
+            last_delta_event_id=self._last_delta_event_id,
+        ).model_dump(mode="json")
 
     def seal(self, reason: str = "") -> None:
         del reason
@@ -606,29 +626,40 @@ class ClaudeSdkAgentEventAdapter:
             return ()
         if not already_gated and _safe_text(
             value,
-            maximum=_MAX_TEXT,
+            maximum=len(value),
             sanitizer=self._sanitizer,
         ) is None:
-            return ()
-        if len(self._answer_content + value) > _MAX_TEXT:
-            self._sealed = True
             return ()
         events: list[ClaudeAgentEventCandidate] = []
         if not self._answer_started:
             self._answer_started = True
             events.append(self._candidate("message.started", {}, identity="message"))
-        self._answer_content += value
-        events.append(self._candidate("message.delta", {"delta": value}, identity=f"delta:{len(self._answer_content)}"))
+        for offset in range(0, len(value), _MAX_DELTA):
+            chunk = value[offset : offset + _MAX_DELTA]
+            self._answer_delta_count += 1
+            self._answer_text_length += len(chunk)
+            identity = f"delta:{self._answer_delta_count}"
+            candidate = self._candidate("message.delta", {"delta": chunk}, identity=identity)
+            events.append(candidate)
+            self._last_delta_identity = identity
+            self._last_delta_event_id = candidate.event_id
         return tuple(events)
 
     def complete_answer(self, value: object) -> tuple[ClaudeAgentEventCandidate, ...]:
+        del value
         if self._sealed or not self._answer_started:
             return ()
-        content = _safe_text(value, maximum=_MAX_TEXT, sanitizer=self._sanitizer)
-        if content is None:
-            return ()
-        self._answer_content = content
-        return (self._candidate("message.completed", {"content": content}, identity="message.completed"),)
+        completed = self._candidate(
+            "message.completed",
+            {
+                "delta_count": self._answer_delta_count,
+                "text_length": self._answer_text_length,
+            },
+            identity="message.completed",
+            causation_identity=self._last_delta_identity,
+        )
+        self._answer_completed = True
+        return (completed,)
 
     def accept_thinking_summary(
         self,

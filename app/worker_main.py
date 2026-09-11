@@ -27,8 +27,10 @@ from app.bootstrap.streaming import build_worker_v4_runtime
 from app.bootstrap.worker_maintenance import (
     close_runtime_clients as _close_runtime_clients,
     maintenance_until_done,
+    publication_until_done,
     run_maintenance_phases,
     worker_maintenance_interval_seconds as _worker_maintenance_interval_seconds,
+    worker_publication_interval_seconds,
 )
 from app.execution.api import WorkerQueueLease, stage_stale_run_reconciliation
 from app.control_plane_contracts import (
@@ -683,16 +685,20 @@ async def run_worker_publication_maintenance(
     settings: object,
     *,
     v4_capabilities: WorkerV4Capabilities,
-) -> None:
+) -> int:
+    published = 0
+
     async def drain_due_v4_publication() -> int:
+        nonlocal published
         scope_limit = max(1, min(int(getattr(settings, "v4_publication_scope_limit", 64)), 256))
         event_limit = max(1, min(int(getattr(settings, "v4_publication_event_limit", 64)), 256))
-        return await publish_due_v4_events(
+        published = await publish_due_v4_events(
             v4_capabilities.publication_claims,
             v4_capabilities.publication_transport,
             scope_limit=scope_limit,
             event_limit=event_limit,
         )
+        return published
 
     async def drain_pending_v4_admissions() -> int:
         limit = max(1, min(int(getattr(settings, "v4_pending_admission_limit", 64)), 256))
@@ -708,6 +714,7 @@ async def run_worker_publication_maintenance(
         },
         logger=logger,
     )
+    return published
 
 
 async def run_worker_cleanup_maintenance(
@@ -774,7 +781,7 @@ async def _publication_maintenance_until_done(
     interval_seconds: float,
     v4_capabilities: WorkerV4Capabilities,
 ) -> None:
-    await maintenance_until_done(
+    await publication_until_done(
         settings,
         interval_seconds,
         lambda current_settings: run_worker_publication_maintenance(
@@ -1018,7 +1025,7 @@ async def run_once(
         asyncio.create_task(
             _publication_maintenance_until_done(
                 settings,
-                _worker_maintenance_interval_seconds(settings),
+                worker_publication_interval_seconds(settings),
                 v4_capabilities,
             )
         )
@@ -1155,7 +1162,7 @@ async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float =
     publication_maintenance_task = asyncio.create_task(
         _publication_maintenance_until_done(
             settings,
-            _worker_maintenance_interval_seconds(settings),
+            worker_publication_interval_seconds(settings),
             worker_runtime.capabilities,
         ),
         name="ai-platform-worker-publication-maintenance",
@@ -1261,7 +1268,7 @@ async def run_worker_pool(
     publication_maintenance_task = asyncio.create_task(
         _publication_maintenance_until_done(
             settings,
-            _worker_maintenance_interval_seconds(settings),
+            worker_publication_interval_seconds(settings),
             worker_runtime.capabilities,
         ),
         name="ai-platform-worker-publication-maintenance",

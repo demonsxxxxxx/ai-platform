@@ -58,6 +58,7 @@ from app.routes.runs import (
 )
 from app.runs import api as runs_api
 from app.run_projection import (
+    CHAT_ASSISTANT_DELTA_SOURCE,
     CHAT_PUBLIC_PROJECTION_VERSION,
     PublicChatAnswerStreamProjector,
     public_chat_answer_text,
@@ -173,10 +174,17 @@ def _session_payload(row: dict[str, Any]) -> dict[str, Any]:
 
 def _terminal_final_payload(
     run: dict[str, Any],
+    *,
+    include_successful_answer: bool = True,
 ) -> tuple[str, dict[str, str], str] | None:
     """Adapt the authoritative terminal projection to the compatibility wire."""
     projection = public_chat_terminal_projection(run)
     if projection is None:
+        return None
+    if (
+        projection["event_type"] == "message:chunk"
+        and not include_successful_answer
+    ):
         return None
     payload = projection["payload"]
     if not isinstance(payload, dict):
@@ -203,9 +211,6 @@ class _CompatibilityFoldState:
     seen_public_lifecycle_singletons: frozenset[str]
     answer_source: str
     answer_projection_state: tuple[str, str, bool] = ("", "", False)
-
-
-CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
 
 
 @dataclass(frozen=True)
@@ -838,7 +843,7 @@ def _persisted_v4_assistant_delta(
         "visible_to_user": True,
         "payload_json": {
             "delta": delta,
-            "source": "worker_answer_delta_v1",
+            "source": CHAT_ASSISTANT_DELTA_SOURCE,
             "visible_to_user": True,
             "severity": "info",
         },
@@ -1229,7 +1234,15 @@ def _compatibility_events_for_run_page(
             )
         )
 
-    final_payload = _terminal_final_payload(run) if include_terminal else None
+    has_streamed_answer = prefer_v4_answer or bool(answer_projector.state[1])
+    final_payload = (
+        _terminal_final_payload(
+            run,
+            include_successful_answer=not has_streamed_answer,
+        )
+        if include_terminal
+        else None
+    )
     if final_payload is not None:
         event_type, payload, severity = final_payload
         final_data = {"run_id": run_id, **payload}

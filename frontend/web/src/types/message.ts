@@ -128,12 +128,15 @@ export interface ExecutionTimelinePart {
   status: ExecutionTimelineStatus;
   progress: ExecutionTimelineProgress;
   safe_file_name: string | null;
+  started_at?: string;
+  completed_at?: string;
 }
 
 /** Terminal-only grouping of allowlisted public execution steps. */
 export interface ExecutionProcessPart {
   type: "execution_process";
   steps: ExecutionTimelinePart[];
+  elapsed_ms?: number;
 }
 
 export type ToolPermissionDecision = "allow_once" | "allow_for_run" | "deny";

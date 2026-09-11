@@ -218,7 +218,7 @@
     "MessageCompletedEventV4": {
       "allOf": [
         { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
-        { "type": "object", "properties": { "event_type": { "const": "message.completed" }, "payload": { "type": "object", "properties": { "content": { "type": "string", "maxLength": 262144 } }, "required": ["content"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+        { "type": "object", "properties": { "event_type": { "const": "message.completed" }, "payload": { "type": "object", "properties": { "delta_count": { "type": "integer", "minimum": 1 }, "text_length": { "type": "integer", "minimum": 1 } }, "required": ["delta_count", "text_length"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
       ], "unevaluatedProperties": false
     },
     "ThinkingStartedEventV4": {

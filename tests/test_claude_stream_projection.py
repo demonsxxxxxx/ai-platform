@@ -1,6 +1,5 @@
 import pytest
 
-from app.control_plane_contracts import sanitize_public_payload
 from app.executors.claude_stream_projection import AssistantAnswerTimeline, ClaudeStreamProjector
 
 
@@ -36,8 +35,8 @@ def test_complete_message_preserves_a_different_already_streamed_delta():
     assert timeline.text == "Earlier.\n\nProvisional.\n\nCorrected."
 
 
-def _projector(**kwargs):
-    return ClaudeStreamProjector(sanitizer=sanitize_public_payload, **kwargs)
+def _projector():
+    return ClaudeStreamProjector()
 
 
 def _start(index=0, content_type="text"):
@@ -52,91 +51,37 @@ def _stop(index=0):
     return {"type": "content_block_stop", "index": index}
 
 
-def test_projector_publishes_safe_prefix_before_matching_stop():
+@pytest.mark.parametrize(
+    "text", ["没有标点的中文", "，继续输出", "x" * 4097, "中" * 262_145],
+    ids=["chinese", "comma", "former-lexical-limit", "long-fragment"],
+)
+def test_projector_forwards_text_before_stop_without_a_lexical_or_length_gate(text):
     projector = _projector()
-
     assert projector.accept(_start()) == ()
-    assert projector.accept(_text_delta("Short safe public answer.")) == ("Short safe public ",)
-    assert projector.accept(_stop()) == ("answer.",)
-    assert projector.partial_emitted is True
-
-
-def test_projector_rejects_split_sensitive_marker_without_publication():
-    projector = _projector()
-
-    projector.accept(_start())
-    assert projector.accept(_text_delta("C:")) == ()
-    assert projector.accept(_text_delta("\\private\\token.txt")) == ()
-    assert projector.disabled is True
-    assert projector.accept(_stop()) == ()
-    assert projector.partial_emitted is False
-
-
-def test_projector_preserves_only_prior_safe_prefix_after_later_sensitive_text():
-    projector = _projector()
-    safe_text = "safe " * 120
-
-    projector.accept(_start())
-    assert projector.accept(_text_delta(safe_text)) == (safe_text,)
-    assert projector.accept(_text_delta("C:\\private\\token.txt")) == ()
-    assert projector.disabled is True
-    assert projector.partial_emitted is True
-
-
-def test_projector_disables_at_max_pending_bound():
-    projector = _projector(max_pending_chars=8)
-
-    projector.accept(_start())
-    assert projector.accept(_text_delta("x" * 9)) == ()
-    assert projector.disabled is True
-
-
-def test_projector_accepts_large_fragment_with_stable_boundary_near_end():
-    projector = _projector(max_pending_chars=8)
-    safe_text = "safe " * 4
-
-    projector.accept(_start())
-    assert projector.accept(_text_delta(safe_text)) == (safe_text,)
+    assert projector.accept(_text_delta(text)) == (text,)
+    assert projector.accept(_text_delta("后续")) == ("后续",)
     assert projector.accept(_stop()) == ()
     assert projector.disabled is False
+    assert projector.partial_emitted is True
 
 
-def test_projector_accepts_full_size_whitespace_fragment_in_constant_sanitizer_calls():
-    sanitizer_calls = 0
+def test_parser_output_passes_the_public_gate_for_cross_chunk_redaction():
+    from app.executors.public_answer_stream import PublicAnswerStreamGate
 
-    def counting_sanitizer(value):
-        nonlocal sanitizer_calls
-        sanitizer_calls += 1
-        return sanitize_public_payload(value)
-
-    projector = ClaudeStreamProjector(
-        sanitizer=counting_sanitizer,
-        max_pending_chars=4_096,
+    parser = _projector()
+    gate = PublicAnswerStreamGate(
+        private_replacements={"synthetic-secret": "[redacted]"},
+        sanitizer=lambda text: text,
     )
-    safe_text = "a " * 131_072
-
-    projector.accept(_start())
-    assert projector.accept(_text_delta(safe_text)) == (safe_text,)
-    assert sanitizer_calls <= 4
-
-
-def test_projector_rejects_oversized_unbroken_suffix_before_publication():
-    projector = _projector(max_pending_chars=8)
-
-    projector.accept(_start())
-    assert projector.accept(_text_delta("ok " + "x" * 16)) == ()
-    assert projector.disabled is True
-    assert projector.partial_emitted is False
-
-
-def test_projector_rejects_email_continuation_without_partial_publication():
-    projector = _projector(max_pending_chars=64)
-
-    projector.accept(_start())
-    assert projector.accept(_text_delta("x" * 20)) == ()
-    assert projector.accept(_text_delta("@example.com ")) == ()
-    assert projector.disabled is True
-    assert projector.partial_emitted is False
+    parser.accept(_start())
+    visible = []
+    for text in ("正常内容 synthetic-", "secret 后续内容"):
+        for fragment in parser.accept(_text_delta(text)):
+            visible.extend(gate.accept(fragment))
+    parser.accept(_stop())
+    visible.extend(gate.finish(final_text="正常内容 synthetic-secret 后续内容", release=True).chunks)
+    assert "".join(visible) == "正常内容 [redacted] 后续内容"
+    assert not gate.failed
 
 
 @pytest.mark.parametrize(
@@ -167,8 +112,8 @@ def test_projector_tracks_and_closes_non_text_before_a_text_block():
     assert projector.accept({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "private"}}) == ()
     assert projector.accept(_stop(0)) == ()
     assert projector.accept(_start(1)) == ()
-    assert projector.accept(_text_delta("safe answer", index=1)) == ("safe ",)
-    assert projector.accept(_stop(1)) == ("answer",)
+    assert projector.accept(_text_delta("safe answer", index=1)) == ("safe answer",)
+    assert projector.accept(_stop(1)) == ()
     assert projector.disabled is False
     assert projector.partial_emitted is True
 
@@ -197,8 +142,8 @@ def test_projector_rejects_wrong_and_duplicate_stop_permanently():
 
     duplicate_stop = _projector()
     duplicate_stop.accept(_start())
-    assert duplicate_stop.accept(_text_delta("short answer")) == ("short ",)
-    assert duplicate_stop.accept(_stop()) == ("answer",)
+    assert duplicate_stop.accept(_text_delta("short answer")) == ("short answer",)
+    assert duplicate_stop.accept(_stop()) == ()
     assert duplicate_stop.accept(_stop()) == ()
     assert duplicate_stop.disabled is True
 

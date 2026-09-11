@@ -390,6 +390,30 @@ class ExecutorTaskDispatchReceipt(BaseModel):
         return assert_safe_id(value, str(info.field_name))
 
 
+class AssistantAnswerReceipt(BaseModel):
+    """Bounded receipt for a persisted assistant delta sequence."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_version: Literal["ai-platform.assistant-answer-receipt.v1"]
+    message_id: str
+    delta_count: int = Field(gt=0)
+    text_length: int = Field(gt=0)
+    last_delta_event_id: str
+
+    @field_validator("schema_version")
+    @classmethod
+    def validate_schema_version(cls, value: str) -> str:
+        if value != "ai-platform.assistant-answer-receipt.v1":
+            raise ValueError("assistant answer receipt schema version is invalid")
+        return value
+
+    @field_validator("message_id", "last_delta_event_id")
+    @classmethod
+    def validate_references(cls, value: str, info) -> str:
+        return assert_safe_id(value, str(info.field_name))
+
+
 class ExecutorTerminalResult(BaseModel):
     """Authoritative terminal response returned through the callback channel."""
 
@@ -398,6 +422,7 @@ class ExecutorTerminalResult(BaseModel):
     status: Literal["completed", "succeeded", "failed", "cancelled", "canceled"]
     run_id: str
     message: str = Field(default="", max_length=200_000)
+    answer_receipt: AssistantAnswerReceipt | None = None
     error_code: str | None = Field(default=None, max_length=256)
     error_message: str | None = Field(default=None, max_length=4_096)
 
@@ -409,10 +434,21 @@ class ExecutorTerminalResult(BaseModel):
     @model_validator(mode="after")
     def validate_terminal_payload(self) -> "ExecutorTerminalResult":
         if self.status in {"completed", "succeeded"}:
-            if not self.message.strip():
-                raise ValueError("successful terminal result requires a non-empty message")
-        elif not str(self.error_code or "").strip() or not str(self.error_message or "").strip():
-            raise ValueError("failed or cancelled terminal result requires structured error fields")
+            if self.answer_receipt is None and not self.message.strip():
+                raise ValueError(
+                    "successful terminal result requires a non-empty message or answer receipt"
+                )
+            if self.answer_receipt is not None and self.message != "":
+                raise ValueError(
+                    "successful terminal result must contain either a message or answer receipt"
+                )
+        else:
+            if self.answer_receipt is not None:
+                raise ValueError(
+                    "failed or cancelled terminal result must not contain an answer receipt"
+                )
+            if not str(self.error_code or "").strip() or not str(self.error_message or "").strip():
+                raise ValueError("failed or cancelled terminal result requires structured error fields")
         return self
 
 

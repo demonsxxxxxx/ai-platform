@@ -333,7 +333,13 @@ export function MessagePartRenderer({
   }
 
   if (part.type === "execution_process") {
-    return <PublicExecutionProcess steps={part.steps} isStreaming={false} />;
+    return (
+      <PublicExecutionProcess
+        steps={part.steps}
+        isStreaming={false}
+        elapsedMs={part.elapsed_ms}
+      />
+    );
   }
 
   if (part.type === "cancelled") {
