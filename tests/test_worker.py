@@ -3198,7 +3198,10 @@ async def test_worker_drains_receipt_events_before_attempt_bound_answer_load(
     async def no_terminal_publish(*_args, **_kwargs):
         return False
 
-    monkeypatch.setattr("app.worker.publish_pending_v4_events", publish_pending)
+    monkeypatch.setattr(
+        "app.streaming.application.worker_publication_v4.publish_pending_v4_events",
+        publish_pending,
+    )
     monkeypatch.setattr(
         "app.streaming.application.worker_publication_v4.publish_pending_run_terminal",
         no_terminal_publish,

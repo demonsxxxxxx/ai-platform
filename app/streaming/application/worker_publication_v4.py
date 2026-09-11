@@ -260,6 +260,28 @@ async def persist_and_publish_worker_event(
     return cancelled
 
 
+async def drain_pending_v4_events(
+    capabilities: WorkerV4Capabilities,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+) -> int:
+    """Drain the current attempt's committed v4 rows before terminal hydration."""
+
+    published = 0
+    while True:
+        batch_published = await publish_pending_v4_events(
+            capabilities,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+        )
+        published += batch_published
+        if batch_published == 0:
+            return published
+
+
 async def finalize_parent_and_publish(
     transaction_factory: TransactionFactory,
     capabilities: WorkerV4Capabilities,
@@ -326,6 +348,7 @@ __all__ = [
     "WorkerEventPersistence",
     "WorkerV4Capabilities",
     "admit_v4_stream",
+    "drain_pending_v4_events",
     "finalize_parent_and_publish",
     "persist_and_publish_worker_event",
     "publish_pending_admissions",

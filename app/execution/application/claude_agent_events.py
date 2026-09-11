@@ -14,8 +14,7 @@ from collections.abc import Mapping
 from dataclasses import InitVar, dataclass, field
 from typing import Any, Callable
 
-from app.runtime.sandbox.contracts import AssistantAnswerReceipt
-
+from app.sandbox.api import AssistantAnswerReceipt
 from app.streaming.events import PUBLIC_APPLICATION_EVENT_TYPES_V4
 
 _APPLICATION_EVENT_TYPES = PUBLIC_APPLICATION_EVENT_TYPES_V4
@@ -35,6 +34,21 @@ _BUILTIN_TOOL_CATEGORIES = {
     "WebSearch": "search",
     "Skill": "skill",
 }
+
+
+def runtime_terminal_payload(
+    executor_response: Mapping[str, Any],
+    *,
+    runtime_status: str,
+) -> dict[str, Any]:
+    """Build the executor-owned terminal fields forwarded by the adapter."""
+
+    return {
+        "runtime_terminal_status": runtime_status,
+        "answer_receipt": executor_response.get("answer_receipt"),
+    }
+
+
 _FAILURE_CATEGORIES = frozenset(
     {"invalid_input", "not_found", "permission_denied", "timeout", "unavailable", "execution_failed"}
 )

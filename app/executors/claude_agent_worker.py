@@ -57,7 +57,7 @@ from app.execution.api import (
     SkillInvocationEvidenceBinder,
     claude_sdk_failure_code,
     claude_sdk_failure_message,
-    collect_workspace_artifacts,
+    collect_workspace_artifacts, runtime_terminal_payload,
     sandbox_reconciliation_payload,
 )
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
@@ -1602,8 +1602,7 @@ class ClaudeAgentWorkerAdapter:
             "sdk_used": bool(executor_response.get("sdk_used")),
             "sdk_session_id": executor_response.get("sdk_session_id"),
             "sdk_usage": executor_response.get("sdk_usage", {}) or {},
-            "runtime_terminal_status": runtime_status,
-            "answer_receipt": executor_response.get("answer_receipt"),
+            **runtime_terminal_payload(executor_response, runtime_status=runtime_status),
             "delegate_used": False,
             "worker_boundary": self.executor_type,
             "allowed_skills": prepared.allowed_skill_names,

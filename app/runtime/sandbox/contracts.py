@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.control_plane_contracts import normalize_thinking_effort
 from app.runtime.kernel_contracts import AgentEvent
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
+from app.sandbox.api import AssistantAnswerReceipt
 from app.validation import (
     MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
     assert_safe_id,
@@ -390,30 +391,6 @@ class ExecutorTaskDispatchReceipt(BaseModel):
         return assert_safe_id(value, str(info.field_name))
 
 
-class AssistantAnswerReceipt(BaseModel):
-    """Bounded receipt for a persisted assistant delta sequence."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    schema_version: Literal["ai-platform.assistant-answer-receipt.v1"]
-    message_id: str
-    delta_count: int = Field(gt=0)
-    text_length: int = Field(gt=0)
-    last_delta_event_id: str
-
-    @field_validator("schema_version")
-    @classmethod
-    def validate_schema_version(cls, value: str) -> str:
-        if value != "ai-platform.assistant-answer-receipt.v1":
-            raise ValueError("assistant answer receipt schema version is invalid")
-        return value
-
-    @field_validator("message_id", "last_delta_event_id")
-    @classmethod
-    def validate_references(cls, value: str, info) -> str:
-        return assert_safe_id(value, str(info.field_name))
-
-
 class ExecutorTerminalResult(BaseModel):
     """Authoritative terminal response returned through the callback channel."""
 
@@ -425,6 +402,11 @@ class ExecutorTerminalResult(BaseModel):
     answer_receipt: AssistantAnswerReceipt | None = None
     error_code: str | None = Field(default=None, max_length=256)
     error_message: str | None = Field(default=None, max_length=4_096)
+
+    @field_validator("answer_receipt", mode="before")
+    @classmethod
+    def validate_answer_receipt(cls, value: object):
+        return None if value is None else AssistantAnswerReceipt.model_validate(value)
 
     @field_validator("run_id")
     @classmethod

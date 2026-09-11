@@ -6,8 +6,19 @@ from app.persistence_limits import MESSAGE_CONTENT_MAX_BYTES, RUN_RESULT_MAX_BYT
 from app.streaming.api import opaque_message_id
 from app.streaming.application.worker_publication_v4 import AssistantAnswerReceiptError
 from app.streaming.infrastructure.v4 import load_answer_by_receipt
-from app.worker import _ANSWER_BODY_REFERENCE, _bounded_answer_persistence
+from app.execution.application.worker_answer_persistence import (
+    AnswerPersistenceLimits,
+    _ANSWER_BODY_REFERENCE,
+    _bounded_answer_persistence,
+)
 from tests.test_streaming_v4_durable import _authority, _row
+
+
+_ANSWER_PERSISTENCE_LIMITS = AnswerPersistenceLimits(
+    message_content_max_bytes=MESSAGE_CONTENT_MAX_BYTES,
+    run_result_max_bytes=RUN_RESULT_MAX_BYTES,
+    json_size_bytes=json_size_bytes,
+)
 
 
 class _Cursor:
@@ -222,6 +233,7 @@ def test_bounded_answer_persistence_keeps_short_compatibility_message():
         {"status": "completed"},
         message="short answer",
         answer_receipt=_receipt(),
+        limits=_ANSWER_PERSISTENCE_LIMITS,
     )
 
     assert payload["message"] == "short answer"
@@ -238,6 +250,7 @@ def test_bounded_answer_persistence_references_body_when_message_is_over_limit()
         {"status": "completed"},
         message=answer,
         answer_receipt=_receipt(),
+        limits=_ANSWER_PERSISTENCE_LIMITS,
     )
 
     assert payload["message"] == _ANSWER_BODY_REFERENCE
@@ -273,6 +286,7 @@ def test_bounded_answer_persistence_references_body_when_result_json_overflows()
         base_result,
         message=answer,
         answer_receipt=receipt,
+        limits=_ANSWER_PERSISTENCE_LIMITS,
     )
 
     assert json_size_bytes(payload) <= RUN_RESULT_MAX_BYTES

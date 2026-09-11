@@ -1,5 +1,4 @@
 import re
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from functools import partial as _partial
@@ -44,14 +43,14 @@ from app.execution.api import (
     WorkerAttemptLifecycle,
     WorkerAttemptLifecyclePorts,
     WorkerExecutorReconciliation,
-    WorkerQueueLease,
-    WorkerRunCancelled,
+    WorkerQueueLease, WorkerRunCancelled, AnswerPersistenceLimits, append_artifact_links,
     bind_worker_attempt_lifecycle,
     build_artifact_execution_owner,
     build_artifact_records,
     fail_run_and_reconcile_worker_child as _fail_run_and_reconcile_worker_child,
     finalize_worker_child_parent as _finalize_worker_child_parent,
     locked_run_payload_candidate as _locked_run_payload_candidate,
+    materialize_worker_answer,
     promote_artifact_reservations,
     restored_executor_reconciliation_queue_payload as _restored_executor_reconciliation_queue_payload,
     submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
@@ -73,6 +72,7 @@ from app.executors.base import (
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.mcp import api as mcp_api
+from app.persistence_limits import MESSAGE_CONTENT_MAX_BYTES, RUN_RESULT_MAX_BYTES, json_size_bytes
 from app.persistence.artifacts import promote_provisional_artifact_cleanup, reserve_provisional_artifact_cleanup
 from app.principal_authority import (
     CURRENT_PRINCIPAL_DENIAL_REASON,
@@ -93,11 +93,6 @@ from app.required_tool_contract import (
 )
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
-from app.persistence_limits import (
-    MESSAGE_CONTENT_MAX_BYTES,
-    RUN_RESULT_MAX_BYTES,
-    json_size_bytes,
-)
 from app.runtime.sandbox.executor_client import (
     SandboxExecutorHttpError,
     canonical_executor_reported_failure_code,
@@ -106,13 +101,11 @@ from app.runtime.sandbox.executor_client import (
 )
 from app.settings import get_settings
 from app.streaming.api import (
-    AssistantAnswerReceiptError,
     WorkerV4Capabilities,
-    admit_v4_stream,
+    admit_v4_stream, drain_pending_v4_events,
     finalize_parent_and_publish,
     persist_and_publish_worker_event,
     publish_pending_run_terminal,
-    publish_pending_v4_events,
 )
 from app.streaming.worker_projection import persist_worker_failure_event
 from app.skills.api import restore_admitted_skill_manifest_authority
@@ -140,6 +133,9 @@ from app.worker_principal_authority import (
     _payload_identity,
     _resolve_current_principal_before_dispatch,
 )
+
+
+_ANSWER_PERSISTENCE_LIMITS = AnswerPersistenceLimits(MESSAGE_CONTENT_MAX_BYTES, RUN_RESULT_MAX_BYTES, json_size_bytes)
 
 
 _submit_run_until_cancelled = _partial(
@@ -364,16 +360,6 @@ async def _fail_run_and_reconcile_with_write(
     )
 
 
-def _strip_local_output_paths(message: str) -> str:
-    lines = []
-    for line in message.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(("详细报告:", "批注文档:")) and "/tmp/" in stripped:
-            continue
-        lines.append(line)
-    return "\n".join(lines).strip()
-
-
 def _artifact_download_url(artifact_id: str) -> str:
     return f"/api/ai/artifacts/{artifact_id}/download"
 
@@ -465,52 +451,6 @@ async def append_user_event(
         payload=merged,
         **event_kwargs,
     )
-
-
-_ANSWER_BODY_REFERENCE = "The complete assistant response is available in the run history."
-
-
-def _bounded_answer_persistence(
-    result_payload: Mapping[str, Any],
-    *,
-    message: str,
-    answer_receipt: Mapping[str, Any],
-) -> tuple[dict[str, Any], str, dict[str, Any]]:
-    """Keep inline compatibility while making v4 deltas the long-answer authority."""
-
-    receipt_json = dict(answer_receipt)
-    metadata = {
-        "answer_receipt": receipt_json,
-        "answer_body_source": "run_events_v4",
-    }
-    full_result_payload = {
-        **result_payload,
-        "message": message,
-        "answer_receipt": receipt_json,
-    }
-    if len(message.encode("utf-8")) <= MESSAGE_CONTENT_MAX_BYTES and json_size_bytes(
-        full_result_payload
-    ) <= RUN_RESULT_MAX_BYTES:
-        return full_result_payload, message, metadata
-    return (
-        {
-            **result_payload,
-            "message": _ANSWER_BODY_REFERENCE,
-            "answer_receipt": receipt_json,
-            "answer_body_source": "run_events_v4",
-        },
-        message if len(message.encode("utf-8")) <= MESSAGE_CONTENT_MAX_BYTES else _ANSWER_BODY_REFERENCE,
-        metadata,
-    )
-
-
-def _append_artifact_links(message: str, artifact_records: list[dict[str, Any]]) -> str:
-    base = _strip_local_output_paths(message)
-    if not artifact_records:
-        return base
-    links = [f"- {item['label']}: {item['download_url']}" for item in artifact_records]
-    suffix = "输出文件:\n" + "\n".join(links)
-    return f"{base}\n\n{suffix}" if base else suffix
 
 
 def _int_payload_value(payload: dict[str, Any], key: str, default: int = 0) -> int:
@@ -2804,7 +2744,7 @@ async def process_run_payload(
     result_payload = {
         **public_result,
         **observability,
-        "message": _append_artifact_links(str(result.result.get("message") or ""), artifact_records),
+        "message": append_artifact_links(str(result.result.get("message") or ""), artifact_records),
         "artifacts": [
             {
                 "id": item["id"],
@@ -2828,17 +2768,8 @@ async def process_run_payload(
         result_payload["skills"] = skill_snapshot
     if agent_capability_state is not None:
         result_payload["capability_state"] = agent_capability_state.public_projection()
-    assistant_message_for_persistence: str | None = None
-    assistant_message_metadata: dict[str, Any] = {}
-    answer_receipt = result.executor_payload.get("answer_receipt")
-    if result.status == "succeeded" and answer_receipt is not None:
-        while await publish_pending_v4_events(
-            v4_capabilities,
-            tenant_id=payload.tenant_id,
-            run_id=payload.run_id,
-            attempt_id=attempt_id,
-        ):
-            pass
+    assistant_message_for_persistence, assistant_message_metadata, answer_receipt = None, {}, result.executor_payload.get("answer_receipt")
+    await drain_pending_v4_events(v4_capabilities, tenant_id=payload.tenant_id, run_id=payload.run_id, attempt_id=attempt_id) if result.status == "succeeded" and answer_receipt is not None else None
     reconciled_parent = None
     try:
         async with transaction_factory() as conn:
@@ -2906,52 +2837,12 @@ async def process_run_payload(
                 }
             answer_receipt = result.executor_payload.get("answer_receipt")
             if result.status == "succeeded" and answer_receipt is not None:
-                try:
-                    reconstructed = await v4_capabilities.event_persistence.load_answer_by_receipt(
-                        conn,
-                        tenant_id=payload.tenant_id,
-                        run_id=payload.run_id,
-                        attempt_id=attempt_id,
-                        receipt=answer_receipt,
-                    )
-                except AssistantAnswerReceiptError as exc:
-                    if exc.retryable:
-                        raise
-                    error_code = AssistantAnswerReceiptError.code
-                    error_message = "The assistant response could not be verified."
-                    result = replace(
-                        result,
-                        status="failed",
-                        artifacts=[],
-                        result={
-                            **result.result,
-                            "message": error_message,
-                            "error_code": error_code,
-                        },
-                    )
-                    artifact_records = []
-                    assistant_message_for_persistence = None
-                    assistant_message_metadata = {}
-                    result_payload = {
-                        **result_payload,
-                        "message": error_message,
-                        "error_code": error_code,
-                        "artifacts": [],
-                    }
-                else:
-                    reconstructed_message = _append_artifact_links(
-                        reconstructed.text,
-                        artifact_records,
-                    )
-                    (
-                        result_payload,
-                        assistant_message_for_persistence,
-                        assistant_message_metadata,
-                    ) = _bounded_answer_persistence(
-                        result_payload,
-                        message=reconstructed_message,
-                        answer_receipt=answer_receipt,
-                    )
+                materialized = await materialize_worker_answer(v4_capabilities, conn, result=result, result_payload=result_payload, artifact_records=artifact_records, tenant_id=payload.tenant_id, run_id=payload.run_id, attempt_id=attempt_id, answer_receipt=answer_receipt, limits=_ANSWER_PERSISTENCE_LIMITS)
+                result = materialized.result
+                result_payload = materialized.result_payload
+                artifact_records = materialized.artifact_records
+                assistant_message_for_persistence = materialized.assistant_message_for_persistence
+                assistant_message_metadata = materialized.assistant_message_metadata
             cancel_requested = await repositories.is_cancel_requested(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
             if result.status == "succeeded" and cancel_requested:
                 result_payload = {

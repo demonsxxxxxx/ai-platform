@@ -37,9 +37,16 @@ from app.execution.application.worker_attempt_lifecycle import (
 from app.execution.application.claude_agent_events import (
     ClaudeAgentEventCandidate,
     ClaudeSdkAgentEventAdapter,
+    runtime_terminal_payload,
 )
 from app.execution.application.stale_terminalization import (
     stage_stale_run_reconciliation,
+)
+from app.execution.application.worker_answer_persistence import (
+    AnswerPersistenceLimits,
+    WorkerAnswerMaterialization,
+    append_artifact_links,
+    materialize_worker_answer,
 )
 from app.execution.application.artifact_storage import (
     artifact_content_type,
@@ -81,6 +88,11 @@ async def resolve_chat_model_selection(
 __all__ = [
     "ClaudeAgentEventCandidate",
     "ClaudeSdkAgentEventAdapter",
+    "AnswerPersistenceLimits",
+    "WorkerAnswerMaterialization",
+    "append_artifact_links",
+    "materialize_worker_answer",
+    "runtime_terminal_payload",
     "RunModelSelection",
     "SkillInvocationEvidenceBinder",
     "WorkerRunCancelled",
