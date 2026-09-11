@@ -7,9 +7,8 @@ from time import monotonic as system_monotonic
 from typing import Any, Callable
 
 from app.runs.api import (
+    RunAttemptLifecycleService,
     RunTerminalizationProgress,
-    terminalize_latest_run_attempt,
-    terminalize_run_attempt,
 )
 from app.streaming.api import WorkerV4Capabilities, append_run_terminal_v4_row
 
@@ -252,6 +251,7 @@ async def drain_run_tool_permission_terminalization(
     run_id: str,
     transaction_factory: Callable[[], Any],
     capabilities: WorkerV4Capabilities,
+    attempt_lifecycle: RunAttemptLifecycleService,
     max_batches: int = 4,
     attempt_id: str | None = None,
     attempt_error_code: str | None = None,
@@ -268,7 +268,7 @@ async def drain_run_tool_permission_terminalization(
                 capabilities=capabilities,
             )
             if attempt_id is not None and result is not None and result.is_terminal():
-                await terminalize_run_attempt(
+                await attempt_lifecycle.terminalize(
                     conn,
                     tenant_id=tenant_id,
                     run_id=run_id,
@@ -289,6 +289,7 @@ async def reconcile_terminalized_permission_run(
     tenant_id: str,
     run_id: str,
     transaction_factory: Callable[[], Any],
+    attempt_lifecycle: RunAttemptLifecycleService,
     progress: Any | None = None,
 ) -> dict[str, Any] | None:
     """Reconcile one final child transition after commit, or one durably selected recovery item."""
@@ -320,7 +321,7 @@ async def reconcile_terminalized_permission_run(
             )
             parent_status = str((parent_run or {}).get("status") or "")
             if parent_status in {"succeeded", "failed", "cancelled"}:
-                await terminalize_latest_run_attempt(
+                await attempt_lifecycle.terminalize_latest(
                     conn,
                     tenant_id=tenant_id,
                     run_id=parent_run_id,

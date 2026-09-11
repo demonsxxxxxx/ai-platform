@@ -344,30 +344,24 @@ function profile(
   return {
     agent_id: "agt_support",
     revision: 4,
+    published_revision: null,
     status: "draft",
     name: "支持助手",
-    description: "处理授权支持请求。",
-    welcome_message: "欢迎使用支持助手。",
+    description: "在授权范围内处理企业支持请求。",
     starter_prompts: ["帮我处理支持请求"],
-    capability_summary: "在授权范围内处理企业支持请求。",
-    recommended_tasks: ["支持请求分流"],
-    supported_input_types: ["text", "file"],
-    expected_outputs: ["处理建议"],
-    permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
     avatar_ref: "builtin:assistant",
-    avatar_asset_id: null,
-    category: "support",
+    avatar_seed: "agt-support",
+    market_tags: ["支持"],
     visibility: "tenant",
     allowed_department_ids: [],
     allowed_roles: [],
     allowed_user_ids: [],
     instructions: "仅回答公司支持范围内的问题。",
-    selected_skill: {
-      skill_id: "support-skill",
-      expected_version: "2026.07.28",
-    },
+    skill_set: [{ skill_id: "support-skill" }],
     mcp_tool_ids: ["mcp:support:search"],
     content_hash: "b".repeat(64),
+    created_at: "2026-08-01T00:00:00Z",
+    published_at: null,
     ...overrides,
   };
 }
@@ -469,12 +463,12 @@ test("mounted workbench hydrates, refreshes, and creates only an explicit local 
     assert.equal(listCalls, 1);
     assert.match(container.textContent, /支持助手/);
     const nameInput = container.querySelector('[aria-label="专家名称"]');
-    const descriptionInput = container.querySelector('[aria-label="专家简介"]');
+    const descriptionInput = container.querySelector('[aria-label="专家说明"]');
     const instructionsInput = container.querySelector('[aria-label="Agent.md 初始指令"]');
     assert.equal(nameInput?.value, "支持助手");
     assert.ok(descriptionInput);
     assert.ok(instructionsInput);
-    assert.equal((reactProps(descriptionInput) as unknown as { value: string }).value, "处理授权支持请求。");
+    assert.equal((reactProps(descriptionInput) as unknown as { value: string }).value, "在授权范围内处理企业支持请求。");
     assert.equal((reactProps(instructionsInput) as unknown as { value: string }).value, "仅回答公司支持范围内的问题。");
     assert.equal(container.querySelector('[aria-label="专家模型"]'), null);
     assert.match(container.textContent, /support-skill/);
@@ -516,7 +510,7 @@ test("mounted workbench hydrates, refreshes, and creates only an explicit local 
   }
 });
 
-test("mounted list fields preserve separators while editing and normalize on blur", async () => {
+test("mounted starter prompts preserve separators while editing and normalize on blur", async () => {
   const document = installDom();
   const ReactDOM = await import("react-dom/client");
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
@@ -535,21 +529,21 @@ test("mounted list fields preserve separators while editing and normalize on blu
       await flush();
     });
 
-    const recommendedTasks = container.querySelector('[aria-label="推荐任务（可选）"]');
-    assert.ok(recommendedTasks);
+    const starterPrompts = container.querySelector('[aria-label="启动问题（可选）"]');
+    assert.ok(starterPrompts);
     await React.act(async () => {
-      reactProps(recommendedTasks).onFocus?.({ target: recommendedTasks } as never);
-      recommendedTasks.value = "任务一,任务二";
-      reactProps(recommendedTasks).onChange?.({ target: recommendedTasks } as never);
+      reactProps(starterPrompts).onFocus?.({ target: starterPrompts } as never);
+      starterPrompts.value = "问题一,问题二";
+      reactProps(starterPrompts).onChange?.({ target: starterPrompts } as never);
       await Promise.resolve();
     });
-    assert.equal(recommendedTasks.value, "任务一,任务二");
+    assert.equal(starterPrompts.value, "问题一,问题二");
 
     await React.act(async () => {
-      reactProps(recommendedTasks).onBlur?.({ target: recommendedTasks } as never);
+      reactProps(starterPrompts).onBlur?.({ target: starterPrompts } as never);
       await Promise.resolve();
     });
-    assert.equal(recommendedTasks.value, "任务一\n任务二");
+    assert.equal(starterPrompts.value, "问题一\n问题二");
   } finally {
     Object.assign(agentProfileApi, originals);
     await React.act(async () => root.unmount());
@@ -564,10 +558,10 @@ test("market tag combobox shows existing tags, filters them, and accepts custom 
   const originals = { ...agentProfileApi };
   agentProfileApi.listAdmin = async () => ({
     agent_profiles: [
-      profile({ market_tag: "客户支持" }),
+      profile({ market_tags: ["客户支持"] }),
       profile({
         agent_id: "agt_hr",
-        market_tag: "人力资源",
+        market_tags: ["人力资源"],
         name: "人事助手",
       }),
     ],

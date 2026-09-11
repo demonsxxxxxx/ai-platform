@@ -22,19 +22,15 @@ class PublicAnswerStreamGate:
         private_replacements: Mapping[str, str],
         sanitizer: Callable[[str], str],
         max_private_token_chars: int = 512,
-        max_sealed_chars: int = 4_096,
     ) -> None:
         self._sanitizer = sanitizer
         self._max_private_token_chars = max_private_token_chars
-        self._max_sealed_chars = max_sealed_chars
         self._replacements: dict[str, str] = {}
         self._tokens: tuple[str, ...] = ()
         self._pending = ""
         self._published_suffix = ""
-        self._logical_view = ""
-        self._logical_overflowed = False
+        self._public_answer_chunks: list[str] = []
         self._accepted_text = False
-        self._public_answer_text = ""
         self._active_capability_invocations: set[tuple[str, str, str]] = set()
         self._failed = False
         self._failure_reason: str | None = None
@@ -44,9 +40,6 @@ class PublicAnswerStreamGate:
             or not isinstance(max_private_token_chars, int)
             or isinstance(max_private_token_chars, bool)
             or max_private_token_chars < 2
-            or not isinstance(max_sealed_chars, int)
-            or isinstance(max_sealed_chars, bool)
-            or max_sealed_chars < 1
         ):
             self._fail("invalid_configuration")
         else:
@@ -64,23 +57,6 @@ class PublicAnswerStreamGate:
 
         return self._failure_reason
 
-    def final_text_exceeds_bound(self, value: object) -> bool:
-        """Check the projected terminal fallback without publishing it."""
-
-        if (
-            self._failed
-            or not isinstance(value, str)
-            or self._accepted_text
-        ):
-            return False
-        projected = self._project(value)
-        exceeds = self._logical_overflowed or (
-            projected is not None and len(projected) > self._max_sealed_chars
-        )
-        if exceeds:
-            self._fail("answer_too_large")
-        return exceeds
-
     def accept(self, text: object) -> tuple[str, ...]:
         """Accept one ordered Assistant fragment and return immediately safe chunks."""
 
@@ -92,10 +68,10 @@ class PublicAnswerStreamGate:
         if not text:
             return ()
         self._accepted_text = True
-        self._extend_logical_view(text)
-        if self._failed:
-            return ()
         raw_candidate = self._pending + text
+        projected_candidate = self._project(raw_candidate)
+        if projected_candidate is None:
+            return ()
         raw_hold = (
             0
             if any(token in raw_candidate for token in self._tokens)
@@ -111,9 +87,7 @@ class PublicAnswerStreamGate:
             self._pending = raw_candidate[-raw_hold:]
             emitted = self._project_across_publication_boundary(stable_candidate)
             return self._emit(emitted) if emitted is not None else ()
-        candidate = self._project(raw_candidate)
-        if candidate is None:
-            return ()
+        candidate = projected_candidate
         held_chars = self._private_prefix_chars(candidate)
         if held_chars > self._max_private_token_chars:
             self._fail("private_token_prefix_overflow")
@@ -160,14 +134,14 @@ class PublicAnswerStreamGate:
         if self._failed:
             return
         added_tokens = set(self._tokens) - previous_tokens
-        if any(token in self._public_answer_text for token in added_tokens):
-            self._fail("private_token_already_published")
-            return
-        logical_view = self._project(self._logical_view)
+        if added_tokens:
+            published_text = self._published_text()
+            if any(token in published_text for token in added_tokens):
+                self._fail("private_token_already_published")
+                return
         pending = self._project(self._pending)
-        if logical_view is None or pending is None:
+        if pending is None:
             return
-        self._logical_view = logical_view
         self._pending = pending
 
     def release_after_verified_capability(
@@ -197,12 +171,11 @@ class PublicAnswerStreamGate:
             self._fail("invalid_input")
             return self._discard()
         safe_final = self._project(final_text)
-        if safe_final is None or len(safe_final) > self._max_sealed_chars:
-            if safe_final is not None:
-                self._fail("answer_too_large")
+        if safe_final is None:
             return self._discard()
-        if self._accepted_text and safe_final.startswith(self._public_answer_text):
-            candidate = safe_final[len(self._public_answer_text) :]
+        published_text = self._published_text()
+        if self._accepted_text and safe_final.startswith(published_text):
+            candidate = safe_final[len(published_text) :]
         elif self._accepted_text:
             candidate = self._pending
         else:
@@ -247,19 +220,6 @@ class PublicAnswerStreamGate:
             for replacement in self._replacements.values()
         ):
             self._fail("private_replacement_invalid")
-
-    def _extend_logical_view(self, text: str) -> None:
-        if self._logical_overflowed:
-            return
-        candidate = self._project(self._logical_view + text)
-        if candidate is None:
-            return
-        if len(candidate) > self._max_sealed_chars:
-            self._logical_view = ""
-            self._logical_overflowed = True
-            self._fail("answer_too_large")
-            return
-        self._logical_view = candidate
 
     def _project(self, text: str) -> str | None:
         candidate = text
@@ -320,13 +280,13 @@ class PublicAnswerStreamGate:
             return None
         return projected
 
+    def _published_text(self) -> str:
+        return "".join(self._public_answer_chunks)
+
     def _emit(self, text: str) -> tuple[str, ...]:
         if not text:
             return ()
-        if len(self._public_answer_text) + len(text) > self._max_sealed_chars:
-            self._fail("answer_too_large")
-            return ()
-        self._public_answer_text += text
+        self._public_answer_chunks.append(text)
         suffix_chars = self._max_private_token_chars - 1
         self._published_suffix = (self._published_suffix + text)[-suffix_chars:]
         return (text,)
@@ -338,10 +298,8 @@ class PublicAnswerStreamGate:
             )
         self._failed = True
         self._pending = ""
-        self._logical_view = ""
 
     def _discard(self) -> PublicAnswerFinish:
         self._pending = ""
-        self._logical_view = ""
         self._finished = True
         return PublicAnswerFinish((), "")

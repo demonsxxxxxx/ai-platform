@@ -6,7 +6,6 @@ import {
   normalizeMessageTextLogicalIds,
   processMessageEvent,
 } from "../eventProcessor.ts";
-import { isAssistantTextProjection } from "../types.ts";
 
 test("normalizes hydrated text with deterministic message-local ordinals", () => {
   const hydrated = {
@@ -548,134 +547,263 @@ test("keeps user-actionable ai-platform run warnings visible", () => {
   assert.doesNotMatch(JSON.stringify(part), /storage_key|tenants\/default/);
 });
 
-test("streams versioned assistant deltas and converges to one canonical final", () => {
-  assert.equal(
-    isAssistantTextProjection({
-      projection_version: "ai-platform.chat-public-projection.v1",
-      projection_kind: "assistant_final",
-      content: "canonical",
-    }),
-    true,
-  );
-  const progressAndPartial: MessagePart[] = [
-    {
-      type: "run_status",
-      event_id: "evt-progress",
-      event_type: "run_started",
-      stage: "status",
-      message: "任务已开始处理",
-      severity: "info",
-    },
-    { type: "text", content: "Hel" },
-  ];
-
-  const delta = processMessageEvent(
-    "message:chunk",
-    {
-      projection_version: "ai-platform.chat-public-projection.v1",
-      projection_kind: "assistant_delta",
-      event_id: "evt-delta",
-      sequence: 3,
-      run_id: "run-a",
-      content: "lo",
-    },
-    progressAndPartial,
-    "Hel",
-    [],
-    0,
-    [],
-    true,
-    "message-1",
-  );
-
-  assert.equal(delta.content, "Hello");
-  assert.deepEqual(
-    delta.parts.filter((part) => part.type === "text"),
-    [
-      {
-        type: "text",
-        content: "Hello",
-        logical_id: "message-1:text:0:0:root",
-      },
-    ],
-  );
-
-  const final = processMessageEvent(
-    "message:chunk",
-    {
-      projection_version: "ai-platform.chat-public-projection.v1",
-      projection_kind: "assistant_final",
-      run_id: "run-a",
-      content: "Hello, world!",
-    },
-    [...delta.parts, { type: "text", content: " stale duplicate" }],
-    delta.content,
-    [],
-    0,
-    [],
-    true,
-    "message-1",
-  );
-  const replayedFinal = processMessageEvent(
-    "message:chunk",
-    {
-      projection_version: "ai-platform.chat-public-projection.v1",
-      projection_kind: "assistant_final",
-      run_id: "run-a",
-      content: "Hello, world!",
-    },
-    final.parts,
-    final.content,
-    [],
-    0,
-    [],
-    false,
-    "message-1",
-  );
-
-  assert.equal(replayedFinal.content, "Hello, world!");
-  assert.deepEqual(replayedFinal.parts, [
-    {
-      type: "text",
-      content: "Hello, world!",
-      logical_id: "message-1:text:0:0:root",
-    },
-  ]);
-
-  const secondSegment = processMessageEvent(
+test("streams versioned assistant deltas into one identity-stable source across visible interleaving", () => {
+  const first = processMessageEvent(
     "message:chunk",
     {
       projection_version: "ai-platform.chat-public-projection.v1",
       projection_kind: "assistant_delta",
       message_id: "protocol-message-1",
-      event_id: "evt-second-segment",
-      sequence: 5,
+      event_id: "evt-delta-1",
+      sequence: 1,
       run_id: "run-a",
-      content: "Second segment",
+      content: "hello",
     },
-    [
-      ...replayedFinal.parts,
-      {
-        type: "tool",
-        id: "tool-divider",
-        name: "Read authorized files",
-        args: {},
-        isPending: false,
-      },
-    ],
-    replayedFinal.content,
+    [],
+    "",
     [],
     0,
     [],
-    false,
+    true,
     "message-1",
   );
-  const textIds = secondSegment.parts
-    .filter((part) => part.type === "text")
-    .map((part) => part.logical_id);
-  assert.deepEqual(textIds, [
-    "message-1:text:0:0:root",
-    "protocol-message-1:text:1:0:root",
+  const withStatus = processMessageEvent(
+    "run_event",
+    {
+      projection_version: "ai-platform.chat-public-projection.v1",
+      event_id: "evt-status",
+      sequence: 2,
+      run_id: "run-a",
+      event_type: "public_activity",
+      stage: "tool_started",
+      status: "running",
+      message: "Reading authorized files",
+      severity: "info",
+    },
+    first.parts,
+    first.content,
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+  const withTodo = processMessageEvent(
+    "todo:updated",
+    {
+      event_id: "evt-todo",
+      sequence: 3,
+      run_id: "run-a",
+      todos: [{ content: "Follow up", status: "pending" }],
+    },
+    withStatus.parts,
+    withStatus.content,
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+  const second = processMessageEvent(
+    "message:chunk",
+    {
+      projection_version: "ai-platform.chat-public-projection.v1",
+      projection_kind: "assistant_delta",
+      message_id: "protocol-message-1",
+      event_id: "evt-delta-2",
+      sequence: 4,
+      run_id: "run-a",
+      content: " world",
+    },
+    withTodo.parts,
+    withTodo.content,
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+
+  assert.equal(second.content, "hello world");
+  assert.deepEqual(second.parts.map((part) => part.type), [
+    "text",
+    "run_status",
+    "todo",
+    "text",
+  ]);
+  assert.deepEqual(
+    second.parts.filter((part) => part.type === "text"),
+    [
+      {
+        type: "text",
+        content: "hello",
+        logical_id: "protocol-message-1:text:0:0:root",
+      },
+      {
+        type: "text",
+        content: " world",
+        logical_id: "protocol-message-1:text:1:0:root",
+      },
+    ],
+  );
+});
+
+test("merges consecutive protocol deltas into one stable text segment", () => {
+  const first = processMessageEvent(
+    "message:chunk",
+    {
+      projection_version: "ai-platform.chat-public-projection.v1",
+      projection_kind: "assistant_delta",
+      message_id: "protocol-message-consecutive",
+      event_id: "evt-consecutive-1",
+      sequence: 1,
+      run_id: "run-consecutive",
+      content: "hello",
+    },
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-consecutive",
+  );
+  const second = processMessageEvent(
+    "message:chunk",
+    {
+      projection_version: "ai-platform.chat-public-projection.v1",
+      projection_kind: "assistant_delta",
+      message_id: "protocol-message-consecutive",
+      event_id: "evt-consecutive-2",
+      sequence: 2,
+      run_id: "run-consecutive",
+      content: " world",
+    },
+    first.parts,
+    first.content,
+    [],
+    0,
+    [],
+    true,
+    "message-consecutive",
+  );
+
+  assert.equal(second.content, "hello world");
+  assert.deepEqual(second.parts, [
+    {
+      type: "text",
+      content: "hello world",
+      logical_id: "protocol-message-consecutive:text:0:0:root",
+    },
+  ]);
+});
+
+test("keeps an adjacent anonymous text source separate from protocol text", () => {
+  const result = processMessageEvent(
+    "message:chunk",
+    {
+      projection_version: "ai-platform.chat-public-projection.v1",
+      projection_kind: "assistant_delta",
+      message_id: "protocol-message-owned",
+      event_id: "evt-owned-1",
+      sequence: 1,
+      run_id: "run-owned",
+      content: "owned",
+    },
+    [{ type: "text", content: "anonymous" }],
+    "anonymous",
+    [],
+    0,
+    [],
+    true,
+    "message-owned",
+  );
+
+  assert.deepEqual(result.parts, [
+    { type: "text", content: "anonymous" },
+    {
+      type: "text",
+      content: "owned",
+      logical_id: "protocol-message-owned:text:0:0:root",
+    },
+  ]);
+});
+
+test("keeps unmatched child fallback text separate from an adjacent root delta", () => {
+  const child = processMessageEvent(
+    "message:chunk",
+    {
+      projection_version: "ai-platform.chat-public-projection.v1",
+      projection_kind: "assistant_delta",
+      message_id: "protocol-message-scoped",
+      event_id: "evt-child-1",
+      sequence: 1,
+      run_id: "run-scoped",
+      agent_id: "child",
+      content: "child",
+    },
+    [],
+    "",
+    [],
+    1,
+    [],
+    true,
+    "message-scoped",
+  );
+  const childContinuation = processMessageEvent(
+    "message:chunk",
+    {
+      projection_version: "ai-platform.chat-public-projection.v1",
+      projection_kind: "assistant_delta",
+      message_id: "protocol-message-scoped",
+      event_id: "evt-child-2",
+      sequence: 2,
+      run_id: "run-scoped",
+      agent_id: "child",
+      content: " continued",
+    },
+    child.parts,
+    child.content,
+    [],
+    1,
+    [],
+    true,
+    "message-scoped",
+  );
+  const root = processMessageEvent(
+    "message:chunk",
+    {
+      projection_version: "ai-platform.chat-public-projection.v1",
+      projection_kind: "assistant_delta",
+      message_id: "protocol-message-scoped",
+      event_id: "evt-root-3",
+      sequence: 3,
+      run_id: "run-scoped",
+      content: "root",
+    },
+    childContinuation.parts,
+    childContinuation.content,
+    [],
+    0,
+    [],
+    true,
+    "message-scoped",
+  );
+
+  assert.equal(root.content, "root");
+  assert.deepEqual(root.parts, [
+    {
+      type: "text",
+      content: "child continued",
+      logical_id: "protocol-message-scoped:text:0:1:child",
+      depth: 1,
+      agent_id: "child",
+    },
+    {
+      type: "text",
+      content: "root",
+      logical_id: "protocol-message-scoped:text:0:0:root",
+    },
   ]);
 });
 
@@ -1729,7 +1857,7 @@ test("upserts strict public execution steps by step id without merging them into
       progress: { current: 0, total: 4 },
       safe_file_name: null,
       artifact_public_id: null,
-      created_at: null,
+      created_at: "2026-07-27T07:59:00.000Z",
     } as never,
     [{ type: "text", content: "最终答复保持独立。" }],
     "最终答复保持独立。",
@@ -1802,6 +1930,8 @@ test("upserts strict public execution steps by step id without merging them into
     progress: { current: number; total: number };
     status: string;
     safe_file_name: string | null;
+    started_at?: string;
+    completed_at?: string;
   };
   assert.equal(executionStep.type, "execution_step");
   assert.equal(executionStep.step_id, "step-prepare-report");
@@ -1810,9 +1940,11 @@ test("upserts strict public execution steps by step id without merging them into
   assert.deepEqual(executionStep.progress, { current: 4, total: 4 });
   assert.equal(executionStep.status, "completed");
   assert.equal(executionStep.safe_file_name, "report.docx");
+  assert.equal(executionStep.started_at, "2026-07-27T07:59:00.000Z");
+  assert.equal(executionStep.completed_at, "2026-07-27T08:00:00.000Z");
   assert.doesNotMatch(
     JSON.stringify(completed.parts),
-    /evt-step|run-execution|准备报告|输入已准备|artifact-public|2026-07-27/,
+    /evt-step|run-execution|准备报告|输入已准备|artifact-public/,
   );
 });
 
@@ -1923,7 +2055,7 @@ test("fails closed for unsafe dynamic v2 labels", () => {
     status: "running",
     progress: { current: 0, total: 1 },
     safe_label: "Skill\ufeff",
-    created_at: null,
+    created_at: "2026-08-27T00:00:00Z",
   };
   const accepted = processMessageEvent(
     "execution_step",
@@ -2092,7 +2224,7 @@ test("preserves v2 optional-label parity between live and history", () => {
     stage: "execution",
     status: "running",
     progress: { current: 0, total: 1 },
-    created_at: null,
+    created_at: "2026-07-31T01:00:00.000Z",
   } as const;
   const live = processMessageEvent(
     "execution_step",

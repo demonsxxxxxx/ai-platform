@@ -377,34 +377,24 @@ export function AgentBuilderEnterpriseFields({
           </span>
           <div>
             <h3 className="text-sm font-semibold" id="agent-enterprise-heading">
-              市场展示与任务入口
+              市场展示
             </h3>
             <p className="mt-1 text-sm leading-6 text-[var(--theme-text-secondary)]">
-              配置员工在专家市场看到的信息、开场白和可以直接开始的任务。
+              配置员工在专家市场看到的统一说明、标签和逻辑头像。
             </p>
           </div>
         </div>
         <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(14rem,0.85fr)]">
           <div className="grid gap-4">
             <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium">专家简介</span>
+              <span className="text-sm font-medium">专家说明</span>
               <textarea
-                aria-label="专家简介"
-                className={`${INPUT_CLASS} min-h-24 resize-y`}
+                aria-label="专家说明"
+                className={`${INPUT_CLASS} min-h-32 resize-y`}
                 disabled={disabled}
                 onChange={(event) => onChange({ description: event.target.value })}
-                placeholder="用一句话说明这位专家适合解决什么问题"
+                placeholder="说明这位专家适合解决什么问题"
                 value={editor.description}
-              />
-            </label>
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium">能力摘要</span>
-              <textarea
-                className={`${INPUT_CLASS} min-h-28 resize-y`}
-                disabled={disabled}
-                onChange={(event) => onChange({ capabilitySummary: event.target.value })}
-                placeholder="说明能力范围和交付方式"
-                value={editor.capabilitySummary}
               />
             </label>
           </div>
@@ -435,45 +425,20 @@ export function AgentBuilderEnterpriseFields({
         <div className="mt-5 border-t border-[var(--theme-border)] pt-5">
           <div className="mb-4 flex items-center gap-2">
             <MessageSquareText aria-hidden="true" className="text-[var(--theme-text-secondary)]" size={17} />
-            <h4 className="text-sm font-semibold">对话开场</h4>
+            <h4 className="text-sm font-semibold">对话启动问题</h4>
           </div>
-          <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium">欢迎语</span>
-              <textarea
-                className={`${INPUT_CLASS} min-h-20 resize-y`}
-                disabled={disabled}
-                onChange={(event) => onChange({ welcomeMessage: event.target.value })}
-                placeholder="员工打开专家工作区时看到的开场白"
-                value={editor.welcomeMessage}
-              />
-          </label>
-          <div className="mt-4 grid gap-4 lg:grid-cols-3">
-            <ListField
-              className="min-h-28"
-              disabled={disabled}
-              label="推荐任务（可选）"
-              onChange={(recommendedTasks) => onChange({ recommendedTasks })}
-              values={editor.recommendedTasks}
-            />
-            <ListField
-              className="min-h-28"
-              disabled={disabled}
-              label="示例问题（可选）"
-              onChange={(starterPrompts) => onChange({ starterPrompts })}
-              values={editor.starterPrompts}
-            />
-            <ListField
-              disabled={disabled}
-              label="预期输出（可选）"
-              onChange={(expectedOutputs) => onChange({ expectedOutputs })}
-              values={editor.expectedOutputs}
-            />
-          </div>
+          <ListField
+            className="min-h-28"
+            disabled={disabled}
+            label="启动问题（可选）"
+            onChange={(starterPrompts) => onChange({ starterPrompts })}
+            values={editor.starterPrompts}
+          />
         </div>
       </section>
 
       <section
-        aria-label="访问范围与数据说明（高级）"
+        aria-label="访问范围（高级）"
         className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-5"
       >
         <details
@@ -485,7 +450,7 @@ export function AgentBuilderEnterpriseFields({
               className="text-[var(--theme-text-secondary)]"
               size={17}
             />
-            访问范围与数据说明（高级）
+            访问范围（高级）
           </summary>
           <p className="mt-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
             默认对公司内部用户开放；需要限制部门、角色或用户时再展开配置。
@@ -538,17 +503,6 @@ export function AgentBuilderEnterpriseFields({
           </div>
         ) : null}
 
-        <label className="mt-4 flex flex-col gap-2">
-          <span className="text-sm font-medium">权限与数据访问说明</span>
-          <textarea
-            className={`${INPUT_CLASS} min-h-28 resize-y`}
-            disabled={disabled}
-            onChange={(event) =>
-              onChange({ permissionsAndDataAccessNotice: event.target.value })
-            }
-            value={editor.permissionsAndDataAccessNotice}
-          />
-        </label>
         </details>
       </section>
     </>

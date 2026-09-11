@@ -34,7 +34,7 @@ from app.runtime.sandbox.providers.opensandbox.startup import (
     is_authoritative_not_found_error,
 )
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
-from app.runs.api import request_run_attempt_cancel, terminalize_run_attempt
+from app.runs.api import RunAttemptLifecycleService
 from app.settings import get_settings
 from app.storage import run_storage_io
 from app.tool_permission_lifecycle import (
@@ -287,6 +287,7 @@ async def _terminalize_reconciliation_failure(
     claim_token: str,
     logger: logging.Logger,
     v4_capabilities: WorkerV4Capabilities,
+    attempt_lifecycle: RunAttemptLifecycleService,
 ) -> None:
     tenant_id = str(lease_row["tenant_id"])
     run_id = str(lease_row["run_id"])
@@ -316,7 +317,7 @@ async def _terminalize_reconciliation_failure(
                 run.get("permission_terminalization_target") or ""
             ) in {"cancel_requested", "cancelled"}
             if attempt_id is not None and cancel_requested:
-                await request_run_attempt_cancel(
+                await attempt_lifecycle.request_cancel(
                     conn,
                     tenant_id=tenant_id,
                     run_id=run_id,
@@ -343,7 +344,7 @@ async def _terminalize_reconciliation_failure(
                     },
                 )
             if progress.is_terminal() and attempt_id is not None:
-                await terminalize_run_attempt(
+                await attempt_lifecycle.terminalize(
                     conn,
                     tenant_id=tenant_id,
                     run_id=run_id,
@@ -366,6 +367,7 @@ async def _terminalize_reconciliation_failure(
             run_id=run_id,
             capabilities=v4_capabilities,
             transaction_factory=transaction,
+            attempt_lifecycle=attempt_lifecycle,
             attempt_id=attempt_id,
             attempt_error_code=(
                 None if cancel_requested else "terminal_reconciliation_failed"
@@ -378,6 +380,7 @@ async def _terminalize_reconciliation_failure(
                 run_id=run_id,
                 progress=progress,
                 transaction_factory=transaction,
+                attempt_lifecycle=attempt_lifecycle,
             )
         except Exception:  # noqa: BLE001 - durable child reconciliation remains retryable.
             logger.exception(
@@ -436,12 +439,14 @@ async def _finish_terminal_reconciliation_failure(
     error_code: str,
     logger: logging.Logger,
     v4_capabilities: WorkerV4Capabilities,
+    attempt_lifecycle: RunAttemptLifecycleService,
 ) -> None:
     await _terminalize_reconciliation_failure(
         lease_row,
         claim_token=claim_token,
         logger=logger,
         v4_capabilities=v4_capabilities,
+        attempt_lifecycle=attempt_lifecycle,
     )
     lease = container_lease_from_persisted_row(lease_row)
     if lease is None:
@@ -725,6 +730,7 @@ async def reconcile_pending_executor_terminals_once(
     registry: AdapterRegistry | None = None,
     worker_id: str | None = None,
     v4_capabilities: WorkerV4Capabilities | None = None,
+    attempt_lifecycle: RunAttemptLifecycleService,
     limit: int = _RECONCILIATION_BATCH_SIZE,
 ) -> int:
     claim_token = uuid.uuid4().hex
@@ -791,6 +797,7 @@ async def reconcile_pending_executor_terminals_once(
                         claim_token=claim_token,
                         transaction_factory=transaction,
                         v4_capabilities=v4_capabilities,
+                        run_attempt_lifecycle=attempt_lifecycle,
                     )
                 await _release_reconciled_lease(
                     lease_row,
@@ -837,6 +844,7 @@ async def reconcile_pending_executor_terminals_once(
                         error_code=error_code,
                         logger=_logger,
                         v4_capabilities=v4_capabilities,
+                        attempt_lifecycle=attempt_lifecycle,
                     )
             except asyncio.CancelledError:
                 await _release_claimed_terminal_batch(claimed, claim_token)
@@ -874,6 +882,7 @@ async def run_executor_terminal_reconciler(
     registry: AdapterRegistry | None = None,
     worker_id: str | None = None,
     v4_capabilities: WorkerV4Capabilities | None = None,
+    attempt_lifecycle: RunAttemptLifecycleService,
 ) -> None:
     while not stop_event.is_set():
         reconciled = 0
@@ -882,6 +891,7 @@ async def run_executor_terminal_reconciler(
                 registry=registry,
                 worker_id=worker_id,
                 v4_capabilities=v4_capabilities,
+                attempt_lifecycle=attempt_lifecycle,
             )
         except asyncio.CancelledError:
             raise

@@ -15,20 +15,6 @@ export const AGENT_PROFILE_AVATAR_REFS = [
 
 export type AgentProfileAvatarRef = (typeof AGENT_PROFILE_AVATAR_REFS)[number];
 
-export const AGENT_PROFILE_CATEGORIES = ["general", "support", "writing", "research", "operations"] as const;
-
-export type AgentProfileCategory = (typeof AGENT_PROFILE_CATEGORIES)[number];
-
-export type UniversalAgentInputTypes = ["text", "file"];
-
-export const AGENT_PROFILE_CATEGORY_LABELS = {
-  general: "通用专家",
-  support: "支持服务",
-  writing: "内容写作",
-  research: "研究分析",
-  operations: "运营效率",
-} as const satisfies Record<AgentProfileCategory, string>;
-
 /** Optimistic client lock for one published Agent Profile revision. */
 export interface SelectedAgentProfileRequest {
   agent_id: string;
@@ -39,20 +25,12 @@ export interface SelectedAgentProfileRequest {
 export interface AgentProfilePublicProjection extends SelectedAgentProfileRequest {
   name: string;
   description: string;
-  welcome_message: string;
   starter_prompts: string[];
-  capability_summary: string;
-  recommended_tasks: string[];
-  supported_input_types: UniversalAgentInputTypes;
-  expected_outputs: string[];
-  permissions_and_data_access_notice: string;
   avatar_ref: AgentProfileAvatarRef;
-  avatar_seed?: string;
-  category: AgentProfileCategory;
-  market_tags?: string[];
-  market_tag?: string;
+  avatar_seed: string;
+  market_tags: string[];
   completed_tasks?: number;
-  is_favorite?: boolean;
+  is_favorite: boolean;
   published_at: string | null;
 }
 
@@ -62,16 +40,9 @@ export interface AgentConversationIdentity {
   revision: number;
   name: string;
   description: string;
-  welcome_message: string;
   starter_prompts: string[];
-  capability_summary: string;
-  recommended_tasks: string[];
-  supported_input_types: UniversalAgentInputTypes;
-  expected_outputs: string[];
-  permissions_and_data_access_notice: string;
   avatar_ref: AgentProfileAvatarRef;
-  avatar_seed?: string;
-  category: AgentProfileCategory;
+  avatar_seed: string;
   published_at: string | null;
 }
 
@@ -127,58 +98,6 @@ function requireStringList(value: unknown, code: string): string[] {
   return [...value];
 }
 
-function requireUniversalAgentInputTypes(value: unknown, code: string): UniversalAgentInputTypes {
-  const values = requireStringList(value, code);
-  if (values.length !== 2 || values[0] !== "text" || values[1] !== "file") {
-    throw new Error(code);
-  }
-  return ["text", "file"];
-}
-
-function projectEnterpriseFields(
-  record: Record<string, unknown>,
-  code: string,
-): Pick<
-  AgentProfilePublicProjection,
-  | "welcome_message"
-  | "starter_prompts"
-  | "capability_summary"
-  | "recommended_tasks"
-  | "supported_input_types"
-  | "expected_outputs"
-  | "permissions_and_data_access_notice"
-  | "published_at"
-> {
-  return {
-    welcome_message:
-      record.welcome_message === undefined
-        ? ""
-        : requireString(record.welcome_message, code, true),
-    starter_prompts:
-      record.starter_prompts === undefined
-        ? []
-        : requireStringList(record.starter_prompts, code),
-    capability_summary:
-      record.capability_summary === undefined
-        ? ""
-        : requireString(record.capability_summary, code, true),
-    recommended_tasks:
-      record.recommended_tasks === undefined
-        ? []
-        : requireStringList(record.recommended_tasks, code),
-    supported_input_types: requireUniversalAgentInputTypes(record.supported_input_types, code),
-    expected_outputs:
-      record.expected_outputs === undefined
-        ? []
-        : requireStringList(record.expected_outputs, code),
-    permissions_and_data_access_notice:
-      record.permissions_and_data_access_notice === undefined
-        ? ""
-        : requireString(record.permissions_and_data_access_notice, code, true),
-    published_at: typeof record.published_at === "string" ? record.published_at : null,
-  };
-}
-
 function requireOneOf<const T extends readonly string[]>(
   value: unknown,
   allowed: T,
@@ -200,23 +119,15 @@ export function projectAgentProfilePublicProjection(value: unknown): AgentProfil
     expected_revision: requirePositiveRevision(record.expected_revision, PROFILE_ERROR),
     name: requireString(record.name, PROFILE_ERROR),
     description: requireString(record.description, PROFILE_ERROR, true),
-    ...projectEnterpriseFields(record, PROFILE_ERROR),
+    starter_prompts: requireStringList(record.starter_prompts, PROFILE_ERROR),
     avatar_ref: requireOneOf(record.avatar_ref, AGENT_PROFILE_AVATAR_REFS, PROFILE_ERROR),
     avatar_seed: projectAvatarSeed(record, PROFILE_ERROR),
-    category: requireOneOf(record.category, AGENT_PROFILE_CATEGORIES, PROFILE_ERROR),
-    market_tags:
-      record.market_tags === undefined
-        ? record.market_tag === undefined || record.market_tag === ""
-          ? []
-          : [requireString(record.market_tag, PROFILE_ERROR, true)]
-        : requireStringList(record.market_tags, PROFILE_ERROR),
-    market_tag: record.market_tag === undefined
-      ? ""
-      : requireString(record.market_tag, PROFILE_ERROR, true),
+    market_tags: requireStringList(record.market_tags, PROFILE_ERROR),
     ...(record.completed_tasks === undefined
       ? {}
       : { completed_tasks: requireNonNegativeInteger(record.completed_tasks, PROFILE_ERROR) }),
     is_favorite: record.is_favorite === true,
+    published_at: typeof record.published_at === "string" ? record.published_at : null,
   };
 }
 
@@ -229,10 +140,10 @@ export function projectAgentConversationIdentity(value: unknown): AgentConversat
     revision: requirePositiveRevision(record.revision, IDENTITY_ERROR),
     name: requireString(record.name, IDENTITY_ERROR),
     description: requireString(record.description, IDENTITY_ERROR, true),
-    ...projectEnterpriseFields(record, IDENTITY_ERROR),
+    starter_prompts: requireStringList(record.starter_prompts, IDENTITY_ERROR),
     avatar_ref: requireOneOf(record.avatar_ref, AGENT_PROFILE_AVATAR_REFS, IDENTITY_ERROR),
     avatar_seed: projectAvatarSeed(record, IDENTITY_ERROR),
-    category: requireOneOf(record.category, AGENT_PROFILE_CATEGORIES, IDENTITY_ERROR),
+    published_at: typeof record.published_at === "string" ? record.published_at : null,
   };
 }
 
@@ -254,30 +165,18 @@ export function projectAgentConversationSession(value: unknown): AgentConversati
 
 export interface AgentProfileSkillReference {
   skill_id: string;
-  /** Legacy response field; profile writes omit it and resolve the current Skill by name. */
-  expected_version?: string;
 }
 
 export interface AgentProfileDraftRequest {
   name: string;
   description: string;
-  welcome_message: string;
   starter_prompts: string[];
-  capability_summary: string;
-  recommended_tasks: string[];
-  supported_input_types: Array<"text" | "file">;
-  expected_outputs: string[];
-  permissions_and_data_access_notice: string;
   instructions: string;
-  selected_skill: AgentProfileSkillReference;
   skill_set: AgentProfileSkillReference[];
   mcp_tool_ids: string[];
   avatar_ref: AgentProfileAvatarRef;
   avatar_seed: string;
-  avatar_asset_id: string | null;
-  category: AgentProfileCategory;
-  market_tag?: string;
-  market_tags?: string[];
+  market_tags: string[];
   visibility: "tenant" | "restricted";
   allowed_department_ids: string[];
   allowed_roles: string[];
@@ -286,31 +185,51 @@ export interface AgentProfileDraftRequest {
   expected_draft_revision: number;
 }
 
-export interface AgentProfileAdminProjection extends Omit<
-  AgentProfileDraftRequest,
-  "avatar_seed" | "expected_draft_revision" | "skill_set"
-> {
-  supported_input_types: UniversalAgentInputTypes;
-  avatar_seed?: string;
-  skill_set?: AgentProfileSkillReference[];
+export interface AgentProfileAdminProjection
+  extends Omit<AgentProfileDraftRequest, "expected_draft_revision"> {
   agent_id: string;
   revision: number;
-  /** Current aggregate publication; absent only while talking to a rolling old API. */
-  published_revision?: number | null;
+  published_revision: number | null;
   status: "draft" | "published" | "withdrawn";
   content_hash: string;
-  created_at?: string | null;
-  published_at?: string | null;
+  created_at: string | null;
+  published_at: string | null;
 }
 
-/** Validate the universal input contract before trusting an admin-only profile response. */
+/** Rebuild an admin projection from the hard-cut allowlist. */
 export function validateAgentProfileAdminProjection(value: unknown): AgentProfileAdminProjection {
   const record = requireRecord(value, "invalid_agent_profile_admin_projection");
-  requireUniversalAgentInputTypes(
-    record.supported_input_types,
-    "invalid_agent_profile_admin_projection",
-  );
-  return value as AgentProfileAdminProjection;
+  const code = "invalid_agent_profile_admin_projection";
+  if (!Array.isArray(record.skill_set)) throw new Error(code);
+  const skillSet = record.skill_set.map((skill) => ({
+    skill_id: requireString(requireRecord(skill, code).skill_id, code),
+  }));
+  if (skillSet.length === 0) throw new Error(code);
+  const publishedRevision = record.published_revision === null
+    ? null
+    : requirePositiveRevision(record.published_revision, code);
+  return {
+    agent_id: requireString(record.agent_id, code),
+    revision: requirePositiveRevision(record.revision, code),
+    published_revision: publishedRevision,
+    status: requireOneOf(record.status, ["draft", "published", "withdrawn"] as const, code),
+    name: requireString(record.name, code),
+    description: requireString(record.description, code, true),
+    starter_prompts: requireStringList(record.starter_prompts, code),
+    instructions: requireString(record.instructions, code),
+    skill_set: skillSet,
+    mcp_tool_ids: requireStringList(record.mcp_tool_ids, code),
+    avatar_ref: requireOneOf(record.avatar_ref, AGENT_PROFILE_AVATAR_REFS, code),
+    avatar_seed: projectAvatarSeed(record, code),
+    market_tags: requireStringList(record.market_tags, code),
+    visibility: requireOneOf(record.visibility, ["tenant", "restricted"] as const, code),
+    allowed_department_ids: requireStringList(record.allowed_department_ids, code),
+    allowed_roles: requireStringList(record.allowed_roles, code),
+    allowed_user_ids: requireStringList(record.allowed_user_ids, code),
+    content_hash: requireString(record.content_hash, code),
+    created_at: typeof record.created_at === "string" ? record.created_at : null,
+    published_at: typeof record.published_at === "string" ? record.published_at : null,
+  };
 }
 
 export interface AgentProfileMutationResponse {

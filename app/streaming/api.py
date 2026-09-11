@@ -33,10 +33,13 @@ from app.streaming.application.live_fanout import (
     RunStreamHub,
 )
 from app.streaming.application.worker_publication_v4 import (
+    AssistantAnswerReceiptError,
+    ReconstructedAssistantAnswer,
     WorkerV4Capabilities,
     admit_v4_stream,
     append_callback_v4_rows,
     append_run_terminal_v4_row,
+    drain_pending_v4_events,
     finalize_parent_and_publish,
     persist_and_publish_worker_event,
     publish_pending_admissions,
@@ -55,6 +58,7 @@ from app.streaming.domain.live import (
     redis_id_tuple,
     stream_key,
     stream_live_channel,
+    tenant_scope,
 )
 from app.streaming.domain.public_events_v4 import (
     V4_METADATA_KEY as V4_METADATA_KEY,
@@ -120,6 +124,8 @@ __all__ = [
     "V4SuccessorRebuildReceipt",
     "V4SuccessorRebuildTransport",
     "V4SuccessorRebuilds",
+    "AssistantAnswerReceiptError",
+    "ReconstructedAssistantAnswer",
     "WorkerV4Capabilities",
     "activate_v4_successor_rebuild",
     "admit_v4_stream",
@@ -140,6 +146,7 @@ __all__ = [
     "publish_pending_admissions",
     "publish_pending_run_terminal",
     "publish_pending_v4_events",
+    "drain_pending_v4_events",
     "finalize_parent_and_publish",
     "persist_and_publish_worker_event",
     "prepare_v4_successor_rebuild",
@@ -158,4 +165,5 @@ __all__ = [
     "redis_id_tuple",
     "stream_key",
     "stream_live_channel",
+    "tenant_scope",
 ]

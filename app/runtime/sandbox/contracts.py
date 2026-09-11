@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.control_plane_contracts import normalize_thinking_effort
 from app.runtime.kernel_contracts import AgentEvent
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
+from app.sandbox.api import AssistantAnswerReceipt
 from app.validation import (
     MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
     assert_safe_id,
@@ -398,8 +399,14 @@ class ExecutorTerminalResult(BaseModel):
     status: Literal["completed", "succeeded", "failed", "cancelled", "canceled"]
     run_id: str
     message: str = Field(default="", max_length=200_000)
+    answer_receipt: AssistantAnswerReceipt | None = None
     error_code: str | None = Field(default=None, max_length=256)
     error_message: str | None = Field(default=None, max_length=4_096)
+
+    @field_validator("answer_receipt", mode="before")
+    @classmethod
+    def validate_answer_receipt(cls, value: object):
+        return None if value is None else AssistantAnswerReceipt.model_validate(value)
 
     @field_validator("run_id")
     @classmethod
@@ -409,10 +416,21 @@ class ExecutorTerminalResult(BaseModel):
     @model_validator(mode="after")
     def validate_terminal_payload(self) -> "ExecutorTerminalResult":
         if self.status in {"completed", "succeeded"}:
-            if not self.message.strip():
-                raise ValueError("successful terminal result requires a non-empty message")
-        elif not str(self.error_code or "").strip() or not str(self.error_message or "").strip():
-            raise ValueError("failed or cancelled terminal result requires structured error fields")
+            if self.answer_receipt is None and not self.message.strip():
+                raise ValueError(
+                    "successful terminal result requires a non-empty message or answer receipt"
+                )
+            if self.answer_receipt is not None and self.message != "":
+                raise ValueError(
+                    "successful terminal result must contain either a message or answer receipt"
+                )
+        else:
+            if self.answer_receipt is not None:
+                raise ValueError(
+                    "failed or cancelled terminal result must not contain an answer receipt"
+                )
+            if not str(self.error_code or "").strip() or not str(self.error_message or "").strip():
+                raise ValueError("failed or cancelled terminal result requires structured error fields")
         return self
 
 

@@ -9,25 +9,20 @@ import {
 import {
   projectAgentConversationIdentity,
   projectAgentProfilePublicProjection,
-  validateAgentProfileAdminProjection,
 } from "../../../types/agentProfile.ts";
 
 const defaultEnterpriseProjection = {
-  welcome_message: "",
   starter_prompts: [] as string[],
-  capability_summary: "",
-  recommended_tasks: [] as string[],
-  supported_input_types: ["text", "file"] as ["text", "file"],
-  expected_outputs: [] as string[],
-  permissions_and_data_access_notice: "",
   avatar_seed: "agt_support",
+  market_tags: [] as string[],
+  is_favorite: false,
   published_at: null,
 };
 
 test("builds server-authoritative catalog and detail URLs", () => {
   assert.equal(
-    buildAgentProfileCatalogUrl({ query: "支持 助手", category: "support" }),
-    "/api/ai/agent-profiles?query=%E6%94%AF%E6%8C%81+%E5%8A%A9%E6%89%8B&category=support",
+    buildAgentProfileCatalogUrl({ query: "支持 助手" }),
+    "/api/ai/agent-profiles?query=%E6%94%AF%E6%8C%81+%E5%8A%A9%E6%89%8B",
   );
   assert.equal(
     buildAgentProfileDetailUrl("agent/with space"),
@@ -49,10 +44,11 @@ test("loads only the safe public Agent Profile projection", async () => {
             expected_revision: 7,
             name: "支持助手",
             description: "处理已授权的支持请求。",
-            supported_input_types: ["text", "file"],
+            starter_prompts: [],
             avatar_ref: "builtin:assistant",
             avatar_seed: unicodeAvatarSeed,
-            category: "support",
+            market_tags: [],
+            is_favorite: false,
             instructions: "PRIVATE_PROMPT",
             model_id: "private-model",
             mcp_tool_ids: ["private-mcp"],
@@ -65,8 +61,8 @@ test("loads only the safe public Agent Profile projection", async () => {
   }) as typeof fetch;
 
   try {
-    const result = await agentProfileApi.listPublished({ category: "support" });
-    assert.deepEqual(calls, ["/api/ai/agent-profiles?category=support"]);
+    const result = await agentProfileApi.listPublished();
+    assert.deepEqual(calls, ["/api/ai/agent-profiles"]);
     assert.deepEqual(result, {
       agent_profiles: [
         {
@@ -77,7 +73,6 @@ test("loads only the safe public Agent Profile projection", async () => {
           description: "处理已授权的支持请求。",
           avatar_ref: "builtin:assistant",
           avatar_seed: unicodeAvatarSeed,
-          category: "support",
         },
       ],
     });
@@ -113,9 +108,8 @@ test("published authorization reads bypass cache and preserve transport failures
       expected_revision: 7,
       name: "支持助手",
       description: "处理已授权的支持请求。",
-      supported_input_types: ["text", "file"],
+      ...defaultEnterpriseProjection,
       avatar_ref: "builtin:assistant",
-      category: "support",
     };
     return new Response(
       JSON.stringify(responseKind === "catalog" ? { agent_profiles: [profile] } : profile),
@@ -171,9 +165,8 @@ test("lists only server-authorized conversations with their immutable safe ident
               revision: 7,
               name: "支持助手",
               description: "处理已授权的支持请求。",
-              supported_input_types: ["text", "file"],
+              ...defaultEnterpriseProjection,
               avatar_ref: "builtin:assistant",
-              category: "support",
               model_id: "private-model",
             },
           },
@@ -203,15 +196,16 @@ test("lists only server-authorized conversations with their immutable safe ident
           agent_id: "agt_support",
           title: "支持助手",
           purpose: "conversation",
-          agent_conversation: {
-            ...defaultEnterpriseProjection,
-            agent_id: "agt_support",
-            revision: 7,
-            name: "支持助手",
-            description: "处理已授权的支持请求。",
-            avatar_ref: "builtin:assistant",
-            category: "support",
-          },
+            agent_conversation: {
+              agent_id: "agt_support",
+              revision: 7,
+              name: "支持助手",
+              description: "处理已授权的支持请求。",
+              starter_prompts: [],
+              avatar_ref: "builtin:assistant",
+              avatar_seed: "agt_support",
+              published_at: null,
+            },
           created_at: "2026-07-29T00:00:00Z",
           updated_at: "2026-07-30T00:00:00Z",
         },
@@ -253,9 +247,8 @@ test("creates a durable Agent Conversation with one caller-owned operation ident
           revision: 7,
           name: "支持助手",
           description: "处理已授权的支持请求。",
-          supported_input_types: ["text", "file"],
+          ...defaultEnterpriseProjection,
           avatar_ref: "builtin:assistant",
-          category: "support",
           model_id: "private-model",
           content_hash: "private-hash",
         },
@@ -285,13 +278,14 @@ test("creates a durable Agent Conversation with one caller-owned operation ident
       },
     ]);
     assert.deepEqual(response.agent_conversation, {
-      ...defaultEnterpriseProjection,
       agent_id: "agt_support",
       revision: 7,
       name: "支持助手",
       description: "处理已授权的支持请求。",
+      starter_prompts: [],
       avatar_ref: "builtin:assistant",
-      category: "support",
+      avatar_seed: "agt_support",
+      published_at: null,
     });
     assert.equal("content_hash" in response.agent_conversation!, false);
     assert.equal("model_id" in response.agent_conversation!, false);
@@ -306,22 +300,14 @@ test("uses the current admin profile contract without retired file-type transpor
   const draftWriteBodies: Array<Record<string, unknown>> = [];
   const draft = {
     name: "Support assistant",
-    description: "Approved support helper.",
-    welcome_message: "",
+    description: "Approved support requests.",
     starter_prompts: [],
-    capability_summary: "Approved support requests.",
-    recommended_tasks: ["Review a request"],
-    supported_input_types: ["text", "file"] as Array<"text" | "file">,
-    expected_outputs: [],
-    permissions_and_data_access_notice: "",
     instructions: "Keep answers concise.",
-    selected_skill: { skill_id: "general-chat", expected_version: "version-a" },
-    skill_set: [{ skill_id: "general-chat", expected_version: "version-a" }],
+    skill_set: [{ skill_id: "general-chat" }],
     mcp_tool_ids: [],
     avatar_ref: "builtin:agent" as const,
     avatar_seed: "support-assistant",
-    avatar_asset_id: null,
-    category: "support" as const,
+    market_tags: ["support"],
     visibility: "tenant" as const,
     allowed_department_ids: [],
     allowed_roles: [],
@@ -409,42 +395,36 @@ test("uses the current admin profile contract without retired file-type transpor
   }
 });
 
-test("rejects non-universal supported input projections instead of repairing them", () => {
+test("rejects incomplete hard-cut projections instead of repairing them", () => {
   const publicProfile = {
     agent_id: "agt_support",
     expected_revision: 7,
     name: "支持助手",
     description: "处理已授权的支持请求。",
-    supported_input_types: ["text", "file"],
+    starter_prompts: [],
     avatar_ref: "builtin:assistant",
-    category: "support",
+    avatar_seed: "agt-support",
+    market_tags: [],
+    is_favorite: false,
+    published_at: null,
   };
   const conversationIdentity = {
-    ...publicProfile,
+    agent_id: publicProfile.agent_id,
     revision: publicProfile.expected_revision,
-  };
-  delete (conversationIdentity as { expected_revision?: number }).expected_revision;
-  const adminProfile = {
-    ...publicProfile,
-    revision: 7,
-    status: "draft",
-    content_hash: "hash-a",
+    name: publicProfile.name,
+    description: publicProfile.description,
+    starter_prompts: publicProfile.starter_prompts,
+    avatar_ref: publicProfile.avatar_ref,
+    avatar_seed: publicProfile.avatar_seed,
+    published_at: publicProfile.published_at,
   };
 
-  for (const invalid of [["text"], ["file", "text"], ["text", "file", "file"]]) {
-    assert.throws(() =>
-      projectAgentProfilePublicProjection({ ...publicProfile, supported_input_types: invalid }),
-    );
-    assert.throws(() =>
-      projectAgentConversationIdentity({
-        ...conversationIdentity,
-        supported_input_types: invalid,
-      }),
-    );
-    assert.throws(() =>
-      validateAgentProfileAdminProjection({ ...adminProfile, supported_input_types: invalid }),
-    );
-  }
+  assert.throws(() =>
+    projectAgentProfilePublicProjection({ ...publicProfile, starter_prompts: undefined }),
+  );
+  assert.throws(() =>
+    projectAgentConversationIdentity({ ...conversationIdentity, starter_prompts: undefined }),
+  );
 });
 
 

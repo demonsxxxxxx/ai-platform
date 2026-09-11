@@ -61,7 +61,7 @@ EVENT_SCHEMA_FIELDS = {"schema_version": "ai-platform.event-envelope.v1"}
 _ORIGINAL_RESOLVE_AGENT_SKILL = repository_module.resolve_agent_skill
 _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = repository_module.authorize_run_capabilities
 _ORIGINAL_AUTHORIZE_REPLAY_RUN_CAPABILITIES = repository_module.authorize_replay_run_capabilities
-_ORIGINAL_REAUTHORIZE_PINNED_RUN_FOR_REPLAY = runs_module.reauthorize_pinned_run_for_replay
+_ORIGINAL_REAUTHORIZE_PINNED_RUN_FOR_REPLAY = runs_module._agent_profile_authority.reauthorize_pinned_run_for_replay
 
 
 class _NoOpPendingAdmissions:
@@ -276,7 +276,7 @@ def allow_existing_run_route_tests_through_enqueue_authorization(monkeypatch):
     monkeypatch.setattr(repository_module, "authorize_replay_run_capabilities", allow, raising=False)
     monkeypatch.setattr(repository_module, "update_run_auth_snapshot", update_auth_snapshot, raising=False)
     monkeypatch.setattr(
-        runs_module,
+        runs_module._agent_profile_authority,
         "reauthorize_pinned_run_for_replay",
         allow_persisted_run_reauthorization,
     )
@@ -4517,7 +4517,7 @@ async def test_prepare_copied_agent_profile_reauthorizes_complete_skill_set(monk
     monkeypatch.setattr(repository_module, "update_run_auth_snapshot", no_write)
     monkeypatch.setattr(repository_module, "append_event", no_write)
     monkeypatch.setattr(repository_module, "update_run_input_execution_snapshot", no_write)
-    monkeypatch.setattr(runs_module, "reauthorize_pinned_run_for_replay", reauthorize)
+    monkeypatch.setattr(runs_module._agent_profile_authority, "reauthorize_pinned_run_for_replay", reauthorize)
     monkeypatch.setattr(runs_module, "record_initial_context_snapshot", record_context)
 
     queue_payload = await runs_module.prepare_copied_run_for_queue(
@@ -4793,7 +4793,7 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
         _ORIGINAL_AUTHORIZE_REPLAY_RUN_CAPABILITIES,
     )
     monkeypatch.setattr(
-        runs_module,
+        runs_module._agent_profile_authority,
         "reauthorize_pinned_run_for_replay",
         _ORIGINAL_REAUTHORIZE_PINNED_RUN_FOR_REPLAY,
     )

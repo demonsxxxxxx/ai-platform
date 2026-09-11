@@ -33,15 +33,9 @@ const safeIdentity: AgentConversationIdentity = {
   revision: 7,
   name: "支持助手",
   description: "处理已授权的支持请求。",
-  welcome_message: "欢迎使用支持助手。",
   starter_prompts: ["帮我处理支持请求"],
-  capability_summary: "在授权范围内处理企业支持请求。",
-  recommended_tasks: ["支持请求分流"],
-  supported_input_types: ["text", "file"],
-  expected_outputs: ["处理建议"],
-  permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
   avatar_ref: "builtin:assistant",
-  category: "support",
+  avatar_seed: "agt-support-avatar",
   published_at: "2026-08-04T01:00:00Z",
 };
 
@@ -101,6 +95,8 @@ test("recovers an exact current Agent Conversation and keeps ordinary sessions g
     return {
       ...safeIdentity,
       expected_revision: safeIdentity.revision,
+      market_tags: ["支持"],
+      is_favorite: false,
     };
   };
 
@@ -140,6 +136,8 @@ test("keeps immutable revision history while current access remains authorized",
   agentProfileApi.getPublished = async () => ({
     ...safeIdentity,
     expected_revision: safeIdentity.revision + 1,
+    market_tags: ["支持"],
+    is_favorite: false,
   });
 
   try {
@@ -764,7 +762,7 @@ test("renders only safe Agent identity and locks MCP catalog controls", () => {
   );
   assert.match(html, /支持助手/);
   assert.match(html, /处理已授权的支持请求/);
-  assert.match(html, /支持服务/);
+  assert.match(html, /处理已授权的支持请求/);
   assert.match(html, /data-agent-conversation-profile/);
   assert.match(html, /data-agent-avatar-ref="builtin:assistant"/);
   assert.doesNotMatch(html, /content_hash|model_id|skill_id|mcp_tool_ids|PRIVATE/);
@@ -781,7 +779,7 @@ test("renders only safe Agent identity and locks MCP catalog controls", () => {
   assert.equal(exposeGenericChatControl("bound", retryMcpCatalog), undefined);
 });
 
-test("projects the Agent welcome and recommendations only in the empty Chat UI", () => {
+test("projects the Agent description and starter prompts only in the empty Chat UI", () => {
   const chatViewSource = readFileSync(new URL("../ChatView.tsx", import.meta.url), "utf8");
   const appContentSource = readFileSync(
     new URL("../ChatAppContent.tsx", import.meta.url),
@@ -794,7 +792,7 @@ test("projects the Agent welcome and recommendations only in the empty Chat UI",
   assert.match(chatViewSource, /avatarRef=\{agentEmptyProfile\.avatar_ref\}/);
   assert.match(chatViewSource, /avatarSeed=\{agentEmptyProfile\.avatar_seed\}/);
   assert.doesNotMatch(chatViewSource, /<Bot\b/);
-  assert.match(chatViewSource, /agentEmptyProfile\.welcome_message/);
+  assert.match(chatViewSource, /agentEmptyProfile\.description/);
   assert.match(chatViewSource, /data-agent-starter-prompts/);
   assert.match(chatViewSource, /onClick=\{\(\) => setComposerInput\(prompt\)\}/);
   assert.match(

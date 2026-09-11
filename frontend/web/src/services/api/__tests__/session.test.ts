@@ -24,13 +24,7 @@ import {
 } from "../session.ts";
 
 const defaultEnterpriseProjection = {
-  welcome_message: "",
   starter_prompts: [] as string[],
-  capability_summary: "",
-  recommended_tasks: [] as string[],
-  supported_input_types: ["text", "file"] as ["text", "file"],
-  expected_outputs: [] as string[],
-  permissions_and_data_access_notice: "",
   published_at: null,
 };
 
@@ -97,10 +91,10 @@ test("projects the canonical session list into safe sidebar sessions", () => {
       revision: 7,
       name: "支持助手",
       description: "处理已授权的支持请求。",
-      ...defaultEnterpriseProjection,
+      starter_prompts: [],
       avatar_ref: "builtin:assistant",
       avatar_seed: "agt_support",
-      category: "support",
+      published_at: null,
     },
   });
 });
@@ -152,14 +146,14 @@ test("preserves legacy session get while adding safe authoritative recovery", as
     const authoritative = await sessionApi.getAuthoritative("session-agent");
     assert.equal(legacy?.id, "session-agent");
     assert.deepEqual(authoritative.agent_conversation, {
-      ...defaultEnterpriseProjection,
       agent_id: "agt_support",
       revision: 7,
       name: "支持助手",
       description: "处理已授权的支持请求。",
+      starter_prompts: [],
       avatar_ref: "builtin:assistant",
       avatar_seed: "agt_support",
-      category: "support",
+      published_at: null,
     });
     assert.equal("selected_skill" in authoritative.agent_conversation!, false);
     assert.equal("content_hash" in authoritative.agent_conversation!, false);
