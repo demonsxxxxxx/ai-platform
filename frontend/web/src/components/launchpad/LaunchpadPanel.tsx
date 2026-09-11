@@ -50,6 +50,7 @@ import {
 
 const categoryIcons: Record<string, LucideIcon> = {
   内网登录: Building2,
+  企业内部AI助手: Sparkles,
   AI: Sparkles,
   翻译: Languages,
   绘图: Palette,
