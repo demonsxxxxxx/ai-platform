@@ -22,8 +22,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-import { useAgent } from "../../hooks/useAgent";
-import { agentProfileApi } from "../../services/api/agentProfile";
 import type { Message } from "../../types";
 import { APP_ROUTE_PATHS } from "../../appRouteManifest";
 import { resolveInternalAiApplication } from "./aiApplicationCatalog";
@@ -56,51 +54,140 @@ function reviewStatusLabel(status: WordReviewStatus): string {
   }[status];
 }
 
-function usePublishedAgent(agentId: string) {
-  const [profile, setProfile] = useState<{ agent_id: string; expected_revision: number } | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
-  const [failureReason, setFailureReason] = useState("");
+const SOP_RAGFLOW_API_BASE = "http://10.56.0.211:8080";
+const SOP_RAGFLOW_SHARE_URL =
+  import.meta.env?.VITE_RAGFLOW_SOP_SHARE_URL?.trim() || "";
+const SOP_REQUEST_TIMEOUT = 120_000;
 
-  useEffect(() => {
-    let active = true;
-    setLoading(true);
-    setFailed(false);
-    setFailureReason("");
-    void agentProfileApi
-      .getPublished(agentId)
-      .then((value) => {
-        if (!active) return;
-        if (value.agent_id !== agentId) {
-          setFailed(true);
-          setFailureReason("平台返回的应用身份不匹配。");
-          return;
-        }
-        setProfile({ agent_id: value.agent_id, expected_revision: value.expected_revision });
-      })
-      .catch((error: unknown) => {
-        if (!active) return;
-        const status = typeof error === "object" && error !== null && "status" in error
-          ? (error as { status?: unknown }).status
-          : undefined;
-        setFailed(true);
-        setFailureReason(
-          status === 404
-            ? "该应用还没有已发布的 Agent Profile。"
-            : typeof status === "number" && status >= 500
-              ? "平台 Agent Profile 接口返回 500，请检查 API 与数据库服务。"
-              : "平台服务暂时无法连接。",
-        );
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
+interface SopRagflowConfig {
+  chatId: string;
+  apiKey: string;
+}
+
+function getSopRagflowConfig(): SopRagflowConfig | null {
+  try {
+    const shareUrl = new URL(SOP_RAGFLOW_SHARE_URL);
+    const chatId = shareUrl.searchParams.get("shared_id")?.trim() || "";
+    const apiKey = shareUrl.searchParams.get("auth")?.trim() || "";
+    return chatId && apiKey ? { chatId, apiKey } : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseSopSseBlock(block: string): Record<string, unknown> | null {
+  const data = block
+    .split(/\r?\n/)
+    .filter((line) => line.trimStart().startsWith("data:"))
+    .map((line) => line.trimStart().slice(5).trim())
+    .filter(Boolean)
+    .join("\n");
+  if (!data || data === "[DONE]") return null;
+  try {
+    const event: unknown = JSON.parse(data);
+    if (!event || typeof event !== "object") return null;
+    const record = event as Record<string, unknown>;
+    if (typeof record.code === "number" && record.code !== 0) {
+      throw new Error(
+        typeof record.message === "string"
+          ? record.message
+          : "公司知识库返回错误。",
+      );
+    }
+    return record.data && typeof record.data === "object"
+      ? (record.data as Record<string, unknown>)
+      : null;
+  } catch (error) {
+    if (error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
+
+async function streamSopAnswer(
+  question: string,
+  sessionId: string,
+  onAnswer: (answer: string) => void,
+): Promise<{ answer: string; sessionId: string }> {
+  const config = getSopRagflowConfig();
+  if (!config) throw new Error("公司知识库访问配置未提供。");
+
+  const controller = new AbortController();
+  const timer = globalThis.setTimeout(
+    () => controller.abort(),
+    SOP_REQUEST_TIMEOUT,
+  );
+  try {
+    const response = await fetch(
+      `${SOP_RAGFLOW_API_BASE}/api/v1/chatbots/${encodeURIComponent(config.chatId)}/completions`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "text/event-stream",
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.apiKey}`,
+        },
+        body: JSON.stringify({
+          question,
+          stream: true,
+          session_id: sessionId || undefined,
+          quote: true,
+          reference_metadata: {
+            include: true,
+            fields: [
+              "doc_code",
+              "version",
+              "effective_date",
+              "department",
+              "document_type",
+            ],
+          },
+        }),
+        signal: controller.signal,
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`公司知识库请求失败：${response.status}`);
+    }
+    if (!response.body) throw new Error("公司知识库未返回流式响应。");
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let answer = "";
+    let nextSessionId = sessionId;
+    let buffer = "";
+    const acceptBlock = (block: string) => {
+      const payload = parseSopSseBlock(block);
+      if (!payload) return;
+      if (typeof payload.session_id === "string") {
+        nextSessionId = payload.session_id;
+      }
+      if (typeof payload.answer === "string") {
+        answer = payload.final ? payload.answer : answer + payload.answer;
+        onAnswer(answer);
+      }
     };
-  }, [agentId]);
 
-  return { profile, loading, failed, failureReason };
+    while (true) {
+      const chunk = await reader.read();
+      buffer += decoder.decode(chunk.value || new Uint8Array(), {
+        stream: !chunk.done,
+      });
+      const blocks = buffer.split(/\n\n|\r\n\r\n/);
+      buffer = blocks.pop() || "";
+      blocks.forEach(acceptBlock);
+      if (chunk.done) break;
+    }
+    if (buffer.trim()) acceptBlock(buffer);
+    if (!answer) throw new Error("公司知识库未返回回答内容。");
+    return { answer, sessionId: nextSessionId };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("公司知识库回答超时，请稍后重试。");
+    }
+    throw error;
+  } finally {
+    globalThis.clearTimeout(timer);
+  }
 }
 
 function formatTime(value: Date): string {
@@ -190,23 +277,79 @@ function MessageBubble({ message }: { message: Message }) {
 }
 
 function KnowledgeBaseApplication() {
-  const { profile, loading: profileLoading, failed: profileFailed, failureReason } = usePublishedAgent("sop-assistant");
-  const { messages, isLoading, error, sendMessage, clearMessages } = useAgent();
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [sessionId, setSessionId] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
   const [draft, setDraft] = useState("");
   const [localError, setLocalError] = useState("");
+  const configured = getSopRagflowConfig() !== null;
+
+  const clearMessages = () => {
+    if (isLoading) return;
+    setMessages([]);
+    setSessionId("");
+    setLocalError("");
+  };
 
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
     const text = draft.trim();
     if (!text || isLoading) return;
-    if (!profile) {
-      setLocalError("知识库助手尚未完成平台配置，请稍后重试。");
+    if (!configured) {
+      setLocalError("公司知识库访问配置未提供。");
       return;
     }
+
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const userMessage: Message = {
+      id: `sop-user-${requestId}`,
+      role: "user",
+      content: text,
+      timestamp: new Date(),
+    };
+    const assistantId = `sop-assistant-${requestId}`;
+    const assistantMessage: Message = {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+      timestamp: new Date(),
+      isStreaming: true,
+    };
+
     setDraft("");
     setLocalError("");
-    const result = await sendMessage(text, {}, [], undefined, profile);
-    if (result.status === "failed" && !error) setLocalError("问题提交失败，请检查平台连接后重试。");
+    setIsLoading(true);
+    setMessages((current) => [...current, userMessage, assistantMessage]);
+    try {
+      const result = await streamSopAnswer(text, sessionId, (answer) => {
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === assistantId ? { ...message, content: answer } : message,
+          ),
+        );
+      });
+      setSessionId(result.sessionId);
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === assistantId
+            ? { ...message, content: result.answer, isStreaming: false }
+            : message,
+        ),
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "SOP 问询失败，请稍后重试。";
+      setLocalError(message);
+      setMessages((current) =>
+        current.map((item) =>
+          item.id === assistantId
+            ? { ...item, content: message, isStreaming: false }
+            : item,
+        ),
+      );
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -214,9 +357,12 @@ function KnowledgeBaseApplication() {
       title="公司 SOP 问询助手"
       subtitle="面向制度、流程、审批与操作指引的公司知识库问答"
       icon={BookOpen}
-      status={<AgentStatus loading={profileLoading} failed={profileFailed} />}
+      status={<AgentStatus loading={isLoading} failed={!configured || Boolean(localError)} label="知识库已接入" />}
     >
-      <ConnectionNotice failed={profileFailed} message={failureReason} />
+      <ConnectionNotice
+        failed={!configured}
+        message="公司知识库访问配置未提供，请配置 VITE_RAGFLOW_SOP_SHARE_URL。"
+      />
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
         <section className="flex min-h-[calc(100vh-150px)] flex-col overflow-hidden rounded-lg border border-[#dce5ed] bg-white shadow-[0_2px_8px_rgba(31,58,80,0.04)]">
           <div className="flex items-center justify-between border-b border-[#edf1f4] px-5 py-4">
@@ -260,7 +406,7 @@ function KnowledgeBaseApplication() {
             )}
           </div>
           <form onSubmit={submit} className="border-t border-[#edf1f4] bg-[#fbfcfd] p-4 sm:p-5">
-            {(localError || error) && <p className="mb-2 text-xs text-[#c35b50]">{localError || error}</p>}
+            {localError && <p className="mb-2 text-xs text-[#c35b50]">{localError}</p>}
             <div className="flex items-end gap-2 rounded-lg border border-[#d4e0e8] bg-white p-2 focus-within:border-[#55aaa0] focus-within:ring-2 focus-within:ring-[#d9f0ed]">
               <textarea
                 value={draft}
