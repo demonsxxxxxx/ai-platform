@@ -161,7 +161,7 @@ const DEV_AUTH_PREVIEW_USER: User = {
 
 function isDevAuthPreviewRequested(): boolean {
   return (
-    import.meta.env.DEV &&
+    import.meta.env?.DEV === true &&
     typeof window !== "undefined" &&
     new URLSearchParams(window.location.search).get("dev-auth") === "1"
   );
