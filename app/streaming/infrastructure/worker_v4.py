@@ -20,13 +20,13 @@ from app.streaming.application.worker_publication_v4 import (
     V4StreamAuthorityLookup,
     WorkerEventPersistence,
 )
+from app.streaming.domain.live import tenant_scope
 from app.streaming.redis import (
     StreamContractError,
     StreamTransportUnavailable,
     confirm_stream_admission,
     create_or_get_stream_admission_v4,
     get_stream_authority,
-    tenant_scope,
 )
 from app.streaming.infrastructure import v4 as _v4
 from app.streaming.infrastructure.run_v4_events import append_current_run_terminal_v4_row

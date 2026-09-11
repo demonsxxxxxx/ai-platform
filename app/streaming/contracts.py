@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
@@ -25,6 +24,7 @@ from app.streaming.api import (
     StreamCursor,
     StreamGap as StreamGap,
     canonical_json_bytes,
+    tenant_scope as tenant_scope,
 )
 from app.streaming.events import (
     INTERNAL_STREAM_EVENT_SCHEMA,
@@ -32,7 +32,6 @@ from app.streaming.events import (
     STREAM_DESIGN_ID as GENERATED_STREAM_DESIGN_ID,
     STREAM_PROJECTION_VERSION as GENERATED_STREAM_PROJECTION_VERSION,
 )
-
 STREAM_EVENT_SCHEMA = INTERNAL_STREAM_EVENT_SCHEMA
 STREAM_PROJECTION_VERSION = GENERATED_STREAM_PROJECTION_VERSION
 STREAM_DESIGN_ID = GENERATED_STREAM_DESIGN_ID
@@ -139,14 +138,6 @@ class StreamEnvelope:
 class StreamEntry:
     cursor: StreamCursor
     envelope: StreamEnvelope
-
-
-def tenant_scope(tenant_id: str, *, secret: str) -> str:
-    if not tenant_id or not secret:
-        raise StreamContractError("stream_tenant_scope_authority_missing")
-    return hmac.new(secret.encode(), tenant_id.encode(), hashlib.sha256).hexdigest()[
-        :32
-    ]
 
 
 def stable_event_id(

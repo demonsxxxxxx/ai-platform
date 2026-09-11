@@ -49,14 +49,14 @@ test("admin lifecycle URLs target review and fully rolled-out stable promotion",
   );
 });
 
-test("admin catalog normalizer exposes draft rediscovery and released aggregate lifecycle without private package fields", () => {
+test("admin catalog normalizer exposes active skills and draft versions without private package fields", () => {
   const catalog = normalizeAdminSkillCatalogResponse({
     items: [
       {
         skill_id: "research",
         name: "research",
         description: "Research workflow",
-        lifecycle_status: "released",
+        lifecycle_status: "active",
         distribution_status: "disabled",
         visible_to_user: false,
         latest_version: "sha-123",
@@ -72,7 +72,7 @@ test("admin catalog normalizer exposes draft rediscovery and released aggregate 
       skillId: "research",
       name: "research",
       description: "Research workflow",
-      lifecycleStatus: "released",
+      lifecycleStatus: "active",
       distributionStatus: "disabled",
       visibleToUser: false,
       latestVersion: "sha-123",
@@ -119,6 +119,28 @@ test("admin lifecycle normalizers drop raw source, storage, and package fields",
 });
 
 test("admin lifecycle normalizers reject unrecognized state and unsafe ZIP fields", () => {
+  for (const lifecycleStatus of ["inactive", "released", "disabled"]) {
+    assert.throws(
+      () =>
+        normalizeAdminSkillCatalogResponse({
+          items: [
+            {
+              skill_id: "retired-skill",
+              name: "Retired skill",
+              description: "No longer managed",
+              lifecycle_status: lifecycleStatus,
+              distribution_status: "disabled",
+              visible_to_user: false,
+              latest_version: null,
+              latest_version_status: null,
+              current_version: null,
+              rollout_percent: null,
+            },
+          ],
+        }),
+      /admin_skill_lifecycle_invalid/,
+    );
+  }
   assert.throws(
     () =>
       normalizeAdminSkillUploadResponse({

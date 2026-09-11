@@ -1069,6 +1069,15 @@ async def test_existing_v4_authority_requires_canonical_digest_and_identity() ->
         tenant_scope="scope-a",
     )).open_event_id == "open-a"
 
+    with pytest.raises(SseAuthorityConflictError, match="sse_stream_attempt_conflict"):
+        await create_or_get_stream_admission_v4(
+            Connection(),
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-b",
+            tenant_scope="scope-a",
+        )
+
     for override in ({"open_payload_digest": "wrong"}, {"open_event_id": "other"}):
         base.update(override)
         with pytest.raises(SseAuthorityConflictError, match="sse_stream_protocol_conflict"):

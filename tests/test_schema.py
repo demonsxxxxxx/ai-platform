@@ -157,6 +157,9 @@ def test_schema_seeds_first_agent_apps():
     assert "update skills\nset status = 'inactive'\nwhere id = 'baoyu-translate';" in schema
     assert "update tenant_capability_distributions" in schema
     assert "where capability_kind = 'skill' and capability_id = 'baoyu-translate';" in schema
+    assert "where skill_id = 'general-chat';" in schema
+    assert "where capability_kind = 'skill' and capability_id = 'general-chat';" in schema
+    assert "update skills\nset status = 'inactive'\nwhere id = 'general-chat';" in schema
     assert "'translate', 'default'" not in agent_seed
     assert "'baoyu-translate', 'default'" not in agent_seed
     assert "'document-review', 'default'" in agent_seed
