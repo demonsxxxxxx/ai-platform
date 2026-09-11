@@ -79,6 +79,11 @@ const AgentWorkspaceRoute = lazy(() =>
     default: m.AgentWorkspaceRoute,
   })),
 );
+const AgentApplicationRoute = lazy(() =>
+  import("./features/ai-applications/AgentApplicationRoute").then((m) => ({
+    default: m.AgentApplicationRoute,
+  })),
+);
 const NotFoundPage = lazy(() =>
   import("./components/common/NotFoundPage").then((m) => ({
     default: m.NotFoundPage,
@@ -406,6 +411,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <AgentWorkspaceRoute />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path={APP_ROUTE_PATHS.aiApplication}
+              element={
+                <ProtectedRoute>
+                  <AgentApplicationRoute />
                 </ProtectedRoute>
               }
             />

@@ -44,7 +44,8 @@ test("website cards use copied icons and safe external anchors", () => {
   assert.match(panelSource, /<img/);
   assert.match(panelSource, /size-12/);
   assert.match(panelSource, /object-contain/);
-  assert.match(panelSource, /href=\{entry\.url\}/);
+  assert.match(panelSource, /resolveLaunchpadDestination/);
+  assert.match(panelSource, /href=\{destination\.href\}/);
   assert.match(panelSource, /target="_blank"/);
   assert.match(panelSource, /rel="noopener noreferrer"/);
   assert.match(panelSource, /companyNavigation\.openEntry/);
@@ -67,13 +68,25 @@ test("favorites use authenticated profile persistence instead of browser storage
   assert.match(favoritesSource, /allowedIds\.has/);
 });
 
-test("obsolete tab, iframe, and runtime configuration paths stay deleted", () => {
+test("AI application destinations use internal routes and direct external URLs", () => {
+  assert.doesNotMatch(panelSource, /fetchBrowserRuntimeConfig/);
+  assert.doesNotMatch(panelSource, /configureLaunchpadCatalog/);
+  assert.match(panelSource, /resolveLaunchpadDestination/);
+  assert.match(panelSource, /destination\.kind === "internal"/);
+  assert.match(panelSource, /navigate\(destination\.path\)/);
+  assert.match(catalogSource, /internalPath: "\/ai-apps\/sop-assistant"/);
+  assert.match(catalogSource, /internalPath: "\/ai-apps\/word-review"/);
+  assert.match(catalogSource, /url: "http:\/\/10\.56\.0\.210:8000"/);
+  assert.match(catalogSource, /url: "http:\/\/10\.56\.1\.57:3000\/zh"/);
+  assert.match(catalogSource, /url: "http:\/\/10\.56\.1\.57:5567\/"/);
+  assert.match(catalogSource, /url: "http:\/\/10\.56\.1\.57:7860\/"/);
+});
+
+test("obsolete tabs, iframe, and legacy configuration paths stay deleted", () => {
   for (const source of [catalogSource, panelSource]) {
     assert.doesNotMatch(source, /launchpadTabs/);
     assert.doesNotMatch(source, /activeTab/);
     assert.doesNotMatch(source, /Lingxi/);
-    assert.doesNotMatch(source, /BrowserRuntimeConfig/);
-    assert.doesNotMatch(source, /runtimeUrlKey/);
     assert.doesNotMatch(source, /<iframe/);
     assert.doesNotMatch(source, /VITE_LEGACY/);
   }
