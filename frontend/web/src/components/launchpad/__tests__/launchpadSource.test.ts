@@ -77,9 +77,9 @@ test("AI application destinations use internal routes and direct external URLs",
   assert.match(catalogSource, /internalPath: "\/ai-apps\/sop-assistant"/);
   assert.match(catalogSource, /internalPath: "\/ai-apps\/word-review"/);
   assert.match(catalogSource, /url: "http:\/\/10\.56\.0\.210:8000"/);
-  assert.match(catalogSource, /url: "http:\/\/10\.56\.1\.57:3000\/zh"/);
-  assert.match(catalogSource, /url: "http:\/\/10\.56\.1\.57:5567\/"/);
-  assert.match(catalogSource, /url: "http:\/\/10\.56\.1\.57:7860\/"/);
+  assert.match(catalogSource, /url: "http:\/\/10\.56\.1\.57:21465\/zh"/);
+  assert.match(catalogSource, /url: "http:\/\/10\.56\.1\.57:21463\/"/);
+  assert.match(catalogSource, /url: "http:\/\/10\.56\.1\.57:21464\/"/);
 });
 
 test("obsolete tabs, iframe, and legacy configuration paths stay deleted", () => {
