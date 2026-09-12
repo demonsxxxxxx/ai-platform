@@ -9,12 +9,12 @@ from app.executor_reconciler import (
     PermanentExecutorReconciliationError,
     SandboxReconciliationStopError,
     _context_payload,
-    _finish_terminal_reconciliation_failure,
+    _finish_terminal_reconciliation_failure as _finish_terminal_reconciliation_failure_impl,
     _release_reconciled_lease,
-    _terminalize_reconciliation_failure,
+    _terminalize_reconciliation_failure as _terminalize_reconciliation_failure_impl,
     probe_suspect_executor_tasks_once,
-    reconcile_pending_executor_terminals_once,
-    run_executor_terminal_reconciler,
+    reconcile_pending_executor_terminals_once as reconcile_pending_executor_terminals_once_impl,
+    run_executor_terminal_reconciler as run_executor_terminal_reconciler_impl,
 )
 from app.executors.base import ExecutorResult
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
@@ -50,6 +50,36 @@ class _EventPersistence:
 
 
 _TEST_V4_CAPABILITIES = SimpleNamespace(event_persistence=_EventPersistence())
+
+
+async def _unexpected_attempt_operation(*_args, **_kwargs):
+    raise AssertionError("test must provide the expected attempt lifecycle operation")
+
+
+_TEST_ATTEMPT_LIFECYCLE = SimpleNamespace(
+    request_cancel=_unexpected_attempt_operation,
+    terminalize=_unexpected_attempt_operation,
+)
+
+
+async def _terminalize_reconciliation_failure(*args, **kwargs):
+    kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
+    return await _terminalize_reconciliation_failure_impl(*args, **kwargs)
+
+
+async def _finish_terminal_reconciliation_failure(*args, **kwargs):
+    kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
+    return await _finish_terminal_reconciliation_failure_impl(*args, **kwargs)
+
+
+async def reconcile_pending_executor_terminals_once(*args, **kwargs):
+    kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
+    return await reconcile_pending_executor_terminals_once_impl(*args, **kwargs)
+
+
+async def run_executor_terminal_reconciler(*args, **kwargs):
+    kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
+    return await run_executor_terminal_reconciler_impl(*args, **kwargs)
 
 
 def _lease_row() -> dict[str, object]:
@@ -1431,7 +1461,7 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(mon
         has_claim,
     )
     monkeypatch.setattr(f"{owner}.repositories.fail_run", fail_run)
-    monkeypatch.setattr(f"{owner}.terminalize_run_attempt", terminalize_attempt)
+    monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "terminalize", terminalize_attempt)
     monkeypatch.setattr(f"{owner}.reconcile_terminalized_permission_run", reconcile_child)
     monkeypatch.setattr(f"{owner}.publish_run_event", publish)
 
@@ -1526,10 +1556,10 @@ async def test_terminal_reconciliation_failure_honors_existing_cancel_request(mo
         has_claim,
     )
     monkeypatch.setattr(f"{owner}.repositories.get_run", get_run)
-    monkeypatch.setattr(f"{owner}.request_run_attempt_cancel", request_cancel)
+    monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "request_cancel", request_cancel)
     monkeypatch.setattr(f"{owner}.cancel_run_with_v4", cancel_run)
     monkeypatch.setattr(f"{owner}.fail_run_with_v4", fail_run)
-    monkeypatch.setattr(f"{owner}.terminalize_run_attempt", terminalize_attempt)
+    monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "terminalize", terminalize_attempt)
     monkeypatch.setattr(f"{owner}.publish_run_event", publish)
 
     await _terminalize_reconciliation_failure(
