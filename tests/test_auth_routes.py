@@ -36,9 +36,7 @@ EXPECTED_COMPANY_USER_PERMISSIONS = [
 
 EXPECTED_COMPANY_ADMIN_PERMISSIONS = EXPECTED_COMPANY_USER_PERMISSIONS + [
     "model:admin",
-    "settings:read",
     "settings:manage",
-    "settings:admin",
     "admin:status",
     "skill:write",
     "skill:delete",
@@ -67,7 +65,6 @@ def auth_settings(**overrides):
     values = {
         "ai_session_secret": "test-session-secret-with-at-least-32-bytes",
         "ai_session_max_age_seconds": 28800,
-        "ai_session_cookie_name": "ai_platform_session",
         "ai_session_cookie_secure": False,
         "company_authority_freshness_seconds": 900,
         "default_tenant_id": "default",

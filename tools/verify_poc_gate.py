@@ -399,7 +399,6 @@ def check_api_compat(api_url: str, *, expected_default_model_id: str = "") -> Ga
         "/api/auth/oauth/providers",
         "/api/auth/permissions",
         "/api/agent/models/available",
-        "/api/settings/",
         "/api/projects",
         "/api/notifications/active",
         "/api/upload/config",

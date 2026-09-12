@@ -90,7 +90,6 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         "/api/notifications/active",
         "/api/role-governance",
         "/api/skills",
-        "/api/settings",
         "/api/users",
     }
     active_safe_admin_routes = {
@@ -104,7 +103,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     }
     assert "/api/mcp" in all_safe_routes
     assert "/api/notifications/active" in all_safe_routes
-    assert "/api/settings" in all_safe_routes
+    assert "/api/settings" not in all_safe_routes
     assert "/api/users" in all_safe_routes
     assert "/api/role-governance" in SAFE_PUBLIC_ROUTE_PREFIXES
     all_safe_admin_routes = {
@@ -518,10 +517,10 @@ def test_frontend_projection_audit_tracks_permission_gated_active_legacy_routes(
     }
     assert "/api/skills" in active_safe_routes
     assert "/api/skills" not in active_routes
-    assert "/api/settings" in active_safe_routes
-    assert "/api/settings" not in active_routes
-    assert ordinary_routes == {}
-    assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" not in audit["open_gaps"]
+    assert "/api/settings" not in active_safe_routes
+    assert "/api/settings" in active_routes
+    assert set(ordinary_routes) == {"/api/settings"}
+    assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
 
 
 def test_frontend_projection_audit_treats_skills_as_safe_public_when_permission_gated(tmp_path):
@@ -767,8 +766,8 @@ def test_frontend_projection_audit_tracks_protected_route_lazy_panel_permissions
         route["route_prefix"]
         for route in audit["active_browser_entry"]["route_inventory"]["safe_public_projection_routes"]
     }
-    assert "/api/settings" in active_safe_routes
-    assert "/api/settings" not in active_routes
+    assert "/api/settings" not in active_safe_routes
+    assert "/api/settings" in active_routes
     assert audit["active_browser_entry"]["route_inventory"]["ordinary_user_reachable_legacy_route_policies"] == []
 
 
@@ -834,8 +833,8 @@ def test_frontend_projection_audit_tracks_protected_active_tab_panel_permissions
         route["route_prefix"]
         for route in audit["active_browser_entry"]["route_inventory"]["safe_public_projection_routes"]
     }
-    assert "/api/settings" in active_safe_routes
-    assert "/api/settings" not in active_routes
+    assert "/api/settings" not in active_safe_routes
+    assert "/api/settings" in active_routes
     assert audit["active_browser_entry"]["route_inventory"]["ordinary_user_reachable_legacy_route_policies"] == []
 
 

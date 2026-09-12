@@ -40,14 +40,10 @@ class Settings(BaseSettings):
         default="governed"
     )
     sandbox_executor_image: str = Field(default="ai-platform-executor:dev")
-    sandbox_executor_browser_image: str = Field(default="")
     sandbox_executor_published_host: str = Field(default="127.0.0.1")
     sandbox_callback_base_url: str = Field(default="http://127.0.0.1:8000")
     sandbox_callback_token: str = Field(default="")
     sandbox_egress_policy_enabled: bool = Field(default=False)
-    sandbox_egress_network_name: str = Field(
-        default="ai-platform-sandbox-egress-internal-v1"
-    )
     sandbox_egress_proof_signing_key: str = Field(default="")
     sandbox_egress_proof_key_id: str = Field(default="current")
     sandbox_egress_proof_previous_keys_json: str = Field(default="")
@@ -70,9 +66,6 @@ class Settings(BaseSettings):
     opensandbox_executor_entrypoint: str = Field(
         default="/app/docker-entrypoint.sh uvicorn"
     )
-    opensandbox_workspace_mount_enabled: bool = Field(default=True)
-    opensandbox_startup_io_probe_enabled: bool = Field(default=True)
-    opensandbox_allowed_egress_hosts: str = Field(default="")
     opensandbox_egress_proxy_url: str = Field(default="http://host.docker.internal:18043")
     sandbox_runtime_subject: str = Field(default="")
     opensandbox_executor_image_digest: str = Field(default="")
@@ -146,12 +139,10 @@ class Settings(BaseSettings):
     audit_retention_days: int = Field(default=0, ge=0)
     message_retention_days: int = Field(default=0, ge=0)
     file_retention_days: int = Field(default=0, ge=0)
-    run_event_stream_max_heartbeats: int = Field(default=3600)
     deployment_environment: Literal["development", "test", "production"] = Field(
         default="development"
     )
     default_tenant_id: str = Field(default="default")
-    default_workspace_id: str = Field(default="default")
     cors_allow_origins: str = Field(
         default="http://localhost:9527,http://127.0.0.1:9527"
     )
@@ -166,7 +157,6 @@ class Settings(BaseSettings):
     existing_auth_timeout_seconds: float = Field(default=15.0)
     ai_admin_work_ids: str = Field(default="")
     ai_session_secret: str = Field(default="")
-    ai_session_cookie_name: str = Field(default="ai_platform_session")
     ai_session_cookie_secure: bool = Field(default=False)
     ai_session_max_age_seconds: int = Field(
         default=24 * 60 * 60, ge=24 * 60 * 60, le=24 * 60 * 60
@@ -181,14 +171,12 @@ class Settings(BaseSettings):
         default=24 * 60 * 60, ge=24 * 60 * 60, le=24 * 60 * 60
     )
     auth_context_lease_seconds: int = Field(default=90)
-    artifact_default_retention_days: int = Field(default=90)
 
     # MCP-only server-side custody. JWT lifetime remains authoritative from exp.
     mcp_encryption_keys_json: str = Field(default="", repr=False)
     mcp_encryption_current_key_id: str = Field(default="current")
 
     llm_gateway_provider: str = Field(default="openai_compatible")
-    model_gateway_request_concurrency_limit: int = Field(default=0)
     openai_base_url: str = Field(default="")
     openai_api_key: str = Field(default="")
     openai_model: str = Field(default="deepseek-v4-flash")

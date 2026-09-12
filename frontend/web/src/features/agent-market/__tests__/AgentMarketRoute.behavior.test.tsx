@@ -457,7 +457,7 @@ function installDom() {
 async function prepareShellHarness({ authenticated = false } = {}) {
   await import("../../../i18n/index.ts");
   const { AuthProvider, useAuth } = await import("../../../hooks/useAuth.tsx");
-  const { SettingsProvider } = await import("../../../contexts/SettingsContext.tsx");
+  const { ModelCatalogProvider } = await import("../../../contexts/ModelCatalogContext.tsx");
   const { ThemeProvider } = await import("../../../contexts/ThemeContext.tsx");
   const { authApi } = await import("../../../services/api/auth.ts");
   const { sessionApi } = await import("../../../services/api/session.ts");
@@ -523,7 +523,7 @@ async function prepareShellHarness({ authenticated = false } = {}) {
         React.createElement(
           AuthProvider,
           null,
-          React.createElement(SettingsProvider, null, shellChildren),
+          React.createElement(ModelCatalogProvider, null, shellChildren),
         ),
       );
     },

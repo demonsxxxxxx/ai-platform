@@ -3238,7 +3238,6 @@ async def test_run_once_cleans_expired_memory_records_when_due(monkeypatch):
     class Settings:
         max_active_worker_runs = 3
         default_tenant_id = "tenant-a"
-        default_workspace_id = "workspace-a"
         memory_retention_worker_cleanup_enabled = True
         memory_retention_worker_cleanup_interval_seconds = 300.0
         memory_retention_worker_cleanup_limit = 25
@@ -3323,7 +3322,6 @@ async def test_run_once_does_not_audit_memory_cleanup_when_no_records_deleted(mo
     class Settings:
         max_active_worker_runs = 3
         default_tenant_id = "tenant-a"
-        default_workspace_id = "workspace-a"
         memory_retention_worker_cleanup_enabled = True
         memory_retention_worker_cleanup_interval_seconds = 300.0
         memory_retention_worker_cleanup_limit = 25
@@ -3377,7 +3375,6 @@ async def test_run_once_skips_memory_cleanup_until_interval_elapsed(monkeypatch)
     class Settings:
         max_active_worker_runs = 3
         default_tenant_id = "tenant-a"
-        default_workspace_id = "workspace-a"
         memory_retention_worker_cleanup_enabled = True
         memory_retention_worker_cleanup_interval_seconds = 3600.0
         memory_retention_worker_cleanup_limit = 25
@@ -3439,7 +3436,6 @@ async def test_run_once_skips_memory_cleanup_when_disabled(monkeypatch):
     class Settings:
         max_active_worker_runs = 3
         default_tenant_id = "tenant-a"
-        default_workspace_id = "workspace-a"
         memory_retention_worker_cleanup_enabled = False
         memory_retention_worker_cleanup_interval_seconds = 300.0
         memory_retention_worker_cleanup_limit = 25

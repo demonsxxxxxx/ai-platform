@@ -787,7 +787,6 @@ def test_frontend_bootstrap_endpoints_match_retained_contracts(monkeypatch):
         "/api/auth/permissions": {"groups": list, "all_permissions": list},
         "/api/agent/models/": {"enabled_count": 1},
         "/api/roles/?limit=200": {"roles": list, "total": 0, "skip": 0, "limit": 200},
-        "/api/settings/": {"settings": {}},
         "/api/version": {"version": "ai-platform-poc"},
         "/api/projects": [],
         "/api/notifications/active": {"notifications": []},
@@ -842,7 +841,7 @@ def test_upload_config_exposes_canonical_byte_contract_with_legacy_aliases():
     assert payload["max_file_size"] == MAX_UPLOAD_BYTES
 
 
-def test_settings_and_notifications_have_one_workbench_route_owner(monkeypatch):
+def test_notifications_have_one_workbench_route_owner(monkeypatch):
     from app.routes.lambchat_compat import router as lambchat_router
     from app.routes.workbench_projections import router as workbench_router
     from tests.test_workbench_projection_routes import (
@@ -851,7 +850,7 @@ def test_settings_and_notifications_have_one_workbench_route_owner(monkeypatch):
     )
 
     install_workbench_route_fakes(monkeypatch)
-    for path in ("/settings/", "/notifications/active"):
+    for path in ("/notifications/active",):
         workbench_owners = [
             route.endpoint.__module__
             for route in workbench_router.routes
@@ -869,20 +868,11 @@ def test_settings_and_notifications_have_one_workbench_route_owner(monkeypatch):
 
     client = TestClient(create_app())
 
-    anonymous_settings = client.get("/api/settings/")
-    authenticated_settings = client.get("/api/settings/", headers=user_headers())
     anonymous_notifications = client.get("/api/notifications/active")
     authenticated_notifications = client.get(
         "/api/notifications/active", headers=user_headers()
     )
 
-    assert anonymous_settings.status_code == 200
-    assert anonymous_settings.json() == {"settings": {}}
-    assert authenticated_settings.status_code == 200
-    assert set(authenticated_settings.json()["settings"]) == {
-        "personal_preferences",
-        "system_runtime",
-    }
     assert anonymous_notifications.status_code == 200
     assert anonymous_notifications.json() == {"notifications": []}
     assert authenticated_notifications.status_code == 200

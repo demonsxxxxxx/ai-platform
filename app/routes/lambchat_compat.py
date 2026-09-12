@@ -1410,8 +1410,6 @@ UI_PERMISSIONS = [
     "marketplace:admin",
     "user:read",
     "user:admin",
-    "settings:read",
-    "settings:admin",
     "feedback:read",
     "feedback:admin",
     "notification:read",

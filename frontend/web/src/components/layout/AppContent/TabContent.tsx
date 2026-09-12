@@ -39,11 +39,6 @@ const WorkbenchUsersProjectionPanel = lazy(() =>
     default: m.WorkbenchUsersProjectionPanel,
   })),
 );
-const WorkbenchSettingsProjectionPanel = lazy(() =>
-  import("../../workbench/WorkbenchProjectionPages").then((m) => ({
-    default: m.WorkbenchSettingsProjectionPanel,
-  })),
-);
 const WorkbenchFeedbackProjectionPanel = lazy(() =>
   import("../../workbench/WorkbenchProjectionPages").then((m) => ({
     default: m.WorkbenchFeedbackProjectionPanel,
@@ -63,7 +58,6 @@ const panelMap: Record<
   skills: SkillsHubPanel,
   users: WorkbenchUsersProjectionPanel,
   roles: RolesPanel,
-  settings: WorkbenchSettingsProjectionPanel,
   mcp: MCPPanel,
   feedback: WorkbenchFeedbackProjectionPanel,
   models: ModelCatalogPanel,

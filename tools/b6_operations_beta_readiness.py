@@ -36,7 +36,6 @@ _REQUIRED_WORKFLOW_FIELDS = [
 class _ReadinessSettings:
     sandbox_container_provider = "fake"
     llm_gateway_provider = "openai_compatible"
-    model_gateway_request_concurrency_limit = 0
 
 
 def _domain(

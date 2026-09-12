@@ -226,15 +226,6 @@ function RolesPage() {
   return <AppContent key="roles" activeTab="roles" />;
 }
 
-function SettingsPage() {
-  useSEO({
-    title: "seo.settings.title",
-    description: "seo.settings.description",
-    path: "/settings",
-  });
-  return <AppContent key="settings" activeTab="settings" />;
-}
-
 function MCPPage() {
   useSEO({
     title: "seo.mcp.title",
@@ -482,7 +473,7 @@ function App() {
               path={APP_ROUTE_PATHS.settings}
               element={
                 <ProtectedRoute requireAdmin redirectTo={APP_ROUTE_PATHS.agentMarket}>
-                  <SettingsPage />
+                  <Navigate to={APP_ROUTE_PATHS.models} replace />
                 </ProtectedRoute>
               }
             />

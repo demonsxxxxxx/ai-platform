@@ -1016,7 +1016,10 @@ def test_runtime_proxy_rejects_redirect_without_following(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response(monkeypatch) -> None:
+@pytest.mark.parametrize("binding_available", [True, False])
+async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response(
+    monkeypatch, binding_available: bool,
+) -> None:
     captured = {}
 
     @asynccontextmanager
@@ -1030,6 +1033,8 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
             "openai/gpt-5",
             _key(),
         )
+        if not binding_available:
+            return None
         return SimpleNamespace(
             base_url="https://gateway.example",
             api_key="run-pinned-secret",
@@ -1083,6 +1088,8 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
             sandbox_callback_token=callback_secret,
             model_connection_encryption_key=_key(),
             model_connection_allowed_internal_hosts="",
+            openai_base_url="https://legacy.example",
+            openai_api_key="legacy-env-secret",
         ),
         repository=SimpleNamespace(run_connection=fake_run_connection),
         legacy_catalog=SimpleNamespace(),
@@ -1092,7 +1099,7 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
     )
     monkeypatch.setattr(model_routes, "configured_model_control_plane", lambda: service)
 
-    response = await model_routes.proxy_model_request(
+    response_call = model_routes.proxy_model_request(
         "openai",
         "v1/chat/completions",
         request,
@@ -1102,9 +1109,18 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
         x_ai_platform_model_authorization=f"Bearer {model_capability}",
         x_ai_platform_model_api_key="",
     )
+    if not binding_available:
+        with pytest.raises(HTTPException) as caught:
+            await response_call
+        assert caught.value.status_code == 403
+        assert caught.value.detail == "model_proxy_run_binding_invalid"
+        assert captured == {}
+        return
+    response = await response_call
     streamed = b"".join([chunk async for chunk in response.body_iterator])
 
     assert streamed == b"data: first\n\ndata: second\n\n"
+    assert captured["base_url"] == "https://gateway.example"
     assert captured["api_key"] == "run-pinned-secret"
     assert captured["path"] == "/v1/chat/completions"
     assert captured["body"] == payload

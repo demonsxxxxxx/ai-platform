@@ -848,7 +848,6 @@ def auth_settings(**overrides):
     values = {
         "ai_session_secret": "test-session-secret-with-at-least-32-bytes",
         "ai_session_max_age_seconds": 3600,
-        "ai_session_cookie_name": "ai_platform_session",
         "ai_session_cookie_secure": False,
         "company_authority_freshness_seconds": 900,
         "auth_context_cookie_name": "ai_platform_auth_context",
@@ -2425,7 +2424,7 @@ def test_old_principal_cookie_forces_relogin_while_trusted_headers_and_bearer_st
     from app.auth import sign_principal_session
 
     redis = FakeAuthRedis()
-    settings = install_auth_context_dependencies(monkeypatch, redis)
+    install_auth_context_dependencies(monkeypatch, redis)
     client = TestClient(create_app())
     legacy_token = sign_principal_session(
         AuthPrincipal(
@@ -2438,7 +2437,7 @@ def test_old_principal_cookie_forces_relogin_while_trusted_headers_and_bearer_st
         )
     )
 
-    client.cookies.set(settings.ai_session_cookie_name, legacy_token)
+    client.cookies.set("ai_platform_session", legacy_token)
     legacy = client.get("/api/ai/auth/me")
     assert legacy.status_code == 401
     assert "set-cookie" not in legacy.headers

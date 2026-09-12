@@ -9,7 +9,6 @@ from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
 from app.models import (
-    WorkbenchAuditResponse,
     WorkbenchFeedbackItemResponse,
     WorkbenchFeedbackListResponse,
     WorkbenchFeedbackStatsResponse,
@@ -20,12 +19,6 @@ from app.models import (
     WorkbenchNotificationResponse,
     WorkbenchNotificationWriteRequest,
     WorkbenchOperationResponse,
-    WorkbenchSettingGroupResponse,
-    WorkbenchSettingItemResponse,
-    WorkbenchSettingResetResponse,
-    WorkbenchSettingUpdateRequest,
-    WorkbenchSettingWriteResponse,
-    WorkbenchSettingsResponse,
     WorkbenchUserListResponse,
     WorkbenchUserResponse,
     WorkbenchUserWriteRequest,
@@ -37,8 +30,6 @@ router = APIRouter()
 DOMAIN_PERMISSIONS = (
     "user:read",
     "user:admin",
-    "settings:read",
-    "settings:admin",
     "feedback:read",
     "feedback:admin",
     "notification:read",
@@ -52,7 +43,6 @@ def _effective_permission_set(principal: AuthPrincipal) -> set[str]:
         granted.update(DOMAIN_PERMISSIONS)
     for read_permission, admin_permission in (
         ("user:read", "user:admin"),
-        ("settings:read", "settings:admin"),
         ("feedback:read", "feedback:admin"),
         ("notification:read", "notification:admin"),
     ):
@@ -244,128 +234,6 @@ async def delete_user(user_id: str, principal: AuthPrincipal = Depends(require_p
 
     _require_permission(principal, "user:admin")
     return await _record_operation(principal=principal, target_type="user", target_id=user_id, operation="delete")
-
-
-@router.get("/settings/", response_model=None)
-async def list_settings(request: Request) -> WorkbenchSettingsResponse | dict[str, object]:
-    """Return personal preferences and masked system/runtime settings."""
-
-    principal = await _optional_principal(request)
-    if principal is None:
-        return {"settings": {}}
-    _require_permission(principal, "settings:read")
-    personal = WorkbenchSettingGroupResponse(
-        category="personal_preferences",
-        items=[
-            WorkbenchSettingItemResponse(
-                key="ui.locale",
-                value="zh-CN",
-                type="string",
-                category="personal_preferences",
-                label="Locale",
-            )
-        ],
-    )
-    system = WorkbenchSettingGroupResponse(
-        category="system_runtime",
-        items=[
-            WorkbenchSettingItemResponse(
-                key="gateway.api_key",
-                value="[redacted]",
-                type="secret",
-                category="system_runtime",
-                label="Gateway API key",
-                is_public=False,
-                is_secret=True,
-                audit_required=True,
-                rollback_available=True,
-            )
-        ],
-    )
-    return WorkbenchSettingsResponse(
-        settings={"personal_preferences": personal, "system_runtime": system},
-        governance=_governance(
-            principal,
-            "safe_settings_split",
-            degraded=not is_ai_admin(principal),
-            audit_required=True,
-            rollback_available=True,
-        ),
-    )
-
-
-@router.get("/settings/{key}", response_model=WorkbenchSettingItemResponse)
-async def get_setting(key: str, principal: AuthPrincipal = Depends(require_principal)) -> WorkbenchSettingItemResponse:
-    """Return one safe settings item."""
-
-    _require_permission(principal, "settings:read")
-    safe_key = key.strip()
-    if safe_key == "gateway.api_key":
-        return WorkbenchSettingItemResponse(
-            key=safe_key,
-            value="[redacted]",
-            type="secret",
-            category="system_runtime",
-            label="Gateway API key",
-            is_public=False,
-            is_secret=True,
-            audit_required=True,
-            rollback_available=True,
-        )
-    return WorkbenchSettingItemResponse(
-        key=safe_key,
-        value="zh-CN",
-        type="string",
-        category="personal_preferences",
-        label=safe_key,
-    )
-
-
-@router.put("/settings/{key}", response_model=WorkbenchSettingWriteResponse)
-async def update_setting(
-    key: str,
-    principal: AuthPrincipal = Depends(require_principal),
-    payload: Any = Body(default=None),
-) -> WorkbenchSettingWriteResponse:
-    """Queue an audited settings update with masked value projection."""
-
-    _require_permission(principal, "settings:admin")
-    request = _request_model(WorkbenchSettingUpdateRequest, payload or {})
-    operation = await _record_operation(
-        principal=principal,
-        target_type="settings",
-        target_id=key,
-        operation="update",
-        payload_json={"has_rollback_id": request.rollback_id is not None, "value_projected": False},
-    )
-    return WorkbenchSettingWriteResponse(
-        key=key,
-        value="[redacted]",
-        audit=WorkbenchAuditResponse(audit_id=operation.audit_id, action="settings.admin.update_requested"),
-    )
-
-
-@router.post("/settings/reset", response_model=WorkbenchSettingResetResponse)
-async def reset_all_settings(principal: AuthPrincipal = Depends(require_principal)) -> WorkbenchSettingResetResponse:
-    """Queue audited reset for all settings."""
-
-    _require_permission(principal, "settings:admin")
-    operation = await _record_operation(
-        principal=principal,
-        target_type="settings",
-        target_id="all",
-        operation="reset_all",
-    )
-    return WorkbenchSettingResetResponse(key=None, reset_count=2, audit_id=operation.audit_id)
-
-
-@router.post("/settings/reset/{key}", response_model=WorkbenchSettingResetResponse)
-async def reset_setting(key: str, principal: AuthPrincipal = Depends(require_principal)) -> WorkbenchSettingResetResponse:
-    """Queue audited reset for one setting."""
-
-    _require_permission(principal, "settings:admin")
-    operation = await _record_operation(principal=principal, target_type="settings", target_id=key, operation="reset")
-    return WorkbenchSettingResetResponse(key=key, reset_count=1, audit_id=operation.audit_id)
 
 
 def _feedback_item() -> WorkbenchFeedbackItemResponse:
