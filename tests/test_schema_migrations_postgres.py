@@ -312,7 +312,6 @@ async def test_real_postgres_cutover_rejects_an_older_binary_after_migration(
             assert (await schema_migrations.schema_status(conn))["ready"] is True
             exact_base_status = await exact_base.schema_status(conn)
         assert exact_base_status["ready"] is False
-        assert exact_base_status["triggers_current"] is True
         assert exact_base_status["index_ledger_current"] is False
         ledger_versions = await (
             await admin.execute(

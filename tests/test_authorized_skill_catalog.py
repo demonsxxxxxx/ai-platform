@@ -794,9 +794,6 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
             needs_reconcile=True,
         )
 
-    async def assert_worker_run_attempt_current(*_args, **_kwargs):
-        return None
-
     async def append_event(_conn, **kwargs):
         calls.append(("event", kwargs))
         return "event-a"
@@ -821,14 +818,6 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
         return None
 
     monkeypatch.setattr("app.worker.transaction", transaction)
-    monkeypatch.setattr(
-        "app.worker.run_attempts.lock_queued_run_for_attempt",
-        lock_queued_run_for_attempt,
-    )
-    monkeypatch.setattr(
-        "app.worker.run_attempts.assert_worker_run_attempt_current",
-        assert_worker_run_attempt_current,
-    )
     _TEST_ATTEMPT_LIFECYCLE.lock_queued_run = lock_queued_run_for_attempt
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
