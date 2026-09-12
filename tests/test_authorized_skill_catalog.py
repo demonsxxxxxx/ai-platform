@@ -58,6 +58,20 @@ _DISPATCH_V4_CAPABILITIES = types.SimpleNamespace(
 )
 
 
+async def _no_attempt_lifecycle_operation(*_args, **_kwargs):
+    return None
+
+
+_TEST_ATTEMPT_LIFECYCLE = types.SimpleNamespace(
+    get=_no_attempt_lifecycle_operation,
+    get_for_queue_attempt=_no_attempt_lifecycle_operation,
+    start_worker=_no_attempt_lifecycle_operation,
+    assert_worker_current=_no_attempt_lifecycle_operation,
+    request_cancel=_no_attempt_lifecycle_operation,
+    terminalize=_no_attempt_lifecycle_operation,
+)
+
+
 def _content_hash(files: dict[str, bytes]) -> str:
     digest = hashlib.sha256()
     for relative_path, content in sorted(files.items()):
@@ -815,6 +829,7 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
         "app.worker.run_attempts.assert_worker_run_attempt_current",
         assert_worker_run_attempt_current,
     )
+    _TEST_ATTEMPT_LIFECYCLE.lock_queued_run = lock_queued_run_for_attempt
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
@@ -883,6 +898,7 @@ async def test_every_dispatch_shape_denies_unavailable_current_authority_before_
         raw,
         registry=ForbiddenRegistry(),
         v4_capabilities=_DISPATCH_V4_CAPABILITIES,
+        run_attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
     )
 
     assert outcome.status == "failed"
@@ -963,6 +979,7 @@ async def test_queued_admin_snapshot_cannot_restore_revoked_current_skill_access
         raw,
         registry=ForbiddenRegistry(),
         v4_capabilities=_DISPATCH_V4_CAPABILITIES,
+        run_attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
     )
 
     assert locked_run["principal_roles"] == ["admin"]
