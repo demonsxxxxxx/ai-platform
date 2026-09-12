@@ -57,11 +57,16 @@ from app.streaming.domain.transport import (
 )
 from app.streaming.redis import (
     RedisStreamBridge,
+    SSE_STREAM_ACTIVE_IDLE_TTL_MS as _SSE_STREAM_ACTIVE_IDLE_TTL_MS,
+    SSE_STREAM_MAXLEN as _SSE_STREAM_MAXLEN,
     StreamContractError,
     StreamTransportUnavailable,
     StreamAuthority,
     get_stream_authority,
 )
+
+SSE_STREAM_ACTIVE_IDLE_TTL_MS = _SSE_STREAM_ACTIVE_IDLE_TTL_MS
+SSE_STREAM_MAXLEN = _SSE_STREAM_MAXLEN
 
 
 def _normalize_redis_fields(fields: object) -> dict[str, str]:

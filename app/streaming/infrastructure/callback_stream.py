@@ -11,7 +11,7 @@ from redis.exceptions import ResponseError
 from app.streaming.domain.live import stream_key
 from app.streaming.domain.public_events_v4 import validate_internal_envelope_v4
 from app.streaming.domain.transport import canonical_json_bytes
-from app.streaming.redis import (
+from app.streaming.infrastructure.v4 import (
     RedisStreamBridge,
     SSE_STREAM_ACTIVE_IDLE_TTL_MS,
     SSE_STREAM_MAXLEN,
