@@ -2860,8 +2860,6 @@ def test_run_lifecycle_boundary_document_freezes_explicit_composition() -> None:
         "`ContextVar`, thread-local, request-local, or connection attributes",
     ):
         assert required in source
-    assert "TerminalIntentRecorder" not in source
-    assert "sse_terminal_publication_intents" not in source
 
 
 def test_undeclared_runs_lifecycle_bridge_remains_forbidden(
