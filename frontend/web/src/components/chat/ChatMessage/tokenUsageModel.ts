@@ -1,4 +1,4 @@
-import type { AvailableModel } from "../../../contexts/SettingsContext";
+import type { AvailableModel } from "../../../contexts/ModelCatalogContext";
 
 interface ResolveTokenUsageModelNameArgs {
   modelId?: string;

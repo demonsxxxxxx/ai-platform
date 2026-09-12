@@ -20,3 +20,13 @@ test("App registers Run Monitor as an admin-only authenticated route", () => {
     /<ProtectedRoute requireAdmin redirectTo=\{APP_ROUTE_PATHS\.agentMarket\}>\s*<RunsPage \/>\s*<\/ProtectedRoute>/,
   );
 });
+
+test("retired settings route redirects administrators to governed model configuration", () => {
+  const source = readFileSync(join(process.cwd(), "src/App.tsx"), "utf8");
+
+  assert.match(
+    source,
+    /path=\{APP_ROUTE_PATHS\.settings\}[\s\S]{0,220}<Navigate to=\{APP_ROUTE_PATHS\.models\} replace \/>/,
+  );
+  assert.doesNotMatch(source, /activeTab="settings"/);
+});

@@ -6,7 +6,7 @@ from app.main import create_app
 from app.settings import Settings
 
 
-def user_headers(permissions: str = "user:read,settings:read,feedback:read,notification:read") -> dict[str, str]:
+def user_headers(permissions: str = "user:read,feedback:read,notification:read") -> dict[str, str]:
     return {
         "X-AI-User-ID": "ordinary",
         "X-AI-User-Name": "Ordinary",
@@ -19,7 +19,7 @@ def user_headers(permissions: str = "user:read,settings:read,feedback:read,notif
 
 def admin_headers(
     permissions: str = (
-        "user:read,user:admin,settings:read,settings:admin,"
+        "user:read,user:admin,"
         "feedback:read,feedback:admin,notification:read,notification:admin"
     ),
 ) -> dict[str, str]:
@@ -82,7 +82,7 @@ def test_users_projection_returns_safe_directory_for_ordinary_user(monkeypatch):
         "is_active": True,
         "is_superuser": False,
         "roles": ["user"],
-        "permissions": ["feedback:read", "notification:read", "settings:read", "user:read"],
+        "permissions": ["feedback:read", "notification:read", "user:read"],
         "tenant_id": "default",
         "department_id": "qa",
         "created_at": None,
@@ -127,61 +127,16 @@ def test_users_admin_writes_are_permission_gated_and_audited(monkeypatch):
     assert_no_sensitive_material(secret_response.json())
 
 
-def test_settings_projection_splits_personal_and_system_state(monkeypatch):
+def test_retired_generic_settings_routes_are_absent(monkeypatch):
     install_workbench_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
-    response = client.get("/api/settings/", headers=user_headers())
-
-    assert response.status_code == 200
-    body = response.json()
-    assert set(body["settings"]) == {"personal_preferences", "system_runtime"}
-    assert body["settings"]["personal_preferences"]["items"][0]["key"] == "ui.locale"
-    assert body["settings"]["system_runtime"]["items"][0]["value"] == "[redacted]"
-    assert body["settings"]["system_runtime"]["items"][0]["audit_required"] is True
-    assert body["governance"]["rollback_available"] is True
-    assert_no_sensitive_material(body)
-
-
-def test_settings_admin_writes_fail_closed_and_do_not_echo_secret_values(monkeypatch):
-    calls = install_workbench_route_fakes(monkeypatch)
-    client = TestClient(create_app())
-
-    denied = client.put(
-        "/api/settings/gateway.api_key",
-        json={"value": "sk-live-secret-value"},
-        headers=user_headers("settings:read"),
-    )
-    assert denied.status_code == 403
-    assert denied.json()["detail"] == "missing_permission:settings:admin"
-
-    response = client.put(
-        "/api/settings/gateway.api_key",
-        json={"value": "sk-live-secret-value", "rollback_id": "rb-1"},
-        headers=admin_headers(),
-    )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["key"] == "gateway.api_key"
-    assert body["value"] == "[redacted]"
-    assert body["audit"]["audit_id"] == "audit-workbench-contract"
-    assert_no_sensitive_material(body)
-    assert_no_sensitive_material(calls)
-
-    reset = client.post("/api/settings/reset/gateway.api_key", headers=admin_headers())
-    assert reset.status_code == 200
-    assert reset.json()["status"] == "queued"
-
-    nested_secret = client.put(
-        "/api/settings/ui.locale",
-        json={"value": {"token_secret": "gateway-token-secret", "locale": "zh-CN"}},
-        headers=admin_headers(),
-    )
-    assert nested_secret.status_code == 200
-    assert nested_secret.json()["key"] == "ui.locale"
-    assert nested_secret.json()["value"] == "[redacted]"
-    assert_no_sensitive_material(nested_secret.json())
-    assert_no_sensitive_material(calls)
+    for response in (
+        client.get("/api/settings/", headers=admin_headers()),
+        client.put("/api/settings/ui.locale", json={"value": "zh-CN"}, headers=admin_headers()),
+        client.post("/api/settings/reset/ui.locale", headers=admin_headers()),
+    ):
+        assert response.status_code == 404
 
 
 def test_feedback_projection_and_admin_workflow_are_safe(monkeypatch):

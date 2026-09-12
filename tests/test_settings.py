@@ -262,7 +262,7 @@ def test_retired_security_profile_is_rejected_for_every_provider(provider):
         )
 
 
-def test_retired_runtime_authority_settings_are_not_configurable():
+def test_retired_runtime_authority_settings_are_not_configurable(monkeypatch, tmp_path):
     retired_fields = {
         "multi_agent_dispatch_worker_enabled",
         "multi_agent_dispatch_worker_interval_seconds",
@@ -276,9 +276,40 @@ def test_retired_runtime_authority_settings_are_not_configurable():
         "ragflow_timeout_seconds",
         "ragflow_top_k",
         "ragflow_similarity_threshold",
+        "sandbox_executor_browser_image",
+        "sandbox_egress_network_name",
+        "opensandbox_workspace_mount_enabled",
+        "opensandbox_startup_io_probe_enabled",
+        "opensandbox_allowed_egress_hosts",
+        "run_event_stream_max_heartbeats",
+        "default_workspace_id",
+        "ai_session_cookie_name",
+        "artifact_default_retention_days",
+        "model_gateway_request_concurrency_limit",
     }
 
     assert retired_fields.isdisjoint(Settings.model_fields)
+
+    # Old deployment files remain readable while active settings still apply.
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "".join(f"{name.upper()}=obsolete\n" for name in sorted(retired_fields))
+        + "WORKER_CONCURRENCY=7\n",
+        encoding="utf-8",
+    )
+    for name in retired_fields:
+        monkeypatch.setenv(name.upper(), "obsolete")
+    monkeypatch.delenv("WORKER_CONCURRENCY", raising=False)
+    settings = Settings(_env_file=env_file)
+    assert settings.worker_concurrency == 7
+    assert retired_fields.isdisjoint(settings.model_dump())
+
+    for path in (
+        "deploy/ai-platform/.env.example",
+        "deploy/ai-platform/docker-compose.yml",
+    ):
+        text = Path(path).read_text(encoding="utf-8")
+        assert all(name.upper() not in text for name in retired_fields)
 
 
 def test_capacity_and_redis_pool_defaults_are_bounded_independently():

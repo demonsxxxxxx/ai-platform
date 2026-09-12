@@ -18,7 +18,7 @@ import { RevealArtifactsSummary } from "./RevealArtifactsSummary";
 import { FeedbackButtons } from "./FeedbackButtons";
 import { AssistantAvatar } from "./AssistantAvatar";
 import { CollapsiblePill } from "../../common/CollapsiblePill";
-import { useSettingsContext } from "../../../contexts/SettingsContext";
+import { useModelCatalogContext } from "../../../contexts/ModelCatalogContext";
 import { useAuth } from "../../../hooks/useAuth";
 import { ModelIconImg } from "../../agent/modelIcon.tsx";
 import { shouldCloseTokenDetailsPopover } from "./tokenDetailsPopoverGuards";
@@ -252,7 +252,7 @@ export const ChatMessage = memo(function ChatMessage({
   showFeedbackAndShareActions = true,
 }: ChatMessageProps) {
   const { t } = useTranslation();
-  const { availableModels } = useSettingsContext();
+  const { availableModels } = useModelCatalogContext();
   const { isAuthenticated } = useAuth();
   const isUser = message.role === "user";
   const isStreaming = message.isStreaming && !message.content;

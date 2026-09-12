@@ -7,7 +7,6 @@ export type TabType =
   | "skills"
   | "users"
   | "roles"
-  | "settings"
   | "mcp"
   | "feedback"
   | "models"

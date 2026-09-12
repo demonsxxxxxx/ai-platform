@@ -36,9 +36,7 @@ AI_USER_PERMISSIONS = (
 
 AI_ADMIN_PERMISSIONS = (
     "model:admin",
-    "settings:read",
     "settings:manage",
-    "settings:admin",
     "admin:status",
     "skill:write",
     "skill:delete",

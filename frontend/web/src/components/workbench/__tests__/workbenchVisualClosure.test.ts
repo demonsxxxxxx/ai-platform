@@ -394,7 +394,6 @@ test("safe projection pages render a full workbench instead of thin lists", () =
   assert.match(projectionPages, /workbench\.projections\.currentTask/);
   assert.match(projectionPages, /workbench\.projections\.governance\.summaryTitle/);
   assert.match(projectionPages, /workbench\.projections\.users\.directoryTitle/);
-  assert.match(projectionPages, /workbench\.projections\.settings\.secretChip/);
   assert.match(projectionPages, /workbench\.projections\.feedback\.queueTitle/);
   assert.match(projectionPages, /workbench\.projections\.notifications\.streamTitle/);
   assert.equal(zh.workbench.projections.currentTask, "当前任务");

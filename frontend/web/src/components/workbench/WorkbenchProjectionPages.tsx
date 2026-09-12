@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   type LucideIcon,
   Bell,
@@ -8,7 +8,6 @@ import {
   Megaphone,
   RotateCcw,
   Search,
-  Settings,
   ShieldCheck,
   SlidersHorizontal,
   Users,
@@ -45,7 +44,7 @@ type LoadState<T> = {
   isLoading: boolean;
 };
 
-type PageKind = "users" | "settings" | "feedback" | "notifications";
+type PageKind = "users" | "feedback" | "notifications";
 
 type AvailabilityState = "enabled" | "disabled" | "inherited" | "admin-only" | "unavailable";
 
@@ -80,16 +79,6 @@ const pageMeta: Record<
     adminPermission: Permission.USER_ADMIN,
     taskTitle: "workbench.projections.users.taskTitle",
     taskDescription: "workbench.projections.users.taskDescription",
-  },
-  settings: {
-    title: "workbench.projections.settings.title",
-    subtitle: "workbench.projections.settings.subtitle",
-    icon: Settings,
-    surface: "workbench-settings-projection",
-    readPermission: Permission.SETTINGS_READ,
-    adminPermission: Permission.SETTINGS_ADMIN,
-    taskTitle: "workbench.projections.settings.taskTitle",
-    taskDescription: "workbench.projections.settings.taskDescription",
   },
   feedback: {
     title: "workbench.projections.feedback.title",
@@ -171,13 +160,6 @@ function localizedText(
   return resolveChineseNotificationText(value, fallback);
 }
 
-function formatValue(value: unknown) {
-  if (value === null || value === undefined || value === "") return "-";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return JSON.stringify(value);
-}
-
 function normalizedLookupKey(value: string) {
   return value
     .trim()
@@ -207,17 +189,6 @@ function translateMappedValue(
 
 function roleLabel(t: ReturnType<typeof useTranslation>["t"], role: string) {
   return translateMappedValue(t, "workbench.projections.users.roleLabels", role);
-}
-
-function settingCategoryLabel(
-  t: ReturnType<typeof useTranslation>["t"],
-  category: string,
-) {
-  return translateMappedValue(
-    t,
-    "workbench.projections.settings.categories",
-    category,
-  );
 }
 
 function feedbackStatusLabel(
@@ -741,104 +712,6 @@ export function WorkbenchUsersProjectionPanel() {
             ))
           )}
         </div>
-      </div>
-    </ProjectionShell>
-  );
-}
-
-export function WorkbenchSettingsProjectionPanel() {
-  const { t } = useTranslation();
-  const settings = useProjection(() => workbenchApi.listSettings(), []);
-  const groups = useMemo(
-    () => Object.values(settings.data?.settings ?? {}),
-    [settings.data?.settings],
-  );
-  const settingItems = groups.flatMap((group) => group.items);
-  const secretCount = settingItems.filter((item) => item.is_secret).length;
-  const auditCount = settingItems.filter(
-    (item) => item.audit_required || item.rollback_available,
-  ).length;
-
-  return (
-    <ProjectionShell
-      kind="settings"
-      loadState={settings}
-      governance={settings.data?.governance}
-      metrics={[
-        {
-          label: t("workbench.projections.settings.groups"),
-          value: groups.length,
-          detail: t("workbench.projections.settings.items", {
-            count: settingItems.length,
-          }),
-          icon: Settings,
-        },
-        {
-          label: t("workbench.projections.settings.redactedCount"),
-          value: secretCount,
-          detail: t("workbench.projections.settings.redactedDetail"),
-          icon: ShieldCheck,
-        },
-        {
-          label: t("workbench.projections.settings.auditCount"),
-          value: auditCount,
-          detail: t("workbench.projections.settings.auditDetail"),
-          icon: RotateCcw,
-        },
-      ]}
-    >
-      <div className="grid gap-3 xl:grid-cols-2">
-        {groups.length === 0 ? (
-          <EmptyProjection message={t("workbench.projections.settings.empty")} />
-        ) : (
-          groups.map((group) => (
-            <section key={group.category} className={workbenchSurface.compactPanel}>
-              <div className="border-b border-[var(--theme-border)] px-4 py-3">
-                <h3 className="text-sm font-semibold text-[var(--theme-text)]">
-                  {settingCategoryLabel(t, group.category)}
-                </h3>
-                <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
-                  {t("workbench.projections.settings.groupItemCount", {
-                    count: group.items.length,
-                  })}
-                </p>
-              </div>
-              <div className="divide-y divide-[var(--theme-border)]">
-                {group.items.map((item) => (
-                  <div key={item.key} className="grid gap-2 px-4 py-3 text-sm">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <h4 className="truncate font-medium text-[var(--theme-text)]">
-                          {item.label || item.key}
-                        </h4>
-                        <p className="mt-1 truncate text-xs text-[var(--theme-text-secondary)]">
-                          {item.key}
-                        </p>
-                      </div>
-                      <div className="flex shrink-0 gap-1.5">
-                        {item.is_secret ? (
-                          <ProjectionStatusChip tone="muted">
-                            {t("workbench.projections.settings.secretChip")}
-                          </ProjectionStatusChip>
-                        ) : null}
-                        {item.audit_required || item.rollback_available ? (
-                          <ProjectionStatusChip tone="primary">
-                            {t("workbench.projections.settings.auditedChip")}
-                          </ProjectionStatusChip>
-                        ) : null}
-                      </div>
-                    </div>
-                    <p className="truncate rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1.5 text-xs text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
-                      {item.is_secret
-                        ? t("workbench.projections.settings.redacted")
-                        : formatValue(item.value)}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </section>
-          ))
-        )}
       </div>
     </ProjectionShell>
   );
