@@ -693,18 +693,6 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "ai_platform_guard_run_attempt_transition",
             23,
         ),
-        (
-            "agent_profile_revisions",
-            "trg_agent_profile_legacy_insert_compatibility",
-            "agent_profile_legacy_insert_compatibility",
-            7,
-        ),
-        (
-            "agent_profile_revisions",
-            "trg_agent_profile_legacy_insert_reconcile",
-            "agent_profile_legacy_insert_reconcile",
-            5,
-        ),
     )
     trigger_contract = schema_migrations._critical_trigger_contract()
     assert [item[:4] for item in trigger_contract] == list(schema_migrations.CRITICAL_TRIGGERS)

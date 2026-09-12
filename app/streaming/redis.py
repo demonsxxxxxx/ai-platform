@@ -19,7 +19,10 @@ from app.streaming.api import (
     StreamContractError,
     canonical_json_bytes,
     stream_key,
+    tenant_scope as _tenant_scope,
 )
+
+tenant_scope = _tenant_scope
 
 SSE_PUBLISH_MAX_CONNECTIONS = 16
 SSE_READ_MAX_CONNECTIONS = 256

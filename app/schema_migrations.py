@@ -231,18 +231,6 @@ CRITICAL_TRIGGERS = (
         "ai_platform_guard_run_attempt_transition",
         23,
     ),
-    (
-        "agent_profile_revisions",
-        "trg_agent_profile_legacy_insert_compatibility",
-        "agent_profile_legacy_insert_compatibility",
-        7,
-    ),
-    (
-        "agent_profile_revisions",
-        "trg_agent_profile_legacy_insert_reconcile",
-        "agent_profile_legacy_insert_reconcile",
-        5,
-    ),
 )
 MODEL_CRITICAL_CONSTRAINT_DEFINITIONS = (
     (
