@@ -30,7 +30,7 @@ PACKAGE_OMITTED_ENV_KEYS = {
 DATA_IMAGES = {
     "postgres": "postgres:16-alpine",
     "redis": "redis:7-alpine",
-    "minio": "minio/minio:RELEASE.2025-04-22T22-12-26Z",
+    "minio": "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z",
 }
 
 
