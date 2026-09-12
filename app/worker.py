@@ -85,8 +85,8 @@ from app.runs.api import (
     RunAttemptLifecycleService,
     compile_execution_spec_for_dispatch,
     load_run_model_snapshot as _load_run_model_snapshot,
+    run_attempts,  # noqa: F401
 )
-from app.runs.infrastructure import postgres as run_attempts  # noqa: F401
 from app.required_tool_contract import (
     RequiredCapabilityDecision,
     builtin_capability_subjects,

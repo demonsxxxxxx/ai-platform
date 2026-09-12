@@ -1,5 +1,7 @@
 """Public in-process contracts owned by the Runs bounded context."""
 
+from app.runs.infrastructure import postgres as run_attempts  # noqa: F401
+
 from app.runs.application.admin_run_monitor import (
     assemble_admin_model_output as assemble_admin_model_output,
 )
