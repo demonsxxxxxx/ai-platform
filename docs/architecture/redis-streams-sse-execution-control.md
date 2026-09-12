@@ -7,9 +7,10 @@ Index: [Redis Streams SSE Event Channel](redis-streams-sse-event-channel.md)
 ## Scope
 
 This document exclusively owns transaction-scoped stream admission, reuse of
-current Run/Attempt/sandbox authority, durable public-event publication,
-authorization leases and revocation, retry maintenance, missing-stream
-successor recovery, and terminal convergence.
+current Run/Attempt/sandbox authority, direct committed-event publication,
+authorization leases and revocation, missing-stream gaps, and terminal
+convergence. [ADR 0013](../adr/0013-redis-stream-only-sse.md) owns the hard-cut
+decision and supersession.
 
 ## Change Contract: Agent first-send stream ownership
 
@@ -58,11 +59,11 @@ a parallel execution state machine:
 
 V4 stores design ID, projection version, positive stream incarnation, canonical
 `stream.open` bytes/digest, admission state, and authorization epoch under that
-same authority. Before a Worker transaction can append any public or terminal
-row, it locks the Run/current Attempt and prepares the pending stream authority
-on the same connection. Direct and maintenance admission validate the same
-canonical receipt contract, while Redis I/O occurs only after the PostgreSQL
-transaction releases its locks.
+same authority. The Worker prepares pending stream authority while holding the
+existing Run/current Attempt locks, then publishes and confirms the exact open
+before SDK dispatch. Immediate enqueue-failure and cancellation paths reuse this
+admission contract. There is no pending-admission scan. Redis I/O occurs only
+after the PostgreSQL transaction releases its locks.
 
 A separate execution ledger is out of scope. Any authority extension must use
 the existing Run/Attempt/lease fences rather than duplicate Run status,
@@ -76,18 +77,26 @@ batch, assigns deterministic public identities, and commits canonical public
 `run_events` plus the callback receipt in one transaction. Unknown, private, or
 malformed SDK values do not become public rows.
 
-Publication is an application operation with three phases:
+Publication occurs after that transaction commits. The callback route appends
+the complete canonical batch directly to Redis Stream before acknowledging the
+callback. Callback rows do not enter a PostgreSQL publication queue and have no
+publication claim, retry counter, or pending/published disposition.
 
-1. claim the oldest eligible rows and commit the opaque claim token;
-2. release PostgreSQL locks, append canonical bytes through the Redis transport,
-   and require the exact bounded persisted receipt;
-3. disposition success or retry under a claim-token and PostgreSQL-clock fence.
+The existing executor callback buffer serializes batches and waits for an exact
+acknowledgement before sending the next batch. Redis appends each batch and its
+bounded idempotency receipt in one script. A repeated batch reuses its committed
+semantic IDs and bytes without appending duplicate records. A Redis outage
+returns a retryable callback error through the existing callback delivery policy;
+it does not roll back committed callback audit or answer facts. No PostgreSQL
+lock is held across Redis I/O.
 
-Duplicate callback, Redis, or disposition outcomes reuse the same semantic IDs,
-bytes, and receipt. Transport outage leaves indexed pending work for bounded
-maintenance retry. Unexpected application failure releases the claim when it
-can do so safely; expiry permits fenced takeover. No route or adapter holds a
-PostgreSQL lock across Redis I/O.
+Run-terminal and cancellation publishers use committed business facts directly.
+They do not stage independent terminal intents or persist delivery disposition.
+Before writing a callback batch, the same application path loads and directly
+publishes any preceding committed Run event. This closes the opposite race in
+which a later callback would otherwise overtake a delayed cancellation request.
+The lookup is bounded to events before that batch; no scan or retry task owns it.
+Callback receipts never overwrite the separate Run-event receipt.
 
 ## Committed public-event producer
 
@@ -103,20 +112,16 @@ adapter boundary.
 
 ## Publication bounds and backpressure
 
-Publication claims are bounded by count, canonical bytes, predecessor order,
-and claim TTL. Pending rows are selected through the owned retry index. Redis
-append enforces canonical envelope identity and protocol phase, atomically
-writes the retained Stream record, refreshes TTL, and publishes the same bytes.
-The API hub separately bounds each browser by event count and bytes; subscriber
-overflow or shared-feed uncertainty closes the connection without advancing its
-accepted cursor.
+Callback delivery uses the existing bounded executor buffer and exact-batch
+acknowledgement. Redis retains at most the configured approximate Stream length
+and expires its data and receipt state together. The API replays retained
+records and then uses exclusive `XREAD BLOCK` on a separate bounded read pool;
+each read returns at most 128 events and blocks for at most five seconds.
+Heartbeat and gap controls are emitted by the authorized SSE connection.
 
-Safety-critical interaction does not depend on Pub/Sub. A missed notification
-is repaired by Stream replay; missing terminal history is repaired only by the
-successor protocol below. No unbounded in-memory queue or PostgreSQL-to-browser
-polling fallback is permitted. Canonical v4 `message.delta` rows still commit
-in PostgreSQL before publication; this restriction forbids an alternate
-browser delivery plane, not the canonical durable event ledger.
+Redis Stream is the sole live/replay transport. There is no Pub/Sub producer,
+shared subscriber hub, or PostgreSQL-to-browser polling path. Committed callback
+rows remain the audit and final-answer source, independent of browser delivery.
 
 ## Authorization lease
 
@@ -134,9 +139,8 @@ PostgreSQL is queried on connection establishment, renewal, and authority state
 transitions, not for every payload. Lease acquisition validates the durable
 authorization epoch. Each payload frame, including replay gap, terminal, and
 end, checks the authority-clock `lease_not_after` immediately before gateway
-write admission. Heartbeat also requires a current lease but cannot renew it. A
-Pub/Sub subscription does not authorize a principal; only the per-browser lease
-does.
+write admission. Heartbeat also requires a current lease but cannot renew it.
+Only the per-browser lease authorizes the connection.
 
 A committed epoch change immediately fences renewal. A lease issued before that
 commit remains authoritative only until its `lease_not_after`, so the effective
@@ -154,9 +158,8 @@ class. IDs and payload text are never metric labels.
 An authority transition commits a new epoch in PostgreSQL. Later lease
 acquisition or renewal can obtain only that current epoch. Each API instance
 continues to admit an already issued lease only until its authority-clock
-deadline, then closes the affected writer when renewal is denied. Redis Pub/Sub
-is the run-event transport and is not presented as an authorization invalidation
-bus.
+deadline, then closes the affected writer when renewal is denied. Redis Stream
+delivery is not an authorization invalidation bus.
 
 Revocation states are:
 
@@ -186,128 +189,85 @@ stays pending or fails closed rather than claiming browser quiescence.
 
 ## Mid-run Redis failure
 
-Redis unavailability before confirmed stream admission rejects or holds the run
-without SDK dispatch. There is no in-process stream substitute.
+Redis unavailability before confirmed stream admission prevents SDK dispatch.
+There is no in-process stream substitute or pending-admission scan.
 
-After dispatch, a Redis append or shared live-feed failure:
+After dispatch, a callback append failure returns a retryable callback error
+through the existing bounded executor delivery policy. Its committed PostgreSQL
+facts remain unchanged. An XREAD failure closes the affected SSE connection;
+reconnect uses its accepted cursor. A missing or trimmed Stream emits a gap and
+requires authorized hydration. No publisher reconstructs a missing Stream or
+allocates a successor.
 
-1. seals the bounded producer coalescer when append continuity is uncertain;
-2. closes affected browser subscribers when only live notification is lost, so
-   they reconnect and replay from Redis Stream;
-3. records transport degradation when retained append is unavailable;
-4. forbids unbounded retry and PostgreSQL text-delta fallback;
-5. preserves cancellation, resource, egress, and safety control.
+Transport failure does not revoke cancellation, resource cleanup, egress or
+safety authority. Eligible execution can continue only while those existing
+controls remain reliable. Runtime approval is not exposed over SSE. There is no
+unbounded retry, PostgreSQL browser polling, or background publication drain.
 
-Eligible non-interactive work may continue only while those control authorities
-remain reliable. V4 does not expose runtime approval over this stream. Any
-future safety-critical interaction must first define its own durable authority
-and fail-closed behavior; Pub/Sub delivery alone can never authorize a side
-effect.
+## Committed Run terminal publication
 
-Redis recovery does not retroactively claim lost text replay or rebuild the
-current physical stream in place. Loss of continuity is eligible for rebuild
-only after both the Run and its current RunAttempt are terminal and the current
-stream authority is terminal. Preparation is a PostgreSQL-only transaction: it
-locks the Run, RunAttempt, stream authority, and event cursor; records the exact
-source authority fingerprint and high-water mark; allocates a monotonically new
-incarnation and authorization epoch; and freezes successor canonical bytes for
-all eligible public `run_events`. It neither calls Redis nor mutates source
-`run_events`, stream authority, or leases.
+The existing Run/Attempt/Worker owners commit truthful terminal state, final
+answers and required audit facts under their existing transaction fences. Only
+then does the direct publisher load the committed Run fact and derive its stable
+terminal and linked `stream.end` identities. It needs no live execution lease to
+publish an already committed terminal fact.
 
-A later builder owns the candidate through a hashed, expiring claim token. It
-may perform Redis I/O only after the preparation transaction commits, and it may
-write only the reserved successor key. Crash takeover allocates another new
-incarnation rather than reusing a partially built candidate. Activation remains
-a separate token-CAS transaction which must revalidate the unchanged source
-fingerprint and high-water mark before changing authority. Existing cursors are
-never continuous across that change; they receive a gap and durable hydrate.
+The Run event source includes the highest callback sequence strictly before
+that event in the same Run/Attempt/incarnation. This stable prefix is derived
+from business facts, not persisted publication state. Redis checks its existing
+callback batch receipt before accepting cancellation requests or closing the
+Stream. Neither can overtake a callback between PostgreSQL commit and Redis
+append. A later callback cannot change the frozen cancellation payload. If
+the callback has not reached Redis, terminal publication returns unavailable
+without changing the open phase or undoing Run finalization. The in-flight
+callback can still append. SSE closes from authoritative terminal state and
+hydrates; no publication scheduler is introduced.
 
-## Terminal publication intent
+With a delivered callback prefix, Redis appends terminal then end. Repeating
+the direct operation reuses its receipts. If terminal succeeds but end fails,
+a later invocation reuses the terminal receipt and appends the deterministic
+missing end. Missing/expired Streams remain missing; neither receipts nor
+business facts authorize reconstruction.
 
-The terminal coordinator first enters a closing state that rejects later deltas.
-If Redis is healthy it flushes pending text; otherwise it discards unpublished
-live bytes and marks degradation. It then commits one PostgreSQL transaction
-containing:
-
-- truthful terminal status: success only after completed execution and a
-  durable authoritative final answer; otherwise failure/cancellation/safe pause;
-- final answer and required semantic/tool/approval/artifact/audit facts;
-- transport-degraded fact when applicable;
-- current design, attempt, stream incarnation, envelope schema, and projection
-  version;
-- stable terminal and end semantic event IDs;
-- exact canonical terminal/end payload bytes, byte counts, and cryptographic
-  hashes;
-- publication state and retry metadata.
-
-Only after commit may Redis receive terminal then end. The publisher recomputes
-and verifies bytes/digests before each attempt. An unknown outcome retries the
-same bytes and IDs. A duplicate Redis entry is reducer-idempotent.
-
-If the transaction rolls back, neither terminal nor end is published and the run
-is not reported successful. Existing attempt/worker maintenance ownership retries
-the truthful transaction; a stale owner is fenced by current run/attempt leases.
-
-If the target Redis incarnation is missing or continuity is unprovable, the
-reconciler must use the durable successor operation above. It never changes
-current authority before the candidate has a complete `stream.open`, ordered
-successor projection, terminal, and linked `stream.end`. The readiness/cutover
-transaction rejects an expired token, changed source authority, changed source
-high-water mark, or incomplete candidate. Only then may it advance authority;
-old cursors see an explicit gap. The original `run_events` semantic identity,
-sequence, payload, and commit time remain unchanged, while the successor
-physical envelope records the new incarnation.
-
-Authorized final hydrate reads PostgreSQL and replaces the provisional live fold.
-Pending Redis publication does not leave a terminal run permanently `running`.
+PostgreSQL rollback publishes no terminal/end. Redis failure after commit never
+rolls back Run status or suppresses stored answers. Authorized hydration reads
+the committed business state independently of delivery. No background retry
+promises eventual SSE terminal delivery.
 
 ## Failure matrix
 
 | Scenario | Required behavior |
 | --- | --- |
-| Redis admission unavailable | zero SDK calls; bounded retry of exact open or fail closed |
-| callback HTTP response lost | exact batch retry returns receipt; no new IDs |
-| duplicate batch with changed item | fenced conflict; no publish |
-| Redis event `XADD` unknown | retry same canonical bytes/event ID; reducer applies once |
-| memory cap reached and Redis unavailable | seal/discard unpublished live bytes; no PG delta or unbounded queue |
-| Pub/Sub disconnect or local queue overflow | close affected SSE without cursor advance; reconnect repairs from Stream |
-| attach races publication | subscribe acknowledgement before bounded replay; overlap dedupe; no missed semantic event |
+| Redis admission unavailable | zero SDK calls; fail closed |
+| callback HTTP response lost | existing exact-batch retry; no new semantic IDs |
+| duplicate callback with changed content | conflict; no publish |
+| callback commit followed by Redis failure | retain facts; callback delivery reports failure |
+| Run event races a committed callback append | existing receipts and bounded predecessor lookup preserve order in both directions; business facts stay committed |
+| publication occurs after replay tail capture | exclusive XREAD from that tail observes later retained entries |
+| XREAD failure or slow downstream | close affected SSE; retain last accepted cursor |
 | PostgreSQL terminal rollback | no terminal/end; no success claim |
-| PostgreSQL commit then Redis failure | terminal remains durable; intent pending; final hydrate converges |
-| terminal Redis outcome unknown | retry exact frozen bytes/IDs |
-| continuity lost during terminal retry | successor incarnation, gap, same semantic intent bytes |
-| authorization renewal fails | close fail closed before next payload |
-| authorization epoch commits during blocked/live wait | renewal is denied; no old-epoch application frame is admitted after the <=15-second lease deadline |
-| frame checked before revocation commit | may already be downstream; the issued lease remains authority only through its recorded deadline |
-| late delta races closing | reject and measure; never append after terminal |
+| PostgreSQL terminal commit then Redis failure | truthful final state; authorized hydration |
+| terminal succeeded but end failed | same terminal receipt and deterministic end on a later invocation |
+| Stream missing or continuity lost | gap/hydrate; no recreation or successor |
+| authorization renewal fails | close fail closed before the next payload |
+| epoch commits during blocked read | renewal denied; no new old-epoch application frame after the <=15-second lease deadline |
+| frame admitted before revocation commit | already handed-off bytes may arrive; no browser-byte guarantee |
+| callback after terminal closure | reject; never append after terminal/end |
 
 ## Required focused tests
 
-- admission failure/unknown outcome, stale worker/attempt lease, and zero SDK
-  calls before confirmation;
-- deterministic callback receipt, response loss, conflict, ordering, and Redis
-  unknown outcome;
-- committed Skill/tool execution projection after PG commit, stable row-derived
-  identity/sequence/time, stale authority fencing, and structural detection of
-  direct or nested Redis access inside a PG transaction;
-- coalescer age/size/order/bounds, shutdown/terminal flush, secret/private event
-  rejection, and no hidden reasoning;
-- Redis outage before/mid-run, eligible continuation, no PG delta fallback, and
-  bounded memory;
-- authorization open/renewal, local deadline check without PG query, expiry,
-  restart, blocked-read lease expiry, and fail-closed DB errors;
-- terminal PG rollback, commit plus Redis failure/unknown outcome, exact payload
-  hash retry, exclusive terminal successor preparation, expired-claim takeover
-  without incarnation reuse, candidate completeness, stale-token/source-fingerprint
-  rejection, duplicate event, late delta, and final hydrate replacement.
+- admission failure, stale Run/Attempt ownership, and zero SDK calls before confirmation;
+- callback receipt atomicity, exact retry/conflict, commit-before-append, batch order and bounded buffering;
+- public projection, private-data rejection, committed answer reconstruction without Redis, and no Redis I/O under PostgreSQL locks;
+- real Redis initial replay, predecessor trim, exclusive XREAD after captured tail, malformed/foreign cursors, terminal/missing-stream gaps and pool cleanup;
+- authorization open/renewal, per-frame deadline checks, expiry during a blocked read, restart and fail-closed database errors;
+- terminal rollback, committed callback/terminal race, partial terminal/end retry, expired Stream, truthful final state and durable hydration;
+- retired-state refusal, suppression preservation, schema-local migration, old-binary readiness refusal and obsolete index-ledger cleanup.
 
 ## Convergence proposals and evidence
 
-The [runtime convergence proposal](runtime-convergence.md) separates durable
-callback acknowledgement from publication latency and critical retry scheduling
-from bulk cleanup. It does not alter this contract until the relevant owners
-approve and implement the slice. Every publisher still uses the existing
-committed claim, frozen bytes and fenced receipt. Proposed backlog, wake-up,
-callback and shutdown tests are in the [system matrix](../acceptance/system-architecture-matrix.md).
-An accepted document or a local scheduler probe does not establish deployed
-latency, provider isolation or completed RunAttempt migration.
+The [runtime convergence proposal](runtime-convergence.md) retains only proposals
+compatible with this contract. PostgreSQL publication schedulers, wakeups and
+successor work are superseded by ADR 0013. Business executor reconciliation and
+resource cleanup remain independent owners. Source, local tests, CI, packaged
+images and External Acceptance are separate evidence levels.

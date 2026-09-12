@@ -95,10 +95,10 @@ Detailed proposed changes are in [runtime convergence](runtime-convergence.md).
 
 Retain current wire and callback versions, exact identities, terminal hydration,
 redaction, permission enforcement, immutable revisions, migration safeguards and
-compatibility exit conditions while restructuring. Active stream successor
-creation, transport replacement, provider pooling, image splitting and relaxed
-revocation are separate decisions. A code move that changes locks, retries,
-bytes, authority or side effects is a behavior change.
+compatibility exit conditions while restructuring. ADR 0013 defines the current
+Stream-only transport and prohibits successor creation. Provider pooling, image
+splitting and relaxed revocation require separate decisions. A code move that
+changes locks, retries, bytes, authority or side effects is a behavior change.
 
 ## Acceptance and rollout
 

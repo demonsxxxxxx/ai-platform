@@ -51,11 +51,7 @@ from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.runtime.sandbox.executor_client import SandboxExecutorHttpError
 from app.skills.execution_profiles import resolve_skill_execution_profile
 from app.streaming.application.durable_v4 import V4PendingAdmission
-from app.streaming.application.worker_publication_v4 import (
-    AssistantAnswerReceiptError,
-    ReconstructedAssistantAnswer,
-    WorkerV4Capabilities,
-)
+from app.streaming.application.worker_publication_v4 import WorkerV4Capabilities
 from app.streaming.api import build_v4_control
 from app.streaming.domain.transport import canonical_json_bytes
 
@@ -121,9 +117,6 @@ class _FakeWorkerV4Admission:
             attempt_id=attempt_id,
         )
 
-    async def list_pending_admissions(self, *, limit):
-        return ()
-
     async def confirm_pending_admission(self, admission, *, redis_id):
         assert redis_id
         return SimpleNamespace(
@@ -134,12 +127,10 @@ class _FakeWorkerV4Admission:
         )
 
 
-class _FakeWorkerV4Authority:
-    async def get(self, *, tenant_id, run_id):
-        return SimpleNamespace(attempt_id="qat-test-attempt", stream_incarnation=1)
-
-
 class _FakeWorkerV4Persistence:
+    async def load_latest_run_event(self, *, tenant_id, run_id):
+        return None
+
     async def append_terminal_row(self, _conn, *, tenant_id, run_id):
         return None
 
@@ -183,21 +174,14 @@ class _FakeWorkerV4Persistence:
             )
 
 
-class _FakeWorkerV4Claims:
-    async def claim_next(self, **kwargs):
-        return None
-
-
 class _FakeWorkerV4Transport:
     async def publish(self, canonical_envelope_bytes):
         return "0-1"
 
 
 _FAKE_WORKER_V4_CAPABILITIES = WorkerV4Capabilities(
-    authority=_FakeWorkerV4Authority(),
     pending_admissions=_FakeWorkerV4Admission(),
     event_persistence=_FakeWorkerV4Persistence(),
-    publication_claims=_FakeWorkerV4Claims(),
     publication_transport=_FakeWorkerV4Transport(),
 )
 
@@ -2817,10 +2801,8 @@ async def test_worker_reauthorizes_pinned_profile_before_adapter(
 
         monkeypatch.setattr("app.worker.resolve_current_principal", deny_current_principal)
         v4_capabilities = WorkerV4Capabilities(
-            authority=_FakeWorkerV4Authority(),
             pending_admissions=_FakeWorkerV4Admission(calls),
             event_persistence=_FakeWorkerV4Persistence(),
-            publication_claims=_FakeWorkerV4Claims(),
             publication_transport=_FakeWorkerV4Transport(),
         )
 
@@ -3094,164 +3076,6 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
         item[0] == "event" and item[1] in {"run_failed", "run_cancelled"}
         for item in calls
     )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("retryable_receipt", [False, True])
-async def test_worker_drains_receipt_events_before_attempt_bound_answer_load(
-    monkeypatch,
-    retryable_receipt,
-):
-    queue_attempt_id = "queue-attempt-a"
-    authority_successor_id = "authority-successor"
-    receipt = {
-        "schema_version": "ai-platform.assistant-answer-receipt.v1",
-        "message_id": "msg-answer-a",
-        "delta_count": 1,
-        "text_length": len("reconstructed answer"),
-        "last_delta_event_id": "evt4-delta-a",
-    }
-    calls = []
-    publish_calls = []
-    active_transactions = []
-    drain_complete = False
-    persisted = {}
-
-    @asynccontextmanager
-    async def recording_transaction():
-        conn = object()
-        active_transactions.append(conn)
-        try:
-            yield conn
-        finally:
-            active_transactions.pop()
-
-    async def publish_pending(_capabilities, **kwargs):
-        nonlocal drain_complete
-        publish_calls.append(kwargs)
-        calls.append(("publish", kwargs["attempt_id"]))
-        if len(publish_calls) == 2:
-            drain_complete = True
-            return 0
-        return 1
-
-    class ReceiptPersistence(_FakeWorkerV4Persistence):
-        async def load_answer_by_receipt(
-            self,
-            conn,
-            *,
-            tenant_id,
-            run_id,
-            attempt_id,
-            receipt,
-        ):
-            assert active_transactions and active_transactions[-1] is conn
-            assert drain_complete is True
-            calls.append(("load", conn, attempt_id))
-            if retryable_receipt:
-                raise AssistantAnswerReceiptError(retryable=True)
-            return ReconstructedAssistantAnswer(text="reconstructed answer")
-
-    class AuthoritySuccessor:
-        async def get(self, **_kwargs):
-            return SimpleNamespace(attempt_id=authority_successor_id)
-
-    capabilities = replace(
-        _FAKE_WORKER_V4_CAPABILITIES,
-        authority=AuthoritySuccessor(),
-        event_persistence=ReceiptPersistence(),
-    )
-    raw = base_payload(
-        file_ids=[],
-        skill_id="general-chat",
-        agent_id="general-agent",
-        _queue_attempt_id=queue_attempt_id,
-    )
-
-    class ReceiptAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            calls.append(("adapter", payload.attempt_id))
-            return ExecutorResult(
-                status="succeeded",
-                adapter_version="receipt-adapter/1",
-                executor_type="fake",
-                executor_version="receipt-executor/1",
-                capabilities={"skills": True, "mcp": False, "streaming": False},
-                result={"message": "adapter result"},
-                executor_payload={"answer_receipt": receipt},
-            )
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return locked_run_from_payload(raw)
-
-    async def append_event(_conn, **kwargs):
-        return "event-a"
-
-    async def append_message(_conn, **kwargs):
-        persisted["message"] = kwargs["content"]
-        return "message-a"
-
-    async def complete_run(conn, *, tenant_id, run_id, result_json):
-        persisted["result"] = result_json
-        persisted["complete_conn"] = conn
-        calls.append(("complete", conn, result_json["message"]))
-        return True
-
-    async def no_terminal_publish(*_args, **_kwargs):
-        return False
-
-    monkeypatch.setattr(
-        "app.streaming.application.worker_publication_v4.publish_pending_v4_events",
-        publish_pending,
-    )
-    monkeypatch.setattr(
-        "app.streaming.application.worker_publication_v4.publish_pending_run_terminal",
-        no_terminal_publish,
-    )
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_message", append_message)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-
-    if retryable_receipt:
-        with pytest.raises(AssistantAnswerReceiptError) as error:
-            await process_run_payload(
-                raw,
-                AdapterRegistry({"fake": ReceiptAdapter()}),
-                transaction_factory=recording_transaction,
-                v4_capabilities=capabilities,
-            )
-        assert error.value.retryable is True
-        assert "result" not in persisted
-        assert not any(call[0] == "complete" for call in calls)
-    else:
-        outcome = await process_run_payload(
-            raw,
-            AdapterRegistry({"fake": ReceiptAdapter()}),
-            transaction_factory=recording_transaction,
-            v4_capabilities=capabilities,
-        )
-        assert outcome == WorkerOutcome("succeeded", "run-a")
-        assert persisted["message"] == "reconstructed answer"
-        assert persisted["result"]["message"] == "reconstructed answer"
-        load_call = next(call for call in calls if call[0] == "load")
-        complete_call = next(call for call in calls if call[0] == "complete")
-        assert load_call[1] is complete_call[1]
-        assert load_call[2] == queue_attempt_id
-
-    assert [call["attempt_id"] for call in publish_calls] == [
-        queue_attempt_id,
-        queue_attempt_id,
-    ]
-    assert calls.index(next(call for call in calls if call[0] == "publish")) < calls.index(
-        next(call for call in calls if call[0] == "load")
-    )
-    assert calls[0][0] == "adapter"
-    assert calls[0][1] == queue_attempt_id
-    assert authority_successor_id not in {
-        *[call["attempt_id"] for call in publish_calls],
-        next(call[2] for call in calls if call[0] == "load"),
-    }
 
 
 @pytest.mark.asyncio

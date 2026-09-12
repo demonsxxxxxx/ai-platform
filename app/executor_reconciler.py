@@ -45,7 +45,7 @@ from app.tool_permission_lifecycle import (
 )
 from app.worker import (
     WorkerV4Capabilities,
-    publish_pending_run_terminal,
+    publish_run_event,
     reconcile_executor_terminal_result,
 )
 
@@ -389,7 +389,7 @@ async def _terminalize_reconciliation_failure(
             )
     if run_was_terminal:
         return
-    await publish_pending_run_terminal(
+    await publish_run_event(
         v4_capabilities,
         tenant_id=tenant_id,
         run_id=run_id,

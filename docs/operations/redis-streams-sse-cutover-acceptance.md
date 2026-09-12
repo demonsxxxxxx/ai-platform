@@ -12,98 +12,132 @@ negative source checks, SSE gateway configuration, focused local/CI gates, and
 External Acceptance. The application release procedure remains exclusively owned by
 `release-operations-runbook.md`.
 
-## Implementation and commit groups
+## Implementation and review scope
 
-One coherent change may contain reviewable commits in this order:
+The candidate is one hard cut under [ADR 0013](../adr/0013-redis-stream-only-sse.md):
 
-1. **Documentation and protocol:** ADR 0012, authority index, v4 wire,
-   execution control, generated schema/types, and this operations contract.
-2. **Durable event ownership:** canonical v4 envelopes, transaction-scoped
-   stream admission, PostgreSQL publication claims, and transaction-external
-   Redis publication with receipt-fenced disposition.
-3. **Successor recovery:** PostgreSQL snapshot/claim, inactive Redis candidate
-   construction, source-fingerprint and persisted-receipt verification, and
-   token-fenced readiness without changing active authority.
-4. **Release-atomic v4 cutover:** atomic successor activation, producer and
-   cancellation publication, indexed retry maintenance, SSE route/replay, and
-   frontend v4 connection/reducer ownership.
-5. **Tests and gates:** focused fault injection, schema drift, negative cutover
-   checker, required CI service matrices, release guard, and External
-   Acceptance harness updates.
+1. Commit callback facts and receipts, append their exact batch directly to Redis, then acknowledge.
+2. Publish committed Run terminal/cancellation facts through the existing lifecycle entry points.
+3. Replay and follow the same Redis Stream with bounded XREAD and the existing frontend adapter/reducer.
+4. Explicitly retire legacy state before the guarded schema migration.
+5. Remove obsolete runtime modules, generated artifacts, selectors, configuration and instructions; validate the complete candidate independently.
 
-This is commit ordering, not permission to deploy intermediate images. Dormant
-foundation must be behaviorally unreachable from production admission.
+Intermediate source or passing slices are not deployment authority. The release
+package must satisfy the complete contract and the runbook's immutable-image gates.
+
+## Explicit legacy-state retirement
+
+The Stream-only cutover requires an operator step before schema migration; it
+must never run automatically at API or Worker startup. The immutable backend
+image includes `/app/tools/retire_legacy_sse_streams.py`.
+
+Use the release runbook's existing Compose project, environment file and image
+digests. First finish or cancel old active Runs through the existing Runs
+authority, stop the old API/Worker producers, and record a timezone-qualified
+cutover timestamp in `CUTOVER_BEFORE`. Run the following with those same Compose
+arguments and the new image selected for the `migrate` service. From the
+immutable extracted package, with its images already loaded and verified by the
+runbook preflight, reuse the exact package Compose identity:
+
+```bash
+SSE_COMPOSE=(docker compose --project-name ai-platform-internal \
+  --env-file /absolute/path/to/.env -f compose.yaml -f compose.override.yaml)
+"${SSE_COMPOSE[@]}" stop api worker
+"${SSE_COMPOSE[@]}" run --rm --no-deps --pull never --entrypoint python migrate \
+  /app/tools/retire_legacy_sse_streams.py --before "$CUTOVER_BEFORE"
+"${SSE_COMPOSE[@]}" run --rm --no-deps --pull never --entrypoint python migrate \
+  /app/tools/retire_legacy_sse_streams.py --before "$CUTOVER_BEFORE" --apply
+```
+
+Use the same authorized Docker command as `deploy.py` when sudo is required.
+Do not omit the package files/project options or create a second Compose project.
+
+The first command inventories only. Apply refuses any selected Run that has not
+reached a terminal state. In one transaction it closes old SSE leases, revokes
+old stream authorities, supersedes pending terminal intents, aborts incomplete
+successor builds, and clears retired publication scheduling from canonical
+callback facts. Previously suppressed or inconsistent records remain excluded
+from ordinary-user projections. Run/Attempt state, final result bodies, semantic
+identities, callback receipts and audit content are retained. Redis keys are not
+deleted; old readers are denied by revoked authority and keys expire by TTL.
+
+Keep producers stopped between this operation and the normal release migration.
+`applied: true` means commit was acknowledged. A failure before commit reports
+`applied: false`; lost commit acknowledgement reports `applied: null` with
+`legacy_sse_commit_uncertain`. In that case, inspect the inventory through a new
+connection before deciding whether to repeat the operation. A successful repeat
+preserves the revocation epoch and prior suppression. Migration refuses any of
+the seven publication columns or suppression/scheduling metadata still populated,
+and also refuses a partially present legacy column set before any drop. Operators
+must resolve that inconsistent layout rather than infer retirement from a missing
+marker column. The migration then removes retired tables, columns, indexes and
+obsolete index receipts.
+This schema change is not compatible with restoring an older backend image;
+recovery after migration must use the Stream-only contract.
+Do not use this command as proof that the remaining source cutover, tests,
+independent review or deployment acceptance has completed.
 
 ## Release-atomic rule
 
-The release-atomic v4 cutover is accepted only as a complete set. CI and the
-release authority reject any candidate where exactly one of these old/new
-behaviors remains:
+A candidate is blocked if any of these remain:
 
-- producer admission can commit a public or terminal event before the same
-  transaction prepares stream authority;
-- pending public rows, including cancellation and retry-delayed rows, lack one
-  production-owned durable drain path;
-- Redis publication holds PostgreSQL locks or accepts a blank, malformed, or
-  mismatched receipt as success;
-- missing terminal history reconstructs the active incarnation, or successor
-  activation does not re-lock the Run/current Attempt and compare claim token,
-  expiry, source fingerprint, item count, and persisted Redis receipt;
-- the Chat stream emits anything other than strict v4 public events and
-  controls with the accepted Redis cursor, or replay and live paths use
-  different projection rules;
-- frontend can invent a transport ID, advance a cursor before reducer or
-  terminal-hydration acceptance, disconnect on a valid semantic duplicate, or
-  let `stream.end` become a second terminal authority;
-- active production code imports the legacy v3 frontend adapter or a selectable
-  v3/v4 runtime flag remains;
-- generated Python/TypeScript artifacts differ from the one v4 JSON Schema;
-- terminal/`stream.end` can publish before the frozen PostgreSQL intent commits;
-- API, worker, executor, frontend, workflow, checker, or release documentation
-  disagrees on the active v4 design and projection versions.
+- SDK dispatch before confirmed stream admission;
+- callback acknowledgement before its facts commit and its Redis batch appends;
+- Redis I/O while the caller holds PostgreSQL transaction locks;
+- Run cancellation/terminal or callback publication overtaking an earlier committed counterpart, or terminal publication before Run finalization;
+- publication queues/claims, independent terminal intents, Pub/Sub producers/subscribers, pending-admission scans or successor builders;
+- missing-stream reconstruction or PostgreSQL browser polling;
+- different projection rules for replay and XREAD;
+- frontend cursor mutation before reducer/hydrate acceptance, invented IDs, a v3 adapter/fallback, or a second terminal authority;
+- generated contract drift or disagreement among source, CI and owning documents;
+- dropping unretired state, losing suppressed visibility, modifying business facts or accepting an older binary after migration.
 
-Release preparation verifies the exact source SHA, immutable API/worker and
-frontend image digests, generated v4 protocol artifacts, required workflow
-results, and configuration fingerprint. The dedicated negative checker, CI, and
-release preparation own those separate facts. Intermediate main commits may
-exist only when production admission is provably dormant and release
-verification rejects incomplete evidence.
+Release preparation binds the exact source SHA, required workflow results,
+immutable application image digests and generated v4 artifacts. Local checks
+cannot establish those release facts. After schema `2026.09.11.1`, an older
+backend is incompatible. Recovery uses a compatible package or the separately
+authorized database backup procedure; the deployment entry does not perform
+speculative binary/database rollback.
 
-Rollback is an immutable prior reviewed image. The current image contains no
-hidden legacy runtime flag. Active v4 work must drain, safely pause, or
-terminalize before rollback; a prior image must never reinterpret v4 durable
-rows, receipts, successor claims, or cursors as an older protocol.
+## Retirement inventory and retained consumers
+
+| Surface | Disposition and inspection evidence |
+| --- | --- |
+| `application/live_fanout.py`, `infrastructure/redis_live.py` | deleted; no Pub/Sub live transport; cutover checker and XREAD/replay tests own absence |
+| `infrastructure/postgres_v4.py`, `publication_wakeup.py`, publication claims/drains and pending-admission scans | deleted; direct callback/Run publishers and lifecycle tests inspect every production caller |
+| `application/recovery_v4.py`, `infrastructure/redis_v4_rebuild.py` | deleted; missing-stream tests prove no reconstruction or new keys |
+| `sse_terminal_publication_intents`, `sse_stream_rebuilds`, `sse_stream_rebuild_items` | explicit retirement then schema-local drop; real PostgreSQL retirement/migration tests |
+| seven `run_events.stream_publication_*` columns and their indexes/ledger receipts | guard/clear/drop; real residual-state refusal and obsolete-index cleanup checks |
+| `app/streaming/contracts.py` and v3 schema/generator/frontend generated type/adapter | deleted; current API exports and generated-v4/negative-import checks |
+| `test_streaming_live.py`, `test_streaming_publication_wakeup.py`, `test_sse_v3_contract_generation.py`, frontend `publicRunStreamV3.test.ts` | deleted; CI/package selectors now cover direct callbacks, XREAD and retirement |
+| legacy-named `test_lambchat_sse_v21.py` | existing CI selector retained; its entire active content tests v4 route behavior, not a v2.1 runtime |
+| legacy `sev_` terminal-row projection exception and unused old read-count constant | deleted; current Run terminal producer uses `evt4_run_`; stream-open control identities and authorized historical messages keep their existing consumers |
+| callback-receipt v2.1 | current executor receipt consumer; independently versioned business protocol, not SSE compatibility |
+| opaque Redis `v3` key prefix | retained storage naming only; new runs use the sole v4 runtime; old keys expire without rewriting |
+| historical ledger/message decoders and bounded non-streaming final messages | current authorized history/hydration consumers; no live producer or polling fallback; retirement-history and answer-receipt tests preserve visibility and content |
+| Run/Attempt, executor reconciliation, cancellation, artifact/file outboxes, final answers and audit | preserved business owners; none is a browser publication queue |
+
+Reviewers inspect or rerun the inventory against the actual diff. A checklist
+alone is not absence proof. Historical ADRs retain prior decisions with explicit
+supersession; active wire/control/operations instructions follow ADR 0013.
 
 ## Negative cutover checker
 
-`tools/check_sse_runtime_cutover.py --scope full` is a required source gate. It
-uses Python AST/import analysis plus bounded TypeScript/source checks and fails
-closed on an unknown scope. Every failure names the file and symbol/data flow.
-It rejects:
+`python tools/check_sse_runtime_cutover.py --scope full` is a required source
+gate. Python AST/import checks and bounded frontend/source checks reject:
 
-- `chat_session_stream` calling PostgreSQL event-list/page/fold helpers,
-  `asyncio.sleep`, a blocking Redis `XREAD`, or a status/history live fallback;
-- worker or runtime callback `assistant_delta` routing to a second publisher;
-- Redis publication from callback, worker, or nested transaction helpers;
-- missing transaction-scoped v4 admission before SDK dispatch or missing the
-  single committed-event publication handoff;
-- per-browser blocking Redis reads or retired v2.1 stream markers;
-- Redis append without atomic `XADD` plus TTL refresh plus `PUBLISH`;
-- generated Python or TypeScript v4 artifacts that differ from the one v4 JSON
-  Schema;
-- frontend event-ID UUID fallback, accepted cursor mutation before successful
-  reducer commit, reconnect without `Last-Event-ID`, or an active v3 adapter,
-  selector, or fallback in the production connection path;
-- runtime approval events entering the public frontend handler; and
-- missing required no-buffer/no-transform gateway configuration.
+- PostgreSQL event/page/fold readers or status/history polling in the live route;
+- a second assistant-text ingress or unlisted publication owner;
+- Redis access inside callback, Worker or nested transaction helpers;
+- SDK dispatch before v4 admission, missing direct publication handoffs, or retired runtime imports;
+- Pub/Sub and successor runtime paths, v3 frontend negotiation or generated-contract drift;
+- cursor invention/mutation before acceptance or reconnect without `Last-Event-ID`;
+- private approval events at the frontend boundary or missing SSE gateway controls.
 
-The checker is one source gate, not the complete release evidence collector.
-The required workflow separately executes its selected schema-contract, real
-Redis/PostgreSQL, frontend projection, and image-provenance owners; the checker
-itself owns generated-artifact drift. Standalone owning tests not selected by a
-required job remain useful repository evidence but are not represented here as
-executed release evidence. Checker tests use structural fixtures and execute the
-checker; a test that only searches for one string does not satisfy this gate.
+Bounded per-browser XREAD is required by the current contract. Tests execute the
+checker against structural fixtures; source strings alone are not runtime
+proof. Required workflow service-backed, frontend and image checks remain
+separate evidence owners.
 
 ## SSE application and Nginx contract
 
@@ -130,15 +164,15 @@ add_header X-Accel-Buffering no always;
 ```
 
 The response is not compressed or transformed. A heartbeat comment occurs
-within the accepted read-idle budget and carries no event ID. Each browser queue
-has explicit event/byte/deadline bounds and closes rather than buffering without
-limit. The process-level Pub/Sub feed has explicit disconnect/teardown behavior
-and never substitutes process memory for replay.
+within the accepted read-idle budget and carries no event ID. Each request reads
+at most 128 entries from the bounded read pool and observes gateway send
+deadlines. Cancellation tears down the blocked read. There is no browser event
+queue or process-level Pub/Sub feed; process memory is not replay authority.
 
-The existing `frontend/web/nginx.conf.template` already disables proxy and
-request buffering for `/api/`; implementation extends it only with missing
-cache/compression/header rules and a correctly scoped SSE timeout. It must not
-duplicate conflicting locations or weaken other API routes.
+The existing dedicated SSE location in `frontend/web/nginx.conf.template` owns
+these rules and suppresses upstream content encoding. It must not be bypassed by
+an earlier regex/preferred prefix, duplicate a conflicting location or weaken
+other API routes.
 
 ASGI `send` completion is application-to-protocol-server handoff, not proof of
 browser receipt. The revocation acceptance boundary is the owned application/
@@ -153,14 +187,14 @@ pytest for bounded suites. Required affected gates include:
 
 - backend compile/import checks;
 - generated protocol regeneration and cross-language fixtures;
-- deterministic callback/Redis append-plus-publish/coalescer/authorization/
-  terminal unit suites under workspace-local `--basetemp .pytest-tmp/...`;
-- shared-feed attach race, overlap dedupe, disconnect, teardown, and per-browser
-  event/byte overflow tests;
+- deterministic callback/Redis batch/coalescer/authorization/terminal suites
+  through `tools/run_test_stage.py`, with unique workspace-local basetemp/JUnit;
+- initial replay, predecessor trim, append-after-tail XREAD, cancellation, pool
+  cleanup, missing/expired Stream, terminal race and exact receipt tests;
 - committed semantic producer tests proving the strict Skill/tool execution
   projection reaches the Redis reader contract without raw payload fields;
 - opt-in real PostgreSQL and real Redis selectors when services are locally
-  available, reported as unavailable rather than passed otherwise;
+  available, with `--require-zero-skips`; unavailable services are not a pass;
 - callback response-loss and Redis unknown-outcome fault injection;
 - negative cutover checker and its structural fixture tests;
 - frontend SSE parser/handler/reducer tests, scoped lint, TypeScript check,
@@ -186,14 +220,15 @@ and browser build:
   bytes, reconnect/slow-consumer mix, stop conditions, raw counts, and no hidden
   retry of failures;
 - two independent readers on one API and across API replicas, reconnect within
-  retained history, forced trim, missing key, Redis/PubSub restart, attach-time
-  publication, overlapping native IDs after rebuild, gap and durable hydrate;
+  retained history, forced trim, missing key, Redis restart, publication after
+  tail capture, foreign/incarnation cursor rejection, gap and durable hydrate;
 - Redis unavailable at admission proving zero SDK dispatch; mid-run outage for
   eligible completion, bounded memory, no PostgreSQL delta fallback, and
   truthful terminal convergence;
 - callback HTTP response loss, duplicate batch conflict, Redis `XADD` unknown
   outcomes, PG terminal rollback, PG commit plus terminal Redis unknown outcome,
-  reconciler retry, and exact terminal payload digest;
+  callback/terminal commit-to-append races, partial terminal/end retry, unchanged
+  business facts and exact terminal payload digest;
 - authorization-epoch commits across API replicas, blocked live wait, slow
   downstream delivery, instance restart/loss, renewal denial, and no old-epoch
   application/gateway frame after the recorded <=15-second lease deadline;
@@ -202,7 +237,7 @@ and browser build:
   progressive rendering/final replacement;
 - ordinary-user privacy scan proving no raw command/tool payload, hidden
   reasoning, credentials, paths, or storage keys;
-- connection/pool cleanup to baseline and immutable-image rollback behavior.
+- connection/pool cleanup to baseline and compatible-package failure recovery.
 
 Fifty-concurrency acceptance is a measured result, not inferred from unit tests
 or the `50 / 0.04 ~= 1250 frames/s` sizing model. Browser-chain closure requires
@@ -287,7 +322,7 @@ directory and is never part of the exportable packet.
 
    With at least two API replicas, the inventory includes: two readers on one
    replica, readers across replicas, retained replay, forced trim and durable
-   hydrate, missing Redis key, Pub/Sub restart, attach-time publication, slow
+   hydrate, missing Redis key, Redis restart, publication after tail capture, slow
    consumer, authorization-epoch change during a blocked wait, renewal denial,
    API instance loss, callback response loss, and terminal Redis unknown outcome.
    Every case records expected and observed event/cursor, reconnect latency, last

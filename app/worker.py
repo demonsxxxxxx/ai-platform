@@ -104,10 +104,10 @@ from app.runtime.sandbox.executor_client import (
 from app.settings import get_settings
 from app.streaming.api import (
     WorkerV4Capabilities,
-    admit_v4_stream, drain_pending_v4_events,
+    admit_v4_stream,
     finalize_parent_and_publish,
-    persist_and_publish_worker_event,
-    publish_pending_run_terminal,
+    persist_worker_event,
+    publish_run_event,
 )
 from app.streaming.worker_projection import persist_worker_failure_event
 from app.skills.api import restore_admitted_skill_manifest_authority
@@ -2423,7 +2423,7 @@ async def process_run_payload(
                 terminal_after_transaction.payload,
                 terminal_after_transaction.reconciled_parent,
             )
-            await publish_pending_run_terminal(
+            await publish_run_event(
                 v4_capabilities,
                 tenant_id=terminal_after_transaction.payload.tenant_id,
                 run_id=terminal_after_transaction.payload.run_id,
@@ -2438,10 +2438,9 @@ async def process_run_payload(
     ) -> None:
         if event_type == "assistant_delta":
             raise WorkerDirectAssistantDeltaError
-        if await persist_and_publish_worker_event(
+        if await persist_worker_event(
             v4_capabilities,
             run_payload=run_payload,
-            attempt_id=attempt_id,
             persist_event=True,
             event_type=event_type,
             stage=stage,
@@ -2757,8 +2756,8 @@ async def process_run_payload(
         result_payload["skills"] = skill_snapshot
     if agent_capability_state is not None:
         result_payload["capability_state"] = agent_capability_state.public_projection()
-    assistant_message_for_persistence, assistant_message_metadata, answer_receipt = None, {}, result.executor_payload.get("answer_receipt")
-    await drain_pending_v4_events(v4_capabilities, tenant_id=payload.tenant_id, run_id=payload.run_id, attempt_id=attempt_id) if result.status == "succeeded" and answer_receipt is not None else None
+    assistant_message_for_persistence: str | None = None
+    assistant_message_metadata: dict[str, Any] = {}
     reconciled_parent = None
     try:
         async with transaction_factory() as conn:

@@ -16,34 +16,19 @@ from redis.exceptions import ResponseError
 
 from app.settings import get_settings
 from app.streaming.api import (
-    STREAM_KEY_PREFIX as STREAM_KEY_PREFIX,
-    redis_id_tuple as _redis_id_tuple,
-    stream_key,
-    stream_live_channel,
-)
-from app.streaming.contracts import (
-    PUBLIC_EVENT_TYPES as PUBLIC_EVENT_TYPES,
-    STREAM_EVENT_SCHEMA,
-    STREAM_GAP_SCHEMA as STREAM_GAP_SCHEMA,
-    STREAM_PROJECTION_VERSION,
-    ResumeDecision,
     StreamContractError,
-    StreamCursor,
-    StreamEntry,
-    StreamEnvelope,
-    StreamGap,
-    StreamProjectionError as StreamProjectionError,
-    _rfc3339_utc,
     canonical_json_bytes,
-    stable_event_id as stable_event_id,
-    validate_public_payload as validate_public_payload,
+    stream_key,
+    tenant_scope as _tenant_scope,
 )
 
+tenant_scope = _tenant_scope
+
 SSE_PUBLISH_MAX_CONNECTIONS = 16
+SSE_READ_MAX_CONNECTIONS = 256
 SSE_STREAM_MAXLEN = 10000
 SSE_STREAM_ACTIVE_IDLE_TTL_MS = 7200000
 SSE_STREAM_TERMINAL_TTL_MS = 7200000
-SSE_STREAM_READ_COUNT = 128
 SSE_AUTHORITY_LEASE_SECONDS = 15
 _REDIS_CONNECT_TIMEOUT_SECONDS = 2
 _REDIS_PUBLISH_TIMEOUT_SECONDS = 5
@@ -51,13 +36,13 @@ _REDIS_PUBLISH_TIMEOUT_SECONDS = 5
 _APPEND_WITH_TTL_LUA = """
 local phase=redis.call('HGET',KEYS[2],'phase')
 local request_protocol=ARGV[8]
-if not request_protocol or request_protocol == '' then request_protocol='v3' end
+if request_protocol ~= 'v4' then return redis.error_reply('stream_protocol_invalid') end
 if phase then
   local stored_protocol=redis.call('HGET',KEYS[2],'open_protocol')
-  if not stored_protocol or stored_protocol == '' then stored_protocol='v3' end
   if stored_protocol ~= request_protocol then
     return redis.error_reply('stream_protocol_conflict')
   end
+  if redis.call('XLEN',KEYS[1]) == 0 then return redis.error_reply('stream_missing') end
 end
 if ARGV[5] == 'stream_open' then
   if phase
@@ -89,8 +74,7 @@ elseif ARGV[5] == 'end' then
   if phase ~= 'terminal' or terminal_event_id ~= ARGV[7] then return redis.error_reply('stream_end_without_terminal') end
 else
   if phase ~= 'open' then return redis.error_reply('stream_terminal_closed') end
-  if request_protocol == 'v4'
-     and redis.call('HGET',KEYS[2],'last_event_id') == ARGV[2] then
+  if redis.call('HGET',KEYS[2],'last_event_id') == ARGV[2] then
     if redis.call('HGET',KEYS[2],'last_event_digest') ~= ARGV[6] then
       return redis.error_reply('stream_event_receipt_conflict')
     end
@@ -98,26 +82,25 @@ else
     return redis.call('HGET',KEYS[2],'last_event_redis_id')
   end
 end
+if ARGV[5] == 'terminal' or ARGV[5] == 'run.cancel_requested' then
+  local source=cjson.decode(ARGV[3]).source
+  if tonumber(redis.call('HGET',KEYS[2],'callback_sequence') or '0') < (source.callback_sequence or 0) then
+    return redis.error_reply('stream_callback_pending')
+  end
+end
 local id=redis.call('XADD',KEYS[1],'MAXLEN','~',ARGV[1],'*','envelope',ARGV[3])
 if ARGV[5] == 'stream_open' then
-  if request_protocol == 'v4' then
-    redis.call('HSET',KEYS[2],'phase','open','open_event_id',ARGV[2],'open_digest',ARGV[6],'open_redis_id',id,'open_protocol',request_protocol)
-  else
-    redis.call('HSET',KEYS[2],'phase','open','open_event_id',ARGV[2],'open_digest',ARGV[6],'open_redis_id',id)
-  end
+  redis.call('HSET',KEYS[2],'phase','open','open_event_id',ARGV[2],'open_digest',ARGV[6],'open_redis_id',id,'open_protocol',request_protocol)
 end
 if ARGV[5] == 'terminal' then
   redis.call('HSET',KEYS[2],'phase','terminal','terminal_event_id',ARGV[2],'terminal_digest',ARGV[6],'terminal_redis_id',id)
 end
 if ARGV[5] == 'end' then
   redis.call('HSET',KEYS[2],'phase','ended','end_event_id',ARGV[2],'end_digest',ARGV[6],'end_redis_id',id)
-elseif request_protocol == 'v4' and ARGV[5] ~= 'stream_open' and ARGV[5] ~= 'terminal' then
+elseif ARGV[5] ~= 'stream_open' and ARGV[5] ~= 'terminal' then
   redis.call('HSET',KEYS[2],'last_event_id',ARGV[2],'last_event_digest',ARGV[6],'last_event_redis_id',id)
 end
 redis.call('PEXPIRE',KEYS[1],ARGV[4]);redis.call('PEXPIRE',KEYS[2],ARGV[4])
-if ARGV[9] ~= 'no_live' then
-  redis.call('PUBLISH',KEYS[3],cjson.encode({redis_id=id,envelope=ARGV[3]}))
-end
 return id
 """.strip()
 
@@ -128,6 +111,7 @@ _SCRIPT_CONTRACT_ERRORS = frozenset(
         "stream_missing",
         "stream_open_conflict",
         "stream_protocol_conflict",
+        "stream_protocol_invalid",
         "stream_terminal_closed",
         "stream_terminal_conflict",
     }
@@ -136,16 +120,6 @@ _SCRIPT_CONTRACT_ERRORS = frozenset(
 
 class StreamTransportUnavailable(RuntimeError):
     pass
-
-
-@dataclass(frozen=True, slots=True)
-class RedisV4CandidateInspection:
-    """Narrow same-owner readback for one reserved v4 candidate."""
-
-    stream_exists: bool
-    state_exists: bool
-    rows: tuple[tuple[object, Mapping[object, object]], ...]
-    state: Mapping[object, object]
 
 
 class RedisStreamBridge:
@@ -163,58 +137,20 @@ class RedisStreamBridge:
             socket_timeout=_REDIS_PUBLISH_TIMEOUT_SECONDS,
             **common_options,
         )
+        self._read_client = publish_client if publish_client is not None else Redis.from_url(
+            redis_url,
+            max_connections=SSE_READ_MAX_CONNECTIONS,
+            socket_timeout=10,
+            **common_options,
+        )
 
     async def aclose(self) -> None:
         if self._owns_publish_client:
-            await self._publish_client.aclose()
+            try:
+                await self._read_client.aclose()
+            finally:
+                await self._publish_client.aclose()
 
-    async def inspect_v4_candidate(
-        self,
-        *,
-        tenant_scope_value: str,
-        run_id: str,
-        stream_incarnation: int,
-    ) -> RedisV4CandidateInspection:
-        """Read one v4 candidate through the bridge's owned Redis client."""
-
-        key = stream_key(
-            tenant_scope_value=tenant_scope_value,
-            run_id=run_id,
-            stream_incarnation=stream_incarnation,
-        )
-        state_key = f"{key}:state"
-        try:
-            stream_exists = bool(await self._publish_client.exists(key))
-            state_exists = bool(await self._publish_client.exists(state_key))
-            rows = tuple(await self._publish_client.xrange(key, min="-", max="+"))
-            state = dict(await self._publish_client.hgetall(state_key))
-        except Exception as exc:
-            raise StreamTransportUnavailable("stream_candidate_inspection_unavailable") from exc
-        return RedisV4CandidateInspection(
-            stream_exists=stream_exists,
-            state_exists=state_exists,
-            rows=rows,
-            state=state,
-        )
-
-    async def discard_v4_candidate(
-        self,
-        *,
-        tenant_scope_value: str,
-        run_id: str,
-        stream_incarnation: int,
-    ) -> None:
-        """Remove both keys owned by an incomplete dormant v4 candidate."""
-
-        key = stream_key(
-            tenant_scope_value=tenant_scope_value,
-            run_id=run_id,
-            stream_incarnation=stream_incarnation,
-        )
-        try:
-            await self._publish_client.delete(key, f"{key}:state")
-        except Exception as exc:
-            raise StreamTransportUnavailable("stream_candidate_discard_unavailable") from exc
 
     async def append_canonical(
         self,
@@ -226,26 +162,15 @@ class RedisStreamBridge:
         event_type: str,
         envelope_bytes: bytes,
         terminal_event_id: str = "",
-        protocol: str = "v4",
-        publish_live: bool = True,
     ) -> str:
-        """Append a validated canonical envelope through the frozen Lua authority."""
-        if protocol not in {"v3", "v4"}:
-            raise StreamContractError("stream_protocol_invalid")
-        if not isinstance(publish_live, bool):
-            raise StreamContractError("stream_live_mode_invalid")
+        """Append a validated v4 envelope through the shared Lua operation."""
 
         key = stream_key(
             tenant_scope_value=tenant_scope_value,
             run_id=run_id,
             stream_incarnation=stream_incarnation,
         )
-        live_channel = stream_live_channel(
-            tenant_scope_value=tenant_scope_value,
-            run_id=run_id,
-            stream_incarnation=stream_incarnation,
-        )
-        terminal = event_type in {"terminal", "end", "stream.end", "run.succeeded", "run.cancelled", "run.failed"}
+        terminal = event_type in {"stream.end", "run.succeeded", "run.cancelled", "run.failed"}
         transport_type = {
             "stream.open": "stream_open",
             "stream.end": "end",
@@ -254,10 +179,9 @@ class RedisStreamBridge:
         try:
             args: list[object] = [
                 _APPEND_WITH_TTL_LUA,
-                3,
+                2,
                 key,
                 f"{key}:state",
-                live_channel,
                 SSE_STREAM_MAXLEN,
                 event_id,
                 envelope_bytes.decode("utf-8"),
@@ -265,10 +189,8 @@ class RedisStreamBridge:
                 transport_type,
                 _sha256(envelope_bytes),
                 terminal_event_id,
-                protocol,
+                "v4",
             ]
-            if not publish_live:
-                args.append("no_live")
             redis_id = await self._publish_client.eval(*args)
             return redis_id.decode() if isinstance(redis_id, bytes) else str(redis_id)
         except ResponseError as exc:
@@ -278,231 +200,6 @@ class RedisStreamBridge:
             raise StreamTransportUnavailable("stream_append_unavailable") from exc
         except Exception as exc:
             raise StreamTransportUnavailable("stream_append_unavailable") from exc
-
-    async def append(
-        self, envelope: StreamEnvelope, *, terminal: bool = False
-    ) -> StreamCursor:
-        if terminal != (envelope.event_type in {"terminal", "end"}):
-            raise StreamContractError("stream_ttl_class_mismatch")
-        ttl = SSE_STREAM_TERMINAL_TTL_MS if terminal else SSE_STREAM_ACTIVE_IDLE_TTL_MS
-        key = stream_key(
-            tenant_scope_value=envelope.tenant_scope,
-            run_id=envelope.run_id,
-            stream_incarnation=envelope.stream_incarnation,
-        )
-        live_channel = stream_live_channel(
-            tenant_scope_value=envelope.tenant_scope,
-            run_id=envelope.run_id,
-            stream_incarnation=envelope.stream_incarnation,
-        )
-        envelope_bytes = envelope.canonical_bytes
-        digest = _sha256(envelope_bytes)
-        terminal_event_id = str(envelope.payload.get("terminal_event_id") or "")
-        try:
-            redis_id = await self._publish_client.eval(
-                _APPEND_WITH_TTL_LUA,
-                3,
-                key,
-                f"{key}:state",
-                live_channel,
-                SSE_STREAM_MAXLEN,
-                envelope.event_id,
-                envelope_bytes.decode(),
-                ttl,
-                envelope.event_type,
-                digest,
-                terminal_event_id,
-            )
-            redis_id = redis_id.decode() if isinstance(redis_id, bytes) else redis_id
-            return StreamCursor(envelope.run_id, envelope.stream_incarnation, redis_id)
-        except StreamContractError:
-            raise
-        except ResponseError as exc:
-            reason = next(
-                (value for value in _SCRIPT_CONTRACT_ERRORS if value in str(exc)), None
-            )
-            if reason is not None:
-                raise StreamContractError(reason) from exc
-            raise StreamTransportUnavailable("stream_append_unavailable") from exc
-        except Exception as exc:
-            raise StreamTransportUnavailable("stream_append_unavailable") from exc
-
-    async def retained_bounds(
-        self, *, tenant_scope_value: str, run_id: str, stream_incarnation: int
-    ) -> tuple[StreamEntry, StreamEntry] | None:
-        key = stream_key(
-            tenant_scope_value=tenant_scope_value,
-            run_id=run_id,
-            stream_incarnation=stream_incarnation,
-        )
-        try:
-            first = await self._publish_client.xrange(key, min="-", max="+", count=1)
-            last = await self._publish_client.xrevrange(key, max="+", min="-", count=1)
-        except Exception as exc:
-            raise StreamTransportUnavailable("stream_bounds_unavailable") from exc
-        if not first and not last:
-            return None
-        if not first or not last:
-            raise StreamTransportUnavailable("stream_bounds_unproven")
-        return self._decode(first[0], run_id, stream_incarnation), self._decode(
-            last[0], run_id, stream_incarnation
-        )
-
-    async def resolve_resume(
-        self,
-        *,
-        tenant_scope_value: str,
-        run_id: str,
-        current_stream_incarnation: int,
-        last_event_id: str | None,
-    ) -> ResumeDecision:
-        cursor = (
-            StreamCursor.parse(last_event_id, run_id=run_id) if last_event_id else None
-        )
-        if cursor and cursor.stream_incarnation > current_stream_incarnation:
-            raise StreamContractError("stream_cursor_future_incarnation")
-        if cursor and cursor.stream_incarnation < current_stream_incarnation:
-            return ResumeDecision(
-                None,
-                StreamGap(
-                    "stream_incarnation_mismatch",
-                    cursor.event_id,
-                    cursor.stream_incarnation,
-                    current_stream_incarnation,
-                ),
-            )
-        bounds = await self.retained_bounds(
-            tenant_scope_value=tenant_scope_value,
-            run_id=run_id,
-            stream_incarnation=current_stream_incarnation,
-        )
-        if bounds is None:
-            return ResumeDecision(
-                None,
-                StreamGap(
-                    "stream_missing",
-                    cursor.event_id if cursor else None,
-                    cursor.stream_incarnation if cursor else None,
-                    current_stream_incarnation,
-                ),
-            )
-        first, last = bounds
-        if cursor is None:
-            gap = (
-                None
-                if first.envelope.event_type == "stream_open"
-                else StreamGap(
-                    "retained_history_unavailable",
-                    None,
-                    None,
-                    current_stream_incarnation,
-                    first.cursor.event_id,
-                    last.cursor.event_id,
-                )
-            )
-            return ResumeDecision("0-0" if gap is None else None, gap)
-        if _redis_id_tuple(cursor.redis_id) > _redis_id_tuple(last.cursor.redis_id):
-            raise StreamContractError("stream_cursor_future_redis_id")
-        if _redis_id_tuple(cursor.redis_id) < _redis_id_tuple(first.cursor.redis_id):
-            return ResumeDecision(
-                None,
-                StreamGap(
-                    "retained_history_unavailable",
-                    cursor.event_id,
-                    cursor.stream_incarnation,
-                    current_stream_incarnation,
-                    first.cursor.event_id,
-                    last.cursor.event_id,
-                ),
-            )
-        key = stream_key(
-            tenant_scope_value=tenant_scope_value,
-            run_id=run_id,
-            stream_incarnation=current_stream_incarnation,
-        )
-        try:
-            exact = await self._publish_client.xrange(
-                key, min=cursor.redis_id, max=cursor.redis_id, count=1
-            )
-        except Exception as exc:
-            raise StreamTransportUnavailable(
-                "stream_cursor_lookup_unavailable"
-            ) from exc
-        gap = (
-            None
-            if exact
-            else StreamGap(
-                "stream_continuity_unproven",
-                cursor.event_id,
-                cursor.stream_incarnation,
-                current_stream_incarnation,
-                first.cursor.event_id,
-                last.cursor.event_id,
-            )
-        )
-        return ResumeDecision(cursor.redis_id if gap is None else None, gap)
-
-    async def replay_page(
-        self,
-        *,
-        tenant_scope_value: str,
-        run_id: str,
-        stream_incarnation: int,
-        after_redis_id: str,
-        through_redis_id: str,
-    ) -> tuple[StreamEntry, ...]:
-        after = _redis_id_tuple(after_redis_id)
-        through = _redis_id_tuple(through_redis_id)
-        if after >= through:
-            return ()
-        key = stream_key(
-            tenant_scope_value=tenant_scope_value,
-            run_id=run_id,
-            stream_incarnation=stream_incarnation,
-        )
-        try:
-            rows = await self._publish_client.xrange(
-                key,
-                min=f"({after_redis_id}",
-                max=through_redis_id,
-                count=SSE_STREAM_READ_COUNT,
-            )
-        except Exception as exc:
-            raise StreamTransportUnavailable("stream_replay_unavailable") from exc
-        return tuple(
-            self._decode(row, run_id, stream_incarnation) for row in rows or ()
-        )
-
-    def decode_live_publication(
-        self,
-        *,
-        redis_id: str,
-        envelope_json: str,
-        run_id: str,
-        stream_incarnation: int,
-    ) -> StreamEntry:
-        return self._decode(
-            (redis_id, {"envelope": envelope_json}),
-            run_id,
-            stream_incarnation,
-        )
-
-    @staticmethod
-    def _decode(row: object, run_id: str, incarnation: int) -> StreamEntry:
-        if (
-            not isinstance(row, (tuple, list))
-            or len(row) != 2
-            or not isinstance(row[1], Mapping)
-        ):
-            raise StreamContractError("stream_entry_invalid")
-        redis_id, fields = row
-        redis_id = redis_id.decode() if isinstance(redis_id, bytes) else redis_id
-        envelope = StreamEnvelope.from_json(
-            fields.get("envelope", fields.get(b"envelope"))
-        )
-        if envelope.run_id != run_id or envelope.stream_incarnation != incarnation:
-            raise StreamContractError("stream_entry_authority_mismatch")
-        return StreamEntry(StreamCursor(run_id, incarnation, redis_id), envelope)
 
 
 class SseAuthorityConflictError(ValueError):
@@ -545,23 +242,6 @@ class SseAuthorityLease:
         return now < deadline
 
 
-@dataclass(frozen=True, slots=True)
-class TerminalPublicationIntent:
-    intent_id: str
-    tenant_id: str
-    run_id: str
-    attempt_id: str
-    stream_incarnation: int
-    terminal_event_id: str
-    end_event_id: str
-    terminal_payload_bytes: str
-    terminal_payload_digest: str
-    end_payload_bytes: str
-    end_payload_digest: str
-    emitted_at: str
-    state: str = "pending"
-
-
 def _sha256(value: str | bytes) -> str:
     return hashlib.sha256(
         value.encode() if isinstance(value, str) else value
@@ -592,49 +272,8 @@ def _authority(row: Mapping[str, object]) -> StreamAuthority:
         raise SseAuthorityConflictError("sse_stream_authority_unavailable") from exc
 
 
-def _intent(row: Mapping[str, object]) -> TerminalPublicationIntent:
-    try:
-        return TerminalPublicationIntent(
-            str(row["id"]),
-            *(str(row[key]) for key in ("tenant_id", "run_id", "attempt_id")),
-            int(row["stream_incarnation"]),
-            *(
-                str(row[key])
-                for key in (
-                    "terminal_event_id",
-                    "end_event_id",
-                    "terminal_payload_bytes",
-                    "terminal_payload_digest",
-                    "end_payload_bytes",
-                    "end_payload_digest",
-                    "emitted_at",
-                    "state",
-                )
-            ),
-        )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise SseAuthorityConflictError("sse_terminal_intent_unavailable") from exc
-
-
 def _semantic_id(kind: str, *parts: object) -> str:
     return f"sev_{_sha256(canonical_json_bytes([kind, *parts]))}"
-
-
-def stream_open_event_id(
-    *, tenant_scope: str, run_id: str, attempt_id: str, incarnation: int
-) -> str:
-    return _semantic_id(
-        "ai-platform-stream-open-v3", tenant_scope, run_id, attempt_id, incarnation
-    )
-
-
-def terminal_event_ids(
-    *, tenant_scope: str, run_id: str, attempt_id: str, incarnation: int
-) -> tuple[str, str]:
-    base = (tenant_scope, run_id, attempt_id, incarnation)
-    return _semantic_id(
-        "ai-platform-stream-terminal-v3", *base, "terminal"
-    ), _semantic_id("ai-platform-stream-terminal-v3", *base, "end")
 
 
 async def create_or_get_stream_admission_v4(
@@ -645,7 +284,7 @@ async def create_or_get_stream_admission_v4(
     attempt_id: str,
     tenant_scope: str,
 ) -> StreamAuthority:
-    """Persist a strict v4 stream.open authority without changing v3 callers."""
+    """Persist and revalidate the canonical stream.open admission receipt."""
 
     from app.streaming.api import build_v4_control
 
@@ -731,14 +370,6 @@ async def confirm_stream_admission(
         """update sse_stream_authorities
            set state = case
                  when state = 'terminal' then 'terminal'
-                 when exists (
-                   select 1
-                   from sse_terminal_publication_intents as intent
-                   where intent.tenant_id = sse_stream_authorities.tenant_id
-                     and intent.run_id = sse_stream_authorities.run_id
-                     and intent.attempt_id = sse_stream_authorities.attempt_id
-                     and intent.stream_incarnation = sse_stream_authorities.stream_incarnation
-                 ) then 'terminal'
                  else 'confirmed'
                end,
                admission_confirmed_at=clock_timestamp(),
@@ -849,154 +480,5 @@ async def commit_sse_revocation(
     return _authority(row)
 
 
-def freeze_terminal_intent(
-    *,
-    tenant_id: str,
-    run_id: str,
-    attempt_id: str,
-    tenant_scope: str,
-    stream_incarnation: int,
-    status: str,
-) -> TerminalPublicationIntent:
-    if status not in {"succeeded", "failed", "cancelled"}:
-        raise ValueError("sse_terminal_status_invalid")
-    terminal_id, end_id = terminal_event_ids(
-        tenant_scope=tenant_scope,
-        run_id=run_id,
-        attempt_id=attempt_id,
-        incarnation=stream_incarnation,
-    )
-    terminal = canonical_json_bytes(
-        {"event_id": terminal_id, "hydrate_required": True, "status": status}
-    ).decode()
-    end = canonical_json_bytes({"terminal_event_id": terminal_id}).decode()
-    return TerminalPublicationIntent(
-        f"sti_{uuid.uuid4().hex}",
-        tenant_id,
-        run_id,
-        attempt_id,
-        stream_incarnation,
-        terminal_id,
-        end_id,
-        terminal,
-        _sha256(terminal),
-        end,
-        _sha256(end),
-        _rfc3339_utc(datetime.now(timezone.utc)),
-    )
-
-
-async def persist_terminal_intent(
-    conn: AsyncConnection[dict[str, object]], *, intent: TerminalPublicationIntent
-) -> TerminalPublicationIntent:
-    result = await conn.execute(
-        """insert into sse_terminal_publication_intents(id,tenant_id,run_id,attempt_id,stream_incarnation,schema_version,projection_version,terminal_event_id,end_event_id,terminal_payload_bytes,terminal_payload_digest,terminal_payload_size,end_payload_bytes,end_payload_digest,end_payload_size,emitted_at,state) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending') on conflict(tenant_id,run_id,attempt_id) do nothing returning *""",
-        (
-            intent.intent_id,
-            intent.tenant_id,
-            intent.run_id,
-            intent.attempt_id,
-            intent.stream_incarnation,
-            STREAM_EVENT_SCHEMA,
-            STREAM_PROJECTION_VERSION,
-            intent.terminal_event_id,
-            intent.end_event_id,
-            intent.terminal_payload_bytes,
-            intent.terminal_payload_digest,
-            len(intent.terminal_payload_bytes.encode()),
-            intent.end_payload_bytes,
-            intent.end_payload_digest,
-            len(intent.end_payload_bytes.encode()),
-            intent.emitted_at,
-        ),
-    )
-    row = await result.fetchone()
-    if row is None:
-        result = await conn.execute(
-            "select * from sse_terminal_publication_intents where tenant_id=%s and run_id=%s and attempt_id=%s for update",
-            (intent.tenant_id, intent.run_id, intent.attempt_id),
-        )
-        row = await result.fetchone()
-        existing = _intent(row) if row is not None else None
-        expected = (
-            intent.stream_incarnation,
-            intent.terminal_event_id,
-            intent.end_event_id,
-            intent.terminal_payload_digest,
-            intent.end_payload_digest,
-        )
-        actual = (
-            (
-                existing.stream_incarnation,
-                existing.terminal_event_id,
-                existing.end_event_id,
-                existing.terminal_payload_digest,
-                existing.end_payload_digest,
-            )
-            if existing
-            else None
-        )
-        if actual != expected:
-            raise SseAuthorityConflictError("sse_terminal_intent_conflict")
-        return existing
-    return _intent(row)
-
-
-async def ensure_run_terminal_intent(
-    conn: AsyncConnection[dict[str, object]],
-    *,
-    tenant_id: str,
-    run_id: str,
-    status: str,
-) -> TerminalPublicationIntent | None:
-    authority = await get_stream_authority(
-        conn, tenant_id=tenant_id, run_id=run_id, for_update=True
-    )
-    if authority is None:
-        return None
-    intent = await persist_terminal_intent(
-        conn,
-        intent=freeze_terminal_intent(
-            tenant_id=tenant_id,
-            run_id=run_id,
-            attempt_id=authority.attempt_id,
-            tenant_scope=authority.tenant_scope,
-            stream_incarnation=authority.stream_incarnation,
-            status=status,
-        ),
-    )
-    await conn.execute(
-        """update sse_stream_authorities
-           set state = case
-                 when state = 'admission_pending' then 'admission_pending'
-                 else 'terminal'
-               end,
-               updated_at=clock_timestamp()
-           where tenant_id=%s and run_id=%s and attempt_id=%s""",
-        (tenant_id, run_id, authority.attempt_id),
-    )
-    return intent
-
-
-async def get_terminal_intent(
-    conn: AsyncConnection[dict[str, object]], *, tenant_id: str, run_id: str
-) -> TerminalPublicationIntent | None:
-    result = await conn.execute(
-        "select * from sse_terminal_publication_intents where tenant_id=%s and run_id=%s",
-        (tenant_id, run_id),
-    )
-    row = await result.fetchone()
-    return _intent(row) if row is not None else None
-
-
-async def mark_terminal_intent_published(
-    conn: AsyncConnection[dict[str, object]], *, intent: TerminalPublicationIntent
-) -> TerminalPublicationIntent:
-    result = await conn.execute(
-        "update sse_terminal_publication_intents set state='published',published_at=coalesce(published_at,clock_timestamp()),updated_at=clock_timestamp() where id=%s and terminal_payload_digest=%s and end_payload_digest=%s and state in ('pending','published') returning *",
-        (intent.intent_id, intent.terminal_payload_digest, intent.end_payload_digest),
-    )
-    row = await result.fetchone()
-    if row is None:
-        raise SseAuthorityConflictError("sse_terminal_intent_fenced")
-    return _intent(row)
+CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
+_ASSISTANT_DELTA_INPUT_STAGES = frozenset({"message", "assistant"})

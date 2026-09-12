@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 
 from app.runs.api import CancelRequestAuthority, RunTerminalEventFact
-from app.streaming.domain.live import tenant_scope
 from app.streaming.infrastructure import v4 as _v4
+from app.streaming.domain.public_events_v4 import _stable_run_event_id
 from app.streaming.redis import (
     create_or_get_stream_admission_v4,
-    ensure_run_terminal_intent,
+    get_stream_authority,
+    tenant_scope,
 )
 
 
@@ -19,7 +20,7 @@ async def append_current_run_terminal_v4_row(
     tenant_id: str,
     run_id: str,
     load_terminal_event_fact: Callable[..., Awaitable[RunTerminalEventFact | None]],
-) -> str | None:
+) -> Mapping[str, object] | None:
     fact = await load_terminal_event_fact(
         conn,
         tenant_id=tenant_id,
@@ -27,21 +28,23 @@ async def append_current_run_terminal_v4_row(
     )
     if fact is None:
         return None
-    intent = await ensure_run_terminal_intent(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        status=fact.status,
+    authority = await get_stream_authority(
+        conn, tenant_id=tenant_id, run_id=run_id, for_update=True,
     )
-    if intent is None:
+    if authority is None or authority.revocation_state != "active":
         return None
+    # One identity across outcomes makes conflicting terminal facts fail closed.
+    terminal_event_id = _stable_run_event_id(
+        tenant_id, run_id, authority.attempt_id,
+        authority.stream_incarnation, "run.terminal",
+    )
     return await _v4.append_run_terminal_v4_row(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
-        attempt_id=intent.attempt_id,
+        attempt_id=authority.attempt_id,
         status=fact.status,
-        terminal_event_id=intent.terminal_event_id,
+        terminal_event_id=terminal_event_id,
         error_code=fact.error_code,
         reason_code=(
             "timeout"

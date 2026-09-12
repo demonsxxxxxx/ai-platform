@@ -18,7 +18,7 @@ from app.runtime.sandbox.container_provider import create_container_provider
 from app.streaming.api import (
     V4PublicationTransportUnavailable,
     admit_v4_stream,
-    publish_pending_run_terminal,
+    publish_run_event,
 )
 from app.control_plane_contracts import sanitize_public_text
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
@@ -204,7 +204,7 @@ async def admin_run_cancel(
         )
     if cancellation is not None and cancellation.attempt_id:
         try:
-            await publish_pending_run_terminal(
+            await publish_run_event(
                 runtime.worker_capabilities,
                 tenant_id=principal.tenant_id,
                 run_id=cancellation.run_id,

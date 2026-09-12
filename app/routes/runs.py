@@ -93,7 +93,7 @@ from app.streaming.api import (
     V4PublicationTransportUnavailable,
     WorkerV4Capabilities,
     admit_v4_stream,
-    publish_pending_run_terminal,
+    publish_run_event,
 )
 from app.routes.sandbox_runtime_cleanup import (
     SandboxRuntimeCleanupError,
@@ -1764,7 +1764,7 @@ async def cancel_run(
         )
     if cancellation is not None and cancellation.attempt_id:
         try:
-            await publish_pending_run_terminal(
+            await publish_run_event(
                 runtime.worker_capabilities,
                 tenant_id=principal.tenant_id,
                 run_id=cancellation.run_id,

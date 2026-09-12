@@ -36,7 +36,7 @@ current SHAs, exceptions, and evidence results belong in the issue/PR.
 | Data ownership, schema changes, and deletion | [Data lifecycle](architecture/single-enterprise-data-lifecycle.md) |
 | SSE navigation and supersession | [SSE index](architecture/redis-streams-sse-event-channel.md) |
 | SSE bytes, identity, replay, and client acceptance | [SSE wire](architecture/redis-streams-sse-wire-protocol.md) |
-| Stream admission, claims, leases, and recovery | [SSE execution control](architecture/redis-streams-sse-execution-control.md) |
+| Stream admission, direct publication, leases, and hydration | [SSE execution control](architecture/redis-streams-sse-execution-control.md) |
 | Chat display and public terminal errors | [Chat projection](architecture/chat-run-lifecycle-and-public-error-projection.md) |
 | Dependency locks, image builds, and publication | [Packaging](architecture/docker-packaging.md) |
 
@@ -52,10 +52,13 @@ Accepted rationale is recorded in [ADR 0001](adr/0001-agent-app-revision-authori
 [ADR 0005](adr/0005-harness-chat-is-not-a-skill.md),
 [ADR 0006](adr/0006-domain-first-modular-monolith.md),
 [ADR 0007](adr/0007-fixed-browser-authentication-day.md),
-[ADR 0008](adr/0008-agent-sdk-autonomous-skill-dispatch.md), and
-[ADR 0012](adr/0012-recoverable-agent-kernel-event-stream-v4.md).
-ADR 0012 owns the active v4 decision. Earlier streaming ADRs are history, not
-selectable fallback runtimes. Keep historical ADRs and release evidence intact.
+[ADR 0008](adr/0008-agent-sdk-autonomous-skill-dispatch.md),
+[ADR 0012](adr/0012-recoverable-agent-kernel-event-stream-v4.md), and
+[ADR 0013](adr/0013-redis-stream-only-sse.md).
+ADR 0012 owns the v4 event model; ADR 0013 supersedes its publication/recovery
+architecture with the sole Redis Stream transport. Earlier streaming designs
+are history, not selectable fallback runtimes. Keep historical decisions and
+release evidence intact.
 
 [SDK 0.2.130 upgrade](architecture/claude-agent-sdk-0.2.130-upgrade.md) is a
 historical upgrade record. It is not the current dependency or capacity table;

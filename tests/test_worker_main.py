@@ -10,6 +10,7 @@ import app.worker_main as worker_main
 from app.queue import LeaseMutationOutcome, QueueHeartbeatOutcome, QueueMessage
 from app.runs.api import RunTerminalizationProgress
 from app.worker import WorkerOutcome
+from app.streaming.application.worker_publication_v4 import WorkerV4Capabilities
 from app.worker_main import run_once as _run_once
 
 
@@ -25,22 +26,11 @@ class _EmptyV4PendingAdmissions:
         assert tenant_id and run_id and attempt_id
         return None
 
-    async def list_pending_admissions(self, *, limit):
-        return ()
-
-
-class _EmptyV4Authority:
-    async def get(self, *, tenant_id, run_id):
-        assert tenant_id and run_id
-        return None
-
-
-class _EmptyV4PublicationClaims:
-    async def list_due_scopes(self, *, limit):
-        return ()
-
 
 class _EmptyV4EventPersistence:
+    async def load_latest_run_event(self, *, tenant_id, run_id):
+        return None
+
     async def append_terminal_row(self, _conn, *, tenant_id, run_id):
         assert tenant_id and run_id
         return None
@@ -51,10 +41,8 @@ class _UnusedV4Transport:
         raise AssertionError("empty v4 maintenance must not publish")
 
 
-_TEST_V4_CAPABILITIES = SimpleNamespace(
-    authority=_EmptyV4Authority(),
+_TEST_V4_CAPABILITIES = WorkerV4Capabilities(
     pending_admissions=_EmptyV4PendingAdmissions(),
-    publication_claims=_EmptyV4PublicationClaims(),
     publication_transport=_UnusedV4Transport(),
     event_persistence=_EmptyV4EventPersistence(),
 )
@@ -83,6 +71,7 @@ async def test_worker_run_once_requires_an_explicit_attempt_lifecycle():
 
 
 _ORIGINAL_SANDBOX_CLEANUP = worker_main.cleanup_expired_sandbox_leases
+_ORIGINAL_FILE_UPLOAD_CLEANUP = worker_main.cleanup_expired_file_upload_sessions
 _ORIGINAL_MEMORY_CLEANUP_FOR_WORKER = worker_main.cleanup_expired_memory_records_for_worker
 _RAW_PERMISSION_TERMINALIZATION_MAINTENANCE = (
     worker_main.progress_pending_tool_permission_terminalizations_for_worker
@@ -518,6 +507,11 @@ async def test_queue_heartbeat_fails_closed_when_postgres_preserves_future_state
 @pytest.fixture(autouse=True)
 def default_sandbox_cleanup(monkeypatch):
     global _TEST_ATTEMPT_LIFECYCLE
+    async def cleanup_expired_file_upload_sessions():
+        return 0
+
+    monkeypatch.setattr(worker_main, "cleanup_expired_file_upload_sessions", cleanup_expired_file_upload_sessions)
+
     async def cleanup_expired_sandbox_leases():
         return []
 
@@ -621,90 +615,6 @@ def default_sandbox_cleanup(monkeypatch):
         "app.worker_main.build_worker_v4_runtime",
         lambda _transaction: _TestWorkerV4Runtime(),
     )
-
-
-@pytest.mark.asyncio
-async def test_worker_maintenance_pending_admission_precedes_due_publication(monkeypatch):
-    order: list[str] = []
-
-    class Pending:
-        async def list_pending_admissions(self, *, limit):
-            order.append("pending.scan")
-            return ()
-
-    class Claims:
-        async def list_due_scopes(self, *, limit):
-            order.append("due.scan")
-            return ()
-
-    class Transport:
-        async def publish(self, canonical_envelope_bytes):
-            order.append("redis.publish")
-            return "1-0"
-
-    async def run_phases(phases, *, logger):
-        await phases["v4_pending_admission"]()
-        await phases["v4_publication"]()
-
-    monkeypatch.setattr(worker_main, "run_maintenance_phases", run_phases)
-    monkeypatch.setattr(worker_main.queue, "reclaim_expired_leases", lambda **kwargs: [])
-    await worker_main.run_worker_publication_maintenance(
-        SimpleNamespace(v4_pending_admission_limit=1, v4_publication_scope_limit=1, v4_publication_event_limit=1),
-        v4_capabilities=SimpleNamespace(
-            pending_admissions=Pending(),
-            publication_claims=Claims(),
-            publication_transport=Transport(),
-        ),
-    )
-    assert order == ["pending.scan", "due.scan"]
-
-
-@pytest.mark.asyncio
-async def test_publication_maintenance_progresses_while_cleanup_is_blocked(monkeypatch):
-    cleanup_started = asyncio.Event()
-    publication_progressed = asyncio.Event()
-    publication_calls = 0
-
-    async def blocked_cleanup(_settings, *, v4_capabilities, attempt_lifecycle):
-        assert v4_capabilities is _TEST_V4_CAPABILITIES
-        assert attempt_lifecycle is _TEST_ATTEMPT_LIFECYCLE
-        cleanup_started.set()
-        await asyncio.Event().wait()
-
-    async def publish(_settings, *, v4_capabilities):
-        nonlocal publication_calls
-        assert v4_capabilities is _TEST_V4_CAPABILITIES
-        publication_calls += 1
-        if publication_calls == 2:
-            publication_progressed.set()
-
-    monkeypatch.setattr(worker_main, "run_worker_cleanup_maintenance", blocked_cleanup)
-    monkeypatch.setattr(worker_main, "run_worker_publication_maintenance", publish)
-    # This test owns task independence; the listener lifecycle is covered by
-    # test_streaming_publication_wakeup without opening a database connection.
-    monkeypatch.setattr(worker_main, "publication_until_done", worker_main.maintenance_until_done)
-    cleanup_task = asyncio.create_task(
-        worker_main._maintenance_until_done(
-            object(),
-            0.001,
-            _TEST_V4_CAPABILITIES,
-            _TEST_ATTEMPT_LIFECYCLE,
-        )
-    )
-    publication_task = asyncio.create_task(
-        worker_main._publication_maintenance_until_done(
-            object(), 0.001, _TEST_V4_CAPABILITIES
-        )
-    )
-    try:
-        await asyncio.wait_for(cleanup_started.wait(), timeout=0.5)
-        await asyncio.wait_for(publication_progressed.wait(), timeout=0.5)
-    finally:
-        cleanup_task.cancel()
-        publication_task.cancel()
-        await asyncio.gather(cleanup_task, publication_task, return_exceptions=True)
-
-    assert publication_calls >= 2
 
 
 @pytest.mark.asyncio
@@ -2246,10 +2156,8 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
         ):
             pending_attempts.append(attempt_id)
 
-    capabilities = SimpleNamespace(
-        authority=_TEST_V4_CAPABILITIES.authority,
+    capabilities = WorkerV4Capabilities(
         pending_admissions=PendingAdmissions(),
-        publication_claims=_TEST_V4_CAPABILITIES.publication_claims,
         publication_transport=_TEST_V4_CAPABILITIES.publication_transport,
         event_persistence=_TEST_V4_CAPABILITIES.event_persistence,
     )
@@ -2947,7 +2855,6 @@ async def test_run_forever_continues_after_transient_run_once_error(monkeypatch)
     monkeypatch.setattr("app.worker_main.run_worker_maintenance", fake_run_worker_maintenance)
     monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", _controlled_terminal_reconciler)
     monkeypatch.setattr("app.worker_main._maintenance_until_done", _controlled_maintenance)
-    monkeypatch.setattr("app.worker_main._publication_maintenance_until_done", _controlled_maintenance)
     monkeypatch.setattr("app.worker_main.asyncio.sleep", fake_sleep)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_pool", fake_close_pool)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_redis_client", fake_close_redis_client)
@@ -3679,7 +3586,7 @@ async def test_upload_cleanup_uses_storage_operation_owned_by_reservation_kind(m
     monkeypatch.setattr(worker_main, "retry_expired_file_upload_session", retry)
     monkeypatch.setattr(worker_main, "delete_expired_file_upload_session", delete)
 
-    assert await worker_main.cleanup_expired_file_upload_sessions() == 4
+    assert await _ORIGINAL_FILE_UPLOAD_CLEANUP() == 4
     assert operations == [
         (
             "delete",

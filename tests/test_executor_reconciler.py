@@ -62,16 +62,6 @@ _TEST_ATTEMPT_LIFECYCLE = SimpleNamespace(
 )
 
 
-async def reconcile_pending_executor_terminals_once(*args, **kwargs):
-    kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
-    return await reconcile_pending_executor_terminals_once_impl(*args, **kwargs)
-
-
-async def run_executor_terminal_reconciler(*args, **kwargs):
-    kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
-    return await run_executor_terminal_reconciler_impl(*args, **kwargs)
-
-
 async def _terminalize_reconciliation_failure(*args, **kwargs):
     kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
     return await _terminalize_reconciliation_failure_impl(*args, **kwargs)
@@ -80,6 +70,16 @@ async def _terminalize_reconciliation_failure(*args, **kwargs):
 async def _finish_terminal_reconciliation_failure(*args, **kwargs):
     kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
     return await _finish_terminal_reconciliation_failure_impl(*args, **kwargs)
+
+
+async def reconcile_pending_executor_terminals_once(*args, **kwargs):
+    kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
+    return await reconcile_pending_executor_terminals_once_impl(*args, **kwargs)
+
+
+async def run_executor_terminal_reconciler(*args, **kwargs):
+    kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
+    return await run_executor_terminal_reconciler_impl(*args, **kwargs)
 
 
 def _lease_row() -> dict[str, object]:
@@ -1463,7 +1463,7 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(mon
     monkeypatch.setattr(f"{owner}.repositories.fail_run", fail_run)
     monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "terminalize", terminalize_attempt)
     monkeypatch.setattr(f"{owner}.reconcile_terminalized_permission_run", reconcile_child)
-    monkeypatch.setattr(f"{owner}.publish_pending_run_terminal", publish)
+    monkeypatch.setattr(f"{owner}.publish_run_event", publish)
 
     await _terminalize_reconciliation_failure(
         {
@@ -1560,7 +1560,7 @@ async def test_terminal_reconciliation_failure_honors_existing_cancel_request(mo
     monkeypatch.setattr(f"{owner}.cancel_run_with_v4", cancel_run)
     monkeypatch.setattr(f"{owner}.fail_run_with_v4", fail_run)
     monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "terminalize", terminalize_attempt)
-    monkeypatch.setattr(f"{owner}.publish_pending_run_terminal", publish)
+    monkeypatch.setattr(f"{owner}.publish_run_event", publish)
 
     await _terminalize_reconciliation_failure(
         {
@@ -1625,7 +1625,7 @@ async def test_terminal_reconciliation_failure_does_not_republish_an_already_ter
     )
     monkeypatch.setattr(f"{owner}.repositories.get_run", get_run)
     monkeypatch.setattr(f"{owner}.repositories.fail_run", fail_run)
-    monkeypatch.setattr(f"{owner}.publish_pending_run_terminal", publish)
+    monkeypatch.setattr(f"{owner}.publish_run_event", publish)
 
     await _terminalize_reconciliation_failure(
         {"id": "lease-a", "tenant_id": "tenant-a", "run_id": "run-a"},

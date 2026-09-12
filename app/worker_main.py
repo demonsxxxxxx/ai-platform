@@ -29,10 +29,8 @@ from app.bootstrap.streaming import build_worker_v4_runtime
 from app.bootstrap.worker_maintenance import (
     close_runtime_clients as _close_runtime_clients,
     maintenance_until_done,
-    publication_until_done,
     run_maintenance_phases,
     worker_maintenance_interval_seconds as _worker_maintenance_interval_seconds,
-    worker_publication_interval_seconds,
 )
 from app.execution.api import WorkerQueueLease, stage_stale_run_reconciliation
 from app.control_plane_contracts import (
@@ -67,9 +65,7 @@ from app.tool_permission_lifecycle import (
 from app.worker import WorkerOutcome, parse_leased_queue_envelope, process_run_payload
 from app.streaming.api import (
     WorkerV4Capabilities,
-    publish_due_v4_events,
-    publish_pending_admissions,
-    publish_pending_run_terminal,
+    publish_run_event,
 )
 
 
@@ -688,40 +684,6 @@ async def cleanup_expired_file_upload_sessions() -> int:
     return len(expired_sessions)
 
 
-async def run_worker_publication_maintenance(
-    settings: object,
-    *,
-    v4_capabilities: WorkerV4Capabilities,
-) -> int:
-    published = 0
-
-    async def drain_due_v4_publication() -> int:
-        nonlocal published
-        scope_limit = max(1, min(int(getattr(settings, "v4_publication_scope_limit", 64)), 256))
-        event_limit = max(1, min(int(getattr(settings, "v4_publication_event_limit", 64)), 256))
-        published = await publish_due_v4_events(
-            v4_capabilities.publication_claims,
-            v4_capabilities.publication_transport,
-            scope_limit=scope_limit,
-            event_limit=event_limit,
-        )
-        return published
-
-    async def drain_pending_v4_admissions() -> int:
-        limit = max(1, min(int(getattr(settings, "v4_pending_admission_limit", 64)), 256))
-        return await publish_pending_admissions(
-            v4_capabilities,
-            limit=limit,
-        )
-
-    await run_maintenance_phases(
-        {
-            "v4_pending_admission": drain_pending_v4_admissions,
-            "v4_publication": drain_due_v4_publication,
-        },
-        logger=logger,
-    )
-    return published
 
 
 async def run_worker_cleanup_maintenance(
@@ -761,10 +723,6 @@ async def run_worker_maintenance(
     settings = settings or get_settings()
     if v4_capabilities is None:
         raise RuntimeError("worker_v4_capabilities_unavailable")
-    await run_worker_publication_maintenance(
-        settings,
-        v4_capabilities=v4_capabilities,
-    )
     await run_worker_cleanup_maintenance(
         settings,
         v4_capabilities=v4_capabilities,
@@ -790,20 +748,6 @@ async def _maintenance_until_done(
     )
 
 
-async def _publication_maintenance_until_done(
-    settings: object,
-    interval_seconds: float,
-    v4_capabilities: WorkerV4Capabilities,
-) -> None:
-    await publication_until_done(
-        settings,
-        interval_seconds,
-        lambda current_settings: run_worker_publication_maintenance(
-            current_settings,
-            v4_capabilities=v4_capabilities,
-        ),
-        logger=logger,
-    )
 
 
 async def _terminalize_escaped_process_exception(
@@ -961,7 +905,7 @@ async def _terminalize_escaped_process_exception(
                 extra={"run_id": run_id},
             )
     if progress is not None and progress.is_terminal():
-        await publish_pending_run_terminal(
+        await publish_run_event(
             v4_capabilities,
             tenant_id=payload.tenant_id,
             run_id=run_id,
@@ -1046,17 +990,6 @@ async def run_once(
         if run_background_maintenance
         else None
     )
-    publication_maintenance_task = (
-        asyncio.create_task(
-            _publication_maintenance_until_done(
-                settings,
-                worker_publication_interval_seconds(settings),
-                v4_capabilities,
-            )
-        )
-        if run_background_maintenance
-        else None
-    )
 
     async def process_leased_message() -> WorkerOutcome:
         try:
@@ -1114,8 +1047,6 @@ async def run_once(
         tasks = [heartbeat_task, ownership_task, processing_task]
         if maintenance_task is not None:
             tasks.append(maintenance_task)
-        if publication_maintenance_task is not None:
-            tasks.append(publication_maintenance_task)
         for task in tasks:
             if not task.done():
                 task.cancel()
@@ -1197,19 +1128,10 @@ async def run_forever(
         ),
         name="ai-platform-worker-cleanup-maintenance",
     )
-    publication_maintenance_task = asyncio.create_task(
-        _publication_maintenance_until_done(
-            settings,
-            worker_publication_interval_seconds(settings),
-            worker_runtime.capabilities,
-        ),
-        name="ai-platform-worker-publication-maintenance",
-    )
     background_tasks = (
         reconciler_task,
         heartbeat_task,
         maintenance_task,
-        publication_maintenance_task,
     )
     try:
         while True:
@@ -1317,14 +1239,6 @@ async def run_worker_pool(
         ),
         name="ai-platform-worker-cleanup-maintenance",
     )
-    publication_maintenance_task = asyncio.create_task(
-        _publication_maintenance_until_done(
-            settings,
-            worker_publication_interval_seconds(settings),
-            worker_runtime.capabilities,
-        ),
-        name="ai-platform-worker-publication-maintenance",
-    )
     heartbeat_task = asyncio.create_task(
         _worker_runtime_heartbeat_until_done(process_worker_id),
         name="ai-platform-worker-runtime-heartbeat",
@@ -1345,7 +1259,6 @@ async def run_worker_pool(
     background_tasks = [
         reconciler_task,
         maintenance_task,
-        publication_maintenance_task,
         heartbeat_task,
     ]
     try:

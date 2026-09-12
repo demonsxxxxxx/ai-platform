@@ -176,40 +176,63 @@ def test_v4_internal_envelope_matches_event_variants_strictly():
     assert list(validator.iter_errors({**control, "replayable": True}))
 
 
-def test_v4_and_v3_public_contracts_reject_each_other():
-    v3_schema = {
-        "type": "object",
-        "properties": {
-            "schema": {"const": "ai-platform.public-run-stream-event.v3"},
-            "event_id": {"type": "string", "minLength": 1, "maxLength": 256},
-            "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
-            "stream_incarnation": {"type": "integer", "minimum": 1},
-            "emitted_at": {"type": "string", "format": "date-time", "maxLength": 64},
-            "event_type": {"const": "assistant_text_delta"},
-            "payload": {
-                "type": "object",
-                "properties": {"delta": {"type": "string", "minLength": 1, "maxLength": 8192}},
-                "required": ["delta"],
-                "additionalProperties": False,
-            },
-        },
-        "required": ["schema", "event_id", "run_id", "stream_incarnation", "emitted_at", "event_type", "payload"],
-        "additionalProperties": False,
-    }
-    v3_validator = Draft202012Validator(v3_schema)
-    v4_validator = _validator("PublicRunStreamEventV4")
-    v3_event = {
+def test_v4_rejects_retired_v3_frames():
+    validator = _validator("PublicRunStreamEventV4")
+    legacy = {
         "schema": "ai-platform.public-run-stream-event.v3",
-        "event_id": "event-1",
-        "run_id": "run-1",
-        "stream_incarnation": 1,
-        "emitted_at": "2026-08-17T00:00:00Z",
-        "event_type": "assistant_text_delta",
+        "event_id": "event-1", "run_id": "run-1", "stream_incarnation": 1,
+        "emitted_at": "2026-08-17T00:00:00Z", "event_type": "assistant_text_delta",
         "payload": {"delta": "legacy"},
     }
-    v4_event = _v4_event("message.delta", {"delta": "current"})
+    assert list(validator.iter_errors(legacy))
+    assert list(validator.iter_errors(_v4_event("message.delta", {"delta": "current"}))) == []
 
-    assert list(v3_validator.iter_errors(v3_event)) == []
-    assert list(v4_validator.iter_errors(v3_event))
-    assert list(v4_validator.iter_errors(v4_event)) == []
-    assert list(v3_validator.iter_errors(v4_event))
+
+def test_public_boundary_exposes_v4_without_duplicate_or_legacy_types():
+    from app.streaming.domain import protocol_v4
+    from app.streaming.events import (
+        INTERNAL_STREAM_EVENT_SCHEMA_V4,
+        PUBLIC_APPLICATION_EVENT_TYPES_V4,
+        PUBLIC_RUN_STREAM_SCHEMA_V4,
+        PUBLIC_STREAM_EVENT_TYPES_V4,
+        STREAM_DESIGN_ID_V4,
+        STREAM_PROJECTION_VERSION_V4,
+        PublicRunStreamEventV4,
+    )
+
+    import app.streaming.events as events
+
+    assert not hasattr(events, "PublicRunStreamEventV3")
+    assert PublicRunStreamEventV4 is protocol_v4.PublicRunStreamEventV4
+    assert PUBLIC_RUN_STREAM_SCHEMA_V4 == protocol_v4.PUBLIC_RUN_STREAM_SCHEMA
+    assert INTERNAL_STREAM_EVENT_SCHEMA_V4 == protocol_v4.INTERNAL_STREAM_EVENT_SCHEMA
+    assert STREAM_PROJECTION_VERSION_V4 == protocol_v4.STREAM_PROJECTION_VERSION
+    assert STREAM_DESIGN_ID_V4 == protocol_v4.STREAM_DESIGN_ID
+    assert PUBLIC_STREAM_EVENT_TYPES_V4 is protocol_v4.PUBLIC_STREAM_EVENT_TYPES
+    assert PUBLIC_APPLICATION_EVENT_TYPES_V4 == frozenset(
+        value
+        for value in protocol_v4.PUBLIC_STREAM_EVENT_TYPES
+        if not value.startswith("stream.")
+    )
+
+
+def test_stream_end_uses_the_run_fact_source_and_rejects_terminal_intents():
+    import pytest
+    from app.streaming.domain.public_events_v4 import V4ProjectionError, validate_internal_envelope_v4
+
+    end = _v4_internal_event("stream.end", {"terminal_event_id": "terminal-1"}, message_id=None, seq=None)
+    validator = _validator("InternalStreamEnvelopeV4")
+    assert list(validator.iter_errors(end)) == []
+    assert validate_internal_envelope_v4(end) == end
+    end["source"]["callback_sequence"] = 0
+    assert list(validator.iter_errors(end)) == []
+    assert validate_internal_envelope_v4(end) == end
+    for invalid in (True, -1, "1", 2**63):
+        end["source"]["callback_sequence"] = invalid
+        assert list(validator.iter_errors(end))
+        with pytest.raises(V4ProjectionError):
+            validate_internal_envelope_v4(end)
+    end["source"] = {"kind": "terminal_intent", "terminal_event_id": "terminal-1"}
+    assert list(validator.iter_errors(end))
+    with pytest.raises(V4ProjectionError, match="v4_source_invalid"):
+        validate_internal_envelope_v4(end)

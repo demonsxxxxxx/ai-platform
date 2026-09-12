@@ -32,7 +32,6 @@ EXIT_TIMEOUT = 124
 STAGE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\Z")
 LOCK_METADATA_BYTES = 512
 WINDOWS_CREATE_SUSPENDED = 0x00000004
-WINDOWS_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 WINDOWS_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 WINDOWS_JOB_OBJECT_LIMIT_KILL_ON_CLOSE = 0x00002000
 
@@ -250,29 +249,9 @@ class OwnedProcess:
 
 
 def _windows_creation_flags() -> int:
-    from ctypes import wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    get_current_process = kernel32.GetCurrentProcess
-    get_current_process.restype = wintypes.HANDLE
-    is_process_in_job = kernel32.IsProcessInJob
-    is_process_in_job.argtypes = [
-        wintypes.HANDLE,
-        wintypes.HANDLE,
-        ctypes.POINTER(wintypes.BOOL),
-    ]
-    is_process_in_job.restype = wintypes.BOOL
-    in_job = wintypes.BOOL()
-    if not is_process_in_job(get_current_process(), None, ctypes.byref(in_job)):
-        raise OSError(
-            ctypes.get_last_error(), "unable to inspect parent Windows Job Object"
-        )
-    flags = (
-        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | WINDOWS_CREATE_SUSPENDED
-    )
-    if in_job.value:
-        flags |= WINDOWS_CREATE_BREAKAWAY_FROM_JOB
-    return flags
+    # Nested Jobs retain host containment; execution starts only after our own
+    # kill-on-close Job is assigned. Hosts may forbid breaking away from theirs.
+    return getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | WINDOWS_CREATE_SUSPENDED
 
 
 def _create_windows_job(process: subprocess.Popen[bytes]) -> int:

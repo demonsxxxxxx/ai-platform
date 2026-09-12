@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Literal
 
 from app.streaming.domain.live import (
@@ -11,9 +11,6 @@ from app.streaming.domain.live import (
     RUN_ID_PATTERN,
     StreamContractError,
 )
-
-STREAM_GAP_SCHEMA = "ai-platform.stream-gap.v3"
-
 
 @dataclass(frozen=True, slots=True)
 class StreamCursor:
@@ -60,24 +57,6 @@ class StreamGap:
     current_stream_incarnation: int
     earliest_available_event_id: str | None = None
     latest_available_event_id: str | None = None
-
-    def as_public_dict(self) -> dict[str, object]:
-        result = {
-            "schema": STREAM_GAP_SCHEMA,
-            "reason": self.reason,
-            "current_stream_incarnation": self.current_stream_incarnation,
-            "recovery": "reload_durable_state",
-        }
-        result.update(
-            {
-                key: value
-                for key, value in asdict(self).items()
-                if key != "reason"
-                and key != "current_stream_incarnation"
-                and value is not None
-            }
-        )
-        return result
 
 
 @dataclass(frozen=True, slots=True)

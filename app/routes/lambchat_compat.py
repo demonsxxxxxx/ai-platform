@@ -5,7 +5,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from fastapi import (
@@ -67,14 +67,11 @@ from app.run_projection import (
 )
 from app.settings import get_settings
 from app.streaming.api import (
-    LiveSubscriptionClosed,
     V4ProjectionError,
     V4StreamEntry,
     live_redis_id_is_after,
     project_persisted_message_delta_v4,
     project_public_envelope_v4,
-    recover_v4_missing_terminal_stream,
-    stream_live_channel,
     validate_public_application_payload_v4,
 )
 from app.streaming.authority import RunCursor, event_page
@@ -90,7 +87,7 @@ from app.streaming.redis import (
 from app.tool_permission_projection import tool_permission_public_event_payload
 
 
-class _V4ReplayBridge(Protocol):
+class _V4StreamBridge(Protocol):
     async def replay_page(
         self,
         *,
@@ -100,6 +97,18 @@ class _V4ReplayBridge(Protocol):
         stream_incarnation: int,
         after_redis_id: str,
         through_redis_id: str,
+    ) -> tuple[V4StreamEntry, ...]: ...
+
+    async def read_stream(
+        self,
+        *,
+        tenant_scope_value: str,
+        run_id: str,
+        attempt_id: str,
+        stream_incarnation: int,
+        after_redis_id: str,
+        count: int,
+        block_ms: int,
     ) -> tuple[V4StreamEntry, ...]: ...
 
 
@@ -113,11 +122,9 @@ _SSE_EXIT_REASONS = frozenset(
     {
         "terminal_completed",
         "client_disconnected",
-        "live_source_closed",
         "transport_failure",
         "stream_contract_failure",
         "stream_setup_failure",
-        "stream_cleanup_failure",
     }
 )
 
@@ -1876,7 +1883,7 @@ async def chat_status(
 
 
 async def _restore_chat_stream_projection(
-    bridge: _V4ReplayBridge,
+    bridge: _V4StreamBridge,
     *,
     run: dict[str, Any],
     tenant_scope_value: str,
@@ -2003,15 +2010,8 @@ async def chat_session_stream(
         await record_sse_exit("stream_setup_failure")
         raise HTTPException(status_code=503, detail="sse_stream_unavailable")
     bridge = runtime.bridge
-    channel = stream_live_channel(
-        tenant_scope_value=authority.tenant_scope,
-        run_id=run_id,
-        stream_incarnation=authority.stream_incarnation,
-    )
-    subscription = None
     setup_gap_requested_event_id: str | None = None
     try:
-        subscription = await runtime.hub.subscribe(channel)
         resume = await bridge.resolve_resume(
             tenant_scope_value=authority.tenant_scope,
             run_id=run_id,
@@ -2019,52 +2019,6 @@ async def chat_session_stream(
             current_stream_incarnation=authority.stream_incarnation,
             last_event_id=last_event_id,
         )
-        if (
-            resume.gap is not None
-            and resume.gap.reason == "stream_missing"
-            and str(initial_run.get("status") or "") in runs_api.TERMINAL_RUN_STATUSES
-        ):
-            await subscription.aclose()
-            subscription = None
-            activation = await recover_v4_missing_terminal_stream(
-                runtime.successor_rebuilds,
-                runtime.successor_activations,
-                runtime.rebuild_transport,
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
-                attempt_id=authority.attempt_id,
-                source_incarnation=authority.stream_incarnation,
-                claim_ttl=timedelta(seconds=30),
-            )
-            if activation is None:
-                raise StreamContractError("stream_successor_activation_unavailable")
-            async with transaction() as conn:
-                authority = await get_stream_authority(
-                    conn, tenant_id=principal.tenant_id, run_id=run_id
-                )
-                if authority is None:
-                    raise StreamContractError("stream_successor_authority_missing")
-                lease = await acquire_sse_authority_lease(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    run_id=run_id,
-                    api_instance_id=_SSE_API_INSTANCE_ID,
-                    connection_id=connection_id,
-                    lease_seconds=SSE_AUTHORITY_LEASE_SECONDS,
-                )
-            channel = stream_live_channel(
-                tenant_scope_value=authority.tenant_scope,
-                run_id=run_id,
-                stream_incarnation=authority.stream_incarnation,
-            )
-            subscription = await runtime.hub.subscribe(channel)
-            resume = await bridge.resolve_resume(
-                tenant_scope_value=authority.tenant_scope,
-                run_id=run_id,
-                attempt_id=authority.attempt_id,
-                current_stream_incarnation=authority.stream_incarnation,
-                last_event_id=None,
-            )
         answer_projector = PublicChatAnswerStreamProjector(initial_run)
         restored_terminal_event_id: str | None = None
         resume_already_ended = False
@@ -2098,42 +2052,19 @@ async def chat_session_stream(
                     raise
                 setup_gap_requested_event_id = resume.after_redis_id or "0-0"
     except StreamContractError as exc:
-        cleanup_failed = False
-        if subscription is not None:
-            try:
-                await subscription.aclose()
-            except Exception:  # noqa: BLE001
-                cleanup_failed = True
-        await record_sse_exit(
-            "stream_cleanup_failure" if cleanup_failed else "stream_contract_failure"
-        )
+        await record_sse_exit("stream_contract_failure")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except (LiveSubscriptionClosed, StreamTransportUnavailable) as exc:
-        cleanup_failed = False
-        if subscription is not None:
-            try:
-                await subscription.aclose()
-            except Exception:  # noqa: BLE001
-                cleanup_failed = True
-        await record_sse_exit(
-            "stream_cleanup_failure" if cleanup_failed else "transport_failure"
-        )
+    except StreamTransportUnavailable as exc:
+        await record_sse_exit("transport_failure")
         raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
     except Exception as exc:  # noqa: BLE001
-        cleanup_failed = False
-        if subscription is not None:
-            try:
-                await subscription.aclose()
-            except Exception:  # noqa: BLE001
-                cleanup_failed = True
-        await record_sse_exit(
-            "stream_cleanup_failure" if cleanup_failed else "stream_setup_failure"
-        )
+        await record_sse_exit("stream_setup_failure")
         raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
 
     async def stream():
         nonlocal lease
         after = resume.after_redis_id or "0-0"
+        observed_run_status = str(initial_run.get("status") or "")
         exit_reason = "transport_failure"
         exit_recorded = False
 
@@ -2145,7 +2076,7 @@ async def chat_session_stream(
             await record_sse_exit(exit_reason)
 
         async def refresh_lease() -> bool:
-            nonlocal lease
+            nonlocal lease, observed_run_status
             now = datetime.now(timezone.utc)
             # A committed epoch change fences renewal. This issued lease remains
             # authoritative only until its authority-clock deadline (<=15s).
@@ -2161,6 +2092,7 @@ async def chat_session_stream(
                     )
                     if run is None or run.get("session_id") != session_id:
                         return False
+                    observed_run_status = str(run.get("status") or "")
                     lease = await acquire_sse_authority_lease(
                         conn,
                         tenant_id=principal.tenant_id,
@@ -2284,37 +2216,35 @@ async def chat_session_stream(
             while True:
                 if not await authorize_frame():
                     return
-                try:
-                    publication = await subscription.next(timeout_seconds=5.0)
-                except TimeoutError:
-                    if not await authorize_frame():
-                        return
-                    yield ": heartbeat\n\n"
-                    continue
-                except LiveSubscriptionClosed:
-                    exit_reason = "live_source_closed"
-                    return
-                if publication.channel != channel:
-                    raise StreamContractError("stream_live_channel_mismatch")
-                if not live_redis_id_is_after(publication.redis_id, after):
-                    continue
-                entry = bridge.decode_live_publication(
-                    redis_id=publication.redis_id,
-                    envelope_json=publication.envelope_json,
+                entries = await bridge.read_stream(
                     tenant_scope_value=authority.tenant_scope,
                     run_id=run_id,
                     attempt_id=authority.attempt_id,
                     stream_incarnation=authority.stream_incarnation,
+                    after_redis_id=after,
+                    count=128,
+                    block_ms=5000,
                 )
-                after = entry.cursor.redis_id
-                frame, ended = project_entry(entry)
-                if frame is not None:
+                if not entries:
                     if not await authorize_frame():
                         return
-                    yield frame
-                if ended:
-                    exit_reason = "terminal_completed"
-                    return
+                    if observed_run_status in runs_api.TERMINAL_RUN_STATUSES:
+                        exit_reason = "terminal_completed"
+                        return
+                    yield ": heartbeat\n\n"
+                    continue
+                for entry in entries:
+                    if not live_redis_id_is_after(entry.cursor.redis_id, after):
+                        continue
+                    after = entry.cursor.redis_id
+                    frame, ended = project_entry(entry)
+                    if frame is not None:
+                        if not await authorize_frame():
+                            return
+                        yield frame
+                    if ended:
+                        exit_reason = "terminal_completed"
+                        return
         except asyncio.CancelledError:
             exit_reason = "client_disconnected"
             raise
@@ -2325,13 +2255,6 @@ async def chat_session_stream(
             exit_reason = "stream_contract_failure"
             return
         finally:
-            cleanup_failed = False
-            try:
-                await subscription.aclose()
-            except Exception:  # noqa: BLE001
-                cleanup_failed = True
-            if cleanup_failed:
-                exit_reason = "stream_cleanup_failure"
             await record_exit()
 
     return StreamingResponse(
