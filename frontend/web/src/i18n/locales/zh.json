@@ -1212,7 +1212,7 @@
       "allowedDepartments": "允许的部门",
       "allowedDepartmentsDescription": "使用逗号分隔可访问此服务器的部门 ID。",
       "allowedDepartmentsPlaceholder": "engineering, finance",
-      "connectionReentry": "连接配置仅可写入。更新时请按需重新输入 URL、HTTP 头、沙箱命令和环境变量键；未提交的值将被清除。",
+      "connectionReentry": "编辑时 URL 和 HTTP 头会回显；沙箱命令和环境变量键不会回显，更新时需要重新输入。",
       "removeRole": "移除角色 {{role}}",
       "add": "添加",
       "allRoles": "所有角色（无限制）",

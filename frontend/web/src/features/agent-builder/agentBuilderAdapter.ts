@@ -76,7 +76,6 @@ export type AgentBuilderBlockCode =
   | "profile_revision_missing"
   | "catalog_unavailable"
   | "selected_skill_stale"
-  | "selected_mcp_tool_unavailable"
   | "no_changes"
   | "save_required"
   | "unsaved_changes"
@@ -84,7 +83,6 @@ export type AgentBuilderBlockCode =
 
 export interface AgentBuilderValidationIssue {
   code: AgentBuilderBlockCode;
-  unavailableMcpToolIds?: readonly string[];
 }
 
 /**
@@ -281,20 +279,6 @@ export function validateAgentProfileEditor(
   });
   if (!selectedSkillsAreCurrent) return { code: "selected_skill_stale" };
 
-  if (editor.selectedMcpToolIds.length > 0) {
-    if (!catalog.mcpToolsResolved) return { code: "catalog_unavailable" };
-    const currentIds = new Set(catalog.mcpTools.map((tool) => tool.id));
-    const unavailableMcpToolIds = editor.selectedMcpToolIds.filter(
-      (toolId, index, selectedIds) =>
-        !toolId.trim() ||
-        !currentIds.has(toolId) ||
-        selectedIds.indexOf(toolId) !== index,
-    );
-    if (unavailableMcpToolIds.length > 0) {
-      return { code: "selected_mcp_tool_unavailable", unavailableMcpToolIds };
-    }
-  }
-
   return null;
 }
 
@@ -363,9 +347,7 @@ export function agentBuilderBlockReason(issue: AgentBuilderValidationIssue): str
     case "catalog_unavailable":
       return "授权目录尚未完整加载，暂不能保存或发布。";
     case "selected_skill_stale":
-      return "所选 Skill 当前不可用，请重新选择。";
-    case "selected_mcp_tool_unavailable":
-      return `已选 MCP 工具中有 ${issue.unavailableMcpToolIds?.length ?? 1} 项不可用，请明确移除或重新选择。`;
+      return "所选 Skill 或其固定版本已不可用，请重新选择。";
     case "no_changes":
       return "当前内容与服务端版本一致，无需再次保存。";
     case "save_required":

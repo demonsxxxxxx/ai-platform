@@ -183,6 +183,8 @@ test("mcp panel gates lifecycle controls behind the AI-admin capability", () => 
   assert.match(source, /updateServer/);
   assert.match(source, /deleteServer/);
   assert.match(source, /toggleServer/);
+  assert.match(source, /getServer/);
+  assert.match(source, /const detailedServer = await getServer\(server\.name\)/);
   assert.doesNotMatch(source, /details=\{\[error\]\.filter/);
 });
 

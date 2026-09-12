@@ -99,12 +99,20 @@ async def get_mcp_server_runtime_target(conn: Any, **kwargs: Any) -> dict[str, A
     return await _repository_call("get_mcp_server_runtime_target", conn, **kwargs)
 
 
+async def get_mcp_server_credential(conn: Any, **kwargs: Any) -> dict[str, Any] | None:
+    return await _repository_call("get_mcp_server_credential", conn, **kwargs)
+
+
 async def get_mcp_tool_registry_entry(conn: Any, **kwargs: Any) -> dict[str, Any] | None:
     return await _repository_call("get_mcp_tool_registry_entry", conn, **kwargs)
 
 
 async def list_mcp_server_registry(conn: Any, **kwargs: Any) -> list[dict[str, Any]]:
     return await _repository_call("list_mcp_server_registry", conn, **kwargs)
+
+
+async def list_mcp_server_registry_names(conn: Any, **kwargs: Any) -> list[str]:
+    return await _repository_call("list_mcp_server_registry_names", conn, **kwargs)
 
 
 async def upsert_mcp_server_registry(conn: Any, **kwargs: Any) -> dict[str, Any]:
@@ -123,6 +131,14 @@ async def record_mcp_server_credential(conn: Any, **kwargs: Any) -> None:
     await _repository_call("record_mcp_server_credential", conn, **kwargs)
 
 
+async def upsert_mcp_server_distribution(conn: Any, **kwargs: Any) -> dict[str, Any]:
+    return await _repository_call("upsert_mcp_server_distribution", conn, **kwargs)
+
+
+async def toggle_mcp_server_distribution(conn: Any, **kwargs: Any) -> dict[str, Any]:
+    return await _repository_call("toggle_mcp_server_distribution", conn, **kwargs)
+
+
 __all__ = [
     "LiveMcpServerResult",
     "LiveMcpTool",
@@ -137,11 +153,13 @@ __all__ = [
     "get_live_mcp_catalog",
     "get_mcp_principal_jwt_store",
     "get_mcp_server_registry_entry",
+    "get_mcp_server_credential",
     "get_mcp_server_runtime_target",
     "get_mcp_tool_registry_entry",
     "is_safe_mcp_id",
     "is_valid_mcp_public_tool_name",
     "list_mcp_server_registry",
+    "list_mcp_server_registry_names",
     "mcp_runtime_metadata_usable",
     "normalize_static_mcp_headers",
     "open_mcp_server_credentials",
@@ -151,5 +169,7 @@ __all__ = [
     "seal_mcp_server_credentials",
     "store_mcp_principal_jwt",
     "toggle_mcp_server_registry",
+    "toggle_mcp_server_distribution",
+    "upsert_mcp_server_distribution",
     "upsert_mcp_server_registry",
 ]

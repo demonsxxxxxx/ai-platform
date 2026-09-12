@@ -231,8 +231,8 @@ async def test_profile_definition_validates_stable_mcp_reference_and_server_exis
     observed: list[tuple[str, str]] = []
     observed_skill: dict[str, object] = {}
 
-    async def authorize_skill(*_args, **kwargs):
-        observed_skill.update(kwargs)
+    async def authorize_skill(*_args, **_kwargs):
+        observed_skill.update(_kwargs)
         return {"skill_id": "general-chat", "skill_version": "version-b"}
 
     async def resolve_skill(*_args, **_kwargs):
@@ -240,7 +240,7 @@ async def test_profile_definition_validates_stable_mcp_reference_and_server_exis
 
     async def get_server(*_args, **kwargs):
         observed.append((kwargs["tenant_id"], kwargs["name"]))
-        return {"name": kwargs["name"], "status": "active"}
+        return {"name": kwargs["name"], "status": "disabled"}
 
     monkeypatch.setattr(
         "app.agent_apps.authority.repositories.resolve_selected_skill",

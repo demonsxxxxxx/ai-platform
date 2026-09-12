@@ -104,8 +104,8 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
     source,
     /startServer|stopServer|restartServer|rawCredential|allowedTransports|createAsSystem|changeToSystem/,
   );
-  assert.doesNotMatch(form, /server\?\.url|server\.url/);
-  assert.doesNotMatch(form, /server\?\.headers|server\.headers/);
+  assert.match(form, /server\?\.url|server\.url/);
+  assert.match(form, /server\?\.headers|server\.headers/);
   assert.doesNotMatch(form, /server\?\.command|server\.command/);
   assert.doesNotMatch(form, /server\?\.env_keys|server\.env_keys/);
   assert.match(form, /department_ids/);
@@ -122,12 +122,12 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
     /onChange=\{\(event\) => setAllowedDepartmentsInput\(event\.target\.value\)\}/,
   );
   assert.doesNotMatch(form, /value=\{allowedDepartments\.join/);
-  assert.match(form, /if \(server\) \{[\s\S]*setUrl\(""\);[\s\S]*setHeaders\(\[\]\);[\s\S]*setCommand\(""\);[\s\S]*setEnvKeys\(\[\]\);/);
+  assert.match(form, /if \(server\) \{[\s\S]*setUrl\(server\.url \?\? ""\);[\s\S]*setHeaders\(toHeaderDrafts\(server\.headers\)\);[\s\S]*setCommand\(""\);[\s\S]*setEnvKeys\(\[\]\);/);
   assert.match(form, /else \{[\s\S]*setAllowedDepartmentsInput\(""\);/);
   assert.ok(
     form.indexOf('t("mcp.form.connectionReentry")') <
       form.indexOf("{/* ── Sandbox-specific fields ── */}"),
-    "write-only re-entry warning must apply to every transport",
+    "connection re-entry warning must be shown before transport-specific fields",
   );
   assert.match(ordinaryCatalog, /data-ordinary-mcp-catalog/);
   assert.match(ordinaryCatalog, /mcp\.available\.empty/);
