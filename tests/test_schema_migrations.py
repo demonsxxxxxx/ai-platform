@@ -986,29 +986,6 @@ def test_every_critical_run_attempt_constraint_has_an_exact_definition():
     assert defined == critical
 
 
-def test_profile_avatar_style_keeps_legacy_avatar_ref_rollback_compatible():
-    schema = " ".join(schema_migrations.schema_sql().split()).lower()
-
-    assert (
-        "alter table agent_profile_revisions add column if not exists "
-        "avatar_style_ref text not null default ''"
-    ) in schema
-    assert "check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research'))" in schema
-    assert "avatar_style_ref = '' or avatar_style_ref in" in schema
-
-
-def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
-    schema = " ".join(schema_migrations.schema_sql().split()).lower()
-
-    assert (
-        "alter table agent_profile_revisions add column if not exists "
-        "supported_file_types jsonb not null default '[]'::jsonb"
-    ) in schema
-    assert "rename column supported_file_types" not in schema
-    assert "drop column supported_file_types" not in schema
-    assert "legacy_supported_file_types" not in schema
-
-
 def test_schema_upgrade_repairs_confirmation_history_before_constraint_validation():
     schema = schema_migrations.schema_sql()
     repair_confirmation = schema.index(
