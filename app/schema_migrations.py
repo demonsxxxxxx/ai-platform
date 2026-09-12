@@ -68,11 +68,7 @@ CRITICAL_COLUMNS = (
     ("sessions", "title_source", "text", True),
     ("agent_profile_revisions", "skill_set", "jsonb", True),
     ("agent_profile_revisions", "avatar_seed", "text", True),
-    ("agent_profile_revisions", "avatar_style_ref", "text", True),
-    ("agent_profile_revisions", "market_tag", "text", True),
     ("agent_profile_revisions", "market_tags", "jsonb", True),
-    # Temporary physical compatibility for the previous binary; product DTOs ignore it.
-    ("agent_profile_revisions", "supported_file_types", "jsonb", True),
     ("runs", "execution_kind", "text", True),
     ("runs", "skill_id", "text", False),
     ("runs", "authz_policy_version", "int4", True),

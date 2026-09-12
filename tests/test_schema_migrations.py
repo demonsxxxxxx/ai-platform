@@ -508,25 +508,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     ) in schema_migrations.CRITICAL_COLUMNS
     assert (
         "agent_profile_revisions",
-        "avatar_style_ref",
-        "text",
-        True,
-    ) in schema_migrations.CRITICAL_COLUMNS
-    assert (
-        "agent_profile_revisions",
-        "market_tag",
-        "text",
-        True,
-    ) in schema_migrations.CRITICAL_COLUMNS
-    assert (
-        "agent_profile_revisions",
         "market_tags",
-        "jsonb",
-        True,
-    ) in schema_migrations.CRITICAL_COLUMNS
-    assert (
-        "agent_profile_revisions",
-        "supported_file_types",
         "jsonb",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
