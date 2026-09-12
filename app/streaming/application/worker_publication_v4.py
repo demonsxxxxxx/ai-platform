@@ -5,33 +5,26 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from datetime import timedelta
 from typing import Any, Protocol
 
 from app.streaming.application.callback_events_v4 import V4CallbackItem
 from app.streaming.application.durable_v4 import (
     V4PendingAdmission,
     V4PendingAdmissionPort,
-    V4PublicationClaims,
     V4PublicationTransport,
+    V4PublicationStreamExpired,
     V4PublicationTransportUnavailable,
-    publish_claimed_v4_events,
-    publish_pending_v4_admissions,
     validate_v4_transport_receipt,
 )
 
 
+from app.streaming.domain.public_events_v4 import V4ProjectionError, project_public_v4
+
 TransactionFactory = Callable[[], AbstractAsyncContextManager[Any]]
 
 
-@dataclass(frozen=True, slots=True)
-class V4StreamAuthority:
-    attempt_id: str
-    stream_incarnation: int
 
 
-class V4StreamAuthorityLookup(Protocol):
-    async def get(self, *, tenant_id: str, run_id: str) -> V4StreamAuthority | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +76,10 @@ class WorkerEventPersistence(Protocol):
         receipt: Mapping[str, object],
     ) -> ReconstructedAssistantAnswer: ...
 
+    async def load_latest_run_event(
+        self, *, tenant_id: str, run_id: str, before_sequence: int | None = None
+    ) -> bytes | None: ...
+
     async def persist_event_and_check_cancel(
         self,
         *,
@@ -100,10 +97,8 @@ class WorkerEventPersistence(Protocol):
 class WorkerV4Capabilities:
     """Explicit worker capabilities composed by the process owner."""
 
-    authority: V4StreamAuthorityLookup
     pending_admissions: V4PendingAdmissionPort
     event_persistence: WorkerEventPersistence
-    publication_claims: V4PublicationClaims
     publication_transport: V4PublicationTransport
 
 
@@ -152,6 +147,34 @@ async def append_callback_v4_rows(
     )
 
 
+async def publish_callback_rows(
+    capabilities: WorkerV4Capabilities,
+    rows: tuple[Mapping[str, object], ...],
+    *,
+    authority: Any,
+) -> None:
+    """Publish exactly the committed callback batch before acknowledging it."""
+    if not rows:
+        return
+    envelopes = []
+    for row in rows:
+        envelope = project_public_v4(row, authority=authority)
+        if envelope is None:
+            raise V4ProjectionError("callback_committed_batch_invalid")
+        envelopes.append(envelope)
+    predecessor = await capabilities.event_persistence.load_latest_run_event(
+        tenant_id=authority.tenant_id, run_id=authority.run_id,
+        before_sequence=envelopes[0]["seq"],
+    )
+    if predecessor is not None:
+        try:
+            validate_v4_transport_receipt(await capabilities.publication_transport.publish(predecessor))
+        except V4PublicationStreamExpired as exc:
+            raise V4PublicationTransportUnavailable("callback_stream_expired") from exc
+    redis_id = await capabilities.publication_transport.publish_callback_batch(tuple(envelopes))
+    validate_v4_transport_receipt(redis_id)
+
+
 async def admit_v4_stream(
     capabilities: WorkerV4Capabilities,
     *,
@@ -179,60 +202,14 @@ async def admit_v4_stream(
     )
 
 
-async def publish_pending_admissions(
-    capabilities: WorkerV4Capabilities,
-    *,
-    limit: int,
-) -> int:
-    return await publish_pending_v4_admissions(
-        capabilities.pending_admissions,
-        capabilities.publication_transport,
-        limit=limit,
-    )
 
 
-async def publish_pending_v4_events(
-    capabilities: WorkerV4Capabilities,
-    *,
-    tenant_id: str,
-    run_id: str,
-    attempt_id: str,
-    stream_incarnation: int | None = None,
-    limit: int = 64,
-) -> int:
-    """Drain committed v4 rows after their owning PostgreSQL transaction."""
-
-    authority = await capabilities.authority.get(
-        tenant_id=tenant_id,
-        run_id=run_id,
-    )
-    if (
-        authority is None
-        or authority.attempt_id != attempt_id
-        or (
-            stream_incarnation is not None
-            and authority.stream_incarnation != stream_incarnation
-        )
-    ):
-        return 0
-    return await publish_claimed_v4_events(
-        capabilities.publication_claims,
-        capabilities.publication_transport,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        attempt_id=authority.attempt_id,
-        stream_incarnation=authority.stream_incarnation,
-        limit=limit,
-        claim_ttl=timedelta(seconds=30),
-        retry_delay=timedelta(seconds=5),
-    )
 
 
-async def persist_and_publish_worker_event(
+async def persist_worker_event(
     capabilities: WorkerV4Capabilities,
     *,
     run_payload: Any,
-    attempt_id: str,
     persist_event: bool,
     event_type: str,
     stage: str,
@@ -240,9 +217,9 @@ async def persist_and_publish_worker_event(
     payload: dict[str, Any] | None,
     record_run_step: Callable[..., Awaitable[None]],
 ) -> bool:
-    """Persist one event, then drain committed v4 rows outside PostgreSQL."""
+    """Persist the business event and inspect cancellation in its transaction."""
 
-    cancelled = await capabilities.event_persistence.persist_event_and_check_cancel(
+    return await capabilities.event_persistence.persist_event_and_check_cancel(
         run_payload=run_payload,
         persist_event=persist_event,
         event_type=event_type,
@@ -251,13 +228,6 @@ async def persist_and_publish_worker_event(
         payload=payload,
         record_run_step=record_run_step,
     )
-    await publish_pending_v4_events(
-        capabilities,
-        tenant_id=run_payload.tenant_id,
-        run_id=run_payload.run_id,
-        attempt_id=attempt_id,
-    )
-    return cancelled
 
 
 async def drain_pending_v4_events(
@@ -290,7 +260,7 @@ async def finalize_parent_and_publish(
     reconciled_parent: Any,
 ) -> None:
     finalized_parent = await finalize_parent(transaction_factory, payload, reconciled_parent)
-    await publish_pending_run_terminal(
+    await publish_run_event(
         capabilities,
         tenant_id=payload.tenant_id,
         run_id=payload.run_id,
@@ -301,41 +271,34 @@ async def finalize_parent_and_publish(
         else getattr(finalized_parent, "parent_run_id", None)
     )
     if isinstance(parent_run_id, str) and parent_run_id and parent_run_id != payload.run_id:
-        await publish_pending_run_terminal(
+        await publish_run_event(
             capabilities,
             tenant_id=payload.tenant_id,
             run_id=parent_run_id,
         )
 
 
-async def publish_pending_run_terminal(
+async def publish_run_event(
     capabilities: WorkerV4Capabilities,
     *,
     tenant_id: str,
     run_id: str,
 ) -> bool:
-    """Drain terminal and other committed v4 rows through the durable claim port."""
+    """Publish a committed Run fact without a publication queue or disposition."""
 
-    authority = await capabilities.authority.get(
-        tenant_id=tenant_id,
-        run_id=run_id,
+    envelope = await capabilities.event_persistence.load_latest_run_event(
+        tenant_id=tenant_id, run_id=run_id,
     )
-    if authority is None:
+    if envelope is None:
         return False
-    published = 0
-    while True:
-        try:
-            batch_published = await publish_pending_v4_events(
-                capabilities,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                attempt_id=authority.attempt_id,
-            )
-        except V4PublicationTransportUnavailable:
-            return bool(published)
-        published += batch_published
-        if batch_published == 0:
-            return bool(published)
+    try:
+        receipt = await capabilities.publication_transport.publish(envelope)
+        validate_v4_transport_receipt(receipt)
+    except (V4PublicationTransportUnavailable, V4PublicationStreamExpired):
+        # Business finalization is already committed. SSE closes on authoritative
+        # terminal state and the existing frontend hydration supplies the result.
+        return False
+    return True
 
 
 __all__ = [
@@ -343,15 +306,11 @@ __all__ = [
     "ReconstructedAssistantAnswer",
     "V4PendingAdmission",
     "V4PendingAdmissionPort",
-    "V4StreamAuthority",
-    "V4StreamAuthorityLookup",
     "WorkerEventPersistence",
     "WorkerV4Capabilities",
     "admit_v4_stream",
     "drain_pending_v4_events",
     "finalize_parent_and_publish",
-    "persist_and_publish_worker_event",
-    "publish_pending_admissions",
-    "publish_pending_run_terminal",
-    "publish_pending_v4_events",
+    "persist_worker_event",
+    "publish_run_event",
 ]

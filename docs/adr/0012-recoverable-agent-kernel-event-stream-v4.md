@@ -1,6 +1,10 @@
 # ADR 0012: Recoverable Agent-Kernel Event Stream v4
 
-Status: accepted; active v4 wire and runtime contract
+Status: accepted v4 event model; publication and recovery superseded by [ADR 0013](0013-redis-stream-only-sse.md)
+
+The publication queues, Pub/Sub delivery, terminal intents and successor
+operations below describe the former implementation. Current transport and
+migration instructions belong to ADR 0013 and its linked owning contracts.
 
 Date: 2026-08-17
 

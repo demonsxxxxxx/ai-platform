@@ -35,7 +35,9 @@ from app.runtime.sandbox.providers.opensandbox.startup import renew_opensandbox_
 from app.settings import get_settings
 from app.streaming.api import (
     V4ProjectionError,
+    V4PublicationTransportUnavailable,
     WorkerV4Capabilities,
+    publish_callback_rows,
     append_callback_v4_rows,
     callback_item_to_v4,
     callback_thinking_summary_to_v4,
@@ -90,6 +92,7 @@ async def record_executor_callback(
     callback_for_events = callback.model_copy(update={"new_message": None})
     events = callback_event_to_run_events(callback_for_events)
     v4_items = []
+    committed_rows = ()
     authority = None
     callback_deduplicated = False
     tenant_id = ""
@@ -216,7 +219,7 @@ async def record_executor_callback(
             )
             if v4_items:
                 try:
-                    await append_callback_v4_rows(
+                    committed_rows = await append_callback_v4_rows(
                         capabilities,
                         conn,
                         tenant_id=tenant_id,
@@ -312,6 +315,10 @@ async def record_executor_callback(
             run_id=callback.run_id,
             attempt_id=callback.attempt_id,
         )
+    try:
+        await publish_callback_rows(capabilities, committed_rows, authority=authority)
+    except V4PublicationTransportUnavailable as exc:
+        raise HTTPException(status_code=503, detail="callback_stream_unavailable") from exc
     return _executor_callback_receipt(
         callback,
         deduplicated=callback_deduplicated,

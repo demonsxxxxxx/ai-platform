@@ -22,12 +22,23 @@ from app.streaming.infrastructure import v4 as streaming_v4
 
 
 class CallbackEventPersistence:
+    async def load_latest_run_event(self, **kwargs):
+        return None
+
     async def append_callback_rows(self, conn, **kwargs):
         return await streaming_v4.append_callback_v4_rows(conn, **kwargs)
 
 
+class CallbackStreamTransport:
+    async def publish_callback_batch(self, envelopes):
+        return "1-0"
+
+
 def callback_event_capabilities():
-    return SimpleNamespace(event_persistence=CallbackEventPersistence())
+    return SimpleNamespace(
+        event_persistence=CallbackEventPersistence(),
+        publication_transport=CallbackStreamTransport(),
+    )
 
 
 def create_app():

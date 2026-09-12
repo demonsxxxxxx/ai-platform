@@ -169,7 +169,6 @@ jobs:
               tests/test_run_control_routes.py
               tests/test_run_persistence.py
               tests/test_run_projection.py
-              tests/test_sse_v3_contract_generation.py
               tests/test_sse_v4_contract_generation.py
               tests/test_streaming_contracts.py
           - shard: schema-migrations
@@ -187,6 +186,8 @@ jobs:
             redis_image: redis:7.4-alpine
             redis_url: redis://127.0.0.1:6379/15
             test_files: >-
+              tests/test_streaming_callback_direct.py
+              tests/test_retire_legacy_sse_streams.py
               tests/test_streaming_v4_durable.py
               tests/test_streaming_v4_postgres_integration.py
               tests/test_streaming_v4_redis_integration.py

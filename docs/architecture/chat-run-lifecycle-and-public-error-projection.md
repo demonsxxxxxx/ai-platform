@@ -73,10 +73,11 @@ Keep accepted safe partial text while a terminal status is displayed. Terminal
 hydrate reconciles the same Run segment rather than appending a second answer or
 replacing unrelated sources. For a streamed Sandbox answer, the terminal carries
 only a versioned `AssistantAnswerReceipt`; the Worker accepts only current-Attempt,
-strictly ordered v4 rows whose database and canonical metadata publication states
-are both `published`. `pending` remains retryable, while inconsistent or
-`suppressed` publication fails closed. Receipt, identity, sequence, count, or
-length mismatch also fails closed. For streamed answers, short compatibility
+strictly ordered, committed v4 rows. Final answer persistence does not wait for
+Redis delivery or drain publication work. `visible_to_user` and the exact
+Attempt-bound committed facts govern eligibility; retired publication metadata
+is not consulted. Retirement materializes suppression before removing that
+metadata. Receipt, identity, sequence, count, or length mismatch fails closed. For streamed answers, short compatibility
 content remains inline only when message/result persistence limits permit;
 otherwise history stores a bounded `run_events_v4` reference. Legacy
 non-streaming bounded terminal messages use the same stable-source

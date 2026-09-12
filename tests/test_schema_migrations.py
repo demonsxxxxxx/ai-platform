@@ -427,7 +427,7 @@ async def test_pending_admission_schema_advances_to_current_schema():
 
 
 @pytest.mark.asyncio
-async def test_successor_activation_schema_advances_to_concurrent_due_index_schema():
+async def test_successor_activation_ledger_advances_to_current_schema():
     state = SharedMigrationState()
     state.ledger[schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION] = (
         REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM
@@ -452,8 +452,9 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.11.1"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.OBSOLETE_SKILL_CATALOG_CLEANUP_SCHEMA_VERSION
+        == schema_migrations.STREAM_ONLY_SCHEMA_VERSION
     )
+    assert schema_migrations.BAOYU_TRANSLATE_RETIREMENT_SCHEMA_VERSION == "2026.09.07.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
@@ -466,7 +467,6 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "run_events",
         "agent_profile_favorites",
         "sse_stream_authorities",
-        "sse_stream_rebuild_items",
         "messages",
         "files",
         "file_upload_sessions",
@@ -508,13 +508,25 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     ) in schema_migrations.CRITICAL_COLUMNS
     assert (
         "agent_profile_revisions",
-        "avatar_ref",
+        "avatar_style_ref",
+        "text",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "agent_profile_revisions",
+        "market_tag",
         "text",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
     assert (
         "agent_profile_revisions",
         "market_tags",
+        "jsonb",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "agent_profile_revisions",
+        "supported_file_types",
         "jsonb",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
@@ -637,14 +649,6 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "chk_object_deletion_outbox_state",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert (
-        "run_events",
-        "chk_run_events_stream_publication_state",
-    ) in schema_migrations.CRITICAL_CONSTRAINTS
-    assert (
-        "run_events",
-        "chk_run_events_stream_publication_claim",
-    ) in schema_migrations.CRITICAL_CONSTRAINTS
-    assert (
         "files",
         "chk_files_lifecycle_state",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
@@ -688,6 +692,18 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "trg_run_attempt_transition_guard",
             "ai_platform_guard_run_attempt_transition",
             23,
+        ),
+        (
+            "agent_profile_revisions",
+            "trg_agent_profile_legacy_insert_compatibility",
+            "agent_profile_legacy_insert_compatibility",
+            7,
+        ),
+        (
+            "agent_profile_revisions",
+            "trg_agent_profile_legacy_insert_reconcile",
+            "agent_profile_legacy_insert_reconcile",
+            5,
         ),
     )
     trigger_contract = schema_migrations._critical_trigger_contract()
@@ -803,22 +819,6 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "UNIQUE (tenant_id, run_id, queue_attempt_id)",
         ),
         (
-            "run_events",
-            "chk_run_events_stream_publication_state",
-            "c",
-            "CHECK (stream_publication_state IS NULL OR (stream_publication_state = ANY (ARRAY["
-            "'pending'::text, 'published'::text, 'suppressed'::text])))",
-        ),
-        (
-            "run_events",
-            "chk_run_events_stream_publication_claim",
-            "c",
-            "CHECK (stream_publication_claim_token IS NULL AND "
-            "stream_publication_claim_expires_at IS NULL OR "
-            "stream_publication_claim_token IS NOT NULL AND "
-            "stream_publication_claim_expires_at IS NOT NULL)",
-        ),
-        (
             "sse_stream_authorities",
             "chk_sse_stream_authority_open_format",
             "c",
@@ -831,110 +831,6 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "c",
             "CHECK (state = 'admission_pending'::text AND admission_confirmed_at IS NULL "
             "OR state <> 'admission_pending'::text AND admission_confirmed_at IS NOT NULL)",
-        ),
-        (
-            "sse_stream_rebuilds",
-            "chk_sse_stream_rebuild_identity",
-            "c",
-            "CHECK (id <> ''::text AND attempt_id <> ''::text "
-            "AND successor_open_event_id <> ''::text AND successor_open_bytes <> ''::text "
-            "AND source_authority_fingerprint ~ '^[0-9a-f]{64}$'::text "
-            "AND successor_open_digest ~ '^[0-9a-f]{64}$'::text "
-            "AND claim_token_digest ~ '^[0-9a-f]{64}$'::text)",
-        ),
-        (
-            "sse_stream_rebuilds",
-            "chk_sse_stream_rebuild_authority",
-            "c",
-            "CHECK (source_incarnation > 0 AND successor_incarnation > source_incarnation "
-            "AND source_authorization_epoch > 0 "
-            "AND successor_authorization_epoch > source_authorization_epoch)",
-        ),
-        (
-            "sse_stream_rebuilds",
-            "chk_sse_stream_rebuild_origin",
-            "c",
-            "CHECK (origin_incarnation > 0 AND origin_incarnation <= source_incarnation "
-            "AND origin_authorization_epoch > 0 "
-            "AND origin_authorization_epoch <= source_authorization_epoch)",
-        ),
-        (
-            "sse_stream_rebuilds",
-            "chk_sse_stream_rebuild_progress",
-            "c",
-            "CHECK (source_cursor_sequence >= source_through_sequence "
-            "AND source_through_sequence > 0 AND item_count > 0 "
-            "AND built_through_sequence >= 0 "
-            "AND built_through_sequence <= source_through_sequence)",
-        ),
-        (
-            "sse_stream_rebuilds",
-            "chk_sse_stream_rebuild_state",
-            "c",
-            "CHECK (state = ANY (ARRAY['building'::text, 'ready'::text, "
-            "'cutover'::text, 'aborted'::text, 'expired'::text]))",
-        ),
-        (
-            "sse_stream_rebuilds",
-            "chk_sse_stream_rebuild_receipt",
-            "c",
-            "CHECK (receipt_entry_count IS NULL AND receipt_open_event_id IS NULL "
-            "AND receipt_terminal_event_id IS NULL AND receipt_end_event_id IS NULL "
-            "AND receipt_last_redis_id IS NULL AND receipt_last_envelope_bytes IS NULL "
-            "AND receipt_last_envelope_digest IS NULL AND receipt_digest IS NULL "
-            "OR receipt_entry_count IS NOT NULL "
-            "AND receipt_entry_count = (item_count + 2) "
-            "AND receipt_open_event_id IS NOT NULL AND receipt_open_event_id <> ''::text "
-            "AND receipt_terminal_event_id IS NOT NULL "
-            "AND receipt_terminal_event_id <> ''::text "
-            "AND receipt_end_event_id IS NOT NULL AND receipt_end_event_id <> ''::text "
-            "AND receipt_last_redis_id IS NOT NULL "
-            "AND receipt_last_redis_id ~ '^[0-9]+-[0-9]+$'::text "
-            "AND receipt_last_envelope_bytes IS NOT NULL "
-            "AND receipt_last_envelope_bytes <> ''::text "
-            "AND receipt_last_envelope_digest IS NOT NULL "
-            "AND receipt_last_envelope_digest ~ '^[0-9a-f]{64}$'::text "
-            "AND receipt_digest IS NOT NULL "
-            "AND receipt_digest ~ '^[0-9a-f]{64}$'::text)",
-        ),
-        (
-            "sse_stream_rebuilds",
-            "fk_sse_stream_rebuild_authority",
-            "f",
-            "FOREIGN KEY (tenant_id, run_id) "
-            "REFERENCES sse_stream_authorities(tenant_id, run_id)",
-        ),
-        (
-            "sse_stream_rebuild_items",
-            "sse_stream_rebuild_items_pkey",
-            "p",
-            "PRIMARY KEY (rebuild_id, sequence)",
-        ),
-        (
-            "sse_stream_rebuild_items",
-            "chk_sse_stream_rebuild_item",
-            "c",
-            "CHECK (sequence > 0 AND event_id <> ''::text AND event_type <> ''::text "
-            "AND canonical_envelope_bytes <> ''::text "
-            "AND envelope_digest ~ '^[0-9a-f]{64}$'::text)",
-        ),
-        (
-            "sse_stream_rebuild_items",
-            "chk_sse_stream_rebuild_item_redis_id",
-            "c",
-            "CHECK (redis_id IS NULL OR redis_id ~ '^[0-9]+-[0-9]+$'::text)",
-        ),
-        (
-            "sse_stream_rebuild_items",
-            "fk_sse_stream_rebuild_item_operation",
-            "f",
-            "FOREIGN KEY (rebuild_id) REFERENCES sse_stream_rebuilds(id)",
-        ),
-        (
-            "sse_stream_rebuild_items",
-            "uq_sse_stream_rebuild_item_event",
-            "u",
-            "UNIQUE (rebuild_id, event_id)",
         ),
         (
             "files",
@@ -1102,103 +998,31 @@ def test_every_critical_run_attempt_constraint_has_an_exact_definition():
     assert defined == critical
 
 
-def test_agent_profile_schema_hard_cuts_retired_storage_and_triggers():
+def test_profile_avatar_style_keeps_legacy_avatar_ref_rollback_compatible():
     schema = " ".join(schema_migrations.schema_sql().split()).lower()
 
-    assert len(schema_migrations.schema_checksum()) == 64
-    for column in (
-        "welcome_message",
-        "capability_summary",
-        "recommended_tasks",
-        "supported_input_types",
-        "supported_file_types",
-        "expected_outputs",
-        "permissions_and_data_access_notice",
-        "model_id",
-        "skill_id",
-        "skill_version",
-        "avatar_style_ref",
-        "avatar_asset_id",
-        "category",
-        "market_tag",
-        "legacy_compatibility_write",
-    ):
-        assert f"drop column if exists {column}" in schema
-    assert "create trigger trg_agent_profile_legacy_insert_compatibility" not in schema
-    assert "create trigger trg_agent_profile_legacy_insert_reconcile" not in schema
-
-
-def test_v4_publication_schema_is_additive_and_index_is_concurrent_only():
-    schema = " ".join(schema_migrations.schema_sql().split()).lower()
-    for column in (
-        "stream_publication_state text",
-        "stream_publication_attempts integer",
-        "stream_publication_next_attempt_at timestamptz",
-        "stream_publication_redis_id text",
-        "stream_publication_last_error text",
-        "stream_publication_claim_token text",
-        "stream_publication_claim_expires_at timestamptz",
-    ):
-        assert column in schema
-    assert "create index if not exists idx_run_events_stream_publication_retry" not in schema
-    assert "create index if not exists idx_run_events_stream_publication_claim" not in schema
-    assert "chk_run_events_stream_publication_claim" in schema
-    retry_migration = next(
-        item
-        for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
-        if item.name == "idx_run_events_stream_publication_retry"
-    )
-    assert retry_migration.predicate_expression == (
-        "visible_to_user = true and stream_publication_state = 'pending'"
-    )
-    assert retry_migration.sql.endswith(
-        "where visible_to_user = true and stream_publication_state = 'pending'"
-    )
-    claim_migration = next(
-        item
-        for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
-        if item.name == "idx_run_events_stream_publication_claim"
-    )
-    assert claim_migration.column_names == ("tenant_id", "run_id", "sequence", "id")
-    assert claim_migration.predicate_expression == (
-        "visible_to_user = true and stream_publication_state = 'pending' "
-        "and payload_json ? '__stream_v4'"
-    )
-
-
-def test_v4_successor_rebuild_schema_is_additive_and_claim_fenced():
-    schema = " ".join(schema_migrations.schema_sql().split()).lower()
-    assert "create table if not exists sse_stream_rebuilds" in schema
-    assert "create table if not exists sse_stream_rebuild_items" in schema
-    assert "successor_incarnation > source_incarnation" in schema
-    assert "successor_authorization_epoch > source_authorization_epoch" in schema
-    assert "claim_token_digest ~ '^[0-9a-f]{64}$'" in schema
-    assert "receipt_entry_count = item_count + 2" in schema
-    assert "receipt_digest is not null" in schema
-    assert "drop constraint if exists chk_sse_stream_rebuild_receipt" in schema
-    assert "where state in ('building', 'ready')" in schema
     assert (
-        "sse_stream_rebuilds",
-        "chk_sse_stream_rebuild_state",
-    ) in schema_migrations.CRITICAL_CONSTRAINTS
-    static_indexes = {
-        definition.name: definition
-        for definition in schema_migrations.STATIC_INDEX_DEFINITIONS
-    }
-    assert static_indexes["uq_sse_stream_rebuild_active"].unique is True
-    assert static_indexes["uq_sse_stream_rebuild_active"].predicate_expression == (
-        "state = any array['building', 'ready']"
-    )
-    assert static_indexes["uq_sse_stream_rebuild_item_event"].unique is True
+        "alter table agent_profile_revisions add column if not exists "
+        "avatar_style_ref text not null default ''"
+    ) in schema
+    assert "check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research'))" in schema
+    assert "avatar_style_ref = '' or avatar_style_ref in" in schema
 
 
-def test_schema_upgrade_delegates_v4_index_and_repairs_confirmation_history():
+def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
+    schema = " ".join(schema_migrations.schema_sql().split()).lower()
+
+    assert (
+        "alter table agent_profile_revisions add column if not exists "
+        "supported_file_types jsonb not null default '[]'::jsonb"
+    ) in schema
+    assert "rename column supported_file_types" not in schema
+    assert "drop column supported_file_types" not in schema
+    assert "legacy_supported_file_types" not in schema
+
+
+def test_schema_upgrade_repairs_confirmation_history_before_constraint_validation():
     schema = schema_migrations.schema_sql()
-    due_index = next(
-        migration
-        for migration in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
-        if migration.name == "idx_run_events_v4_due_scope"
-    )
     repair_confirmation = schema.index(
         "update sse_stream_authorities\nset admission_confirmed_at = coalesce("
     )
@@ -1206,113 +1030,7 @@ def test_schema_upgrade_delegates_v4_index_and_repairs_confirmation_history():
         "add constraint chk_sse_stream_authority_pending_confirmation"
     )
 
-    assert "create index if not exists idx_run_events_v4_due_scope" not in schema
-    assert due_index.sql.startswith(
-        "create index concurrently if not exists idx_run_events_v4_due_scope"
-    )
-    assert due_index.column_names == ("tenant_id", "run_id", "sequence")
     assert repair_confirmation < add_confirmation_constraint
-
-
-@pytest.mark.asyncio
-async def test_v4_successor_rollback_removes_dormant_snapshots_and_due_index_state():
-    class FakeResult:
-        async def fetchone(self):
-            return None
-
-    class FakeRollbackConnection:
-        def __init__(self) -> None:
-            self.statements: list[tuple[str, object]] = []
-
-        async def execute(self, statement: str, params: object = None):
-            self.statements.append((" ".join(statement.lower().split()), params))
-            return FakeResult()
-
-    conn = FakeRollbackConnection()
-    await schema_migrations.rollback_v4_successor_rebuild_migration(conn)
-    assert [statement for statement, _ in conn.statements[1:3]] == [
-        "drop table if exists sse_stream_rebuild_items",
-        "drop table if exists sse_stream_rebuilds",
-    ]
-    assert conn.statements[3] == (
-        "drop index if exists idx_run_events_v4_due_scope",
-        None,
-    )
-    assert conn.statements[4] == (
-        "delete from schema_index_migrations where index_name = %s",
-        ("idx_run_events_v4_due_scope",),
-    )
-    assert conn.statements[5][1] == (
-        schema_migrations.V4_SUCCESSOR_REBUILD_SCHEMA_VERSION,
-        schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION,
-        schema_migrations.V4_CONCURRENT_DUE_INDEX_SCHEMA_VERSION,
-    )
-    assert all("delete from run_events" not in statement for statement, _ in conn.statements)
-    assert all("alter table run_events" not in statement for statement, _ in conn.statements)
-    assert all("drop table if exists run_events" not in statement for statement, _ in conn.statements)
-    assert all("sse_stream_authorities" not in statement for statement, _ in conn.statements)
-
-
-@pytest.mark.asyncio
-async def test_v4_successor_rollback_rejects_activated_lineage():
-    class ActivatedResult:
-        async def fetchone(self):
-            return {"exists": 1}
-
-    class ActivatedConnection:
-        def __init__(self) -> None:
-            self.statements: list[str] = []
-
-        async def execute(self, statement: str, params: object = None):
-            self.statements.append(" ".join(statement.lower().split()))
-            return ActivatedResult()
-
-    conn = ActivatedConnection()
-    with pytest.raises(
-        schema_migrations.SchemaMigrationError,
-        match="v4_successor_rebuild_rollback_cutover_exists",
-    ):
-        await schema_migrations.rollback_v4_successor_rebuild_migration(conn)
-    assert conn.statements == [
-        "select 1 from sse_stream_rebuilds where state = 'cutover' limit 1"
-    ]
-
-
-@pytest.mark.asyncio
-async def test_v4_rollback_removes_only_publication_bookkeeping():
-    class FakeRollbackConnection:
-        def __init__(self) -> None:
-            self.statements: list[str] = []
-            self.params: list[object] = []
-            self.event_facts = [{"id": "evt4_fact", "sequence": 9}]
-
-        async def execute(self, statement: str, params: object = None) -> None:
-            self.statements.append(" ".join(statement.lower().split()))
-            self.params.append(params)
-
-    conn = FakeRollbackConnection()
-    await schema_migrations.rollback_v4_publication_migration(conn)
-    assert conn.event_facts == [{"id": "evt4_fact", "sequence": 9}]
-    assert any("drop index if exists idx_run_events_stream_publication_claim" in item for item in conn.statements)
-    assert any("drop index if exists idx_run_events_stream_publication_retry" in item for item in conn.statements)
-    assert any("drop index if exists idx_run_events_v4_due_scope" in item for item in conn.statements)
-    assert any("delete from schema_index_migrations" in item for item in conn.statements)
-    assert any("delete from schema_migrations" in item for item in conn.statements)
-    assert (
-        schema_migrations.V4_PUBLICATION_SCHEMA_VERSION,
-        schema_migrations.V4_CONCURRENT_DUE_INDEX_SCHEMA_VERSION,
-    ) in conn.params
-    assert all(
-        schema_migrations.MODEL_CONTROL_PLANE_SCHEMA_VERSION not in params
-        for params in conn.params
-        if isinstance(params, tuple)
-    )
-    assert any("drop constraint if exists chk_run_events_stream_publication_claim" in item for item in conn.statements)
-    assert any("drop constraint if exists chk_run_events_stream_publication_state" in item for item in conn.statements)
-    assert any("drop column if exists stream_publication_claim_token" in item for item in conn.statements)
-    assert any("drop column if exists stream_publication_claim_expires_at" in item for item in conn.statements)
-    assert any("drop column if exists stream_publication_state" in item for item in conn.statements)
-    assert all("delete from run_events" not in item for item in conn.statements)
 
 
 def test_sandbox_executor_async_terminal_columns_are_additive():

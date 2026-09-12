@@ -16,17 +16,17 @@ from app.streaming.application.durable_v4 import (
 )
 from app.streaming.application.worker_publication_v4 import (
     ReconstructedAssistantAnswer,
-    V4StreamAuthority,
-    V4StreamAuthorityLookup,
     WorkerEventPersistence,
 )
-from app.streaming.domain.live import tenant_scope
+from app.streaming.domain.public_events_v4 import V4ProjectionError, project_public_v4
+from app.streaming.domain.transport import canonical_json_bytes
 from app.streaming.redis import (
     StreamContractError,
     StreamTransportUnavailable,
     confirm_stream_admission,
     create_or_get_stream_admission_v4,
     get_stream_authority,
+    tenant_scope,
 )
 from app.streaming.infrastructure import v4 as _v4
 from app.streaming.infrastructure.run_v4_events import append_current_run_terminal_v4_row
@@ -65,6 +65,54 @@ class PostgresWorkerEventPersistence(WorkerEventPersistence):
             run_id=run_id,
             load_terminal_event_fact=self._load_terminal_event_fact,
         )
+
+    async def load_latest_run_event(
+        self, *, tenant_id: str, run_id: str, before_sequence: int | None = None
+    ) -> bytes | None:
+        async with self._transaction_factory() as conn:
+            await self.append_terminal_row(conn, tenant_id=tenant_id, run_id=run_id)
+            authority = await get_stream_authority(conn, tenant_id=tenant_id, run_id=run_id)
+            if (
+                authority is None
+                or authority.revocation_state != "active"
+                or authority.state not in {"confirmed", "terminal"}
+            ):
+                return None
+            result = await conn.execute(
+                """
+                select id, tenant_id, run_id, sequence, event_type,
+                       visible_to_user, payload_json, created_at
+                from run_events
+                where tenant_id = %s and run_id = %s and visible_to_user = true
+                  and event_type in ('run.cancel_requested', 'run.succeeded', 'run.failed', 'run.cancelled')
+                  and (%s::bigint is null or sequence < %s)
+                  and payload_json -> '__stream_v4' ->> 'attempt_id' = %s
+                  and payload_json -> '__stream_v4' ->> 'stream_incarnation' = %s
+                order by sequence desc limit 1
+                """,
+                (tenant_id, run_id, before_sequence, before_sequence, authority.attempt_id, str(authority.stream_incarnation)),
+            )
+            row = await result.fetchone()
+            if row is None:
+                return None
+            envelope = project_public_v4(row, authority=authority)
+            if envelope is None:
+                raise V4ProjectionError("v4_run_event_projection_invalid")
+            callbacks = await conn.execute(
+                """
+                select coalesce(max(sequence), 0) as sequence from run_events
+                where tenant_id = %s and run_id = %s and visible_to_user = true
+                  and sequence < %s
+                  and payload_json -> '__stream_v4' ->> 'attempt_id' = %s
+                  and payload_json -> '__stream_v4' ->> 'stream_incarnation' = %s
+                  and payload_json -> '__stream_v4' ->> 'execution_lease_id' is not null
+                """,
+                (tenant_id, run_id, row["sequence"], authority.attempt_id, str(authority.stream_incarnation)),
+            )
+            callback_sequence = (await callbacks.fetchone())["sequence"]
+            if callback_sequence:
+                envelope["source"]["callback_sequence"] = callback_sequence
+            return canonical_json_bytes(envelope)
 
     async def append_callback_rows(
         self,
@@ -152,6 +200,16 @@ class RedisV4PublicationTransport:
     def __init__(self, bridge: V4RedisStreamBridge) -> None:
         self._bridge = bridge
 
+    async def publish_callback_batch(
+        self, envelopes: tuple[Mapping[str, object], ...]
+    ) -> str:
+        from app.streaming.infrastructure.callback_stream import append_callback_batch
+
+        try:
+            return await append_callback_batch(self._bridge._bridge, envelopes)
+        except StreamTransportUnavailable as exc:
+            raise V4PublicationTransportUnavailable("stream_callback_append_unavailable") from exc
+
     async def publish(self, canonical_envelope_bytes: bytes) -> str:
         try:
             envelope = json.loads(canonical_envelope_bytes.decode("utf-8"))
@@ -234,35 +292,6 @@ class PostgresV4PendingAdmissions(V4PendingAdmissionPort):
             open_payload_digest=authority.open_payload_digest,
         )
 
-    async def list_pending_admissions(self, *, limit: int) -> tuple[V4PendingAdmission, ...]:
-        if isinstance(limit, bool) or not 1 <= limit <= 256:
-            raise ValueError("v4_pending_admission_limit_invalid")
-        async with self._transaction_factory() as conn:
-            result = await conn.execute(
-                """
-                select tenant_id, tenant_scope, run_id, attempt_id, stream_incarnation,
-                       open_event_id, open_payload_bytes, open_payload_digest
-                from sse_stream_authorities
-                where state = 'admission_pending'
-                order by updated_at asc, tenant_id asc, run_id asc
-                limit %s
-                """,
-                (limit,),
-            )
-            rows = await result.fetchall()
-        return tuple(
-            V4PendingAdmission(
-                tenant_id=str(row["tenant_id"]),
-                tenant_scope=str(row["tenant_scope"]),
-                run_id=str(row["run_id"]),
-                attempt_id=str(row["attempt_id"]),
-                stream_incarnation=int(row["stream_incarnation"]),
-                open_event_id=str(row["open_event_id"]),
-                open_payload_bytes=str(row["open_payload_bytes"]).encode("utf-8"),
-                open_payload_digest=str(row["open_payload_digest"]),
-            )
-            for row in rows
-        )
 
     async def confirm_pending_admission(
         self,
@@ -289,33 +318,10 @@ class PostgresV4PendingAdmissions(V4PendingAdmissionPort):
             return await confirm_stream_admission(conn, authority=authority)
 
 
-class RedisV4StreamAuthorityLookup(V4StreamAuthorityLookup):
-    def __init__(self, transaction_factory: TransactionFactory) -> None:
-        self._transaction_factory = transaction_factory
-
-    async def get(
-        self,
-        *,
-        tenant_id: str,
-        run_id: str,
-    ) -> V4StreamAuthority | None:
-        async with self._transaction_factory() as conn:
-            authority = await get_stream_authority(
-                conn,
-                tenant_id=tenant_id,
-                run_id=run_id,
-            )
-        if authority is None:
-            return None
-        return V4StreamAuthority(
-            attempt_id=authority.attempt_id,
-            stream_incarnation=authority.stream_incarnation,
-        )
 
 
 __all__ = [
     "PostgresV4PendingAdmissions",
     "PostgresWorkerEventPersistence",
     "RedisV4PublicationTransport",
-    "RedisV4StreamAuthorityLookup",
 ]

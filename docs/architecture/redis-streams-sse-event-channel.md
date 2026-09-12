@@ -8,9 +8,9 @@ Design ID: `ai-platform.redis-streams-sse-event-channel.v4`.
 
 | Concern | Owner |
 | --- | --- |
-| Rationale and supersession | [ADR 0012](../adr/0012-recoverable-agent-kernel-event-stream-v4.md) |
+| Rationale and supersession | [ADR 0013](../adr/0013-redis-stream-only-sse.md) |
 | Envelopes, SDK/callback boundary, progressive timeline, replay/live, cursor/gap and client acceptance | [Wire protocol](redis-streams-sse-wire-protocol.md) |
-| Admission, publication claims, authorization leases, terminal recovery and successor activation | [Execution control](redis-streams-sse-execution-control.md) |
+| Admission, committed callback/Run publication, authorization leases and terminal convergence | [Execution control](redis-streams-sse-execution-control.md) |
 | Gateway, cutover, deployed fault injection and acceptance | [Cutover acceptance](../operations/redis-streams-sse-cutover-acceptance.md) |
 | Cross-component convergence proposals | [Runtime convergence](runtime-convergence.md) |
 
@@ -21,15 +21,16 @@ schema/code and tests updated together when the wire contract changes.
 ## Architecture
 
 Safe Engine projection enters the authenticated callback boundary. Canonical
-public events and their receipt commit in PostgreSQL. A fenced publisher writes
-Redis replay records and Pub/Sub notifications outside that transaction. The
-API shares a live subscription across authorized browser subscribers, replays
-retained records, and serves SSE. Frontend state accepts only validated events;
-terminal content converges through authorized durable hydration.
+public events and their receipt commit in PostgreSQL; the callback route then
+appends the exact batch directly to Redis Stream before acknowledging it. The
+API replays retained records and follows the same Stream with `XREAD BLOCK` to
+serve SSE. Frontend state accepts only validated events; terminal content
+converges through authorized durable hydration.
 
-PostgreSQL owns business facts, semantic order and durable publication work.
-Redis is a bounded replay/live plane. Pub/Sub is a wake-up/delivery mechanism,
-not a durable business record or a side-effect authorization.
+PostgreSQL owns business facts and semantic order. Redis Stream is the sole
+bounded live/replay transport. Committed Run terminal facts use direct,
+transaction-external publication. Independent terminal intents, publication
+queues/claims, background drains and successor recovery are retired.
 
 ## Version distinctions
 
@@ -46,12 +47,11 @@ transport; it does not prohibit these canonical writes. The legacy
 
 ## Recovery boundary
 
-Same-incarnation active recovery requires a validated server anchor plus durable
-hydration. An unproven/missing current stream cannot be recreated under an issued
-incarnation. Terminal successor rebuilding follows the existing fenced protocol.
-Active successor creation requires a separate reviewed contract; this index does
-not authorize it. SDK completion, Run completion, stream end, and final browser
-hydration are distinct facts.
+Same-incarnation recovery requires a validated retained server anchor plus
+authorized durable hydration. A missing Stream produces a gap; it is never
+recreated under an issued incarnation, and there is no successor builder.
+SDK completion, Run completion, stream end, and final browser hydration remain
+distinct facts.
 
 See the wire contract for the progressive timeline and its exact tool-interval,
 sanitization, identity, body consistency, and final-hydration invariants. These

@@ -87,11 +87,9 @@ def _answer_fixture() -> tuple[list[dict[str, object]], dict[str, object]]:
             id=event_id,
             sequence=sequence,
             event_type=event_type,
-            stream_publication_state="published",
         )
         metadata = row["payload_json"]["__stream_v4"]
         assert isinstance(metadata, dict)
-        metadata["publication_state"] = "published"
         metadata["message_id"] = message_id
         metadata["source_event_id"] = (
             source_ids[sequence - 2] if event_type == "message.delta" else event_id
@@ -163,9 +161,7 @@ async def test_load_answer_by_receipt_requires_current_authority_attempt():
         "wrong_receipt_length",
         "wrong_completed_count",
         "wrong_completed_length",
-        "publication_pending",
-        "publication_state_mismatch",
-        "publication_state_invalid",
+        "hidden_row",
     ],
 )
 async def test_load_answer_by_receipt_rejects_invalid_current_attempt_rows(mutation: str):
@@ -199,14 +195,8 @@ async def test_load_answer_by_receipt_rejects_invalid_current_attempt_rows(mutat
         rows[-1]["payload_json"]["delta_count"] = 3
     elif mutation == "wrong_completed_length":
         rows[-1]["payload_json"]["text_length"] = 99
-    elif mutation == "publication_pending":
-        rows[1]["stream_publication_state"] = "pending"
-        rows[1]["payload_json"]["__stream_v4"]["publication_state"] = "pending"
-    elif mutation == "publication_state_mismatch":
-        rows[1]["stream_publication_state"] = "pending"
-    elif mutation == "publication_state_invalid":
-        rows[1]["stream_publication_state"] = "failed"
-        rows[1]["payload_json"]["__stream_v4"]["publication_state"] = "failed"
+    elif mutation == "hidden_row":
+        rows[1]["visible_to_user"] = False
 
     with pytest.raises(AssistantAnswerReceiptError):
         await load_answer_by_receipt(

@@ -112,7 +112,6 @@ BACKEND_TEST_SHARDS = {
         "tests/test_run_control_routes.py",
         "tests/test_run_persistence.py",
         "tests/test_run_projection.py",
-        "tests/test_sse_v3_contract_generation.py",
         "tests/test_sse_v4_contract_generation.py",
         "tests/test_streaming_contracts.py",
     ),
@@ -122,6 +121,8 @@ BACKEND_TEST_SHARDS = {
         "tests/test_schema.py::test_schema_declares_attempt_identity_state_and_fences",
     ),
     "v4-durable-streaming": (
+        "tests/test_streaming_callback_direct.py",
+        "tests/test_retire_legacy_sse_streams.py",
         "tests/test_streaming_v4_durable.py",
         "tests/test_streaming_v4_postgres_integration.py",
         "tests/test_streaming_v4_redis_integration.py",
@@ -265,7 +266,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     all_selectors = [
         selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors
     ]
-    assert len(all_selectors) == len(set(all_selectors)) == 79
+    assert len(all_selectors) == len(set(all_selectors)) == 80
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job

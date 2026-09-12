@@ -45,7 +45,7 @@ from app.required_tool_contract import (
     RequiredCapabilityEvidence,
     declaration_from_input,
 )
-from app.runs.api import RunAttemptLifecycleService, RunTerminalizationProgress
+from app.runs.api import RunTerminalizationProgress
 from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.runtime.sandbox.executor_client import SandboxExecutorHttpError
@@ -72,8 +72,6 @@ from tests.support.executor_stubs import FailingExecutorStub, SuccessfulExecutor
 
 RELEASE_DECISION_SCHEMA_VERSION = "ai-platform.skill-release-decision.v1"
 _CURRENT_QUEUE_PAYLOAD = None
-_TEST_ATTEMPT_PERSISTENCE = None
-_TEST_RUN_ATTEMPT_LIFECYCLE = None
 _ORIGINAL_ENSURE_MCP_TOOL_ACTIVE = repository_module.ensure_mcp_tool_active
 _ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS = repository_module.materialize_run_skill_manifests
 
@@ -121,8 +119,6 @@ class _FakeWorkerV4Admission:
             attempt_id=attempt_id,
         )
 
-    async def list_pending_admissions(self, *, limit):
-        return ()
 
     async def confirm_pending_admission(self, admission, *, redis_id):
         assert redis_id
@@ -134,12 +130,10 @@ class _FakeWorkerV4Admission:
         )
 
 
-class _FakeWorkerV4Authority:
-    async def get(self, *, tenant_id, run_id):
-        return SimpleNamespace(attempt_id="qat-test-attempt", stream_incarnation=1)
-
-
 class _FakeWorkerV4Persistence:
+    async def load_latest_run_event(self, *, tenant_id, run_id):
+        return None
+
     async def append_terminal_row(self, _conn, *, tenant_id, run_id):
         return None
 
@@ -183,30 +177,20 @@ class _FakeWorkerV4Persistence:
             )
 
 
-class _FakeWorkerV4Claims:
-    async def claim_next(self, **kwargs):
-        return None
-
-
 class _FakeWorkerV4Transport:
     async def publish(self, canonical_envelope_bytes):
         return "0-1"
 
 
 _FAKE_WORKER_V4_CAPABILITIES = WorkerV4Capabilities(
-    authority=_FakeWorkerV4Authority(),
     pending_admissions=_FakeWorkerV4Admission(),
     event_persistence=_FakeWorkerV4Persistence(),
-    publication_claims=_FakeWorkerV4Claims(),
     publication_transport=_FakeWorkerV4Transport(),
 )
 
 
 async def process_run_payload(*args, **kwargs):
     kwargs.setdefault("v4_capabilities", _FAKE_WORKER_V4_CAPABILITIES)
-    if _TEST_RUN_ATTEMPT_LIFECYCLE is None:
-        raise RuntimeError("test_run_attempt_lifecycle_unavailable")
-    kwargs.setdefault("run_attempt_lifecycle", _TEST_RUN_ATTEMPT_LIFECYCLE)
     return await _process_run_payload(*args, **kwargs)
 
 
@@ -904,8 +888,6 @@ def _test_current_principal(
 @pytest.fixture(autouse=True)
 def default_cancel_not_requested(monkeypatch):
     global _CURRENT_QUEUE_PAYLOAD
-    global _TEST_ATTEMPT_PERSISTENCE
-    global _TEST_RUN_ATTEMPT_LIFECYCLE
     _CURRENT_QUEUE_PAYLOAD = None
     original_locked_agent_profile_identity_valid = (
         worker_module._locked_agent_profile_identity_valid
@@ -1038,22 +1020,39 @@ def default_cancel_not_requested(monkeypatch):
     async def terminalize_run_attempt(conn, **kwargs):
         return None
 
-    _TEST_ATTEMPT_PERSISTENCE = SimpleNamespace(
-        lock_queued_run_for_attempt=lock_queued_run_for_attempt,
-        start_worker_run_attempt=start_worker_run_attempt,
-        get_run_attempt_for_queue_attempt=get_run_attempt_for_queue_attempt,
-        get_run_attempt=get_run_attempt,
-        assert_worker_run_attempt_current=assert_worker_run_attempt_current,
-        request_run_attempt_cancel=request_run_attempt_cancel,
-        terminalize_run_attempt=terminalize_run_attempt,
+    monkeypatch.setattr(
+        "app.worker.run_attempts.lock_queued_run_for_attempt",
+        lock_queued_run_for_attempt,
     )
-    _TEST_RUN_ATTEMPT_LIFECYCLE = RunAttemptLifecycleService(
-        persistence=_TEST_ATTEMPT_PERSISTENCE
+    monkeypatch.setattr(
+        "app.worker.run_attempts.start_worker_run_attempt",
+        start_worker_run_attempt,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.get_run_attempt_for_queue_attempt",
+        get_run_attempt_for_queue_attempt,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.get_run_attempt",
+        get_run_attempt,
     )
     monkeypatch.setattr(
         "app.execution.application.worker_attempt_lifecycle.run_attempt_id_for_queue_attempt",
         lambda **kwargs: kwargs["queue_attempt_id"],
     )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.assert_worker_run_attempt_current",
+        assert_worker_run_attempt_current,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.request_run_attempt_cancel",
+        request_run_attempt_cancel,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.terminalize_run_attempt",
+        terminalize_run_attempt,
+    )
+
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         return False
 
@@ -1087,7 +1086,7 @@ def default_cancel_not_requested(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(
-        "app.bootstrap.worker_attempt_lifecycle.drain_run_tool_permission_terminalization",
+        "app.worker.drain_run_tool_permission_terminalization",
         drain_run_tool_permission_terminalization,
         raising=False,
     )
@@ -1203,15 +1202,7 @@ def default_cancel_not_requested(monkeypatch):
         raising=False,
     )
 
-    async def reconcile_terminalized_permission_run(
-        *,
-        tenant_id,
-        run_id,
-        progress,
-        transaction_factory,
-        attempt_lifecycle,
-    ):
-        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
+    async def reconcile_terminalized_permission_run(*, tenant_id, run_id, progress, transaction_factory):
         if not progress.did_transition or not progress.needs_reconcile:
             return None
         async with transaction_factory() as conn:
@@ -1881,13 +1872,11 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
         reconciliation,
         transaction_factory,
         v4_capabilities,
-        run_attempt_lifecycle,
     ):
         del registry, reconciliation
         assert worker_id == "worker-a"
         assert transaction_factory is None
         assert v4_capabilities is _FAKE_WORKER_V4_CAPABILITIES
-        assert run_attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
         assert raw["_queue_attempt_id"] == "attempt-a"
         queue_payload = QueueRunPayload.model_validate(
             {key: value for key, value in raw.items() if key != "_queue_attempt_id"}
@@ -1935,7 +1924,6 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
         worker_id="worker-a",
         claim_token="claim-a",
         v4_capabilities=_FAKE_WORKER_V4_CAPABILITIES,
-        run_attempt_lifecycle=_TEST_RUN_ATTEMPT_LIFECYCLE,
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
@@ -2062,7 +2050,6 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         claim_token="claim-a",
         transaction_factory=fake_transaction,
         v4_capabilities=_FAKE_WORKER_V4_CAPABILITIES,
-        run_attempt_lifecycle=_TEST_RUN_ATTEMPT_LIFECYCLE,
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
@@ -2155,15 +2142,16 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         promote_artifact_cleanup,
     )
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr(_TEST_ATTEMPT_PERSISTENCE, "get_run_attempt", get_run_attempt)
     monkeypatch.setattr(
-        _TEST_ATTEMPT_PERSISTENCE,
-        "assert_worker_run_attempt_current",
+        "app.worker.run_attempts.get_run_attempt",
+        get_run_attempt,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.assert_worker_run_attempt_current",
         assert_current_attempt,
     )
     monkeypatch.setattr(
-        _TEST_ATTEMPT_PERSISTENCE,
-        "terminalize_run_attempt",
+        "app.worker.run_attempts.terminalize_run_attempt",
         terminalize_attempt,
     )
     monkeypatch.setattr(
@@ -2226,7 +2214,6 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         worker_id="reconciler-a",
         claim_token="claim-a",
         v4_capabilities=_FAKE_WORKER_V4_CAPABILITIES,
-        run_attempt_lifecycle=_TEST_RUN_ATTEMPT_LIFECYCLE,
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
@@ -2817,10 +2804,8 @@ async def test_worker_reauthorizes_pinned_profile_before_adapter(
 
         monkeypatch.setattr("app.worker.resolve_current_principal", deny_current_principal)
         v4_capabilities = WorkerV4Capabilities(
-            authority=_FakeWorkerV4Authority(),
             pending_admissions=_FakeWorkerV4Admission(calls),
             event_persistence=_FakeWorkerV4Persistence(),
-            publication_claims=_FakeWorkerV4Claims(),
             publication_transport=_FakeWorkerV4Transport(),
         )
 
@@ -3098,12 +3083,11 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("retryable_receipt", [False, True])
-async def test_worker_drains_receipt_events_before_attempt_bound_answer_load(
+async def test_worker_loads_attempt_bound_answer_without_waiting_for_stream_publication(
     monkeypatch,
     retryable_receipt,
 ):
     queue_attempt_id = "queue-attempt-a"
-    authority_successor_id = "authority-successor"
     receipt = {
         "schema_version": "ai-platform.assistant-answer-receipt.v1",
         "message_id": "msg-answer-a",
@@ -3112,9 +3096,7 @@ async def test_worker_drains_receipt_events_before_attempt_bound_answer_load(
         "last_delta_event_id": "evt4-delta-a",
     }
     calls = []
-    publish_calls = []
     active_transactions = []
-    drain_complete = False
     persisted = {}
 
     @asynccontextmanager
@@ -3125,15 +3107,6 @@ async def test_worker_drains_receipt_events_before_attempt_bound_answer_load(
             yield conn
         finally:
             active_transactions.pop()
-
-    async def publish_pending(_capabilities, **kwargs):
-        nonlocal drain_complete
-        publish_calls.append(kwargs)
-        calls.append(("publish", kwargs["attempt_id"]))
-        if len(publish_calls) == 2:
-            drain_complete = True
-            return 0
-        return 1
 
     class ReceiptPersistence(_FakeWorkerV4Persistence):
         async def load_answer_by_receipt(
@@ -3146,19 +3119,13 @@ async def test_worker_drains_receipt_events_before_attempt_bound_answer_load(
             receipt,
         ):
             assert active_transactions and active_transactions[-1] is conn
-            assert drain_complete is True
             calls.append(("load", conn, attempt_id))
             if retryable_receipt:
                 raise AssistantAnswerReceiptError(retryable=True)
             return ReconstructedAssistantAnswer(text="reconstructed answer")
 
-    class AuthoritySuccessor:
-        async def get(self, **_kwargs):
-            return SimpleNamespace(attempt_id=authority_successor_id)
-
     capabilities = replace(
         _FAKE_WORKER_V4_CAPABILITIES,
-        authority=AuthoritySuccessor(),
         event_persistence=ReceiptPersistence(),
     )
     raw = base_payload(
@@ -3201,11 +3168,7 @@ async def test_worker_drains_receipt_events_before_attempt_bound_answer_load(
         return False
 
     monkeypatch.setattr(
-        "app.streaming.application.worker_publication_v4.publish_pending_v4_events",
-        publish_pending,
-    )
-    monkeypatch.setattr(
-        "app.streaming.application.worker_publication_v4.publish_pending_run_terminal",
+        "app.streaming.application.worker_publication_v4.publish_run_event",
         no_terminal_publish,
     )
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -3239,19 +3202,8 @@ async def test_worker_drains_receipt_events_before_attempt_bound_answer_load(
         assert load_call[1] is complete_call[1]
         assert load_call[2] == queue_attempt_id
 
-    assert [call["attempt_id"] for call in publish_calls] == [
-        queue_attempt_id,
-        queue_attempt_id,
-    ]
-    assert calls.index(next(call for call in calls if call[0] == "publish")) < calls.index(
-        next(call for call in calls if call[0] == "load")
-    )
-    assert calls[0][0] == "adapter"
-    assert calls[0][1] == queue_attempt_id
-    assert authority_successor_id not in {
-        *[call["attempt_id"] for call in publish_calls],
-        next(call[2] for call in calls if call[0] == "load"),
-    }
+    assert calls[0] == ("adapter", queue_attempt_id)
+    assert next(call[2] for call in calls if call[0] == "load") == queue_attempt_id
 
 
 @pytest.mark.asyncio
@@ -3707,10 +3659,7 @@ async def test_worker_does_not_append_success_terminal_events_when_run_is_alread
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.classify_success_commit_block", classify_success_commit_block, raising=False)
-    monkeypatch.setattr(
-        "app.bootstrap.worker_attempt_lifecycle.drain_run_tool_permission_terminalization",
-        drain_terminalization,
-    )
+    monkeypatch.setattr("app.worker.drain_run_tool_permission_terminalization", drain_terminalization)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
@@ -4128,23 +4077,19 @@ async def test_worker_starts_and_terminalizes_durable_attempt_around_dispatch(mo
         legacy_mark_run_running,
     )
     monkeypatch.setattr(
-        _TEST_ATTEMPT_PERSISTENCE,
-        "lock_queued_run_for_attempt",
+        "app.worker.run_attempts.lock_queued_run_for_attempt",
         lock_queued_run_for_attempt,
     )
     monkeypatch.setattr(
-        _TEST_ATTEMPT_PERSISTENCE,
-        "start_worker_run_attempt",
+        "app.worker.run_attempts.start_worker_run_attempt",
         start_worker_run_attempt,
     )
     monkeypatch.setattr(
-        _TEST_ATTEMPT_PERSISTENCE,
-        "assert_worker_run_attempt_current",
+        "app.worker.run_attempts.assert_worker_run_attempt_current",
         assert_worker_run_attempt_current,
     )
     monkeypatch.setattr(
-        _TEST_ATTEMPT_PERSISTENCE,
-        "terminalize_run_attempt",
+        "app.worker.run_attempts.terminalize_run_attempt",
         terminalize_run_attempt,
     )
     monkeypatch.setattr(
@@ -4296,19 +4241,16 @@ async def test_worker_cancel_closes_the_same_durable_attempt_without_owner_trans
 
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr(
-        _TEST_ATTEMPT_PERSISTENCE,
-        "assert_worker_run_attempt_current",
+        "app.worker.run_attempts.assert_worker_run_attempt_current",
         assert_current,
     )
     monkeypatch.setattr(
-        _TEST_ATTEMPT_PERSISTENCE,
-        "request_run_attempt_cancel",
+        "app.worker.run_attempts.request_run_attempt_cancel",
         request_cancel,
     )
-    monkeypatch.setattr("app.bootstrap.worker_attempt_lifecycle.cancel_run_with_v4", cancel_run)
+    monkeypatch.setattr("app.worker.cancel_run_with_v4", cancel_run)
     monkeypatch.setattr(
-        _TEST_ATTEMPT_PERSISTENCE,
-        "terminalize_run_attempt",
+        "app.worker.run_attempts.terminalize_run_attempt",
         terminalize,
     )
     monkeypatch.setattr(
@@ -4322,9 +4264,7 @@ async def test_worker_cancel_closes_the_same_durable_attempt_without_owner_trans
         leased_attempt_id="qat-test-attempt",
         worker_id="worker-a",
         is_reconciliation=False,
-        ports=worker_module.build_worker_attempt_lifecycle_ports(
-            _TEST_RUN_ATTEMPT_LIFECYCLE
-        ),
+        ports=worker_module._worker_attempt_lifecycle_ports(),
     )
     progress = await attempt_lifecycle.cancel(
         object(),
@@ -4356,8 +4296,7 @@ async def test_worker_cancel_observes_an_already_cancelled_run_without_refencing
 
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr(
-        _TEST_ATTEMPT_PERSISTENCE,
-        "assert_worker_run_attempt_current",
+        "app.worker.run_attempts.assert_worker_run_attempt_current",
         forbidden,
     )
 
@@ -4367,9 +4306,7 @@ async def test_worker_cancel_observes_an_already_cancelled_run_without_refencing
         leased_attempt_id="qat-test-attempt",
         worker_id="worker-a",
         is_reconciliation=False,
-        ports=worker_module.build_worker_attempt_lifecycle_ports(
-            _TEST_RUN_ATTEMPT_LIFECYCLE
-        ),
+        ports=worker_module._worker_attempt_lifecycle_ports(),
     )
     progress = await attempt_lifecycle.cancel(
         object(),
@@ -4715,10 +4652,7 @@ async def test_worker_does_not_append_failure_terminal_events_when_run_is_alread
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
-    monkeypatch.setattr(
-        "app.bootstrap.worker_attempt_lifecycle.drain_run_tool_permission_terminalization",
-        drain_terminalization,
-    )
+    monkeypatch.setattr("app.worker.drain_run_tool_permission_terminalization", drain_terminalization)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FailingExecutorStub()}))
 
@@ -5213,11 +5147,8 @@ async def test_worker_reconciles_multi_agent_child_after_success(monkeypatch):
         calls.append(("complete", run_id, result_json["message"]))
         return True
 
-    async def reconcile(
-        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
-    ):
+    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         assert transaction_factory is fake_transaction
-        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
@@ -5298,10 +5229,7 @@ async def test_worker_retries_multi_agent_parent_rollup_after_child_transaction_
         calls.append(("complete", conn, run_id))
         return True
 
-    async def reconcile(
-        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
-    ):
-        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
+    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
@@ -5351,10 +5279,7 @@ async def test_worker_reconciles_multi_agent_child_after_failure(monkeypatch):
         calls.append(("fail", run_id, error_code, error_message, result_json))
         return RunTerminalizationProgress(True, "failed", True, True)
 
-    async def reconcile(
-        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
-    ):
-        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
+    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
@@ -5427,10 +5352,7 @@ async def test_worker_reconciles_multi_agent_child_after_cancel(monkeypatch):
         calls.append(("cancel", run_id, result_json))
         return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True, needs_reconcile=True)
 
-    async def reconcile(
-        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
-    ):
-        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
+    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
@@ -5542,10 +5464,7 @@ async def test_worker_reconciles_multi_agent_child_after_executor_exception(monk
         calls.append(("fail", run_id, error_code, error_message, result_json))
         return RunTerminalizationProgress(True, "failed", True, True)
 
-    async def reconcile(
-        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
-    ):
-        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
+    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
@@ -5601,10 +5520,7 @@ async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkey
         calls.append(("attempt_terminal", kwargs))
         return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
 
-    async def reconcile(
-        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
-    ):
-        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
+    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
@@ -5613,13 +5529,11 @@ async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkey
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr(
-        _TEST_ATTEMPT_PERSISTENCE,
-        "assert_worker_run_attempt_current",
+        "app.worker.run_attempts.assert_worker_run_attempt_current",
         assert_worker_run_attempt_current,
     )
     monkeypatch.setattr(
-        _TEST_ATTEMPT_PERSISTENCE,
-        "terminalize_run_attempt",
+        "app.worker.run_attempts.terminalize_run_attempt",
         terminalize_run_attempt,
     )
     monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
@@ -5690,10 +5604,7 @@ async def test_worker_retries_parent_rollup_after_early_unknown_executor_reconci
         calls.append(("fail", conn, error_code))
         return RunTerminalizationProgress(True, "failed", True, True)
 
-    async def reconcile(
-        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
-    ):
-        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
+    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
@@ -6686,7 +6597,7 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("lock", conn, tenant_id, run_id))
 
-    async def get_run(conn, *, tenant_id, run_id, for_update=False):
+    async def get_run(conn, *, tenant_id, run_id):
         calls.append(("get_run", tenant_id, run_id))
         return {
             "id": run_id,
@@ -6707,13 +6618,6 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
         calls.append(("fail", kwargs["error_code"], kwargs["error_message"]))
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
-    async def assert_worker_run_attempt_current(_conn, **_kwargs):
-        return {"id": "rat-run-a", "status": "running"}
-
-    async def terminalize_run_attempt(_conn, **kwargs):
-        calls.append(("attempt_terminal", kwargs))
-        return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
-
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("scope-invalid queued run must not refresh context snapshot")
 
@@ -6722,16 +6626,6 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr(
-        _TEST_ATTEMPT_PERSISTENCE,
-        "assert_worker_run_attempt_current",
-        assert_worker_run_attempt_current,
-    )
-    monkeypatch.setattr(
-        _TEST_ATTEMPT_PERSISTENCE,
-        "terminalize_run_attempt",
-        terminalize_run_attempt,
-    )
 
     outcome = await process_run_payload(
         base_payload(executor_type="claude-agent-worker"),
@@ -6745,14 +6639,6 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
     assert outcome.status == "failed"
     assert outcome.error_code == "queue_payload_identity_mismatch"
     assert ("fail", "queue_payload_identity_mismatch", "Queued run identity is invalid") in calls
-    assert ("attempt_terminal", {
-        "tenant_id": "tenant-a",
-        "run_id": "run-a",
-        "attempt_id": "rat-run-a",
-        "status": "failed",
-        "terminal_reason": "run_failed",
-        "error_code": "queue_payload_identity_mismatch",
-    }) in calls
     prepare_index = next(
         index for index, item in enumerate(calls) if item[0] == "prepare_v4_authority"
     )
@@ -9861,10 +9747,7 @@ async def test_worker_follow_up_terminalization_reconciles_one_final_drain_only(
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr(
-        "app.bootstrap.worker_attempt_lifecycle.drain_run_tool_permission_terminalization",
-        drain,
-    )
+    monkeypatch.setattr("app.worker.drain_run_tool_permission_terminalization", drain)
     monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
@@ -11135,10 +11018,7 @@ async def test_worker_invalid_locked_child_snapshot_reconciles_parent_after_comm
     )
     state["locked_run"]["input_json"]["skill_manifests"] = []
 
-    async def reconcile(
-        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
-    ):
-        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
+    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 

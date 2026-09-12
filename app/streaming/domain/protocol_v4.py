@@ -755,16 +755,12 @@ class RunEventSourceV4(TypedDict):
     kind: Literal["run_event"]
     run_event_id: SafeRefV4
     sequence: int
+    callback_sequence: NotRequired[int]
 
 
 class StreamAuthoritySourceV4(TypedDict):
     kind: Literal["stream_authority"]
     authority_id: SafeRefV4
-
-
-class TerminalIntentSourceV4(TypedDict):
-    kind: Literal["terminal_intent"]
-    terminal_event_id: SafeRefV4
 
 
 SafeRefV4: TypeAlias = str
@@ -828,4 +824,4 @@ class InternalStreamEnvelopeV4(TypedDict):
     emitted_at: str
     projection_version: Literal["public-stream-v4"]
     payload: dict[str, object]
-    source: RunEventSourceV4 | StreamAuthoritySourceV4 | TerminalIntentSourceV4
+    source: RunEventSourceV4 | StreamAuthoritySourceV4

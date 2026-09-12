@@ -34,7 +34,10 @@ Do not add permanent tests solely to lock editorial wording or line counts.
 Use the runner's worktree lock, timeout, process cleanup, and result reporting.
 Do not bypass `test_runner_busy` or start competing pytest processes in that
 worktree. Read CLI options with `python tools/run_test_stage.py --help`; the
-runner owns temporary directories and subprocess configuration.
+runner owns temporary directories and subprocess configuration. On Windows,
+children start suspended and resume only after assignment to the runner's
+kill-on-close Job Object. An enclosing host Job remains in effect; the runner
+uses nested Jobs instead of requesting permission to break away from the host.
 
 Required integration evidence uses real dependencies and `--require-zero-skips`.
 A missing dependency or skip does not pass that gate. Optional local runs may

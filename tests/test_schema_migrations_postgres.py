@@ -1,6 +1,5 @@
 import asyncio
 from contextlib import asynccontextmanager
-import hashlib
 import importlib.util
 import os
 from pathlib import Path
@@ -14,14 +13,10 @@ from psycopg.rows import dict_row
 import pytest
 
 from app import schema_migrations
+from tests.support.db_transactions import event_loop_policy as event_loop_policy
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
-# Exact 2026.08.27.1 ledger checksum at the remote PR predecessor 829acfcd.
-REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM = (
-    "d474b751d6fb6bff75cbbb8f3c482cb42f38ac462c116313baeccfc2c247fef7"
-)
-REMOTE_SUCCESSOR_ACTIVATION_COMMIT = "829acfcd087365c0cf48726cbab35e1c79b5230f"
 REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM = (
     "14941c07a273f8924fb289876ac887879f8a8d5cc2a5a8d95bb9252e1ea40d90"
 )
@@ -41,37 +36,18 @@ def _schema_source_at_commit(commit: str) -> str:
     ).stdout
 
 
-def _remote_successor_activation_schema_sql() -> str:
-    remote_sql = _schema_source_at_commit(REMOTE_SUCCESSOR_ACTIVATION_COMMIT)
-    remote_index_contract = "\n".join(
-        f"{migration.name}:{migration.checksum_sha256}"
-        for migration in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
-        if migration.name != "idx_run_events_v4_due_scope"
-    )
-    remote_checksum = hashlib.sha256(
-        f"{remote_sql}\n-- concurrent-index-contract\n{remote_index_contract}".encode()
-    ).hexdigest()
-    assert remote_checksum == REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM
-    return remote_sql
+def _remote_run_attempt_reconciler_takeover_schema_sql(tmp_path: Path) -> str:
+    exact_base = _load_exact_base_schema_migrations(tmp_path)
+    try:
+        remote_sql = exact_base.schema_sql()
+        assert exact_base.schema_checksum(remote_sql) == REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM
+        return remote_sql
+    finally:
+        sys.modules.pop(exact_base.__name__, None)
 
 
-def _remote_run_attempt_reconciler_takeover_schema_sql() -> str:
-    remote_sql = _schema_source_at_commit(
-        REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_COMMIT
-    )
-    assert (
-        schema_migrations.schema_checksum(remote_sql)
-        == REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM
-    )
-    return remote_sql
-
-
-def test_remote_successor_activation_schema_checksum_remains_pinned() -> None:
-    assert _remote_successor_activation_schema_sql()
-
-
-def test_remote_run_attempt_reconciler_takeover_checksum_remains_pinned() -> None:
-    assert _remote_run_attempt_reconciler_takeover_schema_sql()
+def test_remote_run_attempt_reconciler_takeover_checksum_remains_pinned(tmp_path: Path) -> None:
+    assert _remote_run_attempt_reconciler_takeover_schema_sql(tmp_path)
 
 
 def _postgres_dsn() -> str:
@@ -230,7 +206,7 @@ async def test_real_postgres_concurrent_migrations_use_one_global_lock_and_ledge
 
 
 @pytest.mark.asyncio
-async def test_real_postgres_upgrade_installs_run_attempt_heartbeat_monotonicity_guard():
+async def test_real_postgres_upgrade_installs_run_attempt_heartbeat_monotonicity_guard(tmp_path: Path):
     dsn = _postgres_dsn()
     schema_name = f"schema_attempt_heartbeat_upgrade_{uuid.uuid4().hex}"
     admin = await psycopg.AsyncConnection.connect(
@@ -243,7 +219,7 @@ async def test_real_postgres_upgrade_installs_run_attempt_heartbeat_monotonicity
         await admin.execute(
             sql.SQL("set search_path to {}").format(sql.Identifier(schema_name))
         )
-        await admin.execute(_remote_run_attempt_reconciler_takeover_schema_sql())
+        await admin.execute(_remote_run_attempt_reconciler_takeover_schema_sql(tmp_path))
         await admin.execute(
             """
             insert into schema_migrations(version, checksum_sha256)
@@ -304,11 +280,11 @@ async def test_real_postgres_upgrade_installs_run_attempt_heartbeat_monotonicity
 
 
 @pytest.mark.asyncio
-async def test_real_postgres_candidate_hard_cuts_exact_base_agent_profile_contract(
+async def test_real_postgres_cutover_rejects_an_older_binary_after_migration(
     tmp_path: Path,
 ):
     dsn = _postgres_dsn()
-    schema_name = f"schema_agent_profile_hard_cut_{uuid.uuid4().hex}"
+    schema_name = f"schema_exact_base_compatibility_{uuid.uuid4().hex}"
     exact_base = _load_exact_base_schema_migrations(tmp_path)
     admin = await psycopg.AsyncConnection.connect(
         dsn,
@@ -336,9 +312,8 @@ async def test_real_postgres_candidate_hard_cuts_exact_base_agent_profile_contra
             assert (await schema_migrations.schema_status(conn))["ready"] is True
             exact_base_status = await exact_base.schema_status(conn)
         assert exact_base_status["ready"] is False
-        assert exact_base_status["columns_current"] is False
-        assert exact_base_status["triggers_current"] is False
-        assert exact_base_status["index_ledger_current"] is True
+        assert exact_base_status["triggers_current"] is True
+        assert exact_base_status["index_ledger_current"] is False
         ledger_versions = await (
             await admin.execute(
                 sql.SQL(
@@ -353,142 +328,6 @@ async def test_real_postgres_candidate_hard_cuts_exact_base_agent_profile_contra
         ]
     finally:
         sys.modules.pop(exact_base.__name__, None)
-        await admin.execute(
-            sql.SQL("drop schema if exists {} cascade").format(
-                sql.Identifier(schema_name)
-            )
-        )
-        await admin.close()
-
-
-@pytest.mark.asyncio
-async def test_real_postgres_upgrade_restores_v4_publication_schema_and_confirmation_history():
-    dsn = _postgres_dsn()
-    schema_name = f"schema_v4_upgrade_{uuid.uuid4().hex}"
-    admin = await psycopg.AsyncConnection.connect(
-        dsn,
-        autocommit=True,
-        row_factory=dict_row,
-    )
-    try:
-        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
-        await admin.execute(
-            sql.SQL("set search_path to {}").format(sql.Identifier(schema_name))
-        )
-        await admin.execute(_remote_successor_activation_schema_sql())
-        await admin.execute(
-            """
-            insert into schema_migrations(version, checksum_sha256)
-            values (%s, %s)
-            """,
-            (
-                schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION,
-                REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM,
-            ),
-        )
-        await admin.execute(
-            "insert into users(id, tenant_id, display_name) values ('v4-user', 'default', 'V4')"
-        )
-        await admin.execute(
-            "insert into agents(id, tenant_id, name, agent_type) values ('v4-agent', 'default', 'V4', 'chat')"
-        )
-        await admin.execute(
-            "insert into skills(id, name, version, executor_type) values ('v4-skill', 'V4', '1', 'fake')"
-        )
-        await admin.execute(
-            """
-            insert into sessions(id, tenant_id, workspace_id, user_id, agent_id, title, status)
-            values ('v4-session', 'default', 'default', 'v4-user', 'v4-agent', 'V4', 'archived')
-            """
-        )
-        await admin.execute(
-            """
-            insert into runs(
-              id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id, status
-            ) values (
-              'v4-run', 'default', 'default', 'v4-session', 'v4-user',
-              'v4-agent', 'v4-skill', 'running'
-            )
-            """
-        )
-        await admin.execute(
-            """
-            insert into sse_stream_authorities(
-              tenant_id, run_id, attempt_id, design_id, projection_version,
-              tenant_scope, stream_incarnation, state, open_event_id,
-              open_payload_bytes, open_payload_digest, admission_confirmed_at
-            ) values (
-              'default', 'v4-run', 'v4-attempt', 'v4', 'public-stream-v4',
-              'scope-v4', 1, 'confirmed', 'open-v4', '{}', repeat('a', 64), now()
-            )
-            """
-        )
-        await admin.execute(
-            "alter table sse_stream_authorities drop constraint chk_sse_stream_authority_pending_confirmation"
-        )
-        await admin.execute(
-            "update sse_stream_authorities set admission_confirmed_at = null where run_id = 'v4-run'"
-        )
-
-        factory = _transaction_factory(dsn, schema_name)
-        result = await schema_migrations.apply_migrations(
-            transaction_factory=factory,
-            index_connection_factory=_index_connection_factory(dsn, schema_name),
-        )
-
-        assert result["status"] == "applied"
-        ledger_rows = await admin.execute(
-            "select version, checksum_sha256 from schema_migrations order by version"
-        )
-        assert await ledger_rows.fetchall() == [
-            {
-                "version": schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION,
-                "checksum_sha256": REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM,
-            },
-            {
-                "version": schema_migrations.TARGET_SCHEMA_VERSION,
-                "checksum_sha256": schema_migrations.schema_checksum(),
-            },
-        ]
-        columns = await admin.execute(
-            """
-            select column_name
-            from information_schema.columns
-            where table_schema = current_schema()
-              and table_name = 'run_events'
-              and column_name like 'stream_publication_%'
-            order by column_name
-            """
-        )
-        assert {row["column_name"] for row in await columns.fetchall()} == {
-            "stream_publication_attempts",
-            "stream_publication_claim_expires_at",
-            "stream_publication_claim_token",
-            "stream_publication_last_error",
-            "stream_publication_next_attempt_at",
-            "stream_publication_redis_id",
-            "stream_publication_state",
-        }
-        index_row = await (
-            await admin.execute(
-                "select to_regclass('idx_run_events_v4_due_scope') is not null as present"
-            )
-        ).fetchone()
-        assert index_row == {"present": True}
-        authority_row = await (
-            await admin.execute(
-                "select admission_confirmed_at is not null as repaired from sse_stream_authorities where run_id = 'v4-run'"
-            )
-        ).fetchone()
-        assert authority_row == {"repaired": True}
-        async with factory() as conn:
-            status = await schema_migrations.schema_status(conn)
-            assert status["ready"] is True, {
-                key: value
-                for key, value in status.items()
-                if key.endswith("_current") and value is not True
-            }
-    finally:
         await admin.execute(
             sql.SQL("drop schema if exists {} cascade").format(
                 sql.Identifier(schema_name)
@@ -727,7 +566,6 @@ async def test_real_postgres_upgrade_namespaces_every_legacy_file_outbox_state()
     "damage_sql",
     [
         "alter table runs drop column authz_policy_version",
-        "alter table run_events drop constraint chk_run_events_stream_publication_claim",
         "alter table files drop constraint chk_files_lifecycle_state",
         "alter table artifacts drop constraint chk_artifacts_lifecycle_state",
         "alter table artifacts drop constraint chk_artifacts_run_owner",
@@ -741,6 +579,8 @@ async def test_real_postgres_upgrade_namespaces_every_legacy_file_outbox_state()
         "drop index idx_runs_input_json_gin",
         "drop index idx_object_deletion_outbox_artifact_storage_live",
         "drop index uq_object_deletion_outbox_file",
+        "drop trigger trg_agent_profile_legacy_insert_compatibility on agent_profile_revisions",
+        "drop trigger trg_agent_profile_legacy_insert_reconcile on agent_profile_revisions",
         "drop trigger trg_run_attempt_transition_guard on run_attempts",
         "drop trigger trg_run_attempt_heartbeat_monotonicity_guard on run_attempts",
         """
@@ -749,6 +589,20 @@ async def test_real_postgres_upgrade_namespaces_every_legacy_file_outbox_state()
           before update on run_attempts
           for each row execute function ai_platform_guard_run_attempt_transition()
         """,
+        "alter table agent_profile_revisions enable always trigger trg_agent_profile_legacy_insert_compatibility",
+        """
+        create or replace function agent_profile_legacy_insert_reconcile()
+        returns trigger language plpgsql as $$ begin return null; end $$
+        """,
+        """
+        drop trigger trg_agent_profile_legacy_insert_reconcile on agent_profile_revisions;
+        create trigger trg_agent_profile_legacy_insert_reconcile
+          after insert on agent_profile_revisions
+          for each row when (false)
+          execute function agent_profile_legacy_insert_reconcile()
+        """,
+        "alter function agent_profile_legacy_insert_reconcile() set search_path to pg_catalog",
+        "alter function agent_profile_legacy_insert_reconcile() security definer",
     ],
 )
 async def test_real_postgres_readiness_rejects_missing_critical_contract(damage_sql):
@@ -780,11 +634,6 @@ async def test_real_postgres_readiness_rejects_missing_critical_contract(damage_
 @pytest.mark.parametrize(
     "damage_sql",
     [
-        """
-        alter table run_events drop constraint chk_run_events_stream_publication_claim;
-        alter table run_events add constraint chk_run_events_stream_publication_claim
-          check (stream_publication_claim_token is null)
-        """,
         """
         alter table files drop constraint chk_files_lifecycle_state;
         alter table files add constraint chk_files_lifecycle_state

@@ -62,6 +62,14 @@ Release, extract the archive into a new directory, and keep that directory
 unchanged. Back up the database and choose a maintenance window with no active
 Runs, Attempts, leases, or sandbox containers.
 
+An upgrade from the retired SSE transport additionally requires the explicit
+[legacy-state retirement](redis-streams-sse-cutover-acceptance.md#explicit-legacy-state-retirement)
+step before migration. Use the new immutable backend image, the same Compose
+project and verified package files, and keep old API/Worker producers stopped
+until the package migration completes. This is a one-time data transition, not
+an API/Worker startup action. After schema `2026.09.11.1`, an older backend image
+is incompatible; the failure/recovery rules below still apply.
+
 From the extracted directory, run:
 
 ```sh

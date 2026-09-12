@@ -24,7 +24,7 @@ from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.models import QueueRunPayload
 from app.principal_authority import CURRENT_PRINCIPAL_DENIAL_REASON, PrincipalAuthorityDenied
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
-from app.runs.api import RunAttemptLifecycleService, RunTerminalizationProgress
+from app.runs.api import RunTerminalizationProgress
 from app.skills import catalog
 from app.skills.catalog import (
     AuthorizedSkillCatalogBinding,
@@ -807,6 +807,14 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
         return None
 
     monkeypatch.setattr("app.worker.transaction", transaction)
+    monkeypatch.setattr(
+        "app.worker.run_attempts.lock_queued_run_for_attempt",
+        lock_queued_run_for_attempt,
+    )
+    monkeypatch.setattr(
+        "app.worker.run_attempts.assert_worker_run_attempt_current",
+        assert_worker_run_attempt_current,
+    )
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
@@ -817,13 +825,7 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
     )
     monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
     monkeypatch.setattr("app.worker.admit_v4_stream", no_publication)
-    monkeypatch.setattr("app.worker.publish_pending_run_terminal", no_publication)
-    return RunAttemptLifecycleService(
-        persistence=types.SimpleNamespace(
-            lock_queued_run_for_attempt=lock_queued_run_for_attempt,
-            assert_worker_run_attempt_current=assert_worker_run_attempt_current,
-        )
-    )
+    monkeypatch.setattr("app.worker.publish_run_event", no_publication)
 
 
 @pytest.mark.parametrize(
@@ -854,9 +856,7 @@ async def test_every_dispatch_shape_denies_unavailable_current_authority_before_
 ):
     raw, locked_run, primary_manifest = _worker_dispatch_fixture(execution_input)
     calls: list[tuple[str, Any]] = []
-    attempt_lifecycle = _install_dispatch_failure_fakes(
-        monkeypatch, locked_run, primary_manifest, calls
-    )
+    _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, calls)
 
     async def unavailable_current_principal(**_kwargs):
         calls.append(("current_principal", None))
@@ -883,7 +883,6 @@ async def test_every_dispatch_shape_denies_unavailable_current_authority_before_
         raw,
         registry=ForbiddenRegistry(),
         v4_capabilities=_DISPATCH_V4_CAPABILITIES,
-        run_attempt_lifecycle=attempt_lifecycle,
     )
 
     assert outcome.status == "failed"
@@ -918,9 +917,7 @@ async def test_queued_admin_snapshot_cannot_restore_revoked_current_skill_access
         {"copied_from_run_id": "source-run"}
     )
     calls: list[tuple[str, Any]] = []
-    attempt_lifecycle = _install_dispatch_failure_fakes(
-        monkeypatch, locked_run, primary_manifest, calls
-    )
+    _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, calls)
 
     async def current_principal(**_kwargs):
         return AuthPrincipal(
@@ -966,7 +963,6 @@ async def test_queued_admin_snapshot_cannot_restore_revoked_current_skill_access
         raw,
         registry=ForbiddenRegistry(),
         v4_capabilities=_DISPATCH_V4_CAPABILITIES,
-        run_attempt_lifecycle=attempt_lifecycle,
     )
 
     assert locked_run["principal_roles"] == ["admin"]

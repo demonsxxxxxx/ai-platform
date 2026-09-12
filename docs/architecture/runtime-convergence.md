@@ -4,6 +4,8 @@ Status: proposed implementation direction. This document identifies cross-owner
 constraints and migration order; it does not assert implementation, amend live
 wire bytes, approve a schema change, or authorize deployment. Detailed state
 machines remain with Runs, Sandbox and Streaming. Track work status in issue/PR.
+The Stream-only decision in ADR 0013 supersedes publication scheduling,
+callback durability-only acknowledgement and successor proposals.
 
 ## 1. Independent implementation slices
 
@@ -53,13 +55,14 @@ into an authorized reader. Acceptance: TX-01, TX-02, SBX-01, SBX-02.
 
 ## 4. Recovery scheduling
 
-Database eligible work is authority. Notifications only reduce latency.
+This section applies to business executor/Run recovery, not SSE publication.
+Database eligible business work is authority. Notifications only reduce latency.
 After a successful claim/processing pass, continue within a bounded batch/time
 budget while eligible work exists; wait only after a proven empty pass. Close
 the scan-to-wait race with a retained notification cursor or equivalent observed
 handoff, retaining periodic bounded scans for lost notifications.
 
-Separate critical recovery/publication from bulk retention/cleanup scheduling.
+Separate critical executor terminal recovery from bulk retention/cleanup scheduling.
 Each phase has a deadline, resource budget, next retry and visible last progress.
 Timeout handling must not leave unbounded work while launching replacements.
 Avoid startup waiting for all bulk cleanup before useful Worker slots start.
@@ -92,12 +95,12 @@ A barrier ends optional batching delay but never overtakes an in-flight receipt.
 One absolute close budget covers retries, drains and cleanup; unresolved effects
 remain unknown and recoverable at expiry.
 
-A proposed callback response fast path returns the exact persisted receipt after
-its commit and wakes the existing durable publisher. It must not spawn a fragile
-request-owned background publisher, weaken Tool receipt barriers, or replace
-indexed retry with notifications. Activate only after the protocol owner verifies
-that the acknowledgement denotes durability rather than Redis visibility.
-Remove redundant admission work only after same-authority retry/restart coverage.
+The former durability-only acknowledgement/publisher-wakeup proposal is retired.
+The current callback commits facts and its receipt, directly appends Redis, then
+acknowledges. Existing serial callback delivery owns exact retry. Terminal
+publication checks the existing Redis callback receipt without a publication
+queue, notification or background publisher. Preserve Tool receipt barriers and
+Run/Attempt authority.
 Acceptance: CB-01, CB-02, CB-03.
 
 ## 7. Client state and protocol ownership
@@ -115,7 +118,8 @@ structural runtime validation from the schema or test equivalence automatically;
 retain explicit semantic checks for cross-field bindings. Do not maintain
 independent hand-written protocol field registries indefinitely. A durable
 snapshot/stream anchor must represent a proven consistent cut under concurrent
-writes. Keep current terminal hydration and active-successor restrictions.
+writes. Keep authorized terminal hydration and the prohibition on missing-stream
+reconstruction or successor creation.
 Acceptance: SSE-01 through SSE-06.
 
 ## 8. Package and API convergence

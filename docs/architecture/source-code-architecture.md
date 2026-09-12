@@ -262,7 +262,8 @@ This section maps source placement; the business authority remains
 | Sandbox provider | `sandbox.infrastructure/providers/<provider>` | translates governed lifecycle; provider state is not business truth |
 
 The attempt-bound callback-batch receipt remains part of the Sandbox Runtime
-control contract, and run terminal intent remains `runs`-owned. `streaming`
+control contract, and the business terminalization target remains `runs`-owned.
+Independent SSE terminal intents are retired under ADR 0013. `streaming`
 projects only already-authorized or committed safe facts and MUST NOT create,
 reinterpret, or independently receipt either authority.
 

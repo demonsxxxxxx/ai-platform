@@ -23,9 +23,6 @@ V4_METADATA_KEY = "__stream_v4"
 V4_PUBLIC_STAGE = "agent_kernel"
 V4_METADATA_VERSION = 1
 MAX_PUBLIC_THINKING_DELTA_CODEPOINTS = 8_192
-_V4_PUBLISHER_MUTABLE_METADATA_FIELDS = frozenset(
-    {"publication_state", "publication_attempts", "suppression_reason"}
-)
 
 
 class V4ProjectionError(ValueError):
@@ -194,16 +191,6 @@ def opaque_message_id(tenant_id: str, run_id: str) -> str:
         f"ai-platform-message-v4:{tenant_id}:{run_id}".encode("utf-8")
     ).hexdigest()
     return f"msg4_{digest}"
-
-
-def _publication_state(
-    row: Mapping[str, object], metadata: Mapping[str, object] | None
-) -> str | None:
-    state = row.get("stream_publication_state")
-    if isinstance(state, str):
-        return state
-    value = metadata.get("publication_state") if metadata is not None else None
-    return value if isinstance(value, str) else None
 
 
 def _stable_event_id(
@@ -612,29 +599,6 @@ def build_public_v4_control(**kwargs: object) -> dict[str, object]:
     return public
 
 
-def successor_stream_open_event_id(
-    *, tenant_scope: str, run_id: str, attempt_id: str, stream_incarnation: int
-) -> str:
-    """Return the deterministic v4 open identity for one physical incarnation."""
-
-    _nonempty(tenant_scope, "tenant_scope")
-    _nonempty(run_id, "run_id")
-    _nonempty(attempt_id, "attempt_id")
-    _positive_int(stream_incarnation, name="stream_incarnation")
-    digest = hashlib.sha256(
-        canonical_json_bytes(
-            [
-                "ai-platform-stream-open-v4",
-                tenant_scope,
-                run_id,
-                attempt_id,
-                stream_incarnation,
-            ]
-        )
-    ).hexdigest()
-    return f"sev_{digest}"
-
-
 def stream_end_event_id(terminal_event_id: str) -> str:
     """Return the deterministic semantic identity for a terminal stream end."""
 
@@ -860,28 +824,24 @@ def _validate_source(source: object) -> dict[str, object]:
         raise V4ProjectionError("v4_source_invalid")
     kind = source["kind"]
     if kind == "run_event":
-        if set(source) != {"kind", "run_event_id", "sequence"}:
+        if set(source) - {"kind", "run_event_id", "sequence", "callback_sequence"}:
             raise V4ProjectionError("v4_source_invalid")
-        return {
+        result = {
             "kind": kind,
             "run_event_id": _safe_ref(source.get("run_event_id"), name="run_event_id"),
             "sequence": _positive_int(source.get("sequence"), name="source_sequence"),
         }
+        if "callback_sequence" in source:
+            result["callback_sequence"] = _nonnegative_int(
+                source["callback_sequence"], name="callback_sequence", maximum=2**63 - 1,
+            )
+        return result
     if kind == "stream_authority":
         if set(source) != {"kind", "authority_id"}:
             raise V4ProjectionError("v4_source_invalid")
         return {
             "kind": kind,
             "authority_id": _safe_ref(source.get("authority_id"), name="authority_id"),
-        }
-    if kind == "terminal_intent":
-        if set(source) != {"kind", "terminal_event_id"}:
-            raise V4ProjectionError("v4_source_invalid")
-        return {
-            "kind": kind,
-            "terminal_event_id": _safe_ref(
-                source.get("terminal_event_id"), name="terminal_event_id"
-            ),
         }
     raise V4ProjectionError("v4_source_invalid")
 
@@ -1010,10 +970,7 @@ def project_public_v4(
         if row.get("visible_to_user") is not True:
             return None
         metadata = _metadata(row)
-        if metadata is None or _publication_state(row, metadata) not in {
-            "pending",
-            "published",
-        }:
+        if metadata is None:
             return None
         row_id = row.get("id")
         run_id = row.get("run_id")
@@ -1021,13 +978,7 @@ def project_public_v4(
         event_type = row.get("event_type")
         if (
             not isinstance(row_id, str)
-            or not (
-                row_id.startswith("evt4_")
-                or (
-                    event_type in {"run.succeeded", "run.failed", "run.cancelled"}
-                    and row_id.startswith("sev_")
-                )
-            )
+            or not row_id.startswith("evt4_")
             or row.get("tenant_id") != authority.tenant_id
             or run_id != authority.run_id
             or not isinstance(event_type, str)
@@ -1077,32 +1028,6 @@ def project_public_v4(
         return None
 
 
-def project_public_v4_successor(
-    row: Mapping[str, object],
-    *,
-    source_authority: StreamAuthorityView,
-    successor_incarnation: int,
-    successor_authorization_epoch: int,
-) -> dict[str, object]:
-    """Project one exact source row into an unactivated successor incarnation."""
-
-    if (
-        isinstance(successor_incarnation, bool)
-        or not isinstance(successor_incarnation, int)
-        or successor_incarnation <= source_authority.stream_incarnation
-        or isinstance(successor_authorization_epoch, bool)
-        or not isinstance(successor_authorization_epoch, int)
-        or successor_authorization_epoch <= source_authority.authorization_epoch
-    ):
-        raise V4ProjectionError("v4_successor_authority_invalid")
-    source = project_public_v4(row, authority=source_authority)
-    if source is None:
-        raise V4ProjectionError("v4_successor_source_invalid")
-    successor = dict(source)
-    successor["stream_incarnation"] = successor_incarnation
-    return validate_internal_envelope_v4(successor)
-
-
 def project_public_envelope_v4(
     envelope: Mapping[str, object],
 ) -> dict[str, object] | None:
@@ -1143,7 +1068,6 @@ def project_persisted_message_delta_v4(
             row.get("tenant_id") != tenant_id
             or row.get("run_id") != run_id
             or row.get("v4_attempt_authorized") is not True
-            or row.get("stream_publication_state") not in {"pending", "published"}
             or row.get("event_type") != "message.delta"
         ):
             return None
@@ -1175,26 +1099,6 @@ def project_persisted_message_delta_v4(
         )
     except V4ProjectionError:
         return None
-
-
-def strip_internal_envelope(envelope: Mapping[str, object]) -> dict[str, object]:
-    """Compatibility alias for callers that need the canonical internal copy."""
-
-    return validate_internal_envelope_v4(envelope)
-
-
-def _immutable_v4_payload(value: object) -> object:
-    if not isinstance(value, Mapping):
-        return value
-    payload = dict(value)
-    metadata = payload.get(V4_METADATA_KEY)
-    if isinstance(metadata, Mapping):
-        payload[V4_METADATA_KEY] = {
-            key: item
-            for key, item in metadata.items()
-            if key not in _V4_PUBLISHER_MUTABLE_METADATA_FIELDS
-        }
-    return payload
 
 
 __all__ = [

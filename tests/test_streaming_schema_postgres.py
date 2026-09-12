@@ -11,6 +11,7 @@ from psycopg.rows import dict_row
 import pytest
 
 from app import repositories
+from tests.support.db_transactions import event_loop_policy as event_loop_policy
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
@@ -247,16 +248,16 @@ async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
         assert first_timestamps["callback_received_at"] is not None
         assert first_timestamps["durable_committed_at"] is not None
         assert first_timestamps["callback_received_at"] <= first_timestamps["durable_committed_at"]
-        async with second.transaction():
-            replay_receipt = await repositories.append_event_batch(
-                second,
-                tenant_id="tenant-a",
-                run_id="run-a",
-                attempt_id="attempt-a",
-                batch_id="batch-a",
-                events=[{"event_type": "assistant_delta", "stage": "streaming", "message": "ignored", "payload": {}}],
-            )
-        assert replay_receipt == {**initial_receipt, "duplicate": True}
+        with pytest.raises(repositories.RepositoryConflictError, match="run_event_batch_conflict"):
+            async with second.transaction():
+                await repositories.append_event_batch(
+                    second,
+                    tenant_id="tenant-a",
+                    run_id="run-a",
+                    attempt_id="attempt-a",
+                    batch_id="batch-a",
+                    events=[{"event_type": "assistant_delta", "stage": "streaming", "message": "changed", "payload": {}}],
+                )
         replay_timestamps = await admin.execute(
             """
             select callback_received_at, durable_committed_at
