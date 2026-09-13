@@ -607,6 +607,31 @@ create index if not exists idx_runs_session_created on runs(session_id, created_
 create index if not exists idx_runs_status on runs(status);
 create unique index if not exists uq_runs_tenant_id on runs(tenant_id, id);
 
+create table if not exists run_diagnostics (
+  diagnostic_id text primary key,
+  tenant_id text not null,
+  run_id text not null,
+  schema_version text not null,
+  revision bigint not null default 1,
+  payload_json jsonb not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint fk_run_diagnostics_run foreign key (tenant_id, run_id)
+    references runs(tenant_id, id),
+  constraint chk_run_diagnostics_identity check (
+    diagnostic_id <> '' and tenant_id <> '' and run_id <> ''
+  ),
+  constraint chk_run_diagnostics_revision check (revision > 0),
+  constraint chk_run_diagnostics_payload check (
+    jsonb_typeof(payload_json) = 'object'
+    and payload_json ? 'schema_version'
+    and payload_json->>'schema_version' is not null
+    and payload_json->>'schema_version' = schema_version
+    and octet_length(payload_json::text) <= 147456
+  ),
+  unique (tenant_id, run_id)
+);
+
 create table if not exists run_attempts (
   id text primary key,
   tenant_id text not null,

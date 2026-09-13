@@ -289,19 +289,30 @@ def test_worker_preserves_only_typed_safe_executor_failures():
     assert worker_module._executor_exception_failure(native_error) == (
         "native_tool_admission_failed",
         "Native tool sandbox admission failed",
+        None,
     )
     assert worker_module._executor_exception_failure(
         RuntimeError("ordinary executor failure")
-    ) == ("executor_failure", "Executor failed")
-    assert worker_module._executor_exception_failure(
-        SandboxExecutorHttpError(
-            status_code=401,
-            error_code="invalid_executor_credential",
-            detail="invalid_executor_credential",
-        )
-    ) == (
+    ) == ("executor_failure", "Executor failed", None)
+    http_error = SandboxExecutorHttpError(
+        status_code=401,
+        error_code="invalid_executor_credential",
+        detail="invalid_executor_credential",
+        runtime_diagnostics={
+            "schema_version": "ai-platform.sdk-runtime-diagnostics.v1",
+            "error_code": "executor_authentication_failed",
+            "failure_source": "executor_http",
+            "failure_stage": "dispatch",
+            "sdk": {},
+        },
+    )
+    http_failure = worker_module._executor_exception_failure(http_error)
+    assert http_failure[:2] == (
         "invalid_executor_credential",
         "Executor authentication failed (HTTP 401)",
+    )
+    assert http_failure[2]["runtime_diagnostics"]["error_code"] == (
+        "executor_authentication_failed"
     )
     hostile_error = SandboxExecutorHttpError(
         status_code=502,
@@ -311,11 +322,20 @@ def test_worker_preserves_only_typed_safe_executor_failures():
     assert worker_module._executor_exception_failure(hostile_error) == (
         "executor_http_failure",
         "Executor request failed (HTTP 502)",
+        None,
     )
-    assert private_token not in str(worker_module._executor_exception_failure(native_error))
-    assert private_path not in str(worker_module._executor_exception_failure(native_error))
-    assert "private-secret" not in str(worker_module._executor_exception_failure(hostile_error))
-    assert "private-prompt" not in str(worker_module._executor_exception_failure(hostile_error))
+    assert private_token not in str(
+        worker_module._executor_exception_failure(native_error)
+    )
+    assert private_path not in str(
+        worker_module._executor_exception_failure(native_error)
+    )
+    assert "private-secret" not in str(
+        worker_module._executor_exception_failure(hostile_error)
+    )
+    assert "private-prompt" not in str(
+        worker_module._executor_exception_failure(hostile_error)
+    )
 
 
 @pytest.mark.asyncio
@@ -2998,6 +3018,12 @@ def test_multi_agent_result_summary_preserves_step_governance_context():
 @pytest.mark.asyncio
 async def test_worker_completes_successful_adapter_run(monkeypatch):
     calls = []
+    private_runtime_diagnostics = {
+        "schema_version": "ai-platform.sdk-runtime-diagnostics.v1",
+        "error_code": "non_terminal_tool_warning",
+        "failure_source": "sdk_tool",
+        "failure_stage": "tool_completion",
+    }
     diagnostics = {
         "schema_version": "ai-platform.sdk-turn-diagnostics.v1",
         "terminal_class": "completed",
@@ -3028,9 +3054,20 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
                 result={**result.result, "sdk_turn_diagnostics": diagnostics},
                 executor_payload={
                     "sdk_turn_diagnostics": diagnostics,
+                    "runtime_diagnostics": private_runtime_diagnostics,
                     "private_raw_error": "private-token=must-not-persist",
                 },
             )
+
+    class RecordingDiagnosticsService:
+        async def capture_failure_result(self, _conn, **kwargs):
+            carried = kwargs["result_json"]["runtime_diagnostics"]
+            calls.append(("diagnostics", carried["error_code"]))
+            return {
+                key: value
+                for key, value in kwargs["result_json"].items()
+                if key != "runtime_diagnostics"
+            }
 
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("running", tenant_id, run_id))
@@ -3050,6 +3087,7 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
             "used_skills": [],
         }
         assert result_json["sdk_turn_diagnostics"] == diagnostics
+        assert "runtime_diagnostics" not in result_json
         assert "private-token" not in str(result_json)
         calls.append(("complete", result_json["executor"]["adapter_version"]))
         return True
@@ -3060,6 +3098,10 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr(
+        "app.bootstrap.worker_attempt_lifecycle.build_run_diagnostics_service",
+        lambda: RecordingDiagnosticsService(),
+    )
 
     outcome = await process_run_payload(
         base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
@@ -3070,6 +3112,7 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
     assert ("running", "tenant-a", "run-a") in calls
     assert any(item[0] == "artifact" for item in calls)
     assert ("complete", "fake-adapter/1") in calls
+    assert ("diagnostics", "non_terminal_tool_warning") in calls
     assert calls[-1] == ("event", "status", "worker", "Run succeeded")
     assert sum(1 for item in calls if item[0] == "complete") == 1
     assert not any(
@@ -4402,6 +4445,88 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
     assert next(index for index, item in enumerate(calls) if item[0] == "fail") < next(
         index for index, item in enumerate(calls) if item[0] == "lease_release"
     )
+
+
+@pytest.mark.asyncio
+async def test_worker_moves_http_failure_diagnostics_before_terminal_result(
+    monkeypatch,
+):
+    calls = []
+    diagnostics = {
+        "schema_version": "ai-platform.sdk-runtime-diagnostics.v1",
+        "error_code": "executor_health_timeout",
+        "failure_source": "executor_http",
+        "failure_stage": "dispatch",
+        "sdk": {"exception_message": "private diagnostic detail"},
+    }
+
+    class RaisingAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            raise SandboxExecutorHttpError(
+                status_code=504,
+                error_code="executor_health_timeout",
+                detail="executor_health_timeout",
+                runtime_diagnostics=diagnostics,
+            )
+
+    class RecordingDiagnosticsService:
+        async def capture_failure_result(self, conn, **kwargs):
+            calls.append(("diagnostics", conn, kwargs))
+            return None
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def assert_current_attempt(conn, **kwargs):
+        return {"id": kwargs["queue_attempt_id"], "status": "running"}
+
+    async def append_event(conn, **kwargs):
+        return "evt-a"
+
+    async def fail_run(conn, **kwargs):
+        calls.append(("fail", conn, kwargs))
+        return RunTerminalizationProgress(True, "failed", True)
+
+    async def create_sandbox_lease(conn, **kwargs):
+        return {"id": "lease-http-a", **kwargs}
+
+    async def release_sandbox_lease(conn, **kwargs):
+        return {"id": kwargs["lease_id"], "status": "released", **kwargs}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(
+        _TEST_ATTEMPT_PERSISTENCE,
+        "assert_worker_run_attempt_current",
+        assert_current_attempt,
+    )
+    monkeypatch.setattr(
+        "app.bootstrap.worker_attempt_lifecycle.build_run_diagnostics_service",
+        lambda: RecordingDiagnosticsService(),
+    )
+    monkeypatch.setattr(
+        "app.worker.sandbox_lease_repository.create_sandbox_lease",
+        create_sandbox_lease,
+    )
+    monkeypatch.setattr(
+        "app.worker.sandbox_lease_repository.release_sandbox_lease",
+        release_sandbox_lease,
+    )
+
+    outcome = await process_run_payload(
+        base_payload(),
+        AdapterRegistry({"fake": RaisingAdapter()}),
+    )
+
+    assert outcome.error_code == "executor_health_timeout"
+    assert [item[0] for item in calls] == ["diagnostics", "fail"]
+    assert calls[0][1] is calls[1][1]
+    assert calls[0][2]["result_json"]["runtime_diagnostics"]["error_code"] == (
+        "executor_health_timeout"
+    )
+    assert calls[1][2]["result_json"] is None
 
 
 @pytest.mark.asyncio

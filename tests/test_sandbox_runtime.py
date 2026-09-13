@@ -1300,6 +1300,8 @@ async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, 
                 kwargs["attempt_id"],
                 kwargs["reconciliation_context"]["schema_version"],
                 kwargs["reconciliation_context"]["adapter_name"],
+                kwargs["reconciliation_context"]["dispatch_timings"]["schema_version"],
+                set(kwargs["reconciliation_context"]["dispatch_timings"]),
             )
         )
         return {"id": kwargs["lease_id"]}
@@ -1375,6 +1377,23 @@ async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, 
             "qat_test-runtime-attempt",
             "ai-platform.executor-reconciliation.v1",
             "claude-agent-worker",
+            "ai-platform.sandbox-latency-split.v1",
+            {
+                "schema_version",
+                "sandbox_queue_wait_latency_ms",
+                "sandbox_lease_acquire_latency_ms",
+                "sandbox_container_start_latency_ms",
+                "sandbox_container_cold_start_latency_ms",
+                "sandbox_healthcheck_latency_ms",
+                "sandbox_executor_dispatch_latency_ms",
+                "executor_first_token_latency_ms",
+                "executor_tool_call_latency_ms",
+                "executor_model_latency_ms",
+                "document_processing_latency_ms",
+                "artifact_upload_latency_ms",
+                "sandbox_cleanup_latency_ms",
+                "sandbox_total_latency_ms",
+            },
         ),
     ]
 

@@ -97,6 +97,7 @@ FORBIDDEN_PUBLIC_KEYS = {
     "delegate_used",
     "delegate_executor_type",
     "legacy_runtime_fallback_used",
+    "runtime_diagnostics",
 }
 FORBIDDEN_PUBLIC_KEY_ALIASES = {
     "".join(ch for ch in key if ch.isalnum()).lower()

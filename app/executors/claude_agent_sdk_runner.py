@@ -1054,12 +1054,10 @@ async def run_claude_agent_sdk(
             sdk.update(
                 {
                     "exception_type": type(exception).__name__,
-                    "exception_message": _runtime_diagnostic_text(exception),
-                    "exception_traceback": _runtime_diagnostic_text(
-                        "".join(
-                            traceback.format_exception(
-                                type(exception), exception, exception.__traceback__
-                            )
+                    "exception_message": str(exception),
+                    "exception_traceback": "".join(
+                        traceback.format_exception(
+                            type(exception), exception, exception.__traceback__
                         )
                     ),
                 }

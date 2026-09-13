@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildAdminRunsUrl,
+  fetchAdminRunDiagnostics,
   fetchAdminRunDetail,
   fetchAdminRuns,
   type AdminRunsApiClient,
@@ -51,4 +52,47 @@ test("admin Run detail encodes the Run identity and remains read only", async ()
       init: { method: "GET" },
     },
   ]);
+});
+
+test("admin Run diagnostics uses the independent encoded read endpoint", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const client: AdminRunsApiClient = {
+    async request<T>(url: string, init?: RequestInit): Promise<T> {
+      calls.push({ url, init });
+      return {
+        schema_version: "ai-platform.run-diagnostics.v1",
+        revision: 0,
+        coverage: "not_collected",
+        run: { run_id: "run/a", session_id: "chat-a", user_id: "user-a", status: "running" },
+        handling: [],
+        losses: [],
+        attempts: [],
+        details: { sdk: {}, tool_lifecycles: [], tool_calls: [], tool_policy_denials: [] },
+        versions: {},
+        counts: { retained_observations: 0, omitted_observations: 0 },
+      } as T;
+    },
+  };
+
+  await fetchAdminRunDiagnostics("run/a", client);
+
+  assert.deepEqual(calls, [
+    {
+      url: "/api/ai/admin/runs/run%2Fa/diagnostics",
+      init: { method: "GET" },
+    },
+  ]);
+});
+
+test("admin Run diagnostics rejects an empty response instead of rendering a blank panel", async () => {
+  const client: AdminRunsApiClient = {
+    async request<T>(): Promise<T> {
+      return null as T;
+    },
+  };
+
+  await assert.rejects(
+    fetchAdminRunDiagnostics("run-a", client),
+    /admin_run_diagnostics_response_invalid/,
+  );
 });

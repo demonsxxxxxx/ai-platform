@@ -29,9 +29,11 @@ from app.runtime.sandbox.contracts import (
     ExecutorCallbackEvent,
     ExecutorContextRetrievalRequest,
     executor_callback_receipt_event_count,
+    executor_terminal_receipt_payload,
 )
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
 from app.runtime.sandbox.providers.opensandbox.startup import renew_opensandbox_lifetime
+from app.runs.api import RunDiagnosticsService
 from app.settings import get_settings
 from app.streaming.api import (
     V4ProjectionError,
@@ -75,6 +77,7 @@ async def record_executor_callback(
     callback: ExecutorCallbackEvent,
     *,
     capabilities: WorkerV4Capabilities,
+    run_diagnostics: RunDiagnosticsService | None = None,
 ) -> dict[str, object]:
     """Persist one fenced sandbox observation or terminal result."""
 
@@ -245,12 +248,27 @@ async def record_executor_callback(
         lease_id = str(lease.get("id") or "") if isinstance(lease, dict) else ""
         if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES:
             if callback.terminal_result is None:
-                raise HTTPException(status_code=422, detail="executor_terminal_result_required")
+                raise HTTPException(
+                    status_code=422, detail="executor_terminal_result_required"
+                )
             if not lease_id:
                 raise HTTPException(
                     status_code=503,
                     detail="sandbox_executor_lease_receipt_unavailable",
                 )
+            terminal_result = callback.terminal_result.model_dump(
+                mode="json", exclude_none=True
+            )
+            try:
+                terminal_receipt = executor_terminal_receipt_payload(
+                    callback.terminal_result
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail="executor_terminal_result_invalid",
+                ) from exc
+            terminal_was_new = lease.get("executor_terminal_json") is None
             try:
                 await sandbox_lease_repository.record_sandbox_executor_terminal(
                     conn,
@@ -259,9 +277,7 @@ async def record_executor_callback(
                     attempt_id=callback.attempt_id,
                     lease_id=lease_id,
                     executor_status=callback.status,
-                    terminal_result=callback.terminal_result.model_dump(
-                        mode="json", exclude_none=True
-                    ),
+                    terminal_result=terminal_receipt,
                 )
             except (
                 sandbox_lease_repository.SandboxExecutorTerminalConflictError,
@@ -272,16 +288,33 @@ async def record_executor_callback(
                     status_code=409,
                     detail="sandbox_executor_terminal_conflict",
                 ) from exc
+            if terminal_was_new and run_diagnostics is not None:
+                await run_diagnostics.capture_failure_result(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=callback.run_id,
+                    attempt_id=callback.attempt_id,
+                    source="executor_callback",
+                    stage="terminal_receipt",
+                    error_code=str(
+                        terminal_result.get("error_code") or callback.status
+                    ),
+                    result_json=terminal_result,
+                    lease_id=lease_id,
+                    callback_id=callback.batch_id,
+                )
         elif lease_id:
             settings = get_settings()
-            heartbeat = await sandbox_lease_repository.record_sandbox_executor_heartbeat(
-                conn,
-                tenant_id=tenant_id,
-                run_id=callback.run_id,
-                attempt_id=callback.attempt_id,
-                lease_id=lease_id,
-                executor_status="running",
-                ttl_seconds=settings.sandbox_lease_ttl_seconds,
+            heartbeat = (
+                await sandbox_lease_repository.record_sandbox_executor_heartbeat(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=callback.run_id,
+                    attempt_id=callback.attempt_id,
+                    lease_id=lease_id,
+                    executor_status="running",
+                    ttl_seconds=settings.sandbox_lease_ttl_seconds,
+                )
             )
             if heartbeat is None:
                 raise HTTPException(
@@ -291,11 +324,15 @@ async def record_executor_callback(
             if (
                 callback.state_patch.get("executor_heartbeat") is True
                 and isinstance(heartbeat, dict)
-                and str(heartbeat.get("provider") or "").strip().lower() == "opensandbox"
+                and str(heartbeat.get("provider") or "").strip().lower()
+                == "opensandbox"
             ):
                 try:
                     persisted_lease = container_lease_from_persisted_row(heartbeat)
-                    if persisted_lease is None or persisted_lease.provider != "opensandbox":
+                    if (
+                        persisted_lease is None
+                        or persisted_lease.provider != "opensandbox"
+                    ):
                         raise ValueError("sandbox_runtime_renewal_lease_unavailable")
                     provider = create_container_provider(persisted_lease.provider)
                     await renew_opensandbox_lifetime(
@@ -318,7 +355,9 @@ async def record_executor_callback(
     try:
         await publish_callback_rows(capabilities, committed_rows, authority=authority)
     except V4PublicationTransportUnavailable as exc:
-        raise HTTPException(status_code=503, detail="callback_stream_unavailable") from exc
+        raise HTTPException(
+            status_code=503, detail="callback_stream_unavailable"
+        ) from exc
     return _executor_callback_receipt(
         callback,
         deduplicated=callback_deduplicated,
@@ -416,7 +455,9 @@ def _require_valid_callback_token(
 async def executor_callback(
     request: Request,
     callback: ExecutorCallbackEvent,
-    callback_token: str | None = Header(default=None, alias="X-AI-Platform-Callback-Token"),
+    callback_token: str | None = Header(
+        default=None, alias="X-AI-Platform-Callback-Token"
+    ),
 ) -> dict[str, object]:
     _require_valid_callback_token(
         callback_token,
@@ -428,6 +469,7 @@ async def executor_callback(
     return await record_executor_callback(
         callback,
         capabilities=runtime.worker_capabilities,
+        run_diagnostics=request.app.state.run_diagnostics_service,
     )
 
 

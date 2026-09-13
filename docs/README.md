@@ -74,6 +74,13 @@ with caller retirement, agent exploration scopes, and falsifiable acceptance.
 It is a proposed implementation plan; detailed contracts above remain authoritative
 and execution progress belongs in the active task or PR.
 
+[Run 故障诊断 PRD](implementation/run-diagnostics-prd.md) defines administrator
+self-service diagnosis and redacted export requirements. Its
+[technical proposal](implementation/run-diagnostics-design.md) records the active
+candidate for field preservation, persistence, admin query and retirement of
+superseded mappings, plus the remaining export and runtime-acceptance work.
+Source completion, deployment and production acceptance remain separate evidence.
+
 [AGENTS](../AGENTS.md), [PR workflow](agent-rules/github-issue-pr-workflow.md),
 [local test execution](agent-rules/local-test-execution.md), and
 [multi-agent workflow](agent-rules/multi-agent-context-workflow.md) own repository

@@ -74,6 +74,12 @@ generation, timestamps, and reconciliation ownership in one migration.
    non-streaming bounded terminal messages use the same stable-source
    `assistant_delta` compatibility shape only when no streamed answer exists;
    obsolete `assistant_final` is retired.
+   A first terminal callback fixes the protocol fields in `executor_terminal_json`
+   and appends the bounded Runs-owned private diagnostic observation in the same
+   PostgreSQL transaction. Receipt retry remains the deduplication authority and
+   does not advance the diagnostic revision twice. The receipt is retained for
+   protocol recovery; reconciliation may append its bounded `diagnostics` list,
+   but cannot replace the first receipt fields. It is not the administrator query store.
 4. A real-provider release takes the scoped lease row lock, calls provider stop,
    and marks released in that transaction. Concurrent release waits and then
    observes the terminal row instead of issuing a duplicate stop. Stop failure

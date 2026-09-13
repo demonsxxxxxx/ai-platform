@@ -11,6 +11,7 @@ from app.runtime.sandbox.contracts import (
     ExecutorTerminalResult,
     SandboxRuntimeRequest,
     WorkspaceLease,
+    executor_terminal_receipt_payload,
     normalize_executor_terminal_status,
 )
 from app.runtime.kernel_contracts import RunContext
@@ -182,6 +183,42 @@ def test_terminal_callback_round_trips_outer_metadata_but_rejects_unknown_receip
                 },
             }
         )
+
+
+def test_terminal_receipt_drops_private_and_unknown_fields_and_enforces_total_budget():
+    result = ExecutorTerminalResult.model_validate(
+        {
+            "status": "failed",
+            "run_id": "run-a",
+            "error_code": "executor_failed",
+            "error_message": "Executor failed",
+            "runtime_diagnostics": {"tool_input": {"token": "private"}},
+            "unexpected": {"prompt": "private"},
+            "sdk_turn_diagnostics": {
+                "runtime_diagnostics": {"tool_input": {"token": "private"}},
+                "status": "failed",
+            },
+            "executor_model_latency_ms": 123,
+        }
+    )
+
+    receipt = executor_terminal_receipt_payload(result)
+
+    assert receipt["executor_model_latency_ms"] == 123
+    assert "runtime_diagnostics" not in receipt
+    assert "runtime_diagnostics" not in str(receipt["sdk_turn_diagnostics"])
+    assert "unexpected" not in receipt
+
+    oversized = ExecutorTerminalResult.model_validate(
+        {
+            "status": "completed",
+            "run_id": "run-a",
+            "message": "x" * 200_000,
+            "sdk_usage": {"bounded_but_collectively_oversized": "y" * 100_000},
+        }
+    )
+    with pytest.raises(ValueError, match="executor_terminal_receipt_too_large"):
+        executor_terminal_receipt_payload(oversized)
 
 
 def test_terminal_callback_serializes_large_answer_as_a_bounded_receipt():

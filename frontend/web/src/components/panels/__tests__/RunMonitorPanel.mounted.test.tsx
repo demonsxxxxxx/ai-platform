@@ -6,7 +6,12 @@ import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 
-import { adminRunsApi, type AdminRunDetailResponse, type AdminRunSummary } from "../../../services/api/adminRuns";
+import {
+  adminRunsApi,
+  type AdminRunDiagnosticsResponse,
+  type AdminRunDetailResponse,
+  type AdminRunSummary,
+} from "../../../services/api/adminRuns";
 import { filterAdminRuns, RunMonitorPanel, summarizeAdminRuns } from "../RunMonitorPanel";
 
 const waitFor = async (predicate: () => boolean, timeoutMs = 2_000) => {
@@ -108,6 +113,7 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
   }
   const originalList = adminRunsApi.list;
   const originalDetail = adminRunsApi.detail;
+  const originalDiagnostics = adminRunsApi.diagnostics;
   const calls: string[] = [];
 
   Object.defineProperty(dom.window.HTMLElement.prototype, "scrollIntoView", {
@@ -121,19 +127,6 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
       input: { prompt: "PRIVATE_PROMPT_MARKER" },
       result: {
         text: "PRIVATE_RESULT_MARKER",
-        runtime_diagnostics: {
-          error_code: "claude_agent_sdk_tool_admission_failed",
-          failure_source: "sdk_result_error",
-          sdk: { errors: ["ACTUAL_SDK_FAILURE_MARKER"] },
-          tool_policy_denials: [
-            {
-              tool_name: "Bash",
-              invocation_id: "tool-call-7",
-              reason: "tool_parameters_not_authorized",
-              tool_input: { command: "printf ACTUAL_TOOL_INPUT_MARKER" },
-            },
-          ],
-        },
       },
     },
     events: [
@@ -168,6 +161,68 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     ],
     audit: [{ payload: { credential: "PRIVATE_AUDIT_PAYLOAD_MARKER" } }],
   } as unknown as AdminRunDetailResponse;
+  const diagnostics: AdminRunDiagnosticsResponse = {
+    schema_version: "ai-platform.run-diagnostics.v1",
+    diagnostic_id: "rdiag-a",
+    revision: 2,
+    coverage: "partial",
+    run: {
+      ...runs[0],
+      session_id: runs[0].session_id ?? null,
+      user_id: runs[0].user_id ?? null,
+      workspace_id: runs[0].workspace_id ?? "",
+    },
+    root: {
+      observation_id: "obs-a",
+      attempt_id: "attempt-a",
+      kind: "failure",
+      source: "sdk_result_error",
+      stage: "model_wait",
+      error_code: "claude_agent_sdk_tool_admission_failed",
+      exception_type: "RuntimeError",
+      message: "ACTUAL_SDK_FAILURE_MARKER",
+      stack: "model.py:42\nRuntimeError: ACTUAL_STACK_TAIL_MARKER",
+    },
+    handling: [
+      {
+        observation_id: "obs-a",
+        attempt_id: "attempt-a",
+        kind: "handling",
+        source: "sandbox_terminal_normalization",
+        stage: "terminalization",
+        error_code: "required_tool_completion_evidence_mismatch",
+      },
+    ],
+    losses: [{ field: "tool_calls", reason: "truncated", original: 9, retained: 8 }],
+    attempts: [
+      {
+        attempt_id: "attempt-a",
+        ordinal: 1,
+        status: "failed",
+        owner_kind: "queue_worker",
+        terminal_reason: "run_failed",
+        error_code: "claude_agent_sdk_tool_admission_failed",
+      },
+    ],
+    details: {
+      schema_version: "ai-platform.sdk-runtime-diagnostics.v1",
+      sdk: { errors: ["ACTUAL_SDK_FAILURE_MARKER"] },
+      tool_lifecycles: [],
+      tool_calls: [],
+      tool_policy_denials: [
+        {
+          tool_name: "Bash",
+          invocation_id: "tool-call-7",
+          reason: "tool_parameters_not_authorized",
+        },
+      ],
+    },
+    versions: {
+      run_diagnostics: "ai-platform.run-diagnostics.v1",
+      runtime_diagnostics: "ai-platform.sdk-runtime-diagnostics.v1",
+    },
+    counts: { retained_observations: 1, omitted_observations: 0 },
+  };
 
   adminRunsApi.list = async () => {
     calls.push("list");
@@ -176,6 +231,10 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
   adminRunsApi.detail = async (runId: string) => {
     calls.push(`detail:${runId}`);
     return detail;
+  };
+  adminRunsApi.diagnostics = async (runId: string) => {
+    calls.push(`diagnostics:${runId}`);
+    return diagnostics;
   };
 
   const container = dom.window.document.getElementById("root");
@@ -231,12 +290,15 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     await waitFor(() => container.textContent?.includes("开始执行") === true);
 
     assert.ok(calls.includes("detail:run_running"));
+    assert.ok(calls.includes("diagnostics:run_running"));
     assert.match(container.textContent ?? "", /trace-a/);
     assert.match(container.textContent ?? "", /worker_setup/);
     assert.match(container.textContent ?? "", /lease-a/);
     assert.match(container.textContent ?? "", /执行诊断/);
     assert.match(container.textContent ?? "", /ACTUAL_SDK_FAILURE_MARKER/);
-    assert.match(container.textContent ?? "", /ACTUAL_TOOL_INPUT_MARKER/);
+    assert.match(container.textContent ?? "", /ACTUAL_STACK_TAIL_MARKER/);
+    assert.match(container.textContent ?? "", /tool_parameters_not_authorized/);
+    assert.match(container.textContent ?? "", /历史记录|部分采集/);
     assert.doesNotMatch(container.textContent ?? "", /PRIVATE_PROMPT_MARKER/);
     assert.doesNotMatch(container.textContent ?? "", /PRIVATE_RESULT_MARKER/);
     assert.doesNotMatch(container.textContent ?? "", /PRIVATE_EVENT_PAYLOAD_MARKER/);
@@ -311,9 +373,16 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     let resolvePendingDetail:
       | ((value: AdminRunDetailResponse) => void)
       | undefined;
+    let resolvePendingDiagnostics:
+      | ((value: AdminRunDiagnosticsResponse) => void)
+      | undefined;
     adminRunsApi.detail = async () =>
       new Promise<AdminRunDetailResponse>((resolve) => {
         resolvePendingDetail = resolve;
+      });
+    adminRunsApi.diagnostics = async () =>
+      new Promise<AdminRunDiagnosticsResponse>((resolve) => {
+        resolvePendingDiagnostics = resolve;
       });
     const failedOpenButton = container.querySelector(
       'button[aria-label="查看 run_failed"]',
@@ -325,7 +394,9 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
         new dom.window.MouseEvent("click", { bubbles: true }),
       );
     });
-    await waitFor(() => resolvePendingDetail !== undefined);
+    await waitFor(
+      () => resolvePendingDetail !== undefined && resolvePendingDiagnostics !== undefined,
+    );
     const pendingBackdrop = container.querySelector(
       "button[data-run-monitor-backdrop]",
     ) as HTMLButtonElement | null;
@@ -342,10 +413,15 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
         ...detail,
         run: { ...runs[1], trace_id: "STALE_DETAIL_MARKER" },
       });
+      resolvePendingDiagnostics?.({
+        ...diagnostics,
+        root: { ...diagnostics.root!, message: "STALE_DIAGNOSTICS_MARKER" },
+      });
       await Promise.resolve();
     });
     assert.equal(container.querySelector('[role="dialog"]'), null);
     assert.doesNotMatch(container.textContent ?? "", /STALE_DETAIL_MARKER/);
+    assert.doesNotMatch(container.textContent ?? "", /STALE_DIAGNOSTICS_MARKER/);
 
     const allFilter = (
       Array.from(container.querySelectorAll('button[aria-pressed]')) as HTMLButtonElement[]
@@ -373,6 +449,7 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     });
     adminRunsApi.list = originalList;
     adminRunsApi.detail = originalDetail;
+    adminRunsApi.diagnostics = originalDiagnostics;
     dom.window.close();
     for (const [key, descriptor] of previousDescriptors) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);

@@ -1327,13 +1327,53 @@ async def test_executor_rejects_conflicting_required_bash_lifecycle(
     assert result["error_code"] == "required_tool_completion_evidence_mismatch"
     assert REQUIRED_CAPABILITY_EVIDENCE_KEY not in result
     diagnostics = result["runtime_diagnostics"]
-    assert diagnostics["runner_error_code"] == "claude_agent_sdk_tool_admission_failed"
+    assert diagnostics["error_code"] == "claude_agent_sdk_tool_admission_failed"
+    assert "runner_error_code" not in diagnostics
+    assert diagnostics["failure_observations"][-1]["error_code"] == (
+        "required_tool_completion_evidence_mismatch"
+    )
     assert diagnostics["sdk"]["errors"] == ["actual SDK admission failure"]
     assert diagnostics["tool_calls"][0]["tool_input"] == {
         "command": "printf diagnostic"
     }
     assert diagnostics["tool_policy_denials"][0]["reason"] == (
         "tool_parameters_not_authorized"
+    )
+
+
+def test_runtime_diagnostic_wrapper_preserves_first_failure_and_appends_handling():
+    original = {
+        "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        "error_code": "claude_agent_sdk_timeout",
+        "failure_source": "sdk_exception",
+        "failure_stage": "model_wait",
+        "sdk": {
+            "exception_type": "TimeoutError",
+            "exception_message": "model wait expired",
+        },
+    }
+
+    merged = executor_app._merge_runtime_diagnostics(
+        original,
+        error_code="executor_failed",
+        failure_source="sandbox_terminal_normalization",
+        failure_stage="sandbox_submission",
+        exception=RuntimeError("terminal wrapper failed"),
+    )
+
+    assert merged["error_code"] == "claude_agent_sdk_timeout"
+    assert merged["failure_source"] == "sdk_exception"
+    assert merged["failure_stage"] == "model_wait"
+    assert merged["sdk"]["exception_type"] == "TimeoutError"
+    assert merged["sdk"]["exception_message"] == "model wait expired"
+    assert "runner_error_code" not in merged
+    assert "runner_failure_source" not in merged
+    assert merged["failure_observations"][-1]["error_code"] == "executor_failed"
+    assert merged["failure_observations"][-1]["failure_stage"] == (
+        "sandbox_submission"
+    )
+    assert merged["failure_observations"][-1]["exception"]["type"] == (
+        "RuntimeError"
     )
 
 
@@ -2765,8 +2805,22 @@ def test_executor_execute_preserves_bounded_sdk_error_codes(
     }
     diagnostics = body["runtime_diagnostics"]
     assert diagnostics["error_code"] == expected_error_code
-    assert diagnostics["failure_source"] == "sandbox_terminal_normalization"
-    assert diagnostics["runner_failure_source"] == "sdk_result_error"
+    assert "runner_failure_source" not in diagnostics
+    terminal_observation = {
+        "error_code": expected_error_code,
+        "failure_source": "sandbox_terminal_normalization",
+        "failure_stage": "sandbox_submission",
+    }
+    if sdk_error == expected_error_code:
+        assert diagnostics["failure_source"] == "sdk_result_error"
+        assert diagnostics["failure_observations"][-1] == terminal_observation
+    else:
+        assert diagnostics["failure_source"] == "sandbox_terminal_normalization"
+        assert diagnostics["failure_observations"] == [terminal_observation]
+        assert any(
+            loss["field"] == "error_code" and loss["reason"] == "invalid_field"
+            for loss in diagnostics["normalization_losses"]
+        )
     assert diagnostics["sdk"] == {"errors": ["actual SDK failure"]}
     assert callbacks[-1]["state_patch"] == {
         "stage": "executor_finished",

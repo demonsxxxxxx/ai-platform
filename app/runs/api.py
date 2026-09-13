@@ -3,8 +3,14 @@
 from app.runs.application.admin_run_monitor import (
     assemble_admin_model_output as assemble_admin_model_output,
 )
+from app.runs.application.diagnostics import (
+    RunDiagnosticsService as RunDiagnosticsService,
+)
 from app.runs.domain.admin_diagnostics import (
-    admin_runtime_diagnostics_from_run as admin_runtime_diagnostics_from_run,
+    AdminRunDiagnosticsResponse as AdminRunDiagnosticsResponse,
+)
+from app.runs.domain.diagnostics import (
+    RUN_DIAGNOSTICS_SCHEMA_VERSION as RUN_DIAGNOSTICS_SCHEMA_VERSION,
 )
 from app.runs.domain.thinking import (
     RUN_THINKING_EFFORT_INPUT_KEY as RUN_THINKING_EFFORT_INPUT_KEY,

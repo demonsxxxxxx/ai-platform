@@ -124,9 +124,29 @@ alternate public endpoint.
 
 The retained diagnostic boundary limits structured SDK/Tool values to 4 KiB,
 exception text to 8 KiB, lightweight lifecycle facts to 128, detailed calls and
-policy denials to the latest eight, and the aggregate block to 128 KiB within
-the 256 KiB Run result bound. Preserve newest useful evidence and normalize at
-each producer/trust boundary. An admin role is not permission to expose secrets.
+policy denials to the latest eight. Runs stores the normalized observations in a
+separate, tenant-scoped `run_diagnostics` record with a 128 KiB per-Run budget;
+new terminal results remove the private carrier before writing `runs.result_json`.
+Preserve the first and newest useful evidence and normalize at each producer or
+trust boundary. An admin role is not permission to expose secrets.
+
+Within the SDK diagnostic contract, the first accepted failure remains the root
+observation. Wrappers append bounded handling observations and must not replace
+the root source, stage, exception, or code. Normalization exposes rejected,
+invalid, unknown-field and truncation losses explicitly; unknown payloads are
+not echoed. The retired `runner_error_code`, `runner_failure_source`, and
+top-level `truncated` fields are read-only legacy inputs and are not emitted by
+new producers. HTTP errors keep public text separate from a bounded private
+carrier; the current client parses at most 4 KiB of an error body, recording an
+explicit loss for malformed or larger bodies.
+
+Worker failures append diagnostics only after the current Attempt fence succeeds
+and in the same transaction as terminalization. A first terminal callback stores
+its fixed initial lease receipt fields and diagnostic observation in the same transaction;
+an acknowledged duplicate receipt does not add another observation or revision.
+Permanent reconciliation retains the receipt observation and appends a separate
+classified handling observation. The authorized admin route reads this Runs-owned
+record independently of Run status; absence and legacy data remain explicit.
 
 Terminal-reconciliation failure uses the existing fixed code
 `terminal_reconciliation_failed` for the owning permanent-contract failure or

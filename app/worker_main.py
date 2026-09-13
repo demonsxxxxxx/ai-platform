@@ -25,6 +25,7 @@ from app.bootstrap.files import configure_file_upload_services
 from app.bootstrap.mcp import configure_mcp_runtime
 from app.bootstrap.model_services import configure_model_services
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
+from app.bootstrap.run_diagnostics import build_run_diagnostics_service
 from app.bootstrap.streaming import build_worker_v4_runtime
 from app.bootstrap.worker_maintenance import (
     close_runtime_clients as _close_runtime_clients,
@@ -1112,6 +1113,7 @@ async def run_forever(
             worker_id=worker_id,
             v4_capabilities=worker_runtime.capabilities,
             attempt_lifecycle=attempt_lifecycle,
+            run_diagnostics=build_run_diagnostics_service(),
         ),
         name="ai-platform-executor-terminal-reconciler",
     )
@@ -1227,6 +1229,7 @@ async def run_worker_pool(
             worker_id=process_worker_id,
             v4_capabilities=worker_runtime.capabilities,
             attempt_lifecycle=attempt_lifecycle,
+            run_diagnostics=build_run_diagnostics_service(),
         ),
         name="ai-platform-executor-terminal-reconciler",
     )
