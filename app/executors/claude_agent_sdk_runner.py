@@ -2475,7 +2475,7 @@ async def run_claude_agent_sdk(
                 continue
             if isinstance(message, AssistantMessage):
                 if stream_projector is not None:
-                    stream_projector.close_unfinished()
+                    stream_projector.finish_message()
                 diagnostic_counters["assistant_messages"] += 1
                 assistant_message_identity = (
                     f"assistant_{diagnostic_counters['assistant_messages']}"

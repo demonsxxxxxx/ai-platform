@@ -1819,6 +1819,65 @@ test("v4 history-covered message.started restores ownership before live delta", 
   assert.equal(ctx.messages()[0]?.content, "hydrated live");
 });
 
+test("v4 rejects a message delta when its reducer message is missing", () => {
+  const ctx = createContext([], null);
+  ctx.currentRunIdRef.current = "run-missing-message";
+  ctx.v4MessageOwnerRef = {
+    current: {
+      sessionId: "session-1",
+      runId: "run-missing-message",
+      streamVersion: 0,
+      streamIncarnation: 2,
+      protocolMessageId: "protocol-message-1",
+      reducerMessageId: "missing-assistant",
+    },
+  };
+  const commits: boolean[] = [];
+  const binding = {
+    sessionId: "session-1",
+    runId: "run-missing-message",
+    streamVersion: 0,
+    streamIncarnation: 2,
+    generation: 7,
+  };
+
+  const result = handlePublicRunStreamFrameV4Result({
+    frame: {
+      eventHeader: "message.delta",
+      transportCursor: "run-missing-message:2:2-0",
+      generation: 7,
+      value: {
+        schema: "ai-platform.public-run-stream-event.v4",
+        event_id: "missing-message-delta",
+        run_id: "run-missing-message",
+        message_id: "protocol-message-1",
+        seq: 2,
+        event_type: "message.delta",
+        stream_incarnation: 2,
+        replayable: true,
+        trace_ref: null,
+        causation_event_id: null,
+        emitted_at: "2026-01-01T00:00:02Z",
+        payload: { delta: "must not be silently dropped" },
+      },
+    },
+    adapterBinding: {
+      runId: "run-missing-message",
+      streamIncarnation: 2,
+      generation: 7,
+    },
+    messageId: "missing-assistant",
+    ctx,
+    binding,
+    currentGeneration: 7,
+    onCommitted: (semanticApplied) => commits.push(semanticApplied),
+  });
+
+  assert.deepEqual(result, { kind: "invalid" });
+  assert.deepEqual(commits, []);
+  assert.equal(ctx.messages().length, 0);
+});
+
 test("v4 message ownership survives reconnect and rejects a second protocol identity", () => {
   const ctx = createContext([
     {
