@@ -34,7 +34,8 @@ test("skills hub exposes governed catalog status without composer help copy", ()
   assert.doesNotMatch(source, /data-skills-hub-state-detail/);
   assert.doesNotMatch(source, /skillsHub\.composerEntry/);
   assert.doesNotMatch(source, /data-skills-hub-composer-entry/);
-  assert.match(source, /marketplace:\s*"\/marketplace"/);
+  assert.match(source, /const requestedTab: SkillsHubTab = "skills"/);
+  assert.doesNotMatch(source, /MarketplacePanel|\/marketplace/);
   assert.match(source, /data-auth-projection-has-permission/);
   assert.match(source, /onCatalogStateChange/);
   assert.match(source, /isAiAdminUser\(user\)/);

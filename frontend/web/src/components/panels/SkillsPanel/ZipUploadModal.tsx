@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { Archive, UploadCloud, FileArchive, Upload } from "lucide-react";
+import { Archive, Check, UploadCloud, FileArchive, Upload } from "lucide-react";
 import { LoadingSpinner } from "../../common/LoadingSpinner";
 import { EditorSidebar } from "../../common/EditorSidebar";
 import { Checkbox } from "../../common/Checkbox";
@@ -15,6 +15,7 @@ interface ZipUploadModalProps {
   zipPreviewing: boolean;
   zipSkills: ZipSkillPreview[];
   selectedZipSkills: string[];
+  targetSkillName: string | null;
   adminRelease: boolean;
   adminReleasePhase: AdminSkillReleasePhase;
   adminReleaseBlocked: boolean;
@@ -38,6 +39,7 @@ export function ZipUploadModal({
   zipPreviewing,
   zipSkills,
   selectedZipSkills,
+  targetSkillName,
   adminRelease,
   adminReleasePhase,
   adminReleaseBlocked,
@@ -73,20 +75,29 @@ export function ZipUploadModal({
   const selectedAdminCatalogItem = adminRelease
     ? adminCatalogItems.find((item) => item.skillId === selectedZipSkills[0])
     : undefined;
+  const selectedPreview = zipSkills.find(
+    (skill) => skill.name === selectedZipSkills[0],
+  );
+  const targetMissing =
+    Boolean(targetSkillName) &&
+    zipSkills.length > 0 &&
+    !zipSkills.some((skill) => skill.name === targetSkillName);
 
   return (
     <EditorSidebar
       open={showZipModal}
       onClose={() => setShowZipModal(false)}
       title={
-        adminRelease
-          ? t("skills.adminReleaseZipTitle")
-          : t("skills.uploadZipTitle")
+        targetSkillName
+          ? t("skills.updateZipTitle", { name: targetSkillName })
+          : t("skills.zipUploadTitle")
       }
       subtitle={
-        adminRelease ? t("skills.adminReleaseZipSubtitle") : t("skills.subtitle")
+        targetSkillName
+          ? t("skills.updateZipSubtitle")
+          : t("skills.zipUploadSubtitle")
       }
-      icon={<Archive size={16} />}
+      icon={<UploadCloud size={16} />}
       width="wide"
       footer={
         <div className="flex justify-end gap-2">
@@ -110,7 +121,11 @@ export function ZipUploadModal({
               )}
               <span className="hidden sm:inline">
                 {adminRelease
-                  ? t("skills.adminReleaseAction")
+                  ? t(
+                      selectedPreview?.already_exists
+                        ? "skills.adminUpdateAction"
+                        : "skills.adminPublishAction",
+                    )
                   : t("skills.importSkills")} ({selectedZipSkills.length})
               </span>
             </button>
@@ -209,7 +224,11 @@ export function ZipUploadModal({
                             : "border-[var(--theme-border)]"
                       }`}
                     >
-                      {isComplete ? "✓" : index + 1}
+                      {isComplete ? (
+                        <Check aria-hidden="true" size={12} />
+                      ) : (
+                        index + 1
+                      )}
                     </span>
                     <span
                       className={
@@ -276,14 +295,51 @@ export function ZipUploadModal({
               )}
             </div>
             <p className="text-xs leading-5 text-[var(--theme-text-secondary)]">
-              {adminRelease
+              {targetSkillName
+                ? t("skills.updateZipTargetHint", { name: targetSkillName })
+                : adminRelease
                 ? t("skills.adminReleaseZipHint")
                 : t("skills.zipImportBackedHint")}
             </p>
+            {targetMissing ? (
+              <p
+                className="rounded-md border border-[var(--theme-danger-ring)] bg-[var(--theme-danger-soft)] px-3 py-2 text-xs leading-5 text-[var(--theme-danger)]"
+                role="alert"
+              >
+                {t("skills.updateZipTargetMismatch", { name: targetSkillName })}
+              </p>
+            ) : null}
+            {selectedPreview ? (
+              <div className="skill-upload-summary" data-skill-upload-summary>
+                <div>
+                  <span>{t("skills.uploadOperation")}</span>
+                  <strong>
+                    {selectedPreview.already_exists
+                      ? t("skills.updateExistingSkill")
+                      : t("skills.publishNewSkill")}
+                  </strong>
+                </div>
+                <div>
+                  <span>{t("skills.managementTable.skill")}</span>
+                  <strong>{selectedPreview.name}</strong>
+                </div>
+                <div>
+                  <span>{t("skills.managementTable.package")}</span>
+                  <strong>
+                    {selectedAdminCatalogItem?.currentVersion ??
+                      t("skills.newVersionPending")}
+                  </strong>
+                </div>
+              </div>
+            ) : null}
             <div className="space-y-1.5 max-h-72 overflow-y-auto rounded-lg p-1">
               {zipSkills.map((skill) => {
                 const selected = selectedZipSkills.includes(skill.name);
-                const canSelectSkill = canSelectZipSkill(skill, adminRelease);
+                const canSelectSkill = canSelectZipSkill(
+                  skill,
+                  adminRelease,
+                  targetSkillName,
+                );
                 return (
                   <div
                     key={skill.name}
@@ -319,7 +375,7 @@ export function ZipUploadModal({
                         </p>
                         {skill.already_exists && adminRelease && (
                           <span className="shrink-0 rounded-full bg-[var(--theme-primary)]/8 px-1.5 py-0.5 text-[10px] font-medium text-[var(--theme-primary)]/70">
-                            {t("skills.adminReleaseExistingSkill")}
+                            {t("skills.updateExistingSkill")}
                           </span>
                         )}
                         {skill.already_exists && !adminRelease && (
@@ -329,7 +385,7 @@ export function ZipUploadModal({
                         )}
                         {!skill.already_exists && adminRelease && (
                           <span className="shrink-0 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
-                            {t("skills.newSkillAdminUpload")}
+                            {t("skills.publishNewSkill")}
                           </span>
                         )}
                         {!skill.already_exists && !adminRelease && (

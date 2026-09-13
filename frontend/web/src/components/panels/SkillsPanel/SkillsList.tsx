@@ -2,16 +2,10 @@ import { useEffect, useId, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Package,
-  Archive,
-  Boxes,
-  CheckCircle2,
-  Eye,
   FolderOpen,
-  Check,
   Search,
   Tag,
   ChevronDown,
-  Github,
   Upload,
   X,
 } from "lucide-react";
@@ -67,8 +61,7 @@ interface SkillsListProps {
   onSelectSkill: (name: string) => void;
   onSelectAll: () => void;
   onSelectDetail: (skillId: string) => void;
-  onGithubClick: () => void;
-  onZipClick: () => void;
+  onZipClick: (skillName?: string) => void;
 }
 
 export function SkillsList({
@@ -112,7 +105,6 @@ export function SkillsList({
   onSelectSkill,
   onSelectAll,
   onSelectDetail,
-  onGithubClick,
   onZipClick,
 }: SkillsListProps) {
   const { t } = useTranslation();
@@ -162,13 +154,6 @@ export function SkillsList({
   const canEditSkills = canEdit && !governedUnavailable;
   const canImportSkills = canImport && !governedUnavailable;
   const canBatchSkills = canBatch && !governedUnavailable;
-  const canManageSkills = canBatchSkills || canImportSkills;
-  const selectableNames = catalogEntries.flatMap((entry) =>
-    entry.actionName ? [entry.actionName] : [],
-  );
-  const allSelectableSelected =
-    selectableNames.length > 0 &&
-    selectableNames.every((name) => selectedNames.has(name));
   const catalogMetrics = resolveSkillCatalogMetrics(metricsCatalogEntries);
   const restrictedCount =
     catalogMetrics.total - catalogMetrics.visible - catalogMetrics.internal;
@@ -215,7 +200,7 @@ export function SkillsList({
         ref={filterTriggerRef}
       >
         <Tag size={16} />
-        <span className="hidden sm:inline">{t("adminMarketplace.tags")}</span>
+        <span className="hidden sm:inline">{t("skills.filter")}</span>
         {selectedTags.length > 0 && (
           <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--theme-primary-light)] px-1 text-[11px]">
             {selectedTags.length}
@@ -228,14 +213,14 @@ export function SkillsList({
       </button>
       {isFilterOpen && (
         <div
-          aria-label={t("adminMarketplace.tags")}
+          aria-label={t("skills.tagFilter")}
           className="skill-filter-dropdown absolute right-0 top-[calc(100%+0.5rem)] z-20 w-72 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-3 shadow-[0_12px_28px_rgba(15,23,42,0.12)]"
           id={filterMenuId}
           role="group"
         >
           <div className="mb-2 flex items-center justify-between">
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--theme-text-secondary)]">
-              {t("adminMarketplace.tags")}
+              {t("skills.tagFilter")}
             </p>
             {hasActiveFilters && (
               <button
@@ -267,60 +252,16 @@ export function SkillsList({
     </div>
   );
 
-  const headerActions = canManageSkills ? (
-    <div className="flex items-center gap-2">
-      {canBatchSkills && selectableNames.length > 0 && (
-        <button
-          aria-label={
-            allSelectableSelected
-              ? t("common.deselectAll")
-              : t("common.selectAll")
-          }
-          onClick={onSelectAll}
-          className="btn-secondary h-10"
-          type="button"
-        >
-          <Check size={16} />
-          <span className="hidden sm:inline">
-            {allSelectableSelected
-              ? t("common.deselectAll")
-              : t("common.selectAll")}
-          </span>
-        </button>
-      )}
-      {canImportSkills && (
-        <>
-          <button
-            aria-label={t("skills.importFromGitHub")}
-            onClick={onGithubClick}
-            className="btn-secondary h-10"
-            type="button"
-          >
-            <Github size={16} />
-            <span className="hidden sm:inline">GitHub</span>
-          </button>
-          <button
-            onClick={onZipClick}
-            className={`${adminRelease ? "btn-primary" : "btn-secondary"} h-10`}
-            title={
-              adminRelease
-                ? t("skills.adminReleaseZipSubtitle")
-                : t("skills.uploadZipTitle")
-            }
-            type="button"
-          >
-            <Upload size={16} />
-            <span>
-              {t(
-                adminRelease
-                  ? "skills.adminReleaseZipTitle"
-                  : "skills.uploadZipTitle",
-              )}
-            </span>
-          </button>
-        </>
-      )}
-    </div>
+  const uploadAction = canImportSkills ? (
+    <button
+      onClick={() => onZipClick()}
+      className={`${adminRelease ? "btn-primary" : "btn-secondary"} h-10`}
+      title={t("skills.zipUploadSubtitle")}
+      type="button"
+    >
+      <Upload size={16} />
+      <span>{t("skills.zipUploadAction")}</span>
+    </button>
   ) : undefined;
 
   return (
@@ -328,64 +269,22 @@ export function SkillsList({
       {embedded && (
         <>
           <section
-            className="skill-management-hero"
+            className="skill-management-header"
             data-skill-management-overview
           >
-            <div className="skill-management-hero__intro">
-              <div className="skill-management-hero__title-row">
-                <span className="skill-management-hero__mark">
-                  <Package aria-hidden="true" size={20} />
-                </span>
-                <div className="min-w-0">
-                  <p className="skill-management-hero__eyebrow">
-                    {t("skills.managementEyebrow")}
-                  </p>
-                  <h1 className="skill-management-hero__title">
-                    {t("skills.managementTitle")}
-                  </h1>
-                </div>
-              </div>
-              <p className="skill-management-hero__description">
+            <div className="min-w-0">
+              <h1 className="skill-management-header__title">
+                {t("skills.managementTitle")}
+              </h1>
+              <p className="skill-management-header__description">
                 {t("skills.managementDescription")}
               </p>
-              <p className="skill-management-hero__policy">
-                <Archive aria-hidden="true" size={14} />
-                <span>{t("skills.archivePolicyDescription")}</span>
-              </p>
             </div>
-            <dl
-              className="skill-management-metrics"
-              data-skill-management-metrics
-            >
-              <div className="skill-management-metric">
-                <dt>
-                  <Package aria-hidden="true" size={14} />
-                  {t("skills.metrics.total")}
-                </dt>
-                <dd>{catalogMetrics.total}</dd>
+            {uploadAction ? (
+              <div className="skill-management-header__actions">
+                {uploadAction}
               </div>
-              <div className="skill-management-metric skill-management-metric--enabled">
-                <dt>
-                  <CheckCircle2 aria-hidden="true" size={14} />
-                  {t("skills.metrics.enabled")}
-                </dt>
-                <dd>{catalogMetrics.enabled}</dd>
-              </div>
-              <div className="skill-management-metric skill-management-metric--visible">
-                <dt>
-                  <Eye aria-hidden="true" size={14} />
-                  {t("skills.metrics.visible")}
-                </dt>
-                <dd>{catalogMetrics.visible}</dd>
-              </div>
-              <div className="skill-management-metric skill-management-metric--internal">
-                <dt>
-                  <Boxes aria-hidden="true" size={14} />
-                  {t("skills.metrics.internal")}
-                </dt>
-                <dd>{catalogMetrics.internal}</dd>
-              </div>
-            </dl>
+            ) : null}
           </section>
           <div
             data-skills-catalog-toolbar
@@ -395,9 +294,10 @@ export function SkillsList({
               className={`skill-catalog-toolbar__row skill-catalog-command__surface ${workbenchSurface.catalog.toolbarShell}`}
             >
               <div className="skill-catalog-command__primary">
-                <div
-                  className={`skill-catalog-toolbar__search ${workbenchSurface.catalog.toolbarSearch}`}
-                >
+                <div className="skill-catalog-command__controls">
+                  <div
+                    className={`skill-catalog-toolbar__search ${workbenchSurface.catalog.toolbarSearch}`}
+                  >
                   <div className="relative min-w-0 flex-1">
                     <Search
                       size={18}
@@ -413,33 +313,25 @@ export function SkillsList({
                     />
                   </div>
                   {filterMenu}
-                </div>
-                {headerActions && (
-                  <div
-                    className={`skill-catalog-toolbar__actions ${workbenchSurface.catalog.toolbarActions}`}
-                  >
-                    {headerActions}
                   </div>
-                )}
-              </div>
-              <div className="skill-catalog-command__secondary">
-                <div
-                  aria-label={t("skills.views.label")}
-                  className="skill-catalog-view-switcher"
-                  role="group"
-                >
-                  {catalogViews.map((view) => (
-                    <button
-                      aria-pressed={catalogView === view.id}
-                      className="skill-catalog-view-switcher__item"
-                      key={view.id}
-                      onClick={() => setCatalogView(view.id)}
-                      type="button"
-                    >
-                      <span>{view.label}</span>
-                      <span aria-hidden="true">{view.count}</span>
-                    </button>
-                  ))}
+                  <div
+                    aria-label={t("skills.views.label")}
+                    className="skill-catalog-view-switcher"
+                    role="group"
+                  >
+                    {catalogViews.map((view) => (
+                      <button
+                        aria-pressed={catalogView === view.id}
+                        className="skill-catalog-view-switcher__item"
+                        key={view.id}
+                        onClick={() => setCatalogView(view.id)}
+                        type="button"
+                      >
+                        <span>{view.label}</span>
+                        <span aria-hidden="true">{view.count}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 {hasActiveFilters ? (
                   <button
@@ -469,7 +361,7 @@ export function SkillsList({
           onSearchChange={setSearchQuery}
           searchPlaceholder={t("skills.searchPlaceholder")}
           searchAccessory={filterMenu}
-          actions={headerActions}
+          actions={uploadAction}
         />
       )}
 
@@ -530,13 +422,16 @@ export function SkillsList({
               canDelete={canDelete}
               canEdit={canEditSkills}
               canExport={canExport && !governedUnavailable}
+              canPublish={adminRelease && canImportSkills}
               canToggle={canToggleSkills}
               onDelete={onDelete}
               onEdit={onEdit}
               onExportZip={onExportZip}
               onSelectDetail={onSelectDetail}
               onSelectSkill={onSelectSkill}
+              onSelectAll={onSelectAll}
               onToggle={onToggle}
+              onUploadVersion={onZipClick}
               selectedNames={selectedNames}
               selectedSkillId={selectedSkillId}
               entries={paginatedCatalogEntries}
