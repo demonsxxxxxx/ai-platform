@@ -55,6 +55,7 @@ from app.runtime.sandbox.container_provider import (
 )
 from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    normalize_sdk_runtime_diagnostics,
 )
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.skills.pinning import build_skill_manifest_pins
@@ -3181,9 +3182,17 @@ def test_sandbox_runtime_preserves_private_runtime_diagnostics(tmp_path):
         ),
     )
 
+    expected_diagnostics = normalize_sdk_runtime_diagnostics(runtime_diagnostics)
     assert result.status == "failed"
-    assert result.result["runtime_diagnostics"] == runtime_diagnostics
-    assert result.executor_payload["runtime_diagnostics"] == runtime_diagnostics
+    assert result.result["runtime_diagnostics"] == expected_diagnostics
+    assert result.executor_payload["runtime_diagnostics"] == expected_diagnostics
+    assert expected_diagnostics["failure_observations"] == [
+        {
+            "error_code": "claude_agent_sdk_tool_admission_failed",
+            "failure_source": "sdk_result_error",
+            "failure_stage": "model_wait",
+        }
+    ]
 
 
 @pytest.mark.asyncio

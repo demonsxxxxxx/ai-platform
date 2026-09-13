@@ -67,7 +67,11 @@ def test_runtime_diagnostics_fit_keeps_latest_evidence_within_result_budget():
     )
     assert fitted["tool_calls"][-1]["invocation_id"] == "call-7"
     assert fitted["tool_policy_denials"][-1]["invocation_id"] == "denial-7"
-    assert fitted["truncated"]["tool_lifecycles"]["original"] == 128
+    assert "truncated" not in fitted
+    assert any(
+        loss["reason"] == "truncated"
+        for loss in fitted["normalization_losses"]
+    )
 
 
 def test_runtime_diagnostics_fit_handles_json_escaping_and_invalid_unicode():
@@ -113,6 +117,128 @@ def test_runtime_diagnostics_fit_handles_json_escaping_and_invalid_unicode():
     )
     assert len(encoded) <= SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES
     assert fitted["tool_calls"][0]["tool_input"] == {"command": "?"}
+
+
+def test_runtime_diagnostics_explains_rejected_schema_without_echoing_it():
+    rejected = normalize_sdk_runtime_diagnostics(
+        {
+            "schema_version": "private-future-schema",
+            "error_code": "private_error",
+            "sdk": {"exception_message": "token=private-token"},
+        }
+    )
+
+    assert rejected["error_code"] == "runtime_diagnostics_rejected"
+    assert rejected["normalization_losses"] == [
+        {"field": "schema_version", "reason": "unsupported_schema"}
+    ]
+    assert "private-future-schema" not in str(rejected)
+    assert "private-token" not in str(rejected)
+
+    invalid_field = normalize_sdk_runtime_diagnostics(
+        {
+            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+            "error_code": "executor_failed",
+            "failure_source": {"token": "private-token"},
+        }
+    )
+    assert invalid_field["failure_source"] == ""
+    assert "private-token" not in str(invalid_field)
+    assert {
+        "field": "failure_source",
+        "reason": "invalid_field",
+    } in invalid_field["normalization_losses"]
+
+
+def test_runtime_diagnostics_preserves_traceback_tail_and_loss_metadata_idempotently():
+    terminal_cause = "SYNTHETIC_TERMINAL_CAUSE"
+    fitted = normalize_sdk_runtime_diagnostics(
+        {
+            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+            "error_code": "claude_agent_sdk_runtime_error",
+            "failure_source": "sdk_exception",
+            "failure_stage": "model_wait",
+            "sdk": {
+                "exception_type": "TimeoutError",
+                "exception_traceback": "synthetic frame\n" * 1_200
+                + terminal_cause,
+            },
+        }
+    )
+
+    assert fitted["sdk"]["exception_traceback"].endswith(terminal_cause)
+    assert "... [truncated] ..." in fitted["sdk"]["exception_traceback"]
+    assert any(
+        loss["field"] == "sdk.exception_traceback"
+        and loss["reason"] == "truncated"
+        for loss in fitted["normalization_losses"]
+    )
+    assert normalize_sdk_runtime_diagnostics(fitted) == fitted
+
+
+def test_runtime_diagnostics_upgrades_retired_runner_slots_to_failure_observations():
+    fitted = normalize_sdk_runtime_diagnostics(
+        {
+            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+            "error_code": "executor_failed",
+            "failure_source": "sandbox_terminal_normalization",
+            "failure_stage": "sandbox_submission",
+            "runner_error_code": "claude_agent_sdk_timeout",
+            "runner_failure_source": "sdk_exception",
+            "sdk": {"exception_type": "TimeoutError"},
+        }
+    )
+
+    assert fitted["error_code"] == "claude_agent_sdk_timeout"
+    assert fitted["failure_source"] == "sdk_exception"
+    assert fitted["failure_observations"] == [
+        {
+            "error_code": "claude_agent_sdk_timeout",
+            "failure_source": "sdk_exception",
+            "failure_stage": "",
+        },
+        {
+            "error_code": "executor_failed",
+            "failure_source": "sandbox_terminal_normalization",
+            "failure_stage": "sandbox_submission",
+        },
+    ]
+    assert "runner_error_code" not in fitted
+    assert "runner_failure_source" not in fitted
+
+
+def test_runtime_diagnostics_truncation_keeps_root_earliest_and_latest_failures():
+    fitted = normalize_sdk_runtime_diagnostics(
+        {
+            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+            "error_code": "wrapper_failure",
+            "failure_source": "executor_wrapper",
+            "failure_stage": "terminalization",
+            "failure_observations": [
+                {
+                    "error_code": f"cause_{index}",
+                    "failure_source": "sdk_exception",
+                    "failure_stage": "model_wait",
+                }
+                for index in range(10)
+            ],
+        }
+    )
+
+    assert [item["error_code"] for item in fitted["failure_observations"]] == [
+        "wrapper_failure",
+        "cause_0",
+        "cause_4",
+        "cause_5",
+        "cause_6",
+        "cause_7",
+        "cause_8",
+        "cause_9",
+    ]
+    assert any(
+        item["field"] == "failure_observations" and item["reason"] == "truncated"
+        for item in fitted["normalization_losses"]
+    )
 
 
 def _settings(*, timeout_seconds: float = 5.0):

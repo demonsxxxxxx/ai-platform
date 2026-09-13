@@ -60,7 +60,6 @@ from app.runtime.sandbox.context_retrieval_client import PlatformContextRetrieva
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     normalize_sdk_runtime_diagnostics,
-    runtime_diagnostic_text,
 )
 from app.runtime.sandbox.contracts import (
     EXECUTOR_AUTH_HEADER,
@@ -563,37 +562,64 @@ def _merge_runtime_diagnostics(
     exception: BaseException | None = None,
     tool_lifecycles: list[dict[str, object]] | None = None,
 ) -> dict[str, Any]:
-    merged = dict(existing) if isinstance(existing, dict) else {}
-    previous_error_code = merged.get("error_code")
-    if previous_error_code and previous_error_code != error_code:
-        merged.setdefault("runner_error_code", previous_error_code)
-    previous_failure_source = merged.get("failure_source")
-    if previous_failure_source and previous_failure_source != failure_source:
-        merged.setdefault("runner_failure_source", previous_failure_source)
-    merged.update(
+    raw_existing = dict(existing) if isinstance(existing, dict) else {}
+    if raw_existing and "schema_version" not in raw_existing:
+        raw_existing["schema_version"] = SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION
+    normalized_existing = normalize_sdk_runtime_diagnostics(raw_existing) if raw_existing else {}
+    has_existing_failure = bool(
+        normalized_existing
+        and normalized_existing.get("error_code") != "runtime_diagnostics_rejected"
+    )
+    exception_diagnostic = (
         {
+            "type": type(exception).__name__,
+            "message": str(exception),
+            "traceback": "".join(
+                traceback.format_exception(
+                    type(exception), exception, exception.__traceback__
+                )
+            ),
+        }
+        if exception is not None
+        else None
+    )
+    current_observation: dict[str, object] = {
+        "error_code": error_code,
+        "failure_source": failure_source,
+        "failure_stage": failure_stage,
+    }
+    if exception_diagnostic is not None:
+        current_observation["exception"] = exception_diagnostic
+
+    if has_existing_failure:
+        merged = dict(normalized_existing)
+        observations = list(merged.get("failure_observations") or [])
+        if not observations or observations[-1] != current_observation:
+            observations.append(current_observation)
+        merged["failure_observations"] = observations
+    else:
+        existing_sdk = (
+            dict(raw_existing.get("sdk"))
+            if isinstance(raw_existing.get("sdk"), dict)
+            else {}
+        )
+        if not existing_sdk and exception_diagnostic is not None:
+            existing_sdk = {
+                "exception_type": exception_diagnostic["type"],
+                "exception_message": exception_diagnostic["message"],
+                "exception_traceback": exception_diagnostic["traceback"],
+            }
+        merged = {
             "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
             "error_code": error_code,
             "failure_source": failure_source,
             "failure_stage": failure_stage,
+            "sdk": existing_sdk,
+            "failure_observations": [current_observation],
+            "normalization_losses": list(
+                normalized_existing.get("normalization_losses") or []
+            ),
         }
-    )
-    sdk = dict(merged.get("sdk")) if isinstance(merged.get("sdk"), dict) else {}
-    if exception is not None:
-        sdk.update(
-            {
-                "exception_type": type(exception).__name__,
-                "exception_message": runtime_diagnostic_text(exception),
-                "exception_traceback": runtime_diagnostic_text(
-                    "".join(
-                        traceback.format_exception(
-                            type(exception), exception, exception.__traceback__
-                        )
-                    )
-                ),
-            }
-        )
-    merged["sdk"] = sdk
     merged.setdefault("tool_calls", [])
     merged.setdefault("tool_policy_denials", [])
     existing_lifecycles = (

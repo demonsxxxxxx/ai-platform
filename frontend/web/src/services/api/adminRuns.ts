@@ -31,7 +31,7 @@ export interface AdminQueueInsight {
 export interface AdminRunSummary {
   run_id: string;
   session_id: string | null;
-  user_id: string;
+  user_id: string | null;
   workspace_id?: string | null;
   trace_id?: string | null;
   status: string;
@@ -48,9 +48,106 @@ export interface AdminRunSummary {
   model_output?: string;
   queue_position?: number | null;
   queue_insight?: AdminQueueInsight | null;
-  result?: {
-    runtime_diagnostics?: Record<string, unknown> | null;
-  } | null;
+}
+
+export type AdminRunDiagnosticCoverage =
+  | "full"
+  | "partial"
+  | "not_collected"
+  | "legacy_record"
+  | "unsupported_schema"
+  | "transport_unavailable";
+
+export interface AdminRunDiagnosticObservation {
+  observation_id?: string | null;
+  attempt_id?: string | null;
+  lease_id?: string | null;
+  request_id?: string | null;
+  callback_id?: string | null;
+  kind: "failure" | "handling";
+  source?: string | null;
+  stage?: string | null;
+  error_code?: string | null;
+  exception_type?: string | null;
+  message?: string | null;
+  stack?: string | null;
+  received_at?: string | null;
+}
+
+export interface AdminRunDiagnosticLoss {
+  field: string;
+  reason: string;
+  original_bytes?: number | null;
+  retained_bytes?: number | null;
+  original?: number | null;
+  retained?: number | null;
+  count?: number | null;
+}
+
+export interface AdminRunDiagnosticAttempt {
+  attempt_id: string;
+  ordinal: number;
+  status: string;
+  owner_kind: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  terminal_reason?: string | null;
+  error_code?: string | null;
+}
+
+export interface AdminRunDiagnosticRun {
+  run_id: string;
+  session_id: string | null;
+  user_id: string | null;
+  workspace_id: string;
+  status: string;
+  trace_id?: string | null;
+  created_at?: string | null;
+  queued_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  error_code?: string | null;
+}
+
+export interface AdminRunDiagnosticToolEvidence {
+  tool_name: string;
+  invocation_id?: string | null;
+  state?: string | null;
+  last_stage?: string | null;
+  capability_kind?: string | null;
+  reason?: string | null;
+}
+
+export interface AdminRunDiagnosticsResponse {
+  schema_version: "ai-platform.run-diagnostics.v1";
+  diagnostic_id?: string | null;
+  revision: number;
+  coverage: AdminRunDiagnosticCoverage;
+  run: AdminRunDiagnosticRun;
+  root?: AdminRunDiagnosticObservation | null;
+  handling: AdminRunDiagnosticObservation[];
+  losses: AdminRunDiagnosticLoss[];
+  attempts: AdminRunDiagnosticAttempt[];
+  details: {
+    schema_version?: string | null;
+    sdk: {
+      result_subtype?: string | null;
+      stop_reason?: string | null;
+      terminal_reason?: string | null;
+      exception_type?: string | null;
+      exception_message?: string | null;
+      exception_traceback?: string | null;
+      errors?: unknown;
+    };
+    tool_lifecycles: AdminRunDiagnosticToolEvidence[];
+    tool_calls: AdminRunDiagnosticToolEvidence[];
+    tool_policy_denials: AdminRunDiagnosticToolEvidence[];
+  };
+  versions: Record<string, string | null>;
+  counts: {
+    retained_observations: number;
+    omitted_observations: number;
+  };
 }
 
 export interface AdminRunEvent {
@@ -122,7 +219,22 @@ export async function fetchAdminRunDetail(
   );
 }
 
+export async function fetchAdminRunDiagnostics(
+  runId: string,
+  client: AdminRunsApiClient = defaultClient,
+): Promise<AdminRunDiagnosticsResponse> {
+  const response = await client.request<AdminRunDiagnosticsResponse | null>(
+    `/api/ai/admin/runs/${encodeURIComponent(runId)}/diagnostics`,
+    { method: "GET" },
+  );
+  if (!response || typeof response !== "object") {
+    throw new Error("admin_run_diagnostics_response_invalid");
+  }
+  return response;
+}
+
 export const adminRunsApi = {
   list: fetchAdminRuns,
   detail: fetchAdminRunDetail,
+  diagnostics: fetchAdminRunDiagnostics,
 };

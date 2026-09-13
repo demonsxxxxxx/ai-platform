@@ -461,14 +461,21 @@ async def test_successor_activation_ledger_advances_to_current_schema():
 def test_stream_only_schema_change_advances_schema_version():
     # The cutover SQL changed after 2026.09.11.1 and must use a new ledger row.
     assert schema_migrations.STREAM_ONLY_SCHEMA_VERSION == "2026.09.12.1"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.12.1"
+    assert (
+        schema_migrations.TARGET_SCHEMA_VERSION
+        == schema_migrations.RUN_DIAGNOSTICS_SCHEMA_VERSION
+    )
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.12.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.13.1"
+    assert (
+        schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION
+        == schema_migrations.STREAM_ONLY_SCHEMA_VERSION
+    )
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.STREAM_ONLY_SCHEMA_VERSION
+        == schema_migrations.RUN_DIAGNOSTICS_SCHEMA_VERSION
     )
     assert schema_migrations.BAOYU_TRANSLATE_RETIREMENT_SCHEMA_VERSION == "2026.09.07.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
@@ -476,6 +483,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "schema_index_migrations",
         "users",
         "runs",
+        "run_diagnostics",
         "model_gateway_revisions",
         "model_catalog_entries",
         "run_attempts",
@@ -555,7 +563,11 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         ("created_by", "text"),
         ("created_at", "timestamptz"),
     ):
-        assert ("model_gateway_revisions", *column, True) in schema_migrations.CRITICAL_COLUMNS
+        assert (
+            "model_gateway_revisions",
+            *column,
+            True,
+        ) in schema_migrations.CRITICAL_COLUMNS
     for column in (
         ("model_id", "text"),
         ("upstream_model_id", "text"),
@@ -570,7 +582,11 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         ("first_seen_at", "timestamptz"),
         ("last_seen_at", "timestamptz"),
     ):
-        assert ("model_catalog_entries", *column, True) in schema_migrations.CRITICAL_COLUMNS
+        assert (
+            "model_catalog_entries",
+            *column,
+            True,
+        ) in schema_migrations.CRITICAL_COLUMNS
     for constraint in (
         ("runs", "fk_runs_model_gateway_revision"),
         ("model_gateway_revisions", "chk_model_gateway_revision_positive"),
@@ -693,8 +709,13 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         ),
     )
     trigger_contract = schema_migrations._critical_trigger_contract()
-    assert [item[:4] for item in trigger_contract] == list(schema_migrations.CRITICAL_TRIGGERS)
-    assert all(item[4].startswith("\ndeclare") or item[4].startswith("\nbegin") for item in trigger_contract)
+    assert [item[:4] for item in trigger_contract] == list(
+        schema_migrations.CRITICAL_TRIGGERS
+    )
+    assert all(
+        item[4].startswith("\ndeclare") or item[4].startswith("\nbegin")
+        for item in trigger_contract
+    )
     assert all(item[4].endswith("end ") for item in trigger_contract)
     assert all("\n" in item[4] for item in trigger_contract)
     assert schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS == (
@@ -703,6 +724,47 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "chk_users_metadata_json_object",
             "c",
             "CHECK ((jsonb_typeof(metadata_json) = 'object'::text))",
+        ),
+        (
+            "run_diagnostics",
+            "run_diagnostics_pkey",
+            "p",
+            "PRIMARY KEY (diagnostic_id)",
+        ),
+        (
+            "run_diagnostics",
+            "fk_run_diagnostics_run",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id) REFERENCES runs(tenant_id, id)",
+        ),
+        (
+            "run_diagnostics",
+            "chk_run_diagnostics_identity",
+            "c",
+            "CHECK (diagnostic_id <> ''::text AND tenant_id <> ''::text "
+            "AND run_id <> ''::text)",
+        ),
+        (
+            "run_diagnostics",
+            "chk_run_diagnostics_revision",
+            "c",
+            "CHECK (revision > 0)",
+        ),
+        (
+            "run_diagnostics",
+            "chk_run_diagnostics_payload",
+            "c",
+            "CHECK (jsonb_typeof(payload_json) = 'object'::text "
+            "AND payload_json ? 'schema_version'::text "
+            "AND (payload_json ->> 'schema_version'::text) IS NOT NULL "
+            "AND (payload_json ->> 'schema_version'::text) = schema_version "
+            "AND octet_length(payload_json::text) <= 147456)",
+        ),
+        (
+            "run_diagnostics",
+            "run_diagnostics_tenant_id_run_id_key",
+            "u",
+            "UNIQUE (tenant_id, run_id)",
         ),
         (
             "mcp_servers",
@@ -939,16 +1001,16 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert static_indexes["idx_run_attempts_lease_reconcile"].predicate_expression == (
         "status = any array['claimed', 'running', 'cancel_requested', 'expired']"
     )
-    migrations = {item.name: item for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS}
+    migrations = {
+        item.name: item for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
+    }
     assert migrations["idx_object_deletion_outbox_claim"].predicate_expression == (
         "state = 'pending' or state = 'processing' or state = 'failed' "
         "or state = 'file_pending' or state = 'file_processing' or state = 'file_failed'"
     )
     assert migrations[
         "idx_object_deletion_outbox_artifact_storage_live"
-    ].predicate_expression == (
-        "target_type = 'artifact' and state <> 'deleted'"
-    )
+    ].predicate_expression == ("target_type = 'artifact' and state <> 'deleted'")
     assert migrations["uq_object_deletion_outbox_file"].unique is True
     assert migrations["uq_object_deletion_outbox_file"].predicate_expression == (
         "target_type = 'file' and file_id is not null"
@@ -982,6 +1044,22 @@ def test_every_critical_run_attempt_constraint_has_an_exact_definition():
     }
 
     assert defined == critical
+
+
+def test_every_critical_run_diagnostics_constraint_has_an_exact_definition():
+    critical = {
+        constraint_name
+        for relation_name, constraint_name in schema_migrations.CRITICAL_CONSTRAINTS
+        if relation_name == "run_diagnostics"
+    }
+    defined = {
+        constraint_name
+        for relation_name, constraint_name, _, _ in schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS
+        if relation_name == "run_diagnostics"
+    }
+
+    assert defined == critical
+    assert "payload_json ? 'schema_version'" in schema_migrations.schema_sql()
 
 
 def test_schema_upgrade_repairs_confirmation_history_before_constraint_validation():

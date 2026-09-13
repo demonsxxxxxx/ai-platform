@@ -33,7 +33,8 @@ EXPERT_SKILL_NAME_SCHEMA_VERSION = "2026.09.03.2"
 BAOYU_TRANSLATE_RETIREMENT_SCHEMA_VERSION = "2026.09.07.1"
 EXPERT_MARKET_MULTI_TAG_SCHEMA_VERSION = "2026.09.07.2"
 STREAM_ONLY_SCHEMA_VERSION = "2026.09.12.1"
-TARGET_SCHEMA_VERSION = STREAM_ONLY_SCHEMA_VERSION
+RUN_DIAGNOSTICS_SCHEMA_VERSION = "2026.09.13.1"
+TARGET_SCHEMA_VERSION = RUN_DIAGNOSTICS_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = STREAM_ONLY_SCHEMA_VERSION
@@ -45,6 +46,7 @@ CRITICAL_RELATIONS = (
     "schema_index_migrations",
     "users",
     "runs",
+    "run_diagnostics",
     "model_gateway_revisions",
     "model_catalog_entries",
     "run_attempts",
@@ -77,6 +79,14 @@ CRITICAL_COLUMNS = (
     ("runs", "model_id", "text", False),
     ("runs", "model_value", "text", False),
     ("runs", "model_gateway_revision", "int8", False),
+    ("run_diagnostics", "diagnostic_id", "text", True),
+    ("run_diagnostics", "tenant_id", "text", True),
+    ("run_diagnostics", "run_id", "text", True),
+    ("run_diagnostics", "schema_version", "text", True),
+    ("run_diagnostics", "revision", "int8", True),
+    ("run_diagnostics", "payload_json", "jsonb", True),
+    ("run_diagnostics", "created_at", "timestamptz", True),
+    ("run_diagnostics", "updated_at", "timestamptz", True),
     ("model_gateway_revisions", "revision", "int8", True),
     ("model_gateway_revisions", "base_url", "text", True),
     ("model_gateway_revisions", "api_key_ciphertext", "bytea", True),
@@ -188,6 +198,12 @@ CRITICAL_CONSTRAINTS = (
     ("runs", "fk_runs_workspace_scope"),
     ("runs", "fk_runs_session_scope"),
     ("runs", "chk_runs_execution_skill_identity"),
+    ("run_diagnostics", "run_diagnostics_pkey"),
+    ("run_diagnostics", "fk_run_diagnostics_run"),
+    ("run_diagnostics", "chk_run_diagnostics_identity"),
+    ("run_diagnostics", "chk_run_diagnostics_revision"),
+    ("run_diagnostics", "chk_run_diagnostics_payload"),
+    ("run_diagnostics", "run_diagnostics_tenant_id_run_id_key"),
     ("run_attempts", "fk_run_attempts_run"),
     ("run_attempts", "chk_run_attempts_ordinal"),
     ("run_attempts", "chk_run_attempts_owner_generation"),
@@ -298,6 +314,47 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "chk_users_metadata_json_object",
         "c",
         "CHECK ((jsonb_typeof(metadata_json) = 'object'::text))",
+    ),
+    (
+        "run_diagnostics",
+        "run_diagnostics_pkey",
+        "p",
+        "PRIMARY KEY (diagnostic_id)",
+    ),
+    (
+        "run_diagnostics",
+        "fk_run_diagnostics_run",
+        "f",
+        "FOREIGN KEY (tenant_id, run_id) REFERENCES runs(tenant_id, id)",
+    ),
+    (
+        "run_diagnostics",
+        "chk_run_diagnostics_identity",
+        "c",
+        "CHECK (diagnostic_id <> ''::text AND tenant_id <> ''::text "
+        "AND run_id <> ''::text)",
+    ),
+    (
+        "run_diagnostics",
+        "chk_run_diagnostics_revision",
+        "c",
+        "CHECK (revision > 0)",
+    ),
+    (
+        "run_diagnostics",
+        "chk_run_diagnostics_payload",
+        "c",
+        "CHECK (jsonb_typeof(payload_json) = 'object'::text "
+        "AND payload_json ? 'schema_version'::text "
+        "AND (payload_json ->> 'schema_version'::text) IS NOT NULL "
+        "AND (payload_json ->> 'schema_version'::text) = schema_version "
+        "AND octet_length(payload_json::text) <= 147456)",
+    ),
+    (
+        "run_diagnostics",
+        "run_diagnostics_tenant_id_run_id_key",
+        "u",
+        "UNIQUE (tenant_id, run_id)",
     ),
     (
         "mcp_servers",
