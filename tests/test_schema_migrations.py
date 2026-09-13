@@ -29,6 +29,12 @@ REMOTE_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_CHECKSUM = (
 )
 
 
+# Exact 2026.09.11.1 ledger checksum before the Stream-only cutover.
+REMOTE_STREAM_ONLY_PREDECESSOR_CHECKSUM = (
+    "41981e6b9a8286428ff511337cb03d8f869c1bf349c28c7500e64118236da087"
+)
+
+
 class FakeCursor:
     def __init__(self, row):
         self.row = row
@@ -366,6 +372,10 @@ async def test_schema_status_uses_exact_model_index_relation_keys_and_predicates
             "135136be8faf2adef0bf917354561919d10795ff4b155bfa449aa0aefe8acd13",
         ),
         (
+            "2026.09.11.1",
+            REMOTE_STREAM_ONLY_PREDECESSOR_CHECKSUM,
+        ),
+        (
             schema_migrations.V4_CONCURRENT_DUE_INDEX_SCHEMA_VERSION,
             REMOTE_CONCURRENT_DUE_INDEX_CHECKSUM,
         ),
@@ -448,8 +458,14 @@ async def test_successor_activation_ledger_advances_to_current_schema():
     )
 
 
+def test_stream_only_schema_change_advances_schema_version():
+    # The cutover SQL changed after 2026.09.11.1 and must use a new ledger row.
+    assert schema_migrations.STREAM_ONLY_SCHEMA_VERSION == "2026.09.12.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.12.1"
+
+
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.11.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.12.1"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
         == schema_migrations.STREAM_ONLY_SCHEMA_VERSION

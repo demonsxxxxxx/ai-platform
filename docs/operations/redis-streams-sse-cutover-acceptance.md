@@ -94,7 +94,7 @@ A candidate is blocked if any of these remain:
 
 Release preparation binds the exact source SHA, required workflow results,
 immutable application image digests and generated v4 artifacts. Local checks
-cannot establish those release facts. After schema `2026.09.11.1`, an older
+cannot establish those release facts. After schema `2026.09.12.1`, an older
 backend is incompatible. Recovery uses a compatible package or the separately
 authorized database backup procedure; the deployment entry does not perform
 speculative binary/database rollback.
