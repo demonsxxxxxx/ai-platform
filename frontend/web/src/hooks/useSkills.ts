@@ -807,71 +807,6 @@ export function useSkills(options?: {
     [enabled],
   );
 
-  // Preview skills from GitHub repository
-  const previewGitHubSkills = useCallback(
-    async (
-      repoUrl: string,
-      branch: string = "main",
-    ): Promise<{
-      repo_url: string;
-      branch: string;
-      skills: Array<{ name: string; path: string; description: string }>;
-    } | null> => {
-      if (!enabled) return null;
-      setIsLoading(true);
-      setError(null);
-      try {
-        return await skillApi.previewGitHub(repoUrl, branch);
-      } catch (err) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Failed to preview GitHub skills",
-        );
-        return null;
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [enabled],
-  );
-
-  // Install skills from GitHub repository
-  const installGitHubSkills = useCallback(
-    async (
-      repoUrl: string,
-      skillNames: string[],
-      branch: string = "main",
-    ): Promise<{
-      message: string;
-      installed: string[];
-      errors: string[];
-    } | null> => {
-      if (!enabled) return null;
-      setIsLoading(true);
-      setError(null);
-      try {
-        const result = await skillApi.installGitHub(
-          repoUrl,
-          skillNames,
-          branch,
-        );
-        await fetchSkills();
-        return result;
-      } catch (err) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Failed to install GitHub skills",
-        );
-        return null;
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [enabled, fetchSkills],
-  );
-
   // Stats
   const enabledCount = skills.filter((s) => s.enabled).length;
   const totalCount = skills.length;
@@ -918,8 +853,6 @@ export function useSkills(options?: {
     adminListSkills,
     previewZipSkills,
     adminPreviewZipSkills,
-    previewGitHubSkills,
-    installGitHubSkills,
     pendingSkillNames,
     isMutating,
     isUpdating,

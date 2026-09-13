@@ -37,14 +37,14 @@ test("skills and marketplace remain catalog shells when backend enablement is un
 
   assert.doesNotMatch(skillsHub, /if\s*\(!enableSkills\)\s*{\s*return/);
   assert.doesNotMatch(skillsPanel, /if\s*\(!enableSkills\)\s*{\s*return/);
-  assert.match(skillsHub, /catalogStateByTab/);
-  assert.match(skillsHub, /catalogPermissionDeniedByTab/);
-  assert.match(skillsHub, /catalogProjectionErrorByTab/);
-  assert.match(skillsHub, /effectivePermissionsByTab/);
-  assert.match(skillsHub, /effectivePermissions:\s*effectivePermissionsByTab\[requestedTab\]/);
+  assert.match(skillsHub, /const \[catalogState, setCatalogState\]/);
+  assert.match(skillsHub, /catalogReadPending/);
+  assert.match(skillsHub, /catalogPermissionDenied:\s*catalogState\.permissionDenied/);
+  assert.match(skillsHub, /projectionError:\s*catalogState\.projectionError/);
+  assert.match(skillsHub, /effectivePermissions:\s*catalogState\.effectivePermissions/);
   assert.match(skillsHub, /onCatalogStateChange=\{handleCatalogStateChange\}/);
   assert.match(skillsHub, /data-skill-catalog-shell/);
-  assert.match(skillsHub, /data-marketplace-catalog-shell/);
+  assert.doesNotMatch(skillsHub, /MarketplacePanel|data-marketplace-catalog-shell/);
   assert.match(skillsHub, /buildFrontendGovernanceSmokeAttributes\(governanceState\)/);
   assert.match(skillsPanel, /governedUnavailable/);
   assert.match(skillsPanel, /effectivePermissions:\s*actions\.effectivePermissions/);
@@ -257,8 +257,6 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
     "toggleAll",
     "uploadSkill",
     "previewZipSkills",
-    "previewGitHubSkills",
-    "installGitHubSkills",
   ]) {
     assert.match(
       skillsHook,
@@ -308,7 +306,7 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
   assert.match(skillsList, /canImportSkills/);
   assert.match(skillsList, /canEditSkills/);
   assert.match(skillsList, /canBatchSkills/);
-  assert.match(skillsList, /canManageSkills/);
+  assert.match(skillsList, /const uploadAction = canImportSkills/);
   assert.match(skillCard, /hasWriteActions/);
   assert.match(skillCard, /canEdit/);
   assert.doesNotMatch(
@@ -330,9 +328,8 @@ test("read-only skills catalog removes write controls instead of showing disable
   assert.match(skillsList, /canImportSkills/);
   assert.match(skillsList, /canEditSkills/);
   assert.match(skillsList, /canBatchSkills/);
-  assert.match(skillsList, /canManageSkills/);
-  assert.match(skillsList, /\{canBatchSkills && selectableNames\.length > 0 &&/);
-  assert.match(skillsList, /\{canImportSkills && \(/);
+  assert.match(skillsList, /const uploadAction = canImportSkills/);
+  assert.match(skillsList, /\{uploadAction \? \(/);
   assert.doesNotMatch(skillsList, /canCreateSkills|onCreate/);
   assert.doesNotMatch(
     skillsList,
@@ -398,22 +395,21 @@ test("skills phase one backed operations match current public contracts", () => 
   assert.match(skillApi, /async adminReviewSkillVersion/);
   assert.match(skillApi, /async adminPromoteSkillVersion/);
   assert.match(skillApi, /authFetch<unknown>/);
-  assert.match(skillApi, /async previewGitHub/);
-  assert.match(skillApi, /async installGitHub/);
+  assert.doesNotMatch(skillApi, /async previewGitHub|async installGitHub/);
   assert.match(skillsPanel, /skillFileWriteBacked = true/);
   assert.match(skillsPanel, /skillImportBacked = true/);
   assert.match(skillsPanel, /skillBatchWriteBacked = true/);
-  assert.match(skillsList, /\{canBatchSkills && selectableNames\.length > 0 &&/);
+  assert.match(skillsList, /onSelectAll=\{onSelectAll\}/);
   assert.match(
     skillsActions,
-    /initialZipSkillSelection\(result\.skills, canAdminUploadSkills\)/,
+    /initialZipSkillSelection\([\s\S]*?zipTargetSkillName/,
   );
   assert.match(skillsActions, /canAdminUploadSkills = isAiAdminUser\(user\)/);
   assert.doesNotMatch(skillsActions, /handleCreate|createSkill/);
   assert.doesNotMatch(skillApi, /async create\(data: SkillCreate\)/);
   assert.doesNotMatch(skillsActions, /Permission\.SKILL_ADMIN/);
   assert.match(zipUploadModal, /const backedCount = zipSkills\.filter\(\(s\) => s\.already_exists\)\.length/);
-  assert.match(zipUploadModal, /canSelectZipSkill\(skill, adminRelease\)/);
+  assert.match(zipUploadModal, /canSelectZipSkill\([\s\S]*?targetSkillName/);
   assert.match(zipUploadModal, /!skill\.already_exists && !adminRelease/);
   assert.doesNotMatch(skillsPanel, /skillBatchWriteBacked = false/);
 });
