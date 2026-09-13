@@ -41,7 +41,7 @@ A missing or trimmed Stream produces a gap and authorized hydration. It is never
 
 The release is a hard cut. Old producers stop before an explicit inventory/apply operation retires v2.1/v3/v4 transport authorities. Suppression is materialized into `visible_to_user = false` before publication metadata is removed. Run/Attempt records, callback receipts, final answers, and audit facts remain unchanged.
 
-Schema version `2026.09.11.1` refuses unretired state before dropping publication columns/indexes and terminal/rebuild relations. Earlier backend binaries are not compatible after this migration. The package deployment entry already stops admission after a migration/startup failure without guessing at image or database rollback. Recovery uses a compatible package or the separately authorized backup procedure.
+Schema version `2026.09.12.1` refuses unretired state before dropping publication columns/indexes and terminal/rebuild relations. Earlier backend binaries are not compatible after this migration. The package deployment entry already stops admission after a migration/startup failure without guessing at image or database rollback. Recovery uses a compatible package or the separately authorized backup procedure.
 
 The physical Redis key prefix and the separate `callback-receipt-v2.1` protocol do not enable old SSE wire versions. Historical message/ledger decoders remain only for stored business records and authorized hydration; they cannot become live producers or PostgreSQL browser polling. Old Redis keys expire under their existing TTL and are not rewritten as new authority.
 
