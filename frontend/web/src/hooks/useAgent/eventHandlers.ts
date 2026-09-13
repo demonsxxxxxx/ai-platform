@@ -1156,7 +1156,8 @@ export function handleStreamEvent(
   }
 
   if (owner) ctx.publicStreamPresentation?.flush(owner);
-  commitMessageEvent();
+  const messageApplied = commitMessageEvent();
+  if (!messageApplied && eventType === "message:chunk") return false;
   if (eventType === "agent:result") {
     const agentId = data.agent_id || "unknown";
     const stackIndex = subagentStack.findIndex(
