@@ -86,6 +86,12 @@ interface ChatMessageProps {
 }
 
 // Token usage statistics button component
+function formatDurationMs(durationMs: number): string {
+  return durationMs < 1000
+    ? `${durationMs}毫秒`
+    : `${(durationMs / 1000).toFixed(2)}秒`;
+}
+
 function TokenDetailsButton({
   tokenUsage,
   duration,
@@ -198,13 +204,13 @@ function TokenDetailsButton({
                 </div>
               </>
             )}
-            {duration && (
+            {duration !== undefined && (
               <div className="mt-1.5 flex justify-between gap-4 border-t border-[var(--theme-border)] pt-1.5">
                 <span className="text-[var(--theme-text-secondary)]">
                   {t("chat.message.duration")}
                 </span>
                 <span className="font-medium text-[var(--theme-text)]">
-                  {(duration / 1000).toFixed(2)}s
+                  {formatDurationMs(duration)}
                 </span>
               </div>
             )}
@@ -438,7 +444,7 @@ export const ChatMessage = memo(function ChatMessage({
               <Copy size={16} />
             </button>
             {/* Token usage statistics button */}
-            {(message.tokenUsage || message.duration) && (
+            {(message.tokenUsage || message.duration !== undefined) && (
               <TokenDetailsButton
                 tokenUsage={message.tokenUsage}
                 duration={message.duration}

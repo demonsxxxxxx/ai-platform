@@ -8,6 +8,7 @@ import {
   createMessagePartRenderKeys,
   MessagePartRenderer,
 } from "../MessagePartRenderer.tsx";
+import { ToolCallItem } from "../ToolCallItem.tsx";
 
 test("keeps streaming text object identity stable without using mutable content as a key", () => {
   const streamingText = {
@@ -23,6 +24,28 @@ test("keeps streaming text object identity stable without using mutable content 
   assert.doesNotMatch(secondKey, /first token|second token/);
 });
 
+test("renders public tool metadata without raw arguments or results", () => {
+  for (const [category, label] of [
+    ["skill", "使用 Skill"],
+    ["execute", "执行"],
+    ["mcp", "调用 MCP 工具"],
+  ] as const) {
+    const markup = renderToStaticMarkup(
+      createElement(ToolCallItem, {
+        name: "Run authorized operation",
+        args: { command: "cat private-token", timeout: 60 },
+        result: "private command output",
+        publicCategory: category,
+        publicOperationId: `operation-${category}`,
+        status: "completed",
+        durationMs: category === "skill" ? 0 : 1200,
+      }),
+    );
+    assert.match(markup, new RegExp(`${label}：Run authorized operation`));
+    assert.match(markup, category === "skill" ? /0毫秒/ : /1\.20秒/);
+    assert.doesNotMatch(markup, /private-token|private command output|command/);
+  }
+});
 test("renders public execution kind and status from the Chinese catalog instead of backend copy", async () => {
   const step: Extract<MessagePart, { type: "execution_step" }> = {
     type: "execution_step",

@@ -30,8 +30,8 @@ _MAX_CURRENT_PROMPT_BYTES = 16384
 _MAX_FILE_LIST_PROMPT_BYTES = 4096
 _MAX_CONTEXT_SUMMARY_PROMPT_BYTES = 2048
 _PUBLIC_LANGUAGE_INSTRUCTION = (
-    "Use the language of the user's current request for the final answer and all public "
-    "summarized-thinking text; use Simplified Chinese for Chinese requests."
+    "Use Simplified Chinese for the final answer and all public summarized-thinking text. "
+    "Keep code, commands, filenames, and other literal values unchanged when the task requires them."
 )
 
 

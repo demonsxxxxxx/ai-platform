@@ -415,6 +415,7 @@ test("retries startup-not-ready inside one SSE owner and persists the accepted c
       reducerMessageId: "assistant-old",
     },
   };
+  context.v4TerminalFenceRef = { current: null };
   context.onRunTerminal = (_runId, _status, _messageId, settle) => {
     settle?.(true);
     return true;
@@ -1357,6 +1358,7 @@ test("does not let a deferred stale 401 refresh mutate a replacement SSE stream"
 
 test("retries a current 401 once and aborts only its captured stream controller", async () => {
   const { context, connectionStates } = createTokenRefreshContext();
+  context.v4TerminalFenceRef = { current: null };
   context.onRunTerminal = (_runId, _status, _messageId, settle) => {
     settle?.(true);
     return true;
@@ -2327,7 +2329,6 @@ test("holds duplicate terminal transport and immediate stream.end behind hydrati
     acceptedStreamCursorRef: {
       current: { sessionId: null, runId: null, eventId: null, streamIncarnation: null },
     },
-    v4TerminalEventIdsRef: { current: new Set<string>() },
     v4TerminalReservationsRef: { current: new Set<string>() },
     v4TerminalFenceRef: { current: null },
     lastHistoryTimestampRef: { current: null },
@@ -2417,7 +2418,6 @@ test("failed terminal hydration releases close without accepting its cursor", as
         streamIncarnation: null,
       },
     },
-    v4TerminalEventIdsRef: { current: new Set<string>() },
     v4TerminalReservationsRef: { current: new Set<string>() },
     v4TerminalFenceRef: { current: null },
     lastHistoryTimestampRef: { current: null },

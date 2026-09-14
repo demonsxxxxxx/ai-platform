@@ -15,11 +15,21 @@ from dataclasses import InitVar, dataclass, field
 from typing import Any, Callable
 
 from app.sandbox.api import AssistantAnswerReceipt
-from app.streaming.events import PUBLIC_APPLICATION_EVENT_TYPES_V4
+from app.streaming.domain.protocol_v4 import (
+    PUBLIC_APPLICATION_EVENT_TYPES,
+    PUBLIC_PAYLOAD_ENUMS,
+    PUBLIC_PAYLOAD_FIELDS,
+    PUBLIC_PAYLOAD_INTEGER_BOUNDS,
+    PUBLIC_PAYLOAD_NULLABLE_REF_FIELDS,
+    PUBLIC_PAYLOAD_REF_ARRAY_FIELDS,
+    PUBLIC_PAYLOAD_REF_FIELDS,
+    PUBLIC_PAYLOAD_STRING_BOUNDS,
+    PUBLIC_REQUIRED_PAYLOAD_FIELDS,
+    PUBLIC_TOOL_CATEGORIES,
+)
 
-_APPLICATION_EVENT_TYPES = PUBLIC_APPLICATION_EVENT_TYPES_V4
+_APPLICATION_EVENT_TYPES = PUBLIC_APPLICATION_EVENT_TYPES
 _THINKING_SUMMARY_EVENT_TYPE = "claude_sdk_thinking_summary"
-_TOOL_CATEGORIES = frozenset({"skill", "mcp", "read", "write", "edit", "search", "execute"})
 _BUILTIN_TOOL_CATEGORIES = {
     "Read": "read",
     "Glob": "search",
@@ -49,9 +59,6 @@ def runtime_terminal_payload(
     }
 
 
-_FAILURE_CATEGORIES = frozenset(
-    {"invalid_input", "not_found", "permission_denied", "timeout", "unavailable", "execution_failed"}
-)
 _PRIVATE_KEYS = frozenset(
     {
         "id",
@@ -89,10 +96,6 @@ _MAX_DURATION = 86_400_000
 _MAX_TURNS = 10_000
 _MAX_SIZE_BYTES = 1_099_511_627_776
 _MAX_REFS = 32
-_ALLOWED_CATEGORIES = frozenset({"skill", "mcp", "read", "write", "edit", "search", "execute"})
-_ALLOWED_STOP_CATEGORIES = frozenset({"completed", "max_turns", "cancelled", "failed", "unknown"})
-_ALLOWED_FAILURE_CATEGORIES = frozenset({"invalid_input", "not_found", "permission_denied", "timeout", "unavailable", "execution_failed"})
-_ALLOWED_TASK_REASON_CODES = frozenset({"user_cancelled", "run_cancelled", "timeout"})
 
 
 
@@ -333,139 +336,68 @@ class ClaudeSdkThinkingSummaryCandidate:
 
 
 def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
+    if event_type not in _APPLICATION_EVENT_TYPES:
+        raise ValueError("unsupported Claude application event")
     if not isinstance(payload, dict) or len(payload) > 64:
         raise ValueError("event payload must be an object")
-    required: dict[str, set[str]] = {
-        "message.started": set(),
-        "message.delta": {"delta"},
-        "message.completed": {"delta_count", "text_length"},
-        "thinking.started": {"thinking_id"},
-        "thinking.delta": {"thinking_id", "delta"},
-        "thinking.completed": {"thinking_id"},
-        "model.completed": {"duration_ms", "turn_count", "stop_category"},
-        "tool.started": {"operation_id", "category", "display_name"},
-        "tool.completed": {"operation_id", "category", "display_name", "duration_ms"},
-        "tool.failed": {"operation_id", "category", "display_name", "duration_ms", "failure_category"},
-        "tool.denied": {"operation_id", "category", "display_name", "denial_code"},
-        "subagent.started": {"subagent_id", "display_name"},
-        "subagent.progress": {"subagent_id", "display_name", "duration_ms", "current_category"},
-        "subagent.completed": {"subagent_id", "display_name", "duration_ms"},
-        "subagent.failed": {"subagent_id", "display_name", "duration_ms", "failure_category"},
-        "subagent.cancelled": {"subagent_id", "display_name", "duration_ms", "reason_code"},
-        "artifact.created": {"artifact_id", "filename", "media_type", "size_bytes", "status"},
-        "artifact.ready": {"artifact_id", "filename", "media_type", "size_bytes", "status"},
-        "artifact.failed": {"artifact_id", "status", "failure_category"},
-        "policy.checking": {"decision_id", "category", "display_name"},
-        "policy.allowed": {"decision_id", "category", "display_name", "decision_code"},
-        "policy.denied": {"decision_id", "category", "display_name", "decision_code"},
-        "run.cancel_requested": {"source"},
-        "run.succeeded": {"terminal_event_id", "hydrate_required"},
-        "run.cancelled": {"terminal_event_id", "hydrate_required", "reason_code"},
-        "run.failed": {"terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail"},
-    }
-    optional = {
-        "tool.started": {"input_summary", "evidence_refs"},
-        "tool.completed": {"result_summary", "evidence_refs", "artifact_refs"},
-        "tool.failed": {"evidence_refs"},
-        "subagent.progress": {"progress_percent"},
-        "artifact.created": {"evidence_ref"},
-        "artifact.ready": {"evidence_ref"},
-        "artifact.failed": {"filename", "media_type"},
-    }
-    expected = required[event_type]
+    required = PUBLIC_REQUIRED_PAYLOAD_FIELDS[event_type]
+    allowed = PUBLIC_PAYLOAD_FIELDS[event_type]
     keys = set(payload)
-    if not expected <= keys or not keys <= expected | optional.get(event_type, set()):
+    if not required.issubset(keys) or not keys.issubset(allowed):
         raise ValueError("event payload fields do not match schema")
     if any(key.lower() in _PRIVATE_KEYS for key in keys):
         raise ValueError("private event payload field")
 
-    string_bounds = {
-        "delta": (1, _MAX_DELTA),
-        "display_name": (1, _MAX_DISPLAY),
-        "public_summary": (1, _MAX_SUMMARY),
-        "input_summary": (0, _MAX_SUMMARY),
-        "result_summary": (0, _MAX_RESULT_SUMMARY),
-        "filename": (1, _MAX_FILENAME),
-        "media_type": (1, _MAX_MEDIA_TYPE),
-        "code": (1, _MAX_CODE),
-        "default_message": (1, _MAX_DEFAULT_MESSAGE),
-        "detail": (0, _MAX_DETAIL),
-    }
-    integer_bounds = {
-        "duration_ms": (0, _MAX_DURATION),
-        "turn_count": (0, _MAX_TURNS),
-        "progress_percent": (0, 100),
-        "size_bytes": (0, _MAX_SIZE_BYTES),
-        "delta_count": (1, 2**63 - 1),
-        "text_length": (1, 2**63 - 1),
-    }
-    ref_fields = {"thinking_id", "operation_id", "subagent_id", "artifact_id", "decision_id", "terminal_event_id", "evidence_ref"}
-    array_fields = {"evidence_refs", "artifact_refs"}
     for key, value in payload.items():
-        if key in string_bounds:
-            if key == "detail" and value is None:
-                continue
-            minimum, maximum = string_bounds[key]
-            if not isinstance(value, str) or len(value) < minimum or len(value) > maximum:
-                raise ValueError(f"invalid {key} bound")
-            if key == "filename" and any(ord(char) < 32 or ord(char) == 127 or char in "/\\\\" for char in value):
-                raise ValueError("invalid filename")
-        elif key in integer_bounds:
-            minimum, maximum = integer_bounds[key]
-            if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
-                raise ValueError(f"invalid {key} bound")
-        elif key in ref_fields:
-            if key == "evidence_ref" and value is None:
-                continue
-            _assert_safe_ref(value, key)
-        elif key in array_fields:
-            if not isinstance(value, list) or len(value) > _MAX_REFS or any(not isinstance(ref, str) for ref in value):
+        enum_values = PUBLIC_PAYLOAD_ENUMS.get((event_type, key))
+        if enum_values is not None:
+            if value not in enum_values:
                 raise ValueError(f"invalid {key}")
-            if len(set(value)) != len(value):
+            continue
+        if key in PUBLIC_PAYLOAD_REF_FIELDS:
+            _assert_safe_ref(value, key)
+            continue
+        if key in PUBLIC_PAYLOAD_NULLABLE_REF_FIELDS:
+            if value is not None:
+                _assert_safe_ref(value, key)
+            continue
+        if key in PUBLIC_PAYLOAD_REF_ARRAY_FIELDS:
+            if (
+                not isinstance(value, list)
+                or len(value) > _MAX_REFS
+                or len(set(value)) != len(value)
+            ):
                 raise ValueError(f"invalid {key}")
             for ref in value:
                 _assert_safe_ref(ref, key)
-        elif key == "detail":
-            if value is not None and not isinstance(value, str):
-                raise ValueError("invalid detail")
-
-    if "public_summary" in payload:
-        expected_summary = {
-            "thinking.started": "Analyzing the request",
-            "thinking.completed": "Analysis step completed",
-        }.get(event_type)
-        if payload["public_summary"] != expected_summary:
-            raise ValueError("invalid public_summary")
-    if "category" in payload and payload["category"] not in _ALLOWED_CATEGORIES:
-        raise ValueError("invalid category")
-    if "current_category" in payload and payload["current_category"] not in _ALLOWED_CATEGORIES:
-        raise ValueError("invalid current_category")
-    if "stop_category" in payload and payload["stop_category"] not in _ALLOWED_STOP_CATEGORIES:
-        raise ValueError("invalid stop_category")
-    if "failure_category" in payload:
-        allowed = {"subagent_failed"} if event_type == "subagent.failed" else {"artifact_failed", "unavailable"} if event_type == "artifact.failed" else _ALLOWED_FAILURE_CATEGORIES
-        if payload["failure_category"] not in allowed:
-            raise ValueError("invalid failure_category")
-    if "reason_code" in payload:
-        allowed = {"user_cancelled", "policy_cancelled", "timeout"} if event_type == "run.cancelled" else _ALLOWED_TASK_REASON_CODES
-        if payload["reason_code"] not in allowed:
-            raise ValueError("invalid reason_code")
-    if "denial_code" in payload and payload["denial_code"] not in {"capability_not_authorized", "policy_denied"}:
-        raise ValueError("invalid denial_code")
-    if "decision_code" in payload:
-        allowed = {"allowed"} if event_type == "policy.allowed" else {"capability_not_authorized", "policy_denied"}
-        if payload["decision_code"] not in allowed:
-            raise ValueError("invalid decision_code")
-    if "source" in payload and payload["source"] not in {"user", "system"}:
-        raise ValueError("invalid source")
-    if "status" in payload:
-        expected_status = {"artifact.created": "created", "artifact.ready": "ready", "artifact.failed": "failed"}[event_type]
-        if payload["status"] != expected_status:
-            raise ValueError("invalid status")
-    if "hydrate_required" in payload and payload["hydrate_required"] is not True:
-        raise ValueError("hydrate_required must be true")
-    if "projection_version" in payload and payload["projection_version"] != "ai-platform.chat-public-projection.v1":
-        raise ValueError("invalid projection_version")
+            continue
+        if key == "detail" and value is None:
+            continue
+        string_bounds = PUBLIC_PAYLOAD_STRING_BOUNDS.get((event_type, key))
+        if string_bounds is not None:
+            minimum, maximum = string_bounds
+            if not isinstance(value, str) or not minimum <= len(value) <= maximum:
+                raise ValueError(f"invalid {key} bound")
+            if key == "filename" and any(
+                ord(char) < 32 or ord(char) == 127 or char in "/\\\\"
+                for char in value
+            ):
+                raise ValueError("invalid filename")
+            continue
+        integer_bounds = PUBLIC_PAYLOAD_INTEGER_BOUNDS.get((event_type, key))
+        if integer_bounds is not None:
+            minimum, maximum = integer_bounds
+            if maximum is None and key in {"delta_count", "text_length"}:
+                maximum = 2**63 - 1
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < minimum
+                or (maximum is not None and value > maximum)
+            ):
+                raise ValueError(f"invalid {key} bound")
+            continue
+        raise ValueError(f"unsupported schema field: {key}")
 
 
 @dataclass
@@ -574,7 +506,7 @@ class ClaudeSdkAgentEventAdapter:
                     category = value[0] if isinstance(value[0], str) else None
                     label = value[1]
                 safe_label = _safe_display(label, sanitizer=self._sanitizer)
-                if category in _TOOL_CATEGORIES and safe_label:
+                if category in PUBLIC_TOOL_CATEGORIES and safe_label:
                     self._capabilities[identity] = (category, safe_label)
         for subject in subjects or []:
             if not isinstance(subject, dict) or subject.get("active") is False or subject.get("identity_authorized") is False:
@@ -600,7 +532,7 @@ class ClaudeSdkAgentEventAdapter:
             category = _tool_category(identity, identity)
             label = subject.get("public_tool_label") or identity if category != "mcp" else subject.get("public_tool_label")
             safe_label = _safe_display(label, sanitizer=self._sanitizer)
-            if category in _TOOL_CATEGORIES and safe_label:
+            if category in PUBLIC_TOOL_CATEGORIES and safe_label:
                 self._capabilities[identity] = (category, safe_label)
 
     def _candidate(
@@ -859,7 +791,6 @@ class ClaudeSdkAgentEventAdapter:
                         "operation_id": _opaque("op", self.run_id, "tool", call_id),
                         "category": category,
                         "display_name": label,
-                        "input_summary": f"Starting {label}",
                     },
                     identity=f"started:{call_id}",
                 ),
@@ -886,7 +817,6 @@ class ClaudeSdkAgentEventAdapter:
                     "category": category,
                     "display_name": label,
                     "duration_ms": duration,
-                    "result_summary": f"{label} completed",
                 },
                 identity=f"completed:{call_id}",
             ),
@@ -942,7 +872,7 @@ class ClaudeSdkAgentEventAdapter:
         last_tool = getattr(message, "last_tool_name", None) or patch.get("last_tool_name")
         resolved = self._resolve_tool(last_tool, {}) if isinstance(last_tool, str) else None
         category = resolved[1] if resolved else patch.get("current_category", "execute")
-        if category not in _ALLOWED_CATEGORIES:
+        if category not in PUBLIC_TOOL_CATEGORIES:
             category = "execute"
         usage = getattr(message, "usage", None)
         progress = usage.get("progress_percent") if isinstance(usage, Mapping) else patch.get("progress_percent")
@@ -1004,8 +934,3 @@ class ClaudeSdkAgentEventAdapter:
         if event_type == "artifact.failed":
             payload = {"artifact_id": payload["artifact_id"], "status": "failed", "failure_category": "artifact_failed", "filename": safe_filename, "media_type": safe_media_type}
         return (self._candidate(event_type, payload, identity=f"artifact:{artifact_id}:{status}"),)
-
-
-# Short aliases make the ownership boundary discoverable to runner callers.
-ClaudeSdkAgentEventProjector = ClaudeSdkAgentEventAdapter
-ClaudeSdkEventCandidate = ClaudeAgentEventCandidate

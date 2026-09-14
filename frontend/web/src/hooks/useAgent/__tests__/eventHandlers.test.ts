@@ -46,7 +46,6 @@ function createContext(
     acceptedStreamCursorRef: {
       current: { sessionId: null, runId: null, eventId: null },
     },
-    v4TerminalEventIdsRef: { current: new Set<string>() },
     v4TerminalReservationsRef: { current: new Set<string>() },
     v4MessageCandidateRef: { current: null },
     lastHistoryTimestampRef: { current: lastHistoryTimestamp },
@@ -2017,7 +2016,6 @@ test("v4 stream.end is terminal-fenced and terminal recovery is exactly once", (
   const ctx = createContext([], null);
   ctx.currentRunIdRef.current = "run-1";
   ctx.v4TerminalFenceRef = { current: null };
-  ctx.v4TerminalEventIdsRef = { current: new Set<string>() };
   let terminalCalls = 0;
   let acceptTerminal: ((accepted: boolean) => void) | undefined;
   ctx.onRunTerminal = (_runId, _status, _messageId, onSettled) => {
@@ -2077,7 +2075,6 @@ test("v4 stream.end is terminal-fenced and terminal recovery is exactly once", (
   assert.deepEqual(commits, [false]);
   assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 1);
   assert.equal(ctx.v4TerminalReservationsRef?.current.size, 0);
-  assert.equal(ctx.v4TerminalEventIdsRef?.current.size, 0);
   const lateCommits: boolean[] = [];
   assert.equal(handlePublicRunStreamFrameV4({ frame: terminal, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => lateCommits.push(semanticApplied) }), false);
   const higherSequenceTerminal = {
