@@ -3708,7 +3708,6 @@ async def test_chat_stream_appends_canonical_product_events(monkeypatch):
     assert [event["event_type"] for event in product_events] == [
         "intent_detected",
         "intent_confirmed",
-        "queued",
         "skill_selected",
         "file_bound",
         "skill_release_decision",

@@ -12,6 +12,7 @@ import {
   type AdminRunDetailResponse,
   type AdminRunSummary,
 } from "../../../services/api/adminRuns";
+import { buildAdminRunMonitorView } from "../adminRunTimeline";
 import { filterAdminRuns, RunMonitorPanel, summarizeAdminRuns } from "../RunMonitorPanel";
 
 const waitFor = async (predicate: () => boolean, timeoutMs = 2_000) => {
@@ -70,6 +71,46 @@ const paginatedRuns: AdminRunSummary[] = [
     error_code: `worker_execution_failed_${index}`,
   })),
 ];
+
+test("Run Monitor compacts queue aliases and explains executor failures", () => {
+  const view = buildAdminRunMonitorView(
+    {
+      ...runs[1],
+      result: {
+        runtime_diagnostics: {
+          failure_source: "sdk_exception",
+          sdk: {
+            exception_message: "Model provider unavailable",
+          },
+        },
+      },
+    },
+    [
+      { event_id: "queue-1", type: "run_queued", message: "任务已进入队列" },
+      { event_id: "skill-1", type: "skill_selected", message: "已选择后台能力" },
+      {
+        event_id: "queue-2",
+        type: "queued",
+        message: "任务队列接纳完成",
+        payload: { queue_position: 2 },
+      },
+      { event_id: "renew-1", type: "sandbox_lease_renewed" },
+      {
+        event_id: "failed-1",
+        type: "run_failed",
+        message: "Run failed",
+        error_code: "executor_failure",
+      },
+    ],
+  );
+
+  const queueItems = view.recentActivity.filter((item) => item.label === "已进入队列");
+  assert.equal(queueItems.length, 1);
+  assert.equal(queueItems[0]?.status, "info");
+  assert.equal(view.recentActivity.some((item) => item.label === "活动更新"), false);
+  assert.equal(view.recentActivity.some((item) => item.detail?.includes("Model provider unavailable")), true);
+  assert.equal(view.recentActivity.some((item) => item.detail?.includes("sandbox_lease_renewed")), false);
+});
 
 test("Run Monitor filters only the explicitly projected Run identities", () => {
   assert.deepEqual(filterAdminRuns(runs, "running", "chat_2026").map((run) => run.run_id), [
