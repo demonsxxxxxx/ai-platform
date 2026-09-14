@@ -14,7 +14,10 @@ from app.executors.claude.capability_policy import (
     _mcp_server_options,
     internal_context_tool_policy_subjects,
 )
-from app.platform.public_payload import sanitize_public_answer_text
+from app.platform.public_payload import (
+    sanitize_public_answer_text,
+    sanitize_public_event_candidate,
+)
 from app.required_tool_contract import (
     parse_required_tool_declaration,
     with_sandbox_local_tool_capability_subjects,
@@ -3679,6 +3682,63 @@ async def test_sdk_candidate_projection_failure_skips_batch_and_keeps_successful
         "text_length": len(delivered),
         "last_delta_event_id": message_events[-2].event_id,
     }
+    assert result.turn_diagnostics["counters"]["public_projection_omissions"] == 1
+
+
+@pytest.mark.asyncio
+async def test_sdk_completion_projection_failure_keeps_delivered_text_without_receipt(
+    monkeypatch, tmp_path
+):
+    captured, candidates, deltas = {}, [], []
+    delivered = "Delivered answer"
+
+    def fail_completion(value):
+        if isinstance(value, dict) and value.get("event_type") == "message.completed":
+            raise RuntimeError("synthetic completion projection failure")
+        return sanitize_public_event_candidate(value)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            _stream_steps(delivered, index=0),
+            result_text=delivered,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.sanitize_public_event_candidate",
+        fail_completion,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
+        run_id="run-completion-projection",
+        attempt_id="attempt-completion-projection",
+    )
+
+    assert result.error is None
+    assert result.message == delivered
+    assert result.answer_receipt is None
+    assert "".join(deltas) == delivered
+    event_types = [candidate.event_type for candidate in candidates]
+    assert event_types[0] == "message.started"
+    assert event_types[-1] == "model.completed"
+    assert "message.completed" not in event_types
+    assert "".join(
+        candidate.payload["delta"]
+        for candidate in candidates
+        if candidate.event_type == "message.delta"
+    ) == delivered
     assert result.turn_diagnostics["counters"]["public_projection_omissions"] == 1
 
 

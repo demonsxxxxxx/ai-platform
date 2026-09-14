@@ -242,6 +242,41 @@ def test_answer_candidate_failure_does_not_advance_receipt_state():
     assert adapter.public_projection_omissions == 1
 
 
+def test_result_completion_candidate_failure_does_not_create_answer_receipt():
+    def fail_completion(value):
+        if isinstance(value, dict) and value.get("event_type") == "message.completed":
+            raise RuntimeError("synthetic completion projection failure")
+        return sanitize_public_event_candidate(value)
+
+    adapter = ClaudeSdkAgentEventAdapter(
+        run_id="run-1187",
+        attempt_id="attempt-1",
+        sanitizer=sanitize_public_answer_text,
+        payload_sanitizer=fail_completion,
+        reasoning_sanitizer=sanitize_public_reasoning_text,
+    )
+    accepted = adapter.accept_answer_text("kept", already_gated=True)
+
+    terminal = adapter.accept_result(
+        SimpleNamespace(
+            duration_ms=1,
+            num_turns=1,
+            is_error=False,
+            subtype="success",
+            stop_reason="end_turn",
+        ),
+        final_content="kept",
+    )
+
+    assert [event.event_type for event in (*accepted, *terminal)] == [
+        "message.started",
+        "message.delta",
+        "model.completed",
+    ]
+    assert adapter.answer_receipt is None
+    assert adapter.public_projection_omissions == 1
+
+
 def test_policy_decision_emits_checking_then_terminal_and_denial_tool_event():
     adapter = _adapter()
 

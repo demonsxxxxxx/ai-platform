@@ -1023,6 +1023,7 @@ class ClaudeSdkAgentEventAdapter:
         duration = _bounded_int(getattr(result, "duration_ms", 0), maximum=_MAX_DURATION)
         turns = _bounded_int(getattr(result, "num_turns", 0), maximum=_MAX_TURNS)
         pending: list[tuple[str, ClaudeAgentEventCandidate]] = []
+        completed: tuple[ClaudeAgentEventCandidate, ...] = ()
         if self._answer_started:
             completed = self.complete_answer(final_content, commit=False)
             if completed:
@@ -1039,7 +1040,7 @@ class ClaudeSdkAgentEventAdapter:
             )
         )
         self._commit_candidates(pending)
-        if self._answer_started:
+        if completed:
             self._answer_completed = True
         return tuple(candidate for _identity, candidate in pending)
 
