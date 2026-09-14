@@ -2086,7 +2086,7 @@ test("fails closed for unsafe dynamic v2 labels", () => {
   assert.deepEqual(acceptedHistory.parts, accepted.parts);
 });
 
-test("collapses terminal public execution state without changing answer or artifact siblings", () => {
+test("retains terminal public execution state without changing answer or artifact siblings", () => {
   const parts: MessagePart[] = [
     { type: "text", content: "公开答复" },
     {
@@ -2129,20 +2129,7 @@ test("collapses terminal public execution state without changing answer or artif
     "message-terminal",
   );
 
-  assert.deepEqual(terminal.parts.map((part) => part.type), [
-    "text",
-    "execution_process",
-    "artifact",
-  ]);
-  const process = terminal.parts[1];
-  assert.equal(process?.type, "execution_process");
-  if (process?.type !== "execution_process") {
-    throw new Error("expected public execution process");
-  }
-  assert.deepEqual(process.steps.map((step) => step.step_id), [
-    "step-one",
-    "step-two",
-  ]);
+  assert.deepEqual(terminal.parts, parts);
   assert.equal(terminal.content, "公开答复");
 });
 
@@ -2252,12 +2239,12 @@ test("preserves v2 optional-label parity between live and history", () => {
     "assistant-v2-optional-label",
   );
 
-  const historyProcess = history.parts[0];
-  assert.equal(historyProcess?.type, "execution_process");
-  if (historyProcess?.type !== "execution_process") {
-    throw new Error("expected execution process");
+  const historyStep = history.parts[0];
+  assert.equal(historyStep?.type, "execution_step");
+  if (historyStep?.type !== "execution_step") {
+    throw new Error("expected execution step");
   }
-  assert.deepEqual(historyProcess.steps, live.parts);
+  assert.deepEqual(history.parts, live.parts);
 });
 
 test("drops a path-like safe_file_name before public execution state is retained", () => {
@@ -2378,6 +2365,35 @@ test("fails closed for malformed, unknown, or step-id-less public execution even
   }
 });
 
+test("preserves zero model completion duration without creating a status part", () => {
+  const zero = processMessageEvent(
+    "model.completed",
+    { duration_ms: 0 },
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-model",
+  );
+  assert.equal(zero.duration, 0);
+  assert.deepEqual(zero.parts, []);
+
+  const missing = processMessageEvent(
+    "model.completed",
+    {},
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-model",
+  );
+  assert.equal(missing.duration, undefined);
+});
+
 test("projects v4 tool lifecycle into stable typed statuses", () => {
   const started = processMessageEvent(
     "run_event",
@@ -2388,11 +2404,11 @@ test("projects v4 tool lifecycle into stable typed statuses", () => {
   if (started.parts[0]?.type !== "tool") throw new Error("expected typed tool part");
   assert.equal(started.parts[0].public_operation_id, "op-search-1");
   assert.equal(started.parts[0].name, "Search authorized sources");
-  assert.equal(started.parts[0].public_input_summary, "Query: stability evidence");
-  assert.deepEqual(started.parts[0].args, {
-    category: "search",
-    summary: "Query: stability evidence",
-  });
+  assert.equal(
+    Object.hasOwn(started.parts[0], "public_input_summary"),
+    false,
+  );
+  assert.deepEqual(started.parts[0].args, {});
   assert.equal(started.parts[0].status, "started");
 
   const completed = processMessageEvent(
@@ -2403,12 +2419,12 @@ test("projects v4 tool lifecycle into stable typed statuses", () => {
   assert.equal(completed.parts.length, 1);
   if (completed.parts[0]?.type !== "tool") throw new Error("expected typed tool part");
   assert.equal(completed.parts[0].isPending, false);
-  assert.equal(completed.parts[0].result, "safe summary");
-  assert.equal(completed.parts[0].public_input_summary, "Query: stability evidence");
-  assert.deepEqual(completed.parts[0].args, {
-    category: "search",
-    summary: "Query: stability evidence",
-  });
+  assert.equal(completed.parts[0].result, undefined);
+  assert.equal(
+    Object.hasOwn(completed.parts[0], "public_input_summary"),
+    false,
+  );
+  assert.deepEqual(completed.parts[0].args, {});
   assert.equal(completed.parts[0].status, "completed");
 
   const failed = processMessageEvent(

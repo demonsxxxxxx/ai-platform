@@ -10,6 +10,7 @@ from app.executor_reconciler import (
     SandboxReconciliationStopError,
     _context_payload,
     _finish_terminal_reconciliation_failure as _finish_terminal_reconciliation_failure_impl,
+    _persist_probe_terminal,
     _release_reconciled_lease,
     _terminalize_reconciliation_failure as _terminalize_reconciliation_failure_impl,
     probe_suspect_executor_tasks_once,
@@ -62,6 +63,19 @@ _TEST_ATTEMPT_LIFECYCLE = SimpleNamespace(
 )
 
 
+async def _terminalize_reconciliation_failure(*args, **kwargs):
+    kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
+    kwargs.setdefault("run_diagnostics", None)
+    kwargs.setdefault("reconciliation_error_code", "test_reconciliation_failure")
+    return await _terminalize_reconciliation_failure_impl(*args, **kwargs)
+
+
+async def _finish_terminal_reconciliation_failure(*args, **kwargs):
+    kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
+    kwargs.setdefault("run_diagnostics", None)
+    return await _finish_terminal_reconciliation_failure_impl(*args, **kwargs)
+
+
 async def reconcile_pending_executor_terminals_once(*args, **kwargs):
     kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
     return await reconcile_pending_executor_terminals_once_impl(*args, **kwargs)
@@ -70,16 +84,6 @@ async def reconcile_pending_executor_terminals_once(*args, **kwargs):
 async def run_executor_terminal_reconciler(*args, **kwargs):
     kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
     return await run_executor_terminal_reconciler_impl(*args, **kwargs)
-
-
-async def _terminalize_reconciliation_failure(*args, **kwargs):
-    kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
-    return await _terminalize_reconciliation_failure_impl(*args, **kwargs)
-
-
-async def _finish_terminal_reconciliation_failure(*args, **kwargs):
-    kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
-    return await _finish_terminal_reconciliation_failure_impl(*args, **kwargs)
 
 
 def _lease_row() -> dict[str, object]:
@@ -249,19 +253,27 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch):
         executor_reconciler,
         "_context_and_payload",
         lambda _row: (
-            {"adapter_name": "claude", "adapter_context": {}, "dispatch_timings": {}},
+            {"adapter_name": "claude", "adapter_context": {}},
             {"status": "succeeded"},
             SimpleNamespace(attempt_id="attempt-a"),
         ),
     )
-    monkeypatch.setattr(executor_reconciler, "_reconciliation_request", lambda *_args: object())
+    monkeypatch.setattr(
+        executor_reconciler, "_reconciliation_request", lambda *_args: object()
+    )
     monkeypatch.setattr(
         executor_reconciler,
         "SandboxWorkspaceManager",
-        lambda: SimpleNamespace(prepare=lambda _request: SimpleNamespace(workspace_host_path="/workspace")),
+        lambda: SimpleNamespace(
+            prepare=lambda _request: SimpleNamespace(workspace_host_path="/workspace")
+        ),
     )
-    monkeypatch.setattr(executor_reconciler, "container_lease_from_persisted_row", lambda _row: lease)
-    monkeypatch.setattr(executor_reconciler, "_container_provider_for_lease", lambda _lease: provider)
+    monkeypatch.setattr(
+        executor_reconciler, "container_lease_from_persisted_row", lambda _row: lease
+    )
+    monkeypatch.setattr(
+        executor_reconciler, "_container_provider_for_lease", lambda _lease: provider
+    )
     monkeypatch.setattr(executor_reconciler, "run_storage_io", bridge)
     monkeypatch.setattr(
         executor_reconciler,
@@ -269,8 +281,17 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch):
         reserve_cleanup,
     )
 
-    result, actual_provider, actual_lease = await executor_reconciler._collect_workspace_and_convert_result(
-        {"id": "lease-a", "tenant_id": "tenant-a", "run_id": "run-a", "provider": "docker"},
+    (
+        result,
+        actual_provider,
+        actual_lease,
+    ) = await executor_reconciler._collect_workspace_and_convert_result(
+        {
+            "id": "lease-a",
+            "tenant_id": "tenant-a",
+            "run_id": "run-a",
+            "provider": "docker",
+        },
         registry=Registry(),
         claim_token="claim-a",
     )
@@ -280,7 +301,10 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch):
     assert actual_lease is lease
     assert bridged == ["reconcile_sandbox_terminal"]
     assert adapter_contexts[0]["_artifact_storage_scope"] == "attempt-a"
-    assert abandonment_callbacks[0].__self__ is adapter_contexts[0]["_artifact_collection_abandoned"]
+    assert (
+        abandonment_callbacks[0].__self__
+        is adapter_contexts[0]["_artifact_collection_abandoned"]
+    )
     assert not adapter_contexts[0]["_artifact_collection_abandoned"].is_set()
     assert reserved == [
         {
@@ -532,6 +556,56 @@ async def test_probe_releases_active_executor_for_future_heartbeat_checks(monkey
 
 
 @pytest.mark.asyncio
+async def test_probe_persists_private_diagnostics_before_bounded_terminal_receipt(
+    monkeypatch,
+):
+    calls = []
+
+    async def record_terminal(conn, **kwargs):
+        calls.append(("receipt", conn, kwargs))
+
+    class RecordingDiagnostics:
+        async def capture_failure_result(self, conn, **kwargs):
+            calls.append(("diagnostics", conn, kwargs))
+            return {"message": "safe"}
+
+    monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
+    monkeypatch.setattr(
+        "app.executor_reconciler.sandbox_lease_repository.record_sandbox_executor_terminal",
+        record_terminal,
+    )
+    private = {
+        "schema_version": "ai-platform.sdk-runtime-diagnostics.v1",
+        "error_code": "provider_timeout",
+        "failure_source": "sdk_exception",
+        "failure_stage": "model_wait",
+    }
+    terminal_result = {
+        "status": "failed",
+        "run_id": "run-a",
+        "error_code": "executor_failed",
+        "error_message": "Executor failed",
+        "runtime_diagnostics": private,
+        "sdk_turn_diagnostics": {
+            "runtime_diagnostics": {"token": "nested-private"}
+        },
+    }
+
+    await _persist_probe_terminal(
+        _suspect_lease_row(),
+        executor_status="failed",
+        terminal_result=terminal_result,
+        claim_token="claim-a",
+        run_diagnostics=RecordingDiagnostics(),
+    )
+
+    assert [item[0] for item in calls] == ["receipt", "diagnostics"]
+    assert calls[0][1] is calls[1][1]
+    assert "runtime_diagnostics" not in str(calls[0][2]["terminal_result"])
+    assert calls[1][2]["result_json"]["runtime_diagnostics"] == private
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     (
         "task_status",
@@ -619,6 +693,7 @@ async def test_probe_preserves_matching_terminal_status_and_rejects_contradictio
     assert len(persisted) == 1
     assert persisted[0][0]["id"] == "lease-a"
     assert isinstance(persisted[0][1].pop("claim_token"), str)
+    assert persisted[0][1].pop("run_diagnostics") is None
     if expected_executor_status == "protocol_invalid":
         assert persisted[0][1] == {
             "executor_status": "failed",
@@ -743,6 +818,7 @@ async def test_probe_terminalizes_authoritatively_missing_sandbox_immediately(mo
     assert len(persisted) == 1
     assert persisted[0][0]["id"] == "lease-a"
     assert isinstance(persisted[0][1].pop("claim_token"), str)
+    assert persisted[0][1].pop("run_diagnostics") is None
     assert persisted[0][1] == {
         "executor_status": "failed",
         "terminal_result": {
@@ -1418,7 +1494,9 @@ async def test_reconciler_terminalizes_explicit_permanent_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(monkeypatch):
+async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
+    monkeypatch,
+):
     calls = []
 
     class Progress:
@@ -1442,6 +1520,10 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(mon
         calls.append(("fail_run", kwargs))
         return Progress()
 
+    class RecordingDiagnostics:
+        async def capture_reconciliation_failure(self, _conn, **kwargs):
+            calls.append(("diagnostics", kwargs))
+
     async def terminalize_attempt(_conn, **kwargs):
         calls.append(("terminalize_attempt", kwargs))
         return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
@@ -1462,8 +1544,10 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(mon
     )
     monkeypatch.setattr(f"{owner}.repositories.fail_run", fail_run)
     monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "terminalize", terminalize_attempt)
-    monkeypatch.setattr(f"{owner}.reconcile_terminalized_permission_run", reconcile_child)
-    monkeypatch.setattr(f"{owner}.publish_pending_run_terminal", publish)
+    monkeypatch.setattr(
+        f"{owner}.reconcile_terminalized_permission_run", reconcile_child
+    )
+    monkeypatch.setattr(f"{owner}.publish_run_event", publish)
 
     await _terminalize_reconciliation_failure(
         {
@@ -1471,10 +1555,17 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(mon
             "tenant_id": "tenant-a",
             "run_id": "run-a",
             "attempt_id": "rat-a",
+            "executor_terminal_json": {
+                "run_id": "run-a",
+                "status": "failed",
+                "error_code": "provider_timeout",
+            },
         },
         claim_token="claim-a",
         logger=logging.getLogger(__name__),
         v4_capabilities=_TEST_V4_CAPABILITIES,
+        run_diagnostics=RecordingDiagnostics(),
+        reconciliation_error_code="artifact_manifest_invalid",
     )
 
     fail_call = next(value for name, value in calls if name == "fail_run")
@@ -1485,11 +1576,16 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(mon
     assert [name for name, _value in calls] == [
         "has_claim",
         "get_run",
+        "diagnostics",
         "fail_run",
         "terminalize_attempt",
         "reconcile_child",
         "publish",
     ]
+    diagnostic_call = next(value for name, value in calls if name == "diagnostics")
+    assert diagnostic_call["attempt_id"] == "rat-a"
+    assert diagnostic_call["terminal_result"]["error_code"] == "provider_timeout"
+    assert diagnostic_call["reconciliation_error_code"] == "artifact_manifest_invalid"
     terminal_call = next(
         item[1]
         for item in calls
@@ -1560,7 +1656,7 @@ async def test_terminal_reconciliation_failure_honors_existing_cancel_request(mo
     monkeypatch.setattr(f"{owner}.cancel_run_with_v4", cancel_run)
     monkeypatch.setattr(f"{owner}.fail_run_with_v4", fail_run)
     monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "terminalize", terminalize_attempt)
-    monkeypatch.setattr(f"{owner}.publish_pending_run_terminal", publish)
+    monkeypatch.setattr(f"{owner}.publish_run_event", publish)
 
     await _terminalize_reconciliation_failure(
         {
@@ -1625,7 +1721,7 @@ async def test_terminal_reconciliation_failure_does_not_republish_an_already_ter
     )
     monkeypatch.setattr(f"{owner}.repositories.get_run", get_run)
     monkeypatch.setattr(f"{owner}.repositories.fail_run", fail_run)
-    monkeypatch.setattr(f"{owner}.publish_pending_run_terminal", publish)
+    monkeypatch.setattr(f"{owner}.publish_run_event", publish)
 
     await _terminalize_reconciliation_failure(
         {"id": "lease-a", "tenant_id": "tenant-a", "run_id": "run-a"},

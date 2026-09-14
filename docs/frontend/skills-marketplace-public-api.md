@@ -156,12 +156,19 @@ returned in API responses or written to audit payloads.
 
 Company login stores one encrypted MCP JWT per `tenant_id + user_id` in Redis;
 the JWT's own `exp` is its lifetime and a later login replaces the earlier
-value. The browser never receives or stores this JWT. At MCP execution time the
-Worker reuses the existing Capability Distribution and Tool Policy plan, reads
-the current JWT and encrypted Server target, then registers the Server with the
-Agent SDK using static headers plus `JWT-Authorization`. The SDK calls the MCP
-Server directly. There is no separate MCP Broker capability or host Relay, and
-runtime connection material is removed from reconciliation persistence.
+value. Ordinary MCP flows never return this JWT to the browser. The document
+translator is the only exception: `POST /api/ai/auth/company-credential-handoff`
+returns the current user's JWT to an authenticated same-origin page with
+`Cache-Control: private, no-store`; the page keeps it only in memory and sends
+it to the fixed translator origin after validating the child window and its
+nonce. It is never placed in a URL or AI Platform browser storage. The
+translator stores the received JWT in its own tab-scoped `sessionStorage` for
+its API calls. At MCP execution time the Worker reuses the existing Capability
+Distribution and Tool Policy plan, reads the current JWT and encrypted Server
+target, then registers the Server with the Agent SDK using static headers plus
+`JWT-Authorization`. The SDK calls the MCP Server directly. There is no
+separate MCP Broker capability or host Relay, and runtime connection material
+is removed from reconciliation persistence.
 
 Explicitly fail-closed follow-up routes:
 

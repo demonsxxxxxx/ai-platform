@@ -6,6 +6,7 @@ from urllib.parse import urlsplit, urlunsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.control_plane_contracts import normalize_thinking_effort
+from app.persistence_limits import RUN_RESULT_MAX_BYTES, ensure_json_size
 from app.runtime.kernel_contracts import AgentEvent
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
 from app.sandbox.api import AssistantAnswerReceipt
@@ -432,6 +433,75 @@ class ExecutorTerminalResult(BaseModel):
             if not str(self.error_code or "").strip() or not str(self.error_message or "").strip():
                 raise ValueError("failed or cancelled terminal result requires structured error fields")
         return self
+
+
+_EXECUTOR_TERMINAL_RECEIPT_FIELDS = frozenset(
+    {
+        "status",
+        "run_id",
+        "message",
+        "answer_receipt",
+        "error_code",
+        "error_message",
+        "executor_model_latency_ms",
+        "document_processing_latency_ms",
+        "executor_first_token_latency_ms",
+        "executor_tool_call_latency_ms",
+        "artifact_upload_latency_ms",
+        "timeout_elapsed_ms",
+        "sdk_session_id",
+        "sdk_usage",
+        "sdk_used",
+        "sdk_received_structured_terminal",
+        "sdk_terminal_reason",
+        "executor_mode",
+        "used_skills",
+        "used_skills_source",
+        "sdk_turn_diagnostics",
+        "capability_evidence",
+        "required_capability_evidence",
+        "tool_invocation_evidence",
+        "callback_errors",
+        "diagnostics",
+    }
+)
+
+
+def executor_terminal_receipt_payload(
+    value: ExecutorTerminalResult | dict[str, Any],
+) -> dict[str, Any]:
+    """Persist only the bounded reconciliation contract, excluding private diagnostics."""
+
+    raw = (
+        value.model_dump(mode="json", exclude_none=True)
+        if isinstance(value, ExecutorTerminalResult)
+        else dict(value)
+    )
+    receipt = {
+        key: _without_runtime_diagnostics(raw[key])
+        for key in _EXECUTOR_TERMINAL_RECEIPT_FIELDS
+        if key in raw
+    }
+    ensure_json_size(
+        receipt,
+        max_bytes=RUN_RESULT_MAX_BYTES,
+        code="executor_terminal_receipt_too_large",
+    )
+    return receipt
+
+
+def _without_runtime_diagnostics(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _without_runtime_diagnostics(item)
+            for key, item in value.items()
+            if str(key) != "runtime_diagnostics"
+        }
+    if isinstance(value, list):
+        return [_without_runtime_diagnostics(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_without_runtime_diagnostics(item) for item in value)
+    return value
 
 
 def normalize_executor_terminal_status(

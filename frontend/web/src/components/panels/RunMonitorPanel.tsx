@@ -19,6 +19,7 @@ import { workbenchSurface } from "../workbench/workbenchSurface";
 import {
   adminRunsApi,
   type AdminQueueInsight,
+  type AdminRunDiagnosticsResponse,
   type AdminRunDetailResponse,
   type AdminRunSummary,
 } from "../../services/api/adminRuns";
@@ -27,6 +28,7 @@ import {
   buildAdminRunMonitorView,
   type AdminRunTimelineItem,
 } from "./adminRunTimeline";
+import { RunDiagnosticsSection } from "./RunDiagnosticsSection";
 
 const RUN_LIMIT = 50;
 const PAGE_SIZE = 10;
@@ -242,14 +244,20 @@ function focusableElements(container: HTMLElement): HTMLElement[] {
 
 function RunDetail({
   detail,
+  diagnostics,
   loading,
+  diagnosticsLoading,
   error,
+  diagnosticsError,
   onClose,
   fallbackFocusRef,
 }: {
   detail: AdminRunDetailResponse | null;
+  diagnostics: AdminRunDiagnosticsResponse | null;
   loading: boolean;
+  diagnosticsLoading: boolean;
   error: string | null;
+  diagnosticsError: string | null;
   onClose: () => void;
   fallbackFocusRef: RefObject<HTMLButtonElement | null>;
 }) {
@@ -405,16 +413,11 @@ function RunDetail({
             ) : null}
           </section>
 
-          {detail.run.result?.runtime_diagnostics ? (
-            <section className="p-4" data-run-runtime-diagnostics>
-              <h3 className="text-xs font-semibold text-[var(--theme-text)]">
-                执行诊断
-              </h3>
-              <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--theme-bg-sidebar)] p-3 font-mono text-[11px] leading-5 text-[var(--theme-text-secondary)]">
-                {JSON.stringify(detail.run.result.runtime_diagnostics, null, 2)}
-              </pre>
-            </section>
-          ) : null}
+          <RunDiagnosticsSection
+            diagnostics={diagnostics}
+            loading={diagnosticsLoading}
+            error={diagnosticsError}
+          />
 
           <section className="p-4">
             <h3 className="text-xs font-semibold text-[var(--theme-text)]">运行概览</h3>
@@ -621,7 +624,7 @@ function DesktopRunTable({
                   </button>
                 </td>
                 <td className="max-w-[190px] border-b border-[var(--theme-border)] px-3 py-3 align-top">
-                  <p className="truncate text-[var(--theme-text)]" title={run.user_id}>{run.user_id}</p>
+                  <p className="truncate text-[var(--theme-text)]" title={run.user_id ?? ""}>{run.user_id}</p>
                   <p className="mt-1 truncate text-[11px] text-[var(--theme-text-tertiary)]" title={run.workspace_id ?? ""}>{run.workspace_id ?? "default"}</p>
                 </td>
                 <td className="max-w-[210px] border-b border-[var(--theme-border)] px-3 py-3 align-top">
@@ -704,15 +707,19 @@ export function RunMonitorPanel() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [detail, setDetail] = useState<AdminRunDetailResponse | null>(null);
+  const [diagnostics, setDiagnostics] = useState<AdminRunDiagnosticsResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const [page, setPage] = useState(1);
   const listRequestSequence = useRef(0);
   const detailRequestSequence = useRef(0);
+  const diagnosticsRequestSequence = useRef(0);
   const selectedRunIdRef = useRef<string | null>(null);
   const refreshButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -740,6 +747,28 @@ export function RunMonitorPanel() {
     }
   }, []);
 
+  const loadDiagnostics = useCallback(async (runId: string, announce = true) => {
+    const requestId = ++diagnosticsRequestSequence.current;
+    if (announce) setDiagnosticsLoading(true);
+    setDiagnosticsError(null);
+    try {
+      const response = await adminRunsApi.diagnostics(runId);
+      if (
+        requestId !== diagnosticsRequestSequence.current ||
+        selectedRunIdRef.current !== runId
+      ) return;
+      setDiagnostics(response);
+    } catch (error) {
+      if (
+        requestId !== diagnosticsRequestSequence.current ||
+        selectedRunIdRef.current !== runId
+      ) return;
+      setDiagnosticsError(error instanceof Error ? error.message : "运行诊断加载失败");
+    } finally {
+      if (requestId === diagnosticsRequestSequence.current) setDiagnosticsLoading(false);
+    }
+  }, []);
+
   const loadRuns = useCallback(async (initial = false) => {
     const requestId = ++listRequestSequence.current;
     if (initial) setIsLoading(true);
@@ -751,7 +780,10 @@ export function RunMonitorPanel() {
       setLoadError(null);
       setLastUpdatedAt(new Date());
       const activeRunId = selectedRunIdRef.current;
-      if (activeRunId) void loadDetail(activeRunId, false);
+      if (activeRunId) {
+        void loadDetail(activeRunId, false);
+        void loadDiagnostics(activeRunId, false);
+      }
     } catch (error) {
       if (requestId !== listRequestSequence.current) return;
       setLoadError(error instanceof Error ? error.message : "最近运行加载失败");
@@ -761,7 +793,7 @@ export function RunMonitorPanel() {
         setIsRefreshing(false);
       }
     }
-  }, [loadDetail]);
+  }, [loadDetail, loadDiagnostics]);
 
   useEffect(() => {
     void loadRuns(true);
@@ -772,16 +804,22 @@ export function RunMonitorPanel() {
     selectedRunIdRef.current = runId;
     setSelectedRunId(runId);
     setDetail(null);
+    setDiagnostics(null);
     void loadDetail(runId);
-  }, [loadDetail]);
+    void loadDiagnostics(runId);
+  }, [loadDetail, loadDiagnostics]);
 
   const closeDetail = useCallback(() => {
     detailRequestSequence.current += 1;
+    diagnosticsRequestSequence.current += 1;
     selectedRunIdRef.current = null;
     setSelectedRunId(null);
     setDetail(null);
+    setDiagnostics(null);
     setDetailError(null);
+    setDiagnosticsError(null);
     setDetailLoading(false);
+    setDiagnosticsLoading(false);
   }, []);
 
   const filteredRuns = useMemo(
@@ -979,8 +1017,11 @@ export function RunMonitorPanel() {
             <div className="absolute inset-y-0 right-0 w-full xl:w-[420px] xl:p-2">
               <RunDetail
                 detail={detail}
+                diagnostics={diagnostics}
                 loading={detailLoading}
+                diagnosticsLoading={diagnosticsLoading}
                 error={detailError}
+                diagnosticsError={diagnosticsError}
                 onClose={closeDetail}
                 fallbackFocusRef={refreshButtonRef}
               />

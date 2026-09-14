@@ -695,45 +695,6 @@ export const skillApi = {
   },
 
   /**
-   * Preview skills from GitHub repository
-   */
-  async previewGitHub(
-    repoUrl: string,
-    branch: string = "main",
-  ): Promise<{
-    repo_url: string;
-    branch: string;
-    skills: Array<{ name: string; path: string; description: string }>;
-  }> {
-    return authFetch(`${API_BASE}/api/github/preview`, {
-      method: "POST",
-      body: JSON.stringify({ repo_url: repoUrl, branch }),
-    });
-  },
-
-  /**
-   * Install skills from GitHub repository
-   */
-  async installGitHub(
-    repoUrl: string,
-    skillNames: string[],
-    branch: string = "main",
-  ): Promise<{
-    message: string;
-    installed: string[];
-    errors: string[];
-  }> {
-    return authFetch(`${API_BASE}/api/github/install`, {
-      method: "POST",
-      body: JSON.stringify({
-        repo_url: repoUrl,
-        branch,
-        skill_names: skillNames,
-      }),
-    });
-  },
-
-  /**
    * Batch delete skills
    */
   async batchDelete(names: string[]): Promise<{

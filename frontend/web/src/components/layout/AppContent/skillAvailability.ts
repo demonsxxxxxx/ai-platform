@@ -1,5 +1,4 @@
 import type { SkillResponse } from "../../../types";
-import type { SettingsResponse } from "../../../types";
 
 function hasSkillReadPermission(permissions: readonly string[]): boolean {
   return (
@@ -40,38 +39,14 @@ export function countEnabledSkills(skills: SkillResponse[]): number {
   return skills.filter((skill) => skill.enabled).length;
 }
 
-export function resolveSettingsBooleanProjection(
-  settings: SettingsResponse | null,
-  key: string,
-): {
-  known: boolean;
-  value: boolean | undefined;
-} {
-  if (!settings) return { known: false, value: undefined };
-
-  const item = Object.values(settings.settings)
-    .flat()
-    .find((setting) => setting.key === key);
-
-  if (!item) return { known: false, value: undefined };
-
-  return {
-    known: true,
-    value: item.value === true || item.value === "true",
-  };
-}
-
 export function resolveComposerSkillsAvailability({
   isAuthenticated,
   catalogEffectivePermissions,
   catalogPermissionsKnown,
 }: {
   isAuthenticated: boolean;
-  canReadSkills: boolean;
   catalogEffectivePermissions: string[];
   catalogPermissionsKnown: boolean;
-  enableSkillsSettingKnown: boolean;
-  enableSkillsSetting: boolean;
 }): {
   shouldFetchSkills: boolean;
   enableComposerSkills: boolean;

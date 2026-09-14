@@ -1,8 +1,11 @@
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 
 import pytest
 
 from app.streaming import redis as control
+import json
+from app.streaming.api import validate_internal_envelope_v4
 
 
 class Result:
@@ -31,12 +34,7 @@ def authority_row(**overrides):
         "tenant_scope": "scope-a",
         "stream_incarnation": 1,
         "state": "admission_pending",
-        "open_event_id": control.stream_open_event_id(
-            tenant_scope="scope-a",
-            run_id="run-a",
-            attempt_id="attempt-a",
-            incarnation=1,
-        ),
+        "open_event_id": control._semantic_id("ai-platform-stream-open-v4", "scope-a", "run-a", "attempt-a", 1),
         "open_payload_bytes": "{}",
         "open_payload_digest": "digest-a",
         "authorization_epoch": 1,
@@ -47,55 +45,44 @@ def authority_row(**overrides):
 
 
 @pytest.mark.asyncio
-async def test_pending_terminal_intent_preserves_open_admission_order(monkeypatch):
-    authority = control._authority(authority_row())
-    intent = control.freeze_terminal_intent(
+async def test_stream_admission_freezes_open_envelope_before_confirmation():
+    inserted_row = authority_row()
+    conn = ScriptedConnection([None, inserted_row])
+
+    authority = await control.create_or_get_stream_admission_v4(
+        conn,
         tenant_id="tenant-a",
         run_id="run-a",
         attempt_id="attempt-a",
         tenant_scope="scope-a",
-        stream_incarnation=1,
-        status="failed",
     )
 
-    async def get_authority(*_args, **_kwargs):
-        return authority
+    insert_params = conn.calls[1][1]
+    frozen_envelope = validate_internal_envelope_v4(json.loads(insert_params[8]))
+    assert authority.state == "admission_pending"
+    assert frozen_envelope["event_id"] == insert_params[7]
+    assert frozen_envelope["event_type"] == "stream.open"
+    assert frozen_envelope["stream_incarnation"] == 1
+    assert control._sha256(insert_params[8]) == insert_params[9]
 
-    async def persist_intent(*_args, **_kwargs):
-        return intent
-
-    monkeypatch.setattr(control, "get_stream_authority", get_authority)
-    monkeypatch.setattr(control, "persist_terminal_intent", persist_intent)
-    conn = ScriptedConnection([])
-
-    assert await control.ensure_run_terminal_intent(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-a",
-        status="failed",
-    ) is intent
-
-    statement = " ".join(conn.calls[0][0].split()).lower()
-    assert "when state = 'admission_pending' then 'admission_pending'" in statement
-    assert "else 'terminal'" in statement
-
-
-@pytest.mark.asyncio
-async def test_admission_confirmation_promotes_a_frozen_terminal_intent():
-    authority = control._authority(authority_row())
-    conn = ScriptedConnection([authority_row(state="terminal")])
-
-    confirmed = await control.confirm_stream_admission(conn, authority=authority)
-
-    statement = " ".join(conn.calls[0][0].split()).lower()
-    assert "from sse_terminal_publication_intents as intent" in statement
-    assert "then 'terminal'" in statement
-    assert "else 'confirmed'" in statement
-    assert confirmed.state == "terminal"
+    confirmed_row = authority_row(
+        state="confirmed", open_payload_digest=insert_params[9]
+    )
+    confirmation = ScriptedConnection([confirmed_row])
+    confirmed = await control.confirm_stream_admission(
+        confirmation,
+        authority=replace(
+            authority,
+            open_payload_bytes=insert_params[8],
+            open_payload_digest=insert_params[9],
+        ),
+    )
+    assert confirmed.state == "confirmed"
+    assert "terminal_publication_intents" not in confirmation.calls[0][0]
 
 
 @pytest.mark.asyncio
-async def test_admission_confirmation_is_idempotent_after_terminal_promotion():
+async def test_admission_confirmation_preserves_an_existing_terminal_authority():
     terminal = control._authority(authority_row(state="terminal"))
     conn = ScriptedConnection([authority_row(state="terminal")])
 
@@ -105,6 +92,22 @@ async def test_admission_confirmation_is_idempotent_after_terminal_promotion():
     assert "when state = 'terminal' then 'terminal'" in statement
     assert "state in ('admission_pending','confirmed','terminal')" in statement
     assert confirmed.state == "terminal"
+
+
+@pytest.mark.asyncio
+async def test_stream_admission_rejects_a_different_attempt_instead_of_creating_parallel_authority():
+    conn = ScriptedConnection([authority_row()])
+    with pytest.raises(
+        control.SseAuthorityConflictError, match="sse_stream_attempt_conflict"
+    ):
+        await control.create_or_get_stream_admission_v4(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-b",
+            tenant_scope="scope-a",
+        )
+    assert len(conn.calls) == 1
 
 
 def test_authority_lease_checks_authority_deadline_without_database_io():
@@ -223,64 +226,3 @@ async def test_stale_lease_generation_cannot_close_a_renewed_connection_lease():
             connection_id="connection-b",
             lease_seconds=15,
         )
-
-
-def test_terminal_intent_freezes_stable_semantic_ids_exact_payload_bytes_and_hashes():
-    first = control.freeze_terminal_intent(
-        tenant_id="tenant-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        tenant_scope="scope-a",
-        stream_incarnation=2,
-        status="succeeded",
-    )
-    retry = control.freeze_terminal_intent(
-        tenant_id="tenant-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        tenant_scope="scope-a",
-        stream_incarnation=2,
-        status="succeeded",
-    )
-
-    assert retry.terminal_event_id == first.terminal_event_id
-    assert retry.end_event_id == first.end_event_id
-    assert retry.terminal_payload_bytes == first.terminal_payload_bytes
-    assert retry.terminal_payload_digest == first.terminal_payload_digest
-    assert (
-        control._sha256(first.terminal_payload_bytes) == first.terminal_payload_digest
-    )
-    assert control._sha256(first.end_payload_bytes) == first.end_payload_digest
-
-
-@pytest.mark.asyncio
-async def test_terminal_intent_duplicate_with_different_payload_hash_fails_closed():
-    intent = control.freeze_terminal_intent(
-        tenant_id="tenant-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        tenant_scope="scope-a",
-        stream_incarnation=1,
-        status="failed",
-    )
-    conflicting_row = {
-        "id": "sti-existing",
-        "tenant_id": intent.tenant_id,
-        "run_id": intent.run_id,
-        "attempt_id": intent.attempt_id,
-        "stream_incarnation": intent.stream_incarnation,
-        "terminal_event_id": intent.terminal_event_id,
-        "end_event_id": intent.end_event_id,
-        "terminal_payload_bytes": intent.terminal_payload_bytes,
-        "terminal_payload_digest": "different",
-        "end_payload_bytes": intent.end_payload_bytes,
-        "end_payload_digest": intent.end_payload_digest,
-        "emitted_at": intent.emitted_at,
-        "state": "pending",
-    }
-    conn = ScriptedConnection([None, conflicting_row])
-
-    with pytest.raises(
-        control.SseAuthorityConflictError, match="sse_terminal_intent_conflict"
-    ):
-        await control.persist_terminal_intent(conn, intent=intent)

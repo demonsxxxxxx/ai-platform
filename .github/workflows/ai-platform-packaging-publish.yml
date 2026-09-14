@@ -74,6 +74,18 @@ jobs:
         with:
           version: v0.36.1
 
+      - name: Require frontend SOP share URL
+        if: matrix.role == 'frontend'
+        env:
+          VITE_RAGFLOW_SOP_SHARE_URL: ${{ secrets.VITE_RAGFLOW_SOP_SHARE_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$VITE_RAGFLOW_SOP_SHARE_URL"
+          case "$VITE_RAGFLOW_SOP_SHARE_URL" in
+            http://10.56.0.211:8080/next-chats/share\?shared_id=*\&auth=*) ;;
+            *) printf 'frontend_sop_share_url=invalid_shape\n' >&2; exit 1 ;;
+          esac
+
       - name: Build and push immutable image
         id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -89,6 +101,8 @@ jobs:
             AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}
             AI_PLATFORM_BUILD_DIRTY=false
             AI_PLATFORM_BUILD_REPOSITORY=https://github.com/demonsxxxxxx/ai-platform.git
+          secrets: |
+            VITE_RAGFLOW_SOP_SHARE_URL=${{ matrix.role == 'frontend' && secrets.VITE_RAGFLOW_SOP_SHARE_URL || '' }}
           provenance: false
           sbom: false
 

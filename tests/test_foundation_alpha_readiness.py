@@ -50,7 +50,6 @@ class SecretBearingSettings:
     sandbox_workspace_root = "/tmp/tenant-secret/workspaces"
     anthropic_auth_token = "anthropic-secret"
     llm_gateway_provider = "openai_compatible"
-    model_gateway_request_concurrency_limit = 0
     memory_retention_worker_cleanup_enabled = True
     memory_retention_worker_cleanup_limit = 200
     multi_agent_dispatch_worker_enabled = False

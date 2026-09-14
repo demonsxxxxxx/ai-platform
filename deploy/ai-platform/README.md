@@ -21,8 +21,33 @@ OpenSandbox configuration has two owners:
 | --- | --- |
 | Lifecycle connection | Application env: production uses `OPENSANDBOX_BASE_URL`; internal-test requires `OPENSANDBOX_DOMAIN` and `OPENSANDBOX_PROTOCOL`. Both require `OPENSANDBOX_API_KEY`. |
 | Workspace and capabilities | Application env: `SANDBOX_WORKSPACE_ROOT`, `SANDBOX_CALLBACK_TOKEN`; production also requires `SANDBOX_EGRESS_PROOF_SIGNING_KEY` and `MODEL_PROXY_INTERNAL_TOKEN`. |
-| Timeouts and workspace I/O | Optional application tuning: `OPENSANDBOX_REQUEST_TIMEOUT_SECONDS`, `OPENSANDBOX_TIMEOUT_SECONDS`, workspace mount and startup I/O settings. |
+| Timeouts | Optional application tuning: `OPENSANDBOX_REQUEST_TIMEOUT_SECONDS`, `OPENSANDBOX_TIMEOUT_SECONDS`. |
 | Kernel isolation and host firewall | Host OpenSandbox TOML, Docker `runsc` runtime and network-guard service, prepared once by the host administrator. |
+
+Workspace files are staged and collected through the OpenSandbox file API after
+lease acquisition. Network egress follows the selected profile and host network
+policy. The deployment environment, security profile and expected network mode
+are fixed in Compose; build commit and dirty markers are supplied during image
+construction. These are not operator settings in the deployment environment file.
+
+`AI_PLATFORM_API_UPSTREAM` selects the platform API reached by the frontend proxy.
+Model connection ownership depends on the selected package:
+
+| Package | Model request configuration |
+| --- | --- |
+| Production | Configure the upstream URL, key and enabled models in the administrator's Models page before running a model. The executor uses the platform proxy, which requires the Run's pinned database connection revision. Environment model URLs and credentials cannot substitute for that binding. |
+| Internal-test | The package enables direct model credential forwarding. `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` supply the executor's direct connection, including when a database model catalog is active. |
+
+The browser's retained `/settings` address redirects to `/models`. The removed
+generic settings API did not persist or apply submitted values; model changes
+now have one browser entrance and one database-backed control plane.
+
+`OPENAI_MODEL`, `ANTHROPIC_MODEL`, `CLAUDE_AGENT_MODEL`, `DEFAULT_MODEL_ID`
+and `MODEL_CATALOG_JSON` supply legacy model selection before the database
+catalog is active. That selection can create a Run without a connection revision;
+it does not provide a working production proxy fallback. Model gateway request
+concurrency is currently unbounded by the platform; the capacity report records
+enforcement as unimplemented.
 
 ## Prepare the host once
 

@@ -26,25 +26,24 @@ Worker loop  ───┘            │
                              ├─> RunRepository (PostgreSQL)
                              ├─> StreamingEventLedgerWriter
                              ├─> AuditLedgerWriter
-                             ├─> TerminalIntentRecorder
                              └─> SandboxRuntimeClient
 
 bootstrap.api / bootstrap.worker construct and inject every concrete adapter.
 ```
 
 The application service owns the transaction and orchestration. PostgreSQL is
-the durable Run truth. Redis terminal intent is a projection of an already
-authorized terminal transition; it cannot create, replace, or reinterpret that
-transition.
+the durable Run truth. Redis terminal events project an already committed,
+authorized transition; they cannot create, replace or reinterpret it. Independent
+SSE terminal intents are retired by ADR 0013.
 
 ### 1.1 Source and migration status
 
 The original decision-baseline notes are historical observations, not a current
 implementation inventory. Existing RunAttempt transitions, Runs-owned public
-terminal projection, committed v4 publication and terminal-successor recovery
-must be inspected in their owning modules. In particular, do not infer that
-terminal-successor recovery is absent from an earlier lifecycle audit: its
-current contract is [SSE execution control](redis-streams-sse-execution-control.md).
+terminal projection and direct committed-v4 publication must be inspected in
+their owning modules. Publication queues, terminal intents and successor recovery
+are retired; [SSE execution control](redis-streams-sse-execution-control.md) owns
+the current transport behavior.
 
 The application-boundary migration remains incremental. Route/Worker
 orchestration, Sandbox lifecycle access and legacy repository surfaces must be
@@ -59,7 +58,7 @@ acceptance remain separate. No issue is declared closed by this document.
 | Terminal state and decision rules | `app.runs.domain` | framework-neutral values, status classification, typed decisions, safe result policy | psycopg, FastAPI, Redis, repository calls, process settings |
 | Terminalization use cases | `app.runs.application` | commands, results, ports, transaction-scoped orchestration, cancellation/reconciliation policy | concrete adapters, `ContextVar`, service locators, routes, environment reads |
 | PostgreSQL adapter | `app.runs.infrastructure.postgres` | SQL, row locks, CAS/fencing, bounded selectors, record mapping | user-visible wording, HTTP errors, Redis calls, event/audit policy, Sandbox provider calls |
-| Durable Run-event ledger | `app.streaming.infrastructure.postgres` | validate and receipt safe event records supplied by an owning application, write `run_events` on the caller's connection, serve ordered replay | Run terminal decisions, event wording, independent transaction/commit, Redis terminal authority |
+| Durable Run-event ledger | `app.streaming.infrastructure.postgres` | validate and receipt safe event records supplied by an owning application, write `run_events` on the caller's connection, serve authorized history | Run terminal decisions, event wording, independent transaction/commit, Redis terminal authority |
 | Durable audit ledger | `app.platform.postgres.audit` | validate a generic bounded audit envelope and write `audit_logs` on the caller's connection | Runs policy, target authorization, independent transaction/commit, public projection |
 | HTTP transport | `app.runs.transport.http` | auth/input validation, command mapping, safe response/error mapping | SQL, queue/terminal decisions, concrete infrastructure, `app.bootstrap` imports |
 | Public in-process contract | `app.runs.api` | stable application commands/results/service protocol and public Run constants | adapter construction, mutable global registration, compatibility behavior |
@@ -79,7 +78,7 @@ The legacy mixed closure is split by responsibility, not copied wholesale.
 The Runs PostgreSQL adapter owns operations equivalent to:
 
 - lock and read one Run identity/status;
-- stage the first terminal intent with compare-and-set semantics;
+- stage the first business terminalization target with compare-and-set semantics;
 - acquire an owner/admin cancellation row lock and persist the cancellation fact;
 - list bounded terminalization, child-reconciliation, and parent-finalization
   candidates with `FOR UPDATE SKIP LOCKED`;
@@ -106,7 +105,8 @@ append user-visible events, select error wording, or call another context.
 - finalize a ready multi-agent parent exactly once.
 
 These operations coordinate PostgreSQL primitives and explicit event-ledger,
-audit-ledger, terminal-intent-recorder, and Sandbox Runtime application ports.
+audit-ledger and Sandbox Runtime application ports, then invoke direct Streaming
+publication after commit.
 They receive their dependencies by constructor or explicit argument. A missing
 dependency fails during bootstrap, not during a terminal transition.
 
@@ -129,14 +129,14 @@ never becomes a Run event merely because it was present in a database record.
 
 The migration MUST preserve these observable semantics:
 
-1. **One Unit of Work.** A protected Run/step transition, its frozen terminal
-   publication intent, and its durable Run-event/audit facts use the same
+1. **One Unit of Work.** A protected Run/step transition and its durable
+   Run-event/audit facts use the same
    PostgreSQL connection and transaction. `StreamingEventLedgerWriter` owns
    `run_events`; `AuditLedgerWriter` owns `audit_logs`; neither starts or commits
    a transaction supplied by Runs.
 2. **Owning row first.** Acquire the owning Run row before dependent step or
    child reconciliation locks. Do not introduce a reverse lock order.
-3. **First terminal intent wins.** The first nonterminal target is retained;
+3. **First business terminalization target wins.** The first nonterminal target is retained;
    only the defined `cancel_requested` to `cancelled` advancement is allowed.
 4. **Terminal rows are immutable.** Success, failure, and cancellation CAS
    predicates exclude already terminal Runs.
@@ -148,13 +148,11 @@ The migration MUST preserve these observable semantics:
    match.
 7. **Exactly-once durable facts.** Parent finalization and child reconciliation
    keep their event/audit existence checks or an equivalent unique receipt.
-8. **Side-effect order.** Freeze and persist terminal/end semantic IDs,
-   canonical bytes, sizes, digests, stream incarnation, projection version,
-   publication state, and retry metadata with the Run transition. Publish to
-   Redis only after commit. Unknown publication retries the same IDs/bytes;
-   pending work is recovered by the existing fenced terminal publisher or
-   reconciler. A Redis failure does not authorize a second PostgreSQL terminal
-   state or leave the Run permanently nonterminal.
+8. **Side-effect order.** Publish only after the Run transition and its facts
+   commit. Derive stable terminal/end identities from the committed Run fact;
+   Redis receipts enforce idempotency and callback-prefix ordering. There is no
+   publication state, pending-intent drain or successor recovery. Redis failure
+   cannot undo Run finalization or hide its authoritative final answer.
 9. **Sandbox cleanup remains Sandbox-owned.** After the Run cancellation fact
    commits, orchestration calls the public Sandbox Runtime release/reconcile
    application API through a separate Sandbox-owned operation boundary. That authority
@@ -174,7 +172,7 @@ The migration MUST preserve these observable semantics:
 `bootstrap.api` constructs one `RunLifecycleService` graph and supplies it to
 Runs/Chat/Admin HTTP transports. It also supplies the Streaming-owned
 transaction-scoped event-ledger adapter, the platform audit-ledger adapter, the
-terminal-intent recorder/post-commit publisher, and the public Sandbox Runtime
+direct post-commit publisher, and the public Sandbox Runtime
 client. Transport helpers receive the service explicitly or through framework
 dependency injection whose provider reads only the application instance
 installed by bootstrap.
@@ -187,9 +185,9 @@ A route, transport helper, or admission helper MUST NOT import
 `bootstrap.worker` constructs the worker's `RunLifecycleService` and passes it
 through the worker entrypoint. Worker processing and maintenance functions
 receive that service explicitly. After the PostgreSQL transaction commits, the
-worker/API terminal coordinator invokes the Streaming post-commit publisher;
-maintenance retries durable pending terminal intents using the same frozen
-semantic identity and current attempt/incarnation fence. Test doubles implement
+worker/API terminal coordinator invokes the Streaming post-commit publisher.
+Business reconciliation remains durable; no maintenance loop scans SSE delivery
+work. Final hydration converges even when Redis publication fails. Test doubles implement
 application ports and are injected by tests; they are not production registries
 or global monkeypatch requirements.
 
@@ -211,7 +209,7 @@ The Runs lifecycle MUST NOT use:
 - Concrete adapter: `PostgresRunRepository` (or narrowly named PostgreSQL
   adapters when the repository is split).
 - Cross-owner ports: capability nouns such as `StreamingEventLedgerWriter`,
-  `AuditLedgerWriter`, `TerminalIntentRecorder`, `TerminalIntentPublisher`, and
+  `AuditLedgerWriter`, `RunEventPublisher`, and
   `SandboxRuntimeClient`.
 - Input intents: explicit commands such as `CancelRunCommand` and
   `FailRunCommand` when a structured input is required.
@@ -255,9 +253,9 @@ The behavior migration MUST:
 3. **PostgreSQL primitives.** Extract SQL/lock/CAS operations with replay tests
    for SQL, rows, transaction scope, and failure side effects.
 4. **Application service.** Implement explicit ports and orchestration; preserve
-   the existing durable `sse_terminal_publication_intents` identity/digest/state
-   contract and post-commit pending-intent recovery; no ambient locator or
-   concrete adapter import.
+   committed Run/event/audit identity and transaction-external direct publication.
+   Do not restore `sse_terminal_publication_intents`, a publication queue, an
+   ambient locator or a concrete adapter import.
 5. **API composition.** Inject the service into Runs/Chat/Admin transports and
    retire transport-to-bootstrap imports.
 6. **Worker composition.** Inject the same application contract into worker
@@ -267,7 +265,7 @@ The behavior migration MUST:
 
 One slice MUST NOT combine a policy rewrite with an unproven lock/transaction
 rewrite. A source move that changes a response, persisted row, SQL/lock order,
-event/audit identity, terminal-intent identity, or failure side effect is a
+event/audit identity, terminal-event identity, or failure side effect is a
 behavior change and needs separate evidence.
 
 ## 9. Required evidence
@@ -277,9 +275,9 @@ The terminal behavior change is not ready until focused evidence covers:
 - pure decision unit tests with fixed inputs;
 - PostgreSQL integration tests for commit, rollback, CAS loss, lock contention,
   `SKIP LOCKED`, stale lease/generation fencing, and exact-once event/audit facts;
-- terminal publication tests for frozen semantic IDs/bytes/digests, PostgreSQL
-  rollback, commit then Redis failure/unknown outcome, exact retry, pending
-  reconciler recovery, successor incarnation, and final hydrate convergence;
+- terminal publication tests for deterministic IDs/bytes, PostgreSQL rollback,
+  commit then Redis failure, callback/terminal ordering, exact partial-end retry,
+  missing Stream without reconstruction, and final hydrate convergence;
 - Sandbox Runtime tests proving cancellation calls its public release authority,
   provider stop is fenced/receipted there, stop failure remains reconcilable,
   and Runs never mutates the lease or claims cleanup success;

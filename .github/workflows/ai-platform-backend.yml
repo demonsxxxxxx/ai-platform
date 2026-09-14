@@ -167,17 +167,19 @@ jobs:
               tests/test_run_admission_terminalization.py
               tests/test_run_cancellation_use_case.py
               tests/test_run_control_routes.py
+              tests/test_run_diagnostics.py
               tests/test_run_persistence.py
               tests/test_run_projection.py
-              tests/test_sse_v3_contract_generation.py
               tests/test_sse_v4_contract_generation.py
               tests/test_streaming_contracts.py
+              tests/test_worker_attempt_lifecycle.py
           - shard: schema-migrations
             postgres_image: postgres:16-alpine
             postgres_url: postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform
             redis_image: ""
             redis_url: ""
             test_files: >-
+              tests/test_run_diagnostics_postgres.py
               tests/test_schema_migrations.py
               tests/test_schema_migrations_postgres.py
               tests/test_schema.py::test_schema_declares_attempt_identity_state_and_fences
@@ -187,6 +189,8 @@ jobs:
             redis_image: redis:7.4-alpine
             redis_url: redis://127.0.0.1:6379/15
             test_files: >-
+              tests/test_streaming_callback_direct.py
+              tests/test_retire_legacy_sse_streams.py
               tests/test_streaming_v4_durable.py
               tests/test_streaming_v4_postgres_integration.py
               tests/test_streaming_v4_redis_integration.py

@@ -19,7 +19,6 @@ from app.capacity_baseline import (
     build_capacity_recorded_gate_snapshot,
     build_capacity_recorded_gate_evidence_contract,
     render_capacity_baseline_markdown,
-    render_capacity_evidence_bundle_markdown,
     render_capacity_evidence_snapshot_markdown,
     render_capacity_gate_readiness_markdown,
     render_capacity_profile_readiness_markdown,
@@ -69,7 +68,6 @@ class SecretBearingSettings:
     multi_agent_dispatch_worker_enabled = False
     multi_agent_dispatch_worker_limit = 1
     llm_gateway_provider = "openai_compatible"
-    model_gateway_request_concurrency_limit = 0
     openai_base_url = "https://model-gateway.internal/v1"
     openai_api_key = "sk-secret"
 
@@ -162,8 +160,8 @@ def test_capacity_baseline_records_defaults_without_secret_like_settings():
     assert baseline["model_gateway_backpressure_policy"] == {
         "schema_version": "ai-platform.model-gateway-backpressure-policy.v1",
         "status": "contract_only_not_enforced",
-        "config_signal": "MODEL_GATEWAY_REQUEST_CONCURRENCY_LIMIT",
-        "default_limit_policy": "0_disables_platform_request_limit",
+        "config_signal": None,
+        "default_limit_policy": "unbounded_by_platform",
         "required_admin_runtime_fields": [
             "capacity.limits.model_gateway",
             "backpressure.model_gateway",
@@ -190,7 +188,7 @@ def test_capacity_baseline_records_defaults_without_secret_like_settings():
     assert "model-gateway.internal" not in serialized
 
 
-def test_capacity_baseline_reports_configured_model_gateway_limit_without_load_claims():
+def test_capacity_baseline_ignores_retired_model_gateway_limit_without_load_claims():
     class ConfiguredGatewaySettings(SecretBearingSettings):
         model_gateway_request_concurrency_limit = 12
 
@@ -199,13 +197,12 @@ def test_capacity_baseline_reports_configured_model_gateway_limit_without_load_c
     assert baseline["limits"]["model_gateway"] == {
         "provider": "openai_compatible",
         "request_concurrency_limit": None,
-        "configured_request_concurrency_limit": 12,
+        "configured_request_concurrency_limit": None,
         "limit_enforcement": "not_implemented",
         "capacity_evidence": "unproven_without_load_test",
     }
     assert "model_gateway_concurrency_unbounded_by_platform" in baseline["warnings"]
-    assert "model_gateway_configured_limit_not_enforced" in baseline["warnings"]
-    assert "model_gateway_capacity_unproven_without_load_test" in baseline["warnings"]
+    assert "model_gateway_configured_limit_not_enforced" not in baseline["warnings"]
     assert baseline["production_default_policy"] == "do_not_raise_without_recorded_load_test_evidence"
     assert "model_gateway_timeout_and_backpressure" in baseline["load_test_gates"]
 
@@ -250,15 +247,15 @@ def test_render_capacity_baseline_markdown_is_operator_readable_and_safe():
     assert "sk-secret" not in markdown
 
 
-def test_render_capacity_baseline_markdown_shows_configured_model_gateway_limit():
+def test_render_capacity_baseline_markdown_reports_model_gateway_limit_unavailable():
     class ConfiguredGatewaySettings(SecretBearingSettings):
         model_gateway_request_concurrency_limit = 12
 
     markdown = render_capacity_baseline_markdown(build_capacity_baseline(ConfiguredGatewaySettings()))
 
-    assert "Model gateway concurrency | configured=12; not enforced; load-test required" in markdown
-    assert "model_gateway_configured_limit_not_enforced" in markdown
-    assert "model_gateway_capacity_unproven_without_load_test" in markdown
+    assert "Model gateway concurrency | unbounded by platform; load-test required" in markdown
+    assert "model_gateway_configured_limit_not_enforced" not in markdown
+    assert "Config signal: `unavailable`" in markdown
 
 
 def test_capacity_baseline_cli_outputs_json_without_secret_markers():
@@ -277,7 +274,7 @@ def test_capacity_baseline_cli_outputs_json_without_secret_markers():
     assert payload["schema_version"] == "ai-platform.capacity-baseline.v1"
     assert payload["limits"]["worker"]["max_active_worker_runs"] == 7
     assert payload["limits"]["model_gateway"]["request_concurrency_limit"] is None
-    assert payload["limits"]["model_gateway"]["configured_request_concurrency_limit"] == 11
+    assert payload["limits"]["model_gateway"]["configured_request_concurrency_limit"] is None
     assert payload["limits"]["model_gateway"]["limit_enforcement"] == "not_implemented"
     assert "ai_platform_dev_password" not in result.stdout
     assert "database_url" not in result.stdout.lower()

@@ -5962,7 +5962,7 @@ def test_cancel_routes_publish_only_after_drain_can_create_terminal_row(
     monkeypatch.setattr(f"{module_path}.admit_v4_stream", admit)
     monkeypatch.setattr(f"{module_path}.drain_run_tool_permission_terminalization", drain)
     monkeypatch.setattr(f"{module_path}.reconcile_terminalized_permission_run", reconcile)
-    monkeypatch.setattr(f"{module_path}.publish_pending_run_terminal", publish)
+    monkeypatch.setattr(f"{module_path}.publish_run_event", publish)
     monkeypatch.setattr(f"{module_path}.remove_queued_run", remove_queued_run, raising=False)
 
     app = create_app()
@@ -6047,7 +6047,7 @@ def test_cancel_routes_complete_queue_cleanup_when_v4_publication_raises(
         f"{module_path}.reconcile_terminalized_permission_run",
         reconcile,
     )
-    monkeypatch.setattr(f"{module_path}.publish_pending_run_terminal", publish)
+    monkeypatch.setattr(f"{module_path}.publish_run_event", publish)
     monkeypatch.setattr(
         f"{module_path}.remove_queued_run",
         remove_queued_run,

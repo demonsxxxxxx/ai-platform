@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from redis.exceptions import ResponseError
@@ -36,7 +35,6 @@ from app.streaming.domain.public_events_v4 import (
     _APPLICATION_EVENT_TYPES,
     _MESSAGE_EVENT_TYPES,
     _RUN_DOMAIN_EVENT_TYPES,
-    _immutable_v4_payload,
     _nonempty,
     _safe_ref,
     _stable_event_id,
@@ -49,7 +47,6 @@ from app.streaming.domain.public_events_v4 import (
     project_public_envelope_v4,
     project_public_v4,
     stream_end_event_id,
-    strip_internal_envelope,
     validate_internal_envelope_v4 as _validate_internal_envelope,
 )
 from app.streaming.domain.transport import (
@@ -58,14 +55,18 @@ from app.streaming.domain.transport import (
     StreamGap,
     canonical_json_bytes,
 )
-from app.streaming.infrastructure.publication_wakeup import PUBLICATION_CHANNEL
 from app.streaming.redis import (
     RedisStreamBridge,
+    SSE_STREAM_ACTIVE_IDLE_TTL_MS as _SSE_STREAM_ACTIVE_IDLE_TTL_MS,
+    SSE_STREAM_MAXLEN as _SSE_STREAM_MAXLEN,
     StreamContractError,
     StreamTransportUnavailable,
     StreamAuthority,
     get_stream_authority,
 )
+
+SSE_STREAM_ACTIVE_IDLE_TTL_MS = _SSE_STREAM_ACTIVE_IDLE_TTL_MS
+SSE_STREAM_MAXLEN = _SSE_STREAM_MAXLEN
 
 
 def _normalize_redis_fields(fields: object) -> dict[str, str]:
@@ -86,13 +87,6 @@ def _normalize_redis_fields(fields: object) -> dict[str, str]:
             raise StreamContractError("v4_stream_fields_duplicate")
         normalized[key] = value
     return normalized
-
-
-@dataclass(frozen=True, slots=True)
-class V4Publication:
-    event_id: str
-    redis_id: str
-    envelope: dict[str, object]
 
 
 _V4_REPLAY_PAGE_LUA = r"""
@@ -123,7 +117,6 @@ async def append_application_v4_row(
     authority: StreamAuthority,
     execution_lease_id: str | None,
     event_id: str | None = None,
-    terminal_intent_id: str | None = None,
     message_id: str | None = None,
     trace_ref: str | None = None,
     causation_event_id: str | None = None,
@@ -136,15 +129,10 @@ async def append_application_v4_row(
         raise V4ProjectionError("v4_callback_item_invalid")
     is_run_domain = event_type in _RUN_DOMAIN_EVENT_TYPES
     if execution_lease_id is None:
-        expected_authority_state = (
-            "confirmed" if event_type == "run.cancel_requested" else "terminal"
-        )
-        if not is_run_domain or (
-            authority.state != expected_authority_state
-            and not (
-                authority.state == "admission_pending"
-                and event_type in {"run.cancel_requested", "run.cancelled", "run.succeeded", "run.failed"}
-            )
+        if (
+            not is_run_domain
+            or authority.state not in {"admission_pending", "confirmed", "terminal"}
+            or (event_type == "run.cancel_requested" and authority.state == "terminal")
         ):
             raise V4ProjectionError("v4_run_authority_scope_mismatch")
     else:
@@ -170,14 +158,10 @@ async def append_application_v4_row(
         )
     if event_id is not None:
         _safe_ref(event_id, name="event_id")
-    if terminal_intent_id is not None:
-        _safe_ref(terminal_intent_id, name="terminal_intent_id")
     if event_type in {"run.succeeded", "run.failed", "run.cancelled"}:
         terminal_payload_id = payload.get("terminal_event_id") if isinstance(payload, Mapping) else None
         if event_id != terminal_payload_id:
             raise V4ProjectionError("v4_terminal_event_id_mismatch")
-        if terminal_intent_id is None or terminal_intent_id != event_id:
-            raise V4ProjectionError("v4_terminal_intent_identity_mismatch")
 
     if (
         isinstance(callback_index, bool)
@@ -219,9 +203,6 @@ async def append_application_v4_row(
         "causation_event_id": causation_event_id,
         "source_event_id": source_event_id,
         "source_run_id": source_run_id,
-        "terminal_intent_id": terminal_intent_id,
-        "publication_state": "pending",
-        "publication_attempts": 0,
         "lease_fence": "active" if execution_lease_id is not None else "not_required",
         "cancellation_fence": "not_requested",
     }
@@ -237,7 +218,7 @@ async def append_application_v4_row(
         tenant_id, run_id, attempt_id, batch_id, callback_index, batch_index
     )
     existing_result = await conn.execute(
-        "select id, tenant_id, run_id, sequence, event_type, visible_to_user, payload_json, stream_publication_state, stream_publication_attempts, stream_publication_next_attempt_at, created_at from run_events where id = %s for update",
+        "select id, tenant_id, run_id, sequence, event_type, visible_to_user, payload_json, created_at from run_events where id = %s for update",
         (event_id,),
     )
     existing = await existing_result.fetchone()
@@ -248,8 +229,7 @@ async def append_application_v4_row(
                 existing.get("run_id") != run_id,
                 existing.get("event_type") != event_type,
                 existing.get("visible_to_user") is not True,
-                _immutable_v4_payload(existing.get("payload_json"))
-                != _immutable_v4_payload(expected_payload),
+                existing.get("payload_json") != expected_payload,
             )
         ):
             raise V4ProjectionError("v4_callback_existing_row_conflict")
@@ -261,17 +241,6 @@ async def append_application_v4_row(
         event=event,
         event_id=event_id,
     )
-    await conn.execute(
-        """
-        update run_events
-        set stream_publication_state = 'pending',
-            stream_publication_attempts = 0,
-            stream_publication_next_attempt_at = now(),
-            stream_publication_last_error = null
-        where id = %s
-        """,
-        (receipt.event_id,),
-    )
     return {
         "id": receipt.event_id,
         "tenant_id": tenant_id,
@@ -280,9 +249,6 @@ async def append_application_v4_row(
         "event_type": event_type,
         "visible_to_user": True,
         "payload_json": dict(event.payload),
-        "stream_publication_state": "pending",
-        "stream_publication_attempts": 0,
-        "stream_publication_next_attempt_at": datetime.now(timezone.utc),
         "created_at": receipt.created_at,
     }
 
@@ -297,7 +263,6 @@ async def append_run_v4_row(
     payload: Mapping[str, object],
     batch_id: str,
     event_id: str | None = None,
-    terminal_intent_id: str | None = None,
     trace_ref: str | None = None,
 ) -> Mapping[str, object] | None:
     """Append one Run-owned v4 row on the caller's PostgreSQL transaction."""
@@ -309,9 +274,6 @@ async def append_run_v4_row(
         return None
     if not attempt_id:
         attempt_id = authority.attempt_id
-    if event_type in {"run.succeeded", "run.failed", "run.cancelled"}:
-        if event_id is None or terminal_intent_id != event_id:
-            raise V4ProjectionError("v4_terminal_intent_identity_mismatch")
     return await append_application_v4_row(
         conn,
         tenant_id=tenant_id,
@@ -325,9 +287,8 @@ async def append_run_v4_row(
         authority=authority,
         execution_lease_id=None,
         event_id=event_id,
-        terminal_intent_id=terminal_intent_id,
         trace_ref=trace_ref,
-        source_event_id=terminal_intent_id,
+        source_event_id=event_id,
         source_run_id=run_id,
     )
 
@@ -405,7 +366,7 @@ async def append_run_terminal_v4_row(
     reason_code: str = "user_cancelled",
     trace_ref: str | None = None,
 ) -> Mapping[str, object] | None:
-    """Append the terminal Run event using the existing terminal intent identity."""
+    """Append the terminal Run fact under its deterministic event identity."""
 
     return await append_run_v4_row(
         conn,
@@ -421,7 +382,6 @@ async def append_run_terminal_v4_row(
         ),
         batch_id=terminal_event_id,
         event_id=terminal_event_id,
-        terminal_intent_id=terminal_event_id,
         trace_ref=trace_ref,
     )
 
@@ -463,8 +423,6 @@ async def append_callback_v4_rows(
                 source_run_id=item.source_run_id,
             )
         )
-    if rows:
-        await conn.execute("select pg_notify(%s, '')", (PUBLICATION_CHANNEL,))
     return tuple(rows)
 
 
@@ -513,7 +471,7 @@ async def load_answer_by_receipt(
     cursor = await conn.execute(
         """
         select id, tenant_id, run_id, sequence, event_type, visible_to_user,
-               payload_json, stream_publication_state, created_at
+               payload_json, created_at
         from run_events
         where tenant_id = %s
           and run_id = %s
@@ -536,16 +494,10 @@ async def load_answer_by_receipt(
         for row in rows:
             if not isinstance(row, Mapping):
                 raise V4ProjectionError("row")
-            publication_state = row.get("stream_publication_state")
             payload = row.get("payload_json")
             metadata = payload.get(V4_METADATA_KEY) if isinstance(payload, Mapping) else None
             if not isinstance(metadata, Mapping):
-                raise V4ProjectionError("publication_state")
-            metadata_state = metadata.get("publication_state")
-            if publication_state == "pending" and metadata_state == "pending":
-                raise AssistantAnswerReceiptError(retryable=True)
-            if publication_state != "published" or metadata_state != "published":
-                raise V4ProjectionError("publication_state")
+                raise V4ProjectionError("metadata")
             projected = project_public_v4(row, authority=authority)
             if projected is None:
                 raise V4ProjectionError("projection")
@@ -612,131 +564,6 @@ async def load_answer_by_receipt(
     return ReconstructedAssistantAnswer(text=text)
 
 
-async def list_pending_v4_rows(
-    conn: Any,
-    *,
-    limit: int = 64,
-) -> tuple[Mapping[str, object], ...]:
-    if isinstance(limit, bool) or not 1 <= limit <= 256:
-        raise ValueError("v4_pending_limit_invalid")
-    result = await conn.execute(
-        """
-        select id, tenant_id, run_id, sequence, event_type, visible_to_user,
-               payload_json, stream_publication_state, stream_publication_attempts,
-               stream_publication_next_attempt_at, created_at
-        from run_events
-        where visible_to_user = true
-          and stream_publication_state = 'pending'
-          and (stream_publication_next_attempt_at is null or stream_publication_next_attempt_at <= now())
-          and not exists (
-            select 1
-            from run_events predecessor
-            where predecessor.tenant_id = run_events.tenant_id
-              and predecessor.run_id = run_events.run_id
-              and predecessor.visible_to_user = true
-              and predecessor.stream_publication_state = 'pending'
-              and predecessor.sequence < run_events.sequence
-          )
-        order by run_id asc, sequence asc
-        limit %s
-        for update skip locked
-        """,
-        (limit,),
-    )
-    return tuple(await result.fetchall())
-
-
-async def mark_v4_published(
-    conn: Any,
-    *,
-    event_id: str,
-    redis_id: str,
-) -> bool:
-    """Record transport identity only after XADD succeeds."""
-
-    _nonempty(event_id, "event_id")
-    _nonempty(redis_id, "redis_id")
-    result = await conn.execute(
-        """
-        update run_events
-        set stream_publication_state = 'published',
-            stream_publication_redis_id = %s,
-            stream_publication_next_attempt_at = null,
-            stream_publication_last_error = null,
-            payload_json = jsonb_set(
-              payload_json, '{__stream_v4,publication_state}', to_jsonb('published'::text)
-            )
-        where id = %s
-          and stream_publication_state = 'pending'
-        returning id
-        """,
-        (redis_id, event_id),
-    )
-    return await result.fetchone() is not None
-
-
-async def mark_v4_attempt(
-    conn: Any,
-    *,
-    event_id: str,
-) -> None:
-    await conn.execute(
-        """
-        update run_events
-        set stream_publication_attempts = coalesce(stream_publication_attempts, 0) + 1,
-            stream_publication_next_attempt_at = now() + interval '5 seconds',
-            payload_json = jsonb_set(
-              payload_json, '{__stream_v4,publication_attempts}',
-              to_jsonb(coalesce((payload_json -> '__stream_v4' ->> 'publication_attempts')::integer, 0) + 1)
-            )
-        where id = %s and stream_publication_state = 'pending'
-        """,
-        (event_id,),
-    )
-
-
-async def mark_v4_retry_error(
-    conn: Any,
-    *,
-    event_id: str,
-    error: str,
-) -> None:
-    await conn.execute(
-        """
-        update run_events
-        set stream_publication_last_error = %s
-        where id = %s and stream_publication_state = 'pending'
-        """,
-        (_nonempty(error, "publication_error")[:120], event_id),
-    )
-
-
-async def suppress_v4_event(
-    conn: Any,
-    *,
-    event_id: str,
-    reason: str,
-) -> bool:
-    _nonempty(event_id, "event_id")
-    _nonempty(reason, "suppression_reason")
-    result = await conn.execute(
-        """
-        update run_events
-        set stream_publication_state = 'suppressed',
-            stream_publication_next_attempt_at = null,
-            stream_publication_last_error = %s,
-            payload_json = jsonb_set(
-              jsonb_set(payload_json, '{__stream_v4,publication_state}', to_jsonb('suppressed'::text)),
-              '{__stream_v4,suppression_reason}', to_jsonb(%s::text)
-            )
-        where id = %s and stream_publication_state = 'pending'
-        returning id
-        """,
-        (reason, reason, event_id),
-    )
-    return await result.fetchone() is not None
-
-
 class V4RedisStreamBridge:
     """Use the existing Redis bridge client for the v4 bounded transport."""
 
@@ -781,7 +608,6 @@ class V4RedisStreamBridge:
                 event_type=event_type,
                 envelope_bytes=payload,
                 terminal_event_id=terminal_event_id,
-                protocol="v4",
             )
             if event_type not in {"run.succeeded", "run.cancelled", "run.failed"}:
                 return redis_id
@@ -794,7 +620,7 @@ class V4RedisStreamBridge:
                 stream_incarnation=incarnation,
                 event_type="stream.end",
                 payload={"terminal_event_id": terminal_event_id},
-                source={"kind": "terminal_intent", "terminal_event_id": terminal_event_id},
+                source=internal["source"],
                 causation_event_id=terminal_event_id,
                 emitted_at=internal["emitted_at"],
             )
@@ -806,7 +632,6 @@ class V4RedisStreamBridge:
                 event_type="stream.end",
                 envelope_bytes=canonical_json_bytes(end),
                 terminal_event_id=terminal_event_id,
-                protocol="v4",
             )
         except StreamContractError:
             raise
@@ -816,41 +641,6 @@ class V4RedisStreamBridge:
             if isinstance(exc, StreamTransportUnavailable):
                 raise
             raise StreamTransportUnavailable("v4_stream_append_unavailable") from exc
-
-    async def publish_non_replayable(self, envelope: Mapping[str, object]) -> str:
-        """Publish heartbeat/gap live-only and return the latest real cursor."""
-
-        internal = _validate_internal_envelope(envelope)
-        if internal["event_type"] not in {"stream.heartbeat", "stream.gap"}:
-            raise StreamContractError("v4_control_replayable")
-        latest_cursor = await self.latest_cursor(
-            tenant_scope_value=str(internal["tenant_scope"]),
-            run_id=str(internal["run_id"]),
-            attempt_id=str(internal["attempt_id"]),
-            stream_incarnation=int(internal["stream_incarnation"]),
-        )
-        channel = stream_key(
-            tenant_scope_value=str(internal["tenant_scope"]),
-            run_id=str(internal["run_id"]),
-            stream_incarnation=int(internal["stream_incarnation"]),
-        ).removesuffix(":events") + ":live"
-        try:
-            latest = StreamCursor.parse(
-                latest_cursor,
-                run_id=str(internal["run_id"]),
-            )
-            publication = json.dumps(
-                {
-                    "redis_id": latest.redis_id,
-                    "envelope": canonical_json_bytes(dict(internal)).decode("utf-8"),
-                },
-                separators=(",", ":"),
-                sort_keys=True,
-            )
-            await self._bridge._publish_client.publish(channel, publication)
-            return latest_cursor
-        except Exception as exc:
-            raise StreamTransportUnavailable("v4_control_publish_unavailable") from exc
 
     async def latest_cursor(
         self,
@@ -974,13 +764,6 @@ class V4RedisStreamBridge:
             source={"kind": "stream_authority", "authority_id": event_id},
             emitted_at=emitted_at,
         )
-        return envelope, cursor
-
-    async def publish_gap(self, **kwargs: object) -> tuple[dict[str, object], str]:
-        envelope, cursor = await self.build_gap(**kwargs)
-        published_cursor = await self.publish_non_replayable(envelope)
-        if published_cursor != cursor:
-            raise StreamContractError("v4_gap_cursor_changed")
         return envelope, cursor
 
     def _decode(
@@ -1133,29 +916,71 @@ class V4RedisStreamBridge:
             for row in rows or ()
         )
 
-    def decode_live_publication(
+    async def read_stream(
         self,
         *,
-        redis_id: str,
-        envelope_json: str,
         tenant_scope_value: str,
         run_id: str,
         attempt_id: str,
         stream_incarnation: int,
-    ) -> V4StreamEntry:
-        return self._decode(
-            (redis_id, {"envelope": envelope_json}),
+        after_redis_id: str,
+        count: int = 128,
+        block_ms: int = 5000,
+    ) -> tuple[V4StreamEntry, ...]:
+        """Read later entries directly from the authorized Redis Stream."""
+        _redis_id_tuple(after_redis_id)
+        if (
+            isinstance(count, bool)
+            or not isinstance(count, int)
+            or not 1 <= count <= 128
+            or isinstance(block_ms, bool)
+            or not isinstance(block_ms, int)
+            or not 1 <= block_ms <= 5000
+        ):
+            raise StreamContractError("v4_stream_read_options_invalid")
+        key = stream_key(
             tenant_scope_value=tenant_scope_value,
             run_id=run_id,
-            attempt_id=attempt_id,
             stream_incarnation=stream_incarnation,
+        )
+        try:
+            result = await self._bridge._read_client.xread(
+                {key: after_redis_id}, count=count, block=block_ms
+            )
+        except Exception as exc:
+            raise StreamTransportUnavailable("v4_stream_read_unavailable") from exc
+        if not result:
+            return ()
+        if not isinstance(result, (list, tuple)) or len(result) != 1:
+            raise StreamTransportUnavailable("v4_stream_read_result_invalid")
+        stream_result = result[0]
+        if not isinstance(stream_result, (list, tuple)) or len(stream_result) != 2:
+            raise StreamTransportUnavailable("v4_stream_read_result_invalid")
+        stream_name, rows = stream_result
+        if isinstance(stream_name, bytes):
+            try:
+                stream_name = stream_name.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise StreamContractError("v4_stream_authority_mismatch") from exc
+        if stream_name != key:
+            raise StreamContractError("v4_stream_authority_mismatch")
+        if not isinstance(rows, (list, tuple)):
+            raise StreamTransportUnavailable("v4_stream_read_result_invalid")
+        return tuple(
+            self._decode(
+                row,
+                tenant_scope_value=tenant_scope_value,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                stream_incarnation=stream_incarnation,
+            )
+            for row in rows
         )
 
 
 __all__ = [
     "V4CallbackItem",
     "V4ProjectionError",
-    "V4Publication",
     "V4RedisStreamBridge",
     "V4StreamEntry",
     "append_application_v4_row",
@@ -1165,14 +990,8 @@ __all__ = [
     "build_v4_control",
     "callback_item_to_v4",
     "load_answer_by_receipt",
-    "list_pending_v4_rows",
-    "mark_v4_attempt",
-    "mark_v4_published",
-    "mark_v4_retry_error",
-    "suppress_v4_event",
     "opaque_message_id",
     "project_public_envelope_v4",
     "project_public_v4",
     "stream_end_event_id",
-    "strip_internal_envelope",
 ]

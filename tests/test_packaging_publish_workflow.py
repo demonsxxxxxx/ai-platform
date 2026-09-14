@@ -246,7 +246,17 @@ def test_syft_scans_the_immutable_subject_via_explicit_registry_linux_amd64():
     assert "docker:" not in str(generate["with"]["image"])
 
 
-def test_publish_build_has_no_secret_inputs_and_all_evidence_precedes_ready_manifest():
+def test_frontend_dockerfile_consumes_sop_secret_only_during_build():
+    dockerfile = (ROOT / "frontend" / "web" / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+
+    assert "RUN --mount=type=secret,id=VITE_RAGFLOW_SOP_SHARE_URL" in dockerfile
+    assert 'VITE_RAGFLOW_SOP_SHARE_URL="$(cat /run/secrets/VITE_RAGFLOW_SOP_SHARE_URL' in dockerfile
+    assert "ENV VITE_RAGFLOW_SOP_SHARE_URL" not in dockerfile
+
+
+def test_publish_build_uses_secret_mount_and_all_evidence_precedes_ready_manifest():
     workflow = _workflow()
     publish = workflow["jobs"]["publish"]
     steps = publish["steps"]
@@ -270,14 +280,26 @@ def test_publish_build_has_no_secret_inputs_and_all_evidence_precedes_ready_mani
 
     build = next(step for step in steps if step.get("name") == "Build and push immutable image")
     build_inputs = build["with"]
-    assert "secrets" not in build_inputs
+    assert "secrets" in build_inputs
     assert "secret-files" not in build_inputs
     assert set(build_inputs["build-args"].splitlines()) == {
         "AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}",
         "AI_PLATFORM_BUILD_DIRTY=false",
         "AI_PLATFORM_BUILD_REPOSITORY=https://github.com/demonsxxxxxx/ai-platform.git",
     }
+    assert build_inputs["secrets"] == (
+        "VITE_RAGFLOW_SOP_SHARE_URL=${{ matrix.role == 'frontend' && "
+        "secrets.VITE_RAGFLOW_SOP_SHARE_URL || '' }}\n"
+    )
     assert build_inputs["provenance"] == "false"
+
+    require_sop_url = next(
+        step for step in steps if step.get("name") == "Require frontend SOP share URL"
+    )
+    assert require_sop_url["if"] == "matrix.role == 'frontend'"
+    assert require_sop_url["env"] == {
+        "VITE_RAGFLOW_SOP_SHARE_URL": "${{ secrets.VITE_RAGFLOW_SOP_SHARE_URL }}"
+    }
 
     assert "secrets." not in build_inputs["build-args"]
     assert "github.token" not in build_inputs["build-args"]

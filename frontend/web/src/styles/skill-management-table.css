@@ -10,12 +10,12 @@
 .skill-management-table__row {
   display: grid;
   grid-template-columns:
-    minmax(14rem, 2.2fr)
-    minmax(7rem, 0.8fr)
+    minmax(16rem, 2.2fr)
+    minmax(6.5rem, 0.75fr)
+    minmax(8rem, 0.9fr)
+    minmax(6rem, 0.65fr)
     minmax(7rem, 0.75fr)
-    minmax(11rem, 1.15fr)
-    minmax(6rem, 0.7fr)
-    minmax(9rem, auto);
+    minmax(4.5rem, auto);
   min-width: 58rem;
   align-items: center;
   column-gap: 0.75rem;
@@ -25,12 +25,12 @@
 .skill-management-table__row--selectable {
   grid-template-columns:
     2rem
-    minmax(14rem, 2.2fr)
-    minmax(7rem, 0.8fr)
+    minmax(16rem, 2.2fr)
+    minmax(6.5rem, 0.75fr)
+    minmax(8rem, 0.9fr)
+    minmax(6rem, 0.65fr)
     minmax(7rem, 0.75fr)
-    minmax(11rem, 1.15fr)
-    minmax(6rem, 0.7fr)
-    minmax(9rem, auto);
+    minmax(4.5rem, auto);
 }
 
 .skill-management-table__head {
@@ -104,9 +104,58 @@
   }
 }
 
+@media (min-width: 1200px) {
+  .skill-management-table--master .skill-management-table__head,
+  .skill-management-table--master .skill-management-table__row {
+    grid-template-columns:
+      minmax(12rem, 2fr)
+      minmax(5.5rem, 0.72fr)
+      minmax(6.5rem, 0.9fr)
+      minmax(4rem, 0.55fr)
+      minmax(6rem, 0.72fr)
+      minmax(4.5rem, auto);
+  }
+
+  .skill-management-table--master .skill-management-table__head--selectable,
+  .skill-management-table--master .skill-management-table__row--selectable {
+    grid-template-columns:
+      2rem
+      minmax(12rem, 2fr)
+      minmax(5.5rem, 0.72fr)
+      minmax(6.5rem, 0.9fr)
+      minmax(4rem, 0.55fr)
+      minmax(6rem, 0.72fr)
+      minmax(4.5rem, auto);
+  }
+
+  .skill-management-table--master .skill-management-table__package,
+  .skill-management-table--master .skill-management-table__updated {
+    display: block;
+  }
+}
+
 .skill-management-table__identity,
 .skill-management-table__package {
   min-width: 0;
+}
+
+.skill-management-table__identity {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+}
+
+.skill-management-table__icon {
+  display: inline-flex;
+  width: 2.25rem;
+  height: 2.25rem;
+  flex: 0 0 2.25rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--skill-border-strong);
+  border-radius: 7px;
+  background: var(--skill-accent-soft);
+  color: var(--theme-primary);
 }
 
 .skill-management-table__select {
@@ -139,6 +188,24 @@
   color: var(--theme-text-secondary);
   font-size: 0.75rem;
   line-height: 1.25;
+}
+
+.skill-management-table__runtime .skill-management-table__status {
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+  background: var(--theme-bg-sidebar);
+  padding: 0.28rem 0.45rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.skill-management-table__runtime .skill-management-table__status--active {
+  border-color: color-mix(in srgb, var(--theme-success) 28%, var(--theme-border));
+  background: color-mix(
+    in srgb,
+    var(--theme-success-soft) 62%,
+    var(--theme-workbench-panel)
+  );
 }
 
 .skill-management-table__status > span {
@@ -219,6 +286,41 @@
   width: 2rem;
   height: 2rem;
   flex: 0 0 2rem;
+}
+
+.skill-management-table__action-menu {
+  position: relative;
+}
+
+.skill-management-table__action-menu-panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 0.3rem);
+  right: 0;
+  width: 9.5rem;
+  overflow: hidden;
+  border: 1px solid var(--theme-border);
+  border-radius: 7px;
+  background: var(--theme-workbench-panel);
+  box-shadow: 0 12px 28px -14px rgb(0 0 0 / 0.28);
+}
+
+.skill-management-table__action-menu-panel > button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.55rem 0.7rem;
+  color: var(--theme-text-secondary);
+  font-size: 0.75rem;
+  text-align: left;
+}
+
+.skill-management-table__action-menu-panel > button:hover,
+.skill-management-table__action-menu-panel > button:focus-visible {
+  background: var(--theme-bg-sidebar);
+  color: var(--theme-text);
+  outline: none;
 }
 
 .skill-management-table__archive-action {

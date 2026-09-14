@@ -389,7 +389,7 @@
     },
     "RunEventSourceV4": {
       "type": "object",
-      "properties": { "kind": { "const": "run_event" }, "run_event_id": { "$ref": "#/$defs/SafeRefV4" }, "sequence": { "type": "integer", "minimum": 1 } },
+      "properties": { "kind": { "const": "run_event" }, "run_event_id": { "$ref": "#/$defs/SafeRefV4" }, "sequence": { "type": "integer", "minimum": 1 }, "callback_sequence": { "type": "integer", "minimum": 0, "maximum": 9223372036854775807 } },
       "required": ["kind", "run_event_id", "sequence"],
       "additionalProperties": false
     },
@@ -397,12 +397,6 @@
       "type": "object",
       "properties": { "kind": { "const": "stream_authority" }, "authority_id": { "$ref": "#/$defs/SafeRefV4" } },
       "required": ["kind", "authority_id"],
-      "additionalProperties": false
-    },
-    "TerminalIntentSourceV4": {
-      "type": "object",
-      "properties": { "kind": { "const": "terminal_intent" }, "terminal_event_id": { "$ref": "#/$defs/SafeRefV4" } },
-      "required": ["kind", "terminal_event_id"],
       "additionalProperties": false
     },
     "InternalStreamEnvelopeV4": {
@@ -430,8 +424,7 @@
         "payload": { "type": "object", "maxProperties": 64 },
         "source": { "oneOf": [
           { "$ref": "#/$defs/RunEventSourceV4" },
-          { "$ref": "#/$defs/StreamAuthoritySourceV4" },
-          { "$ref": "#/$defs/TerminalIntentSourceV4" }
+          { "$ref": "#/$defs/StreamAuthoritySourceV4" }
         ] }
       },
       "required": [

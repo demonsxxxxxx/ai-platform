@@ -10,7 +10,6 @@ import {
 } from "react";
 import { useAuth } from "../hooks/useAuth";
 import { modelPublicApi } from "../services/api/modelPublic";
-import type { SettingsResponse } from "../types";
 
 export interface AvailableModel {
   id: string;
@@ -20,36 +19,20 @@ export interface AvailableModel {
   description?: string;
 }
 
-interface SettingsContextValue {
-  settings: SettingsResponse | null;
-  enableSkills: boolean;
-  enableMemory: boolean;
+interface ModelCatalogContextValue {
   isLoading: boolean;
-  error: string | null;
-  savingKeys: Set<string>;
   availableModels: AvailableModel[] | null;
   defaultModel: string;
   pinnedModelIds: string[];
   togglePinnedModel: (modelId: string) => void;
-  updateSetting: (
-    key: string,
-    value: string | number | boolean | object,
-  ) => Promise<boolean>;
-  resetSetting: (key: string) => Promise<boolean>;
-  resetAllSettings: () => Promise<boolean>;
-  clearError: () => void;
-  exportSettings: () => void;
-  importSettings: (
-    file: File,
-  ) => Promise<{ success: boolean; updatedCount: number; errors: string[] }>;
 }
 
-const SettingsContext = createContext<SettingsContextValue | undefined>(
+const ModelCatalogContext = createContext<ModelCatalogContextValue | undefined>(
   undefined,
 );
 const EMPTY_PINNED_MODEL_IDS: string[] = [];
 
-interface SubjectSettingsSnapshot {
+interface SubjectModelCatalogSnapshot {
   subjectKey: string;
   dbModels: AvailableModel[] | null;
   adminDefaultModelId: string;
@@ -63,7 +46,7 @@ interface SubjectRequestOwner {
   abortController: AbortController;
 }
 
-function emptySubjectSettings(subjectKey: string): SubjectSettingsSnapshot {
+function emptySubjectModelCatalog(subjectKey: string): SubjectModelCatalogSnapshot {
   return {
     subjectKey,
     dbModels: null,
@@ -73,7 +56,7 @@ function emptySubjectSettings(subjectKey: string): SubjectSettingsSnapshot {
   };
 }
 
-export function SettingsProvider({ children }: { children: ReactNode }) {
+export function ModelCatalogProvider({ children }: { children: ReactNode }) {
   const { isAuthenticated, user } = useAuth();
   const authSubjectKey =
     isAuthenticated && user?.tenant_id
@@ -83,16 +66,10 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   authSubjectKeyRef.current = authSubjectKey;
   const subjectGenerationRef = useRef(0);
   const subjectOwnerRef = useRef<SubjectRequestOwner | null>(null);
-  const [subjectSettings, setSubjectSettings] =
-    useState<SubjectSettingsSnapshot | null>(null);
-  const subjectSettingsRef = useRef(subjectSettings);
-  subjectSettingsRef.current = subjectSettings;
-  const [subjectError, setSubjectError] = useState<{
-    subjectKey: string | null;
-    message: string;
-  } | null>(null);
-  const savingKeys = useMemo(() => new Set<string>(), []);
-
+  const [subjectModelCatalog, setSubjectModelCatalog] =
+    useState<SubjectModelCatalogSnapshot | null>(null);
+  const subjectModelCatalogRef = useRef(subjectModelCatalog);
+  subjectModelCatalogRef.current = subjectModelCatalog;
   const isCurrentSubjectOwner = useCallback((owner: SubjectRequestOwner) => {
     return (
       authSubjectKeyRef.current === owner.subjectKey &&
@@ -106,10 +83,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     subjectGenerationRef.current += 1;
     subjectOwnerRef.current?.abortController.abort();
     subjectOwnerRef.current = null;
-    setSubjectError(null);
 
     if (!authSubjectKey) {
-      setSubjectSettings(null);
+      setSubjectModelCatalog(null);
       return;
     }
 
@@ -119,16 +95,16 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       abortController: new AbortController(),
     };
     subjectOwnerRef.current = owner;
-    setSubjectSettings(emptySubjectSettings(authSubjectKey));
+    setSubjectModelCatalog(emptySubjectModelCatalog(authSubjectKey));
 
     const patchCurrentSubject = (
-      patch: Partial<Omit<SubjectSettingsSnapshot, "subjectKey">>,
+      patch: Partial<Omit<SubjectModelCatalogSnapshot, "subjectKey">>,
     ) => {
       if (!isCurrentSubjectOwner(owner)) return;
-      setSubjectSettings((previous) => ({
+      setSubjectModelCatalog((previous) => ({
         ...(previous?.subjectKey === owner.subjectKey
           ? previous
-          : emptySubjectSettings(owner.subjectKey)),
+          : emptySubjectModelCatalog(owner.subjectKey)),
         ...patch,
       }));
     };
@@ -170,33 +146,33 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     };
   }, [authSubjectKey, isCurrentSubjectOwner]);
 
-  const visibleSubjectSettings =
-    authSubjectKey && subjectSettings?.subjectKey === authSubjectKey
-      ? subjectSettings
+  const visibleSubjectModelCatalog =
+    authSubjectKey && subjectModelCatalog?.subjectKey === authSubjectKey
+      ? subjectModelCatalog
       : null;
-  const dbModels = visibleSubjectSettings?.dbModels ?? null;
+  const dbModels = visibleSubjectModelCatalog?.dbModels ?? null;
   const adminDefaultModelId =
-    visibleSubjectSettings?.adminDefaultModelId ?? "";
+    visibleSubjectModelCatalog?.adminDefaultModelId ?? "";
   const pinnedModelIds =
-    visibleSubjectSettings?.pinnedModelIds ?? EMPTY_PINNED_MODEL_IDS;
+    visibleSubjectModelCatalog?.pinnedModelIds ?? EMPTY_PINNED_MODEL_IDS;
 
   const togglePinnedModel = useCallback(
     (modelId: string) => {
       const owner = subjectOwnerRef.current;
       if (!owner || !isCurrentSubjectOwner(owner)) return;
-      const current = subjectSettingsRef.current;
+      const current = subjectModelCatalogRef.current;
       if (current?.subjectKey !== owner.subjectKey) return;
       const nextPinnedModelIds = current.pinnedModelIds.includes(modelId)
         ? current.pinnedModelIds.filter((id) => id !== modelId)
         : [...current.pinnedModelIds, modelId];
-      setSubjectSettings({ ...current, pinnedModelIds: nextPinnedModelIds });
+      setSubjectModelCatalog({ ...current, pinnedModelIds: nextPinnedModelIds });
       void modelPublicApi
         .updatePinnedModelIds(nextPinnedModelIds, {
           signal: owner.abortController.signal,
         })
         .then((serverPinnedModelIds) => {
           if (!isCurrentSubjectOwner(owner)) return;
-          setSubjectSettings((previous) =>
+          setSubjectModelCatalog((previous) =>
             previous?.subjectKey === owner.subjectKey
               ? { ...previous, pinnedModelIds: serverPinnedModelIds }
               : previous,
@@ -222,7 +198,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     if (cleanedPinnedIds.length === pinnedModelIds.length) return;
     const owner = subjectOwnerRef.current;
     if (!owner || !isCurrentSubjectOwner(owner)) return;
-    setSubjectSettings((previous) =>
+    setSubjectModelCatalog((previous) =>
       previous?.subjectKey === owner.subjectKey
         ? { ...previous, pinnedModelIds: cleanedPinnedIds }
         : previous,
@@ -249,61 +225,29 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     );
   }, [adminDefaultModelId, availableModels]);
 
-  const unsupportedSettingsMutation = useCallback(async () => {
-    setSubjectError({
-      subjectKey: authSubjectKeyRef.current,
-      message: "Settings management requires the phase 2 admin projection.",
-    });
-    return false;
-  }, []);
-
-  const clearError = useCallback(() => {
-    setSubjectError(null);
-  }, []);
-
-  const error =
-    subjectError?.subjectKey === authSubjectKey
-      ? subjectError.message
-      : null;
-
-  const value: SettingsContextValue = {
-    settings: null,
-    enableSkills: true,
-    enableMemory: true,
+  const value: ModelCatalogContextValue = {
     availableModels,
     defaultModel,
     pinnedModelIds: cleanedPinnedIds,
     togglePinnedModel,
-    isLoading: visibleSubjectSettings?.isLoading ?? false,
-    error,
-    savingKeys,
-    updateSetting: unsupportedSettingsMutation,
-    resetSetting: unsupportedSettingsMutation,
-    resetAllSettings: unsupportedSettingsMutation,
-    clearError,
-    exportSettings: () => {},
-    importSettings: async () => ({
-      success: false,
-      updatedCount: 0,
-      errors: ["Settings import requires the phase 2 admin projection."],
-    }),
+    isLoading: visibleSubjectModelCatalog?.isLoading ?? false,
   };
 
   return (
-    <SettingsContext.Provider value={value}>
+    <ModelCatalogContext.Provider value={value}>
       {children}
-    </SettingsContext.Provider>
+    </ModelCatalogContext.Provider>
   );
 }
 
 // Fast refresh only works when a file only exports components.
 // Use a new file to share constants or functions between components
 // eslint-disable-next-line react-refresh/only-export-components
-export function useSettingsContext() {
-  const context = useContext(SettingsContext);
+export function useModelCatalogContext() {
+  const context = useContext(ModelCatalogContext);
   if (context === undefined) {
     throw new Error(
-      "useSettingsContext must be used within a SettingsProvider",
+      "useModelCatalogContext must be used within a ModelCatalogProvider",
     );
   }
   return context;

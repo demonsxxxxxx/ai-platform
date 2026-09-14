@@ -96,6 +96,7 @@ const DIRECT_HISTORY_PROCESSOR_EVENTS = new Set([
   "todo:updated",
   "summary",
   "artifact_card",
+  "model.completed",
 ]);
 
 /**
@@ -234,7 +235,7 @@ function processHistoryEvent(
   if (result.tokenUsage) {
     msg.tokenUsage = result.tokenUsage;
   }
-  if (result.duration) {
+  if (result.duration !== undefined) {
     msg.duration = result.duration;
   }
   if (result.cancelled) {

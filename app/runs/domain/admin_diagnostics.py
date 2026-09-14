@@ -1,11 +1,108 @@
-"""Administrator-only Run diagnostic projection rules."""
+"""Framework-neutral administrator projection contract for Run diagnostics."""
 
-from typing import Any
+from typing import Any, Literal, NotRequired, TypedDict
 
 
-def admin_runtime_diagnostics_from_run(run: object) -> dict[str, Any]:
-    if not isinstance(run, dict) or run.get("status") != "failed":
-        return {}
-    result = run.get("result_json")
-    diagnostics = result.get("runtime_diagnostics") if isinstance(result, dict) else None
-    return diagnostics if isinstance(diagnostics, dict) else {}
+class AdminRunDiagnosticRun(TypedDict):
+    run_id: str
+    session_id: str | None
+    user_id: str | None
+    workspace_id: str
+    status: str
+    trace_id: str | None
+    created_at: Any | None
+    queued_at: Any | None
+    started_at: Any | None
+    finished_at: Any | None
+    error_code: str | None
+
+
+class AdminRunDiagnosticObservation(TypedDict):
+    observation_id: str | None
+    attempt_id: str | None
+    lease_id: str | None
+    request_id: str | None
+    callback_id: str | None
+    kind: Literal["failure", "handling"]
+    source: str | None
+    stage: str | None
+    error_code: str | None
+    exception_type: str | None
+    message: str | None
+    stack: str | None
+    received_at: Any | None
+
+
+class AdminRunDiagnosticLoss(TypedDict):
+    field: str
+    reason: str
+    original_bytes: NotRequired[int]
+    retained_bytes: NotRequired[int]
+    original: NotRequired[int]
+    retained: NotRequired[int]
+    count: NotRequired[int]
+
+
+class AdminRunDiagnosticAttempt(TypedDict):
+    attempt_id: str
+    ordinal: int
+    status: str
+    owner_kind: str
+    started_at: Any | None
+    finished_at: Any | None
+    terminal_reason: str | None
+    error_code: str | None
+
+
+class AdminRunDiagnosticSdk(TypedDict, total=False):
+    result_subtype: str
+    stop_reason: str
+    terminal_reason: str
+    exception_type: str
+    exception_message: str
+    exception_traceback: str
+    errors: Any
+
+
+class AdminRunDiagnosticToolEvidence(TypedDict):
+    tool_name: str
+    invocation_id: NotRequired[str]
+    state: NotRequired[str]
+    last_stage: NotRequired[str]
+    capability_kind: NotRequired[str]
+    reason: NotRequired[str]
+
+
+class AdminRunDiagnosticDetails(TypedDict):
+    schema_version: str | None
+    sdk: AdminRunDiagnosticSdk
+    tool_lifecycles: list[AdminRunDiagnosticToolEvidence]
+    tool_calls: list[AdminRunDiagnosticToolEvidence]
+    tool_policy_denials: list[AdminRunDiagnosticToolEvidence]
+
+
+class AdminRunDiagnosticCounts(TypedDict):
+    retained_observations: int
+    omitted_observations: int
+
+
+class AdminRunDiagnosticsResponse(TypedDict):
+    schema_version: Literal["ai-platform.run-diagnostics.v1"]
+    diagnostic_id: str | None
+    revision: int
+    coverage: Literal[
+        "full",
+        "partial",
+        "not_collected",
+        "legacy_record",
+        "unsupported_schema",
+        "transport_unavailable",
+    ]
+    run: AdminRunDiagnosticRun
+    root: AdminRunDiagnosticObservation | None
+    handling: list[AdminRunDiagnosticObservation]
+    losses: list[AdminRunDiagnosticLoss]
+    attempts: list[AdminRunDiagnosticAttempt]
+    details: AdminRunDiagnosticDetails
+    versions: dict[str, str | None]
+    counts: AdminRunDiagnosticCounts

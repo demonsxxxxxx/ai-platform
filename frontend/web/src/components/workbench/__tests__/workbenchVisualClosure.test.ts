@@ -394,7 +394,6 @@ test("safe projection pages render a full workbench instead of thin lists", () =
   assert.match(projectionPages, /workbench\.projections\.currentTask/);
   assert.match(projectionPages, /workbench\.projections\.governance\.summaryTitle/);
   assert.match(projectionPages, /workbench\.projections\.users\.directoryTitle/);
-  assert.match(projectionPages, /workbench\.projections\.settings\.secretChip/);
   assert.match(projectionPages, /workbench\.projections\.feedback\.queueTitle/);
   assert.match(projectionPages, /workbench\.projections\.notifications\.streamTitle/);
   assert.equal(zh.workbench.projections.currentTask, "当前任务");
@@ -527,7 +526,7 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
   assert.match(marketplace, /skill-catalog-toolbar__row/);
   assert.match(skillsList, /skill-catalog-toolbar__search/);
   assert.match(marketplace, /skill-catalog-toolbar__search/);
-  assert.match(skillsList, /skill-catalog-toolbar__actions/);
+  assert.match(skillsList, /skill-management-header__actions/);
   assert.match(marketplace, /skill-catalog-toolbar__actions/);
   assert.match(skillsList, /workbenchSurface\.catalog\.toolbarShell/);
   assert.match(marketplace, /workbenchSurface\.catalog\.toolbarShell/);

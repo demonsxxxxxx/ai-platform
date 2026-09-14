@@ -419,6 +419,20 @@ async def me(principal: AuthPrincipal = Depends(require_principal)) -> Principal
     return PrincipalResponse.model_validate(principal_to_response(principal))
 
 
+@router.post("/auth/company-credential-handoff")
+async def company_credential_handoff(
+    response: Response,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, str]:
+    try:
+        credential = await get_mcp_principal_jwt_store().get(principal)
+    except McpRuntimeContextError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Pragma"] = "no-cache"
+    return {"credential": credential}
+
+
 @router.post("/auth/logout")
 async def logout(request: Request) -> dict[str, str]:
     """Clear only the current context principal through a fenced operation."""

@@ -41,13 +41,7 @@ function convertPart(part: MessagePart, index: number): AssistantUiContentPart |
       };
     case "tool": {
       const data = definedData({
-        inputSummary: part.public_operation_id
-          ? part.public_input_summary
-          : undefined,
-        resultSummary:
-          part.public_operation_id && typeof part.result === "string"
-            ? part.result
-            : undefined,
+        category: part.public_operation_id ? part.public_category : undefined,
         durationMs: part.duration_ms,
         evidenceRefs: part.evidence_refs,
         artifactRefs: part.artifact_refs,
@@ -58,18 +52,8 @@ function convertPart(part: MessagePart, index: number): AssistantUiContentPart |
         type: "tool-call",
         toolCallId: part.public_operation_id || `tool-${index}`,
         toolName: part.public_operation_id ? part.name : "Tool",
-        args: part.public_operation_id && part.public_category
-          ? {
-              category: part.public_category,
-              ...(part.public_input_summary
-                ? { summary: part.public_input_summary }
-                : {}),
-            }
-          : {},
-        argsText:
-          part.public_operation_id && part.public_input_summary
-            ? part.public_input_summary
-            : "",
+        args: {},
+        argsText: "",
         isError: part.success === false,
         ...(data ? { data } : {}),
       } as AssistantUiContentPart;

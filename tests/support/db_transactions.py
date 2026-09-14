@@ -1,5 +1,17 @@
+import asyncio
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+
+import pytest
+
+
+@pytest.fixture(scope="session")
+def event_loop_policy():
+    """Opt PostgreSQL integration modules into a psycopg-compatible loop."""
+    if sys.platform == "win32":
+        return asyncio.WindowsSelectorEventLoopPolicy()
+    return asyncio.get_event_loop_policy()
 
 
 class OpaqueConnection:

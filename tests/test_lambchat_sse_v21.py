@@ -10,21 +10,19 @@ from fastapi import HTTPException
 from app.auth import AuthPrincipal
 from app.routes import lambchat_compat as route
 from app.streaming.api import (
-    LivePublication,
-    LiveSubscriptionClosed,
+    ResumeDecision,
+    StreamCursor,
+    StreamGap,
     V4StreamEntry,
     build_v4_control,
     live_redis_id_is_after,
 )
 from app.streaming.events import STREAM_DESIGN_ID_V4
 from app.streaming.redis import (
-    ResumeDecision,
     SseAuthorityConflictError,
     SseAuthorityLease,
     StreamAuthority,
     StreamContractError,
-    StreamCursor,
-    StreamGap,
     StreamTransportUnavailable,
 )
 
@@ -138,58 +136,46 @@ def open_entry(redis_id="1-0"):
     )
 
 
-class FailingSubscription:
-    def __init__(self, *, cleanup_error=False):
-        self.closed = False
-        self.cleanup_error = cleanup_error
-
-    async def next(self, *, timeout_seconds=None):
-        raise RuntimeError("private setup failure")
-
-    async def aclose(self):
-        self.closed = True
-        if self.cleanup_error:
-            raise RuntimeError("private cleanup failure")
+class FailingReader:
+    async def read_stream(self, **kwargs):
+        raise RuntimeError("private read failure")
 
 
-class ClosedSubscription:
-    def __init__(self):
-        self.closed = False
-
-    async def next(self, *, timeout_seconds=None):
-        raise LiveSubscriptionClosed("test_stream_closed")
-
-    async def aclose(self):
-        self.closed = True
+class ClosedReader:
+    async def read_stream(self, **kwargs):
+        raise StreamTransportUnavailable("test_stream_closed")
 
 
-class BlockingSubscription:
+class BlockingReader:
     def __init__(self):
         self.started = asyncio.Event()
-        self.closed = False
+        self.cancelled = False
 
-    async def next(self, *, timeout_seconds=None):
+    async def read_stream(self, **kwargs):
         self.started.set()
-        await asyncio.Event().wait()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
 
-    async def aclose(self):
-        self.closed = True
 
-
-class ExpiringSubscription:
-    def __init__(self, lease_gate, *, publication=None):
+class ExpiringReader:
+    def __init__(self, lease_gate, *, entries=()):
         self.lease_gate = lease_gate
-        self.publication = publication
-        self.closed = False
+        self.entries = tuple(entries)
 
-    async def next(self, *, timeout_seconds=None):
+    async def read_stream(self, **kwargs):
         self.lease_gate.valid = False
-        if self.publication is None:
-            raise TimeoutError
-        return self.publication
+        return self.entries
 
-    async def aclose(self):
-        self.closed = True
+
+class SequencedReader:
+    def __init__(self, batches):
+        self.batches = list(batches)
+
+    async def read_stream(self, **kwargs):
+        return self.batches.pop(0) if self.batches else ()
 
 
 class FakeBridge:
@@ -200,11 +186,15 @@ class FakeBridge:
         resume=None,
         resolve_error=None,
         replay_error=None,
+        on_read=None,
     ):
         self.rows = list(rows)
         self.resume = resume
         self.resolve_error = resolve_error
         self.replay_error = replay_error
+        self.on_read = on_read
+        self._read_hook_called = False
+        self.reader = None
         self.calls = []
 
     async def resolve_resume(self, **kwargs):
@@ -274,42 +264,31 @@ class FakeBridge:
             and not live_redis_id_is_after(row.cursor.redis_id, through_redis_id)
         )
 
-    def decode_live_publication(self, **kwargs):
-        raise AssertionError("finite replay tests must not decode live publications")
+    async def read_stream(self, **kwargs):
+        self.calls.append(
+            f"read:{kwargs['after_redis_id']}:{kwargs['count']}:{kwargs['block_ms']}"
+        )
+        if self.on_read is not None and not self._read_hook_called:
+            self._read_hook_called = True
+            self.on_read()
+        if self.reader is not None:
+            return await self.reader.read_stream(**kwargs)
+        after_redis_id = kwargs["after_redis_id"]
+        return tuple(
+            row
+            for row in self.rows
+            if live_redis_id_is_after(row.cursor.redis_id, after_redis_id)
+        )
 
 
-class LiveBridge(FakeBridge):
-    def __init__(self, rows, *, live_entry):
-        super().__init__(rows)
-        self.live_entry = live_entry
-
-    def decode_live_publication(self, **kwargs):
-        return self.live_entry
 
 
-class FakeHub:
-    def __init__(self, bridge, *, on_subscribe=None, subscription=None):
-        self.bridge = bridge
-        self.on_subscribe = on_subscribe
-        self.calls = []
-        self.subscription = subscription or ClosedSubscription()
-
-    async def subscribe(self, channel):
-        self.calls.append("subscribe")
-        self.bridge.calls.append("subscribe")
-        if self.on_subscribe:
-            self.on_subscribe()
-        return self.subscription
-
-
-def request_for(bridge, *, on_subscribe=None, subscription=None):
-    runtime = SimpleNamespace(
-        bridge=bridge,
-        hub=FakeHub(
-            bridge, on_subscribe=on_subscribe, subscription=subscription
-        ),
+def request_for(bridge, *, reader=None):
+    bridge.reader = ClosedReader() if reader is None and bridge.on_read is None else reader
+    runtime = SimpleNamespace(bridge=bridge)
+    return SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(run_stream_runtime=runtime))
     )
-    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(run_stream_runtime=runtime)))
 
 
 def request_without_runtime():
@@ -346,16 +325,12 @@ def deny_lease_renewal(monkeypatch):
 
 
 async def open_response(
-    bridge, *, last_event_id=None, on_subscribe=None, subscription=None
+    bridge, *, last_event_id=None, reader=None
 ):
     return await route.chat_session_stream(
         "session-a",
         "run-a",
-        request_for(
-            bridge,
-            on_subscribe=on_subscribe,
-            subscription=subscription,
-        ),
+        request_for(bridge, reader=reader),
         last_event_id=last_event_id,
         principal=AuthPrincipal(
             user_id="user-a", display_name="User", tenant_id="tenant-a"
@@ -363,14 +338,46 @@ async def open_response(
     )
 
 
-async def connect(bridge, *, last_event_id=None, on_subscribe=None):
+async def connect(bridge, *, last_event_id=None, reader=None):
     response = await open_response(
         bridge,
         last_event_id=last_event_id,
-        on_subscribe=on_subscribe,
+        reader=reader,
     )
     body = "".join([chunk async for chunk in response.body_iterator])
     return response, body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_status", ["succeeded", "failed", "cancelled"])
+async def test_idle_stream_closes_when_authority_refresh_observes_terminal_run(monkeypatch, terminal_status):
+    run = {"id": "run-a", "session_id": "session-a", "status": "running"}
+    gate = FrameLeaseGate()
+    patch_authority(monkeypatch, run=run, lease_value=gate)
+    acquired = []
+    closed = []
+
+    async def acquire(conn, **kwargs):
+        acquired.append(kwargs)
+        return gate if len(acquired) == 1 else lease()
+
+    async def close(conn, **kwargs):
+        closed.append(kwargs)
+        return True
+
+    def complete_run():
+        run["status"] = terminal_status
+        gate.valid = False
+
+    monkeypatch.setattr(route, "acquire_sse_authority_lease", acquire)
+    monkeypatch.setattr(route, "close_sse_authority_lease", close)
+    bridge = FakeBridge([open_entry()], on_read=complete_run)
+    _, body = await asyncio.wait_for(connect(bridge, reader=SequencedReader([()])), timeout=1)
+    assert "stream.open" in body
+    assert "stream.end" not in body  # No fabricated transport receipt.
+    assert ": heartbeat" not in body
+    assert len(acquired) == 2
+    assert closed == [{"lease_id": "lease-a", "reason": "terminal_completed"}]
 
 
 def terminal_rows():
@@ -487,16 +494,21 @@ async def test_v4_replay_uses_native_cursor_and_schema_event(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_v4_subscribes_before_capturing_replay_tail(monkeypatch):
+async def test_v4_reads_entries_added_after_replay_tail(monkeypatch):
     patch_authority(monkeypatch)
-    bridge = FakeBridge([open_entry()])
+    bridge = FakeBridge(
+        [open_entry()],
+        on_read=lambda: bridge.rows.extend(terminal_rows()[1:]),
+    )
 
-    def append_after_subscribe():
-        bridge.rows.extend(terminal_rows()[1:])
+    _, body = await connect(bridge)
 
-    _, body = await connect(bridge, on_subscribe=append_after_subscribe)
-
-    assert bridge.calls[:3] == ["subscribe", "resolve", "bounds"]
+    assert bridge.calls[:4] == [
+        "resolve",
+        "bounds",
+        "replay:0-0:1-0",
+        "read:1-0:128:5000",
+    ]
     assert '"delta": "hello "' in body
     assert "event: stream.end\n" in body
 
@@ -602,13 +614,13 @@ async def test_v4_replay_gap_checks_lease_immediately_before_write(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_v4_heartbeat_rechecks_lease_after_live_wait(monkeypatch):
+async def test_v4_heartbeat_rechecks_lease_after_blocking_read(monkeypatch):
     lease_gate = FrameLeaseGate()
-    subscription = ExpiringSubscription(lease_gate)
+    reader = ExpiringReader(lease_gate)
     patch_authority(monkeypatch, lease_value=lease_gate)
     response = await open_response(
         FakeBridge([open_entry()]),
-        subscription=subscription,
+        reader=reader,
     )
     deny_lease_renewal(monkeypatch)
     iterator = response.body_iterator
@@ -616,24 +628,30 @@ async def test_v4_heartbeat_rechecks_lease_after_live_wait(monkeypatch):
     assert "event: stream.open" in await iterator.__anext__()
     with pytest.raises(StopAsyncIteration):
         await iterator.__anext__()
-
-    assert subscription.closed is True
 
 
 @pytest.mark.asyncio
-async def test_v4_live_frame_rechecks_lease_after_live_wait(monkeypatch):
+async def test_v4_empty_blocking_read_emits_heartbeat_before_next_batch(monkeypatch):
+    patch_authority(monkeypatch)
+    reader = SequencedReader([(), terminal_rows()[1:]])
+    _, body = await connect(
+        FakeBridge([open_entry()]),
+        reader=reader,
+    )
+
+    assert ": heartbeat\n\n" in body
+    assert "event: stream.end\n" in body
+
+
+@pytest.mark.asyncio
+async def test_v4_live_frame_rechecks_lease_after_blocking_read(monkeypatch):
     lease_gate = FrameLeaseGate()
     live_entry = entry("2-0", "sev-delta", "message.delta", {"delta": "late"})
-    subscription = ExpiringSubscription(
-        lease_gate,
-        publication=LivePublication(
-            "sse-live:scope-a:run-a:1", "2-0", '{"private":"ignored"}'
-        ),
-    )
+    reader = ExpiringReader(lease_gate, entries=(live_entry,))
     patch_authority(monkeypatch, lease_value=lease_gate)
     response = await open_response(
-        LiveBridge([open_entry()], live_entry=live_entry),
-        subscription=subscription,
+        FakeBridge([open_entry()]),
+        reader=reader,
     )
     deny_lease_renewal(monkeypatch)
     iterator = response.body_iterator
@@ -642,7 +660,6 @@ async def test_v4_live_frame_rechecks_lease_after_live_wait(monkeypatch):
     with pytest.raises(StopAsyncIteration):
         await iterator.__anext__()
 
-    assert subscription.closed is True
 
 
 @pytest.mark.asyncio
@@ -702,16 +719,16 @@ async def test_v4_admitted_terminal_body_records_one_safe_exit_with_lease_result
 
 
 @pytest.mark.asyncio
-async def test_v4_admitted_body_cancellation_closes_subscription_and_records_once(
+async def test_v4_admitted_body_cancellation_cancels_blocking_read_and_records_once(
     monkeypatch, caplog
 ):
     patch_authority(monkeypatch)
     caplog.set_level(logging.INFO, logger=route.logger.name)
-    subscription = BlockingSubscription()
+    reader = BlockingReader()
     response = await route.chat_session_stream(
         "session-a",
         "run-a",
-        request_for(FakeBridge([open_entry()]), subscription=subscription),
+        request_for(FakeBridge([open_entry()]), reader=reader),
         principal=AuthPrincipal(
             user_id="user-a", display_name="User", tenant_id="tenant-a"
         ),
@@ -719,7 +736,7 @@ async def test_v4_admitted_body_cancellation_closes_subscription_and_records_onc
     iterator = response.body_iterator
     assert "event: stream.open" in await iterator.__anext__()
     pending = asyncio.create_task(iterator.__anext__())
-    await subscription.started.wait()
+    await reader.started.wait()
     pending.cancel()
     with pytest.raises(asyncio.CancelledError):
         await pending
@@ -727,7 +744,7 @@ async def test_v4_admitted_body_cancellation_closes_subscription_and_records_onc
     records = [record for record in caplog.records if record.msg == "sse_stream_exit"]
     assert len(records) == 1
     assert records[0].reason == "client_disconnected"
-    assert subscription.closed is True
+    assert reader.cancelled is True
 
 
 @pytest.mark.asyncio
@@ -755,39 +772,13 @@ async def test_v4_missing_runtime_after_admission_records_setup_exit_and_release
 
 
 @pytest.mark.asyncio
-async def test_v4_generic_setup_failure_records_one_safe_exit(monkeypatch, caplog):
+async def test_v4_blocking_read_transport_failure_records_safe_exit(monkeypatch, caplog):
     patch_authority(monkeypatch)
     caplog.set_level(logging.INFO, logger=route.logger.name)
-
-    def fail_subscribe():
-        raise RuntimeError("private hub failure")
-
-    with pytest.raises(HTTPException) as exc:
-        await route.chat_session_stream(
-            "session-a",
-            "run-a",
-            request_for(FakeBridge([open_entry()]), on_subscribe=fail_subscribe),
-            principal=AuthPrincipal(
-                user_id="user-a", display_name="User", tenant_id="tenant-a"
-            ),
-        )
-    assert exc.value.status_code == 503
-    records = [record for record in caplog.records if record.msg == "sse_stream_exit"]
-    assert len(records) == 1
-    assert records[0].reason == "stream_setup_failure"
-    assert records[0].lease_released is True
-    assert "private hub failure" not in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_v4_live_source_close_records_bounded_reason_and_cleanup(monkeypatch, caplog):
-    patch_authority(monkeypatch)
-    caplog.set_level(logging.INFO, logger=route.logger.name)
-    subscription = ClosedSubscription()
     response = await route.chat_session_stream(
         "session-a",
         "run-a",
-        request_for(FakeBridge([open_entry()]), subscription=subscription),
+        request_for(FakeBridge([open_entry()]), reader=ClosedReader()),
         principal=AuthPrincipal(
             user_id="user-a", display_name="User", tenant_id="tenant-a"
         ),
@@ -796,84 +787,27 @@ async def test_v4_live_source_close_records_bounded_reason_and_cleanup(monkeypat
     assert "event: stream.open" in body
     records = [record for record in caplog.records if record.msg == "sse_stream_exit"]
     assert len(records) == 1
-    assert records[0].reason == "live_source_closed"
+    assert records[0].reason == "transport_failure"
     assert records[0].lease_released is True
-    assert subscription.closed is True
 
 
 @pytest.mark.asyncio
 async def test_v4_generic_generator_failure_records_transport_exit(monkeypatch, caplog):
     patch_authority(monkeypatch)
     caplog.set_level(logging.INFO, logger=route.logger.name)
-    subscription = FailingSubscription()
+    reader = FailingReader()
     response = await route.chat_session_stream(
         "session-a",
         "run-a",
-        request_for(
-            FakeBridge([open_entry()]),
-            subscription=subscription,
-        ),
+        request_for(FakeBridge([open_entry()]), reader=reader),
         principal=AuthPrincipal(
             user_id="user-a", display_name="User", tenant_id="tenant-a"
         ),
     )
-    with pytest.raises(RuntimeError, match="private setup failure"):
+    with pytest.raises(RuntimeError, match="private read failure"):
         "".join([chunk async for chunk in response.body_iterator])
     records = [record for record in caplog.records if record.msg == "sse_stream_exit"]
     assert len(records) == 1
     assert records[0].reason == "transport_failure"
     assert records[0].lease_released is True
-    assert subscription.closed is True
-    assert "private setup failure" not in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_v4_cleanup_failure_overrides_exit_reason_without_duplicate_record(
-    monkeypatch, caplog
-):
-    patch_authority(monkeypatch)
-    caplog.set_level(logging.INFO, logger=route.logger.name)
-    subscription = FailingSubscription(cleanup_error=True)
-    response = await route.chat_session_stream(
-        "session-a",
-        "run-a",
-        request_for(
-            FakeBridge(terminal_rows()),
-            subscription=subscription,
-        ),
-        principal=AuthPrincipal(
-            user_id="user-a", display_name="User", tenant_id="tenant-a"
-        ),
-    )
-    body = "".join([chunk async for chunk in response.body_iterator])
-    assert "event: stream.end\n" in body
-    records = [record for record in caplog.records if record.msg == "sse_stream_exit"]
-    assert len(records) == 1
-    assert records[0].reason == "stream_cleanup_failure"
-    assert records[0].lease_released is True
-    assert subscription.closed is True
-
-
-@pytest.mark.asyncio
-async def test_v4_setup_cleanup_failure_is_classified_once(monkeypatch, caplog):
-    patch_authority(monkeypatch)
-    caplog.set_level(logging.INFO, logger=route.logger.name)
-    subscription = FailingSubscription(cleanup_error=True)
-    with pytest.raises(HTTPException) as exc:
-        await route.chat_session_stream(
-            "session-a",
-            "run-a",
-            request_for(
-                FakeBridge([open_entry()], resolve_error=StreamTransportUnavailable("down")),
-                subscription=subscription,
-            ),
-            principal=AuthPrincipal(
-                user_id="user-a", display_name="User", tenant_id="tenant-a"
-            ),
-        )
-    assert exc.value.status_code == 503
-    records = [record for record in caplog.records if record.msg == "sse_stream_exit"]
-    assert len(records) == 1
-    assert records[0].reason == "stream_cleanup_failure"
-    assert records[0].lease_released is True
-    assert subscription.closed is True
+    assert "private read failure" not in caplog.text

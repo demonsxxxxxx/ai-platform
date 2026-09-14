@@ -41,7 +41,7 @@ ACL and must never create a second department authority.
 
 | Data class | Authority | Contract |
 | --- | --- | --- |
-| Users, sessions, runs, messages, artifact metadata, ACL and audit facts | PostgreSQL | Durable business facts and authorization evidence. |
+| Users, sessions, runs, private Run diagnostics, messages, artifact metadata, ACL and audit facts | PostgreSQL | Durable business facts and authorization evidence. Private diagnostics use a separate tenant/Run-scoped bounded record and are not public answer data. |
 | Queue entries, leases and bounded SSE transport | Redis | Ephemeral coordination only; it is not the terminal record. |
 | Uploaded files, generated artifacts and Skill packages | MinIO/S3 | Object bytes live here; PostgreSQL stores keys, digests, sizes, schemas and bounded summaries. |
 | Executor workspace | Sandbox filesystem | Attempt-scoped temporary copy; never a durable authority. |
@@ -117,6 +117,13 @@ indexes, ledger, and outbox tables. Do not drop or rename them during rollback.
 There is no automatic down migration. A checksum mismatch or missing critical
 contract is a stop condition requiring operator investigation, not a reason to
 bypass readiness.
+
+`run_diagnostics` is an additive Runs-owned relation with one row per
+`(tenant_id, run_id)`, a composite Run foreign key, a versioned JSON payload and
+monotonic revision. Schema readiness verifies the relation, columns, named
+constraints and target ledger before API or Worker startup. New application
+versions strip the private carrier from `runs.result_json`; historical result
+diagnostics remain read-only through the authorized Runs projection.
 
 Before rolling back to an artifact-only worker, stop the file-delete producer.
 Namespaced file rows remain invisible to that worker, so rollback cannot make it
@@ -219,6 +226,10 @@ Cleanup runs in small worker batches and is retryable:
   implemented, `0` is reported as `disabled_fail_safe`; a non-zero value is
   reported as `unsupported_not_implemented` and maintenance performs no delete.
   Production settings reject those non-zero values during startup.
+- Private Run diagnostics follow the owning Run's approved lifecycle. The table
+  has no implicit cascade delete and no independent TTL setting; a future physical
+  Run delete must remove its diagnostic record explicitly in the same authorized
+  lifecycle transaction and audit that outcome.
 
 Owner-requested file deletion does not make non-zero `file_retention_days`
 supported. It also begins only after a `files` row exists. Object bytes written
@@ -245,6 +256,7 @@ cannot bypass the bound. Oversized values fail before their write with a stable
 | Value | Maximum |
 | --- | ---: |
 | Run input or result | 256 KiB |
+| Private diagnostics across all Attempts of one Run | 128 KiB |
 | Run-event payload | 64 KiB |
 | Accumulated run-step payload | 64 KiB |
 | Run-event message | 16 KiB |

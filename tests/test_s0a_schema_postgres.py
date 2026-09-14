@@ -12,6 +12,7 @@ from psycopg.rows import dict_row
 import pytest
 
 from app import repositories
+from tests.support.db_transactions import event_loop_policy as event_loop_policy
 from app.platform.postgres.errors import RepositoryConflictError
 from app.runs.domain.execution_spec import (
     EXECUTION_SPEC_SCHEMA_VERSION,
@@ -565,16 +566,19 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
 ):
     """Exercise cleanup, recovery, and terminalization against the real schema."""
 
-    from app.bootstrap.run_attempt_lifecycle import (
-        build_run_attempt_lifecycle_service,
-    )
     from app.executor_reconciler import reconcile_pending_executor_terminals_once
     from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+    from app.runs.application import attempt_lifecycle
+    from app.runs.infrastructure import postgres as run_attempt_persistence
     from app.routes.sandbox_runtime_cleanup import (
         cleanup_expired_sandbox_runtime_leases,
         cleanup_failed_sandbox_executor_reconciliation_leases,
     )
 
+    monkeypatch.setattr(
+        attempt_lifecycle, "_service",
+        attempt_lifecycle.RunAttemptLifecycleService(persistence=run_attempt_persistence),
+    )
     dsn = _postgres_dsn()
     schema_name = f"terminal_receipt_{uuid.uuid4().hex}"
     schema_sql = Path("app/schema.sql").read_text(encoding="utf-8")
@@ -610,10 +614,10 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
             """
             insert into runs(
               id, tenant_id, workspace_id, session_id, user_id, agent_id, status,
-              started_at
+              execution_kind, started_at
             ) values (
               'run-a', 'tenant-a', 'workspace-a', 'session-a', 'user-a',
-              'agent-a', 'running', now() - interval '10 minutes'
+              'agent-a', 'running', 'harness_chat', now() - interval '10 minutes'
             )
             """
         )
@@ -621,14 +625,15 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
             """
             insert into artifacts(
               id, tenant_id, run_id, artifact_type, label, content_type,
-              storage_key, size_bytes, expires_at, lifecycle_state
+              storage_key, size_bytes, expires_at, lifecycle_state, manifest_json
             ) values
               ('artifact-a', 'tenant-a', 'run-a', 'text', 'result.txt',
-               'text/plain', 'artifacts/result.txt', 8, now() + interval '1 day', 'active'),
-              ('artifact-deleted', 'tenant-a', 'run-a', 'text', 'deleted.txt',
-               'text/plain', 'artifacts/deleted.txt', 8, now() + interval '1 day', 'deleted'),
+               'text/plain', 'artifacts/result.txt', 8, now() + interval '1 day', 'active', '{}'),
+              ('artifact-deleted', 'tenant-a', null, 'text', 'deleted.txt',
+               'text/plain', 'artifacts/deleted.txt', 8, now() + interval '1 day', 'deleted',
+               '{"retention_artifact_cleanup":true,"deletion_owner_run_id":"run-a"}'),
               ('artifact-expired', 'tenant-a', 'run-a', 'text', 'expired.txt',
-               'text/plain', 'artifacts/expired.txt', 8, now() - interval '1 day', 'active')
+               'text/plain', 'artifacts/expired.txt', 8, now() - interval '1 day', 'active', '{}')
             """
         )
         await conn.execute(
@@ -723,10 +728,10 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
             """
             insert into runs(
               id, tenant_id, workspace_id, session_id, user_id, agent_id, status,
-              started_at
+              execution_kind, started_at
             ) values (
               'run-pending', 'tenant-a', 'workspace-a', 'session-a', 'user-a',
-              'agent-a', 'running', now()
+              'agent-a', 'running', 'harness_chat', now()
             )
             """
         )
@@ -780,17 +785,17 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
             ignore_terminal_child,
         )
         monkeypatch.setattr(
-            "app.executor_reconciler.publish_pending_run_terminal",
+            "app.executor_reconciler.publish_run_event",
             ignore_terminal_publish,
         )
 
-        assert (
-            await reconcile_pending_executor_terminals_once(
-                worker_id="worker-a",
-                attempt_lifecycle=build_run_attempt_lifecycle_service(),
-            )
-            == 1
-        )
+        # Advance the fixture past the durable reconciler's bounded retry delay.
+        await conn.execute("update sandbox_leases set updated_at = now() - interval '31 seconds' where id = 'lease-a'")
+        from tests.test_streaming_v4_postgres_integration import _callback_capabilities
+
+        assert await reconcile_pending_executor_terminals_once(
+            worker_id="worker-a", v4_capabilities=_callback_capabilities(dsn, schema_name),
+        ) == 1
         run = await (
             await conn.execute(
                 "select status, error_code, result_json from runs where id = 'run-a'"
@@ -802,7 +807,7 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
             )
         ).fetchone()
         artifact_count = await (
-            await conn.execute("select count(*) as count from artifacts where run_id = 'run-a'")
+            await conn.execute("select count(*) as count from artifacts where tenant_id = 'tenant-a'")
         ).fetchone()
 
         assert run["status"] == "failed"
@@ -819,12 +824,12 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
             """
             insert into runs(
               id, tenant_id, workspace_id, session_id, user_id, agent_id, status,
-              started_at, finished_at
+              execution_kind, started_at, finished_at
             ) values
               ('run-b', 'tenant-a', 'workspace-a', 'session-a', 'user-a', 'agent-a',
-               'failed', now() - interval '10 minutes', now() - interval '5 minutes'),
+               'failed', 'harness_chat', now() - interval '10 minutes', now() - interval '5 minutes'),
               ('run-c', 'tenant-a', 'workspace-a', 'session-a', 'user-a', 'agent-a',
-               'failed', now() - interval '10 minutes', now() - interval '5 minutes')
+               'failed', 'harness_chat', now() - interval '10 minutes', now() - interval '5 minutes')
             """
         )
         await conn.execute(

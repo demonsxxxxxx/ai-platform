@@ -50,6 +50,34 @@ def test_create_app_owns_one_run_stream_runtime_and_closes_dependencies(monkeypa
     assert calls == ["run_stream_runtime", "redis_client", "close_pool"]
 
 
+@pytest.mark.asyncio
+async def test_stream_runtime_composes_worker_capabilities_and_closes_bridge(monkeypatch):
+    from app.bootstrap import streaming
+
+    closed = []
+
+    class Bridge:
+        async def aclose(self):
+            closed.append(True)
+
+    bridge = Bridge()
+    monkeypatch.setattr(streaming, "V4RedisStreamBridge", lambda: bridge)
+    monkeypatch.setattr(
+        streaming, "get_settings", lambda: SimpleNamespace(ai_session_secret="synthetic-test-secret")
+    )
+
+    def transaction_factory():
+        raise AssertionError("composition must not open a database transaction")
+
+    runtime = streaming.build_run_stream_runtime(transaction_factory)
+    assert runtime.bridge is bridge
+    assert runtime.worker_capabilities.event_persistence is not None
+    assert not hasattr(runtime, "hub")
+    assert not hasattr(runtime, "rebuild_transport")
+    await runtime.aclose()
+    assert closed == [True]
+
+
 @pytest.mark.parametrize("getter", [require_owner_use_case, require_admin_use_case])
 @pytest.mark.parametrize("state_value", [None, object()])
 def test_cancel_routes_fail_closed_without_exact_lifespan_owner(getter, state_value):

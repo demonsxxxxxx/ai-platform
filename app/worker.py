@@ -104,10 +104,10 @@ from app.runtime.sandbox.executor_client import (
 from app.settings import get_settings
 from app.streaming.api import (
     WorkerV4Capabilities,
-    admit_v4_stream, drain_pending_v4_events,
+    admit_v4_stream,
     finalize_parent_and_publish,
-    persist_and_publish_worker_event,
-    publish_pending_run_terminal,
+    persist_worker_event,
+    publish_run_event,
 )
 from app.streaming.worker_projection import persist_worker_failure_event
 from app.skills.api import restore_admitted_skill_manifest_authority
@@ -235,16 +235,15 @@ def _public_executor_failure_message(result: ExecutorResult) -> str:
     return generic_message
 
 
-def _executor_exception_failure(exc: Exception) -> tuple[str, str]:
-    """Keep typed executor failures distinguishable without projecting private exceptions."""
-
+def _executor_exception_failure(exc: Exception) -> tuple[str, str, dict[str, Any] | None]:
     if isinstance(exc, NativeToolAdmissionError):
-        return exc.error_code, "Native tool sandbox admission failed"
+        return exc.error_code, "Native tool sandbox admission failed", None
     if isinstance(exc, SandboxExecutorHttpError):
-        return exc.error_code, exc.public_message
+        failure_result = {"runtime_diagnostics": exc.runtime_diagnostics} if exc.runtime_diagnostics is not None else None
+        return exc.error_code, exc.public_message, failure_result
     if isinstance(exc, WorkerDirectAssistantDeltaError):
-        return "worker_direct_assistant_delta_forbidden", "Executor used an unsupported text ingress"
-    return "executor_failure", "Executor failed"
+        return "worker_direct_assistant_delta_forbidden", "Executor used an unsupported text ingress", None
+    return "executor_failure", "Executor failed", None
 
 
 def _normalize_sandbox_reported_failure(result: ExecutorResult) -> ExecutorResult:
@@ -2423,7 +2422,7 @@ async def process_run_payload(
                 terminal_after_transaction.payload,
                 terminal_after_transaction.reconciled_parent,
             )
-            await publish_pending_run_terminal(
+            await publish_run_event(
                 v4_capabilities,
                 tenant_id=terminal_after_transaction.payload.tenant_id,
                 run_id=terminal_after_transaction.payload.run_id,
@@ -2438,10 +2437,9 @@ async def process_run_payload(
     ) -> None:
         if event_type == "assistant_delta":
             raise WorkerDirectAssistantDeltaError
-        if await persist_and_publish_worker_event(
+        if await persist_worker_event(
             v4_capabilities,
             run_payload=run_payload,
-            attempt_id=attempt_id,
             persist_event=True,
             event_type=event_type,
             stage=stage,
@@ -2606,7 +2604,7 @@ async def process_run_payload(
         return cancelled_outcome
     except Exception as exc:  # noqa: BLE001 - worker boundary terminalizes all failures.
         reconciled_parent = None
-        failure_code, failure_message = _executor_exception_failure(exc)
+        failure_code, failure_message, failure_result = _executor_exception_failure(exc)
         outcome_after_exception = WorkerOutcome(
             "failed", payload.run_id, failure_code, failure_message
         )
@@ -2649,6 +2647,7 @@ async def process_run_payload(
                     run_id=payload.run_id,
                     error_code=failure_code,
                     error_message=failure_message,
+                    result_json=failure_result,
                     attempt_lifecycle=attempt_lifecycle,
                 )
                 if not terminal_written:
@@ -2723,7 +2722,7 @@ async def process_run_payload(
     )
     public_result = {
         key: value
-        for key, value in result.result.items()
+        for key, value in (result.result | ({"runtime_diagnostics": result.executor_payload["runtime_diagnostics"]} if "runtime_diagnostics" in result.executor_payload else {})).items()
         if key not in {"skill_manifests", "used_skills", "used_skills_source", "inferred_used_skills"}
     }
     if required_agent_skill_id is None and (
@@ -2757,8 +2756,8 @@ async def process_run_payload(
         result_payload["skills"] = skill_snapshot
     if agent_capability_state is not None:
         result_payload["capability_state"] = agent_capability_state.public_projection()
-    assistant_message_for_persistence, assistant_message_metadata, answer_receipt = None, {}, result.executor_payload.get("answer_receipt")
-    await drain_pending_v4_events(v4_capabilities, tenant_id=payload.tenant_id, run_id=payload.run_id, attempt_id=attempt_id) if result.status == "succeeded" and answer_receipt is not None else None
+    assistant_message_for_persistence: str | None = None
+    assistant_message_metadata: dict[str, Any] = {}
     reconciled_parent = None
     try:
         async with transaction_factory() as conn:

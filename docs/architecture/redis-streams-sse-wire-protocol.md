@@ -9,7 +9,7 @@ Index: [Redis Streams SSE Event Channel](redis-streams-sse-event-channel.md)
 This document exclusively owns the active v4 internal/public envelopes, Redis
 key and replay/live framing, callback-protocol separation, cursor validation,
 strict gap/end controls, and frontend cursor acceptance. Execution,
-authorization, publication claims, successor activation, and release operations
+authorization, direct committed-event publication, schema retirement, and release operations
 remain with their dedicated owners.
 
 ## Generated protocol authority
@@ -37,50 +37,18 @@ It binds tenant, Run, current Attempt, runtime lease, callback index, and ordere
 batch items. The v4 platform adapter validates every item before receipt,
 assigns deterministic safe identities, and commits canonical public `run_events`
 plus the receipt atomically. Exact retries reuse the same rows and identities;
-a conflicting receipt fails closed. The callback response acknowledges that
-PostgreSQL commit without waiting for Redis publication or a terminal wake.
-The Worker drains publication work outside the terminal PostgreSQL transaction
-and retries terminal reconciliation from durable rows. Callback transport fields
-and engine SDK objects are never browser wire fields.
+a conflicting receipt fails closed. The callback response acknowledges only
+after the PostgreSQL commit and direct Redis batch append. Redis failure leaves
+the committed facts intact and returns a callback transport error. The existing
+executor buffer owns exact callback retry; no publication queue or terminal
+wakeup is involved. Callback transport fields and engine SDK objects are never
+browser wire fields.
 
 Streaming body contract is explicit: each public `message.delta` frame is at
 most 8,192 code points, and this per-frame bound never becomes a cumulative
 answer cutoff. `message.completed` is metadata-only with
 `{delta_count,text_length}`; its `causation_event_id` identifies the last delta
 and the completion never carries full text.
-
-After callback v4 rows are staged, the same PostgreSQL transaction sends a
-payload-free `pg_notify` wake on `ai_platform_stream_publication`. The Worker
-LISTENs before its startup scan, drains pending rows repeatedly while work
-remains, scans after reconnect, and retains periodic fallback recovery. The
-notification is only a scheduling hint: it contains no event or answer body
-and does not replace durable rows, callback receipts, publication claims, or
-Run/Attempt authority.
-
-The Sandbox may enqueue only single-item callbacks containing one adjacent,
-already-projected `message.delta` event before this boundary. The worker batches
-those callback items without concatenating or rewriting their events: each
-keeps its event identity and becomes its own durable row and SSE sequence. It
-uses a configured 50-millisecond aggregation delay, stops adding before a
-batch would exceed 100 events or 8 KiB of aggregate delta text, and holds at
-most 100 queued callback items. The text byte limit excludes envelope/JSON
-metadata. The configured delay does not bound queue residence, network retry
-or end-to-end latency; those require separate measurement. Deadline-based age
-handling and a wakeable forced flush are convergence targets, not claims about
-the current timer implementation. A larger pre-projected item and every multi-item callback remain
-synchronous barriers. Once v4 answer projection is accepted, the redundant
-legacy `assistant_delta` callback is suppressed. One ordered runner-event
-callback is in flight at a time; queue saturation backpressures the SDK. Every
-non-delta runner event, Tool lifecycle transition, error, cancellation, or
-terminal transition is a receipt barrier, so no later fact can overtake
-uncommitted public answer text. Cancellation discards only callbacks that have
-not started and waits for an in-flight delivery to reach its bounded receipt or
-rejection before terminal delivery. The callback HTTP client is reused for the
-application lifetime; reconnect behavior does not change callback identity or
-retry bytes. A cancellation request establishes the same 30-second monotonic
-shutdown deadline used by message buffering, progress cleanup, terminal callback
-retry, and callback-client close. Process shutdown reuses that deadline rather
-than starting consecutive or unbounded waits.
 
 The Sandbox may enqueue only single-item callbacks containing one adjacent,
 already-projected `message.delta` event before this boundary. The worker batches
@@ -151,7 +119,14 @@ append.
 business order; Redis ID is transport order inside one proven incarnation.
 Unknown publication outcomes retry the same canonical bytes and semantic ID.
 Readers may encounter transport duplicates and advance through them, while the
-frontend applies each semantic event once.
+frontend applies each semantic event once. A Run event source may carry
+`callback_sequence`, the highest callback sequence strictly before that event
+in the same Run/Attempt/incarnation. Redis checks its existing callback receipt
+before accepting a cancellation request or terminal event. Callback publication
+first publishes a preceding committed Run event through the same direct path,
+so a delayed cancellation cannot be overtaken by later callback text. Receipt
+state for these two producers remains separate. The derived prefix is internal,
+not persisted publication state, and is stripped at the public boundary.
 
 ## Public event types
 
@@ -193,55 +168,44 @@ public row can be committed.
 
 ## Key and stream incarnation
 
-PostgreSQL allocates a positive, monotonically increasing
-`stream_incarnation` for the current attempt. The physical key prefix remains the existing `v3` Redis namespace because v4
-reuses the single transport plane rather than creating a parallel stack:
+The admitted current Attempt binds one positive `stream_incarnation`. The
+physical `v3` prefix is an opaque retained storage namespace; it does not enable
+v3 wire negotiation or another transport:
 
 ```text
 ai-platform:sse:v3:{<tenant_scope>:<run_id>}:<stream_incarnation>:events
-ai-platform:sse:v3:{<tenant_scope>:<run_id>}:<stream_incarnation>:live
+ai-platform:sse:v3:{<tenant_scope>:<run_id>}:<stream_incarnation>:events:state
 ```
 
-The first key is the replay Stream and the second is its Pub/Sub channel. The
-cluster hash tag keeps one run's incarnation and live notification on one slot.
-Exactly one
-incarnation is current. The key, every envelope, the terminal intent, and every
-cursor must agree. A missing/unprovable current key is never recreated under an
-already-issued incarnation; rebuild first increments PostgreSQL authority.
+These are the Stream and its bounded append-receipt/phase state. The cluster hash
+tag places them on the same slot. Exactly one incarnation is current; the key,
+envelope and cursor must agree with its authority. A missing issued Stream is
+never recreated and there is no successor allocation or builder.
 
-`stream.open` is the first entry. Its stable semantic ID and canonical bytes
-bind the admitted Attempt/incarnation/projection version. Redis admission is
-proven only when that exact first entry exists; a mismatched first entry fails
+`stream.open` is the first entry. Its stable identity and canonical bytes bind
+the admitted Attempt/incarnation/projection version. Redis admission requires
+that exact first entry; a mismatch or residual state without the Stream fails
 closed.
 
 ## Atomic append and retention
 
-All appends run through one reviewed Lua script:
+The existing transport owns two bounded Lua operations: one for ordered callback
+batches and one for open, Run events, terminal and end. Each validates current
+protocol/phase, reuses its exact receipt, performs `XADD MAXLEN ~ 10000`, and
+refreshes Stream/state TTL atomically. Neither script calls `PUBLISH`.
 
-1. validate the expected key state and open protocol when publishing
-   `stream.open`, an application event, or a terminal pair;
-2. `XADD key MAXLEN ~ <configured_maxlen> * envelope <canonical-bytes>`;
-3. `PEXPIRE` the Stream and state keys with the selected TTL;
-4. `PUBLISH` a bounded wrapper containing the returned native Redis ID and the
-   exact canonical envelope bytes;
-5. return the native Redis ID and applied TTL class.
+The callback script writes the complete ordered batch and its latest sequence,
+digest and Redis receipt together. The serial executor buffer does not send a
+later batch before acknowledgement. A terminal append checks that all callbacks
+committed before the terminal fact have reached that receipt. A missing prefix
+leaves the Stream open and returns unavailable; it does not roll back Run state
+or create retry work. Terminal/end retries reuse the same semantic identities.
 
-No producer publishes outside this script. A Pub/Sub notification without the
-corresponding retained Stream entry is a contract failure; a retained entry
-without an observed notification is repaired by replay.
-
-The active TTL is an idle TTL refreshed by every accepted active event. It is
-not a fixed absolute duration from stream creation. Terminal then end use the
-terminal replay TTL, also in the atomic append, and terminal TTL is never shorter
-than active idle TTL. A long active task therefore stays retained while it emits
-within the active-idle window.
-
-Starting values are not capacity claims: `MAXLEN ~ 10000`, active idle TTL two
-hours, terminal replay TTL two hours, `XREAD COUNT 128`, block at most 15 seconds,
-and heartbeat at 15 seconds. External Acceptance must set values from measured
-event rate, reconnect target, entry bytes, Redis memory, and slow-consumer data.
-
-The approximate checks are:
+The active TTL is an idle TTL refreshed by accepted events. Terminal then end
+use the terminal replay TTL, never shorter than the active idle TTL. Current
+starting values are `MAXLEN ~ 10000`, two-hour active and terminal TTLs, 16 publish
+connections and 256 read connections per transport instance. Receipt state has
+fixed fields and expires with the Stream. These are bounds, not capacity claims.
 
 ```text
 replay_seconds ~= MAXLEN / p99_post_coalesce_events_per_second
@@ -249,28 +213,25 @@ redis_bytes ~= retained_runs * min(MAXLEN, event_rate * ttl_seconds)
               * (average_entry_bytes + measured_redis_overhead)
 ```
 
-## Shared live feed and bounded subscribers
+## Replay and blocking reads
 
-Each API process owns one Pub/Sub connection and dynamically subscribes to one
-logical live channel per active Run stream. Browsers for the same stream share
-that Redis subscription. Every browser still has an independent bounded queue,
-authorization lease, reducer cursor, and connection lifetime.
+The API validates retained bounds and the accepted cursor, then replays through
+a captured tail. The replay Lua operation checks that a nonzero predecessor
+still exists before removing it from the returned page. An initial `0-0` read
+uses the legal exclusive range `(0-0`. A trim during replay produces a gap.
 
-Attach subscribes and observes the Redis subscription acknowledgement before it
-captures retained Stream bounds. It then replays through that captured tail,
-buffers concurrent live notifications, discards overlap at or before the replay
-tail, drains later buffered events in Redis-ID order, and enters live mode.
-Semantic event IDs make an exact retry reducer-idempotent.
+After replay, the same decoder and public projector consume exclusive `XREAD`
+from that tail. Entries appended between tail capture and the first read remain
+in the Stream, so there is no subscription/attach race. Each read returns at
+most 128 entries and blocks at most five seconds, shortened for the connection
+lease. An empty read can emit an id-less heartbeat after lease revalidation.
 
-A feed disconnect, malformed wrapper, foreign key/incarnation, event-count or
-byte overflow, or uncertain ordering closes affected connections. It never
-drops a frame and then advances the browser cursor. Reconnect uses Stream replay.
-There is no process-memory replay log and no `XREADGROUP`.
-
-Starting local bounds, pending External Acceptance, are 256 queued events and 1
-MiB per browser, 256 browsers per API process, and 32 browsers per Run stream.
-Values are configuration with strict positive upper bounds and are not capacity
-claims.
+Every browser owns its authorization lease, accepted cursor and request
+lifetime. The lifespan owns bounded read/publish pools; request cancellation
+cancels the blocked read. There is no shared feed, per-browser event queue,
+process-memory replay log, `XREADGROUP`, Pub/Sub connection or PostgreSQL live
+reader. Transport errors close the affected SSE connection without inventing
+progress; reconnect uses the last reducer-accepted cursor.
 
 ## Public SSE frames
 
@@ -358,9 +319,8 @@ The gap is a complete `PublicStreamControlV4` envelope. Its payload is:
 
 The payload IDs are native Redis IDs; the SSE `id:` carries the complete
 Run/incarnation/Redis cursor. Bounds are null when Redis has none. A missing
-terminal stream is recovered into a fresh successor before replay. A
-nonterminal missing stream emits the truthful null-bounds gap with the current
-incarnation start cursor and requires durable hydrate.
+Stream, terminal or active, emits the truthful null-bounds gap with the current
+incarnation start cursor and requires durable hydrate. No successor is created.
 
 ## Frontend accepted cursor
 
@@ -387,14 +347,14 @@ text or replace unrelated narration, Tool, process, or actionable status parts.
 
 - callback response loss, exact duplicate receipt, conflicting duplicate,
   ordered canonical rows, and stable semantic IDs;
-- transaction-scoped admission before public/terminal commit, claim commit
-  before Redis, no PostgreSQL locks during Redis I/O, receipt-fenced disposition,
-  and indexed retry;
+- transaction-scoped admission before SDK dispatch, callback commit before
+  Redis, no PostgreSQL locks during Redis I/O, and exact callback receipts;
 - atomic TTL refresh, ordinary and terminal duplicate receipts, terminal-pair
   ordering, and publish-pool cleanup;
-- malformed/foreign/future cursor, trim gap, nonterminal missing-stream gap,
-  exclusive successor rebuild, stale-token/fingerprint rejection, and atomic
-  activation;
+- malformed/foreign/future cursor, initial replay, predecessor trim, exclusive
+  XREAD after captured tail, active/terminal missing-stream gaps and no recreation;
+- terminal/callback commit-to-append race, immutable business facts, partial
+  terminal/end retry and final hydration without successful Redis delivery;
 - schema-valid v4 gap, semantic duplicate transport acceptance, accepted cursor
   only after reducer or terminal-hydrate commit, matching `stream.end` fence,
   incarnation rejection, and terminal-hydrate reconciliation;
@@ -408,8 +368,8 @@ text or replace unrelated narration, Tool, process, or actionable status parts.
   `app/executors/public_answer_stream.py`, the existing Claude public-event
   adapter, the durable Chat history projector, `frontend/web/src/hooks/useAgent/`,
   this document, ADR 0012, and their focused tests. The Redis envelope, key,
-  cursor, publication-claim, authorization, and Run terminal authorities are
-  unchanged.
+  cursor, authorization and Run terminal authorities remain unchanged.
+  Publication now follows ADR 0013 and the Stream-only execution contract.
 - **Public timeline invariant:** a disclosure-safe Assistant text prefix outside
   an active Tool invocation becomes a durable `message.delta` without waiting
   for an `AssistantMessage`, tool completion, or `ResultMessage`. Tool
@@ -446,10 +406,9 @@ text or replace unrelated narration, Tool, process, or actionable status parts.
   only after PostgreSQL V4 hydration has applied and only from the
   server-provided latest retained cursor. Durable history owns state through
   that anchor; Redis replay/live owns later events. `stream_missing`,
-  cross-incarnation recovery without a validated current anchor, and active
-  successor-incarnation creation remain terminal-only recovery until the
-  Run/Attempt owner defines a separate active-successor contract; the frontend
-  never synthesizes one.
+  and cross-incarnation recovery without a validated current anchor require
+  durable hydration without stream reconstruction. The frontend never invents
+  a cursor or successor incarnation.
 - **Single-body invariant:** v4 `message.delta` is the public incremental body
   authority and accepted deltas remain the durable source for streamed answers.
   `message.completed` closes the sequence with counts only and carries no answer
@@ -461,10 +420,10 @@ text or replace unrelated narration, Tool, process, or actionable status parts.
   `message_id`, `delta_count`, `text_length`, and `last_delta_event_id`; its
   legacy `message` field is exactly empty, and failed or cancelled terminals
   cannot carry an answer receipt. The Worker
-  accepts only current-Attempt, strictly ordered v4 rows whose database and
-  canonical metadata publication states are both `published`; `pending` remains
-  retryable, while inconsistent or `suppressed` publication fails closed. Receipt,
-  identity, sequence, or length mismatch also fails closed. For streamed answers,
+  accepts only committed, visible, current-Attempt v4 rows matching the exact
+  receipt, message identity, order, counts and lengths. Redis delivery and retired
+  publication metadata are not answer authority. Invalid or unauthorized rows
+  fail closed. For streamed answers,
   short compatibility content remains inline when persistence limits allow,
   otherwise history stores a bounded `run_events_v4` reference, without
   truncating the answer. Legacy non-streaming bounded terminal messages use the
@@ -482,11 +441,12 @@ text or replace unrelated narration, Tool, process, or actionable status parts.
   event cannot erase an earlier received delta; and refreshing a failed V4-only
   Run preserves that delta exactly once.
 - **Evidence ceiling:** source and local/CI tests cannot prove real SDK timing,
-  proxy flushing, Redis fan-out, browser paint, or restart recovery. Those claims
+  proxy flushing, Redis delivery, browser paint, or restart recovery. Those claims
   require an immutable candidate image on the controlled Linux environment and
   the applicable External Acceptance matrix.
-- **Rollback:** restore the prior reviewed image. No schema, cursor, Redis key,
-  or durable migration is introduced by this repair.
+- **Rollback:** the original progressive-projection repair introduced no schema
+  migration. After the Stream-only cutover, recovery follows the release runbook;
+  an older backend image is not compatible with the migrated schema.
 - **Stop conditions:** stop before code expands the public schema, weakens
   sanitizer or admission controls, treats narration as capability evidence,
   trusts callback-owned publication metadata, creates a second body or terminal
@@ -503,6 +463,8 @@ obsolete `assistant_final`; and obsolete frontend final-text replacement.
 Retained: bounded per-frame and queue limits, legacy non-streaming bounded
 terminal messages projected as the stable-source `assistant_delta`
 compatibility shape only when no streamed answer exists, and current history
-compatibility projection. PostgreSQL, Redis Streams/Pub/Sub,
-Run/Attempt, lease, callback-receipt, and publication-claim authorities remain
-unchanged. This source disposition is not deployment or real-latency evidence.
+compatibility projection. Their consumers are stored conversation records and
+authorized history/final hydration, never a second SSE producer. Run/Attempt,
+lease and callback-receipt authorities remain; publication claims and Pub/Sub
+are retired by ADR 0013. This source disposition is not deployment or latency
+evidence.

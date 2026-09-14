@@ -351,7 +351,7 @@
     "skillFileDeleteNotBacked": "Skill 文件删除暂未开放。当前可读取和导出已批准 Skills，文件变更需要后续存储能力。",
     "skillFileWriteNotBacked": "Skill 文件编辑暂未开放。当前可读取和导出已批准 Skills，文件变更需要后续存储能力。",
     "skillFileRequired": "技能至少需要一个文件",
-    "skillImportNotBacked": "Skill 导入暂未开放。请先使用市场中已批准的 Skills，ZIP/GitHub 导入需要后续存储能力。",
+    "skillImportNotBacked": "该导入方式暂未开放，请使用 Skill ZIP 上传或更新 Skill。",
     "skillPackageInvalidZip": "无法读取 Skill ZIP，请确认文件是有效的 ZIP 压缩包后重试。",
     "skillPackageSkillMdRequired": "ZIP 中未找到 SKILL.md。请上传 Skill 文件夹本身的 ZIP，或将 SKILL.md 放在包根目录。",
     "skillPackageMultipleSkills": "一次只能上传一个 Skill。请将每个包含 SKILL.md 的 Skill 分别压缩上传。",
@@ -1677,10 +1677,6 @@
       "description": "配置角色和细粒度权限。定义团队、资源和管​​理功能的访问控制策略。",
       "title": "角色与权限"
     },
-    "settings": {
-      "description": "配置应用和系统设置。管理全局偏好、集成、安全策略和平台行为。",
-      "title": "系统设置"
-    },
     "skills": {
       "description": "创建、配置和管理 AI 技能。通过提示词工程、工具集成和模块化技能组合，构建强大的自定义能力。",
       "title": "技能管理"
@@ -2063,22 +2059,14 @@
       "visibleToUsers": "对普通用户可见"
     },
     "archiveAction": "确认归档",
-    "archivePolicyDescription": "归档会停止新的任务使用，并从当前目录移除；历史版本、运行记录和审计证据继续保留。",
-    "managementDescription": "在一个页面内管理 Skill 的版本、运行状态和用户可见范围。",
-    "managementEyebrow": "能力治理",
+    "managementDescription": "上传、发布和更新受治理的 Skill，并管理企业内的分发范围。",
     "managementTitle": "Skill 管理",
-    "metrics": {
-      "enabled": "已启用",
-      "internal": "内部依赖",
-      "total": "当前目录",
-      "visible": "用户可见"
-    },
     "views": {
       "all": "全部",
-      "available": "用户可用",
+      "available": "用户可见",
       "internal": "内部依赖",
       "label": "Skill 目录视图",
-      "restricted": "未对用户开放"
+      "restricted": "受限"
     },
     "batchDeleteFailed": "部分 Skill 归档失败",
     "batchDeletePartial": "已归档 {{deleted}} 个 Skill，另有 {{failed}} 个归档失败。",
@@ -2106,8 +2094,8 @@
     },
     "managementTable": {
       "actions": "操作",
-      "delete": "归档",
-      "deleteSkill": "归档 {{name}}",
+      "delete": "归档（当前租户）",
+      "deleteSkill": "在当前租户归档 {{name}}",
       "disable": "停用",
       "disableSkill": "停用 {{name}}",
       "disabled": "已停用",
@@ -2127,10 +2115,10 @@
       "listLabel": "Skill 管理列表",
       "notInDirectory": "未进入目录",
       "notPublished": "尚未发布",
-      "package": "版本包",
+      "package": "当前版本",
       "packageOnly": "版本包待发布",
       "readOnly": "只读",
-      "runtimeStatus": "运行状态",
+      "runtimeStatus": "租户状态",
       "selectSkill": "选择 {{name}}",
       "selectedDetail": "当前 Skill 详情",
       "selectDetailPrompt": "请从目录选择一项查看详情。",
@@ -2140,11 +2128,13 @@
       "selectionCurrent": "左侧列表和右侧详情当前均为 {{name}}。",
       "skill": "技能",
       "tags": "标签",
-      "catalogStatus": "目录状态",
+      "catalogStatus": "用户目录",
+      "updateVersion": "上传新版本",
+      "updateVersionSkill": "为 {{name}} 上传新版本",
       "updatedAt": "更新时间"
     },
-    "confirmDelete": "归档 Skill「{{name}}」",
-    "confirmDeleteMessage": "归档会停止该 Skill 的活跃使用并从当前目录移除；历史版本、运行记录和审计证据将继续保留。",
+    "confirmDelete": "从当前租户归档 Skill「{{name}}」",
+    "confirmDeleteMessage": "归档会停止当前租户的活跃使用并移出用户目录；全局 Skill、历史版本、运行记录和审计证据继续保留。",
     "createFailed": "创建技能失败",
     "createFirst": "创建您的第一个技能",
     "createNew": "创建新技能",
@@ -2162,6 +2152,8 @@
     "exportToJSON": "导出为 JSON",
     "exportZip": "导出 ZIP",
     "featureDisabled": "技能功能已禁用，请联系管理员启用。",
+    "filter": "筛选",
+    "tagFilter": "标签筛选",
     "catalogUnavailable": {
       "description": "Skills 目录会保持可见用于发现。创建、导入、发布和启用动作需要管理员启用 Skill 访问后开放。",
       "title": "Skills 目录受治理"
@@ -2200,17 +2192,12 @@
         "tagTooLong": "单个标签长度不能超过30个字符"
       }
     },
-    "foundSkills": "找到 {{count}} 个技能 - 选择要安装的",
-    "githubRepoUrl": "GitHub 仓库地址",
-    "importFromGitHub": "从 GitHub 导入",
-    "importFromGitHubTitle": "从 GitHub 导入技能",
     "importFromJSON": "从 JSON 导入",
     "importSkills": "导入技能",
     "importSuccess": "技能导入成功",
     "install": "安装",
     "installAsSystem": "安装为系统技能（对所有用户可见）",
     "installCount": "安装 {{count}} 个技能",
-    "installSelected": "安装 {{count}} 个技能",
     "installed": "已安装",
     "installing": "安装中...",
     "invalidFormat": "JSON 格式无效：缺少 skills 对象",
@@ -2228,15 +2215,14 @@
     "preview": "预览",
     "promoteFailed": "升级技能失败",
     "promoteSuccess": "技能已升级为系统技能",
-    "repositoryUrl": "仓库 URL",
-    "searchPlaceholder": "搜索技能...",
+    "searchPlaceholder": "搜索名称、说明或标签",
     "selectBackedZipSkills": "选择要覆盖的已发布技能",
     "selectNewSkillToPublish": "选择一个要发布的新 Skill",
     "selectSkillsToInstall": "选择要安装的技能",
     "selectZipFile": "选择 ZIP 文件",
     "sourceLocal": "本地",
     "sourceMarketplace": "市场",
-    "subtitle": "创建和管理自定义技能，增强 AI 助手能力",
+    "subtitle": "上传、发布和更新 Skill，并管理企业内的分发范围",
     "title": "技能管理",
     "loadFailed": "技能目录加载失败，请重试。",
     "toggleFailed": "技能启停失败，请重试。",
@@ -2247,12 +2233,24 @@
     "updateSuccess": "技能更新成功",
     "upload": "上传",
     "uploadZipTitle": "上传技能 ZIP",
+    "zipUploadAction": "上传 Skill ZIP",
+    "zipUploadTitle": "上传 Skill ZIP",
+    "zipUploadSubtitle": "发布新 Skill，或为已有 Skill 上传新版本。",
+    "updateZipTitle": "更新 Skill：{{name}}",
+    "updateZipSubtitle": "上传同名 Skill ZIP，生成新版本并完成审核与稳定发布。",
+    "updateZipTargetHint": "ZIP 中必须包含同名 Skill「{{name}}」。",
+    "updateZipTargetMismatch": "当前 ZIP 未包含 Skill「{{name}}」，请选择正确的版本包。",
+    "uploadOperation": "本次操作",
+    "updateExistingSkill": "更新已有 Skill",
+    "publishNewSkill": "发布新 Skill",
+    "newVersionPending": "等待生成版本",
+    "adminUpdateAction": "审核并发布新版本",
+    "adminPublishAction": "审核并发布 Skill",
+    "adminUpdateSuccess": "Skill 新版本已发布到稳定通道，目录已刷新。",
+    "adminPublishSuccess": "新 Skill 已发布到稳定通道，目录已刷新。",
     "uploading": "上传中...",
     "userSkillVisible": "用户技能（仅对自己可见）",
     "adminUploadSelectOne": "管理员上传一次只能发布一个 Skill ZIP",
-    "adminUploadRequiresNewSkill": "管理员上传只发布全新的 Skill",
-    "adminReleaseZipTitle": "发布 Skill ZIP",
-    "adminReleaseZipSubtitle": "上传一个受治理的版本包，并通过审核后发布。",
     "adminCatalogInvalid": "Skill 管理目录与当前服务版本不一致，请刷新页面；问题持续时请检查前后端部署版本。",
     "adminReleaseLifecycleTitle": "发布流程",
     "adminReleaseLifecycleHint": "ZIP 会先成为不可变草稿，完成审核后以 100% 发布到稳定通道，最后刷新授权目录。",
@@ -2260,7 +2258,6 @@
     "adminReleaseReviewStep": "审核版本",
     "adminReleasePromoteStep": "发布稳定版本（100%）",
     "adminReleaseRefreshStep": "刷新授权目录",
-    "adminReleaseAction": "上传、审核并发布",
     "adminReleaseBlocked": "此次发布尚未得到确认。请保持 ZIP 打开，并重试被阻断的生命周期步骤。",
     "adminReleaseCatalogDraft": "管理员目录中已存在该 Skill 的不可变草稿。可继续使用此 ZIP 完成审核和发布。",
     "adminReleaseCatalogReviewed": "管理员目录中已有该 Skill 的已审核版本，可发布到稳定通道。",
@@ -2268,13 +2265,9 @@
     "adminReleaseReviewFailed": "草稿未能通过审核，仍未发布。",
     "adminReleasePromoteFailed": "已审核版本未能发布到稳定通道。",
     "adminReleaseRefreshFailed": "稳定发布已被接受，但未能刷新目录。请重新加载后再做下一次发布决定。",
-    "adminReleaseSuccess": "Skill 版本已发布到稳定通道，且目录已刷新。",
     "selectSkillToRelease": "选择一个要发布的 Skill",
     "adminReleaseZipHint": "请选择一个全新或已存在的 Skill。管理员发布会创建不可变目录版本，绝不会改动个人覆盖层。",
-    "adminReleaseExistingSkill": "已有 Skill",
     "adminZipImportHint": "管理员上传会创建公共 Skill、写入版本包，并发布到稳定通道。",
-    "adminZipNoNewSkill": "这个 ZIP 中没有全新的 Skill；已存在的公共目录 Skill 不能通过管理员上传发布。",
-    "newSkillAdminUpload": "新 Skill",
     "publicCatalogSkill": "公共目录",
     "newSkillImportUnsupported": "需管理员上传",
     "zipImportBackedHint": "ZIP 导入会写入你自己的技能文件覆盖层，只支持覆盖已存在的公共技能；新 Skill 需要管理员上传。",
@@ -2547,30 +2540,6 @@
         "description": "用户目录已接入企业工作台安全投影；新增、停用和角色分配继续受管理员权限与审计约束。",
         "title": "公司用户目录"
       },
-      "settings": {
-        "capabilities": {
-          "publicProfile": {
-            "description": "个人偏好仍通过个人资料和公开设置读取。",
-            "title": "个人偏好"
-          },
-          "runtime": {
-            "description": "系统级运行配置以只读投影展示，写入继续受管理员审计约束。",
-            "title": "运行配置"
-          },
-          "secrets": {
-            "description": "密钥、网关和环境变量不会在普通前端页面暴露。",
-            "title": "密钥与网关"
-          }
-        },
-        "details": {
-          "adminProjection": "管理员控制：系统运行配置、功能开关和平台参数按设置权限分层展示。",
-          "auditProjection": "审计边界：配置变更需要作者、时间、来源和回滚线索，普通页面只读。",
-          "nextContract": "已接入合同：个人偏好和系统配置读取分层；密钥网关保持脱敏与权限约束。",
-          "publicProjection": "当前状态：个人偏好和系统设置读取安全投影，写操作继续由管理员治理。"
-        },
-        "description": "系统设置已读取安全工作台投影；密钥、网关和运行配置写入继续按管理员审计流程处理。",
-        "title": "系统设置"
-      },
       "feedback": {
         "capabilities": {
           "audit": {
@@ -2685,35 +2654,6 @@
           "superuser": "超级用户",
           "tenant_admin": "企业管理员",
           "user": "普通用户"
-        }
-      },
-      "settings": {
-        "title": "设置",
-        "subtitle": "来自安全后端投影的个人与系统设置。",
-        "taskTitle": "检查工作台设置投影",
-        "taskDescription": "展示可读配置、脱敏项和审计能力；密钥、回滚和变更写入仍由后端权限保护。",
-        "empty": "当前投影中没有可见设置。",
-        "redacted": "[已脱敏]",
-        "groups": "设置分组",
-        "items": "{{count}} 个设置项",
-        "groupItemCount": "{{count}} 个设置项",
-        "secretChip": "已脱敏",
-        "auditedChip": "受审计",
-        "redactedCount": "脱敏项",
-        "redactedDetail": "不展示密钥材料",
-        "auditCount": "审计项",
-        "auditDetail": "变更需审计或回滚",
-        "categories": {
-          "auth": "认证",
-          "chat": "对话",
-          "general": "通用",
-          "governance": "治理",
-          "model": "模型",
-          "notification": "通知",
-          "personal_preferences": "个人偏好",
-          "security": "安全",
-          "system_runtime": "系统运行时",
-          "workspace": "工作区"
         }
       },
       "feedback": {

@@ -568,6 +568,7 @@ def build_sdk_env(*, cwd: Path | None = None) -> dict[str, str]:
         if value:
             env[key] = value
     if cwd is not None:
+        env["AI_PLATFORM_WORK_DIR"] = str(cwd)
         home = cwd / ".home"
         env["HOME"] = str(home)
         env["USERPROFILE"] = str(home)
@@ -1053,12 +1054,10 @@ async def run_claude_agent_sdk(
             sdk.update(
                 {
                     "exception_type": type(exception).__name__,
-                    "exception_message": _runtime_diagnostic_text(exception),
-                    "exception_traceback": _runtime_diagnostic_text(
-                        "".join(
-                            traceback.format_exception(
-                                type(exception), exception, exception.__traceback__
-                            )
+                    "exception_message": str(exception),
+                    "exception_traceback": "".join(
+                        traceback.format_exception(
+                            type(exception), exception, exception.__traceback__
                         )
                     ),
                 }
@@ -2476,7 +2475,7 @@ async def run_claude_agent_sdk(
                 continue
             if isinstance(message, AssistantMessage):
                 if stream_projector is not None:
-                    stream_projector.close_unfinished()
+                    stream_projector.finish_message()
                 diagnostic_counters["assistant_messages"] += 1
                 assistant_message_identity = (
                     f"assistant_{diagnostic_counters['assistant_messages']}"

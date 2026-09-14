@@ -15,7 +15,7 @@ import {
 import { ModelSelector } from "../../agent/ModelSelector";
 import { UserMenu } from "../UserMenu";
 import { useTheme } from "../../../contexts/ThemeContext";
-import { useSettingsContext } from "../../../contexts/SettingsContext";
+import { useModelCatalogContext } from "../../../contexts/ModelCatalogContext";
 import { notificationPublicApi } from "../../../services/api/notificationPublic";
 import { NotificationDialog } from "../../notification/NotificationDialog";
 import type { TabType } from "./types";
@@ -61,7 +61,7 @@ export function Header({
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { theme, toggleTheme } = useTheme();
-  const { pinnedModelIds, togglePinnedModel } = useSettingsContext();
+  const { pinnedModelIds, togglePinnedModel } = useModelCatalogContext();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [notifDialogOpen, setNotifDialogOpen] = useState(false);
   const [activeNotifCount, setActiveNotifCount] = useState(0);

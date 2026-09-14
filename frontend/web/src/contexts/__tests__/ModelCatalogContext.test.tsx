@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { AvailableModel } from "../SettingsContext.tsx";
+import type { AvailableModel } from "../ModelCatalogContext.tsx";
 import type { User } from "../../types/index.ts";
 
 type Listener = (event: { type: string }) => void;
@@ -234,7 +234,7 @@ function availableModelIds(models: AvailableModel[] | null) {
   return models?.map((model) => model.id) ?? [];
 }
 
-async function mountSettingsHarness(
+async function mountModelCatalogHarness(
   configure: (
     authApi: typeof import("../../services/api/auth.ts").authApi,
     modelApi: typeof import("../../services/api/modelPublic.ts").modelPublicApi,
@@ -243,8 +243,8 @@ async function mountSettingsHarness(
   const React = await import("react");
   const { createRoot } = await import("react-dom/client");
   const { AuthProvider, useAuth } = await import("../../hooks/useAuth.tsx");
-  const { SettingsProvider, useSettingsContext } = await import(
-    "../SettingsContext.tsx"
+  const { ModelCatalogProvider, useModelCatalogContext } = await import(
+    "../ModelCatalogContext.tsx"
   );
   const { authApi } = await import("../../services/api/auth.ts");
   const { modelPublicApi } = await import("../../services/api/modelPublic.ts");
@@ -281,10 +281,10 @@ async function mountSettingsHarness(
   storage.set("ai_platform_session_present", "test-session-marker");
 
   let authSnapshot: ReturnType<typeof useAuth> | null = null;
-  let settingsSnapshot: ReturnType<typeof useSettingsContext> | null = null;
+  let modelCatalogSnapshot: ReturnType<typeof useModelCatalogContext> | null = null;
   function Probe() {
     authSnapshot = useAuth();
-    settingsSnapshot = useSettingsContext();
+    modelCatalogSnapshot = useModelCatalogContext();
     return null;
   }
 
@@ -297,7 +297,7 @@ async function mountSettingsHarness(
           AuthProvider,
           null,
           React.createElement(
-            SettingsProvider,
+            ModelCatalogProvider,
             null,
             React.createElement(Probe),
           ),
@@ -325,9 +325,9 @@ async function mountSettingsHarness(
       assert.ok(authSnapshot);
       return authSnapshot;
     },
-    get settings() {
-      assert.ok(settingsSnapshot);
-      return settingsSnapshot;
+    get modelCatalog() {
+      assert.ok(modelCatalogSnapshot);
+      return modelCatalogSnapshot;
     },
     async flush() {
       await React.act(async () => {
@@ -353,7 +353,7 @@ async function mountSettingsHarness(
   };
 }
 
-test("SettingsProvider hides A synchronously and accepts only B GET completions", async () => {
+test("ModelCatalogProvider hides A synchronously and accepts only B GET completions", async () => {
   const bModels = deferred<ReturnType<typeof modelProjection>>();
   const bPins = deferred<string[]>();
   const modelSignals: AbortSignal[] = [];
@@ -361,7 +361,7 @@ test("SettingsProvider hides A synchronously and accepts only B GET completions"
   let userCalls = 0;
   let modelCalls = 0;
   let pinCalls = 0;
-  const harness = await mountSettingsHarness((authApi, modelApi) => {
+  const harness = await mountModelCatalogHarness((authApi, modelApi) => {
     authApi.getCurrentUser = async () =>
       ++userCalls === 1
         ? authUser("user-a", "tenant-a")
@@ -383,16 +383,16 @@ test("SettingsProvider hides A synchronously and accepts only B GET completions"
 
   try {
     await harness.flush();
-    assert.equal(harness.settings.availableModels?.[0]?.id, "model-a");
-    assert.deepEqual(harness.settings.pinnedModelIds, ["model-a"]);
+    assert.equal(harness.modelCatalog.availableModels?.[0]?.id, "model-a");
+    assert.deepEqual(harness.modelCatalog.pinnedModelIds, ["model-a"]);
 
     await harness.React.act(async () => {
       await harness.auth.login({ username: "user-b", password: "safe-test" });
     });
 
     assert.equal(harness.auth.user?.id, "user-b");
-    assert.equal(harness.settings.availableModels, null);
-    assert.deepEqual(harness.settings.pinnedModelIds, []);
+    assert.equal(harness.modelCatalog.availableModels, null);
+    assert.deepEqual(harness.modelCatalog.pinnedModelIds, []);
     assert.equal(modelSignals[0]?.aborted, true);
     assert.equal(pinSignals[0]?.aborted, true);
 
@@ -400,10 +400,10 @@ test("SettingsProvider hides A synchronously and accepts only B GET completions"
     bPins.resolve(["model-b"]);
     await harness.flush();
 
-    assert.deepEqual(availableModelIds(harness.settings.availableModels), [
+    assert.deepEqual(availableModelIds(harness.modelCatalog.availableModels), [
       "model-b",
     ]);
-    assert.deepEqual(harness.settings.pinnedModelIds, ["model-b"]);
+    assert.deepEqual(harness.modelCatalog.pinnedModelIds, ["model-b"]);
   } finally {
     await harness.cleanup();
   }
@@ -417,7 +417,7 @@ test("deferred A GET and PUT results cannot mutate authenticated subject B", asy
   let modelCalls = 0;
   let pinCalls = 0;
   let putCalls = 0;
-  const harness = await mountSettingsHarness((authApi, modelApi) => {
+  const harness = await mountModelCatalogHarness((authApi, modelApi) => {
     authApi.getCurrentUser = async () =>
       ++userCalls === 1
         ? authUser("user-a", "tenant-a")
@@ -437,33 +437,33 @@ test("deferred A GET and PUT results cannot mutate authenticated subject B", asy
 
   try {
     await harness.React.act(async () => {
-      harness.settings.togglePinnedModel("model-a-pending");
+      harness.modelCatalog.togglePinnedModel("model-a-pending");
       await Promise.resolve();
       await harness.auth.login({ username: "user-b", password: "safe-test" });
     });
     await harness.flush();
 
-    assert.equal(harness.settings.availableModels?.[0]?.id, "model-b");
-    assert.deepEqual(harness.settings.pinnedModelIds, ["model-b"]);
+    assert.equal(harness.modelCatalog.availableModels?.[0]?.id, "model-b");
+    assert.deepEqual(harness.modelCatalog.pinnedModelIds, ["model-b"]);
 
     aModels.resolve(modelProjection("model-a", "Model A"));
     aPins.resolve(["model-a"]);
     aPut.resolve(["model-a-pending"]);
     await harness.flush();
 
-    assert.equal(harness.settings.availableModels?.[0]?.id, "model-b");
-    assert.deepEqual(harness.settings.pinnedModelIds, ["model-b"]);
+    assert.equal(harness.modelCatalog.availableModels?.[0]?.id, "model-b");
+    assert.deepEqual(harness.modelCatalog.pinnedModelIds, ["model-b"]);
     assert.equal(putCalls, 1);
   } finally {
     await harness.cleanup();
   }
 });
 
-test("SettingsProvider fails closed on B denial and clears state on logout", async () => {
+test("ModelCatalogProvider fails closed on B denial and clears state on logout", async () => {
   let userCalls = 0;
   let modelCalls = 0;
   let pinCalls = 0;
-  const harness = await mountSettingsHarness((authApi, modelApi) => {
+  const harness = await mountModelCatalogHarness((authApi, modelApi) => {
     authApi.getCurrentUser = async () =>
       ++userCalls === 1
         ? authUser("user-a", "tenant-a")
@@ -486,24 +486,24 @@ test("SettingsProvider fails closed on B denial and clears state on logout", asy
       await harness.auth.login({ username: "user-b", password: "safe-test" });
     });
     await harness.flush();
-    assert.equal(harness.settings.availableModels, null);
-    assert.deepEqual(harness.settings.pinnedModelIds, []);
+    assert.equal(harness.modelCatalog.availableModels, null);
+    assert.deepEqual(harness.modelCatalog.pinnedModelIds, []);
 
     await harness.React.act(async () => {
       await harness.auth.logout();
     });
-    assert.equal(harness.settings.availableModels, null);
-    assert.deepEqual(harness.settings.pinnedModelIds, []);
+    assert.equal(harness.modelCatalog.availableModels, null);
+    assert.deepEqual(harness.modelCatalog.pinnedModelIds, []);
   } finally {
     await harness.cleanup();
   }
 });
 
-test("SettingsProvider aborts pending subject work on unmount", async () => {
+test("ModelCatalogProvider aborts pending subject work on unmount", async () => {
   const models = deferred<ReturnType<typeof modelProjection>>();
   const pins = deferred<string[]>();
   const signals: AbortSignal[] = [];
-  const harness = await mountSettingsHarness((authApi, modelApi) => {
+  const harness = await mountModelCatalogHarness((authApi, modelApi) => {
     authApi.getCurrentUser = async () => authUser("user-a", "tenant-a");
     modelApi.listAvailable = async (options?: { signal?: AbortSignal }) => {
       if (options?.signal) signals.push(options.signal);

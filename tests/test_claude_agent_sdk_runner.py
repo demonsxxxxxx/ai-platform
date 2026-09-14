@@ -221,6 +221,16 @@ def _scripted_sdk(
         def __init__(self, text):
             self.text = text
 
+    class ThinkingBlock:
+        def __init__(self, thinking):
+            self.thinking = thinking
+
+    class ToolUseBlock:
+        def __init__(self, *, id, name, input):
+            self.id = id
+            self.name = name
+            self.input = input
+
     class AssistantMessage:
         def __init__(self, text):
             self.content = [TextBlock(text)]
@@ -281,6 +291,17 @@ def _scripted_sdk(
                 message = AssistantMessage("")
                 message.content = value
                 yield message
+            elif kind == "assistant_tool":
+                message = AssistantMessage("")
+                message.content = [
+                    ThinkingBlock(value["thinking"]),
+                    ToolUseBlock(
+                        id=value["id"],
+                        name=value["name"],
+                        input=value["input"],
+                    ),
+                ]
+                yield message
             elif kind == "stream":
                 yield StreamEvent(value)
             elif kind in {"hook", "cancel_hook"}:
@@ -307,6 +328,8 @@ def _scripted_sdk(
         ResultMessage=ResultMessage,
         StreamEvent=StreamEvent,
         TextBlock=TextBlock,
+        ThinkingBlock=ThinkingBlock,
+        ToolUseBlock=ToolUseBlock,
         query=query,
     )
 
@@ -3049,6 +3072,98 @@ async def test_sdk_selected_skill_streams_after_completed_evidence_before_termin
         "invocation_requested",
         "completed",
     ]
+
+
+@pytest.mark.asyncio
+async def test_sdk_selected_skill_resumes_stream_after_incomplete_tool_block_boundary(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    deltas = []
+    candidates = []
+    observed_before_result = []
+    text = "Answer after the Skill completes."
+    skill_input = {
+        "tool_name": "Skill",
+        "tool_use_id": "skill-call-1",
+        "tool_input": {"skill": "qa-review"},
+    }
+    steps = [
+        (
+            "stream",
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "skill-call-1",
+                    "name": "Skill",
+                },
+            },
+        ),
+        (
+            "stream",
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": '{"skill":"qa-review"}',
+                },
+            },
+        ),
+        (
+            "assistant_tool",
+            {
+                "thinking": "Reviewing the Skill result.",
+                "id": "skill-call-1",
+                "name": "Skill",
+                "input": {"skill": "qa-review"},
+            },
+        ),
+        ("hook", ("PreToolUse", skill_input, "skill-call-1")),
+        ("hook", ("PostToolUse", skill_input, "skill-call-1")),
+        *_stream_steps(text),
+        ("probe", lambda: observed_before_result.extend(deltas)),
+    ]
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, steps, result_text=text),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="review",
+        cwd=tmp_path,
+        skill_id="qa-review",
+        skills=["qa-review"],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[_skill_subject()],
+        on_text=deltas.append,
+        on_capability_evidence=_acknowledge_capability_evidence,
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
+        run_id="run-post-tool-stream",
+        attempt_id="attempt-post-tool-stream",
+        thinking_effort="high",
+    )
+
+    assert observed_before_result
+    assert text.startswith("".join(observed_before_result))
+    assert result.error is None
+    assert "".join(deltas) == text
+    event_types = [
+        candidate.event_type
+        if hasattr(candidate, "event_type")
+        else candidate.as_agent_event_fields()["type"]
+        for candidate in candidates
+    ]
+    assert "claude_sdk_thinking_summary" in event_types
+    assert event_types.index("tool.completed") < event_types.index("message.delta")
 
 
 @pytest.mark.asyncio

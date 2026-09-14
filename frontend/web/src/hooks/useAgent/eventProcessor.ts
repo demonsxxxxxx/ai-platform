@@ -23,7 +23,6 @@ import type {
 } from "../../types";
 import type { ExecutionTimelinePart } from "../../types/message";
 import {
-  collapsePublicExecutionSteps,
   projectPublicAgentProgress,
   projectPublicThinkingActivity,
   upsertPublicExecutionStep,
@@ -63,6 +62,140 @@ import {
   upsertToolPermissionPart,
 } from "./toolPermissionParts";
 import type { ThinkingPart } from "../../types";
+import type { V4PublicEvent } from "../../components/chat/assistant-ui/publicEventAdapter";
+
+function normalizeV4Event(event: V4PublicEvent): {
+  eventType: string;
+  data: EventData;
+} {
+  const payload = event.event.payload as unknown as Record<string, unknown>;
+  const base = {
+    ...payload,
+    event_id: event.eventId,
+    message_id: event.messageId ?? undefined,
+    run_id: event.runId,
+    sequence: event.sequence ?? undefined,
+    timestamp: event.emittedAt,
+    trace_ref: event.event.trace_ref,
+    causation_event_id: event.causationEventId,
+  } as EventData;
+  const activity = (
+    stage: string,
+    message: string,
+    severity: "info" | "warning" | "error" = "info",
+  ): { eventType: string; data: EventData } => ({
+    eventType: "run_event",
+    data: {
+      ...base,
+      event_type: "public_activity",
+      projection_version: CHAT_PUBLIC_PROJECTION_VERSION,
+      stage,
+      status:
+        stage === "message_started"
+          ? "running"
+          : stage === "message_completed"
+            ? "completed"
+            : stage,
+      severity,
+      message,
+      payload,
+    },
+  });
+
+  switch (event.eventType) {
+    case "message.started":
+      return activity("message_started", "Assistant response started");
+    case "message.delta":
+      return {
+        eventType: "message:chunk",
+        data: {
+          ...base,
+          content: String(payload.delta),
+          projection_version: CHAT_PUBLIC_PROJECTION_VERSION,
+          projection_kind: "assistant_delta",
+        },
+      };
+    case "message.completed":
+      return activity("message_completed", "Assistant response complete");
+    case "thinking.started":
+    case "thinking.delta":
+    case "thinking.completed":
+      return activity(
+        event.eventType.replace(".", "_"),
+        typeof payload.public_summary === "string"
+          ? payload.public_summary
+          : typeof payload.delta === "string"
+            ? payload.delta
+            : "",
+      );
+    case "agent.progress":
+      return {
+        eventType: "run_event",
+        data: {
+          ...base,
+          event_type: "agent_public_progress",
+          projection_version: CHAT_PUBLIC_PROJECTION_VERSION,
+          stage: String(payload.phase),
+          status: String(payload.lifecycle),
+          message: String(payload.message),
+          payload,
+        },
+      };
+    case "model.completed":
+      return { eventType: "model.completed", data: base };
+    case "tool.started":
+    case "tool.completed":
+    case "tool.failed":
+    case "tool.denied":
+      return {
+        eventType: "run_event",
+        data: {
+          ...base,
+          event_type: "public_tool_activity",
+          status: event.eventType.slice("tool.".length),
+        },
+      };
+    case "subagent.started":
+    case "subagent.progress":
+    case "subagent.completed":
+    case "subagent.failed":
+    case "subagent.cancelled":
+      return {
+        eventType: "run_event",
+        data: {
+          ...base,
+          event_type: "public_subagent_activity",
+          status: event.eventType.slice("subagent.".length),
+        },
+      };
+    case "artifact.created":
+    case "artifact.ready":
+    case "artifact.failed":
+      return {
+        eventType: "artifact_card",
+        data: {
+          ...base,
+          artifact_id: String(payload.artifact_id),
+          artifact_type: typeof payload.media_type === "string" ? payload.media_type : "artifact",
+          label: typeof payload.filename === "string" ? payload.filename : "Artifact unavailable",
+          content_type: typeof payload.media_type === "string" ? payload.media_type : "application/octet-stream",
+          size_bytes: typeof payload.size_bytes === "number" ? payload.size_bytes : 0,
+          status: typeof payload.status === "string" ? payload.status : undefined,
+        },
+      };
+    case "policy.checking":
+      return activity("policy_checking", String(payload.display_name));
+    case "policy.allowed":
+      return activity("policy_allowed", String(payload.display_name));
+    case "policy.denied":
+      return activity("policy_denied", String(payload.display_name), "warning");
+    case "run.cancel_requested":
+      return activity("cancel_requested", "Cancellation requested", "warning");
+    default:
+      return { eventType: event.eventType, data: base };
+  }
+}
+
 
 // ============================================
 // Shared utilities
@@ -209,8 +342,8 @@ export function normalizeMessageTextLogicalIds(
  * Unified message event processor.
  */
 export function processMessageEvent(
-  eventType: string,
-  data: EventData,
+  eventType: string | V4PublicEvent,
+  eventData: EventData | undefined,
   parts: MessagePart[],
   content: string,
   toolCalls: ToolCall[],
@@ -219,15 +352,21 @@ export function processMessageEvent(
   isStreaming: boolean,
   messageId?: string,
 ): ProcessMessageEventResult {
+  const normalizedEvent =
+    typeof eventType === "string"
+      ? { eventType, data: eventData ?? {} }
+      : normalizeV4Event(eventType);
+  const eventName = normalizedEvent.eventType;
+  const data = normalizedEvent.data;
   const result: ProcessMessageEventResult = { parts, content, toolCalls };
   const agentId = data.agent_id;
-  if (eventType === "tool:start" || eventType === "tool:result") {
+  if (eventName === "tool:start" || eventName === "tool:result") {
     // Legacy tool frames carry an unversioned raw-tool surface. They are not a
     // fallback for public execution v1 and must not create renderable parts.
     return result;
   }
 
-  switch (eventType) {
+  switch (eventName) {
     // ---- Agent events ----
 
     case "agent:call": {
@@ -392,7 +531,7 @@ export function processMessageEvent(
     case "execution_progress":
     case "execution_step_completed":
     case "execution_step_failed": {
-      const executionPart = createExecutionTimelinePart(eventType, data);
+      const executionPart = createExecutionTimelinePart(eventName, data);
       if (executionPart) {
         result.parts = upsertPublicExecutionStep(parts, executionPart);
       }
@@ -433,6 +572,13 @@ export function processMessageEvent(
       break;
     }
 
+    case "model.completed": {
+      if (typeof data.duration_ms === "number") {
+        result.duration = data.duration_ms;
+      }
+      break;
+    }
+
     // ---- Token usage ----
 
     case "token:usage": {
@@ -446,7 +592,7 @@ export function processMessageEvent(
         model_id: data.model_id,
         model: data.model,
       };
-      if (data.duration) result.duration = data.duration * 1000;
+      if (typeof data.duration === "number") result.duration = data.duration * 1000;
       break;
     }
 
@@ -683,9 +829,6 @@ export function processMessageEvent(
     }
   }
 
-  if (!isStreaming) {
-    result.parts = collapsePublicExecutionSteps(result.parts);
-  }
   return result;
 }
 
@@ -701,15 +844,12 @@ function createPublicToolPart(data: EventData): Extract<MessagePart, { type: "to
     !status ||
     !["started", "completed", "failed", "denied"].includes(status)
   ) return null;
-  const inputSummary =
-    typeof data.input_summary === "string" ? data.input_summary : undefined;
   const failed = status === "failed" || status === "denied";
   return {
     type: "tool",
     id: operationId,
     name: displayName,
-    args: { category, ...(inputSummary ? { summary: inputSummary } : {}) },
-    result: typeof data.result_summary === "string" ? data.result_summary : undefined,
+    args: {},
     status: status as "started" | "completed" | "failed" | "denied",
     success: failed ? false : status === "completed" ? true : undefined,
     error: undefined,
@@ -719,7 +859,6 @@ function createPublicToolPart(data: EventData): Extract<MessagePart, { type: "to
     agent_id: typeof data.agent_id === "string" ? data.agent_id : undefined,
     public_operation_id: operationId,
     public_category: category,
-    public_input_summary: inputSummary,
     duration_ms: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
     evidence_refs: Array.isArray(data.evidence_refs) ? data.evidence_refs : undefined,
     artifact_refs: Array.isArray(data.artifact_refs) ? data.artifact_refs : undefined,
@@ -742,10 +881,7 @@ function upsertPublicToolPart(
   updated[index] = {
     ...current,
     ...next,
-    args: next.public_input_summary ? next.args : current.args,
     result: next.result ?? current.result,
-    public_input_summary:
-      next.public_input_summary ?? current.public_input_summary,
   };
   return updated;
 }

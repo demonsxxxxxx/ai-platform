@@ -6,7 +6,6 @@ import {
   ClipboardList,
   Loader2,
   LogIn,
-  Settings2,
   ShieldAlert,
   ShieldCheck,
   UsersRound,
@@ -25,7 +24,6 @@ import { workbenchSurface } from "./workbenchSurface";
 
 const routeIcons: Partial<Record<TabType, ElementType>> = {
   users: UsersRound,
-  settings: Settings2,
   feedback: ClipboardList,
   notifications: BellRing,
 };

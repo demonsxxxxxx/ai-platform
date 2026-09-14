@@ -36,6 +36,30 @@ test("reconstructMessagesFromEvents preserves backend user message ids", () => {
   assert.doesNotMatch(messages[0]?.content || "", /\/skill/);
 });
 
+test("reconstructs zero model completion duration without inventing a run time", () => {
+  const messages = reconstructMessagesFromEvents(
+    [
+      {
+        id: "model-completed-zero",
+        type: "model.completed",
+        event_type: "model.completed",
+        run_id: "run-model",
+        timestamp: "2026-05-08T00:00:00.000Z",
+        data: {
+          duration_ms: 0,
+          turn_count: 1,
+          stop_category: "completed",
+        },
+      } satisfies HistoryEvent,
+    ],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]?.duration, 0);
+  assert.equal(messages[0]?.content, "");
+});
 test("production compatibility history reconstructs each persisted user turn before its run answer", () => {
   const messages = reconstructMessagesFromEvents(
     [
@@ -1040,8 +1064,8 @@ test("failed history retains canonical public execution activity through termina
   const tool = visibleParts[2];
   assert.equal(tool?.type, "tool");
   if (tool?.type !== "tool") throw new Error("expected tool part");
-  assert.equal(tool.public_input_summary, "Starting Search authorized sources");
-  assert.equal(tool.result, "Search authorized sources completed");
+  assert.equal(Object.hasOwn(tool, "public_input_summary"), false);
+  assert.equal(tool.result, undefined);
   const terminal = visibleParts[3];
   assert.equal(terminal?.type, "run_status");
   if (terminal?.type !== "run_status") throw new Error("expected failed terminal status");

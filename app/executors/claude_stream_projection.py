@@ -115,6 +115,24 @@ class ClaudeStreamProjector:
         if self._active_text_index is not None or self._ignored_block_index is not None:
             self._disable()
 
+    def finish_message(self) -> bool:
+        """Close one typed Assistant message and reopen framing for the next turn.
+
+        A complete ``AssistantMessage`` is the SDK's authoritative boundary for
+        one model turn.  A malformed or truncated partial-message sequence stays
+        suppressed within that turn, while the next turn must be allowed to start
+        from a new, exactly framed content block.
+        """
+
+        if self._active_text_index is not None or self._ignored_block_index is not None:
+            self._disable()
+        recovered = self._disabled
+        self._disabled = False
+        self._active_text_index = None
+        self._ignored_block_index = None
+        self._ignored_block_type = None
+        return recovered
+
     def _accept_start(self, event: dict[str, Any]) -> tuple[str, ...]:
         if self._active_text_index is not None or self._ignored_block_index is not None:
             self._disable()

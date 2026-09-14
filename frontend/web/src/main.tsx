@@ -19,7 +19,7 @@ import "./styles/syntax-highlight.css";
 import "./styles/markdown.css";
 import "./styles/utilities.css";
 import { AuthProvider } from "./hooks/useAuth";
-import { SettingsProvider } from "./contexts/SettingsContext";
+import { ModelCatalogProvider } from "./contexts/ModelCatalogContext";
 import { installMobileViewportResetHandlers } from "./utils/mobile";
 import { registerAiPlatformPwa } from "./pwa";
 
@@ -34,9 +34,9 @@ registerAiPlatformPwa();
 createRoot(document.getElementById("root")!).render(
   <BrowserRouter>
     <AuthProvider>
-      <SettingsProvider>
+      <ModelCatalogProvider>
         <App />
-      </SettingsProvider>
+      </ModelCatalogProvider>
     </AuthProvider>
   </BrowserRouter>,
 );

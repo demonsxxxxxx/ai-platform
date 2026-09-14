@@ -9,7 +9,7 @@ import { BlockPreviewPortal } from "../../chat/ChatMessage/items/McpBlockPreview
 import { SessionSidebar } from "../../panels/SessionSidebar";
 import type { SessionSidebarHandle } from "../../panels/SessionSidebar";
 import type { SessionSidebarSessionSource } from "../../panels/SessionSidebar";
-import { useSettingsContext } from "../../../contexts/SettingsContext";
+import { useModelCatalogContext } from "../../../contexts/ModelCatalogContext";
 import { useAgent } from "../../../hooks/useAgent";
 import { useApprovals } from "../../../hooks/useApprovals";
 import { useAuth } from "../../../hooks/useAuth";
@@ -50,7 +50,6 @@ import {
   buildEffectiveSkills,
   countEnabledSkills,
   resolveComposerSkillsAvailability,
-  resolveSettingsBooleanProjection,
 } from "./skillAvailability";
 import { AppShell } from "./AppShell";
 import { ChatView } from "./ChatView";
@@ -444,21 +443,12 @@ export function ChatAppContent({
     sessionId: null,
   });
   const agentConversationControlsLocked = !chatToolAccess.enabled;
-  const { enableSkills, settings, availableModels, defaultModel } =
-    useSettingsContext();
+  const { availableModels, defaultModel } = useModelCatalogContext();
   const { hasPermission, isAuthenticated } = useAuth();
-  const canReadSkills = hasPermission(Permission.SKILL_READ);
-  const enableSkillsProjection = resolveSettingsBooleanProjection(
-    settings,
-    "ENABLE_SKILLS",
-  );
   const composerSkillsProbeAvailability = resolveComposerSkillsAvailability({
     isAuthenticated,
-    canReadSkills,
     catalogEffectivePermissions: [],
     catalogPermissionsKnown: false,
-    enableSkillsSettingKnown: enableSkillsProjection.known,
-    enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
   });
 
   const {
@@ -504,11 +494,8 @@ export function ChatAppContent({
   });
   const composerSkillsAvailability = resolveComposerSkillsAvailability({
     isAuthenticated,
-    canReadSkills,
     catalogEffectivePermissions: skillsEffectivePermissions,
     catalogPermissionsKnown: skillsEffectivePermissionsKnown,
-    enableSkillsSettingKnown: enableSkillsProjection.known,
-    enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
   });
 
   const sessionConfigRef = useRef({

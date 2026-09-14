@@ -532,7 +532,14 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
         assert overlay["services"][service_name]["ports"] == []
     assert "OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS" not in env_example
     assert "OPENSANDBOX_EGRESS_PROXY_URL=http://egress.opensandbox.internal:8080" in env_example
-    assert "SANDBOX_SECURITY_PROFILE=governed" in env_example
+    for fixed_key in (
+        "DEPLOYMENT_ENVIRONMENT",
+        "SANDBOX_SECURITY_PROFILE",
+        "OPENSANDBOX_EXPECTED_NETWORK_MODE",
+        "AI_PLATFORM_BUILD_COMMIT",
+        "AI_PLATFORM_BUILD_DIRTY",
+    ):
+        assert f"{fixed_key}=" not in env_example
     assert "trusted_internal" not in env_example
     assert "OPENSANDBOX_TRUSTED_INTERNAL_" not in env_example
 
@@ -850,13 +857,11 @@ def test_env_example_documents_sandbox_egress_policy_defaults():
 
     for expected in [
         "SANDBOX_CONTAINER_PROVIDER=opensandbox",
-        "SANDBOX_SECURITY_PROFILE=governed",
         "SANDBOX_EXECUTOR_IMAGE=ai-platform:local",
         "SANDBOX_EXECUTOR_PUBLISHED_HOST=host.docker.internal",
         "SANDBOX_WORKSPACE_ROOT=/tmp/ai-platform-sandbox-workspaces",
         "SANDBOX_CALLBACK_BASE_URL=http://api.sandbox.internal:8020",
         "SANDBOX_EGRESS_POLICY_ENABLED=false",
-        "SANDBOX_EGRESS_NETWORK_NAME=ai-platform-sandbox-egress-internal-v1",
         "SANDBOX_EGRESS_PROOF_SIGNING_KEY=replace_me_with_a_random_32_byte_minimum_value",
         "SANDBOX_EGRESS_PROOF_KEY_ID=current",
         "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON=",
@@ -882,7 +887,6 @@ def test_compose_passes_sandbox_egress_policy_env_to_api_and_worker():
         service_text = compose_service_text(compose_text, service_name)
         for expected in [
             "SANDBOX_EGRESS_POLICY_ENABLED: ${SANDBOX_EGRESS_POLICY_ENABLED:-false}",
-            "SANDBOX_EGRESS_NETWORK_NAME: ${SANDBOX_EGRESS_NETWORK_NAME:-ai-platform-sandbox-egress-internal-v1}",
             "SANDBOX_EGRESS_PROOF_SIGNING_KEY: ${SANDBOX_EGRESS_PROOF_SIGNING_KEY:-}",
             "SANDBOX_EGRESS_PROOF_KEY_ID: ${SANDBOX_EGRESS_PROOF_KEY_ID:-current}",
             "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON: ${SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON:-}",

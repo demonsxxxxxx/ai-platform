@@ -18,7 +18,7 @@ import { RevealArtifactsSummary } from "./RevealArtifactsSummary";
 import { FeedbackButtons } from "./FeedbackButtons";
 import { AssistantAvatar } from "./AssistantAvatar";
 import { CollapsiblePill } from "../../common/CollapsiblePill";
-import { useSettingsContext } from "../../../contexts/SettingsContext";
+import { useModelCatalogContext } from "../../../contexts/ModelCatalogContext";
 import { useAuth } from "../../../hooks/useAuth";
 import { ModelIconImg } from "../../agent/modelIcon.tsx";
 import { shouldCloseTokenDetailsPopover } from "./tokenDetailsPopoverGuards";
@@ -86,6 +86,12 @@ interface ChatMessageProps {
 }
 
 // Token usage statistics button component
+function formatDurationMs(durationMs: number): string {
+  return durationMs < 1000
+    ? `${durationMs}毫秒`
+    : `${(durationMs / 1000).toFixed(2)}秒`;
+}
+
 function TokenDetailsButton({
   tokenUsage,
   duration,
@@ -198,13 +204,13 @@ function TokenDetailsButton({
                 </div>
               </>
             )}
-            {duration && (
+            {duration !== undefined && (
               <div className="mt-1.5 flex justify-between gap-4 border-t border-[var(--theme-border)] pt-1.5">
                 <span className="text-[var(--theme-text-secondary)]">
                   {t("chat.message.duration")}
                 </span>
                 <span className="font-medium text-[var(--theme-text)]">
-                  {(duration / 1000).toFixed(2)}s
+                  {formatDurationMs(duration)}
                 </span>
               </div>
             )}
@@ -252,7 +258,7 @@ export const ChatMessage = memo(function ChatMessage({
   showFeedbackAndShareActions = true,
 }: ChatMessageProps) {
   const { t } = useTranslation();
-  const { availableModels } = useSettingsContext();
+  const { availableModels } = useModelCatalogContext();
   const { isAuthenticated } = useAuth();
   const isUser = message.role === "user";
   const isStreaming = message.isStreaming && !message.content;
@@ -438,7 +444,7 @@ export const ChatMessage = memo(function ChatMessage({
               <Copy size={16} />
             </button>
             {/* Token usage statistics button */}
-            {(message.tokenUsage || message.duration) && (
+            {(message.tokenUsage || message.duration !== undefined) && (
               <TokenDetailsButton
                 tokenUsage={message.tokenUsage}
                 duration={message.duration}

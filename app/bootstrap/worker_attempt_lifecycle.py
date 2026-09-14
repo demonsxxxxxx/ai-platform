@@ -4,6 +4,7 @@ from functools import partial
 from typing import Any, Callable
 
 from app import repositories
+from app.bootstrap.run_diagnostics import build_run_diagnostics_service
 from app.execution.api import WorkerAttemptLifecyclePorts, finalize_worker_child_parent
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.runs.api import RunAttemptLifecycleService
@@ -20,6 +21,7 @@ def build_worker_attempt_lifecycle_ports(
 ) -> WorkerAttemptLifecyclePorts:
     """Bind worker lifecycle ports to one process-owned attempt service."""
 
+    run_diagnostics = build_run_diagnostics_service()
     return WorkerAttemptLifecyclePorts(
         lock_run=repositories.get_run,
         complete_run=complete_run_with_v4,
@@ -39,6 +41,7 @@ def build_worker_attempt_lifecycle_ports(
         request_attempt_cancel=attempt_lifecycle.request_cancel,
         terminalize_attempt=attempt_lifecycle.terminalize,
         conflict_error=repositories.RepositoryConflictError,
+        record_result_diagnostics=run_diagnostics.capture_failure_result,
     )
 
 

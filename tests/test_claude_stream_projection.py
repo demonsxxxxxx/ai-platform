@@ -156,3 +156,16 @@ def test_projector_close_unfinished_is_a_permanent_disable():
     projector.close_unfinished()
     assert projector.disabled is True
     assert projector.accept(_stop()) == ()
+
+
+def test_projector_recovers_only_at_a_typed_assistant_message_boundary():
+    projector = _projector()
+
+    projector.accept(_start(0, "tool_use"))
+    assert projector.finish_message() is True
+    assert projector.disabled is False
+    assert projector.accept(_start()) == ()
+    assert projector.accept(_text_delta("safe next-turn answer")) == (
+        "safe next-turn answer",
+    )
+    assert projector.accept(_stop()) == ()

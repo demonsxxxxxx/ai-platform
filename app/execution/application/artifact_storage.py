@@ -16,7 +16,29 @@ _MAX_DOCX_ARCHIVE_ENTRIES = 2000
 _MAX_DOCX_ARCHIVE_ENTRY_BYTES = 32 * 1024 * 1024
 _MAX_DOCX_ARCHIVE_TOTAL_BYTES = 64 * 1024 * 1024
 
+_WORKSPACE_INTERNAL_DIRS = {
+    ".ai-platform",
+    ".claude",
+    ".claude-config",
+    ".home",
+    ".pins",
+    ".tmp",
+    "inputs",
+    "logs",
+    "runtime",
+    "_audit",
+    "_debug",
+    "artifacts",
+    "tasks",
+}
+_WORKSPACE_INTERNAL_FILES = {
+    "run-state.json",
+    "step-event.json",
+    "step-response.json",
+}
 
+# These directories belong to the platform or contain inputs and installed
+# Skills. They stay inside the run workspace but are never user artifacts.
 def _parse_docx_xml(raw_xml: bytes) -> ElementTree.Element:
     parser = expat.ParserCreate()
 
@@ -143,6 +165,20 @@ def artifact_label(filename: str, kind: str) -> str:
     return filename
 
 
+def _is_user_workspace_file(path: Path, workspace: Path) -> bool:
+    """Keep collection rooted in the platform workspace and exclude internals."""
+    relative = path.relative_to(workspace)
+    if (
+        not relative.parts
+        or relative.parts[0] == "review"
+        or any(part in _WORKSPACE_INTERNAL_DIRS for part in relative.parts[:-1])
+    ):
+        return False
+    if path.name in _WORKSPACE_INTERNAL_FILES:
+        return False
+    return relative.parts[0] != "outputs" or "delivery" in relative.parts[1:-1]
+
+
 def collect_workspace_artifacts(
     *,
     tenant_id: str,
@@ -160,7 +196,7 @@ def collect_workspace_artifacts(
     reserve_storage: Callable[[str], str] | None = None,
 ) -> list[Any]:
     storage = storage_factory()
-    output_dirs: list[Path] = []
+    output_dirs: list[Path] = [workspace]
     legacy_output = workspace / "output"
     if legacy_output.is_dir():
         ensure_inside(workspace, legacy_output, "workspace output must stay inside the run workspace")
@@ -183,7 +219,9 @@ def collect_workspace_artifacts(
                 raise ValueError("workspace output must not contain symlinks")
             if not item.is_file():
                 continue
-            ensure_inside(output_dir, item, "workspace artifact must stay inside output directory")
+            if not _is_user_workspace_file(item, workspace):
+                continue
+            ensure_inside(workspace, item, "workspace artifact must stay inside run workspace")
             resolved = item.resolve(strict=False)
             if resolved in seen_candidates:
                 continue

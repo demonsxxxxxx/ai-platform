@@ -28,8 +28,6 @@ export enum Permission {
   ROLE_REQUEST = "role:request",
   ROLE_MANAGE = "role:manage",
   // Settings (Admin)
-  SETTINGS_READ = "settings:read",
-  SETTINGS_ADMIN = "settings:admin",
   SETTINGS_MANAGE = "settings:manage",
   // MCP
   MCP_READ = "mcp:read",

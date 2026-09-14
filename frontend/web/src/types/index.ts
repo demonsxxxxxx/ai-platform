@@ -153,19 +153,6 @@ export type {
 } from "./tool";
 
 // ============================================
-// Settings Types
-// ============================================
-export type {
-  SettingType,
-  SettingCategory,
-  SettingDependsOn,
-  SettingItem,
-  SettingsResponse,
-  SettingUpdate,
-  SettingResetResponse,
-} from "./settings";
-
-// ============================================
 // File Upload Types
 // ============================================
 export type {

@@ -2,11 +2,21 @@ import {
   Download,
   Archive,
   Boxes,
-  FileArchive,
+  Code2,
+  FileText,
+  FileType2,
+  Globe2,
+  Package2,
+  Presentation,
   Pencil,
   Power,
+  MoreHorizontal,
+  Search,
+  Sheet,
   Store,
+  UploadCloud,
 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type {
@@ -33,13 +43,16 @@ interface SkillManagementTableProps {
   canDelete: boolean;
   canEdit: boolean;
   canExport: boolean;
+  canPublish: boolean;
   canToggle: boolean;
   onDelete: (name: string) => void;
   onEdit: (skill: NonNullable<SkillCatalogEntry["runtimeSkill"]>) => void;
   onExportZip: (name: string) => void;
   onSelectDetail: (skillId: string) => void;
+  onSelectAll: () => void;
   onSelectSkill: (name: string) => void;
   onToggle: (name: string) => void;
+  onUploadVersion: (skillName: string) => void;
   selectedNames: Set<string>;
   selectedSkillId: string | null;
   entries: SkillCatalogEntry[];
@@ -56,7 +69,27 @@ function catalogStatusKey(status: SkillCatalogStatus): string {
 function updatedDateLabel(value?: string): string {
   if (!value) return "-";
   const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleDateString() : "-";
+  return Number.isFinite(timestamp)
+    ? new Date(timestamp).toLocaleString("zh-CN", {
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      })
+    : "-";
+}
+
+function skillIcon(name: string) {
+  const normalized = name.toLocaleLowerCase();
+  if (normalized.includes("spreadsheet") || normalized.includes("excel")) return Sheet;
+  if (normalized === "pdf" || normalized.includes("pdf")) return FileType2;
+  if (normalized.includes("presentation") || normalized.includes("slide")) return Presentation;
+  if (normalized.includes("research")) return Search;
+  if (normalized.includes("web") || normalized.includes("browser")) return Globe2;
+  if (normalized.includes("code") || normalized.includes("interpreter")) return Code2;
+  if (normalized.includes("document") || normalized.includes("word")) return FileText;
+  return Package2;
 }
 
 export function SkillManagementTable({
@@ -64,18 +97,50 @@ export function SkillManagementTable({
   canDelete,
   canEdit,
   canExport,
+  canPublish,
   canToggle,
   onDelete,
   onEdit,
   onExportZip,
   onSelectDetail,
+  onSelectAll,
   onSelectSkill,
   onToggle,
+  onUploadVersion,
   selectedNames,
   selectedSkillId,
   entries,
 }: SkillManagementTableProps) {
   const { t } = useTranslation();
+  const [openActionName, setOpenActionName] = useState<string | null>(null);
+  const openActionMenuRef = useRef<HTMLDivElement>(null);
+  const selectableEntries = entries.filter((entry) => entry.actionName !== null);
+  const allSelectableSelected =
+    selectableEntries.length > 0 &&
+    selectableEntries.every((entry) => selectedNames.has(entry.actionName!));
+
+  useEffect(() => {
+    if (!openActionName) return;
+
+    const closeMenu = (event: MouseEvent) => {
+      if (
+        openActionMenuRef.current &&
+        !openActionMenuRef.current.contains(event.target as Node)
+      ) {
+        setOpenActionName(null);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenActionName(null);
+    };
+
+    document.addEventListener("mousedown", closeMenu);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeMenu);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [openActionName]);
 
   return (
     <div
@@ -88,11 +153,24 @@ export function SkillManagementTable({
         className={`skill-management-table__head ${canBatch ? "skill-management-table__head--selectable" : ""}`}
         role="row"
       >
-        {canBatch ? <span aria-hidden="true" /> : null}
+        {canBatch ? (
+          <span className="skill-management-table__select">
+            <input
+              aria-label={
+                allSelectableSelected
+                  ? t("common.deselectAll")
+                  : t("common.selectAll")
+              }
+              checked={allSelectableSelected}
+              onChange={onSelectAll}
+              type="checkbox"
+            />
+          </span>
+        ) : null}
         <span role="columnheader">{t("skills.managementTable.skill")}</span>
-        <span className="skill-management-table__package" role="columnheader">{t("skills.managementTable.package")}</span>
         <span role="columnheader">{t("skills.managementTable.runtimeStatus")}</span>
         <span className="skill-management-table__distribution" role="columnheader">{t("skills.managementTable.catalogStatus")}</span>
+        <span className="skill-management-table__package" role="columnheader">{t("skills.managementTable.package")}</span>
         <span className="skill-management-table__updated" role="columnheader">{t("skills.managementTable.updatedAt")}</span>
         <span aria-label={t("skills.managementTable.actions")} role="columnheader" />
       </div>
@@ -104,11 +182,13 @@ export function SkillManagementTable({
           const rowCanToggle = canToggle && canAct;
           const rowCanEdit = canEdit && canAct;
           const rowCanExport = canExport && canAct;
+          const rowCanPublish = canPublish && canAct;
           const rowCanDelete = canDelete && canAct;
           const hasActions =
-            rowCanToggle || rowCanEdit || rowCanExport || rowCanDelete;
+            rowCanToggle || rowCanEdit || rowCanExport || rowCanPublish || rowCanDelete;
           const CatalogStatusIcon =
             entry.catalogStatus === "internal" ? Boxes : Store;
+          const SkillIcon = skillIcon(entry.displayName);
           return (
             <div
             aria-selected={entry.id === selectedSkillId}
@@ -148,6 +228,9 @@ export function SkillManagementTable({
               data-label={t("skills.managementTable.skill")}
               role="cell"
             >
+              <span className="skill-management-table__icon" aria-hidden="true">
+                <SkillIcon size={18} />
+              </span>
               <div className="min-w-0">
                 <p
                   className="truncate text-sm font-semibold text-[var(--theme-text)]"
@@ -183,22 +266,6 @@ export function SkillManagementTable({
                   </div>
                 ) : null}
               </div>
-            </div>
-
-            <div
-              className="skill-management-table__package"
-              data-label={t("skills.managementTable.package")}
-              role="cell"
-            >
-              <span className="inline-flex items-center gap-1.5 font-mono text-xs text-[var(--theme-text)]">
-                <FileArchive aria-hidden="true" size={14} />
-                {entry.version || "-"}
-              </span>
-              <span className="mt-1 block text-[11px] text-[var(--theme-text-secondary)]">
-                {entry.fileCount === null
-                  ? t("skills.managementTable.packageOnly")
-                  : t("skills.managementTable.fileCount", { count: entry.fileCount })}
-              </span>
             </div>
 
             <div className="skill-management-table__runtime" data-label={t("skills.managementTable.runtimeStatus")} role="cell">
@@ -244,6 +311,16 @@ export function SkillManagementTable({
             </div>
 
             <div
+              className="skill-management-table__package"
+              data-label={t("skills.managementTable.package")}
+              role="cell"
+            >
+              <span className="font-mono text-xs text-[var(--theme-text)]">
+                {entry.version || "-"}
+              </span>
+            </div>
+
+            <div
               className="skill-management-table__updated text-xs text-[var(--theme-text-secondary)]"
               data-label={t("skills.managementTable.updatedAt")}
               role="cell"
@@ -256,70 +333,110 @@ export function SkillManagementTable({
               data-label={t("skills.managementTable.actions")}
               role="cell"
             >
-              {rowCanToggle ? (
+              {rowCanPublish ? (
                 <button
-                  aria-label={t(
-                    entry.runtimeEnabled
-                      ? "skills.managementTable.disableSkill"
-                      : "skills.managementTable.enableSkill",
-                    { name: entry.displayName },
-                  )}
+                  aria-label={t("skills.managementTable.updateVersionSkill", {
+                    name: entry.displayName,
+                  })}
                   className="btn-icon"
                   onClick={(event) => {
                     event.stopPropagation();
-                    onToggle(actionName);
+                    onUploadVersion(actionName);
                   }}
-                  title={t(
-                    entry.runtimeEnabled
-                      ? "skills.managementTable.disable"
-                      : "skills.managementTable.enable",
-                  )}
+                  title={t("skills.managementTable.updateVersion")}
                   type="button"
                 >
-                  <Power aria-hidden="true" size={16} />
+                  <UploadCloud aria-hidden="true" size={16} />
                 </button>
               ) : null}
-              {rowCanEdit ? (
-                <button
-                  aria-label={t("skills.managementTable.editSkill", { name: entry.displayName })}
-                  className="btn-icon"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onEdit(entry.runtimeSkill!);
-                  }}
-                  title={t("skills.managementTable.edit")}
-                  type="button"
+              {hasActions ? (
+                <div
+                  className="skill-management-table__action-menu"
+                  ref={openActionName === actionName ? openActionMenuRef : undefined}
                 >
-                  <Pencil aria-hidden="true" size={16} />
-                </button>
-              ) : null}
-              {rowCanExport ? (
-                <button
-                  aria-label={t("skills.managementTable.exportSkill", { name: entry.displayName })}
-                  className="btn-icon"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onExportZip(actionName);
-                  }}
-                  title={t("skills.exportZip")}
-                  type="button"
-                >
-                  <Download aria-hidden="true" size={16} />
-                </button>
-              ) : null}
-              {rowCanDelete ? (
-                <button
-                  aria-label={t("skills.managementTable.deleteSkill", { name: entry.displayName })}
-                  className="btn-icon skill-management-table__archive-action"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onDelete(actionName);
-                  }}
-                  title={t("skills.managementTable.delete")}
-                  type="button"
-                >
-                  <Archive aria-hidden="true" size={16} />
-                </button>
+                  <button
+                    aria-expanded={openActionName === actionName}
+                    aria-haspopup="menu"
+                    aria-label={t("common.menu")}
+                    className="btn-icon"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setOpenActionName((current) =>
+                        current === actionName ? null : actionName,
+                      );
+                    }}
+                    title={t("common.menu")}
+                    type="button"
+                  >
+                    <MoreHorizontal aria-hidden="true" size={17} />
+                  </button>
+                  {openActionName === actionName ? (
+                    <div
+                      aria-label={`${entry.displayName} ${t("common.menu")}`}
+                      className="skill-management-table__action-menu-panel"
+                      onClick={(event) => event.stopPropagation()}
+                      role="menu"
+                    >
+                      {rowCanToggle ? (
+                        <button
+                          onClick={() => {
+                            setOpenActionName(null);
+                            onToggle(actionName);
+                          }}
+                          role="menuitem"
+                          type="button"
+                        >
+                          <Power aria-hidden="true" size={14} />
+                          {t(
+                            entry.runtimeEnabled
+                              ? "skills.managementTable.disable"
+                              : "skills.managementTable.enable",
+                          )}
+                        </button>
+                      ) : null}
+                      {rowCanEdit ? (
+                        <button
+                          onClick={() => {
+                            setOpenActionName(null);
+                            onEdit(entry.runtimeSkill!);
+                          }}
+                          role="menuitem"
+                          type="button"
+                        >
+                          <Pencil aria-hidden="true" size={14} />
+                          {t("skills.managementTable.edit")}
+                        </button>
+                      ) : null}
+                      {rowCanExport ? (
+                        <button
+                          onClick={() => {
+                            setOpenActionName(null);
+                            onExportZip(actionName);
+                          }}
+                          role="menuitem"
+                          type="button"
+                        >
+                          <Download aria-hidden="true" size={14} />
+                          {t("skills.exportZip")}
+                        </button>
+                      ) : null}
+                      {rowCanDelete ? (
+                        <button
+                          className="skill-management-table__archive-action"
+                          onClick={() => {
+                            setOpenActionName(null);
+                            onDelete(actionName);
+                          }}
+                          role="menuitem"
+                          type="button"
+                        >
+                          <Archive aria-hidden="true" size={14} />
+                          {t("skills.managementTable.delete")}
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
               ) : null}
               {!hasActions ? (
                 <span className="text-xs text-[var(--theme-text-secondary)]">

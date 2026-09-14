@@ -4289,10 +4289,6 @@ async def progress_run_tool_permission_terminalization(
         action="run.admission.rejected" if retired_admission_rejection else f"run.{target_status}",
         target_type="run", target_id=run_id, trace_id=staged.get("trace_id"), payload_json=audit_payload,
     )
-    from app.streaming.redis import ensure_run_terminal_intent
-    await ensure_run_terminal_intent(
-        conn, tenant_id=tenant_id, run_id=run_id, status=target_status
-    )
     return runs_api.RunTerminalizationProgress(completed=True, status=target_status, did_transition=True, needs_reconcile=True)
 
 
@@ -7889,8 +7885,6 @@ async def complete_run(
         consumed_ids = {str(item.get("id") or "") for item in await consumed_cursor.fetchall()}
         if consumed_ids != set(valid_allow_for_run_ids):
             raise RepositoryConflictError("allow_for_run_consumption_mismatch")
-    from app.streaming.redis import ensure_run_terminal_intent
-    await ensure_run_terminal_intent(conn, tenant_id=tenant_id, run_id=run_id, status="succeeded")
     return True
 
 

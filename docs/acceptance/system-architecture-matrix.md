@@ -99,7 +99,7 @@ Boundary: `Run lifecycle, attempt transition and terminal publication`.
 
 **When:** Inject transaction rollback and Redis failure immediately after a committed terminal.
 
-**Required result:** One permitted terminal transition and exact durable facts; rollback exposes no committed terminal/end; post-commit outage retains pending publication with the same IDs/bytes.
+**Required result:** One permitted terminal transition and exact durable facts; rollback publishes no terminal/end; post-commit outage preserves truthful status and hydration without a publication queue.
 
 **Reject:** A second terminal outcome or success inferred from SDK/Redis alone.
 
@@ -245,7 +245,7 @@ Evidence: Real Redis/database integration. Budget: Measure maximum detection gap
 
 Boundary: `Worker maintenance phase scheduler`.
 
-**Given:** A bulk cleanup never completes within its deadline; critical publication and reclaim work is eligible.
+**Given:** A bulk cleanup never completes within its deadline; critical executor terminal recovery and reclaim work is eligible.
 
 **When:** Run the proposed isolated schedules and cancel the slow phase.
 
@@ -303,17 +303,17 @@ Evidence: Deterministic clock/scheduling and process stop tests. Budget: 50 ms d
 
 ### CB-03 | Sandbox / Streaming
 
-Boundary: `Callback persistence and durable publisher`.
+Boundary: `Committed callback, Redis batch receipt and Run terminal`.
 
-**Given:** Exact callback batch commits, Redis publication blocks/fails, notification is lost.
+**Given:** An exact callback batch commits while its Redis append is paused; a Run terminal commits concurrently.
 
-**When:** Use the proposed durability-acknowledgement fast path and restart publication.
+**When:** Publish terminal, resume the callback append, then invoke terminal publication again.
 
-**Required result:** Acknowledgement matches the committed batch only; durable indexed work survives and publishes in order; no request-owned background task is the sole recovery mechanism.
+**Required result:** Cancellation/terminal/end cannot overtake the committed callback prefix; a later callback first publishes any preceding committed cancellation. Acknowledgement follows commit and Redis append; Run status remains truthful; repeated Run events retain their receipts even after another callback.
 
-**Reject:** Acknowledging before commit or changing Tool receipt semantics without a protocol-owner decision.
+**Reject:** Early acknowledgement, Stream closure before the callback prefix, changed business facts, a publication queue or a new retry scheduler.
 
-Evidence: Real PostgreSQL/Redis fault integration. Budget: Response/publication budgets measured independently; activate only after contract approval.
+Evidence: Real PostgreSQL/Redis deterministic interleaving. Budget: Existing bounded callback delivery and transport deadlines.
 
 
 ### SSE-01 | Streaming / Frontend
@@ -369,26 +369,26 @@ Boundary: `Hydration snapshot/stream anchor`.
 
 **When:** Install the snapshot and resume from a server-proven anchor.
 
-**Required result:** Snapshot coverage and cursor form one verified consistent cut; later events apply once; no invented cursor, same-incarnation recreation, or unapproved active successor.
+**Required result:** Snapshot coverage and cursor form one verified consistent cut; later events apply once; no invented cursor, missing-stream reconstruction or successor.
 
 **Reject:** Pairing unrelated latest-history and latest-Redis reads.
 
-Evidence: Real PostgreSQL/Redis plus frontend integration. Budget: Existing terminal-only successor boundary preserved.
+Evidence: Real PostgreSQL/Redis plus frontend integration. Budget: Authorized hydration with no reconstructed Stream.
 
 
 ### SSE-05 | Streaming
 
-Boundary: `Shared Pub/Sub reader/control acknowledgements`.
+Boundary: `Captured replay tail and bounded exclusive XREAD`.
 
-**Given:** A malformed publication on channel A arrives before the subscription acknowledgement for B; C is healthy.
+**Given:** Two readers share the lifespan-owned pool; an entry is appended after one captures its replay tail.
 
-**When:** Invalidate A while B subscribes and C receives data.
+**When:** Start its exclusive XREAD, then cancel one reader or return a foreign/malformed entry.
 
-**Required result:** Reader keeps consuming acknowledgements; B completes and C remains live; A failure is isolated unless transport itself is truly lost.
+**Required result:** The later retained entry is delivered once; cancellation releases the blocked read; invalid authority closes only the affected request.
 
-**Reject:** Waiting on a control lock that is held by code waiting for that same reader.
+**Reject:** A missed tail-to-read entry, cursor advance for invalid data, unbounded buffering or a Pub/Sub fallback.
 
-Evidence: Deterministic race and real Redis integration. Budget: Control deadline and per-browser count/byte caps retained.
+Evidence: Route contracts and real Redis integration. Budget: At most 128 entries/read, five-second block and bounded read pool.
 
 
 ### SSE-06 | Streaming / Frontend

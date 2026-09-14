@@ -58,6 +58,50 @@ test("hides routine intent, context, queue, and run-start transcript cards", () 
   );
 });
 
+test("groups only contiguous execution steps without rewriting ordered parts", () => {
+  const firstStep: MessagePart = {
+    type: "execution_step",
+    sequence: 1,
+    step_id: "step-first",
+    kind: "processing",
+    progress: { current: 1, total: 1 },
+    status: "completed",
+    safe_file_name: null,
+  };
+  const secondStep: MessagePart = {
+    ...firstStep,
+    sequence: 2,
+    step_id: "step-second",
+  };
+  const thirdStep: MessagePart = {
+    ...firstStep,
+    sequence: 3,
+    step_id: "step-third",
+  };
+  const parts: MessagePart[] = [
+    firstStep,
+    { type: "text", content: "正文" },
+    secondStep,
+    { type: "thinking", content: "公开思考", public_reasoning: true },
+    thirdStep,
+  ];
+
+  const visible = getVisibleMessageParts(parts);
+  assert.deepEqual(visible.map((part) => part.type), [
+    "execution_process",
+    "text",
+    "execution_process",
+    "thinking",
+    "execution_process",
+  ]);
+  assert.deepEqual(parts, [firstStep, parts[1], secondStep, parts[3], thirdStep]);
+  assert.deepEqual(
+    visible
+      .filter((part): part is Extract<MessagePart, { type: "execution_process" }> => part.type === "execution_process")
+      .map((part) => part.steps.map((step) => step.step_id)),
+    [["step-first"], ["step-second"], ["step-third"]],
+  );
+});
 test("keeps user-actionable run status cards visible", () => {
   const parts: MessagePart[] = [
     {

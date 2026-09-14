@@ -30,8 +30,8 @@ _MAX_CURRENT_PROMPT_BYTES = 16384
 _MAX_FILE_LIST_PROMPT_BYTES = 4096
 _MAX_CONTEXT_SUMMARY_PROMPT_BYTES = 2048
 _PUBLIC_LANGUAGE_INSTRUCTION = (
-    "Use the language of the user's current request for the final answer and all public "
-    "summarized-thinking text; use Simplified Chinese for Chinese requests."
+    "Use Simplified Chinese for the final answer and all public summarized-thinking text. "
+    "Keep code, commands, filenames, and other literal values unchanged when the task requires them."
 )
 
 
@@ -239,8 +239,10 @@ def build_skill_prompt(
         f"User request: {bounded_user_message}\n"
         f"Workspace input files (under inputs/):\n{files_text}\n\n"
         "If a staged Skill matches the task, use that Skill's instructions. "
-        "Use inputs/ for attachments and save user-deliverable files under "
-        "outputs/delivery/. Return a concise execution summary."
+        "The platform-assigned work directory is the current working directory and is "
+        "available as AI_PLATFORM_WORK_DIR. Use it as the only workspace for generated "
+        "files; use relative paths and never "
+        "write into the installed Skill directory. Return a concise execution summary."
         f"{render_authorized_skill_catalog_prompt(authorized_skill_catalog)}"
         f"{context_pack_prompt_section(context_pack)}"
     )
@@ -276,7 +278,7 @@ def build_harness_chat_prompt(
         f"Authorized attachment names (read content only through platform context tools):\n"
         f"{files_text}\n\n"
         "Use only platform-authorized context and tools. If a context tool stages a file, "
-        "use its returned workspace path. Save any user-deliverable files under "
-        "outputs/delivery/ and return a concise response."
+        "use the platform-assigned current working directory (AI_PLATFORM_WORK_DIR) for "
+        "generated files and return a concise response."
         f"{context_pack_prompt_section(context_pack)}"
     )

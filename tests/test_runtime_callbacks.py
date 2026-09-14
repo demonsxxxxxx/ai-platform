@@ -22,12 +22,23 @@ from app.streaming.infrastructure import v4 as streaming_v4
 
 
 class CallbackEventPersistence:
+    async def load_latest_run_event(self, **kwargs):
+        return None
+
     async def append_callback_rows(self, conn, **kwargs):
         return await streaming_v4.append_callback_v4_rows(conn, **kwargs)
 
 
+class CallbackStreamTransport:
+    async def publish_callback_batch(self, envelopes):
+        return "1-0"
+
+
 def callback_event_capabilities():
-    return SimpleNamespace(event_persistence=CallbackEventPersistence())
+    return SimpleNamespace(
+        event_persistence=CallbackEventPersistence(),
+        publication_transport=CallbackStreamTransport(),
+    )
 
 
 def create_app():
@@ -514,11 +525,20 @@ def test_executor_callback_accepts_valid_event_and_records_callback(monkeypatch)
     except ModuleNotFoundError:
         runtime_callbacks = None
     else:
-        async def fake_record_executor_callback(callback, *, capabilities):
+
+        async def fake_record_executor_callback(
+            callback,
+            *,
+            capabilities,
+            run_diagnostics=None,
+        ):
             recorded.append(callback)
+            assert run_diagnostics is not None
             return {"accepted": True, "event_count": 1}
 
-        monkeypatch.setattr(runtime_callbacks, "record_executor_callback", fake_record_executor_callback)
+        monkeypatch.setattr(
+            runtime_callbacks, "record_executor_callback", fake_record_executor_callback
+        )
 
     client = TestClient(create_app())
 
@@ -615,10 +635,12 @@ def test_failed_executor_callback_persists_receipt_for_reconciliation(monkeypatc
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     calls = []
 
+    transaction_connection = object()
+
     class FakeTransaction:
         async def __aenter__(self):
             calls.append("transaction_enter")
-            return object()
+            return transaction_connection
 
         async def __aexit__(self, exc_type, exc, traceback):
             calls.append("transaction_exit")
@@ -650,7 +672,13 @@ def test_failed_executor_callback_persists_receipt_for_reconciliation(monkeypatc
 
     async def fake_record_terminal(conn, **kwargs):
         calls.append(("executor_terminal", kwargs["executor_status"]))
+        lease["executor_terminal_json"] = kwargs["terminal_result"]
         return lease
+
+    class RecordingDiagnostics:
+        async def capture_failure_result(self, conn, **kwargs):
+            calls.append(("diagnostics", conn, kwargs))
+            return {"error_code": kwargs["error_code"]}
 
     async def unexpected_fail_run(*_args, **_kwargs):
         pytest.fail("failed callback must defer Run terminalization to reconciliation")
@@ -661,42 +689,80 @@ def test_failed_executor_callback_persists_receipt_for_reconciliation(monkeypatc
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
+    monkeypatch.setattr(
+        runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity
+    )
     monkeypatch.setattr(
         runtime_callbacks.repositories,
         "list_current_sandbox_runtime_leases_for_attempt",
         fake_list_current_leases,
     )
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
+    monkeypatch.setattr(
+        runtime_callbacks.repositories, "append_event", fake_append_event
+    )
     monkeypatch.setattr(
         runtime_callbacks.sandbox_lease_repository,
         "record_sandbox_executor_terminal",
         fake_record_terminal,
     )
-    monkeypatch.setattr(runtime_callbacks, "fail_run_with_v4", unexpected_fail_run, raising=False)
+    monkeypatch.setattr(
+        runtime_callbacks, "fail_run_with_v4", unexpected_fail_run, raising=False
+    )
     monkeypatch.setattr(
         runtime_callbacks.sandbox_lease_repository,
         "release_sandbox_lease",
         unexpected_release,
     )
 
-    client = TestClient(create_app())
+    app = create_app()
+    app.state.run_diagnostics_service = RecordingDiagnostics()
+    client = TestClient(app)
+    callback_json = callback_payload(
+        status="failed",
+        progress=100,
+        new_message=None,
+        state_patch={},
+        terminal_result={
+            "status": "failed",
+            "run_id": "run-a",
+            "error_code": "executor_failed",
+            "error_message": "Executor failed",
+            "runtime_diagnostics": {
+                "schema_version": "ai-platform.sdk-runtime-diagnostics.v1",
+                "error_code": "provider_timeout",
+                "failure_source": "sdk_exception",
+                "failure_stage": "model_wait",
+                "sdk": {},
+            },
+        },
+    )
     response = client.post(
         "/api/ai/runtime/callbacks/executor",
         headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
-        json=callback_payload(
-            status="failed",
-            progress=100,
-            new_message=None,
-            state_patch={},
-        ),
+        json=callback_json,
+    )
+    duplicate = client.post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_json,
     )
 
     assert response.status_code == 200
+    assert duplicate.status_code == 200
     assert response.json() == {"accepted": True, "event_count": 1}
     assert ("executor_terminal", "failed") in calls
     assert ("list_lease", "attempt-a") in calls
     assert "transaction_exit" in calls
+    diagnostics_calls = [
+        item for item in calls if isinstance(item, tuple) and item[0] == "diagnostics"
+    ]
+    assert len(diagnostics_calls) == 1
+    assert diagnostics_calls[0][1] is transaction_connection
+    assert diagnostics_calls[0][2]["attempt_id"] == "attempt-a"
+    assert diagnostics_calls[0][2]["result_json"]["runtime_diagnostics"][
+        "error_code"
+    ] == ("provider_timeout")
+    assert "runtime_diagnostics" not in lease["executor_terminal_json"]
 
 
 def test_executor_callback_does_not_stop_runtime_container_from_callback(monkeypatch):

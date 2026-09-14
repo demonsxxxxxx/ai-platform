@@ -51,11 +51,7 @@ from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.runtime.sandbox.executor_client import SandboxExecutorHttpError
 from app.skills.execution_profiles import resolve_skill_execution_profile
 from app.streaming.application.durable_v4 import V4PendingAdmission
-from app.streaming.application.worker_publication_v4 import (
-    AssistantAnswerReceiptError,
-    ReconstructedAssistantAnswer,
-    WorkerV4Capabilities,
-)
+from app.streaming.application.worker_publication_v4 import WorkerV4Capabilities
 from app.streaming.api import build_v4_control
 from app.streaming.domain.transport import canonical_json_bytes
 
@@ -121,9 +117,6 @@ class _FakeWorkerV4Admission:
             attempt_id=attempt_id,
         )
 
-    async def list_pending_admissions(self, *, limit):
-        return ()
-
     async def confirm_pending_admission(self, admission, *, redis_id):
         assert redis_id
         return SimpleNamespace(
@@ -134,12 +127,10 @@ class _FakeWorkerV4Admission:
         )
 
 
-class _FakeWorkerV4Authority:
-    async def get(self, *, tenant_id, run_id):
-        return SimpleNamespace(attempt_id="qat-test-attempt", stream_incarnation=1)
-
-
 class _FakeWorkerV4Persistence:
+    async def load_latest_run_event(self, *, tenant_id, run_id):
+        return None
+
     async def append_terminal_row(self, _conn, *, tenant_id, run_id):
         return None
 
@@ -183,21 +174,14 @@ class _FakeWorkerV4Persistence:
             )
 
 
-class _FakeWorkerV4Claims:
-    async def claim_next(self, **kwargs):
-        return None
-
-
 class _FakeWorkerV4Transport:
     async def publish(self, canonical_envelope_bytes):
         return "0-1"
 
 
 _FAKE_WORKER_V4_CAPABILITIES = WorkerV4Capabilities(
-    authority=_FakeWorkerV4Authority(),
     pending_admissions=_FakeWorkerV4Admission(),
     event_persistence=_FakeWorkerV4Persistence(),
-    publication_claims=_FakeWorkerV4Claims(),
     publication_transport=_FakeWorkerV4Transport(),
 )
 
@@ -305,19 +289,30 @@ def test_worker_preserves_only_typed_safe_executor_failures():
     assert worker_module._executor_exception_failure(native_error) == (
         "native_tool_admission_failed",
         "Native tool sandbox admission failed",
+        None,
     )
     assert worker_module._executor_exception_failure(
         RuntimeError("ordinary executor failure")
-    ) == ("executor_failure", "Executor failed")
-    assert worker_module._executor_exception_failure(
-        SandboxExecutorHttpError(
-            status_code=401,
-            error_code="invalid_executor_credential",
-            detail="invalid_executor_credential",
-        )
-    ) == (
+    ) == ("executor_failure", "Executor failed", None)
+    http_error = SandboxExecutorHttpError(
+        status_code=401,
+        error_code="invalid_executor_credential",
+        detail="invalid_executor_credential",
+        runtime_diagnostics={
+            "schema_version": "ai-platform.sdk-runtime-diagnostics.v1",
+            "error_code": "executor_authentication_failed",
+            "failure_source": "executor_http",
+            "failure_stage": "dispatch",
+            "sdk": {},
+        },
+    )
+    http_failure = worker_module._executor_exception_failure(http_error)
+    assert http_failure[:2] == (
         "invalid_executor_credential",
         "Executor authentication failed (HTTP 401)",
+    )
+    assert http_failure[2]["runtime_diagnostics"]["error_code"] == (
+        "executor_authentication_failed"
     )
     hostile_error = SandboxExecutorHttpError(
         status_code=502,
@@ -327,11 +322,20 @@ def test_worker_preserves_only_typed_safe_executor_failures():
     assert worker_module._executor_exception_failure(hostile_error) == (
         "executor_http_failure",
         "Executor request failed (HTTP 502)",
+        None,
     )
-    assert private_token not in str(worker_module._executor_exception_failure(native_error))
-    assert private_path not in str(worker_module._executor_exception_failure(native_error))
-    assert "private-secret" not in str(worker_module._executor_exception_failure(hostile_error))
-    assert "private-prompt" not in str(worker_module._executor_exception_failure(hostile_error))
+    assert private_token not in str(
+        worker_module._executor_exception_failure(native_error)
+    )
+    assert private_path not in str(
+        worker_module._executor_exception_failure(native_error)
+    )
+    assert "private-secret" not in str(
+        worker_module._executor_exception_failure(hostile_error)
+    )
+    assert "private-prompt" not in str(
+        worker_module._executor_exception_failure(hostile_error)
+    )
 
 
 @pytest.mark.asyncio
@@ -2817,10 +2821,8 @@ async def test_worker_reauthorizes_pinned_profile_before_adapter(
 
         monkeypatch.setattr("app.worker.resolve_current_principal", deny_current_principal)
         v4_capabilities = WorkerV4Capabilities(
-            authority=_FakeWorkerV4Authority(),
             pending_admissions=_FakeWorkerV4Admission(calls),
             event_persistence=_FakeWorkerV4Persistence(),
-            publication_claims=_FakeWorkerV4Claims(),
             publication_transport=_FakeWorkerV4Transport(),
         )
 
@@ -3016,6 +3018,12 @@ def test_multi_agent_result_summary_preserves_step_governance_context():
 @pytest.mark.asyncio
 async def test_worker_completes_successful_adapter_run(monkeypatch):
     calls = []
+    private_runtime_diagnostics = {
+        "schema_version": "ai-platform.sdk-runtime-diagnostics.v1",
+        "error_code": "non_terminal_tool_warning",
+        "failure_source": "sdk_tool",
+        "failure_stage": "tool_completion",
+    }
     diagnostics = {
         "schema_version": "ai-platform.sdk-turn-diagnostics.v1",
         "terminal_class": "completed",
@@ -3046,9 +3054,20 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
                 result={**result.result, "sdk_turn_diagnostics": diagnostics},
                 executor_payload={
                     "sdk_turn_diagnostics": diagnostics,
+                    "runtime_diagnostics": private_runtime_diagnostics,
                     "private_raw_error": "private-token=must-not-persist",
                 },
             )
+
+    class RecordingDiagnosticsService:
+        async def capture_failure_result(self, _conn, **kwargs):
+            carried = kwargs["result_json"]["runtime_diagnostics"]
+            calls.append(("diagnostics", carried["error_code"]))
+            return {
+                key: value
+                for key, value in kwargs["result_json"].items()
+                if key != "runtime_diagnostics"
+            }
 
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("running", tenant_id, run_id))
@@ -3068,6 +3087,7 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
             "used_skills": [],
         }
         assert result_json["sdk_turn_diagnostics"] == diagnostics
+        assert "runtime_diagnostics" not in result_json
         assert "private-token" not in str(result_json)
         calls.append(("complete", result_json["executor"]["adapter_version"]))
         return True
@@ -3078,6 +3098,10 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr(
+        "app.bootstrap.worker_attempt_lifecycle.build_run_diagnostics_service",
+        lambda: RecordingDiagnosticsService(),
+    )
 
     outcome = await process_run_payload(
         base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
@@ -3088,170 +3112,13 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
     assert ("running", "tenant-a", "run-a") in calls
     assert any(item[0] == "artifact" for item in calls)
     assert ("complete", "fake-adapter/1") in calls
+    assert ("diagnostics", "non_terminal_tool_warning") in calls
     assert calls[-1] == ("event", "status", "worker", "Run succeeded")
     assert sum(1 for item in calls if item[0] == "complete") == 1
     assert not any(
         item[0] == "event" and item[1] in {"run_failed", "run_cancelled"}
         for item in calls
     )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("retryable_receipt", [False, True])
-async def test_worker_drains_receipt_events_before_attempt_bound_answer_load(
-    monkeypatch,
-    retryable_receipt,
-):
-    queue_attempt_id = "queue-attempt-a"
-    authority_successor_id = "authority-successor"
-    receipt = {
-        "schema_version": "ai-platform.assistant-answer-receipt.v1",
-        "message_id": "msg-answer-a",
-        "delta_count": 1,
-        "text_length": len("reconstructed answer"),
-        "last_delta_event_id": "evt4-delta-a",
-    }
-    calls = []
-    publish_calls = []
-    active_transactions = []
-    drain_complete = False
-    persisted = {}
-
-    @asynccontextmanager
-    async def recording_transaction():
-        conn = object()
-        active_transactions.append(conn)
-        try:
-            yield conn
-        finally:
-            active_transactions.pop()
-
-    async def publish_pending(_capabilities, **kwargs):
-        nonlocal drain_complete
-        publish_calls.append(kwargs)
-        calls.append(("publish", kwargs["attempt_id"]))
-        if len(publish_calls) == 2:
-            drain_complete = True
-            return 0
-        return 1
-
-    class ReceiptPersistence(_FakeWorkerV4Persistence):
-        async def load_answer_by_receipt(
-            self,
-            conn,
-            *,
-            tenant_id,
-            run_id,
-            attempt_id,
-            receipt,
-        ):
-            assert active_transactions and active_transactions[-1] is conn
-            assert drain_complete is True
-            calls.append(("load", conn, attempt_id))
-            if retryable_receipt:
-                raise AssistantAnswerReceiptError(retryable=True)
-            return ReconstructedAssistantAnswer(text="reconstructed answer")
-
-    class AuthoritySuccessor:
-        async def get(self, **_kwargs):
-            return SimpleNamespace(attempt_id=authority_successor_id)
-
-    capabilities = replace(
-        _FAKE_WORKER_V4_CAPABILITIES,
-        authority=AuthoritySuccessor(),
-        event_persistence=ReceiptPersistence(),
-    )
-    raw = base_payload(
-        file_ids=[],
-        skill_id="general-chat",
-        agent_id="general-agent",
-        _queue_attempt_id=queue_attempt_id,
-    )
-
-    class ReceiptAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            calls.append(("adapter", payload.attempt_id))
-            return ExecutorResult(
-                status="succeeded",
-                adapter_version="receipt-adapter/1",
-                executor_type="fake",
-                executor_version="receipt-executor/1",
-                capabilities={"skills": True, "mcp": False, "streaming": False},
-                result={"message": "adapter result"},
-                executor_payload={"answer_receipt": receipt},
-            )
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return locked_run_from_payload(raw)
-
-    async def append_event(_conn, **kwargs):
-        return "event-a"
-
-    async def append_message(_conn, **kwargs):
-        persisted["message"] = kwargs["content"]
-        return "message-a"
-
-    async def complete_run(conn, *, tenant_id, run_id, result_json):
-        persisted["result"] = result_json
-        persisted["complete_conn"] = conn
-        calls.append(("complete", conn, result_json["message"]))
-        return True
-
-    async def no_terminal_publish(*_args, **_kwargs):
-        return False
-
-    monkeypatch.setattr(
-        "app.streaming.application.worker_publication_v4.publish_pending_v4_events",
-        publish_pending,
-    )
-    monkeypatch.setattr(
-        "app.streaming.application.worker_publication_v4.publish_pending_run_terminal",
-        no_terminal_publish,
-    )
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_message", append_message)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-
-    if retryable_receipt:
-        with pytest.raises(AssistantAnswerReceiptError) as error:
-            await process_run_payload(
-                raw,
-                AdapterRegistry({"fake": ReceiptAdapter()}),
-                transaction_factory=recording_transaction,
-                v4_capabilities=capabilities,
-            )
-        assert error.value.retryable is True
-        assert "result" not in persisted
-        assert not any(call[0] == "complete" for call in calls)
-    else:
-        outcome = await process_run_payload(
-            raw,
-            AdapterRegistry({"fake": ReceiptAdapter()}),
-            transaction_factory=recording_transaction,
-            v4_capabilities=capabilities,
-        )
-        assert outcome == WorkerOutcome("succeeded", "run-a")
-        assert persisted["message"] == "reconstructed answer"
-        assert persisted["result"]["message"] == "reconstructed answer"
-        load_call = next(call for call in calls if call[0] == "load")
-        complete_call = next(call for call in calls if call[0] == "complete")
-        assert load_call[1] is complete_call[1]
-        assert load_call[2] == queue_attempt_id
-
-    assert [call["attempt_id"] for call in publish_calls] == [
-        queue_attempt_id,
-        queue_attempt_id,
-    ]
-    assert calls.index(next(call for call in calls if call[0] == "publish")) < calls.index(
-        next(call for call in calls if call[0] == "load")
-    )
-    assert calls[0][0] == "adapter"
-    assert calls[0][1] == queue_attempt_id
-    assert authority_successor_id not in {
-        *[call["attempt_id"] for call in publish_calls],
-        next(call[2] for call in calls if call[0] == "load"),
-    }
 
 
 @pytest.mark.asyncio
@@ -4578,6 +4445,88 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
     assert next(index for index, item in enumerate(calls) if item[0] == "fail") < next(
         index for index, item in enumerate(calls) if item[0] == "lease_release"
     )
+
+
+@pytest.mark.asyncio
+async def test_worker_moves_http_failure_diagnostics_before_terminal_result(
+    monkeypatch,
+):
+    calls = []
+    diagnostics = {
+        "schema_version": "ai-platform.sdk-runtime-diagnostics.v1",
+        "error_code": "executor_health_timeout",
+        "failure_source": "executor_http",
+        "failure_stage": "dispatch",
+        "sdk": {"exception_message": "private diagnostic detail"},
+    }
+
+    class RaisingAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            raise SandboxExecutorHttpError(
+                status_code=504,
+                error_code="executor_health_timeout",
+                detail="executor_health_timeout",
+                runtime_diagnostics=diagnostics,
+            )
+
+    class RecordingDiagnosticsService:
+        async def capture_failure_result(self, conn, **kwargs):
+            calls.append(("diagnostics", conn, kwargs))
+            return None
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def assert_current_attempt(conn, **kwargs):
+        return {"id": kwargs["queue_attempt_id"], "status": "running"}
+
+    async def append_event(conn, **kwargs):
+        return "evt-a"
+
+    async def fail_run(conn, **kwargs):
+        calls.append(("fail", conn, kwargs))
+        return RunTerminalizationProgress(True, "failed", True)
+
+    async def create_sandbox_lease(conn, **kwargs):
+        return {"id": "lease-http-a", **kwargs}
+
+    async def release_sandbox_lease(conn, **kwargs):
+        return {"id": kwargs["lease_id"], "status": "released", **kwargs}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(
+        _TEST_ATTEMPT_PERSISTENCE,
+        "assert_worker_run_attempt_current",
+        assert_current_attempt,
+    )
+    monkeypatch.setattr(
+        "app.bootstrap.worker_attempt_lifecycle.build_run_diagnostics_service",
+        lambda: RecordingDiagnosticsService(),
+    )
+    monkeypatch.setattr(
+        "app.worker.sandbox_lease_repository.create_sandbox_lease",
+        create_sandbox_lease,
+    )
+    monkeypatch.setattr(
+        "app.worker.sandbox_lease_repository.release_sandbox_lease",
+        release_sandbox_lease,
+    )
+
+    outcome = await process_run_payload(
+        base_payload(),
+        AdapterRegistry({"fake": RaisingAdapter()}),
+    )
+
+    assert outcome.error_code == "executor_health_timeout"
+    assert [item[0] for item in calls] == ["diagnostics", "fail"]
+    assert calls[0][1] is calls[1][1]
+    assert calls[0][2]["result_json"]["runtime_diagnostics"]["error_code"] == (
+        "executor_health_timeout"
+    )
+    assert calls[1][2]["result_json"] is None
 
 
 @pytest.mark.asyncio
