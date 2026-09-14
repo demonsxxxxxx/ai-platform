@@ -1016,16 +1016,6 @@ def build_capacity_baseline(settings: object | None = None) -> dict[str, Any]:
                 default="fake",
                 allowed_values=_SANDBOX_PROVIDER_VALUES,
             ),
-            "max_active_ephemeral_containers": _int_setting(
-                resolved_settings,
-                "sandbox_max_active_ephemeral_containers",
-                2,
-            ),
-            "max_active_persistent_containers": _int_setting(
-                resolved_settings,
-                "sandbox_max_active_persistent_containers",
-                1,
-            ),
             "container_start_timeout_seconds": _int_setting(
                 resolved_settings,
                 "sandbox_container_start_timeout_seconds",
@@ -2980,13 +2970,6 @@ def render_capacity_baseline_markdown(baseline: dict[str, Any]) -> str:
         ("User queue processing limit", str(limits["queue"]["user_processing_limit"])),
         ("Queue lease scan limit", str(limits["queue"]["lease_scan_limit"])),
         ("Sandbox provider", str(limits["sandbox"]["container_provider"])),
-        (
-            "Sandbox active containers",
-            (
-                f"ephemeral={limits['sandbox']['max_active_ephemeral_containers']}, "
-                f"persistent={limits['sandbox']['max_active_persistent_containers']}"
-            ),
-        ),
         ("Model gateway concurrency", model_gateway_concurrency),
     ]
     table = "\n".join(f"| {name} | {value} |" for name, value in rows)
