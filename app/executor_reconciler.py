@@ -8,8 +8,6 @@ import threading
 import uuid
 from typing import Any
 
-from pydantic import ValidationError
-
 from app import repositories
 from app.db import transaction
 from app.execution.api import restored_sandbox_run_payload
@@ -712,13 +710,14 @@ async def probe_suspect_executor_tasks_once(
                     ).model_dump(mode="json", exclude_none=True)
                 except ValueError as exc:
                     canonical_result = None
+                    error_details = getattr(exc, "errors", None)
                     validation_errors = (
-                        exc.errors(
+                        error_details(
                             include_url=False,
                             include_context=False,
                             include_input=False,
                         )
-                        if isinstance(exc, ValidationError)
+                        if callable(error_details)
                         else [
                             {
                                 "loc": [],
