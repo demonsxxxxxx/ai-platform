@@ -1,4 +1,8 @@
-import type { AdminRunEvent, AdminRunSummary } from "../../services/api/adminRuns";
+import type {
+  AdminRunDiagnosticsResponse,
+  AdminRunEvent,
+  AdminRunSummary,
+} from "../../services/api/adminRuns";
 
 export type AdminRunTimelineKind = "activity" | "tool" | "terminal";
 export type AdminRunTimelineStatus = "info" | "running" | "succeeded" | "failed" | "denied" | "cancelled";
@@ -22,6 +26,12 @@ export interface AdminRunMonitorView {
 }
 
 const HEARTBEAT_TYPES = new Set(["heartbeat", "stream.heartbeat"]);
+const NOISY_EVENT_TYPES = new Set([
+  "sandbox_lease_renewed",
+  "run_control_operation_committed",
+]);
+const QUEUE_EVENT_TYPES = new Set(["queued", "run_queued"]);
+const MAX_RECENT_ACTIVITY = 12;
 const MODEL_OUTPUT_TYPES = new Set([
   "assistant_delta",
   "message.delta",
@@ -62,13 +72,19 @@ const EVENT_LABELS: Record<string, string> = {
   run_queued: "已进入队列",
   queued: "已进入队列",
   run_created: "已创建运行",
+  intent_detected: "已识别请求",
+  intent_confirmed: "已确认处理方式",
+  skill_selected: "已选择能力",
+  skill_release_decision: "已锁定能力版本",
   run_started: "开始执行",
   worker_started: "Worker 已开始执行",
   runtime_container_started: "运行环境已启动",
   sandbox_executor_readiness_failed: "运行环境未就绪",
   cancel_requested: "已请求取消",
   cancel_requested_but_completed: "取消请求到达时运行已完成",
-  context_snapshot_created: "已准备上下文",
+  context_snapshot_created: "已准备执行上下文",
+  context_retrieved: "已读取执行上下文",
+  file_bound: "已绑定输入文件",
   capability_selected: "已选择能力",
   capability_staged: "已准备能力",
   capability_actually_invoked: "已调用能力",
@@ -103,6 +119,53 @@ const EVENT_LABELS: Record<string, string> = {
   "run.cancelled": "运行已取消",
   error: "发生错误",
 };
+
+function eventMessage(event: AdminRunEvent): string | null {
+  const message = event.message?.trim();
+  return message || null;
+}
+
+function payloadText(event: AdminRunEvent, key: string): string | null {
+  const value = event.payload?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function eventDetail(event: AdminRunEvent): string | null {
+  const message = eventMessage(event);
+  const queuePosition = event.payload?.queue_position;
+  const queueDetail =
+    typeof queuePosition === "number" && queuePosition > 0
+      ? `当前队列第 ${queuePosition} 位`
+      : null;
+  const detail = [queueDetail, message, event.error_code ?? null].filter(Boolean);
+  return detail.length ? detail.join(" · ") : payloadText(event, "detail");
+}
+
+function diagnosticText(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (Array.isArray(value)) {
+    const text = value.find((item) => typeof item === "string" && item.trim());
+    return typeof text === "string" ? text.trim() : null;
+  }
+  return null;
+}
+
+function failureDetail(
+  run: AdminRunSummary,
+  event: AdminRunEvent,
+  diagnostics: AdminRunDiagnosticsResponse | null,
+): string | null {
+  const base = eventDetail(event) ?? run.error_code ?? null;
+  if (!diagnostics || event.error_code !== "executor_failure") return base;
+  const reason =
+    diagnosticText(diagnostics.root?.message) ??
+    diagnosticText(diagnostics.details.sdk.exception_message) ??
+    diagnosticText(diagnostics.details.sdk.errors) ??
+    diagnosticText(diagnostics.root?.source) ??
+    diagnosticText(diagnostics.root?.stage);
+  if (!reason || base?.includes(reason)) return base;
+  return `${base ?? "执行器失败"} · 原因：${reason}`;
+}
 
 function eventType(event: AdminRunEvent): string {
   return event.type ?? "event";
@@ -177,6 +240,7 @@ function mergeProgress(
 export function buildAdminRunMonitorView(
   run: AdminRunSummary,
   events: AdminRunEvent[],
+  diagnostics: AdminRunDiagnosticsResponse | null = null,
 ): AdminRunMonitorView {
   const modelOutput = run.model_output ?? "";
   const timeline: AdminRunTimelineItem[] = [];
@@ -185,10 +249,44 @@ export function buildAdminRunMonitorView(
   let legacyToolNumber = 0;
   let lastProgressKey: string | null = null;
   let latestAction: string | null = null;
+  const appendActivity = (item: AdminRunTimelineItem) => {
+    const previous = timeline.at(-1);
+    if (
+      previous?.kind === "activity" &&
+      previous.label === item.label &&
+      previous.detail === item.detail
+    ) {
+      timeline[timeline.length - 1] = {
+        ...previous,
+        created_at: item.created_at ?? previous.created_at,
+        count: previous.count + item.count,
+      };
+      return;
+    }
+    timeline.push(item);
+  };
 
   events.forEach((event, index) => {
     const type = eventType(event);
-    if (HEARTBEAT_TYPES.has(type)) return;
+    if (HEARTBEAT_TYPES.has(type) || NOISY_EVENT_TYPES.has(type)) return;
+
+    if (QUEUE_EVENT_TYPES.has(type)) {
+      const queueItem: AdminRunTimelineItem = {
+        id: "activity:queue",
+        kind: "activity",
+        status: "info",
+        label: EVENT_LABELS[type] ?? "已进入队列",
+        detail: eventDetail(event),
+        created_at: event.created_at ?? null,
+        count: 1,
+      };
+      const existingIndex = timeline.findIndex((item) => item.id === queueItem.id);
+      if (existingIndex >= 0) timeline.splice(existingIndex, 1);
+      timeline.push(queueItem);
+      latestAction = queueItem.label;
+      lastProgressKey = null;
+      return;
+    }
 
     if (MODEL_OUTPUT_TYPES.has(type)) {
       latestAction = "模型正在输出";
@@ -263,7 +361,7 @@ export function buildAdminRunMonitorView(
           kind: "activity",
           status: "running",
           label: EVENT_LABELS[type] ?? "正在处理",
-          detail: null,
+          detail: eventMessage(event),
           created_at: event.created_at ?? null,
           count: 1,
         };
@@ -281,7 +379,14 @@ export function buildAdminRunMonitorView(
         kind: "terminal",
         status: terminalStatus(type),
         label: EVENT_LABELS[type] ?? "运行已结束",
-        detail: event.error_code ?? null,
+        detail: failureDetail(
+          run,
+          {
+            ...event,
+            error_code: event.error_code ?? run.error_code,
+          },
+          diagnostics,
+        ),
         created_at: event.created_at ?? null,
         count: 1,
       });
@@ -289,12 +394,13 @@ export function buildAdminRunMonitorView(
       return;
     }
 
-    timeline.push({
+    const label = EVENT_LABELS[type] ?? eventMessage(event) ?? "活动更新";
+    appendActivity({
       id: `activity:${event.event_id ?? index}`,
       kind: "activity",
       status: event.severity === "error" ? "failed" : "info",
-      label: EVENT_LABELS[type] ?? "活动更新",
-      detail: event.error_code ?? null,
+      label,
+      detail: eventMessage(event) === label ? event.error_code ?? null : eventDetail(event),
       created_at: event.created_at ?? null,
       count: 1,
     });
@@ -305,7 +411,7 @@ export function buildAdminRunMonitorView(
   return {
     currentStatus: run.status,
     currentAction,
-    recentActivity: timeline,
+    recentActivity: timeline.slice(-MAX_RECENT_ACTIVITY),
     modelOutput,
     rawEventCount: events.length,
   };

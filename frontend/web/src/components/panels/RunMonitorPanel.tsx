@@ -326,7 +326,7 @@ function RunDetail({
   }, [fallbackFocusRef]);
 
   const monitorView = detail
-    ? buildAdminRunMonitorView(detail.run, detail.events)
+    ? buildAdminRunMonitorView(detail.run, detail.events, diagnostics)
     : null;
 
   return (

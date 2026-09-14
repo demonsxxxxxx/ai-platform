@@ -21,6 +21,7 @@ import {
 } from "../sseConnection.ts";
 import { PublicStreamPresentation } from "../publicStreamPresentation.ts";
 import { PUBLIC_RUN_STREAM_SCHEMA } from "../../../generated/publicRunStreamV4.ts";
+import { ApiRequestError } from "../../../services/api/fetch.ts";
 import type { Message } from "../../../types";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -766,6 +767,25 @@ test("uses raw_status as the authoritative compatibility status", async () => {
   assert.deepEqual(bareError, { kind: "unavailable" });
 });
 
+test("classifies authoritative status authentication failures without retrying", async () => {
+  for (const status of [401, 403]) {
+    let statusCalls = 0;
+    const result = await queryAuthoritativeRunStatus({
+      sessionId: "session-auth",
+      runId: "run-auth",
+      isCurrent: () => true,
+      statusRetryCountRef: { current: 0 },
+      getStatus: async () => {
+        statusCalls += 1;
+        throw new ApiRequestError("authentication rejected", status, "unauthorized");
+      },
+    });
+
+    assert.deepEqual(result, { kind: "unauthorized" });
+    assert.equal(statusCalls, 1);
+  }
+});
+
 test("resolves an idle session only for runless history reconciliation", async () => {
   let statusCalls = 0;
   const retryRef = { current: MAX_STATUS_QUERY_RETRIES };
@@ -948,7 +968,7 @@ test("does not let a stale connection target abort the active stream", async () 
   assert.equal(context.streamingMessageIdRef.current, "active-message");
 });
 
-test("fails closed when reconnect cannot read the authoritative run status", async () => {
+test("keeps the reconnect owner when authoritative status is temporarily unavailable", async () => {
   const connectionStates: string[] = [];
   let connectCalls = 0;
   const context = {
@@ -984,8 +1004,70 @@ test("fails closed when reconnect cannot read the authoritative run status", asy
   });
 
   assert.equal(connectCalls, 0);
+  assert.equal(context.currentRunIdRef.current, "run-1");
+  assert.equal(context.streamingMessageIdRef.current, "assistant-1");
   assert.equal(context.reconnectTimeoutRef.current, null);
   assert.equal(connectionStates.at(-1), "disconnected");
+});
+
+test("fails closed when reconnect status is unauthorized or its assistant owner is missing", async () => {
+  const cases = [
+    {
+      name: "unauthorized",
+      messageId: "assistant-1",
+      error: new ApiRequestError("authentication rejected", 401, "unauthorized"),
+      expectedMessageId: "assistant-1",
+    },
+    {
+      name: "missing assistant",
+      messageId: null,
+      error: new Error("status unavailable"),
+      expectedMessageId: "run-1",
+    },
+  ];
+
+  for (const candidate of cases) {
+    const unavailableCalls: Array<[string, string]> = [];
+    const context = {
+      abortControllerRef: { current: null },
+      isConnectingRef: { current: false },
+      streamingMessageIdRef: { current: candidate.messageId },
+      reconnectTimeoutRef: { current: null },
+      retryCountRef: { current: 0 },
+      messagesRef: { current: [] },
+      sessionIdRef: { current: "session-1" },
+      currentRunIdRef: { current: "run-1" },
+      processedEventIdsRef: { current: new Set<string>() },
+      lastHistoryTimestampRef: { current: null },
+      activeSubagentStackRef: { current: [] },
+      streamVersionRef: { current: 0 },
+      setSessionId: () => undefined,
+      setMessages: () => undefined,
+      setConnectionStatus: () => undefined,
+      setIsInitializingSandbox: () => undefined,
+      setSandboxError: () => undefined,
+      isReconnectFromHistoryRef: { current: false },
+      onRunStatusUnavailable: (runId: string, messageId: string) => {
+        unavailableCalls.push([runId, messageId]);
+        return true;
+      },
+    } satisfies SSEConnectionContext & {
+      isReconnectFromHistoryRef: { current: boolean };
+    };
+
+    await reconnectSSE(context, {
+      getStatus: async () => {
+        throw candidate.error;
+      },
+    });
+
+    assert.deepEqual(
+      unavailableCalls,
+      [["run-1", candidate.expectedMessageId]],
+      candidate.name,
+    );
+    assert.equal(context.reconnectTimeoutRef.current, null);
+  }
 });
 
 test("drops a reconnect when its status response belongs to an old stream generation", async () => {
@@ -1040,7 +1122,7 @@ test("drops a reconnect when its status response belongs to an old stream genera
   assert.equal(context.reconnectTimeoutRef.current, null);
 });
 
-test("bounds status-query retries before converging to local unavailable state", async () => {
+test("bounds status-query retries without terminalizing the reconnect owner", async () => {
   let statusCalls = 0;
   let unavailableCalls = 0;
   const context = {
@@ -1080,8 +1162,10 @@ test("bounds status-query retries before converging to local unavailable state",
   });
 
   assert.equal(statusCalls, 3);
-  assert.equal(context.statusRetryCountRef.current, 2);
-  assert.equal(unavailableCalls, 1);
+  assert.equal(context.statusRetryCountRef.current, 0);
+  assert.equal(unavailableCalls, 0);
+  assert.equal(context.currentRunIdRef.current, "run-1");
+  assert.equal(context.streamingMessageIdRef.current, "assistant-1");
   assert.equal(context.reconnectTimeoutRef.current, null);
 });
 
@@ -2938,9 +3022,24 @@ test("fresh no-cursor gap enters durable recovery without committing its cursor"
 });
 
 
-test("non-resumable gap clears rejected state before unavailable status convergence", async () => {
+test("non-resumable gap preserves transient failure state and rejects status authentication failure", async () => {
   const states: string[] = [];
   let invalidations = 0;
+  let unavailableCalls = 0;
+  const gap = {
+    streamIncarnation: 1,
+    event: {
+      payload: {
+        reason: "stream_missing",
+        recovery: "reload_durable_state",
+        requested_event_id: "8-0",
+        requested_stream_incarnation: 1,
+        current_stream_incarnation: 1,
+        earliest_available_event_id: null,
+        latest_available_event_id: null,
+      },
+    },
+  } as never;
   let messages: Message[] = [
     {
       id: "assistant-1",
@@ -2982,6 +3081,11 @@ test("non-resumable gap clears rejected state before unavailable status converge
     },
     setConnectionStatus: (status: string) => states.push(status),
     setIsInitializingSandbox: () => undefined,
+    onRunStatusUnavailable: (runId: string, messageId: string) => {
+      unavailableCalls += 1;
+      assert.deepEqual([runId, messageId], ["run-1", "assistant-1"]);
+      return true;
+    },
   } satisfies Partial<SSEConnectionContext>;
 
   await recoverReplayGap(
@@ -2991,20 +3095,7 @@ test("non-resumable gap clears rejected state before unavailable status converge
       runId: "run-1",
       messageId: "assistant-1",
       streamVersion: 4,
-      gap: {
-        streamIncarnation: 1,
-        event: {
-          payload: {
-            reason: "stream_missing",
-            recovery: "reload_durable_state",
-            requested_event_id: "8-0",
-            requested_stream_incarnation: 1,
-            current_stream_incarnation: 1,
-            earliest_available_event_id: null,
-            latest_available_event_id: null,
-          },
-        },
-      } as never,
+      gap,
     },
     {
       getStatus: async () => {
@@ -3014,19 +3105,38 @@ test("non-resumable gap clears rejected state before unavailable status converge
   );
 
   assert.deepEqual(context.acceptedStreamCursorRef.current, {
-    sessionId: null,
-    runId: null,
-    eventId: null,
-    streamIncarnation: null,
+    sessionId: "session-1",
+    runId: "run-1",
+    eventId: "run-1:1:8-0",
+    streamIncarnation: 1,
   });
   assert.deepEqual(context.acceptedRunEventSequenceRef.current, {
-    sessionId: null,
-    runId: null,
-    sequence: null,
+    sessionId: "session-1",
+    runId: "run-1",
+    sequence: 8,
   });
-  assert.equal(invalidations, 1);
-  assert.equal(messages[0]?.isStreaming, false);
+  assert.equal(invalidations, 0);
+  assert.equal(messages[0]?.isStreaming, true);
+  assert.equal(unavailableCalls, 0);
   assert.deepEqual(states, ["recovering_gap", "disconnected"]);
+
+  await recoverReplayGap(
+    context as unknown as SSEConnectionContext,
+    {
+      sessionId: "session-1",
+      runId: "run-1",
+      messageId: "assistant-1",
+      streamVersion: 4,
+      gap,
+    },
+    {
+      getStatus: async () => {
+        throw new ApiRequestError("authentication rejected", 403, "unauthorized");
+      },
+    },
+  );
+
+  assert.equal(unavailableCalls, 1);
 });
 
 

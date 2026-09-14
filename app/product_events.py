@@ -64,14 +64,16 @@ def initial_run_event_specs(
                 "skill_version": skill_version,
             }
         )
-    events: list[dict[str, Any]] = [
-        {
-            "event_type": "queued",
-            "stage": "queue",
-            "message": "任务已进入队列",
-            "payload": base_payload,
-        }
-    ]
+    events: list[dict[str, Any]] = []
+    if source != "chat_stream":
+        events.append(
+            {
+                "event_type": "queued",
+                "stage": "queue",
+                "message": "任务已进入队列",
+                "payload": base_payload,
+            }
+        )
     if execution_kind == RUN_EXECUTION_KIND_SKILL:
         events.append(
             {
