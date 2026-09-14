@@ -187,7 +187,7 @@ def test_worker_compose_forwards_worker_concurrency_setting_only_to_worker():
     assert name not in api_section
 
 
-def test_compose_and_example_use_unbounded_sdk_timeout_by_default():
+def test_compose_and_example_use_sdk_execution_defaults():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
 
@@ -199,6 +199,14 @@ def test_compose_and_example_use_unbounded_sdk_timeout_by_default():
         == 2
     )
     assert "CLAUDE_AGENT_SDK_TIMEOUT_SECONDS:-1200}" not in compose_text
+    assert "CLAUDE_AGENT_SDK_MAX_TURNS=256" in env_example_text
+    assert (
+        compose_text.count(
+            "CLAUDE_AGENT_SDK_MAX_TURNS: ${CLAUDE_AGENT_SDK_MAX_TURNS:-256}"
+        )
+        == 2
+    )
+    assert "CLAUDE_AGENT_SDK_MAX_TURNS:-128}" not in compose_text
 
 
 def test_compose_forwards_bounded_redis_pool_to_api_and_worker_without_limiting_server():

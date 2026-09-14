@@ -19,6 +19,12 @@ def test_claude_agent_sdk_timeout_defaults_to_unbounded(monkeypatch):
     )
 
 
+def test_claude_agent_sdk_max_turns_defaults_to_256(monkeypatch):
+    monkeypatch.delenv("CLAUDE_AGENT_SDK_MAX_TURNS", raising=False)
+
+    assert Settings(_env_file=None).claude_agent_sdk_max_turns == 256
+
+
 def test_browser_authentication_windows_default_to_twenty_four_hours():
     settings = Settings(_env_file=None)
 
