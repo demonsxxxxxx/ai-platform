@@ -260,7 +260,13 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     assert (
         await can_use("Write", {"file_path": "outputs/delivery/out.txt", "content": "safe"})
     ).behavior == "allow"
-    assert (await can_use("Write", {"file_path": "out.txt", "content": "unsafe"})).behavior == "deny"
+    assert (await can_use("Write", {"file_path": "out.txt", "content": "safe"})).behavior == "allow"
+    assert (
+        await can_use("Write", {"file_path": "inputs/source.docx", "content": "unsafe"})
+    ).behavior == "deny"
+    assert (
+        await can_use("Write", {"file_path": "CLAUDE.md", "content": "unsafe"})
+    ).behavior == "deny"
     assert (await can_use("Skill", {"skill": "qa-file-reviewer"})).behavior == "allow"
     assert (await can_use("Skill", {"skill": "unknown-skill"})).behavior == "deny"
     assert (await can_use("mcp__corp-search__query", {"query": "safe"})).behavior == "allow"
