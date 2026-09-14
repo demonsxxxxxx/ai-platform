@@ -6516,7 +6516,110 @@ test("useAgent rehydrates durable partial text and one fixed failure card", asyn
   }
 });
 
-test("useAgent fails closed after initial reload status retries are exhausted", async () => {
+test("useAgent restores the v4 message owner while replay catches up with history", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = dom.window.fetch;
+  const runId = "run-history-replay-owner";
+  let stream: ReturnType<typeof controlledPublicRunLifecycle> | null = null;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-history-replay-owner",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({
+    current_run_id: runId,
+    events: [
+      {
+        id: `${runId}:user`,
+        run_id: runId,
+        event_type: "user:message",
+        timestamp: "2026-08-21T00:00:00Z",
+        data: { message_id: `${runId}:user`, content: "恢复进行中的回复" },
+      },
+      {
+        id: `preceding-${runId}-0`,
+        run_id: runId,
+        sequence: 1,
+        event_type: "message.started",
+        timestamp: "2026-08-21T00:00:00.001Z",
+        data: { event_id: `preceding-${runId}-0` },
+      },
+      {
+        id: `preceding-${runId}-1`,
+        run_id: runId,
+        sequence: 2,
+        event_type: "message:chunk",
+        timestamp: "2026-08-21T00:00:00.002Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          projection_kind: "assistant_delta",
+          event_id: `preceding-${runId}-1`,
+          message_id: `message-${runId}`,
+          sequence: 2,
+          run_id: runId,
+          content: "已恢复正文",
+        },
+      },
+    ],
+  });
+  sessionApi.getStatus = (async () => ({
+    session_id: "session-history-replay-owner",
+    run_id: runId,
+    status: "running",
+  })) as typeof sessionApi.getStatus;
+  dom.window.fetch = async () => {
+    stream = controlledPublicRunLifecycle(runId, "cancelled", [
+      { eventType: "message.started", payload: {} },
+      { eventType: "message.delta", payload: { delta: "已恢复正文" } },
+    ]);
+    return stream.response;
+  };
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-history-replay-owner");
+    });
+    await settle(harness.act);
+
+    assert.equal(harness.hook.currentRunId, runId);
+    assert.equal(harness.hook.connectionStatus, "connected");
+    assert.equal(
+      harness.hook.messages.find(
+        (message) => message.role === "assistant" && message.runId === runId,
+      )?.content,
+      "已恢复正文",
+    );
+    assert.equal(
+      harness.hook.messages
+        .flatMap((message) => message.parts || [])
+        .some(
+          (part) =>
+            part.type === "run_status" &&
+            part.event_id === `terminal-status-unavailable:${runId}`,
+        ),
+      false,
+    );
+    assert.ok(stream);
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent keeps transient status failure recoverable and fails closed on status authentication", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
@@ -6526,6 +6629,8 @@ test("useAgent fails closed after initial reload status retries are exhausted", 
   const originalFetch = dom.window.fetch;
   let statusCalls = 0;
   let sseCalls = 0;
+  let statusMode: "unavailable" | "running" | "unauthorized" = "unavailable";
+  let resumedStream: ReturnType<typeof controlledPublicRunLifecycle> | null = null;
   sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-initial-status-unavailable",
@@ -6549,15 +6654,21 @@ test("useAgent fails closed after initial reload status retries are exhausted", 
   });
   sessionApi.getStatus = (async () => {
     statusCalls += 1;
+    if (statusMode === "unauthorized") {
+      throw new ApiRequestError("authentication rejected", 401, "unauthorized");
+    }
     return {
       session_id: "session-initial-status-unavailable",
       run_id: "run-initial-status-unavailable",
-      status: "error",
+      status: statusMode === "running" ? "running" : "error",
     };
   }) as typeof sessionApi.getStatus;
   dom.window.fetch = async () => {
     sseCalls += 1;
-    return completedSseResponse();
+    resumedStream = controlledPublicRunLifecycle(
+      "run-initial-status-unavailable",
+    );
+    return resumedStream.response;
   };
 
   try {
@@ -6567,27 +6678,67 @@ test("useAgent fails closed after initial reload status retries are exhausted", 
     await settle(harness.act);
 
     const parts = harness.hook.messages.flatMap((message) => message.parts || []);
+    const assistant = harness.hook.messages.find(
+      (message) =>
+        message.role === "assistant" &&
+        message.runId === "run-initial-status-unavailable",
+    );
     assert.equal(statusCalls, 3);
     assert.equal(sseCalls, 0);
-    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(
+      harness.hook.currentRunId,
+      "run-initial-status-unavailable",
+    );
+    assert.equal(assistant?.isStreaming, true);
     assert.equal(harness.hook.isLoading, false);
     assert.equal(harness.hook.connectionStatus, "disconnected");
-    assert.equal(
-      parts.filter(
-        (part) =>
-          part.type === "run_status" &&
-          part.event_id ===
-            "terminal-status-unavailable:run-initial-status-unavailable",
-      ).length,
-      1,
-    );
     assert.equal(
       parts.some(
         (part) =>
           part.type === "run_status" &&
-          part.event_id === "terminal-failure:run-initial-status-unavailable",
+          part.event_id ===
+            "terminal-status-unavailable:run-initial-status-unavailable",
       ),
       false,
+    );
+
+    statusMode = "running";
+    await harness.act(async () => {
+      await harness.hook.reconnectSSE();
+    });
+    await harness.act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2_100));
+    });
+    await settle(harness.act);
+
+    assert.equal(statusCalls, 4);
+    assert.equal(sseCalls, 1);
+    assert.equal(
+      harness.hook.currentRunId,
+      "run-initial-status-unavailable",
+    );
+    assert.equal(harness.hook.connectionStatus, "connected");
+    assert.ok(resumedStream);
+
+    statusMode = "unauthorized";
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-initial-status-unavailable");
+    });
+    await settle(harness.act);
+
+    assert.equal(statusCalls, 5);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+    assert.equal(
+      harness.hook.messages
+        .flatMap((message) => message.parts || [])
+        .some(
+          (part) =>
+            part.type === "run_status" &&
+            part.event_id ===
+              "terminal-status-unavailable:run-initial-status-unavailable",
+        ),
+      true,
     );
   } finally {
     sessionApi.get = originalGet;

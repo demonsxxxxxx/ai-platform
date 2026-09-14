@@ -1761,6 +1761,7 @@ test("v4 history-covered message.started restores ownership before live delta", 
   ctx.currentRunIdRef.current = "run-history";
   ctx.v4MessageOwnerRef = { current: null };
   ctx.v4MessageCandidateRef = { current: null };
+  ctx.processedEventIdsRef.current.add("history-event-1");
   const commits: boolean[] = [];
   const accept = (
     eventType: "message.started" | "message.delta",
@@ -1805,11 +1806,28 @@ test("v4 history-covered message.started restores ownership before live delta", 
       onCommitted: (semanticApplied) => commits.push(semanticApplied),
     });
 
+  ctx.v4MessageCandidateRef.current = {
+    sessionId: "session-1",
+    runId: "run-history",
+    streamVersion: 0,
+    streamIncarnation: 2,
+    protocolMessageId: "different-protocol-message",
+  };
   assert.equal(
     accept("message.started", 1, "2026-01-01T00:00:00Z"),
-    true,
+    false,
   );
-  assert.equal(commits[0], true);
+  assert.equal(Boolean(ctx.v4MessageOwnerRef.current), false);
+  assert.equal(
+    ctx.v4MessageCandidateRef.current?.protocolMessageId,
+    "different-protocol-message",
+  );
+  ctx.v4MessageCandidateRef.current.protocolMessageId = "protocol-message-1";
+  assert.equal(
+    accept("message.started", 1, "2026-01-01T00:00:00Z"),
+    false,
+  );
+  assert.deepEqual(commits, [false, false]);
   assert.equal(
     ctx.v4MessageOwnerRef.current?.protocolMessageId,
     "protocol-message-1",
@@ -1996,6 +2014,7 @@ test("v4 message ownership survives reconnect and rejects a second protocol iden
     "persisted-assistant",
   );
 
+  ctx.processedEventIdsRef.current.add("event-2-3");
   const before = {
     messages: structuredClone(ctx.messages()),
     owner: structuredClone(ctx.v4MessageOwnerRef.current),
