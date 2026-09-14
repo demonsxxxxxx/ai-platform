@@ -31,6 +31,7 @@ import {
   type TerminalRunStatus,
 } from "./runLifecycle";
 import type { ChatRunStatusResponse } from "../../services/api/session";
+import { ApiRequestError } from "../../services/api/fetch";
 import { formatSafeDiagnosticLog } from "../../utils/backendErrors";
 
 /**
@@ -263,6 +264,7 @@ export type AuthoritativeStatusQueryResult =
       status: string;
     }
   | { kind: "stale" }
+  | { kind: "unauthorized" }
   | { kind: "unavailable" };
 
 /**
@@ -327,6 +329,12 @@ export async function queryAuthoritativeRunStatus({
           error,
         ),
       );
+      if (
+        error instanceof ApiRequestError &&
+        (error.status === 401 || error.status === 403)
+      ) {
+        return { kind: "unauthorized" };
+      }
     } finally {
       if (attemptTimeout !== null) {
         clearTimeout(attemptTimeout);
@@ -456,23 +464,21 @@ export async function recoverReplayGap(
     );
   };
 
-  if (!resumeCursor) stopForTerminalRecovery();
-
   const owner: ReplayGapRecoveryOwner = {
     sessionId,
     runId,
     streamVersion,
     promise: Promise.resolve(),
   };
-  const settleUnavailable = () => {
-    if (!isCurrent()) {
-      return;
-    }
-    if (ctx.onRunStatusUnavailable?.(runId, messageId)) {
-      return;
-    }
+  const settleStatusUnavailable = () => {
+    if (!isCurrent()) return;
     ctx.setConnectionStatus("disconnected");
     ctx.setIsInitializingSandbox(false);
+  };
+  const convergeUnrecoverable = () => {
+    if (!isCurrent()) return;
+    if (ctx.onRunStatusUnavailable?.(runId, messageId)) return;
+    settleStatusUnavailable();
   };
   const delayMs = Math.max(
     0,
@@ -492,8 +498,14 @@ export async function recoverReplayGap(
         if (statusResult.kind === "stale") {
           return;
         }
+        if (statusResult.kind === "unauthorized") {
+          convergeUnrecoverable();
+          return;
+        }
         if (statusResult.kind === "unavailable") {
-          settleUnavailable();
+          // A failed status read does not prove that the run or its replay
+          // authority ended. Preserve both owners for a later recovery read.
+          settleStatusUnavailable();
           return;
         }
         const terminalStatus = terminalRunStatus(statusResult.status);
@@ -514,7 +526,7 @@ export async function recoverReplayGap(
             );
             if (!isCurrent() || !ownsExpectedCursor()) return;
             if (!hydratedMessageId) {
-              settleUnavailable();
+              convergeUnrecoverable();
               return;
             }
             ctx.acceptedStreamCursorRef.current = {
@@ -1221,6 +1233,11 @@ export async function reconnectSSE(
     setConnectionStatus("disconnected");
     ctx.setIsInitializingSandbox(false);
   };
+  const preserveStatusUnavailable = () => {
+    statusRetryCountRef.current = 0;
+    setConnectionStatus("disconnected");
+    ctx.setIsInitializingSandbox(false);
+  };
 
   if (!currentSessId || !currentRId || !isCurrentReconnect()) {
     console.log("[SSE] No session/run ID, skipping reconnect");
@@ -1256,8 +1273,15 @@ export async function reconnectSSE(
   if (statusResult.kind === "stale") {
     return;
   }
-  if (statusResult.kind === "unavailable") {
+  if (statusResult.kind === "unauthorized") {
     convergeUnavailable();
+    return;
+  }
+  if (statusResult.kind === "unavailable") {
+    // Transport recovery is paused only while its assistant owner remains
+    // available; a status read failure cannot recreate a missing owner.
+    if (currentMsgId) preserveStatusUnavailable();
+    else convergeUnavailable();
     return;
   }
 

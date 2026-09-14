@@ -102,8 +102,30 @@ export function rebindV4MessageOwner(
     "sessionId" | "runId" | "streamVersion" | "streamIncarnation"
   >,
   reducerMessageId: string,
+  protocolMessageId?: string,
 ): boolean {
   const owner = ownerRef.current;
+  if (protocolMessageId) {
+    const ownerMatchesBinding = Boolean(
+      owner &&
+        owner.sessionId === binding.sessionId &&
+        owner.runId === binding.runId &&
+        owner.streamVersion === binding.streamVersion &&
+        owner.streamIncarnation === binding.streamIncarnation,
+    );
+    if (ownerMatchesBinding && owner!.protocolMessageId !== protocolMessageId) {
+      return false;
+    }
+    ownerRef.current = {
+      sessionId: binding.sessionId,
+      runId: binding.runId,
+      streamVersion: binding.streamVersion,
+      streamIncarnation: binding.streamIncarnation,
+      protocolMessageId,
+      reducerMessageId,
+    };
+    return true;
+  }
   if (
     !owner ||
     owner.sessionId !== binding.sessionId ||
@@ -533,6 +555,39 @@ export function handlePublicRunStreamEventV4(
     onCommitted?.(false);
     return true;
   }
+  if (ctx.processedEventIdsRef.current.has(event.semanticKey)) {
+    // History reconstruction already applied this event. Replaying its
+    // message.started frame must still restore the protocol-to-UI owner before
+    // later message-correlated frames arrive.
+    if (
+      event.eventType === "message.started" &&
+      event.messageId &&
+      ctx.v4MessageOwnerRef
+    ) {
+      const candidate = ctx.v4MessageCandidateRef?.current;
+      const candidateConflicts = Boolean(
+        candidate &&
+          candidate.sessionId === binding.sessionId &&
+          candidate.runId === binding.runId &&
+          candidate.streamVersion === binding.streamVersion &&
+          candidate.streamIncarnation === binding.streamIncarnation &&
+          candidate.protocolMessageId !== event.messageId,
+      );
+      const rebound =
+        !candidateConflicts &&
+        rebindV4MessageOwner(
+          ctx.v4MessageOwnerRef,
+          binding,
+          messageId,
+          event.messageId,
+        );
+      if (rebound && ctx.v4MessageCandidateRef) {
+        ctx.v4MessageCandidateRef.current = null;
+      }
+    }
+    onCommitted?.(false);
+    return false;
+  }
   const owner = ctx.v4MessageOwnerRef?.current;
   const ownerMatchesRun = Boolean(
     owner &&
@@ -588,10 +643,6 @@ export function handlePublicRunStreamEventV4(
       onCommitted?.(false);
       return false;
     }
-  }
-  if (ctx.processedEventIdsRef.current.has(event.semanticKey)) {
-    onCommitted?.(false);
-    return false;
   }
   const acceptedSequence = ctx.acceptedRunEventSequenceRef?.current;
   if (
@@ -697,14 +748,12 @@ export function handlePublicRunStreamEventV4(
     event.messageId &&
     ctx.v4MessageOwnerRef
   ) {
-    ctx.v4MessageOwnerRef.current = {
-      sessionId: binding.sessionId,
-      runId: binding.runId,
-      streamVersion: binding.streamVersion,
-      streamIncarnation: binding.streamIncarnation,
-      protocolMessageId: event.messageId,
-      reducerMessageId: messageId,
-    };
+    rebindV4MessageOwner(
+      ctx.v4MessageOwnerRef,
+      binding,
+      messageId,
+      event.messageId,
+    );
     if (ctx.v4MessageCandidateRef) ctx.v4MessageCandidateRef.current = null;
   }
   return true;

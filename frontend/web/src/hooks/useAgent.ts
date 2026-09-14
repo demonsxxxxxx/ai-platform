@@ -1810,9 +1810,16 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           // history/status read is GET-only and remains the convergence path.
           const isCancelRequested = normalizedStatus === "cancel_requested";
           const terminalStatus = terminalRunStatus(normalizedStatus);
+          const statusUnauthorized = statusResult?.kind === "unauthorized";
           const statusUnavailable = statusResult?.kind === "unavailable";
-          const activeHistoryRunId =
-            isTaskRunning && historyCurrentRunId ? historyCurrentRunId : null;
+          // An unavailable read proves no terminal outcome. Keep the restored
+          // owner disconnected so a later authoritative read can resume it.
+          const keepRunRecoverable = Boolean(
+            historyCurrentRunId && (isTaskRunning || statusUnavailable),
+          );
+          const activeHistoryRunId = keepRunRecoverable
+            ? historyCurrentRunId
+            : null;
           let reconstructedMessages = eventsData.events?.length
             ? reconstructMessagesFromEvents(
                 eventsData.events as HistoryEvent[],
@@ -1856,7 +1863,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           }
 
           let streamingMessageId: string | null = null;
-          if (isTaskRunning && historyCurrentRunId) {
+          if (keepRunRecoverable && historyCurrentRunId) {
             const prepared = prepareMessagesForRunningRun(
               reconstructedMessages,
               historyCurrentRunId,
@@ -1886,13 +1893,25 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                 )?.id || historyCurrentRunId)
             : null;
 
-          if (statusUnavailable && historyCurrentRunId) {
+          if (statusUnauthorized && historyCurrentRunId) {
             currentRunIdRef.current = historyCurrentRunId;
             setCurrentRunId(historyCurrentRunId);
             finalizeRunStatusUnavailable(
               historyCurrentRunId,
               historyMessageId || historyCurrentRunId,
             );
+          } else if (
+            statusUnavailable &&
+            historyCurrentRunId &&
+            streamingMessageId
+          ) {
+            currentRunIdRef.current = historyCurrentRunId;
+            setCurrentRunId(historyCurrentRunId);
+            streamingMessageIdRef.current = streamingMessageId;
+            statusRetryCountRef.current = 0;
+            setConnectionStatus("disconnected");
+            setIsInitializingSandbox(false);
+            setSandboxError(null);
           } else if (terminalStatus && historyCurrentRunId) {
             // An explicit target already arrived through the exact history
             // contract. Default history still hydrates that exact run before
