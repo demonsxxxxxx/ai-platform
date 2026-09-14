@@ -36,6 +36,10 @@ from app.models import QueueRunPayload
 from app.mcp.infrastructure import postgres as mcp_postgres
 from app.mcp.infrastructure import runtime as mcp_runtime
 from app.principal_authority import CURRENT_PRINCIPAL_DENIAL_REASON, PrincipalAuthorityDenied
+from app.platform.sandbox.errors import (
+    ContainerStartFailedError,
+    ExecutorHealthTimeoutError,
+)
 from app.repositories import (
     RepositoryConflictError,
     RepositoryNotFoundError,
@@ -49,6 +53,7 @@ from app.runs.api import RunAttemptLifecycleService, RunTerminalizationProgress
 from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.runtime.sandbox.executor_client import SandboxExecutorHttpError
+from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.skills.execution_profiles import resolve_skill_execution_profile
 from app.streaming.application.durable_v4 import V4PendingAdmission
 from app.streaming.application.worker_publication_v4 import WorkerV4Capabilities
@@ -286,14 +291,60 @@ def test_worker_preserves_only_typed_safe_executor_failures():
     native_error = NativeToolAdmissionError()
     native_error.__context__ = RuntimeError(f"{private_token} at {private_path}")
 
-    assert worker_module._executor_exception_failure(native_error) == (
+    native_failure = worker_module._executor_exception_failure(native_error)
+    assert native_failure[:2] == (
         "native_tool_admission_failed",
         "Native tool sandbox admission failed",
-        None,
     )
-    assert worker_module._executor_exception_failure(
+    assert native_failure[2]["runtime_diagnostics"]["error_code"] == (
+        "native_tool_admission_failed"
+    )
+    assert native_failure[2]["runtime_diagnostics"]["sdk"]["exception_type"] == (
+        "NativeToolAdmissionError"
+    )
+    generic_failure = worker_module._executor_exception_failure(
         RuntimeError("ordinary executor failure")
-    ) == ("executor_failure", "Executor failed", None)
+    )
+    assert generic_failure[:2] == ("executor_failure", "Executor failed")
+    assert generic_failure[2]["runtime_diagnostics"]["error_code"] == (
+        "executor_failure"
+    )
+    health_failure = worker_module._executor_exception_failure(
+        ExecutorHealthTimeoutError(
+            readiness_evidence=ExecutorReadinessEvidence(
+                readiness_phase="health_probe",
+                container_state="running",
+                published_port_observed=True,
+                health_outcome="timeout",
+                elapsed_ms=321,
+            )
+        )
+    )
+    assert health_failure[:2] == ("executor_failure", "Executor failed")
+    assert health_failure[2]["runtime_diagnostics"]["error_code"] == (
+        "executor_health_timeout"
+    )
+    assert health_failure[2]["runtime_diagnostics"]["failure_stage"] == (
+        "health_probe"
+    )
+    assert health_failure[2]["runtime_diagnostics"]["sdk"]["errors"] == {
+        "readiness": {
+            "readiness_phase": "health_probe",
+            "container_state": "running",
+            "exit_code": None,
+            "oom_killed": None,
+            "published_port_observed": True,
+            "health_outcome": "timeout",
+            "elapsed_ms": 321,
+        }
+    }
+    start_failure = worker_module._executor_exception_failure(
+        ContainerStartFailedError()
+    )
+    assert start_failure[:2] == ("executor_failure", "Executor failed")
+    assert start_failure[2]["runtime_diagnostics"]["error_code"] == (
+        "container_start_failed"
+    )
     http_error = SandboxExecutorHttpError(
         status_code=401,
         error_code="invalid_executor_credential",
@@ -324,12 +375,8 @@ def test_worker_preserves_only_typed_safe_executor_failures():
         "Executor request failed (HTTP 502)",
         None,
     )
-    assert private_token not in str(
-        worker_module._executor_exception_failure(native_error)
-    )
-    assert private_path not in str(
-        worker_module._executor_exception_failure(native_error)
-    )
+    assert private_token not in str(native_failure)
+    assert private_path not in str(native_failure)
     assert "private-secret" not in str(
         worker_module._executor_exception_failure(hostile_error)
     )

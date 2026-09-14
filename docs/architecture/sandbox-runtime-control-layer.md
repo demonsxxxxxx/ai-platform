@@ -75,9 +75,13 @@ generation, timestamps, and reconciliation ownership in one migration.
    `assistant_delta` compatibility shape only when no streamed answer exists;
    obsolete `assistant_final` is retired.
    A first terminal callback fixes the protocol fields in `executor_terminal_json`
-   and appends the bounded Runs-owned private diagnostic observation in the same
-   PostgreSQL transaction. Receipt retry remains the deduplication authority and
-   does not advance the diagnostic revision twice. The receipt is retained for
+   and normally appends the bounded Runs-owned private diagnostic observation in
+   the same PostgreSQL transaction. Diagnostic-only normalization, budget, lock
+   wait or write failure is contained by a savepoint with bounded local timeouts;
+   the valid receipt/terminal may commit without that observation. Connection,
+   savepoint and outer business-transaction failures retain existing retry
+   semantics. Receipt retry remains the deduplication authority and does not
+   advance the diagnostic revision twice. The receipt is retained for protocol
    protocol recovery; reconciliation may append its bounded `diagnostics` list,
    but cannot replace the first receipt fields. It is not the administrator query store.
 4. A real-provider release takes the scoped lease row lock, calls provider stop,

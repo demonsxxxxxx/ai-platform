@@ -1,5 +1,8 @@
+from contextlib import asynccontextmanager
+import json
 import os
 from pathlib import Path
+import time
 import uuid
 
 import psycopg
@@ -72,6 +75,42 @@ def _runtime_diagnostics(error_code: str) -> dict:
             "exception_message": f"{error_code} detail",
         },
     }
+
+
+@asynccontextmanager
+async def _isolated_postgres_run():
+    dsn = _postgres_dsn()
+    schema_name = f"run_diagnostics_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(
+        dsn,
+        autocommit=True,
+        row_factory=dict_row,
+    )
+    conn = None
+    try:
+        await admin.execute(
+            sql.SQL("create schema {}").format(sql.Identifier(schema_name))
+        )
+        await admin.execute(
+            sql.SQL("set search_path to {}").format(sql.Identifier(schema_name))
+        )
+        await admin.execute(Path("app/schema.sql").read_text(encoding="utf-8"))
+        await _seed_run(admin)
+        conn = await psycopg.AsyncConnection.connect(
+            dsn,
+            options=f"-c search_path={schema_name}",
+            row_factory=dict_row,
+        )
+        yield dsn, schema_name, admin, conn
+    finally:
+        if conn is not None:
+            await conn.close()
+        await admin.execute(
+            sql.SQL("drop schema if exists {} cascade").format(
+                sql.Identifier(schema_name)
+            )
+        )
+        await admin.close()
 
 
 @pytest.mark.asyncio
@@ -190,3 +229,137 @@ async def test_postgres_run_diagnostics_are_tenant_scoped_bounded_and_idempotent
             )
         )
         await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_diagnostic_constraint_failure_keeps_outer_terminal_write():
+    async with _isolated_postgres_run() as (_dsn, _schema, admin, conn):
+        await admin.execute(
+            "alter table run_diagnostics add constraint reject_diagnostic_write "
+            "check (revision < 0) not valid"
+        )
+        service = RunDiagnosticsService(
+            persistence=PostgresRunDiagnosticsRepository(write_timeout_seconds=0.1),
+            normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+            runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        )
+
+        async with conn.transaction():
+            cursor = await conn.execute(
+                "select current_setting('lock_timeout') as lock_timeout, "
+                "current_setting('statement_timeout') as statement_timeout"
+            )
+            before = dict(await cursor.fetchone())
+            public_result = await service.capture_failure_result(
+                conn,
+                tenant_id="tenant-a",
+                run_id="run-a",
+                attempt_id="attempt-a",
+                source="worker_executor",
+                stage="terminalization",
+                error_code="executor_failure",
+                result_json={
+                    "message": "safe",
+                    "runtime_diagnostics": _runtime_diagnostics("provider_timeout"),
+                },
+            )
+            cursor = await conn.execute(
+                "select current_setting('lock_timeout') as lock_timeout, "
+                "current_setting('statement_timeout') as statement_timeout"
+            )
+            after = dict(await cursor.fetchone())
+            await conn.execute(
+                "update runs set status = 'failed', result_json = %s::jsonb "
+                "where tenant_id = 'tenant-a' and id = 'run-a'",
+                (json.dumps(public_result),),
+            )
+
+        cursor = await conn.execute(
+            "select status, result_json from runs where id = 'run-a'"
+        )
+        run = await cursor.fetchone()
+        cursor = await conn.execute("select count(*) as count from run_diagnostics")
+        diagnostic_count = int((await cursor.fetchone())["count"])
+
+        assert before == after
+        assert run == {"status": "failed", "result_json": {"message": "safe"}}
+        assert diagnostic_count == 0
+
+
+@pytest.mark.asyncio
+async def test_postgres_diagnostic_row_lock_timeout_keeps_outer_transaction_usable():
+    async with _isolated_postgres_run() as (dsn, schema_name, _admin, conn):
+        service = RunDiagnosticsService(
+            persistence=PostgresRunDiagnosticsRepository(write_timeout_seconds=0.05),
+            normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+            runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        )
+        async with conn.transaction():
+            await service.capture_failure_result(
+                conn,
+                tenant_id="tenant-a",
+                run_id="run-a",
+                attempt_id="attempt-a",
+                source="worker_executor",
+                stage="terminalization",
+                error_code="executor_failure",
+                result_json={
+                    "runtime_diagnostics": _runtime_diagnostics("provider_timeout")
+                },
+            )
+
+        blocker = await psycopg.AsyncConnection.connect(
+            dsn,
+            options=f"-c search_path={schema_name}",
+            row_factory=dict_row,
+        )
+        try:
+            async with blocker.transaction():
+                await blocker.execute(
+                    "select revision from run_diagnostics "
+                    "where tenant_id = 'tenant-a' and run_id = 'run-a' for update"
+                )
+                async with conn.transaction():
+                    cursor = await conn.execute(
+                        "select current_setting('lock_timeout') as lock_timeout, "
+                        "current_setting('statement_timeout') as statement_timeout"
+                    )
+                    before = dict(await cursor.fetchone())
+                    started_at = time.monotonic()
+                    await service.capture_failure_result(
+                        conn,
+                        tenant_id="tenant-a",
+                        run_id="run-a",
+                        attempt_id="attempt-a",
+                        source="executor_reconciler",
+                        stage="terminalization",
+                        error_code="terminal_reconciliation_failed",
+                        result_json={
+                            "runtime_diagnostics": _runtime_diagnostics(
+                                "terminal_reconciliation_failed"
+                            )
+                        },
+                    )
+                    elapsed = time.monotonic() - started_at
+                    cursor = await conn.execute(
+                        "select current_setting('lock_timeout') as lock_timeout, "
+                        "current_setting('statement_timeout') as statement_timeout"
+                    )
+                    after = dict(await cursor.fetchone())
+                    await conn.execute(
+                        "update runs set status = 'failed' "
+                        "where tenant_id = 'tenant-a' and id = 'run-a'"
+                    )
+        finally:
+            await blocker.close()
+
+        cursor = await conn.execute(
+            "select r.status, d.revision "
+            "from runs r join run_diagnostics d on d.run_id = r.id "
+            "where r.tenant_id = 'tenant-a' and r.id = 'run-a'"
+        )
+        state = await cursor.fetchone()
+
+        assert before == after
+        assert elapsed < 5
+        assert state == {"status": "failed", "revision": 1}

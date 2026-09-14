@@ -55,6 +55,10 @@ from app.runs.api import (
     RunAttemptLifecycleService,
     run_attempt_id_for_queue_attempt,
 )
+from app.sandbox.api import (
+    SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    exception_chain_from_error,
+)
 from app.schema_migrations import require_schema_current
 from app.settings import get_settings
 from app.tool_permission_lifecycle import (
@@ -758,6 +762,7 @@ async def _terminalize_escaped_process_exception(
     *,
     v4_capabilities: WorkerV4Capabilities,
     attempt_lifecycle: RunAttemptLifecycleService,
+    run_diagnostics: Any | None = None,
 ) -> WorkerOutcome:
     """Converge one valid claimed run after processing escapes its normal terminal path."""
 
@@ -842,6 +847,34 @@ async def _terminalize_escaped_process_exception(
         if attempt_authority is None:
             return _queue_ownership_lost_outcome(run_id)
         validated_attempt_id = str(attempt_authority["id"])
+        if run_diagnostics is not None:
+            exception_chain_losses: list[dict[str, object]] = []
+            await run_diagnostics.capture_failure_result(
+                conn,
+                tenant_id=payload.tenant_id,
+                run_id=run_id,
+                attempt_id=validated_attempt_id,
+                source="worker_escaped",
+                stage="worker_process",
+                error_code=error_code,
+                result_json={
+                    "runtime_diagnostics": {
+                        "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+                        "error_code": error_code,
+                        "failure_source": "worker_escaped",
+                        "failure_stage": "worker_process",
+                        "sdk": {
+                            "exception_type": type(exc).__name__,
+                            "exception_message": str(exc),
+                            "exception_chain": exception_chain_from_error(
+                                exc,
+                                losses=exception_chain_losses,
+                            ),
+                        },
+                        "normalization_losses": exception_chain_losses,
+                    }
+                },
+            )
         cancel_requested = bool(locked_run.get("cancel_requested_at")) or str(
             locked_run.get("permission_terminalization_target") or ""
         ) in {"cancel_requested", "cancelled"}
@@ -1015,6 +1048,7 @@ async def run_once(
                     exc,
                     v4_capabilities=v4_capabilities,
                     attempt_lifecycle=attempt_lifecycle,
+                    run_diagnostics=build_run_diagnostics_service(),
                 )
             except Exception:
                 logger.exception(

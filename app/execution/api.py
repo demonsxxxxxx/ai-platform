@@ -34,6 +34,10 @@ from app.execution.application.worker_attempt_lifecycle import (
     finalize_worker_child_parent,
     worker_child_terminal_progress,
 )
+from app.execution.application.worker_failure_diagnostics import (
+    executor_exception_failure,
+    predispatch_failure_result,
+)
 from app.execution.application.claude_agent_events import (
     ClaudeAgentEventCandidate,
     ClaudeSdkAgentEventAdapter,
@@ -109,6 +113,7 @@ __all__ = [
     "collect_workspace_artifacts",
     "bind_worker_attempt_lifecycle",
     "fail_run_and_reconcile_worker_child",
+    "executor_exception_failure",
     "finalize_worker_child_parent",
     "restored_executor_reconciliation_queue_payload",
     "restored_sandbox_run_payload",
@@ -119,6 +124,7 @@ __all__ = [
     "locked_run_payload_candidate",
     "parse_requested_model_selection",
     "promote_artifact_reservations",
+    "predispatch_failure_result",
     "public_answer_failure_reason",
     "resolve_chat_model_selection",
     "time",

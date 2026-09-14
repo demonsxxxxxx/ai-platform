@@ -72,10 +72,16 @@ export function RunDiagnosticsSection({
   const sdkErrors = Array.isArray(diagnostics.details.sdk.errors)
     ? diagnostics.details.sdk.errors
     : [];
-  const toolEvidence = [
-    ...diagnostics.details.tool_calls,
-    ...diagnostics.details.tool_policy_denials,
-  ];
+  const observationEvidence = diagnostics.details.observations ?? [];
+  const toolEvidence = observationEvidence.length
+    ? observationEvidence.flatMap((observation) => [
+        ...observation.tool_calls,
+        ...observation.tool_policy_denials,
+      ])
+    : [
+        ...diagnostics.details.tool_calls,
+        ...diagnostics.details.tool_policy_denials,
+      ];
   const protocolEvidence = diagnostics.details.executor_protocol;
   return (
     <section className="p-4" data-run-runtime-diagnostics>
@@ -222,6 +228,42 @@ export function RunDiagnosticsSection({
               </ul>
             </div>
           ) : null}
+          {observationEvidence.length ? (
+            <div className="rounded-md border border-[var(--theme-border)] p-3">
+              <h4 className="text-xs font-medium text-[var(--theme-text)]">逐条观测证据</h4>
+              <div className="mt-2 space-y-2">
+                {observationEvidence.map((observation, index) => (
+                  <details key={`${observation.observation_id ?? "observation"}-${index}`}>
+                    <summary className="cursor-pointer break-words font-mono text-[11px] text-[var(--theme-text)]">
+                      {[
+                        observation.error_code,
+                        observation.source,
+                        observation.stage,
+                        observation.attempt_id && `Attempt ${observation.attempt_id}`,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ") || "未分类观测"}
+                    </summary>
+                    <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-[var(--theme-text-secondary)]">
+                      {diagnosticJson({
+                        lease_id: observation.lease_id,
+                        request_id: observation.request_id,
+                        callback_id: observation.callback_id,
+                        received_at: observation.received_at,
+                        exception_chain: observation.sdk.exception_chain,
+                        sdk_errors: observation.sdk.errors,
+                        tool_lifecycles: observation.tool_lifecycles,
+                        tool_calls: observation.tool_calls,
+                        tool_policy_denials: observation.tool_policy_denials,
+                        executor_protocol: observation.executor_protocol,
+                        normalization_losses: observation.normalization_losses,
+                      })}
+                    </pre>
+                  </details>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {diagnostics.handling.length ? (
             <div className="rounded-md border border-[var(--theme-border)] p-3">
               <h4 className="text-xs font-medium text-[var(--theme-text)]">后续处理</h4>
@@ -242,7 +284,7 @@ export function RunDiagnosticsSection({
             <div className="rounded-md bg-[var(--theme-warning-soft)] p-3 text-[11px] text-[var(--theme-warning)]">
               <p className="font-medium">有 {diagnostics.losses.length} 项内容经过裁剪或拒绝</p>
               <ul className="mt-1 space-y-0.5 font-mono">
-                {diagnostics.losses.slice(0, 8).map((item, index) => (
+                {diagnostics.losses.map((item, index) => (
                   <li key={`${item.field}-${item.reason}-${index}`}>{item.field} · {item.reason}</li>
                 ))}
               </ul>

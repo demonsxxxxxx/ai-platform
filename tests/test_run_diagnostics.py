@@ -1,3 +1,4 @@
+import asyncio
 from copy import deepcopy
 from datetime import datetime, timezone
 
@@ -103,6 +104,160 @@ async def test_capture_moves_private_diagnostics_out_of_terminal_result_and_is_i
     assert persistence.payload["observations"][0]["attempt_id"] == "attempt-a"
 
 
+def test_run_sanitizer_preserves_bounded_source_and_stage_labels():
+    projected = sanitize_runtime_diagnostics(
+        runtime_diagnostics(
+            failure_source="sdk exception",
+            failure_stage="model wait",
+        )
+    )
+    observation = build_failure_observation(
+        attempt_id=None,
+        source="queue admission",
+        stage="enqueue rejection",
+        error_code="queue_enqueue_failed",
+        runtime_diagnostics=projected,
+        received_at=NOW,
+    )
+
+    assert projected["failure_source"] == "sdk exception"
+    assert projected["failure_stage"] == "model wait"
+    assert observation["source"] == "queue admission"
+    assert observation["stage"] == "enqueue rejection"
+
+
+@pytest.mark.asyncio
+async def test_capture_diagnostic_failure_does_not_veto_public_terminal_result():
+    class FailingPersistence:
+        async def append_observation(self, _conn, **_kwargs):
+            raise RuntimeError("diagnostic database is unavailable")
+
+    service = RunDiagnosticsService(
+        persistence=FailingPersistence(),
+        normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        clock=lambda: NOW,
+    )
+
+    public_result = await service.capture_failure_result(
+        object(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        source="worker_executor",
+        stage="terminalization",
+        error_code="executor_failure",
+        result_json={
+            "message": "safe public result",
+            "runtime_diagnostics": runtime_diagnostics(),
+        },
+    )
+
+    await service.capture_executor_protocol_failure(
+        object(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        lease_id="lease-a",
+        task_status="failed",
+        terminal_result={"status": "invalid"},
+        validation_errors=[],
+    )
+
+    assert public_result == {"message": "safe public result"}
+
+
+@pytest.mark.asyncio
+async def test_capture_diagnostic_normalizer_failure_still_strips_private_carrier():
+    def fail_normalization(_value):
+        raise ValueError("normalization failed")
+
+    service = RunDiagnosticsService(
+        persistence=InMemoryDiagnostics(),
+        normalize_runtime_diagnostics=fail_normalization,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    )
+
+    public_result = await service.capture_failure_result(
+        object(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id=None,
+        source="queue admission",
+        stage="enqueue rejection",
+        error_code="queue_enqueue_failed",
+        result_json={
+            "message": "safe",
+            "nested": {"runtime_diagnostics": {"token": "private"}},
+            "runtime_diagnostics": {"token": "private"},
+        },
+    )
+
+    assert public_result == {"message": "safe", "nested": {}}
+
+
+@pytest.mark.asyncio
+async def test_capture_treats_callable_private_carrier_as_data():
+    called = False
+
+    def private_carrier():
+        nonlocal called
+        called = True
+        return runtime_diagnostics()
+
+    persistence = InMemoryDiagnostics()
+    service = RunDiagnosticsService(
+        persistence=persistence,
+        normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    )
+
+    public_result = await service.capture_failure_result(
+        object(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id=None,
+        source="run_admission",
+        stage="queue_enqueue",
+        error_code="queue_enqueue_failed",
+        result_json={
+            "message": "safe",
+            "runtime_diagnostics": private_carrier,
+        },
+    )
+
+    assert public_result == {"message": "safe"}
+    assert called is False
+    assert persistence.payload["observations"][0]["error_code"] == (
+        "queue_enqueue_failed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_capture_does_not_swallow_cancellation():
+    class CancelledPersistence:
+        async def append_observation(self, _conn, **_kwargs):
+            raise asyncio.CancelledError
+
+    service = RunDiagnosticsService(
+        persistence=CancelledPersistence(),
+        normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.capture_failure_result(
+            object(),
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            source="worker_executor",
+            stage="terminalization",
+            error_code="executor_failure",
+            result_json={"runtime_diagnostics": runtime_diagnostics()},
+        )
+
+
 @pytest.mark.asyncio
 async def test_reconciliation_keeps_original_failure_and_appends_classified_handling():
     persistence = InMemoryDiagnostics()
@@ -136,6 +291,41 @@ async def test_reconciliation_keeps_original_failure_and_appends_classified_hand
     assert observations[1]["runtime_diagnostics"]["sdk"]["errors"] == [
         "artifact_manifest_invalid"
     ]
+
+    persistence.snapshot = {
+        "run": {
+            "run_id": "run-a",
+            "session_id": "session-a",
+            "user_id": "user-a",
+            "workspace_id": "workspace-a",
+            "status": "failed",
+            "trace_id": None,
+            "created_at": NOW,
+            "queued_at": NOW,
+            "started_at": NOW,
+            "finished_at": NOW,
+            "error_code": "terminal_reconciliation_failed",
+        },
+        "result_json": {},
+        "diagnostic": {
+            "diagnostic_id": "rdiag-a",
+            "schema_version": RUN_DIAGNOSTICS_SCHEMA_VERSION,
+            "revision": 2,
+            "payload_json": persistence.payload,
+        },
+        "attempts": [],
+    }
+    projected = await service.read_admin(
+        object(), tenant_id="tenant-a", run_id="run-a"
+    )
+
+    assert projected["details"]["observations"][1]["sdk"]["errors"] == [
+        "artifact_manifest_invalid"
+    ]
+    assert projected["details"]["observations"][1]["attempt_id"] == "attempt-a"
+    assert [item["error_code"] for item in projected["handling"]].count(
+        "terminal_reconciliation_failed"
+    ) == 1
 
 
 def test_run_budget_keeps_the_first_and_latest_observations():
@@ -590,6 +780,7 @@ async def test_admin_projection_marks_legacy_and_absent_records_explicitly():
         "tool_calls": [],
         "tool_policy_denials": [],
         "executor_protocol": None,
+        "observations": [],
     }
 
 

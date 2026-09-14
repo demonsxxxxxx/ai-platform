@@ -1,8 +1,10 @@
 import hashlib
 import json
 import re
+import traceback
+from collections import deque
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 
 SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-runtime-diagnostics.v1"
@@ -13,7 +15,23 @@ SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES = 128
 SDK_RUNTIME_DIAGNOSTIC_LIFECYCLE_LIMIT = 128
 SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT = 8
 SDK_RUNTIME_DIAGNOSTIC_FAILURE_LIMIT = 8
+SDK_RUNTIME_DIAGNOSTIC_EXCEPTION_CHAIN_LIMIT = 8
+SDK_RUNTIME_DIAGNOSTIC_EXCEPTION_CHAIN_SCAN_LIMIT = 64
+SDK_RUNTIME_DIAGNOSTIC_EXCEPTION_CHAIN_MAX_BYTES = 16 * 1024
 SDK_RUNTIME_DIAGNOSTIC_LOSS_LIMIT = 32
+
+
+@runtime_checkable
+class SandboxExecutorHttpFailure(Protocol):
+    error_code: str
+    public_message: str
+    runtime_diagnostics: dict[str, Any] | None
+
+
+@runtime_checkable
+class SandboxRuntimeFailure(Protocol):
+    error_code: str
+
 
 _STRUCTURED_VALUE_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _LOSS_FIELD_PATTERN = re.compile(r"[a-z][a-z0-9_.\[\]]{0,127}")
@@ -22,6 +40,7 @@ _LOSS_REASONS = frozenset(
         "invalid_field",
         "invalid_payload",
         "truncated",
+        "cycle",
         "unknown_fields_dropped",
         "unsupported_schema",
     }
@@ -35,6 +54,70 @@ _SDK_VALUE_FIELDS = frozenset(
         "permission_denials",
     }
 )
+
+
+def exception_chain_from_error(
+    value: BaseException,
+    *,
+    include_nested_text: bool = True,
+    losses: list[dict[str, object]] | None = None,
+) -> list[dict[str, str]]:
+    """Extract the standard Python cause/context chain with a bounded walk."""
+
+    seen: set[int] = set()
+    outer: tuple[BaseException, str | None] | None = None
+    inner: deque[tuple[BaseException, str | None]] = deque(
+        maxlen=SDK_RUNTIME_DIAGNOSTIC_EXCEPTION_CHAIN_LIMIT
+    )
+    current: BaseException | None = value
+    walked = 0
+    while (
+        current is not None
+        and id(current) not in seen
+        and walked < SDK_RUNTIME_DIAGNOSTIC_EXCEPTION_CHAIN_SCAN_LIMIT
+    ):
+        seen.add(id(current))
+        cause = current.__cause__
+        if cause is not None:
+            relation = "cause"
+            next_error = cause
+        elif not current.__suppress_context__ and current.__context__ is not None:
+            relation = "context"
+            next_error = current.__context__
+        else:
+            relation = None
+            next_error = None
+        if outer is None:
+            outer = (current, relation)
+        else:
+            inner.append((current, relation))
+        current = next_error
+        walked += 1
+    if losses is not None and current is not None and id(current) in seen:
+        losses.append({"field": "sdk.exception_chain", "reason": "cycle"})
+
+    selected = ([outer] if outer is not None else []) + list(inner)
+    chain: list[dict[str, str]] = []
+    for error, relation in selected:
+        node = {"type": type(error).__name__}
+        if error is value or include_nested_text:
+            node.update(
+                {
+                    "message": str(error),
+                    "traceback": "".join(
+                        traceback.format_exception(
+                            type(error),
+                            error,
+                            error.__traceback__,
+                            chain=False,
+                        )
+                    ),
+                }
+            )
+        if relation is not None:
+            node["relation"] = relation
+        chain.append(node)
+    return chain
 
 
 def _valid_unicode_text(value: object) -> str:
@@ -246,6 +329,85 @@ def _value_field(
     return projected
 
 
+def _normalize_exception_chain(
+    value: object,
+    *,
+    losses: list[dict[str, object]],
+) -> list[dict[str, str]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        _append_loss(losses, field="sdk.exception_chain", reason="invalid_field")
+        return []
+    raw_items = value
+    selected = raw_items
+    if len(raw_items) > SDK_RUNTIME_DIAGNOSTIC_EXCEPTION_CHAIN_LIMIT:
+        selected = [
+            raw_items[0],
+            *raw_items[-(SDK_RUNTIME_DIAGNOSTIC_EXCEPTION_CHAIN_LIMIT - 1) :],
+        ]
+    normalized: list[dict[str, str]] = []
+    for index, raw in enumerate(selected):
+        if not isinstance(raw, dict):
+            _append_loss(
+                losses,
+                field=f"sdk.exception_chain[{index}]",
+                reason="invalid_field",
+            )
+            continue
+        exception_type = _text_field(
+            raw.get("type"),
+            field=f"sdk.exception_chain[{index}].type",
+            losses=losses,
+            max_bytes=SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES,
+        )
+        if not exception_type:
+            _append_loss(
+                losses,
+                field=f"sdk.exception_chain[{index}]",
+                reason="invalid_field",
+            )
+            continue
+        node = {"type": exception_type}
+        for key, max_bytes in (("message", 1_024), ("traceback", 2_048)):
+            text = _text_field(
+                raw.get(key),
+                field=f"sdk.exception_chain[{index}].{key}",
+                losses=losses,
+                max_bytes=max_bytes,
+                preserve_tail=True,
+            )
+            if text:
+                node[key] = text
+        relation = raw.get("relation")
+        if relation in {"cause", "context"}:
+            node["relation"] = relation
+        elif relation is not None:
+            _append_loss(
+                losses,
+                field=f"sdk.exception_chain[{index}].relation",
+                reason="invalid_field",
+            )
+        normalized.append(node)
+
+    original_count = len(raw_items)
+    truncated = original_count > len(normalized)
+    while len(normalized) > 1 and len(_json_bytes(normalized)) > (
+        SDK_RUNTIME_DIAGNOSTIC_EXCEPTION_CHAIN_MAX_BYTES
+    ):
+        del normalized[1]
+        truncated = True
+    if truncated:
+        _append_loss(
+            losses,
+            field="sdk.exception_chain",
+            reason="truncated",
+            original=original_count,
+            retained=len(normalized),
+        )
+    return normalized
+
+
 def _normalize_sdk(
     value: object,
     *,
@@ -274,7 +436,13 @@ def _normalize_sdk(
         )
         if text:
             normalized[key] = text
+    if "exception_chain" in value:
+        normalized["exception_chain"] = _normalize_exception_chain(
+            value.get("exception_chain"),
+            losses=losses,
+        )
     known = _SDK_VALUE_FIELDS | {
+        "exception_chain",
         "exception_type",
         "exception_message",
         "exception_traceback",

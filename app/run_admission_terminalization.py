@@ -5,7 +5,12 @@ from __future__ import annotations
 from psycopg import AsyncConnection
 
 from app import repositories
-from app.runs.api import RunTerminalizationProgress
+from app.bootstrap.run_diagnostics import build_run_diagnostics_service
+from app.runs.api import RunDiagnosticsService, RunTerminalizationProgress
+from app.sandbox.api import (
+    SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    exception_chain_from_error,
+)
 from app.streaming.api import WorkerV4Capabilities
 from app.tool_permission_lifecycle import fail_run_with_v4
 from app.run_admission_policy import (
@@ -23,6 +28,8 @@ async def terminalize_enqueue_failure_with_v4(
     user_id: str | None,
     run_id: str,
     trace_id: str,
+    diagnostic_error: BaseException | None = None,
+    run_diagnostics: RunDiagnosticsService | None = None,
 ) -> RunTerminalizationProgress:
     """Compensate deterministic queue rejection with its durable v4 terminal row."""
 
@@ -41,6 +48,32 @@ async def terminalize_enqueue_failure_with_v4(
     )
     if not progress.did_transition:
         raise RuntimeError("enqueue_failure_terminal_transition_missing")
+    if diagnostic_error is not None:
+        run_diagnostics = run_diagnostics or build_run_diagnostics_service()
+        await run_diagnostics.capture_failure_result(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=None,
+            source="run_admission",
+            stage="queue_enqueue",
+            error_code="queue_enqueue_failed",
+            result_json={
+                "runtime_diagnostics": {
+                    "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+                    "error_code": "queue_enqueue_failed",
+                    "failure_source": "run_admission",
+                    "failure_stage": "queue_enqueue",
+                    "sdk": {
+                        "exception_type": type(diagnostic_error).__name__,
+                        "exception_message": str(diagnostic_error),
+                        "exception_chain": exception_chain_from_error(
+                            diagnostic_error
+                        ),
+                    },
+                }
+            },
+        )
     terminal_row = await v4_capabilities.event_persistence.append_terminal_row(
         conn,
         tenant_id=tenant_id,

@@ -11,9 +11,11 @@ from app.executors.claude_agent_sdk_runner import (
     project_sdk_turn_diagnostics,
     run_claude_agent_sdk,
 )
+from app.runs.domain.diagnostics import sanitize_runtime_diagnostics
 from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES,
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    exception_chain_from_error,
     normalize_sdk_runtime_diagnostics,
 )
 
@@ -205,6 +207,78 @@ def test_runtime_diagnostics_upgrades_retired_runner_slots_to_failure_observatio
     ]
     assert "runner_error_code" not in fitted
     assert "runner_failure_source" not in fitted
+
+
+def test_runtime_diagnostics_preserves_bounded_exception_cause_chain():
+    cause = RuntimeError("root cause")
+    wrapper = ValueError("wrapper failure")
+    wrapper.__cause__ = cause
+
+    normalized = normalize_sdk_runtime_diagnostics(
+        {
+            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+            "error_code": "executor_failure",
+            "failure_source": "worker_executor",
+            "failure_stage": "executor",
+            "sdk": {"exception_chain": exception_chain_from_error(wrapper)},
+        }
+    )
+
+    chain = normalized["sdk"]["exception_chain"]
+    assert [item["type"] for item in chain] == ["ValueError", "RuntimeError"]
+    assert chain[0]["relation"] == "cause"
+    assert chain[-1]["message"] == "root cause"
+    assert sanitize_runtime_diagnostics(normalized)["sdk"]["exception_chain"] == chain
+    assert normalize_sdk_runtime_diagnostics(normalized) == normalized
+
+
+def test_runtime_diagnostics_names_exception_chain_cycle_and_depth_losses():
+    first = RuntimeError("first")
+    second = ValueError("second")
+    first.__cause__ = second
+    second.__cause__ = first
+    cycle_losses: list[dict[str, object]] = []
+
+    cycle = normalize_sdk_runtime_diagnostics(
+        {
+            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+            "error_code": "executor_failure",
+            "failure_source": "sdk_exception",
+            "failure_stage": "model_wait",
+            "sdk": {
+                "exception_chain": exception_chain_from_error(
+                    first,
+                    losses=cycle_losses,
+                )
+            },
+            "normalization_losses": cycle_losses,
+        }
+    )
+
+    assert {loss["reason"] for loss in cycle["normalization_losses"]} == {"cycle"}
+
+    current: BaseException = RuntimeError("root")
+    for index in range(10):
+        wrapper = RuntimeError(f"wrapper-{index}")
+        wrapper.__cause__ = current
+        current = wrapper
+    deep = normalize_sdk_runtime_diagnostics(
+        {
+            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+            "error_code": "executor_failure",
+            "failure_source": "sdk_exception",
+            "failure_stage": "model_wait",
+            "sdk": {"exception_chain": exception_chain_from_error(current)},
+        }
+    )
+
+    assert len(deep["sdk"]["exception_chain"]) == 8
+    assert deep["sdk"]["exception_chain"][0]["message"] == "wrapper-9"
+    assert deep["sdk"]["exception_chain"][-1]["message"] == "root"
+    assert any(
+        loss["field"] == "sdk.exception_chain" and loss["reason"] == "truncated"
+        for loss in deep["normalization_losses"]
+    )
 
 
 def test_runtime_diagnostics_truncation_keeps_root_earliest_and_latest_failures():

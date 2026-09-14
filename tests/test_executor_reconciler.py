@@ -19,7 +19,12 @@ from app.executor_reconciler import (
 )
 from app.executors.base import ExecutorResult
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+from app.runs.application.diagnostics import RunDiagnosticsService
 from app.runtime.sandbox.executor_signals import ExecutorSignalUnavailable
+from app.sandbox.api import (
+    SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    normalize_sdk_runtime_diagnostics,
+)
 from app.worker import WorkerOutcome
 
 
@@ -215,8 +220,11 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch):
             return self
 
     class Provider:
+        fail_collection = False
+
         async def collect_workspace(self, _lease, _request, _workspace):
-            return None
+            if self.fail_collection:
+                raise RuntimeError("workspace collection failed")
 
     class Adapter:
         def reconcile_sandbox_terminal(self, **_kwargs):
@@ -231,6 +239,7 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch):
     lease = Lease()
     bridged = []
     adapter_contexts = []
+    terminal_results = []
     abandonment_callbacks = []
     reserved = []
 
@@ -241,6 +250,7 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch):
     async def bridge(operation, **kwargs):
         bridged.append(operation.__name__)
         adapter_contexts.append(kwargs["adapter_context"])
+        terminal_results.append(kwargs["terminal_result"])
         abandonment_callbacks.append(kwargs["on_abandoned"])
         receipt_id = await asyncio.to_thread(
             kwargs["adapter_context"]["_reserve_artifact_storage"],
@@ -313,6 +323,27 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch):
             "storage_key": "private/reconciliations/claim-a/result.txt",
         }
     ]
+
+    provider.fail_collection = True
+    await executor_reconciler._collect_workspace_and_convert_result(
+        {
+            "id": "lease-a",
+            "tenant_id": "tenant-a",
+            "run_id": "run-a",
+            "provider": "docker",
+        },
+        registry=Registry(),
+        claim_token="claim-a",
+    )
+    collection_diagnostics = terminal_results[-1]["runtime_diagnostics"]
+    assert terminal_results[-1]["status"] == "failed"
+    assert collection_diagnostics["error_code"] == (
+        "sandbox_workspace_collection_failed"
+    )
+    assert collection_diagnostics["failure_stage"] == "workspace_collection"
+    assert [
+        item["type"] for item in collection_diagnostics["sdk"]["exception_chain"]
+    ] == ["RuntimeError"]
 
 
 def test_reconciler_classifies_invalid_persisted_run_payload_as_permanent(monkeypatch):
@@ -678,10 +709,16 @@ async def test_probe_keeps_terminal_receipt_when_protocol_diagnostics_fail(
     async def record_terminal(conn, **kwargs):
         calls.append(("receipt", conn, kwargs))
 
-    class FailingDiagnostics:
-        async def capture_executor_protocol_failure(self, conn, **_kwargs):
+    class FailingPersistence:
+        async def append_observation(self, conn, **_kwargs):
             calls.append(("protocol", conn))
             raise RuntimeError("diagnostic storage unavailable")
+
+    run_diagnostics = RunDiagnosticsService(
+        persistence=FailingPersistence(),
+        normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    )
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
@@ -699,7 +736,7 @@ async def test_probe_keeps_terminal_receipt_when_protocol_diagnostics_fail(
             "error_message": "Sandbox executor returned an invalid terminal result",
         },
         claim_token="claim-a",
-        run_diagnostics=FailingDiagnostics(),
+        run_diagnostics=run_diagnostics,
         protocol_failure={
             "task_status": "completed",
             "terminal_result": {"run_id": "run-a", "status": "completed"},

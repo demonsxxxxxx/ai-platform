@@ -12,6 +12,9 @@ from app.runs.domain.admin_diagnostics import (
 from app.runs.domain.diagnostics import (
     RUN_DIAGNOSTICS_SCHEMA_VERSION as RUN_DIAGNOSTICS_SCHEMA_VERSION,
 )
+from app.runs.domain.diagnostics import (
+    sanitize_runtime_diagnostics as sanitize_runtime_diagnostics,
+)
 from app.runs.domain.thinking import (
     RUN_THINKING_EFFORT_INPUT_KEY as RUN_THINKING_EFFORT_INPUT_KEY,
 )

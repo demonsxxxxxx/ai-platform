@@ -51,9 +51,11 @@ from app.execution.api import (
     build_artifact_execution_owner,
     build_artifact_records,
     fail_run_and_reconcile_worker_child as _fail_run_and_reconcile_worker_child,
+    executor_exception_failure as _executor_exception_failure,
     locked_run_payload_candidate as _locked_run_payload_candidate,
     materialize_worker_answer,
     promote_artifact_reservations,
+    predispatch_failure_result as _pre_dispatch_failure_result,
     restored_executor_reconciliation_queue_payload as _restored_executor_reconciliation_queue_payload,
     submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
     time,
@@ -93,10 +95,8 @@ from app.required_tool_contract import (
     required_tool_completion_for_run,
     with_boundary_sandbox_local_tool_subjects,
 )
-from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.runtime.sandbox.executor_client import (
-    SandboxExecutorHttpError,
     canonical_executor_reported_failure_code,
     executor_reported_failure_message,
     normalize_executor_reported_failure,
@@ -235,17 +235,6 @@ def _public_executor_failure_message(result: ExecutorResult) -> str:
     return generic_message
 
 
-def _executor_exception_failure(exc: Exception) -> tuple[str, str, dict[str, Any] | None]:
-    if isinstance(exc, NativeToolAdmissionError):
-        return exc.error_code, "Native tool sandbox admission failed", None
-    if isinstance(exc, SandboxExecutorHttpError):
-        failure_result = {"runtime_diagnostics": exc.runtime_diagnostics} if exc.runtime_diagnostics is not None else None
-        return exc.error_code, exc.public_message, failure_result
-    if isinstance(exc, WorkerDirectAssistantDeltaError):
-        return "worker_direct_assistant_delta_forbidden", "Executor used an unsupported text ingress", None
-    return "executor_failure", "Executor failed", None
-
-
 def _normalize_sandbox_reported_failure(result: ExecutorResult) -> ExecutorResult:
     if (
         result.status != "failed"
@@ -312,6 +301,9 @@ async def _fail_run_and_reconcile_with_write(
     v4_capabilities: WorkerV4Capabilities,
     attempt_lifecycle: WorkerAttemptLifecycle,
 ) -> tuple[bool, Any | None]:
+    result_json = result_json or _pre_dispatch_failure_result(
+        error_code, "worker", reason=error_code
+    )
     return await _fail_run_and_reconcile_worker_child(
         conn,
         payload=payload,
@@ -2302,7 +2294,11 @@ async def process_run_payload(
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
                     error_code="unknown_executor_type",
-                    error_message=str(exc), attempt_lifecycle=attempt_lifecycle,
+                    error_message=str(exc),
+                    result_json=_pre_dispatch_failure_result(
+                        "unknown_executor_type", "executor_resolution", error=exc
+                    ),
+                    attempt_lifecycle=attempt_lifecycle,
                 )
                 if not terminal_written:
                     terminal_after_transaction = _WorkerTerminalAfterTransaction(
