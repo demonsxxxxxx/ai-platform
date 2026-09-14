@@ -2,7 +2,28 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { MessagePart } from "../../../../types";
-import { getVisibleMessageParts } from "../messagePartVisibility.ts";
+import {
+  getVisibleMessageParts,
+  isWorkActivityPart,
+} from "../messagePartVisibility.ts";
+
+test("classifies every work activity without hiding answers, artifacts, or actionable status", () => {
+  for (const type of [
+    "sandbox",
+    "thinking",
+    "tool",
+    "subagent",
+    "execution_step",
+    "execution_process",
+    "todo",
+    "summary",
+  ] as const) {
+    assert.equal(isWorkActivityPart({ type } as MessagePart), true, type);
+  }
+  for (const type of ["text", "artifact", "run_status", "tool_permission"] as const) {
+    assert.equal(isWorkActivityPart({ type } as MessagePart), false, type);
+  }
+});
 
 test("hides routine intent, context, queue, and run-start transcript cards", () => {
   const parts: MessagePart[] = [

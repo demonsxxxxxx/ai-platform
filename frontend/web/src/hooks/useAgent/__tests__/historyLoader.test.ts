@@ -60,6 +60,73 @@ test("reconstructs zero model completion duration without inventing a run time",
   assert.equal(messages[0]?.duration, 0);
   assert.equal(messages[0]?.content, "");
 });
+
+test("history reconstruction preserves sandbox readiness duration", () => {
+  const historyProgress = (
+    eventId: string,
+    sequence: number,
+    timestamp: string,
+    lifecycle: "started" | "completed",
+  ): HistoryEvent => ({
+    id: eventId,
+    sequence,
+    event_type: "agent_public_progress",
+    run_id: "run-sandbox-history",
+    timestamp,
+    data: {
+      projection_version: "ai-platform.chat-public-projection.v1",
+      event_id: eventId,
+      event_type: "agent_public_progress",
+      stage: "sandbox_preparation",
+      message:
+        lifecycle === "completed"
+          ? "Controlled execution is ready"
+          : "Preparing controlled execution",
+      severity: "info",
+      progress_kind: lifecycle === "completed" ? "completed" : "active",
+      payload: {
+        schema_version: "ai-platform.public-agent-progress.v1",
+        step_id: "phase_sandbox_preparation",
+        phase: "sandbox_preparation",
+        lifecycle,
+        message:
+          lifecycle === "completed"
+            ? "Controlled execution is ready"
+            : "Preparing controlled execution",
+      },
+    },
+  });
+  const messages = reconstructMessagesFromEvents(
+    [
+      historyProgress(
+        "sandbox-history-started",
+        1,
+        "2026-05-08T00:00:00.000Z",
+        "started",
+      ),
+      historyProgress(
+        "sandbox-history-completed",
+        2,
+        "2026-05-08T00:00:01.250Z",
+        "completed",
+      ),
+    ],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  const process = getVisibleMessageParts(messages[0]?.parts ?? []).find(
+    (
+      part,
+    ): part is Extract<MessagePart, { type: "execution_process" }> =>
+      part.type === "execution_process",
+  );
+  assert.ok(process);
+  assert.equal(process.elapsed_ms, 1_250);
+  assert.equal(process.steps[0]?.started_at, "2026-05-08T00:00:00.000Z");
+  assert.equal(process.steps[0]?.completed_at, "2026-05-08T00:00:01.250Z");
+});
+
 test("production compatibility history reconstructs each persisted user turn before its run answer", () => {
   const messages = reconstructMessagesFromEvents(
     [

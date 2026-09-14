@@ -571,7 +571,18 @@
     },
     "publicExecutionProcess": {
       "title": "处理过程",
-      "summary": "共 {{total}} 步，已完成 {{completed}} 步，失败 {{failed}} 步"
+      "summary": "共 {{total}} 步，已完成 {{completed}} 步，失败 {{failed}} 步",
+      "durationSeconds": "{{count}} 秒",
+      "durationMinutes": "{{count}} 分钟",
+      "durationMinutesSeconds": "{{minutes}} 分 {{seconds}} 秒",
+      "durationSuffix": "，用时 {{duration}}"
+    },
+    "workDetails": {
+      "title": "工作过程",
+      "working": "工作中",
+      "itemCount": "{{count}} 项",
+      "collapseAll": "全部收起",
+      "expandAll": "全部展开"
     },
     "runStatus": {
       "event": {
@@ -679,7 +690,8 @@
       "error": "初始化失败",
       "initializing": "正在初始化环境",
       "name": "沙箱",
-      "ready": "沙箱已就绪"
+      "ready": "沙箱已就绪",
+      "readyDuration": "用时 {{duration}}"
     },
     "sandboxInitFailed": "沙箱初始化失败",
     "send": "发送消息",

@@ -80,6 +80,85 @@ test("renders public execution kind and status from the Chinese catalog instead 
   assert.equal(startedKey, completedKey);
 });
 
+test("renders sandbox readiness duration from v4 execution timestamps", () => {
+  const markup = renderToStaticMarkup(
+    createElement(MessagePartRenderer, {
+      isLast: true,
+      withinWorkDetails: true,
+      part: {
+        type: "execution_process",
+        elapsed_ms: 1_250,
+        steps: [{
+          type: "execution_step",
+          sequence: 2,
+          step_id: "phase_sandbox_preparation",
+          kind: "processing",
+          stage: "sandbox_preparation",
+          progress: { current: 1, total: 1 },
+          status: "completed",
+          safe_file_name: null,
+          started_at: "2026-09-15T01:00:00.000Z",
+          completed_at: "2026-09-15T01:00:01.250Z",
+        }],
+      } satisfies Extract<MessagePart, { type: "execution_process" }>,
+    }),
+  );
+
+  assert.match(markup, /沙箱已就绪/);
+  assert.match(markup, /用时 1\.25秒/);
+  assert.match(markup, /data-sandbox-ready-duration/);
+  assert.doesNotMatch(markup, /<details/);
+});
+
+test("renders historical sandbox readiness duration without requiring details", () => {
+  const markup = renderToStaticMarkup(
+    createElement(MessagePartRenderer, {
+      isLast: true,
+      part: {
+        type: "sandbox",
+        status: "ready",
+        ready_duration_ms: 850,
+      } satisfies Extract<MessagePart, { type: "sandbox" }>,
+    }),
+  );
+
+  assert.match(markup, /沙箱已就绪/);
+  assert.match(markup, /用时 850毫秒/);
+});
+
+test("keeps completed public thinking collapsed and streaming thinking expanded inline", () => {
+  const completed = renderToStaticMarkup(
+    createElement(MessagePartRenderer, {
+      isLast: true,
+      part: {
+        type: "thinking",
+        content: "公开思考摘要",
+        public_reasoning: true,
+        isStreaming: false,
+      } satisfies Extract<MessagePart, { type: "thinking" }>,
+    }),
+  );
+  const streaming = renderToStaticMarkup(
+    createElement(MessagePartRenderer, {
+      isLast: true,
+      isStreaming: true,
+      part: {
+        type: "thinking",
+        content: "正在核对公开证据",
+        public_reasoning: true,
+        isStreaming: true,
+      } satisfies Extract<MessagePart, { type: "thinking" }>,
+    }),
+  );
+
+  assert.match(completed, /data-public-thinking/);
+  assert.match(completed, /aria-expanded="false"/);
+  assert.doesNotMatch(completed, /公开思考摘要/);
+  assert.match(streaming, /aria-expanded="true"/);
+  assert.match(streaming, /正在核对公开证据/);
+  assert.doesNotMatch(streaming, /data-persistent-tool-panel/);
+});
+
 test("renders binary lifecycle as a status row without a progress bar", async () => {
   const markup = renderToStaticMarkup(
     createElement(MessagePartRenderer, {

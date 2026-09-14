@@ -60,6 +60,7 @@ export function MessagePartRenderer({
   activePreview,
   onOpenPreview,
   artifactDownloadScope,
+  withinWorkDetails,
 }: {
   part: MessagePart;
   messageId?: string;
@@ -73,6 +74,7 @@ export function MessagePartRenderer({
     source?: RevealPreviewOpenSource,
   ) => boolean;
   artifactDownloadScope?: ArtifactDownloadScope;
+  withinWorkDetails?: boolean;
 }) {
   const { t } = useTranslation();
   const toolPartAnchorId =
@@ -245,7 +247,6 @@ export function MessagePartRenderer({
       <ThinkingBlock
         content={part.content}
         isStreaming={isStreaming && isLast && part.isStreaming}
-        panelKey={part.thinking_id}
       />
     );
   }
@@ -280,6 +281,7 @@ export function MessagePartRenderer({
         status={part.status}
         sandboxId={part.sandbox_id}
         error={part.error}
+        readyDurationMs={part.ready_duration_ms}
       />
     );
   }
@@ -341,7 +343,7 @@ export function MessagePartRenderer({
       <PublicExecutionProcess
         steps={part.steps}
         isStreaming={isStreaming === true}
-        expandable={isStreaming !== true}
+        expandable={!withinWorkDetails && isStreaming !== true}
         elapsedMs={part.elapsed_ms}
       />
     );

@@ -56,6 +56,7 @@ export interface SandboxPart {
   sandbox_id?: string;
   error?: string;
   timestamp?: string;
+  ready_duration_ms?: number;
 }
 
 // Token 使用统计块类型
