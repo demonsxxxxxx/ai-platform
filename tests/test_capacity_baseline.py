@@ -63,8 +63,6 @@ class SecretBearingSettings:
     sandbox_container_provider = "fake"
     sandbox_container_start_timeout_seconds = 30
     sandbox_executor_health_timeout_seconds = 60
-    sandbox_max_active_ephemeral_containers = 2
-    sandbox_max_active_persistent_containers = 1
     multi_agent_dispatch_worker_enabled = False
     multi_agent_dispatch_worker_limit = 1
     llm_gateway_provider = "openai_compatible"
@@ -156,6 +154,8 @@ def test_capacity_baseline_records_defaults_without_secret_like_settings():
     assert baseline["limits"]["queue"]["tenant_processing_quota_enabled"] is False
     assert baseline["limits"]["database_pool"]["max_size"] == 10
     assert baseline["limits"]["sandbox"]["container_provider"] == "fake"
+    assert "max_active_ephemeral_containers" not in baseline["limits"]["sandbox"]
+    assert "max_active_persistent_containers" not in baseline["limits"]["sandbox"]
     assert baseline["limits"]["model_gateway"]["request_concurrency_limit"] is None
     assert baseline["model_gateway_backpressure_policy"] == {
         "schema_version": "ai-platform.model-gateway-backpressure-policy.v1",
@@ -239,6 +239,7 @@ def test_render_capacity_baseline_markdown_is_operator_readable_and_safe():
     assert "# ai-platform Capacity Baseline" in markdown
     assert "Active worker runs | 3" in markdown
     assert "DB pool max size | 10" in markdown
+    assert "Sandbox active containers" not in markdown
     assert "ai-platform.model-gateway-backpressure-policy.v1" in markdown
     assert "model_gateway_timeout_and_backpressure" in markdown
     assert "Do not raise production concurrency defaults" in markdown

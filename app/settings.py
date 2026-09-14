@@ -72,8 +72,6 @@ class Settings(BaseSettings):
     opensandbox_expected_network_mode: Literal[
         "none", "bridge", "ai-platform-opensandbox-egress-internal-v1"
     ] = Field(default="bridge")
-    sandbox_max_active_ephemeral_containers: int = Field(default=2)
-    sandbox_max_active_persistent_containers: int = Field(default=1)
     max_active_runs_per_user: int = Field(default=3)
     max_active_worker_runs: int = Field(default=10)
     queue_tenant_processing_limit: int = Field(default=0)
