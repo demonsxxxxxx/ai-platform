@@ -61,6 +61,7 @@ class AdminRunDiagnosticSdk(TypedDict, total=False):
     exception_type: str
     exception_message: str
     exception_traceback: str
+    exception_chain: list[dict[str, str]]
     errors: Any
 
 
@@ -110,6 +111,24 @@ class AdminRunDiagnosticExecutorProtocol(TypedDict):
     canonical: AdminRunDiagnosticProtocolCanonical
 
 
+class AdminRunDiagnosticObservationEvidence(TypedDict):
+    observation_id: str | None
+    attempt_id: str | None
+    lease_id: str | None
+    request_id: str | None
+    callback_id: str | None
+    received_at: Any | None
+    source: str | None
+    stage: str | None
+    error_code: str | None
+    sdk: AdminRunDiagnosticSdk
+    tool_lifecycles: list[AdminRunDiagnosticToolEvidence]
+    tool_calls: list[AdminRunDiagnosticToolEvidence]
+    tool_policy_denials: list[AdminRunDiagnosticToolEvidence]
+    executor_protocol: AdminRunDiagnosticExecutorProtocol | None
+    normalization_losses: list[AdminRunDiagnosticLoss]
+
+
 class AdminRunDiagnosticDetails(TypedDict):
     schema_version: str | None
     sdk: AdminRunDiagnosticSdk
@@ -117,6 +136,7 @@ class AdminRunDiagnosticDetails(TypedDict):
     tool_calls: list[AdminRunDiagnosticToolEvidence]
     tool_policy_denials: list[AdminRunDiagnosticToolEvidence]
     executor_protocol: AdminRunDiagnosticExecutorProtocol | None
+    observations: list[AdminRunDiagnosticObservationEvidence]
 
 
 class AdminRunDiagnosticCounts(TypedDict):

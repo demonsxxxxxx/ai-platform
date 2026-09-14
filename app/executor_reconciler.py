@@ -36,6 +36,10 @@ from app.runtime.sandbox.providers.opensandbox.startup import (
 )
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.runs.api import RunAttemptLifecycleService, RunDiagnosticsService
+from app.sandbox.api import (
+    SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    exception_chain_from_error,
+)
 from app.settings import get_settings
 from app.storage import run_storage_io
 from app.tool_permission_lifecycle import (
@@ -562,11 +566,27 @@ async def _collect_workspace_and_convert_result(
         collection_error = exc
     adapter_context = dict(context.get("adapter_context") or {})
     if collection_error is not None:
+        exception_chain_losses: list[dict[str, object]] = []
         terminal_result = {
             **terminal_result,
             "status": "failed",
             "error_code": "sandbox_workspace_collection_failed",
             "message": "Sandbox workspace collection failed.",
+            "runtime_diagnostics": {
+                "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+                "error_code": "sandbox_workspace_collection_failed",
+                "failure_source": "sandbox_runtime",
+                "failure_stage": "workspace_collection",
+                "sdk": {
+                    "exception_type": type(collection_error).__name__,
+                    "exception_message": str(collection_error),
+                    "exception_chain": exception_chain_from_error(
+                        collection_error,
+                        losses=exception_chain_losses,
+                    ),
+                },
+                "normalization_losses": exception_chain_losses,
+            },
         }
     abandoned = threading.Event()
     loop = asyncio.get_running_loop()
@@ -629,20 +649,16 @@ async def _persist_probe_terminal(
         )
         if run_diagnostics is not None:
             if protocol_failure is not None:
-                try:
-                    async with conn.transaction():
-                        await run_diagnostics.capture_executor_protocol_failure(
-                            conn,
-                            tenant_id=str(lease_row["tenant_id"]),
-                            run_id=str(lease_row["run_id"]),
-                            attempt_id=str(lease_row["attempt_id"]),
-                            lease_id=str(lease_row["id"]),
-                            task_status=protocol_failure.get("task_status"),
-                            terminal_result=protocol_failure.get("terminal_result"),
-                            validation_errors=protocol_failure.get("validation_errors"),
-                        )
-                except Exception:  # noqa: BLE001 - diagnostics cannot change Run outcome.
-                    _logger.exception("Failed to persist executor protocol diagnostics")
+                await run_diagnostics.capture_executor_protocol_failure(
+                    conn,
+                    tenant_id=str(lease_row["tenant_id"]),
+                    run_id=str(lease_row["run_id"]),
+                    attempt_id=str(lease_row["attempt_id"]),
+                    lease_id=str(lease_row["id"]),
+                    task_status=protocol_failure.get("task_status"),
+                    terminal_result=protocol_failure.get("terminal_result"),
+                    validation_errors=protocol_failure.get("validation_errors"),
+                )
             else:
                 await run_diagnostics.capture_failure_result(
                     conn,

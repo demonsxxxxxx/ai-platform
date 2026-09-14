@@ -2107,6 +2107,7 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
     terminal_call,
 ):
     calls = []
+    diagnostic_calls = []
     pending_attempts = []
     payload = {
         "tenant_id": "tenant-a",
@@ -2222,6 +2223,15 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
         calls.append(("dead_letter",))
         return LeaseMutationOutcome("failed")
 
+    class Diagnostics:
+        async def capture_failure_result(self, _conn, **kwargs):
+            diagnostic_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "app.worker_main.build_run_diagnostics_service",
+        lambda: Diagnostics(),
+    )
+
     monkeypatch.setattr("app.worker_main.transaction", Transaction)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
     monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
@@ -2261,6 +2271,21 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
                 run_id="run-a",
                 queue_attempt_id="qat-test-attempt",
             )
+        ]
+    if terminal_call is None:
+        assert diagnostic_calls == []
+    else:
+        assert len(diagnostic_calls) == 1
+        assert diagnostic_calls[0]["attempt_id"] == "rat-run-a"
+        assert diagnostic_calls[0]["source"] == "worker_escaped"
+        assert diagnostic_calls[0]["stage"] == "worker_process"
+        escaped_sdk = diagnostic_calls[0]["result_json"]["runtime_diagnostics"][
+            "sdk"
+        ]
+        assert escaped_sdk["exception_type"] == "RuntimeError"
+        assert escaped_sdk["exception_message"] == "snapshot persistence failed"
+        assert [item["type"] for item in escaped_sdk["exception_chain"]] == [
+            "RuntimeError"
         ]
     if terminal_call == "fail":
         failure = next(call for call in calls if call[0] == "fail")

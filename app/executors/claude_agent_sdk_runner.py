@@ -66,6 +66,7 @@ from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES as _MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES,
     SDK_RUNTIME_DIAGNOSTIC_LIFECYCLE_LIMIT as _MAX_RUNTIME_DIAGNOSTIC_LIFECYCLES,
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    exception_chain_from_error,
     normalize_sdk_runtime_diagnostics,
     runtime_diagnostic_text as _runtime_diagnostic_text,
     runtime_diagnostic_value as _runtime_diagnostic_value,
@@ -1048,6 +1049,7 @@ async def run_claude_agent_sdk(
     ) -> dict[str, Any]:
         finalize_read_only_lifecycle_denials()
         sdk: dict[str, Any] = {}
+        normalization_losses: list[dict[str, object]] = []
         for key, value in (
             ("errors", sdk_errors),
             ("result_subtype", result_subtype),
@@ -1066,6 +1068,10 @@ async def run_claude_agent_sdk(
                         traceback.format_exception(
                             type(exception), exception, exception.__traceback__
                         )
+                    ),
+                    "exception_chain": exception_chain_from_error(
+                        exception,
+                        losses=normalization_losses,
                     ),
                 }
             )
@@ -1116,6 +1122,7 @@ async def run_claude_agent_sdk(
                 "failure_source": failure_source,
                 "failure_stage": last_public_stage,
                 "sdk": sdk,
+                "normalization_losses": normalization_losses,
                 "tool_policy_denials": list(
                     diagnostic_counters.get("tool_policy_denials_detail", [])[
                         -_MAX_RUNTIME_DIAGNOSTIC_DETAIL_ENTRIES:

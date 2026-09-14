@@ -230,7 +230,12 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
         error_code: "required_tool_completion_evidence_mismatch",
       },
     ],
-    losses: [{ field: "tool_calls", reason: "truncated", original: 9, retained: 8 }],
+    losses: Array.from({ length: 9 }, (_, index) => ({
+      field: `sdk.exception_chain[${index}]`,
+      reason: "truncated",
+      original: 9,
+      retained: 8,
+    })),
     attempts: [
       {
         attempt_id: "attempt-a",
@@ -244,6 +249,49 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     details: {
       schema_version: "ai-platform.sdk-runtime-diagnostics.v1",
       sdk: { errors: ["ACTUAL_SDK_FAILURE_MARKER"] },
+      observations: [
+        {
+          observation_id: "obs-a",
+          attempt_id: "attempt-a",
+          source: "sdk_result_error",
+          stage: "model_wait",
+          error_code: "claude_agent_sdk_tool_admission_failed",
+          sdk: {
+            errors: ["ACTUAL_SDK_FAILURE_MARKER"],
+            exception_chain: [
+              {
+                type: "RuntimeError",
+                message: "ACTUAL_CHAIN_MARKER",
+                relation: "cause",
+              },
+            ],
+          },
+          tool_lifecycles: [],
+          tool_calls: [],
+          tool_policy_denials: [
+            {
+              tool_name: "Bash",
+              invocation_id: "tool-call-7",
+              reason: "tool_parameters_not_authorized",
+            },
+          ],
+          normalization_losses: [],
+        },
+        {
+          observation_id: "obs-b",
+          attempt_id: "attempt-a",
+          source: "executor_reconciler",
+          stage: "terminalization",
+          error_code: "terminal_reconciliation_failed",
+          sdk: { errors: ["artifact_manifest_invalid"] },
+          tool_lifecycles: [],
+          tool_calls: [],
+          tool_policy_denials: [],
+          normalization_losses: [
+            { field: "sdk.errors", reason: "truncated", count: 1 },
+          ],
+        },
+      ],
       tool_lifecycles: [],
       tool_calls: [],
       tool_policy_denials: [
@@ -290,7 +338,7 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
       run_diagnostics: "ai-platform.run-diagnostics.v1",
       runtime_diagnostics: "ai-platform.sdk-runtime-diagnostics.v1",
     },
-    counts: { retained_observations: 1, omitted_observations: 0 },
+    counts: { retained_observations: 2, omitted_observations: 0 },
   };
 
   adminRunsApi.list = async () => {
@@ -367,6 +415,10 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     assert.match(container.textContent ?? "", /ACTUAL_SDK_FAILURE_MARKER/);
     assert.match(container.textContent ?? "", /ACTUAL_STACK_TAIL_MARKER/);
     assert.match(container.textContent ?? "", /tool_parameters_not_authorized/);
+    assert.match(container.textContent ?? "", /逐条观测证据/);
+    assert.match(container.textContent ?? "", /ACTUAL_CHAIN_MARKER/);
+    assert.match(container.textContent ?? "", /artifact_manifest_invalid/);
+    assert.match(container.textContent ?? "", /sdk\.exception_chain\[8\]/);
     assert.match(container.textContent ?? "", /终态协议证据/);
     assert.match(container.textContent ?? "", /上报结构（已脱敏）/);
     assert.match(container.textContent ?? "", /\$ · value_error/);

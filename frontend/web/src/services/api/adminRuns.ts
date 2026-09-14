@@ -170,6 +170,31 @@ export interface AdminRunDiagnosticsResponse {
       exception_traceback?: string | null;
       errors?: unknown;
     };
+    observations?: Array<{
+      observation_id?: string | null;
+      attempt_id?: string | null;
+      lease_id?: string | null;
+      request_id?: string | null;
+      callback_id?: string | null;
+      received_at?: string | null;
+      source?: string | null;
+      stage?: string | null;
+      error_code?: string | null;
+      sdk: {
+        exception_chain?: Array<{
+          type: string;
+          message?: string | null;
+          traceback?: string | null;
+          relation?: "cause" | "context";
+        }>;
+        errors?: unknown;
+      };
+      tool_lifecycles: AdminRunDiagnosticToolEvidence[];
+      tool_calls: AdminRunDiagnosticToolEvidence[];
+      tool_policy_denials: AdminRunDiagnosticToolEvidence[];
+      executor_protocol?: AdminRunDiagnosticExecutorProtocol | null;
+      normalization_losses?: AdminRunDiagnosticLoss[];
+    }>;
     tool_lifecycles: AdminRunDiagnosticToolEvidence[];
     tool_calls: AdminRunDiagnosticToolEvidence[];
     tool_policy_denials: AdminRunDiagnosticToolEvidence[];

@@ -153,8 +153,8 @@ def build_failure_observation(
     runtime_diagnostics = sanitize_runtime_diagnostics(runtime_diagnostics)
     identity = {
         "attempt_id": _identity(attempt_id),
-        "source": _identity(source, fallback="worker"),
-        "stage": _identity(stage, fallback="terminalization"),
+        "source": _diagnostic_label(source, fallback="worker"),
+        "stage": _diagnostic_label(stage, fallback="terminalization"),
         "error_code": _identity(error_code, fallback="executor_failure"),
         "lease_id": _identity(lease_id),
         "request_id": _identity(request_id),
@@ -206,6 +206,10 @@ def sanitize_runtime_diagnostics(value: object) -> dict[str, Any]:
             sdk_projection[key] = _redact_diagnostic_text(sdk[key])
     if "errors" in sdk:
         sdk_projection["errors"] = _sanitize_diagnostic_value(sdk["errors"])
+    if isinstance(sdk.get("exception_chain"), list):
+        sdk_projection["exception_chain"] = _sanitize_diagnostic_value(
+            sdk["exception_chain"]
+        )
 
     failure_observations = [
         projected
@@ -235,8 +239,8 @@ def sanitize_runtime_diagnostics(value: object) -> dict[str, Any]:
     projected = {
         "schema_version": _identity(value.get("schema_version")),
         "error_code": _identity(value.get("error_code")),
-        "failure_source": _identity(value.get("failure_source")),
-        "failure_stage": _identity(value.get("failure_stage")),
+        "failure_source": _diagnostic_label(value.get("failure_source")),
+        "failure_stage": _diagnostic_label(value.get("failure_stage")),
         "sdk": sdk_projection,
         "failure_observations": failure_observations,
         "tool_lifecycles": tool_lifecycles,
@@ -593,8 +597,8 @@ def _sanitize_failure_observation(value: object) -> dict[str, Any] | None:
         return None
     projected: dict[str, Any] = {
         "error_code": error_code,
-        "failure_source": _identity(value.get("failure_source")),
-        "failure_stage": _identity(value.get("failure_stage")),
+        "failure_source": _diagnostic_label(value.get("failure_source")),
+        "failure_stage": _diagnostic_label(value.get("failure_stage")),
     }
     exception = value.get("exception")
     if isinstance(exception, dict):
@@ -874,6 +878,11 @@ def _evidence_has_losses(observations: list[dict[str, Any]]) -> bool:
         and bool(item["runtime_diagnostics"].get("normalization_losses"))
         for item in observations
     )
+
+
+def _diagnostic_label(value: object, *, fallback: str = "") -> str:
+    projected = sanitize_run_diagnostic_text(value, max_bytes=160)
+    return projected or fallback
 
 
 def _identity(value: object, *, fallback: str = "") -> str:

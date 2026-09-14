@@ -150,6 +150,28 @@ Public-answer projection remains fail-closed for secrets, concrete Skill impleme
   for callbacks without a claim and retries holding the same claim; a stale probe
   claim may no longer accept another claimant's identical receipt.
 
+## Change Contract: diagnostic isolation and source capture
+
+- **Owner and scope:** Runs owns diagnostic isolation and persistence; existing
+  admission, Worker, Sandbox and reconciliation boundaries supply bounded source
+  evidence. This batch covers enqueue rejection, Worker pre-dispatch/escaped
+  exceptions, typed Sandbox runtime failures, workspace collection and the
+  platform-admin per-observation projection.
+- **Preserved invariants:** public error code/message, Run/Attempt/lease authority,
+  callback ordering, tenant authorization and the 128 KiB private budget do not
+  change. Private carriers are removed before any fallible diagnostic operation.
+- **Acceptance and stop conditions:** diagnostic builders, normalization, budgets,
+  lock waits and writes may degrade without replacing a valid terminal result;
+  cancellation and outer business-transaction failure still propagate. Stop if
+  this requires a second store, ordinary-user fields or changed terminal semantics.
+- **Retirement and compatibility:** the protocol-only caller transaction/catch is
+  replaced by the common Runs service plus Repository savepoint and bounded local
+  timeouts. The old admin summary remains as an additive response compatibility
+  shape; `details.observations` is authoritative for individual evidence and
+  duplicate same-identity handling is removed. No schema migration is required.
+  Runtime GET maintenance, build-version projection and exports remain outside
+  this batch and associated Issue #1485 stays open.
+
 ## Private diagnostics and reconciliation
 
 Ordinary-user routes, SSE, history and status cards must never render private SDK
@@ -178,10 +200,13 @@ new producers. HTTP errors keep public text separate from a bounded private
 carrier; the current client parses at most 4 KiB of an error body, recording an
 explicit loss for malformed or larger bodies.
 
-Worker failures append diagnostics only after the current Attempt fence succeeds
-and in the same transaction as terminalization. A first terminal callback stores
-its fixed initial lease receipt fields and diagnostic observation in the same transaction;
-an acknowledged duplicate receipt does not add another observation or revision.
+Worker failures append diagnostics only after the current Attempt fence succeeds.
+A first terminal callback normally stores its fixed initial lease receipt fields
+and diagnostic observation in the same transaction; an acknowledged duplicate
+receipt does not add another observation or revision. Diagnostic-only failure is
+contained by a savepoint with bounded local lock/statement timeouts, so the clean
+business terminal may still commit without that observation. Connection,
+savepoint and outer transaction failures retain existing failure/retry semantics.
 Permanent reconciliation retains the receipt observation and appends a separate
 classified handling observation. The authorized admin route reads this Runs-owned
 record independently of Run status; absence and legacy data remain explicit.

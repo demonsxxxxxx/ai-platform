@@ -214,6 +214,17 @@ async def test_enqueue_failure_prepares_authority_then_terminal_row_on_same_conn
             calls.append(("terminal_row", observed_conn))
             return "row-a"
 
+    class Diagnostics:
+        async def capture_failure_result(self, observed_conn, **kwargs):
+            assert observed_conn is conn
+            assert kwargs["attempt_id"] is None
+            assert kwargs["source"] == "run_admission"
+            assert kwargs["stage"] == "queue_enqueue"
+            assert kwargs["result_json"]["runtime_diagnostics"]["sdk"][
+                "exception_type"
+            ] == "RuntimeError"
+            calls.append(("diagnostics", observed_conn))
+
     monkeypatch.setattr(repositories, "mark_run_enqueue_failed", mark_enqueue_failed)
 
     progress = await terminalization.terminalize_enqueue_failure_with_v4(
@@ -226,12 +237,15 @@ async def test_enqueue_failure_prepares_authority_then_terminal_row_on_same_conn
         user_id="user-a",
         run_id="run-a",
         trace_id="trace-run-a",
+        diagnostic_error=RuntimeError("queue payload invalid"),
+        run_diagnostics=Diagnostics(),
     )
 
     assert progress.did_transition is True
     assert calls == [
         ("authority", conn),
         ("transition", conn),
+        ("diagnostics", conn),
         ("terminal_row", conn),
     ]
 

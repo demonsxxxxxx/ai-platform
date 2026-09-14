@@ -17,6 +17,15 @@ from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION as SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
 )
 from app.sandbox.domain.runtime_diagnostics import (
+    SandboxExecutorHttpFailure as SandboxExecutorHttpFailure,
+)
+from app.sandbox.domain.runtime_diagnostics import (
+    SandboxRuntimeFailure as SandboxRuntimeFailure,
+)
+from app.sandbox.domain.runtime_diagnostics import (
+    exception_chain_from_error as exception_chain_from_error,
+)
+from app.sandbox.domain.runtime_diagnostics import (
     normalize_sdk_runtime_diagnostics as normalize_sdk_runtime_diagnostics,
 )
 from app.sandbox.domain.runtime_diagnostics import (

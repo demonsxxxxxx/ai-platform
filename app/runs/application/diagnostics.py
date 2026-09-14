@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Protocol
@@ -15,6 +17,9 @@ from app.runs.domain.diagnostics import (
     sanitize_runtime_diagnostics,
     split_runtime_diagnostics,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class RunDiagnosticsPersistence(Protocol):
@@ -64,30 +69,78 @@ class RunDiagnosticsService:
         """Persist a private carrier and return the public terminal result."""
 
         private_value, public_result = split_runtime_diagnostics(result_json)
-        if private_value is None:
-            return public_result
-        normalized = sanitize_runtime_diagnostics(
-            self.normalize_runtime_diagnostics(private_value)
-        )
-        if normalized:
-            observation = build_failure_observation(
+        if private_value is not None:
+            await self._capture_runtime_diagnostics(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
                 attempt_id=attempt_id,
                 source=source,
                 stage=stage,
                 error_code=error_code,
-                runtime_diagnostics=normalized,
-                received_at=self.clock(),
+                runtime_diagnostics=private_value,
+                normalize=True,
                 lease_id=lease_id,
                 request_id=request_id,
                 callback_id=callback_id,
             )
-            await self.persistence.append_observation(
-                conn,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                observation=observation,
-            )
         return public_result
+
+    async def _capture_runtime_diagnostics(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_id: str,
+        attempt_id: str | None,
+        source: str,
+        stage: str,
+        error_code: str,
+        runtime_diagnostics: object,
+        normalize: bool,
+        runtime_diagnostics_factory: Callable[[], object] | None = None,
+        lease_id: str | None = None,
+        request_id: str | None = None,
+        callback_id: str | None = None,
+    ) -> None:
+        try:
+            value = (
+                runtime_diagnostics_factory()
+                if runtime_diagnostics_factory is not None
+                else runtime_diagnostics
+            )
+            normalized = sanitize_runtime_diagnostics(
+                self.normalize_runtime_diagnostics(value) if normalize else value
+            )
+            if normalized:
+                observation = build_failure_observation(
+                    attempt_id=attempt_id,
+                    source=source,
+                    stage=stage,
+                    error_code=error_code,
+                    runtime_diagnostics=normalized,
+                    received_at=self.clock(),
+                    lease_id=lease_id,
+                    request_id=request_id,
+                    callback_id=callback_id,
+                )
+                await self.persistence.append_observation(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    observation=observation,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - diagnostics cannot veto the business result.
+            logger.warning(
+                "Run diagnostic capture degraded",
+                extra={
+                    "diagnostic_source": source,
+                    "diagnostic_stage": stage,
+                    "diagnostic_reason": type(exc).__name__,
+                },
+            )
 
     async def capture_executor_protocol_failure(
         self,
@@ -101,26 +154,24 @@ class RunDiagnosticsService:
         terminal_result: object,
         validation_errors: object,
     ) -> None:
-        observation = build_failure_observation(
+        await self._capture_runtime_diagnostics(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
             attempt_id=attempt_id,
             source="executor_probe",
             stage="terminal_result_validation",
             error_code="executor_protocol_invalid",
-            runtime_diagnostics=build_executor_protocol_diagnostics(
+            runtime_diagnostics=None,
+            runtime_diagnostics_factory=lambda: build_executor_protocol_diagnostics(
                 runtime_schema_version=self.runtime_diagnostics_schema_version,
                 task_status=task_status,
                 terminal_result=terminal_result,
                 expected_run_id=run_id,
                 validation_errors=validation_errors,
             ),
-            received_at=self.clock(),
+            normalize=False,
             lease_id=lease_id,
-        )
-        await self.persistence.append_observation(
-            conn,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            observation=observation,
         )
 
     async def capture_reconciliation_failure(
@@ -314,18 +365,24 @@ def _project_observations(
         "tool_calls": [],
         "tool_policy_denials": [],
         "executor_protocol": None,
+        "observations": [],
     }
     losses: list[dict[str, Any]] = []
-    for record_index, raw in enumerate(observations):
+    for raw in observations:
         if not isinstance(raw, dict):
             continue
         evidence = sanitize_runtime_diagnostics(raw.get("runtime_diagnostics"))
-        failures = evidence.get("failure_observations")
-        failures = failures if isinstance(failures, list) else []
-        if root is None:
-            root = _failure_projection(raw, failures[0] if failures else evidence)
-            details = {
-                "schema_version": evidence.get("schema_version"),
+        details["observations"].append(
+            {
+                "observation_id": raw.get("observation_id"),
+                "attempt_id": raw.get("attempt_id"),
+                "lease_id": raw.get("lease_id"),
+                "request_id": raw.get("request_id"),
+                "callback_id": raw.get("callback_id"),
+                "received_at": raw.get("received_at"),
+                "source": raw.get("source"),
+                "stage": raw.get("stage"),
+                "error_code": raw.get("error_code"),
                 "sdk": evidence.get("sdk")
                 if isinstance(evidence.get("sdk"), dict)
                 else {},
@@ -341,18 +398,56 @@ def _project_observations(
                 "executor_protocol": evidence.get("executor_protocol")
                 if isinstance(evidence.get("executor_protocol"), dict)
                 else None,
+                "normalization_losses": evidence.get("normalization_losses")
+                if isinstance(evidence.get("normalization_losses"), list)
+                else [],
             }
+        )
+        failures = evidence.get("failure_observations")
+        failures = failures if isinstance(failures, list) else []
+        failure_projections = [
+            _failure_projection(raw, item, kind="handling") for item in failures
+        ]
+        if root is None:
+            root = (
+                failure_projections.pop(0)
+                if failure_projections
+                else _failure_projection(raw, raw)
+            )
+            root["kind"] = "failure"
+            details.update(
+                {
+                    "schema_version": evidence.get("schema_version"),
+                    "sdk": evidence.get("sdk")
+                    if isinstance(evidence.get("sdk"), dict)
+                    else {},
+                    "tool_lifecycles": evidence.get("tool_lifecycles")
+                    if isinstance(evidence.get("tool_lifecycles"), list)
+                    else [],
+                    "tool_calls": evidence.get("tool_calls")
+                    if isinstance(evidence.get("tool_calls"), list)
+                    else [],
+                    "tool_policy_denials": evidence.get("tool_policy_denials")
+                    if isinstance(evidence.get("tool_policy_denials"), list)
+                    else [],
+                }
+            )
+        handling.extend(failure_projections)
+        record_projection = _failure_projection(raw, raw, kind="handling")
+        failure_identities = {
+            _projection_identity(item)
+            for item in [*failure_projections, root]
+            if item is not None
+            and item.get("observation_id") == raw.get("observation_id")
+        }
+        if (
+            _projection_identity(record_projection) not in failure_identities
+            and _projection_identity(record_projection) != _projection_identity(root)
+        ):
+            handling.append(record_projection)
         protocol_evidence = evidence.get("executor_protocol")
         if details["executor_protocol"] is None and isinstance(protocol_evidence, dict):
             details["executor_protocol"] = protocol_evidence
-        for item in failures[1:] if record_index == 0 else failures:
-            handling.append(_failure_projection(raw, item, kind="handling"))
-        if record_index > 0 or len(failures) <= 1:
-            projected = _failure_projection(raw, raw, kind="handling")
-            if root is None or _projection_identity(projected) != _projection_identity(
-                root
-            ):
-                handling.append(projected)
         evidence_loss = evidence.get("normalization_losses")
         if isinstance(evidence_loss, list):
             losses.extend(item for item in evidence_loss if isinstance(item, dict))

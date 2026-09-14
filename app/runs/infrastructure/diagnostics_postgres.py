@@ -15,7 +15,58 @@ from app.runs.domain.diagnostics import (
 
 
 class PostgresRunDiagnosticsRepository:
+    def __init__(self, *, write_timeout_seconds: float = 10.0) -> None:
+        self._write_timeout_ms = max(
+            1,
+            min(int(write_timeout_seconds * 1_000), 60_000),
+        )
+
     async def append_observation(
+        self,
+        conn: AsyncConnection,
+        *,
+        tenant_id: str,
+        run_id: str,
+        observation: dict[str, Any],
+    ) -> dict[str, Any]:
+        savepoint = "run_diagnostics_capture"
+        await conn.execute(f"savepoint {savepoint}")
+        try:
+            cursor = await conn.execute(
+                "select current_setting('lock_timeout') as lock_timeout, "
+                "current_setting('statement_timeout') as statement_timeout"
+            )
+            previous_timeouts = await cursor.fetchone()
+            timeout = f"{self._write_timeout_ms}ms"
+            await conn.execute(
+                "select set_config('lock_timeout', %s, true), "
+                "set_config('statement_timeout', %s, true)",
+                (timeout, timeout),
+            )
+            result = await self._append_observation(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                observation=observation,
+            )
+            await conn.execute(
+                "select set_config('lock_timeout', %s, true), "
+                "set_config('statement_timeout', %s, true)",
+                (
+                    previous_timeouts["lock_timeout"],
+                    previous_timeouts["statement_timeout"],
+                ),
+            )
+        except BaseException:
+            try:
+                await conn.execute(f"rollback to savepoint {savepoint}")
+            finally:
+                await conn.execute(f"release savepoint {savepoint}")
+            raise
+        await conn.execute(f"release savepoint {savepoint}")
+        return result
+
+    async def _append_observation(
         self,
         conn: AsyncConnection,
         *,

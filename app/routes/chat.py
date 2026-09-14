@@ -643,9 +643,7 @@ async def _admit_chat_submission(
         )
         profile_bound = profile_revision is not None
         if profile_bound:
-            # Run creation committed before this fresh authority transaction.
-            # Keep its run/profile locks through Redis admission so workers can
-            # see the run but lifecycle writers cannot overtake admission.
+            # Hold the run/profile locks through Redis admission.
             await _agent_profile_authority.reauthorize_pinned_run_for_replay(
                 conn,
                 principal=principal,
@@ -664,6 +662,7 @@ async def _admit_chat_submission(
                         user_id=principal.user_id,
                         run_id=run_id,
                         trace_id=str(run.get("trace_id") or standard_trace_id(run_id)),
+                        diagnostic_error=profile_enqueue_error,
                     )
                     await repositories.finalize_chat_submission(
                         conn,
@@ -697,7 +696,6 @@ async def _admit_chat_submission(
                     submission["state"] = "queued"
                     submission["outcome_json"] = queued_outcome.model_dump(mode="json")
                 profile_resolution = _chat_submission_resolution(submission)
-
     if profile_bound:
         if profile_enqueue_error is not None and _is_definitive_chat_queue_rejection(
             profile_enqueue_error
@@ -751,6 +749,7 @@ async def _admit_chat_submission(
                 user_id=principal.user_id,
                 run_id=run_id,
                 trace_id=str(current_run.get("trace_id") or standard_trace_id(run_id)),
+                diagnostic_error=exc,
             )
             await repositories.finalize_chat_submission(
                 conn,
@@ -2530,6 +2529,7 @@ async def chat_stream(
                 user_id=principal.user_id,
                 run_id=run_id,
                 trace_id=standard_trace_id(run_id),
+                diagnostic_error=exc,
             )
         raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
     queue_position = int(queue_admission.queue_position)

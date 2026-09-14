@@ -88,7 +88,7 @@ from app.run_admission_terminalization import (
     terminalize_retired_platform_multi_agent_run,
 )
 from app.run_control_readiness import run_control_readiness_snapshot
-from app.runs.api import RunCancellationUseCase
+from app.runs.api import RunCancellationUseCase, RunDiagnosticsService
 from app.streaming.api import (
     V4PublicationTransportUnavailable,
     WorkerV4Capabilities,
@@ -626,6 +626,8 @@ async def _compensate_enqueue_failure(
     principal: AuthPrincipal,
     run_id: str,
     v4_capabilities: WorkerV4Capabilities,
+    diagnostic_error: BaseException | None = None,
+    run_diagnostics: RunDiagnosticsService | None = None,
     trace_id: str | None = None,
 ) -> None:
     """Leave a committed run in a truthful terminal state when queue admission fails."""
@@ -636,6 +638,8 @@ async def _compensate_enqueue_failure(
             user_id=principal.user_id,
             run_id=run_id,
             trace_id=trace_id or standard_trace_id(run_id),
+            diagnostic_error=diagnostic_error,
+            run_diagnostics=run_diagnostics,
         )
 
 
@@ -1165,6 +1169,12 @@ async def create_run(
             principal=principal,
             run_id=run_id,
             v4_capabilities=http_request.app.state.run_stream_runtime.worker_capabilities,
+            diagnostic_error=exc,
+            run_diagnostics=getattr(
+                http_request.app.state,
+                "run_diagnostics_service",
+                None,
+            ),
         )
         raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
     return CreateRunResponse(run_id=run_id, session_id=session_id, status="queued")
@@ -1248,6 +1258,12 @@ async def copy_run(
             principal=principal,
             run_id=str(copied["run_id"]),
             v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
+            diagnostic_error=exc,
+            run_diagnostics=getattr(
+                request.app.state,
+                "run_diagnostics_service",
+                None,
+            ),
         )
         raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
     return RunControlResponse(
