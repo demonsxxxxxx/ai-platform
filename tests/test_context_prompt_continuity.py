@@ -49,15 +49,15 @@ def test_skill_prompt_lists_material_retrieval_without_using_message_refs_as_his
     assert "Context materials: 1 file ref." in prompt
     assert "Recent conversation text is supplied separately by the platform" in prompt
     assert "Authorized message ref IDs" not in prompt
-    assert "read_session_messages" in prompt
+    assert "read_session_messages" not in prompt
     assert "stage_context_file_to_workspace" in prompt
     assert "storage_key" not in prompt
     assert "tenants/private" not in prompt
     assert "private_payload" not in prompt
     assert "Authorized file ref IDs (use these exact IDs in retrieval tools): file-a" in prompt
     assert (
-        "Use the language of the user's current request for the final answer and all public "
-        "summarized-thinking text; use Simplified Chinese for Chinese requests."
+        "Use Simplified Chinese for the final answer and all public summarized-thinking text. "
+        "Keep code, commands, filenames, and other literal values unchanged when the task requires them."
     ) in prompt
 
 
@@ -99,8 +99,8 @@ def test_harness_chat_prompt_keeps_bounded_context_manifest_without_private_payl
     assert "tenants/private" not in prompt
     assert "private_payload" not in prompt
     assert (
-        "Use the language of the user's current request for the final answer and all public "
-        "summarized-thinking text; use Simplified Chinese for Chinese requests."
+        "Use Simplified Chinese for the final answer and all public summarized-thinking text. "
+        "Keep code, commands, filenames, and other literal values unchanged when the task requires them."
     ) in prompt
 
 

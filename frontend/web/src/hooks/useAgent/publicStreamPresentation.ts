@@ -437,6 +437,34 @@ function executionElapsedMs(steps: ExecutionTimelinePart[]): number | undefined 
   );
 }
 
+export function groupPublicExecutionStepsForDisplay(
+  parts: MessagePart[],
+): MessagePart[] {
+  const grouped: MessagePart[] = [];
+  let pending: ExecutionTimelinePart[] = [];
+  const flush = () => {
+    if (pending.length === 0) return;
+    const elapsedMs = executionElapsedMs(pending);
+    grouped.push({
+      type: "execution_process",
+      steps: pending,
+      ...(elapsedMs === undefined ? {} : { elapsed_ms: elapsedMs }),
+    });
+    pending = [];
+  };
+
+  parts.forEach((part) => {
+    if (part.type === "execution_step") {
+      pending.push(part);
+      return;
+    }
+    flush();
+    grouped.push(part);
+  });
+  flush();
+  return grouped;
+}
+
 /** Upsert one safe execution step without retaining the raw public envelope. */
 export function upsertPublicExecutionStep(
   parts: MessagePart[],
@@ -468,40 +496,5 @@ export function upsertPublicExecutionStep(
     part.type === "execution_step" && part.step_id === step.step_id
       ? nextStep
       : part,
-  );
-}
-
-/** Collapse public execution steps into one terminal-only process summary. */
-export function collapsePublicExecutionSteps(parts: MessagePart[]): MessagePart[] {
-  const steps = parts.flatMap((part) =>
-    part.type === "execution_process"
-      ? part.steps
-      : part.type === "execution_step"
-        ? [part]
-        : [],
-  );
-  if (steps.length === 0) return parts;
-  const processSteps = steps.reduce(updateExecutionStep, [] as ExecutionTimelinePart[]);
-  const elapsedMs = executionElapsedMs(processSteps);
-  const process: Extract<MessagePart, { type: "execution_process" }> = {
-    type: "execution_process",
-    steps: processSteps,
-    ...(elapsedMs === undefined ? {} : { elapsed_ms: elapsedMs }),
-  };
-  let inserted = false;
-  return parts.flatMap((part): MessagePart[] => {
-    if (part.type !== "execution_step" && part.type !== "execution_process") {
-      return [part];
-    }
-    if (inserted) return [];
-    inserted = true;
-    return [process];
-  });
-}
-
-/** Restore running execution rows after an active-run history hydration. */
-export function expandPublicExecutionSteps(parts: MessagePart[]): MessagePart[] {
-  return parts.flatMap((part): MessagePart[] =>
-    part.type === "execution_process" ? part.steps : [part],
   );
 }

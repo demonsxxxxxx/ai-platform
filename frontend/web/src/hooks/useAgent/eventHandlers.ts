@@ -27,7 +27,6 @@ import {
 import { clearAllLoadingStates } from "./messageParts";
 import { convertAttachments, processMessageEvent } from "./eventProcessor";
 import {
-  collapsePublicExecutionSteps,
   type PublicStreamPresentation,
   type PublicStreamPresentationOwner,
 } from "./publicStreamPresentation";
@@ -39,7 +38,6 @@ import {
   adaptPublicRunStreamEventV4,
   comparePublicRunStreamCursors,
   isV4MessageCorrelatedEventType,
-  projectV4EventToLegacyHandler,
   type V4AdapterBinding,
   type V4PublicEvent,
   type V4SseFrame,
@@ -55,8 +53,6 @@ export interface EventHandlerContext {
   processedEventIdsRef: React.MutableRefObject<Set<string>>;
   acceptedRunEventSequenceRef?: React.MutableRefObject<AcceptedRunEventSequence>;
   acceptedStreamCursorRef?: React.MutableRefObject<AcceptedStreamCursor>;
-  /** v4 terminal fence: stream.end is accepted only after its terminal event. */
-  v4TerminalEventIdsRef?: React.MutableRefObject<Set<string>>;
   v4TerminalReservationsRef?: React.MutableRefObject<Set<string>>;
   v4TerminalFenceRef?: React.MutableRefObject<V4TerminalFence | null>;
   v4MessageOwnerRef?: React.MutableRefObject<V4MessageOwner | null>;
@@ -468,15 +464,14 @@ export function handlePublicRunStreamEventV4(
     if (
       !terminalEventId ||
       !ctx.onRunTerminal ||
+      !ctx.v4TerminalFenceRef ||
       ctx.v4TerminalFenceRef?.current?.terminalEventId === terminalEventId ||
-      ctx.v4TerminalEventIdsRef?.current.has(terminalEventId) ||
       ctx.v4TerminalReservationsRef?.current.has(terminalEventId) ||
       !canAcceptV4TerminalSequence(event, ctx, binding)
     ) {
       if (
         terminalEventId &&
-        (ctx.v4TerminalEventIdsRef?.current.has(terminalEventId) ||
-          ctx.v4TerminalFenceRef?.current?.terminalEventId === terminalEventId)
+        ctx.v4TerminalFenceRef?.current?.terminalEventId === terminalEventId
       ) {
         onCommitted?.(false);
       }
@@ -500,12 +495,6 @@ export function handlePublicRunStreamEventV4(
       ) {
         onTerminalSettled?.(false);
         return false;
-      }
-      if (!ctx.v4TerminalFenceRef) {
-        ctx.v4TerminalEventIdsRef?.current.add(terminalEventId);
-        onCommitted?.(false);
-        onTerminalSettled?.(true);
-        return true;
       }
       const fenceAccepted = acceptV4TerminalFence(
         event,
@@ -533,12 +522,7 @@ export function handlePublicRunStreamEventV4(
   }
   if (event.eventType === "stream.end") {
     const fenced = matchesV4TerminalFence(event, ctx, terminalEventId);
-    const legacyFenced = Boolean(
-      !ctx.v4TerminalFenceRef &&
-        terminalEventId &&
-        ctx.v4TerminalEventIdsRef?.current.has(terminalEventId),
-    );
-    if (!fenced && !legacyFenced) return false;
+    if (!fenced) return false;
     if (fenced && ctx.v4TerminalFenceRef?.current?.streamEndEventId) {
       onCommitted?.(false);
       return false;
@@ -590,23 +574,108 @@ export function handlePublicRunStreamEventV4(
   } else if (ownerMatchesRun && messageCorrelatedEvent) {
     projectedMessageId = owner!.reducerMessageId;
   }
-  const projected = projectV4EventToLegacyHandler(event, projectedMessageId);
-  if (!projected) return false;
-  let transportAccepted = false;
-  const commit = (semanticApplied: boolean) => {
-    transportAccepted = true;
-    onCommitted?.(semanticApplied);
+  const acceptedCursor = ctx.acceptedStreamCursorRef?.current;
+  if (
+    acceptedCursor?.sessionId === binding.sessionId &&
+    acceptedCursor.runId === binding.runId &&
+    acceptedCursor.eventId
+  ) {
+    const comparison = compareTransportCursors(
+      event.transportCursor,
+      acceptedCursor.eventId,
+    );
+    if (comparison !== null && comparison <= 0) {
+      onCommitted?.(false);
+      return false;
+    }
+  }
+  if (ctx.processedEventIdsRef.current.has(event.semanticKey)) {
+    onCommitted?.(false);
+    return false;
+  }
+  const acceptedSequence = ctx.acceptedRunEventSequenceRef?.current;
+  if (
+    event.sequence !== null &&
+    acceptedSequence?.sessionId === binding.sessionId &&
+    acceptedSequence.runId === binding.runId &&
+    acceptedSequence.sequence !== null &&
+    (event.sequence < acceptedSequence.sequence ||
+      (event.sequence === acceptedSequence.sequence && ownerMatchesRun))
+  ) {
+    if (event.sequence === acceptedSequence.sequence && ownerMatchesRun) onCommitted?.(false);
+    return false;
+  }
+  const commitV4Event = () => {
+    ctx.processedEventIdsRef.current.add(event.semanticKey);
+    if (ctx.processedEventIdsRef.current.size > 10_000) {
+      ctx.processedEventIdsRef.current.clear();
+      ctx.processedEventIdsRef.current.add(event.semanticKey);
+    }
+    if (event.sequence !== null && ctx.acceptedRunEventSequenceRef) {
+      ctx.acceptedRunEventSequenceRef.current = {
+        sessionId: binding.sessionId,
+        runId: binding.runId,
+        sequence: event.sequence,
+      };
+    }
+    onCommitted?.(true);
   };
-  const accepted = handleStreamEvent(
-    projected.streamEvent,
-    projected.messageId,
-    event.transportCursor,
-    undefined,
-    ctx,
-    binding,
-    commit,
-  );
-  const identityAccepted = accepted || transportAccepted;
+  if (event.eventType === "stream.open") {
+    if (ctx.dismissQueueToast) {
+      ctx.dismissQueueToast();
+    } else {
+      void import("react-hot-toast").then(({ default: toast }) => {
+        toast.dismiss("chat-queue");
+        toast.success(i18n.t("chat.queueStart"), { duration: 2000 });
+      });
+    }
+    commitV4Event();
+    return true;
+  }
+  if (event.eventType === "stream.heartbeat") {
+    commitV4Event();
+    return true;
+  }
+  const subagentStack = ctx.activeSubagentStackRef.current;
+  const presentation = presentationOwner(binding, projectedMessageId);
+  if (presentation) ctx.publicStreamPresentation?.flush(presentation);
+  let didApply = false;
+  const next = ctx.messagesRef.current.map((message) => {
+    if (message.id !== projectedMessageId) return message;
+    const result = processMessageEvent(
+      event,
+      undefined,
+      message.parts || [],
+      message.content,
+      message.toolCalls || [],
+      0,
+      subagentStack,
+      true,
+      projectedMessageId,
+    );
+    didApply = true;
+    const updated: Message = {
+      ...message,
+      parts: result.parts,
+      content: result.content,
+      toolCalls: result.toolCalls,
+    };
+    if (result.toolResult) {
+      updated.toolResults = [...(message.toolResults || []), result.toolResult];
+    }
+    if (result.tokenUsage) updated.tokenUsage = result.tokenUsage;
+    if (result.duration !== undefined) updated.duration = result.duration;
+    if (result.cancelled) {
+      updated.isStreaming = false;
+      updated.cancelled = true;
+    }
+    return updated;
+  });
+  if (!didApply) return false;
+  ctx.messagesRef.current = next;
+  ctx.setMessages(next);
+  commitV4Event();
+  const identityAccepted = true;
   if (
     identityAccepted &&
     event.messageId &&
@@ -638,10 +707,7 @@ export function handlePublicRunStreamEventV4(
     };
     if (ctx.v4MessageCandidateRef) ctx.v4MessageCandidateRef.current = null;
   }
-  if (accepted && terminalEventId && ctx.v4TerminalEventIdsRef) {
-    ctx.v4TerminalEventIdsRef.current.add(terminalEventId);
-  }
-  return accepted;
+  return true;
 }
 
 export type V4FrameHandlingResult =
@@ -950,9 +1016,7 @@ export function handleStreamEvent(
             ? {
                 ...m,
                 isStreaming: false,
-                parts: collapsePublicExecutionSteps(
-                  clearAllLoadingStates(m.parts || []),
-                ),
+                parts: clearAllLoadingStates(m.parts || []),
               }
             : m,
         ),
@@ -996,9 +1060,8 @@ export function handleStreamEvent(
           ? data.payload.terminal_event_id
           : undefined;
       if (
-        ctx.v4TerminalEventIdsRef &&
-        terminalEventId !== undefined &&
-        !ctx.v4TerminalEventIdsRef.current.has(terminalEventId)
+        !ctx.v4TerminalFenceRef?.current ||
+        terminalEventId !== ctx.v4TerminalFenceRef.current.terminalEventId
       ) {
         return false;
       }
@@ -1104,7 +1167,7 @@ export function handleStreamEvent(
       if (result.tokenUsage) {
         updated.tokenUsage = result.tokenUsage;
       }
-      if (result.duration) {
+      if (result.duration !== undefined) {
         updated.duration = result.duration;
       }
       if (result.cancelled) {
@@ -1295,18 +1358,15 @@ function handleError(
           ...m,
           isStreaming: false,
           cancelled: true,
-          parts: appendCancelledPart(
-            collapsePublicExecutionSteps(clearAllLoadingStates(m.parts || [])),
-          ),
+          parts: appendCancelledPart(clearAllLoadingStates(m.parts || [])),
         };
       }
       return {
         ...m,
         content: i18n.t("chat.errorPrefix", { error: errorMsg }),
         isStreaming: false,
-        parts: collapsePublicExecutionSteps(
-          clearAllLoadingStates(m.parts || []),
-        ),
+        parts: clearAllLoadingStates(m.parts || []),
+
       };
     }),
   );

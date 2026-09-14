@@ -23,7 +23,6 @@ import {
   type V4SseFrame,
 } from "../../components/chat/assistant-ui/publicEventAdapter";
 import { clearAllLoadingStates } from "./messageParts";
-import { collapsePublicExecutionSteps } from "./publicStreamPresentation";
 import {
   authoritativeRunStatus,
   isActiveRunStatus,
@@ -755,9 +754,8 @@ export async function connectToSSE(
           ? {
               ...m,
               isStreaming: false,
-              parts: collapsePublicExecutionSteps(
-                clearAllLoadingStates(m.parts || []),
-              ),
+              parts: clearAllLoadingStates(m.parts || []),
+
             }
           : m,
       ),

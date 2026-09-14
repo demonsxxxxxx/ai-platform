@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 // @ts-expect-error jsdom is the sole pinned test runtime dependency.
 import { JSDOM } from "jsdom";
 import { act, createElement, useEffect, useState, type ReactNode } from "react";
-import { adaptPublicRunStreamEventV4, projectV4EventToLegacyHandler } from "../publicEventAdapter";
+import { adaptPublicRunStreamEventV4 } from "../publicEventAdapter";
 import { acceptV4TerminalFence, handlePublicRunStreamFrameV4Result, type EventHandlerContext } from "../../../../hooks/useAgent/eventHandlers";
 import { processMessageEvent } from "../../../../hooks/useAgent/eventProcessor";
 import { createRoot, type Root } from "react-dom/client";
@@ -254,7 +254,6 @@ test("mounted production fence owner accepts its matching end once and rejects a
     activeSubagentStackRef: { current: [] },
     streamVersionRef: { current: 3 },
     v4TerminalFenceRef: { current: null },
-    v4TerminalEventIdsRef: { current: new Set<string>() },
   } as unknown as EventHandlerContext;
   function ProductionFinalizationOwner() {
     const [accepted, setAccepted] = useState(0);
@@ -333,10 +332,7 @@ test("mounted adapter-to-reducer artifact failure exposes a safe accessible labe
     },
   }, { runId: "run-1", streamIncarnation: 1 });
   assert.ok(adapted);
-  const legacy = projectV4EventToLegacyHandler(adapted!, "message-1");
-  assert.ok(legacy);
-  const payload = JSON.parse(legacy!.streamEvent.data) as Record<string, unknown>;
-  const reduced = processMessageEvent("artifact_card", payload, [], "", [], 0, [], false, "message-1");
+  const reduced = processMessageEvent(adapted, undefined, [], "", [], 0, [], false, "message-1");
   try {
     renderProjection(dom.root, message(reduced.parts), { sendMessage: async () => undefined, cancel: async () => undefined, reconnect: async () => undefined, loadHistory: async () => undefined });
     const artifact = dom.container.querySelector(
@@ -400,10 +396,26 @@ test("mounted projection renders the production subagent lifecycle with hierarch
     }, { runId: "run-1", streamIncarnation: 1, generation: 3 });
     assert.ok(parent);
     assert.ok(child);
-    const parentProjected = projectV4EventToLegacyHandler(parent, "message-1");
-    const childProjected = projectV4EventToLegacyHandler(child, "message-1");
-    assert.ok(parentProjected);
-    assert.ok(childProjected);
+    let reduced = processMessageEvent(parent, undefined, [], "", [], 0, [], false, "message-1");
+    reduced = processMessageEvent(child, undefined, reduced.parts, reduced.content, reduced.toolCalls, 0, [], false, "message-1");
+    const unknownChild = processMessageEvent(
+      "run_event",
+      {
+        event_type: "public_subagent_activity",
+        event_id: "unknown-child-event",
+        causation_event_id: "unaccepted-parent-event",
+        subagent_id: "un-grouped",
+        display_name: "Un-grouped",
+        status: "started",
+      },
+      reduced.parts,
+      reduced.content,
+      reduced.toolCalls,
+      0,
+      [],
+      false,
+      "message-1",
+    );
     const childProgress = adaptPublicRunStreamEventV4({
       eventHeader: "subagent.progress",
       transportCursor: "run-1:1:3-0",
@@ -430,25 +442,7 @@ test("mounted projection renders the production subagent lifecycle with hierarch
       },
     }, { runId: "run-1", streamIncarnation: 1, generation: 3 });
     assert.ok(childProgress);
-    const childProgressProjected = projectV4EventToLegacyHandler(childProgress, "message-1");
-    assert.ok(childProgressProjected);
-    const parentData = JSON.parse(parentProjected.streamEvent.data) as Record<string, unknown>;
-    const childData = JSON.parse(childProjected.streamEvent.data) as Record<string, unknown>;
-    const childProgressData = JSON.parse(childProgressProjected.streamEvent.data) as Record<string, unknown>;
-    let reduced = processMessageEvent("run_event", parentData, [], "", [], 0, [], false, "message-1");
-    reduced = processMessageEvent("run_event", childData, reduced.parts, reduced.content, reduced.toolCalls, 0, [], false, "message-1");
-    reduced = processMessageEvent("run_event", childProgressData, reduced.parts, reduced.content, reduced.toolCalls, 0, [], false, "message-1");
-    const unknownChild = processMessageEvent(
-      "run_event",
-      { ...childData, event_id: "unknown-child-event", causation_event_id: "unaccepted-parent-event", subagent_id: "un-grouped" },
-      reduced.parts,
-      reduced.content,
-      reduced.toolCalls,
-      0,
-      [],
-      false,
-      "message-1",
-    );
+    reduced = processMessageEvent(childProgress, undefined, reduced.parts, reduced.content, reduced.toolCalls, 0, [], false, "message-1");
     const unknownPart = unknownChild.parts.find(
       (part) => part.type === "subagent" && part.agent_id === "un-grouped",
     );
@@ -486,7 +480,16 @@ test("mounted projection renders the production subagent lifecycle with hierarch
 
     const completed = processMessageEvent(
       "run_event",
-      { ...childData, status: "completed", progress_percent: 100, duration_ms: 2_500 },
+      {
+        event_id: "child-completed-event",
+        event_type: "public_subagent_activity",
+        subagent_id: "subagent-1",
+        display_name: "Research worker",
+        status: "completed",
+        progress_percent: 100,
+        duration_ms: 2_500,
+        causation_event_id: "parent-event",
+      },
       reduced.parts,
       reduced.content,
       reduced.toolCalls,

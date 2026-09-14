@@ -72,11 +72,7 @@ import {
   type TerminalRunStatus,
 } from "./useAgent/runLifecycle";
 import { clearAllLoadingStates } from "./useAgent/messageParts";
-import {
-  collapsePublicExecutionSteps,
-  expandPublicExecutionSteps,
-  PublicStreamPresentation,
-} from "./useAgent/publicStreamPresentation";
+import { PublicStreamPresentation } from "./useAgent/publicStreamPresentation";
 import { getPublicTerminalPresentationDefinition } from "./useAgent/publicTerminalPresentation";
 import {
   rebindV4MessageOwner,
@@ -1093,8 +1089,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               : outcome === "cancelled"
                 ? "cancelled"
                 : null;
-          const parts = collapsePublicExecutionSteps(
-            clearAllLoadingStates(message.parts || []).filter((part) => {
+          const parts = clearAllLoadingStates(message.parts || []).filter((part) => {
               if (
                 part.type !== "run_status" ||
                 terminalRunStatus(part.event_type) !== outcome
@@ -1106,8 +1101,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                   getPublicTerminalPresentationDefinition(part.event_type)
                     ?.detailKind === projectedDetailKind,
               );
-            }),
-          );
+            });
           const hasProjectedTerminalCard = Boolean(
             projectedDetailKind &&
               parts.some(
@@ -1384,14 +1378,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       );
       const streamingMessageId = prepared.streamingMessageId;
       reconstructed = prepared.messages.map((message) =>
-        normalizeMessageTextLogicalIds(
-          message.id === streamingMessageId
-            ? {
-                ...message,
-                parts: expandPublicExecutionSteps(message.parts || []),
-              }
-            : message,
-        ),
+        normalizeMessageTextLogicalIds(message),
       );
       const historySequence = maxAcceptedRunEventSequence(events, targetRunId);
       const lastTimestamp = getLastEventTimestamp(events);
@@ -1875,14 +1862,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               historyCurrentRunId,
               () => uuid(),
             );
-            reconstructedMessages = prepared.messages.map((message) =>
-              message.id === prepared.streamingMessageId
-                ? {
-                    ...message,
-                    parts: expandPublicExecutionSteps(message.parts || []),
-                  }
-                : message,
-            );
+            reconstructedMessages = prepared.messages;
             streamingMessageId = prepared.streamingMessageId;
           }
           messagesRef.current = reconstructedMessages;

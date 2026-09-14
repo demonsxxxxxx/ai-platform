@@ -227,12 +227,12 @@ def test_thinking_summary_and_tool_hooks_exclude_sdk_signature_and_tool_payload(
     pre = {"tool_name": "Read", "tool_use_id": "sdk-tool-1", "tool_input": {}}
     started = adapter.accept_hook("PreToolUse", pre, tool_use_id="sdk-tool-1")
     assert [event.event_type for event in started] == ["tool.started"]
-    assert started[0].payload["input_summary"] == "Starting Read file"
+    assert "input_summary" not in started[0].payload
     assert adapter.accept_hook("PreToolUse", pre, tool_use_id="sdk-tool-1") == ()
 
     completed = adapter.accept_hook("PostToolUse", pre, tool_use_id="sdk-tool-1")
     assert [event.event_type for event in completed] == ["tool.completed"]
-    assert completed[0].payload["result_summary"] == "Read file completed"
+    assert "result_summary" not in completed[0].payload
 
     search = ToolUseBlock()
     search.id = "search-call-1"
@@ -243,7 +243,7 @@ def test_thinking_summary_and_tool_hooks_exclude_sdk_signature_and_tool_payload(
         "PreToolUse",
         {"tool_use_id": "search-call-1", "tool_name": "WebSearch"},
     )
-    assert search_started[0].payload["input_summary"] == "Starting Web search"
+    assert "input_summary" not in search_started[0].payload
     assert "query" not in search_started[0].payload
 
     assert adapter.accept_hook("PostToolUse", pre, tool_use_id="sdk-tool-1") == ()

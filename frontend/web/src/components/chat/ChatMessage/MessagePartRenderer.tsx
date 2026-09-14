@@ -29,7 +29,6 @@ import {
   GrepItem,
   LsItem,
   GlobItem,
-  ExecuteItem,
 } from "./ToolCallItem";
 import { ThinkingBlock, SubagentBlock, SandboxItem } from "./SubagentBlocks";
 import { TodoBlock } from "./TodoBlock";
@@ -99,6 +98,23 @@ export function MessagePartRenderer({
   }
 
   if (part.type === "tool") {
+    if (part.public_operation_id && part.public_category) {
+      return (
+        <ToolCallItem
+          name={part.name}
+          args={part.args}
+          result={part.result}
+          success={part.success}
+          status={part.status}
+          isPending={part.isPending}
+          cancelled={part.cancelled}
+          publicCategory={part.public_category}
+          publicOperationId={part.public_operation_id}
+          durationMs={part.duration_ms}
+        />
+      );
+    }
+
     // Detect Read tool, use dedicated component (strips line numbers, shows file path)
     if (part.name === "read_file") {
       return (
@@ -203,18 +219,6 @@ export function MessagePartRenderer({
     if (part.name === "glob") {
       return (
         <GlobItem
-          args={part.args}
-          result={part.result}
-          success={part.success}
-          isPending={part.isPending}
-          cancelled={part.cancelled}
-        />
-      );
-    }
-    // Detect execute tool, use dedicated component
-    if (part.name === "execute") {
-      return (
-        <ExecuteItem
           args={part.args}
           result={part.result}
           success={part.success}
@@ -336,7 +340,8 @@ export function MessagePartRenderer({
     return (
       <PublicExecutionProcess
         steps={part.steps}
-        isStreaming={false}
+        isStreaming={isStreaming === true}
+        expandable={isStreaming !== true}
         elapsedMs={part.elapsed_ms}
       />
     );
