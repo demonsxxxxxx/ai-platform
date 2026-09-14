@@ -18,12 +18,14 @@ from app.models import (
     PublicSkillImportPreviewResponse,
 )
 from app.settings import get_settings
-from app.skills.api import AdminSkillListResponse, INTERNAL_DEPENDENCY_SKILL_IDS
-from app.skills.domain.version_labels import (
+from app.skills.api import (
+    AdminSkillListResponse,
+    INTERNAL_DEPENDENCY_SKILL_IDS,
+    list_uploaded_skill_display_version_rows,
+    lock_skill_for_version_upload,
     next_uploaded_skill_display_version,
     resolve_uploaded_skill_display_versions,
 )
-from app.skills.infrastructure import postgres as skill_persistence
 from app.skills.dependencies import PUBLIC_WORKBENCH_SKILL_IDS, skill_dependency_policy
 from app.skills.lifecycle import (
     SKILL_VERSION_DEPRECATED,
@@ -275,7 +277,7 @@ async def admin_list_skills(
             conn,
             tenant_id=principal.tenant_id,
         )
-        display_rows = await skill_persistence.list_uploaded_skill_display_version_rows(
+        display_rows = await list_uploaded_skill_display_version_rows(
             conn,
             skill_ids=[str(item.get("skill_id") or "") for item in items],
         )
@@ -477,8 +479,8 @@ async def admin_upload_skill_package(
             except repositories.RepositoryConflictError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-        await skill_persistence.lock_skill_for_version_upload(conn, skill_id=skill_id)
-        display_rows = await skill_persistence.list_uploaded_skill_display_version_rows(
+        await lock_skill_for_version_upload(conn, skill_id=skill_id)
+        display_rows = await list_uploaded_skill_display_version_rows(
             conn,
             skill_ids=[skill_id],
         )

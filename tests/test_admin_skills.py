@@ -61,11 +61,11 @@ def stub_uploaded_skill_display_version_persistence(monkeypatch):
         return []
 
     monkeypatch.setattr(
-        "app.routes.admin_skills.skill_persistence.lock_skill_for_version_upload",
+        "app.routes.admin_skills.lock_skill_for_version_upload",
         lock_skill,
     )
     monkeypatch.setattr(
-        "app.routes.admin_skills.skill_persistence.list_uploaded_skill_display_version_rows",
+        "app.routes.admin_skills.list_uploaded_skill_display_version_rows",
         list_versions,
     )
 
@@ -260,7 +260,7 @@ def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(mon
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_admin_skill_summaries", fake_list_summaries)
     monkeypatch.setattr(
-        "app.routes.admin_skills.skill_persistence.list_uploaded_skill_display_version_rows",
+        "app.routes.admin_skills.list_uploaded_skill_display_version_rows",
         fake_display_versions,
     )
     client = TestClient(create_app())
@@ -845,7 +845,7 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr(
-        "app.routes.admin_skills.skill_persistence.list_uploaded_skill_display_version_rows",
+        "app.routes.admin_skills.list_uploaded_skill_display_version_rows",
         fake_display_versions,
     )
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
