@@ -96,11 +96,9 @@ function createEntry(
     runtimeSkill,
     adminSkill,
     actionName: runtimeSkill?.name ?? null,
-    version:
-      adminSkill?.latestVersion ??
-      adminSkill?.currentVersion ??
-      runtimeSkill?.expected_version ??
-      null,
+    version: adminSkill
+      ? adminSkill.currentDisplayVersion ?? adminSkill.latestDisplayVersion
+      : runtimeSkill?.expected_version ?? null,
     fileCount: runtimeSkill?.file_count ?? null,
     runtimeEnabled: runtimeSkill?.enabled ?? null,
     catalogStatus: statusFor(adminSkill, runtimeSkill),

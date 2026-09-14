@@ -61,6 +61,8 @@ export interface AdminSkillCatalogItem {
   latestVersion: string | null;
   latestVersionStatus: AdminSkillVersionStatus | null;
   currentVersion: string | null;
+  latestDisplayVersion: string | null;
+  currentDisplayVersion: string | null;
   rolloutPercent: number | null;
 }
 
@@ -237,6 +239,12 @@ export function normalizeAdminSkillCatalogResponse(
     invalidAdminSkillLifecycle();
   }
   return response.items.map((item) => {
+    const latestDisplayVersion = isRecord(item)
+      ? item.latest_display_version
+      : undefined;
+    const currentDisplayVersion = isRecord(item)
+      ? item.current_display_version
+      : undefined;
     if (
       !isRecord(item) ||
       typeof item.skill_id !== "string" ||
@@ -251,6 +259,8 @@ export function normalizeAdminSkillCatalogResponse(
       (item.latest_version_status !== null &&
         !isAdminSkillVersionStatus(item.latest_version_status)) ||
       !isNullableNonBlankString(item.current_version) ||
+      !isNullableNonBlankString(latestDisplayVersion) ||
+      !isNullableNonBlankString(currentDisplayVersion) ||
       (item.rollout_percent !== null &&
         (!isNonNegativeInteger(item.rollout_percent) || item.rollout_percent > 100)) ||
       (item.latest_version === null) !== (item.latest_version_status === null)
@@ -267,6 +277,8 @@ export function normalizeAdminSkillCatalogResponse(
       latestVersion: item.latest_version,
       latestVersionStatus: item.latest_version_status,
       currentVersion: item.current_version,
+      latestDisplayVersion,
+      currentDisplayVersion,
       rolloutPercent: item.rollout_percent,
     };
   });

@@ -72,6 +72,8 @@ test("management rows expose a focused update action, governed overflow actions,
   assert.match(source, /data-catalog-status=\{entry\.catalogStatus\}/);
   assert.match(source, /skills\.managementTable\.internalRuntime/);
   assert.match(source, /skills\.managementTable\.internalDependency/);
+  assert.match(source, /className="block truncate font-mono/);
+  assert.match(source, /title=\{entry\.version \?\? undefined\}/);
   assert.match(source, /CatalogStatusIcon/);
   assert.match(source, /skills\.managementTable\.readOnly/);
   assert.match(

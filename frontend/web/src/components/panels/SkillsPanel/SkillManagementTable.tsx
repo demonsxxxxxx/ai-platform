@@ -315,7 +315,10 @@ export function SkillManagementTable({
               data-label={t("skills.managementTable.package")}
               role="cell"
             >
-              <span className="font-mono text-xs text-[var(--theme-text)]">
+              <span
+                className="block truncate font-mono text-xs text-[var(--theme-text)]"
+                title={entry.version ?? undefined}
+              >
                 {entry.version || "-"}
               </span>
             </div>

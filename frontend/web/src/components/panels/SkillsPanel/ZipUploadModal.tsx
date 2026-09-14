@@ -326,7 +326,7 @@ export function ZipUploadModal({
                 <div>
                   <span>{t("skills.managementTable.package")}</span>
                   <strong>
-                    {selectedAdminCatalogItem?.currentVersion ??
+                    {selectedAdminCatalogItem?.currentDisplayVersion ??
                       t("skills.newVersionPending")}
                   </strong>
                 </div>
