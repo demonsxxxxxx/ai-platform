@@ -14,6 +14,15 @@ task reaches that concern; do not recursively load every linked document.
 Historical evidence and `.codegraph` are navigation aids, not current runtime
 proof. Keep progress and blockers in the active task or PR.
 
+New code MUST be named and placed by its stable responsibility owner: use
+bounded-context names for product facts, runtime-control-plane names for
+execution and lifecycle control, and explicit integration or composition names
+for adapters and assembly. Place implementation in the owning context's role
+layer; expose cross-context behavior only through its public `api` or `events`
+contract. Do not introduce generic top-level buckets such as `services`,
+`utils`, or `tools`, and do not copy another project's taxonomy solely for
+visual similarity.
+
 ## Verification and cleanup
 
 Cover changed behavior with an owning regression test; reuse existing coverage
@@ -41,14 +50,15 @@ Do not weaken required checks to make a candidate pass.
   when remote work is requested. Do not substitute system SSH or local state.
   Deployment requires the release runbook, fresh evidence, and explicit authority.
 
-Every behavior change must carry a retirement and compatibility disposition in
-its PR before review. Inventory superseded production paths, tests/selectors,
-and documentation/configuration; remove each obsolete surface or name the
-current compatibility owner and its removal proof. A behavior change is not
-complete while an old implementation, stale assertion, selector, or
-instruction remains active without an explicit disposition and an
-absence/inventory check. The checklist is a review index, not evidence by
-itself; reviewers must inspect or rerun the referenced inventory.
+Behavior changes that delete, replace, migrate, or alter compatibility must carry
+an applicable retirement and compatibility disposition in the PR before review.
+Inventory superseded production paths, tests/selectors, and documentation/configuration;
+remove each obsolete surface or name the current compatibility owner and its removal
+proof. For other behavior changes, state that no superseded surface is in scope.
+A behavior change is not complete while an old implementation, stale assertion,
+selector, or instruction remains active without an explicit disposition and an
+absence/inventory check. The checklist is a review index, not evidence by itself;
+reviewers must inspect or rerun the referenced inventory.
 
 ## Read when relevant
 
