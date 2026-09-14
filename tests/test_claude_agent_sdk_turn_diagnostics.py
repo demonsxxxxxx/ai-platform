@@ -370,6 +370,7 @@ async def test_sdk_turn_limit_variants_share_one_actionable_public_diagnostic(
             "tool_policy_denials": 0,
             "tool_lifecycle_denials": 0,
             "skill_invocations": 0,
+            "public_projection_omissions": 0,
         },
         "last_public_stage": "runtime",
         "selected_skill": None,
@@ -526,27 +527,31 @@ async def test_dependency_hook_failure_after_selected_success_is_safe_upstream_e
     tmp_path: Path,
 ):
     async def query(prompt, options):
+        pre_hook = options.kwargs["hooks"]["PreToolUse"][0].hooks[0]
         success_hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
         failure_hook = options.kwargs["hooks"]["PostToolUseFailure"][0].hooks[0]
-        await success_hook(
-            {
-                "hook_event_name": "PostToolUse",
-                "tool_name": "Skill",
-                "tool_input": {"skill": "review-skill"},
-                "tool_use_id": "selected-tool-id",
-            }
-        )
-        await failure_hook(
-            {
-                "hook_event_name": "PostToolUseFailure",
-                "tool_name": "Skill",
-                "tool_input": {"skill": "minimax-docx"},
-                "tool_use_id": "dependency-tool-id",
-            }
-        )
+        selected = {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Skill",
+            "tool_input": {"skill": "review-skill"},
+            "tool_use_id": "selected-tool-id",
+        }
+        dependency = {
+            "hook_event_name": "PostToolUseFailure",
+            "tool_name": "Skill",
+            "tool_input": {"skill": "minimax-docx"},
+            "tool_use_id": "dependency-tool-id",
+        }
+        await pre_hook(selected)
+        await success_hook(selected)
+        await pre_hook(dependency)
+        await failure_hook(dependency)
         raise RuntimeError("private dependency command failed")
         if False:
             yield None
+
+    async def acknowledge(_fact):
+        return True
 
     _install_sdk(monkeypatch, query)
     monkeypatch.setattr(
@@ -567,6 +572,7 @@ async def test_dependency_hook_failure_after_selected_success_is_safe_upstream_e
         skill_id="review-skill",
         skills=["review-skill", "minimax-docx"],
         public_skill_metadata=metadata,
+        on_capability_evidence=acknowledge,
     )
 
     assert result.error == "claude_agent_sdk_upstream_error"
@@ -632,16 +638,20 @@ async def test_success_diagnostics_include_only_public_skill_metadata_and_bounde
 
     async def query(prompt, options):
         yield sdk_types["AssistantMessage"]([sdk_types["TextBlock"]("working")])
-        hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
-        await hook(
-            {
-                "hook_event_name": "PostToolUse",
-                "tool_name": "Skill",
-                "tool_input": {"skill": "internal-review-id"},
-                "tool_use_id": "tool-secret-id",
-            }
-        )
+        hook_input = {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Skill",
+            "tool_input": {"skill": "internal-review-id"},
+            "tool_use_id": "tool-secret-id",
+        }
+        pre_hook = options.kwargs["hooks"]["PreToolUse"][0].hooks[0]
+        post_hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
+        await pre_hook(hook_input)
+        await post_hook(hook_input)
         yield sdk_types["ResultMessage"](num_turns=3)
+
+    async def acknowledge(_fact):
+        return True
 
     sdk = _install_sdk(monkeypatch, query)
     sdk_types.update(
@@ -669,6 +679,7 @@ async def test_success_diagnostics_include_only_public_skill_metadata_and_bounde
         skill_id="internal-review-id",
         skills=["internal-review-id"],
         public_skill_metadata=metadata,
+        on_capability_evidence=acknowledge,
     )
 
     diagnostics = result.turn_diagnostics
@@ -687,6 +698,7 @@ async def test_success_diagnostics_include_only_public_skill_metadata_and_bounde
         "tool_policy_denials": 0,
         "tool_lifecycle_denials": 0,
         "skill_invocations": 1,
+        "public_projection_omissions": 0,
     }
     assert "internal-review-id" not in str(diagnostics)
     assert "tool-secret-id" not in str(diagnostics)

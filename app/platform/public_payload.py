@@ -165,6 +165,25 @@ def sanitize_public_payload(
     return value
 
 
+def sanitize_public_event_candidate(value: Any) -> Any:
+    """Sanitize one structured event while allowing paths only in answer text."""
+
+    if not isinstance(value, dict):
+        return sanitize_public_payload(value)
+    cleaned = sanitize_public_payload(
+        {key: item for key, item in value.items() if key != "payload"}
+    )
+    payload = value.get("payload")
+    if payload is not None:
+        sanitized_payload = sanitize_public_payload(
+            payload,
+            preserve_paths=value.get("event_type") == "message.delta",
+        )
+        if sanitized_payload is not None:
+            cleaned["payload"] = sanitized_payload
+    return cleaned
+
+
 def sanitize_public_text(value: object, *, preserve_paths: bool = False) -> str:
     text = "" if value is None else str(value)
     sanitized = sanitize_public_payload(text, preserve_paths=preserve_paths)

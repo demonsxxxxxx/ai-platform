@@ -63,39 +63,48 @@ instantiates the stream and terminal message types.
 
 ## Change Contract: public answer projection failures
 
-- **Owner:** the executor public-answer gate and Claude Agent SDK adapter for
-  classification; the Runs public-terminal projection for ordinary-user output;
-  the generated SSE v4 contract and frontend terminal catalog for transport and
-  local presentation.
-- **Bounded paths:** the public-answer gate, Claude SDK runner, existing sandbox
-  error-code allowlists, Runs public-terminal projection and its existing Chat,
-  Run, provenance, and v4 consumers, the v4 schema and generated contracts, the
-  existing frontend v4 adapter and terminal catalog, owning tests, and this
-  contract.
-- **Invariants:** projection remains fail-closed for credentials, concrete Skill
-  implementation/source information, and structured executor/storage fields.
-  Ordinary paths in natural-language answer and thinking text remain visible for
-  internal project workflows; unsafe answer text never enters ordinary-user
-  output.
-- **Acceptance:** public projection does not change Claude execution or Run
-  terminal status. The retired `claude_agent_sdk_public_projection_failed`
-  category and `projection_failure_reason` field are not emitted or accepted by
-  the v4 contract; historical records use the generic `run_failed` presentation.
-- **Regression proof:** gate tests cover size, sanitizer, replacement, terminal
-  consistency, and upstream-projector reasons; SDK/sandbox tests prove public
-  projection cannot change execution status and contains no raw secret or Skill
-  implementation text; Runs, Chat, v4, route, and frontend live/replay tests
-  prove ordinary-user projection preserves allowed paths, filters structured
-  private fields, and rejects the retired projection-failure field.
-- **Evidence ceiling:** source and local tests cannot recover a reason discarded
-  by an older deployed image; runtime acceptance begins with a new failure from
-  the exact packaged image.
-- **Rollback:** restore the retired public failure category and v4 field only if
-  a separately approved disclosure policy requires public projection failures to
-  alter Run status; no data migration is required.
-- **Stop conditions:** any request to expose raw executor text, weaken
-  sanitization, alter tool admission, or add an ordinary-user private-diagnostics
-  endpoint requires a revised contract.
+- **Owner:** Execution owns Claude free-text sanitization, public-event candidate
+  construction, and SDK result assembly. Runs still owns Run terminal state, and
+  Artifact storage still owns file collection, integrity, and delivery.
+- **Bounded paths:** `app/platform/public_payload.py`,
+  `app/executors/public_answer_stream.py`,
+  `app/execution/application/claude_agent_events.py`,
+  `app/executors/claude_agent_sdk_runner.py`, owning runner/Worker/sandbox tests,
+  and this contract. SSE v4, Runs terminal, Artifact storage, Tool/Skill
+  admission, and frontend state contracts are unchanged.
+- **Invariants:** ordinary answer and Thinking text may contain Unix/Windows
+  paths, filenames, code, and technical identifiers. Credentials and exact
+  run-bound private values remain locally redacted; structured event fields,
+  storage keys, executor payloads, and private event identities remain strict.
+- **Event atomicity:** candidate validation completes before deduplication,
+  answer-started state, delta counts, text length, last-delta identity, or
+  receipt state advances. A rejected candidate leaves no partial commit.
+- **Delivered-text authority:** `message.completed`, the terminal answer, and the
+  answer receipt describe only callback-acknowledged text. Raw terminal text
+  cannot replay an omitted fragment or override text already delivered.
+- **Fault separation:** a local answer sanitizer or candidate-construction fault
+  omits only unverified text, retains accepted text, and records a bounded
+  `public_projection_omissions` counter without raw content. Later independent
+  text remains deliverable. Callback persistence/acknowledgement failures,
+  invalid receipts, and Artifact failures retain their existing failure paths.
+- **Compatibility / retirement:** no parallel answer protocol is introduced.
+  The generic structured-payload path check no longer re-rejects
+  `message.delta` paths. Assertions that treated raw terminal text as authority
+  over delivered text are retired. The removed
+  `claude_agent_sdk_public_projection_failed` category and
+  `projection_failure_reason` field remain absent.
+- **Regression proof:** gate tests cover stateful redaction, exact replacements,
+  local fault recovery, and terminal non-replay; adapter tests cover transactional
+  candidate state; runner tests prove continuous event identities and exact
+  receipts after an omitted fragment; Worker tests prove successful receipt and
+  Artifact delivery remain independent from the omission diagnostic.
+- **Evidence ceiling:** source and local tests do not prove packaged or deployed
+  behavior. Runtime acceptance starts from the exact packaged image.
+- **Stop conditions:** exposing structured private fields, raw executor data,
+  storage keys, credentials, or rejected text; weakening exact replacements,
+  stateful secret handling, event persistence, receipt reconstruction, required
+  Artifact validation, or changing SSE v4, Runs terminal, Artifact, Tool/Skill
+  admission, or frontend contracts requires a revised contract.
 
 ## Redis Lifecycle Authority
 

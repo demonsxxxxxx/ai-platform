@@ -34,6 +34,7 @@ class PublicAnswerStreamGate:
         self._active_capability_invocations: set[tuple[str, str, str]] = set()
         self._failed = False
         self._failure_reason: str | None = None
+        self._projection_omissions = 0
         self._finished = False
         if (
             not callable(sanitizer)
@@ -53,9 +54,15 @@ class PublicAnswerStreamGate:
 
     @property
     def failure_reason(self) -> str | None:
-        """Return the first public-safe reason that made projection fail closed."""
+        """Return the first public-safe projection fault reason."""
 
         return self._failure_reason
+
+    @property
+    def projection_omissions(self) -> int:
+        """Return the number of answer fragments omitted after local projection faults."""
+
+        return self._projection_omissions
 
     def accept(self, text: object) -> tuple[str, ...]:
         """Accept one ordered Assistant fragment and return immediately safe chunks."""
@@ -69,7 +76,7 @@ class PublicAnswerStreamGate:
             return ()
         self._accepted_text = True
         raw_candidate = self._pending + text
-        projected_candidate = self._project(raw_candidate)
+        projected_candidate = self._project(raw_candidate, recoverable=True)
         if projected_candidate is None:
             return ()
         raw_hold = (
@@ -81,12 +88,18 @@ class PublicAnswerStreamGate:
             if raw_hold > self._max_private_token_chars:
                 self._fail("sanitizer_bound_exceeded")
                 return ()
-            stable_candidate = self._project(raw_candidate[:-raw_hold])
+            stable_candidate = self._project(
+                raw_candidate[:-raw_hold], recoverable=True
+            )
             if stable_candidate is None:
                 return ()
             self._pending = raw_candidate[-raw_hold:]
-            emitted = self._project_across_publication_boundary(stable_candidate)
-            return self._emit(emitted) if emitted is not None else ()
+            emitted = self._project_across_publication_boundary(
+                stable_candidate, recoverable=True
+            )
+            if emitted is None:
+                return ()
+            return self._emit(emitted)
         candidate = projected_candidate
         held_chars = self._private_prefix_chars(candidate)
         if held_chars > self._max_private_token_chars:
@@ -94,7 +107,9 @@ class PublicAnswerStreamGate:
             return ()
         emitted = candidate[:-held_chars] if held_chars else candidate
         self._pending = candidate[-held_chars:] if held_chars else ""
-        emitted = self._project_across_publication_boundary(emitted)
+        emitted = self._project_across_publication_boundary(
+            emitted, recoverable=True
+        )
         return self._emit(emitted) if emitted is not None else ()
 
     def seal(
@@ -170,9 +185,13 @@ class PublicAnswerStreamGate:
         if not isinstance(final_text, str):
             self._fail("invalid_input")
             return self._discard()
-        safe_final = self._project(final_text)
+        if self._projection_omissions:
+            return self._finish_pending()
+        pending = self._pending
+        safe_final = self._project(final_text, recoverable=True)
         if safe_final is None:
-            return self._discard()
+            self._pending = pending
+            return self._finish_pending()
         published_text = self._published_text()
         if self._accepted_text and safe_final.startswith(published_text):
             candidate = safe_final[len(published_text) :]
@@ -180,14 +199,15 @@ class PublicAnswerStreamGate:
             candidate = self._pending
         else:
             candidate = safe_final
-        public_final_text = safe_final
-        emitted = self._project_across_publication_boundary(candidate)
+        emitted = self._project_across_publication_boundary(
+            candidate, recoverable=True
+        )
         if emitted is None:
-            return self._discard()
+            return self._discard() if self._failed else self._finish_published()
         chunks = self._emit(emitted)
         self._pending = ""
         self._finished = True
-        return PublicAnswerFinish(chunks, public_final_text)
+        return PublicAnswerFinish(chunks, self._published_text())
 
     def _add_replacements(self, replacements: Mapping[str, str]) -> None:
         try:
@@ -221,21 +241,27 @@ class PublicAnswerStreamGate:
         ):
             self._fail("private_replacement_invalid")
 
-    def _project(self, text: str) -> str | None:
+    def _project(self, text: str, *, recoverable: bool = False) -> str | None:
         candidate = text
         for token in self._tokens:
             candidate = candidate.replace(token, self._replacements[token])
         try:
             sanitized = self._sanitizer(candidate)
         except Exception:  # noqa: BLE001
-            self._fail("sanitizer_failed")
+            if recoverable:
+                self._omit("sanitizer_failed")
+            else:
+                self._fail("sanitizer_failed")
             return None
         if (
             not isinstance(sanitized, str)
             or (candidate and not sanitized)
             or any(token in sanitized for token in self._tokens)
         ):
-            self._fail("sanitizer_rejected")
+            if recoverable:
+                self._omit("sanitizer_rejected")
+            else:
+                self._fail("sanitizer_rejected")
             return None
         return sanitized
 
@@ -257,7 +283,12 @@ class PublicAnswerStreamGate:
                     break
         return held
 
-    def _project_across_publication_boundary(self, candidate: str) -> str | None:
+    def _project_across_publication_boundary(
+        self,
+        candidate: str,
+        *,
+        recoverable: bool = False,
+    ) -> str | None:
         consumed = 0
         replacement = "private value"
         boundary = len(self._published_suffix)
@@ -272,7 +303,7 @@ class PublicAnswerStreamGate:
                         replacement = self._replacements[token]
         if consumed:
             candidate = replacement + candidate[consumed:]
-        projected = self._project(candidate)
+        projected = self._project(candidate, recoverable=recoverable)
         if projected is None:
             return None
         if any(token in self._published_suffix + projected for token in self._tokens):
@@ -291,6 +322,14 @@ class PublicAnswerStreamGate:
         self._published_suffix = (self._published_suffix + text)[-suffix_chars:]
         return (text,)
 
+    def _omit(self, reason: str) -> None:
+        if self._failure_reason is None:
+            self._failure_reason = (
+                public_answer_failure_reason(reason) or "upstream_projection_failed"
+            )
+        self._projection_omissions += 1
+        self._pending = ""
+
     def _fail(self, reason: str) -> None:
         if self._failure_reason is None:
             self._failure_reason = (
@@ -298,6 +337,22 @@ class PublicAnswerStreamGate:
             )
         self._failed = True
         self._pending = ""
+
+    def _finish_pending(self) -> PublicAnswerFinish:
+        emitted = self._project_across_publication_boundary(
+            self._pending, recoverable=True
+        )
+        if emitted is None:
+            return self._discard() if self._failed else self._finish_published()
+        chunks = self._emit(emitted)
+        self._pending = ""
+        self._finished = True
+        return PublicAnswerFinish(chunks, self._published_text())
+
+    def _finish_published(self) -> PublicAnswerFinish:
+        self._pending = ""
+        self._finished = True
+        return PublicAnswerFinish((), self._published_text())
 
     def _discard(self) -> PublicAnswerFinish:
         self._pending = ""

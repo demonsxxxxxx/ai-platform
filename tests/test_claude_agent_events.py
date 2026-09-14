@@ -10,9 +10,10 @@ from app.execution.api import (
 )
 from app.executors.claude_agent_sdk_runner import run_claude_agent_sdk
 from app.platform.public_payload import (
+    sanitize_public_answer_text,
+    sanitize_public_event_candidate,
     sanitize_public_payload,
     sanitize_public_reasoning_text,
-    sanitize_public_text,
 )
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.kernel_contracts import (
@@ -28,8 +29,8 @@ def _adapter():
     return ClaudeSdkAgentEventAdapter(
         run_id="run-1187",
         attempt_id="attempt-1",
-        sanitizer=sanitize_public_text,
-        payload_sanitizer=sanitize_public_payload,
+        sanitizer=sanitize_public_answer_text,
+        payload_sanitizer=sanitize_public_event_candidate,
         reasoning_sanitizer=sanitize_public_reasoning_text,
         authorized_capabilities={
             "Read": ("read", "Read file"),
@@ -129,16 +130,45 @@ def test_v4_callback_bridge_rejects_admin_only_event_even_when_schema_valid():
     assert agent_event_to_executor_event(admin_only)["event_type"] == "executor_private_event"
 
 
-def test_v4_candidate_rejects_private_nested_public_strings():
+def test_v4_candidate_allows_answer_paths_but_rejects_structured_paths_and_secrets():
+    answer = (
+        r"Use C:\Users\Alice\result.txt, /tmp/result.py, output/report.md, "
+        "storage_key, ResultParser.parse(), and ordinary_identifier."
+    )
+    path_candidate = ClaudeAgentEventCandidate(
+        run_id="run-1187",
+        event_id="event-path",
+        event_type="message.delta",
+        message_id="message-1",
+        causation_event_id=None,
+        payload={"delta": answer},
+        payload_sanitizer=sanitize_public_event_candidate,
+    )
+
+    assert path_candidate.payload == {"delta": answer}
     with pytest.raises(ValueError, match="private text"):
         ClaudeAgentEventCandidate(
             run_id="run-1187",
-            event_id="event-4",
+            event_id="event-structured-path",
+            event_type="tool.started",
+            message_id="message-1",
+            causation_event_id=None,
+            payload={
+                "operation_id": "operation-1",
+                "category": "read",
+                "display_name": "/tmp/private-tool",
+            },
+            payload_sanitizer=sanitize_public_event_candidate,
+        )
+    with pytest.raises(ValueError, match="private text"):
+        ClaudeAgentEventCandidate(
+            run_id="run-1187",
+            event_id="event-secret",
             event_type="message.delta",
             message_id="message-1",
             causation_event_id=None,
-            payload={"delta": "agent-workspaces/private nested text"},
-            payload_sanitizer=sanitize_public_payload,
+            payload={"delta": 'client_secret="opaque12345"'},
+            payload_sanitizer=sanitize_public_event_candidate,
         )
 
 
@@ -157,6 +187,49 @@ def test_answer_candidates_are_gated_and_have_one_stable_message_identity():
     assert all("attempt-1" not in str(event.as_dict()["payload"]) for event in events)
     assert events[-1].payload == {"delta_count": 1, "text_length": len("safe answer")}
     assert events[-1].causation_event_id == events[1].event_id
+
+
+def test_answer_candidate_failure_does_not_advance_receipt_state():
+    failed_once = False
+
+    def fail_one_delta(value):
+        nonlocal failed_once
+        if (
+            not failed_once
+            and isinstance(value, dict)
+            and value.get("event_type") == "message.delta"
+        ):
+            failed_once = True
+            raise RuntimeError("synthetic projection failure")
+        return sanitize_public_event_candidate(value)
+
+    adapter = ClaudeSdkAgentEventAdapter(
+        run_id="run-1187",
+        attempt_id="attempt-1",
+        sanitizer=sanitize_public_answer_text,
+        payload_sanitizer=fail_one_delta,
+        reasoning_sanitizer=sanitize_public_reasoning_text,
+    )
+
+    assert adapter.accept_answer_text("omitted", already_gated=True) == ()
+    accepted = adapter.accept_answer_text("kept", already_gated=True)
+    completed = adapter.complete_answer("kept")
+
+    assert [event.event_type for event in (*accepted, *completed)] == [
+        "message.started",
+        "message.delta",
+        "message.completed",
+    ]
+    assert accepted[1].payload == {"delta": "kept"}
+    assert completed[0].payload == {"delta_count": 1, "text_length": 4}
+    assert adapter.answer_receipt == {
+        "schema_version": "ai-platform.assistant-answer-receipt.v1",
+        "message_id": accepted[0].message_id,
+        "delta_count": 1,
+        "text_length": 4,
+        "last_delta_event_id": accepted[1].event_id,
+    }
+    assert adapter.public_projection_omissions == 1
 
 
 def test_policy_decision_emits_checking_then_terminal_and_denial_tool_event():
@@ -602,7 +675,7 @@ def test_thinking_is_sanitized_as_one_summary_before_callback_publication():
         ),
     ],
 )
-def test_thinking_sanitizer_redacts_complete_windows_paths(
+def test_thinking_sanitizer_preserves_complete_windows_paths(
     private_path,
     private_fragment,
 ):
