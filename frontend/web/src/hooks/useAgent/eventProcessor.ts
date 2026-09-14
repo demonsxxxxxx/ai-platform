@@ -1064,9 +1064,25 @@ function upsertSandboxPart(
   parts: MessagePart[],
   sandboxPart: SandboxPart,
 ): MessagePart[] {
-  return parts.some((p) => p.type === "sandbox")
-    ? parts.map((p) => (p.type === "sandbox" ? sandboxPart : p))
-    : [...parts, sandboxPart];
+  const existing = parts.find(
+    (part): part is SandboxPart => part.type === "sandbox",
+  );
+  let next = sandboxPart;
+  if (
+    sandboxPart.status === "ready" &&
+    existing?.status === "starting" &&
+    existing.timestamp &&
+    sandboxPart.timestamp
+  ) {
+    const elapsedMs =
+      Date.parse(sandboxPart.timestamp) - Date.parse(existing.timestamp);
+    if (Number.isFinite(elapsedMs) && elapsedMs >= 0 && elapsedMs <= 86_400_000) {
+      next = { ...sandboxPart, ready_duration_ms: Math.round(elapsedMs) };
+    }
+  }
+  return existing
+    ? parts.map((part) => (part.type === "sandbox" ? next : part))
+    : [...parts, next];
 }
 
 /** Replace existing todo part or append if none exists. */

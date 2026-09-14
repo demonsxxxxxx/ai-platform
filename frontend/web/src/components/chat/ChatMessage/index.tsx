@@ -28,6 +28,7 @@ import {
   type AutoPreviewTarget,
 } from "./autoPreviewEligibility";
 import { getVisibleMessageParts } from "./messagePartVisibility";
+import { MessageWorkActivity } from "./MessageWorkActivity";
 import type { RevealPreviewRequest } from "./items/revealPreviewData";
 import type { RevealPreviewOpenSource } from "./items/revealPreviewState";
 import { createMessageAnchorId } from "../../layout/AppContent/messageOutline";
@@ -349,24 +350,30 @@ export const ChatMessage = memo(function ChatMessage({
 
           {hasParts ? (
             <div className="space-y-3 px-2 my-2">
-              {visibleParts.map((part: MessagePart, index: number) => (
-                <MessagePartRenderer
-                  key={visiblePartKeys[index]}
-                  part={part}
-                  messageId={message.id}
-                  partIndex={index}
-                  isStreaming={message.isStreaming}
-                  isLast={index === visibleParts.length - 1}
-                  activePreview={activePreview}
-                  onOpenPreview={onOpenPreview}
-                  artifactDownloadScope={artifactDownloadScope}
-                  allowAutoPreview={shouldAllowAutoPreviewForPart({
-                    messageId: message.id,
-                    partIndex: index,
-                    latestAutoPreview: latestAutoPreview ?? null,
-                  })}
-                />
-              ))}
+              <MessageWorkActivity
+                messageId={message.id}
+                isStreaming={message.isStreaming}
+                parts={visibleParts}
+                partKeys={visiblePartKeys}
+                renderPart={(part, index, withinWorkDetails) => (
+                  <MessagePartRenderer
+                    part={part}
+                    messageId={message.id}
+                    partIndex={index}
+                    isStreaming={message.isStreaming}
+                    isLast={index === visibleParts.length - 1}
+                    activePreview={activePreview}
+                    onOpenPreview={onOpenPreview}
+                    artifactDownloadScope={artifactDownloadScope}
+                    withinWorkDetails={withinWorkDetails}
+                    allowAutoPreview={shouldAllowAutoPreviewForPart({
+                      messageId: message.id,
+                      partIndex: index,
+                      latestAutoPreview: latestAutoPreview ?? null,
+                    })}
+                  />
+                )}
+              />
               <RevealArtifactsSummary
                 parts={visibleParts}
                 isStreaming={message.isStreaming}

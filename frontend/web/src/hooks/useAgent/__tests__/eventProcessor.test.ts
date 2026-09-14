@@ -1619,6 +1619,39 @@ test("does not persist sandbox runtime work directories in message parts", () =>
   assert.doesNotMatch(JSON.stringify(result.parts[0]), /work_dir|workspace/);
 });
 
+test("derives sandbox readiness duration from public lifecycle timestamps", () => {
+  const started = processMessageEvent(
+    "sandbox:starting",
+    { timestamp: "2026-06-02T01:00:00.000Z" },
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+  const ready = processMessageEvent(
+    "sandbox:ready",
+    {
+      sandbox_id: "sandbox-a",
+      timestamp: "2026-06-02T01:00:01.250Z",
+    },
+    started.parts,
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+
+  const part = ready.parts[0];
+  assert.equal(part?.type, "sandbox");
+  if (part?.type !== "sandbox") throw new Error("expected sandbox part");
+  assert.equal(part.ready_duration_ms, 1_250);
+});
+
 test("rejects legacy raw tool start events from ordinary chat", () => {
   const result = processMessageEvent(
     "tool:start",

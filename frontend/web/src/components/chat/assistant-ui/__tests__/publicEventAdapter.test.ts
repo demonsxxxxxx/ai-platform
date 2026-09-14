@@ -309,6 +309,69 @@ test("v4 adapter projects real agent progress and rejects forged phase text", ()
   );
 });
 
+test("v4 sandbox preparation keeps start and ready timestamps for display", () => {
+  const startedFrame = frame(
+    "agent.progress",
+    {
+      schema_version: "ai-platform.public-agent-progress.v1",
+      step_id: "phase_sandbox_preparation",
+      phase: "sandbox_preparation",
+      lifecycle: "started",
+      message: "Preparing controlled execution",
+    },
+    1,
+  );
+  startedFrame.value = {
+    ...startedFrame.value,
+    message_id: null,
+    emitted_at: "2026-01-01T00:00:00.000Z",
+  };
+  const completedFrame = frame(
+    "agent.progress",
+    {
+      schema_version: "ai-platform.public-agent-progress.v1",
+      step_id: "phase_sandbox_preparation",
+      phase: "sandbox_preparation",
+      lifecycle: "completed",
+      message: "Controlled execution is ready",
+    },
+    2,
+  );
+  completedFrame.value = {
+    ...completedFrame.value,
+    message_id: null,
+    emitted_at: "2026-01-01T00:00:01.250Z",
+  };
+  const started = adaptPublicRunStreamEventV4(startedFrame, {
+    runId: "run-1",
+    streamIncarnation: 2,
+  });
+  const completed = adaptPublicRunStreamEventV4(completedFrame, {
+    runId: "run-1",
+    streamIncarnation: 2,
+  });
+  assert.ok(started);
+  assert.ok(completed);
+  const startedResult = reduce(started);
+  const completedResult = processMessageEvent(
+    completed,
+    undefined,
+    startedResult.parts,
+    "",
+    [],
+    0,
+    [],
+    false,
+    "message-1",
+  );
+  const step = completedResult.parts[0];
+  assert.equal(step?.type, "execution_step");
+  if (step?.type !== "execution_step") throw new Error("expected execution step");
+  assert.equal(step.stage, "sandbox_preparation");
+  assert.equal(step.started_at, "2026-01-01T00:00:00.000Z");
+  assert.equal(step.completed_at, "2026-01-01T00:00:01.250Z");
+});
+
 test("v4 thinking preserves model summary, upgrades legacy payloads, and rejects signatures", () => {
   const legacyThinking = adaptPublicRunStreamEventV4(frame("thinking.started"), {
     runId: "run-1",

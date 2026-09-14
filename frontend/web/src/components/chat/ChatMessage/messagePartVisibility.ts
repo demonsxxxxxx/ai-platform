@@ -4,6 +4,21 @@ import { groupPublicExecutionStepsForDisplay } from "../../../hooks/useAgent/pub
 const ACTIONABLE_RUN_STATUS_PATTERN =
   /error|failed|failure|denied|blocked|forbidden|unauthori[sz]ed/i;
 
+const WORK_ACTIVITY_TYPES: ReadonlySet<MessagePart["type"]> = new Set([
+  "sandbox",
+  "thinking",
+  "tool",
+  "subagent",
+  "execution_step",
+  "execution_process",
+  "todo",
+  "summary",
+]);
+
+export function isWorkActivityPart(part: MessagePart): boolean {
+  return WORK_ACTIVITY_TYPES.has(part.type);
+}
+
 export function isVisibleMessagePart(part: MessagePart): boolean {
   if (part.type !== "run_status") {
     return true;
