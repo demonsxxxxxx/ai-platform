@@ -979,7 +979,7 @@ async def run_claude_agent_sdk(
 ) -> ClaudeAgentSdkRunResult:
     thinking_effort = normalize_thinking_effort(thinking_effort)
     settings = get_settings()
-    max_turns = max(1, int(getattr(settings, "claude_agent_sdk_max_turns", 128)))
+    max_turns = max(1, int(getattr(settings, "claude_agent_sdk_max_turns", 256)))
     diagnostic_counters = {
         "max_turns": max_turns,
         "turns_observed": 0,
