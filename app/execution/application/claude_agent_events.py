@@ -14,7 +14,10 @@ from collections.abc import Mapping
 from dataclasses import InitVar, dataclass, field
 from typing import Any, Callable
 
-from app.platform.public_payload import sanitize_public_answer_text
+from app.kernel.memory_redaction import (
+    MEMORY_REDACTION_MODE_STRICT,
+    redact_memory_text,
+)
 from app.sandbox.api import AssistantAnswerReceipt
 from app.streaming.domain.protocol_v4 import (
     PUBLIC_APPLICATION_EVENT_TYPES,
@@ -45,6 +48,12 @@ _BUILTIN_TOOL_CATEGORIES = {
     "WebSearch": "search",
     "Skill": "skill",
 }
+
+
+def _sanitize_public_answer_text(value: object) -> str:
+    """Apply the kernel redaction policy while preserving answer file paths."""
+
+    return redact_memory_text(value, mode=MEMORY_REDACTION_MODE_STRICT)
 
 
 def runtime_terminal_payload(
@@ -251,7 +260,7 @@ class ClaudeAgentEventCandidate:
     causation_event_id: str | None
     payload: dict[str, object]
     payload_sanitizer: InitVar[Callable[[object], object]]
-    text_sanitizer: InitVar[Callable[[object], object]] = sanitize_public_answer_text
+    text_sanitizer: InitVar[Callable[[object], object]] = _sanitize_public_answer_text
 
     def __post_init__(
         self,
@@ -278,6 +287,8 @@ class ClaudeAgentEventCandidate:
         if self.event_type not in _APPLICATION_EVENT_TYPES:
             raise ValueError("unsupported Claude application event")
         _validate_payload(self.event_type, self.payload)
+        if not callable(text_sanitizer):
+            raise ValueError("text sanitizer must be callable")
         if self.event_type not in {"message.delta", "thinking.delta"}:
             if payload_sanitizer(public_candidate) != _without_none_public_values(public_candidate):
                 raise ValueError("public event candidate contains private text")
