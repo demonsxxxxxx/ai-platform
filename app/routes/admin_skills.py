@@ -7,7 +7,6 @@ from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
 from app.models import (
     AdminSkillDetailResponse,
-    AdminSkillListResponse,
     AdminSkillPromoteRequest,
     AdminSkillReleasePolicyResponse,
     AdminSkillRollbackRequest,
@@ -19,7 +18,12 @@ from app.models import (
     PublicSkillImportPreviewResponse,
 )
 from app.settings import get_settings
-from app.skills.api import INTERNAL_DEPENDENCY_SKILL_IDS
+from app.skills.api import AdminSkillListResponse, INTERNAL_DEPENDENCY_SKILL_IDS
+from app.skills.domain.version_labels import (
+    next_uploaded_skill_display_version,
+    resolve_uploaded_skill_display_versions,
+)
+from app.skills.infrastructure import postgres as skill_persistence
 from app.skills.dependencies import PUBLIC_WORKBENCH_SKILL_IDS, skill_dependency_policy
 from app.skills.lifecycle import (
     SKILL_VERSION_DEPRECATED,
@@ -271,6 +275,21 @@ async def admin_list_skills(
             conn,
             tenant_id=principal.tenant_id,
         )
+        display_rows = await skill_persistence.list_uploaded_skill_display_version_rows(
+            conn,
+            skill_ids=[str(item.get("skill_id") or "") for item in items],
+        )
+    display_versions = resolve_uploaded_skill_display_versions(display_rows)
+    for item in items:
+        skill_id = str(item.get("skill_id") or "")
+        latest_version = item.get("latest_version")
+        current_version = item.get("current_version")
+        item["latest_display_version"] = display_versions.get(
+            (skill_id, str(latest_version or ""))
+        )
+        item["current_display_version"] = display_versions.get(
+            (skill_id, str(current_version or ""))
+        )
     items = [item for item in items if item.get("lifecycle_status") == "active"]
     return AdminSkillListResponse(items=items)
 
@@ -457,27 +476,43 @@ async def admin_upload_skill_package(
                 )
             except repositories.RepositoryConflictError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
-        else:
-            existing = await repositories.get_skill_version(conn, skill_id=skill_id, version=parsed.content_hash)
-            if existing is not None:
-                _require_reusable_uploaded_skill_version(skill_id, existing)
-                await repositories.append_audit_log(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    user_id=principal.user_id,
-                    action="skill_version_upload_reused",
-                    target_type="skill",
-                    target_id=skill_id,
-                    payload_json={
-                        "skill_id": skill_id,
-                        "version": parsed.content_hash,
-                        "storage_key": (existing.get("source") or {}).get("storage_key")
-                        if isinstance(existing.get("source"), dict)
-                        else None,
-                    },
-                )
-                return AdminSkillUploadResponse(uploaded=existing)
 
+        await skill_persistence.lock_skill_for_version_upload(conn, skill_id=skill_id)
+        display_rows = await skill_persistence.list_uploaded_skill_display_version_rows(
+            conn,
+            skill_ids=[skill_id],
+        )
+        display_versions = resolve_uploaded_skill_display_versions(display_rows)
+        existing = None
+        if not is_new_skill:
+            existing = await repositories.get_skill_version(
+                conn,
+                skill_id=skill_id,
+                version=parsed.content_hash,
+            )
+        if existing is not None:
+            _require_reusable_uploaded_skill_version(skill_id, existing)
+            await repositories.append_audit_log(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                action="skill_version_upload_reused",
+                target_type="skill",
+                target_id=skill_id,
+                payload_json={
+                    "skill_id": skill_id,
+                    "version": parsed.content_hash,
+                    "display_version": display_versions.get(
+                        (skill_id, parsed.content_hash), "1.0.0"
+                    ),
+                    "storage_key": (existing.get("source") or {}).get("storage_key")
+                    if isinstance(existing.get("source"), dict)
+                    else None,
+                },
+            )
+            return AdminSkillUploadResponse(uploaded=existing)
+
+        display_version = next_uploaded_skill_display_version(skill_id, display_rows)
         dependency_manifests: list[dict[str, object]] = []
         storage_key = f"skills/{skill_id}/versions/{parsed.content_hash}/package.zip"
         stored = ObjectStorage().put_bytes(
@@ -487,6 +522,7 @@ async def admin_upload_skill_package(
         )
         source_json = {
             "kind": "uploaded",
+            "display_version": display_version,
             "storage_key": stored.storage_key,
             "package_sha256": stored.sha256,
             "size_bytes": stored.size_bytes,
@@ -531,6 +567,7 @@ async def admin_upload_skill_package(
                 payload_json={
                     "skill_id": skill_id,
                     "version": parsed.content_hash,
+                    "display_version": display_version,
                     "description": parsed.description,
                     "input_modes": ["chat"],
                     "output_modes": ["answer"],
@@ -560,6 +597,7 @@ async def admin_upload_skill_package(
             payload_json={
                 "skill_id": skill_id,
                 "version": parsed.content_hash,
+                "display_version": display_version,
                 "storage_key": stored.storage_key,
                 "package_sha256": stored.sha256,
                 "size_bytes": stored.size_bytes,

@@ -45,6 +45,12 @@ Backed routes:
 
 No public `/api/skills/{skill_name}/publish` route is backed. Global Skill release remains exclusively under the Admin review, materialization, promote, and rollback lifecycle at `/api/ai/admin/skills/*`.
 
+Admin ZIP uploads retain the content hash as the immutable release and execution
+identity. The admin catalog separately projects a human-readable upload version:
+the first uploaded package is `1.0.0`, and each later package for the same Skill
+increments the patch component. Legacy uploaded packages receive the same
+creation-order projection without rewriting their immutable records.
+
 `POST /api/skills/batch/delete` and `POST /api/skills/batch/toggle` map to tenant skill availability and audit each affected skill. Batch delete disables tenant availability; it does not delete global built-in Skill packages or admin release records.
 
 PUT `/api/skills/{skill_name}/files/{file_path}` stores a tenant/user-scoped UTF-8 text file overlay after `skill:write` passes. The overlay is audited, size-limited by backend configuration, and appears only in that user's public Skills projection. Binary/base64 asset overlays remain out of scope until the import storage slice is backed.

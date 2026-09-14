@@ -1,9 +1,28 @@
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 from app.skills.domain.internal_dependencies import (
     INTERNAL_DEPENDENCY_SKILL_IDS,
     is_internal_dependency_skill,
 )
+
+
+class AdminSkillSummaryResponse(TypedDict):
+    skill_id: str
+    name: str
+    description: str
+    lifecycle_status: Literal["active"]
+    distribution_status: Literal["active", "disabled"]
+    visible_to_user: bool
+    latest_version: str | None
+    latest_version_status: str | None
+    current_version: str | None
+    rollout_percent: int | None
+    latest_display_version: str | None
+    current_display_version: str | None
+
+
+class AdminSkillListResponse(TypedDict):
+    items: list[AdminSkillSummaryResponse]
 
 
 _ADMITTED_MANIFEST_COLLECTION_FIELDS = (
@@ -72,6 +91,8 @@ def restore_admitted_skill_manifest_authority(
 
 
 __all__ = [
+    "AdminSkillListResponse",
+    "AdminSkillSummaryResponse",
     "INTERNAL_DEPENDENCY_SKILL_IDS",
     "is_internal_dependency_skill",
     "restore_admitted_skill_manifest_authority",

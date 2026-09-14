@@ -50,6 +50,26 @@ def skill_admin_headers():
     }
 
 
+@pytest.fixture(autouse=True)
+def stub_uploaded_skill_display_version_persistence(monkeypatch):
+    async def lock_skill(conn, *, skill_id):
+        assert conn is not None
+        assert skill_id
+
+    async def list_versions(conn, *, skill_ids):
+        assert conn is not None
+        return []
+
+    monkeypatch.setattr(
+        "app.routes.admin_skills.skill_persistence.lock_skill_for_version_upload",
+        lock_skill,
+    )
+    monkeypatch.setattr(
+        "app.routes.admin_skills.skill_persistence.list_uploaded_skill_display_version_rows",
+        list_versions,
+    )
+
+
 def skill_package_zip(
     *,
     name: str = "qa-file-reviewer",
@@ -206,9 +226,9 @@ def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(mon
                 "lifecycle_status": "active",
                 "distribution_status": "active",
                 "visible_to_user": True,
-                "latest_version": "hash-current",
-                "latest_version_status": "released",
-                "current_version": "hash-current",
+                "latest_version": "hash-uploaded-draft",
+                "latest_version_status": "draft",
+                "current_version": "hash-builtin-current",
                 "rollout_percent": 100,
             },
             {
@@ -225,9 +245,24 @@ def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(mon
             },
         ]
 
+    async def fake_display_versions(conn, *, skill_ids):
+        assert isinstance(conn, OpaqueConnection)
+        assert skill_ids == ["native-review", "baoyu-translate"]
+        return [
+            {
+                "skill_id": "native-review",
+                "version": "hash-uploaded-draft",
+                "display_version": None,
+            }
+        ]
+
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_admin_skill_summaries", fake_list_summaries)
+    monkeypatch.setattr(
+        "app.routes.admin_skills.skill_persistence.list_uploaded_skill_display_version_rows",
+        fake_display_versions,
+    )
     client = TestClient(create_app())
 
     denied = client.get("/api/ai/admin/skills", headers=user_headers())
@@ -245,10 +280,12 @@ def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(mon
                 "lifecycle_status": "active",
                 "distribution_status": "active",
                 "visible_to_user": True,
-                "latest_version": "hash-current",
-                "latest_version_status": "released",
-                "current_version": "hash-current",
+                "latest_version": "hash-uploaded-draft",
+                "latest_version_status": "draft",
+                "current_version": "hash-builtin-current",
                 "rollout_percent": 100,
+                "latest_display_version": "1.0.0",
+                "current_display_version": None,
             }
         ]
     }
@@ -768,6 +805,17 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
         assert isinstance(conn, OpaqueConnection)
         return None
 
+    async def fake_display_versions(conn, *, skill_ids):
+        assert isinstance(conn, OpaqueConnection)
+        assert skill_ids == ["qa-file-reviewer"]
+        return [
+            {
+                "skill_id": "qa-file-reviewer",
+                "version": "previous-upload-hash",
+                "display_version": "1.0.0",
+            }
+        ]
+
     async def fake_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
         assert isinstance(conn, OpaqueConnection)
         assert tenant_id == "default"
@@ -796,6 +844,10 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr(
+        "app.routes.admin_skills.skill_persistence.list_uploaded_skill_display_version_rows",
+        fake_display_versions,
+    )
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fake_upsert)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
@@ -817,6 +869,7 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
     assert uploaded["skill_id"] == "qa-file-reviewer"
     assert uploaded["version"] == uploaded["content_hash"]
     assert uploaded["source"]["kind"] == "uploaded"
+    assert uploaded["source"]["display_version"] == "1.0.1"
     assert uploaded["source"]["package_sha256"] == "zip-sha256"
     assert uploaded["source"]["size_bytes"] == len(package_content)
     assert uploaded["source"]["package_contract"]["schema_version"] == "ai-platform.skill-package-contract.v1"
@@ -865,6 +918,7 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
     assert audit["target_id"] == "qa-file-reviewer"
     assert audit["payload_json"]["skill_id"] == "qa-file-reviewer"
     assert audit["payload_json"]["version"] == uploaded["content_hash"]
+    assert audit["payload_json"]["display_version"] == "1.0.1"
     assert audit["payload_json"]["storage_key"] == expected_key
     assert audit["payload_json"]["package_sha256"] == "zip-sha256"
 
@@ -954,6 +1008,7 @@ def test_skill_admin_upload_new_skill_package_creates_draft_without_release_or_v
     assert uploaded["description"] == "Summarize research briefs."
     assert uploaded["status"] == "draft"
     assert uploaded["source"]["kind"] == "uploaded"
+    assert uploaded["source"]["display_version"] == "1.0.0"
     assert uploaded["source"]["storage_key"] == (
         f"skills/new-research-skill/versions/{uploaded['content_hash']}/package.zip"
     )

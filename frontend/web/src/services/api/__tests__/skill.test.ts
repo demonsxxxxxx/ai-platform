@@ -59,10 +59,12 @@ test("admin catalog normalizer exposes active skills and draft versions without 
         lifecycle_status: "active",
         distribution_status: "disabled",
         visible_to_user: false,
-        latest_version: "sha-123",
+        latest_version: "sha-456",
         latest_version_status: "draft",
-        current_version: null,
-        rollout_percent: null,
+        current_version: "sha-123",
+        latest_display_version: "1.0.1",
+        current_display_version: "1.0.0",
+        rollout_percent: 100,
         source: { storage_key: "private/skill.zip" },
       },
     ],
@@ -75,10 +77,12 @@ test("admin catalog normalizer exposes active skills and draft versions without 
       lifecycleStatus: "active",
       distributionStatus: "disabled",
       visibleToUser: false,
-      latestVersion: "sha-123",
+      latestVersion: "sha-456",
       latestVersionStatus: "draft",
-      currentVersion: null,
-      rolloutPercent: null,
+      currentVersion: "sha-123",
+      latestDisplayVersion: "1.0.1",
+      currentDisplayVersion: "1.0.0",
+      rolloutPercent: 100,
     },
   ]);
   assert.doesNotMatch(JSON.stringify(catalog), /source|storage|package/i);
@@ -141,6 +145,26 @@ test("admin lifecycle normalizers reject unrecognized state and unsafe ZIP field
       /admin_skill_lifecycle_invalid/,
     );
   }
+  assert.throws(
+    () =>
+      normalizeAdminSkillCatalogResponse({
+        items: [
+          {
+            skill_id: "missing-display-version",
+            name: "Missing display version",
+            description: "Invalid admin projection",
+            lifecycle_status: "active",
+            distribution_status: "active",
+            visible_to_user: true,
+            latest_version: "sha-123",
+            latest_version_status: "released",
+            current_version: "sha-123",
+            rollout_percent: 100,
+          },
+        ],
+      }),
+    /admin_skill_lifecycle_invalid/,
+  );
   assert.throws(
     () =>
       normalizeAdminSkillUploadResponse({

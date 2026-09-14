@@ -33,6 +33,8 @@ function adminSkill(
   name: string,
   overrides: Partial<AdminSkillCatalogItem> = {},
 ): AdminSkillCatalogItem {
+  const currentVersion =
+    overrides.currentVersion === undefined ? "sha-1" : overrides.currentVersion;
   return {
     skillId,
     name,
@@ -42,7 +44,9 @@ function adminSkill(
     visibleToUser: true,
     latestVersion: "sha-1",
     latestVersionStatus: "released",
-    currentVersion: "sha-1",
+    currentVersion,
+    latestDisplayVersion: "1.0.0",
+    currentDisplayVersion: currentVersion ? "1.0.0" : null,
     rolloutPercent: 100,
     ...overrides,
   };
@@ -59,6 +63,19 @@ test("catalog entries keep opaque skill ids while preserving runtime action name
   assert.equal(entries[0]?.actionName, "qa-file-reviewer");
   assert.equal(entries[0]?.adminSkill?.skillId, "skill-opaque-42");
   assert.equal(entries[0]?.runtimeSkill?.name, "qa-file-reviewer");
+});
+
+test("catalog entries use an uploaded draft label when the current built-in has none", () => {
+  const [entry] = buildSkillCatalogEntries([], [
+    adminSkill("review", "Review", {
+      latestVersion: "sha-uploaded-draft",
+      latestVersionStatus: "draft",
+      latestDisplayVersion: "1.0.0",
+      currentDisplayVersion: null,
+    }),
+  ]);
+
+  assert.equal(entry?.version, "1.0.0");
 });
 
 test("runtime delete results resolve to opaque catalog ids", () => {

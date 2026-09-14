@@ -139,6 +139,10 @@
   min-width: 0;
 }
 
+.skill-management-table__updated {
+  white-space: nowrap;
+}
+
 .skill-management-table__identity {
   display: flex;
   align-items: flex-start;
