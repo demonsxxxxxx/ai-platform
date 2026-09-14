@@ -1454,12 +1454,44 @@ async def run_claude_agent_sdk(
         if kind in {"skill", "mcp"}
     }
     private_capability_tokens.update(
+        identity
+        for identity in authorized_subjects
+        if isinstance(identity, str) and identity.startswith("mcp__")
+    )
+    skill_subject = authorized_subjects.get("Skill")
+    if isinstance(skill_subject, dict):
+        private_capability_tokens.update(
+            name
+            for name in skill_subject.get("allowed_skill_names", [])
+            if isinstance(name, str)
+        )
+    private_capability_tokens.update(
         str(subject["mcp_server_config"]["url"])
         for subject in authorized_subjects.values()
         if subject.get("mcp_server") != "ai-platform-context"
         and isinstance(subject.get("mcp_server_config"), dict)
         and isinstance(subject["mcp_server_config"].get("url"), str)
         and subject["mcp_server_config"]["url"]
+    )
+    private_capability_tokens.update(
+        value
+        for subject in authorized_subjects.values()
+        if isinstance(subject.get("mcp_server_config"), dict)
+        and isinstance(subject["mcp_server_config"].get("headers"), dict)
+        for value in subject["mcp_server_config"]["headers"].values()
+        if isinstance(value, str) and value
+    )
+    private_capability_tokens.update(
+        value
+        for value in (
+            getattr(settings, "openai_api_key", ""),
+            getattr(settings, "anthropic_auth_token", ""),
+            getattr(settings, "anthropic_api_key", ""),
+            getattr(settings, "openai_base_url", ""),
+            getattr(settings, "anthropic_base_url", ""),
+            os.environ.get("AI_PLATFORM_NATIVE_TOOL_TOKEN", ""),
+        )
+        if isinstance(value, str) and value
     )
     private_replacement = "\u2588"
     private_replacements = {
@@ -1483,11 +1515,19 @@ async def run_claude_agent_sdk(
     def replacement_for_private_token(token: str) -> str:
         return private_replacements.get(token, private_replacement)
 
+    def sanitize_sdk_reasoning_text(value: object) -> str:
+        text = "" if value is None else str(value)
+        for token in sorted(private_replacements, key=lambda item: (-len(item), item)):
+            text = text.replace(token, private_replacements[token])
+        return sanitize_public_reasoning_text(text)
+
     def register_dynamic_tool_call_id(value: object) -> None:
         call_id = canonical_tool_call_id(value)
         if call_id is not None:
+            replacement = replacement_for_private_token(call_id)
+            private_replacements[call_id] = replacement
             answer_stream_gate.register_private_replacements(
-                {call_id: replacement_for_private_token(call_id)}
+                {call_id: replacement}
             )
 
     sdk_prompt = prompt
@@ -1505,7 +1545,7 @@ async def run_claude_agent_sdk(
             public_skill_metadata=public_skill_metadata,
             sanitizer=sanitize_public_answer_text,
             payload_sanitizer=sanitize_public_event_candidate,
-            reasoning_sanitizer=sanitize_public_reasoning_text,
+            reasoning_sanitizer=sanitize_sdk_reasoning_text,
         )
         if run_id and attempt_id and on_agent_event is not None
         else None

@@ -191,10 +191,14 @@ def sanitize_public_text(value: object, *, preserve_paths: bool = False) -> str:
 
 
 def sanitize_public_answer_text(value: object) -> str:
-    return sanitize_public_text(value, preserve_paths=True)
+    """Redact secrets in natural-language answer text without path heuristics."""
+
+    text = "" if value is None else str(value)
+    return redact_memory_text(text, mode=MEMORY_REDACTION_MODE_STRICT)
 
 
 def sanitize_public_reasoning_text(value: object) -> str:
-    """Redact private Skill fragments while preserving ordinary model paths."""
+    """Redact secrets in summarized thinking without path heuristics."""
 
-    return sanitize_public_text(value, preserve_paths=True)
+    text = "" if value is None else str(value)
+    return redact_memory_text(text, mode=MEMORY_REDACTION_MODE_STRICT)

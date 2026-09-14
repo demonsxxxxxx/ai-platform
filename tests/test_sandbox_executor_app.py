@@ -2745,11 +2745,6 @@ def test_executor_execute_fails_closed_after_final_delta_without_structured_term
         ("claude_agent_sdk_timeout", True, "claude_agent_sdk_timeout"),
         ("claude_agent_sdk_cancelled", True, "claude_agent_sdk_cancelled"),
         ("internal_kernel_failure", True, "internal_kernel_failure"),
-        (
-            "claude_agent_sdk_public_projection_failed",
-            True,
-            "claude_agent_sdk_public_projection_failed",
-        ),
         ("claude_agent_sdk_tool_admission_failed", True, "claude_agent_sdk_tool_admission_failed"),
         ("required_tool_completion_evidence_missing", True, "required_tool_completion_evidence_missing"),
         ("required_tool_completion_evidence_mismatch", True, "required_tool_completion_evidence_mismatch"),

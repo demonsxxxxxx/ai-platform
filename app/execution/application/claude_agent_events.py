@@ -14,6 +14,10 @@ from collections.abc import Mapping
 from dataclasses import InitVar, dataclass, field
 from typing import Any, Callable
 
+from app.kernel.memory_redaction import (
+    MEMORY_REDACTION_MODE_STRICT,
+    redact_memory_text,
+)
 from app.sandbox.api import AssistantAnswerReceipt
 from app.streaming.domain.protocol_v4 import (
     PUBLIC_APPLICATION_EVENT_TYPES,
@@ -44,6 +48,12 @@ _BUILTIN_TOOL_CATEGORIES = {
     "WebSearch": "search",
     "Skill": "skill",
 }
+
+
+def _sanitize_public_answer_text(value: object) -> str:
+    """Apply the kernel redaction policy while preserving answer file paths."""
+
+    return redact_memory_text(value, mode=MEMORY_REDACTION_MODE_STRICT)
 
 
 def runtime_terminal_payload(
@@ -250,8 +260,13 @@ class ClaudeAgentEventCandidate:
     causation_event_id: str | None
     payload: dict[str, object]
     payload_sanitizer: InitVar[Callable[[object], object]]
+    text_sanitizer: InitVar[Callable[[object], object]] = _sanitize_public_answer_text
 
-    def __post_init__(self, payload_sanitizer: Callable[[object], object]) -> None:
+    def __post_init__(
+        self,
+        payload_sanitizer: Callable[[object], object],
+        text_sanitizer: Callable[[object], object],
+    ) -> None:
         _assert_run_id(self.run_id)
         _assert_event_id(self.event_id)
         if self.message_id is not None:
@@ -266,11 +281,26 @@ class ClaudeAgentEventCandidate:
             "causation_event_id": self.causation_event_id,
             "payload": self.payload,
         }
-        if payload_sanitizer(public_candidate) != _without_none_public_values(public_candidate):
+        identity_candidate = {**public_candidate, "payload": {}}
+        if payload_sanitizer(identity_candidate) != _without_none_public_values(identity_candidate):
             raise ValueError("public event candidate contains private text")
         if self.event_type not in _APPLICATION_EVENT_TYPES:
             raise ValueError("unsupported Claude application event")
         _validate_payload(self.event_type, self.payload)
+        if not callable(text_sanitizer):
+            raise ValueError("text sanitizer must be callable")
+        if self.event_type not in {"message.delta", "thinking.delta"}:
+            if payload_sanitizer(public_candidate) != _without_none_public_values(public_candidate):
+                raise ValueError("public event candidate contains private text")
+        else:
+            delta = self.payload.get("delta")
+            if text_sanitizer(delta) != delta:
+                raise ValueError("public event candidate contains private text")
+            structured_payload = {
+                key: value for key, value in self.payload.items() if key != "delta"
+            }
+            if payload_sanitizer(structured_payload) != _without_none_public_values(structured_payload):
+                raise ValueError("public event candidate contains private text")
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -568,6 +598,7 @@ class ClaudeSdkAgentEventAdapter:
             causation_event_id=causation,
             payload=payload,
             payload_sanitizer=self._payload_sanitizer,
+            text_sanitizer=self._sanitizer,
         )
 
     def _commit_candidate(
@@ -575,8 +606,22 @@ class ClaudeSdkAgentEventAdapter:
         identity: str,
         candidate: ClaudeAgentEventCandidate,
     ) -> None:
-        self._seen_events.add(candidate.event_id)
-        self._accepted_event_ids[identity] = candidate.event_id
+        self._commit_candidates(((identity, candidate),))
+
+    def _commit_candidates(
+        self,
+        candidates: list[tuple[str, ClaudeAgentEventCandidate]]
+        | tuple[tuple[str, ClaudeAgentEventCandidate], ...],
+    ) -> None:
+        event_ids = [candidate.event_id for _, candidate in candidates]
+        if len(event_ids) != len(set(event_ids)) or any(
+            event_id in self._seen_events for event_id in event_ids
+        ):
+            raise KeyError("duplicate semantic event")
+        self._seen_events.update(event_ids)
+        self._accepted_event_ids.update(
+            {identity: candidate.event_id for identity, candidate in candidates}
+        )
 
     def _candidate(
         self,
@@ -586,6 +631,7 @@ class ClaudeSdkAgentEventAdapter:
         identity: str,
         causation_identity: str | None = None,
         message_id: str | None = None,
+        commit: bool = True,
     ) -> ClaudeAgentEventCandidate:
         candidate = self._build_candidate(
             event_type,
@@ -594,44 +640,45 @@ class ClaudeSdkAgentEventAdapter:
             causation_identity=causation_identity,
             message_id=message_id,
         )
-        self._commit_candidate(identity, candidate)
+        if commit:
+            self._commit_candidate(identity, candidate)
         return candidate
 
     def accept_answer_text(self, value: object, *, already_gated: bool = False) -> tuple[ClaudeAgentEventCandidate, ...]:
         if self._sealed or not isinstance(value, str) or not value:
             return ()
-        try:
-            sanitized = self._sanitizer(value)
-            if (
-                not isinstance(sanitized, str)
-                or sanitized != value
-                or (
-                    not already_gated
-                    and _safe_text(
+        if not already_gated:
+            try:
+                sanitized = self._sanitizer(value)
+                if (
+                    not isinstance(sanitized, str)
+                    or sanitized != value
+                    or _safe_text(
                         value,
                         maximum=len(value),
                         sanitizer=self._sanitizer,
                     )
                     is None
-                )
-            ):
+                ):
+                    self._omit_public_projection()
+                    return ()
+            except Exception:  # noqa: BLE001 - projection faults omit only this text.
                 self._omit_public_projection()
                 return ()
-        except Exception:  # noqa: BLE001 - projection faults omit only this text.
-            self._omit_public_projection()
-            return ()
 
         next_delta_count = self._answer_delta_count
         next_text_length = self._answer_text_length
         pending: list[tuple[str, ClaudeAgentEventCandidate]] = []
-        last_delta_identity: str | None = None
         try:
             if not self._answer_started:
                 pending.append(
                     (
                         "message",
-                        self._build_candidate(
-                            "message.started", {}, identity="message"
+                        self._candidate(
+                            "message.started",
+                            {},
+                            identity="message",
+                            commit=False,
                         ),
                     )
                 )
@@ -643,31 +690,37 @@ class ClaudeSdkAgentEventAdapter:
                 pending.append(
                     (
                         identity,
-                        self._build_candidate(
-                            "message.delta", {"delta": chunk}, identity=identity
+                        self._candidate(
+                            "message.delta",
+                            {"delta": chunk},
+                            identity=identity,
+                            commit=False,
                         ),
                     )
                 )
-                last_delta_identity = identity
         except Exception:  # noqa: BLE001 - no candidate state has been committed.
             self._omit_public_projection()
             return ()
 
-        for identity, candidate in pending:
-            self._commit_candidate(identity, candidate)
+        self._commit_candidates(pending)
         self._answer_started = True
         self._answer_delta_count = next_delta_count
         self._answer_text_length = next_text_length
-        self._last_delta_identity = last_delta_identity
+        self._last_delta_identity = pending[-1][0]
         self._last_delta_event_id = pending[-1][1].event_id
         return tuple(candidate for _identity, candidate in pending)
 
-    def complete_answer(self, value: object) -> tuple[ClaudeAgentEventCandidate, ...]:
+    def complete_answer(
+        self,
+        value: object,
+        *,
+        commit: bool = True,
+    ) -> tuple[ClaudeAgentEventCandidate, ...]:
         del value
         if self._sealed or not self._answer_started or self._answer_completed:
             return ()
         try:
-            completed = self._build_candidate(
+            completed = self._candidate(
                 "message.completed",
                 {
                     "delta_count": self._answer_delta_count,
@@ -675,12 +728,13 @@ class ClaudeSdkAgentEventAdapter:
                 },
                 identity="message.completed",
                 causation_identity=self._last_delta_identity,
+                commit=commit,
             )
         except Exception:  # noqa: BLE001 - preserve delivered deltas without a receipt.
             self._omit_public_projection()
             return ()
-        self._commit_candidate("message.completed", completed)
-        self._answer_completed = True
+        if commit:
+            self._answer_completed = True
         return (completed,)
 
     def accept_thinking_summary(
@@ -979,17 +1033,27 @@ class ClaudeSdkAgentEventAdapter:
             return ()
         duration = _bounded_int(getattr(result, "duration_ms", 0), maximum=_MAX_DURATION)
         turns = _bounded_int(getattr(result, "num_turns", 0), maximum=_MAX_TURNS)
-        events: list[ClaudeAgentEventCandidate] = []
+        pending: list[tuple[str, ClaudeAgentEventCandidate]] = []
+        completed: tuple[ClaudeAgentEventCandidate, ...] = ()
         if self._answer_started:
-            events.extend(self.complete_answer(final_content))
-        events.append(
-            self._candidate(
+            completed = self.complete_answer(final_content, commit=False)
+            if completed:
+                pending.append(("message.completed", completed[0]))
+        pending.append(
+            (
                 "model.completed",
-                {"duration_ms": duration, "turn_count": turns, "stop_category": _stop_category(result)},
-                identity="model.completed",
+                self._candidate(
+                    "model.completed",
+                    {"duration_ms": duration, "turn_count": turns, "stop_category": _stop_category(result)},
+                    identity="model.completed",
+                    commit=False,
+                ),
             )
         )
-        return tuple(events)
+        self._commit_candidates(pending)
+        if completed:
+            self._answer_completed = True
+        return tuple(candidate for _identity, candidate in pending)
 
     def accept_artifact_reference(self, reference: Mapping[str, object]) -> tuple[ClaudeAgentEventCandidate, ...]:
         """Project only an already-authorized artifact reference."""

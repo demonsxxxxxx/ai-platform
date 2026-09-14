@@ -14,7 +14,10 @@ from app.executors.claude.capability_policy import (
     _mcp_server_options,
     internal_context_tool_policy_subjects,
 )
-from app.platform.public_payload import sanitize_public_event_candidate
+from app.platform.public_payload import (
+    sanitize_public_answer_text,
+    sanitize_public_event_candidate,
+)
 from app.required_tool_contract import (
     parse_required_tool_declaration,
     with_sandbox_local_tool_capability_subjects,
@@ -3601,25 +3604,21 @@ async def test_sdk_complete_assistant_body_publishes_before_terminal_suffix(
 
 
 @pytest.mark.asyncio
-async def test_sdk_omits_one_failed_answer_candidate_and_keeps_successful_terminal(
+async def test_sdk_candidate_projection_failure_skips_batch_and_keeps_successful_terminal(
     monkeypatch, tmp_path
 ):
     captured, candidates, deltas = {}, [], []
     omitted = "omit this fragment "
     delivered = "Saved at /tmp/visible-result.txt."
-    failed_once = False
+    omitted_calls = 0
 
     def fail_one_answer_candidate(value):
-        nonlocal failed_once
-        if (
-            not failed_once
-            and isinstance(value, dict)
-            and value.get("event_type") == "message.delta"
-            and value.get("payload", {}).get("delta") == omitted
-        ):
-            failed_once = True
-            raise RuntimeError("synthetic candidate projection failure")
-        return sanitize_public_event_candidate(value)
+        nonlocal omitted_calls
+        if value == omitted:
+            omitted_calls += 1
+            if omitted_calls == 3:
+                raise RuntimeError("synthetic candidate projection failure")
+        return sanitize_public_answer_text(value)
 
     monkeypatch.setitem(
         sys.modules,
@@ -3638,7 +3637,7 @@ async def test_sdk_omits_one_failed_answer_candidate_and_keeps_successful_termin
         _sandbox_brokered_settings,
     )
     monkeypatch.setattr(
-        "app.executors.claude_agent_sdk_runner.sanitize_public_event_candidate",
+        "app.executors.claude_agent_sdk_runner.sanitize_public_answer_text",
         fail_one_answer_candidate,
     )
 
@@ -3683,6 +3682,63 @@ async def test_sdk_omits_one_failed_answer_candidate_and_keeps_successful_termin
         "text_length": len(delivered),
         "last_delta_event_id": message_events[-2].event_id,
     }
+    assert result.turn_diagnostics["counters"]["public_projection_omissions"] == 1
+
+
+@pytest.mark.asyncio
+async def test_sdk_completion_projection_failure_keeps_delivered_text_without_receipt(
+    monkeypatch, tmp_path
+):
+    captured, candidates, deltas = {}, [], []
+    delivered = "Delivered answer"
+
+    def fail_completion(value):
+        if isinstance(value, dict) and value.get("event_type") == "message.completed":
+            raise RuntimeError("synthetic completion projection failure")
+        return sanitize_public_event_candidate(value)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            _stream_steps(delivered, index=0),
+            result_text=delivered,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.sanitize_public_event_candidate",
+        fail_completion,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
+        run_id="run-completion-projection",
+        attempt_id="attempt-completion-projection",
+    )
+
+    assert result.error is None
+    assert result.message == delivered
+    assert result.answer_receipt is None
+    assert "".join(deltas) == delivered
+    event_types = [candidate.event_type for candidate in candidates]
+    assert event_types[0] == "message.started"
+    assert event_types[-1] == "model.completed"
+    assert "message.completed" not in event_types
+    assert "".join(
+        candidate.payload["delta"]
+        for candidate in candidates
+        if candidate.event_type == "message.delta"
+    ) == delivered
     assert result.turn_diagnostics["counters"]["public_projection_omissions"] == 1
 
 
@@ -4124,6 +4180,66 @@ async def test_stream_failure_before_publication_recovers_terminal_body(
     assert "".join(deltas) == expected
     assert result.error is None
     assert result.message == expected
+
+
+@pytest.mark.asyncio
+async def test_sdk_thinking_replaces_configured_private_values_but_preserves_paths(
+    monkeypatch, tmp_path
+):
+    captured, candidates = {}, []
+    subject = _subject()
+    subject["mcp_server_config"]["headers"] = {
+        "X-Static-Key": "static-header-secret",
+        "Authorization": "Bearer static-jwt-token",
+    }
+    settings = _settings()
+    settings.anthropic_auth_token = "anthropic-config-secret"
+    settings.openai_api_key = "openai-config-secret"
+    settings.anthropic_base_url = "https://private-provider.example/v1"
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_TOKEN", "native-tool-secret")
+    private_values = (
+        subject["identity"],
+        subject["mcp_server_config"]["url"],
+        *subject["mcp_server_config"]["headers"].values(),
+        settings.anthropic_auth_token,
+        settings.openai_api_key,
+        settings.anthropic_base_url,
+        "native-tool-secret",
+    )
+    thinking = (
+        "Review C:/agent-workspaces/run-1/output/result.txt for "
+        + " and ".join(private_values)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(captured, hook_invocations=[], thinking_text=thinking),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings", lambda: settings
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="worker_local_legacy",
+        thinking_effort="high",
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
+        run_id="run-thinking-config",
+        attempt_id="attempt-thinking-config",
+        tool_policy_subjects=[subject],
+    )
+
+    assert result.error is None
+    thinking_candidates = [
+        candidate for candidate in candidates if hasattr(candidate, "summary")
+    ]
+    assert len(thinking_candidates) == 1
+    summary = thinking_candidates[0].summary
+    assert "C:/agent-workspaces/run-1/output/result.txt" in summary
+    for private_value in private_values:
+        assert private_value not in summary
 
 
 @pytest.mark.asyncio

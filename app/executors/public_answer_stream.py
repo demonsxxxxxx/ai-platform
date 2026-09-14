@@ -5,6 +5,9 @@ from app.execution.api import public_answer_failure_reason
 from app.memory_redaction import sanitizer_unstable_suffix_length
 
 
+_RECOVERED_TEXT = "[content unavailable]"
+
+
 @dataclass(frozen=True, slots=True)
 class PublicAnswerFinish:
     """One terminal, already-sanitized public answer projection."""
@@ -78,7 +81,7 @@ class PublicAnswerStreamGate:
         raw_candidate = self._pending + text
         projected_candidate = self._project(raw_candidate, recoverable=True)
         if projected_candidate is None:
-            return ()
+            return self._emit(_RECOVERED_TEXT)
         raw_hold = (
             0
             if any(token in raw_candidate for token in self._tokens)
@@ -86,31 +89,35 @@ class PublicAnswerStreamGate:
         )
         if raw_hold:
             if raw_hold > self._max_private_token_chars:
-                self._fail("sanitizer_bound_exceeded")
-                return ()
+                self._omit("sanitizer_bound_exceeded")
+                return self._emit(_RECOVERED_TEXT)
             stable_candidate = self._project(
                 raw_candidate[:-raw_hold], recoverable=True
             )
             if stable_candidate is None:
-                return ()
+                return self._emit(_RECOVERED_TEXT)
             self._pending = raw_candidate[-raw_hold:]
             emitted = self._project_across_publication_boundary(
                 stable_candidate, recoverable=True
             )
             if emitted is None:
-                return ()
+                self._pending = ""
+                emitted = _RECOVERED_TEXT
             return self._emit(emitted)
         candidate = projected_candidate
         held_chars = self._private_prefix_chars(candidate)
         if held_chars > self._max_private_token_chars:
-            self._fail("private_token_prefix_overflow")
-            return ()
+            self._omit("private_token_prefix_overflow")
+            return self._emit(_RECOVERED_TEXT)
         emitted = candidate[:-held_chars] if held_chars else candidate
         self._pending = candidate[-held_chars:] if held_chars else ""
         emitted = self._project_across_publication_boundary(
             emitted, recoverable=True
         )
-        return self._emit(emitted) if emitted is not None else ()
+        if emitted is None:
+            self._pending = ""
+            emitted = _RECOVERED_TEXT
+        return self._emit(emitted)
 
     def seal(
         self,
@@ -154,8 +161,9 @@ class PublicAnswerStreamGate:
             if any(token in published_text for token in added_tokens):
                 self._fail("private_token_already_published")
                 return
-        pending = self._project(self._pending)
+        pending = self._project(self._pending, recoverable=True)
         if pending is None:
+            self._pending = ""
             return
         self._pending = pending
 
@@ -180,19 +188,31 @@ class PublicAnswerStreamGate:
 
         if self._finished:
             return PublicAnswerFinish((), "")
-        if self._failed or release is not True:
+        if release is not True:
             return self._discard()
+        published_text = self._published_text()
+        if self._failed:
+            self._finished = True
+            return PublicAnswerFinish((), published_text)
         if not isinstance(final_text, str):
             self._fail("invalid_input")
             return self._discard()
-        if self._projection_omissions:
-            return self._finish_pending()
         pending = self._pending
         safe_final = self._project(final_text, recoverable=True)
         if safe_final is None:
-            self._pending = pending
-            return self._finish_pending()
-        published_text = self._published_text()
+            self._pending = ""
+            emitted = (
+                self._project_across_publication_boundary(
+                    pending, recoverable=True
+                )
+                if pending
+                else None
+            )
+            if emitted is None and not published_text:
+                emitted = _RECOVERED_TEXT
+            chunks = self._emit(emitted or "")
+            self._finished = True
+            return PublicAnswerFinish(chunks, self._published_text())
         if self._accepted_text and safe_final.startswith(published_text):
             candidate = safe_final[len(published_text) :]
         elif self._accepted_text:
@@ -203,7 +223,7 @@ class PublicAnswerStreamGate:
             candidate, recoverable=True
         )
         if emitted is None:
-            return self._discard() if self._failed else self._finish_published()
+            emitted = _RECOVERED_TEXT
         chunks = self._emit(emitted)
         self._pending = ""
         self._finished = True
@@ -307,7 +327,10 @@ class PublicAnswerStreamGate:
         if projected is None:
             return None
         if any(token in self._published_suffix + projected for token in self._tokens):
-            self._fail("private_token_boundary_conflict")
+            if recoverable:
+                self._omit("private_token_boundary_conflict")
+            else:
+                self._fail("private_token_boundary_conflict")
             return None
         return projected
 
@@ -337,22 +360,6 @@ class PublicAnswerStreamGate:
             )
         self._failed = True
         self._pending = ""
-
-    def _finish_pending(self) -> PublicAnswerFinish:
-        emitted = self._project_across_publication_boundary(
-            self._pending, recoverable=True
-        )
-        if emitted is None:
-            return self._discard() if self._failed else self._finish_published()
-        chunks = self._emit(emitted)
-        self._pending = ""
-        self._finished = True
-        return PublicAnswerFinish(chunks, self._published_text())
-
-    def _finish_published(self) -> PublicAnswerFinish:
-        self._pending = ""
-        self._finished = True
-        return PublicAnswerFinish((), self._published_text())
 
     def _discard(self) -> PublicAnswerFinish:
         self._pending = ""

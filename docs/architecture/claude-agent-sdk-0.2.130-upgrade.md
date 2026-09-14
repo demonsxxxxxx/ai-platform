@@ -73,9 +73,11 @@ instantiates the stream and terminal message types.
   and this contract. SSE v4, Runs terminal, Artifact storage, Tool/Skill
   admission, and frontend state contracts are unchanged.
 - **Invariants:** ordinary answer and Thinking text may contain Unix/Windows
-  paths, filenames, code, and technical identifiers. Credentials and exact
-  run-bound private values remain locally redacted; structured event fields,
-  storage keys, executor payloads, and private event identities remain strict.
+  paths, filenames, code, and technical identifiers. Credentials, configured
+  model credentials/base URLs, MCP static header values, native tool tokens,
+  and exact run-bound private values remain locally redacted; structured event
+  fields, storage keys, executor payloads, and private event identities remain
+  strict.
 - **Event atomicity:** candidate validation completes before deduplication,
   answer-started state, delta counts, text length, last-delta identity, or
   receipt state advances. A rejected candidate leaves no partial commit.
@@ -83,10 +85,11 @@ instantiates the stream and terminal message types.
   answer receipt describe only callback-acknowledged text. Raw terminal text
   cannot replay an omitted fragment or override text already delivered.
 - **Fault separation:** a local answer sanitizer or candidate-construction fault
-  omits only unverified text, retains accepted text, and records a bounded
-  `public_projection_omissions` counter without raw content. Later independent
-  text remains deliverable. Callback persistence/acknowledgement failures,
-  invalid receipts, and Artifact failures retain their existing failure paths.
+  replaces only unverified text with the fixed `[content unavailable]` fragment,
+  retains accepted text, and records a bounded `public_projection_omissions`
+  counter without raw content. Later independent text remains deliverable.
+  Callback persistence/acknowledgement failures, invalid receipts, and Artifact
+  failures retain their existing failure paths.
 - **Compatibility / retirement:** no parallel answer protocol is introduced.
   The generic structured-payload path check no longer re-rejects
   `message.delta` paths. Assertions that treated raw terminal text as authority
