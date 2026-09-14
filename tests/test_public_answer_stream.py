@@ -187,7 +187,7 @@ def test_sanitizer_owned_secret_split_across_chunks_is_never_published(secret, s
     assert "[redacted-secret]" in public_text
 
 
-def test_progressive_stream_terminal_is_authoritative_when_text_differs():
+def test_progressive_stream_keeps_delivered_text_when_terminal_text_differs():
     gate = _gate()
 
     first = gate.accept("safe prefix mcp__")
@@ -197,7 +197,7 @@ def test_progressive_stream_terminal_is_authoritative_when_text_differs():
     assert first == ("safe prefix ",)
     assert second == ("mcp__not-the-private-token ",)
     assert finished.chunks == ()
-    assert finished.final_text == "different terminal summary"
+    assert finished.final_text == "safe prefix mcp__not-the-private-token "
     assert gate.failed is False
 
 
@@ -212,7 +212,7 @@ def test_progressive_stream_appends_terminal_suffix_without_replay():
     assert finished.final_text == "progressive answer"
 
 
-def test_progressive_stream_accepts_terminal_edge_whitespace_normalization():
+def test_progressive_stream_preserves_delivered_terminal_edge_whitespace():
     gate = _gate()
 
     published = gate.accept("progressive answer \n")
@@ -221,7 +221,7 @@ def test_progressive_stream_accepts_terminal_edge_whitespace_normalization():
     assert published == ("progressive answer \n",)
     assert gate.failed is False
     assert finished.chunks == ()
-    assert finished.final_text == "progressive answer"
+    assert finished.final_text == "progressive answer \n"
 
 
 def test_progressive_stream_continues_past_previous_cumulative_bound():
@@ -399,7 +399,7 @@ def test_capability_lifecycle_does_not_defer_safe_assistant_narration():
         "I will inspect the workspace. Inspection is in progress. "
         "The tool invocation completed safely."
     )
-    assert finished.final_text == "A different structured terminal summary."
+    assert finished.final_text == public_text
 
 
 def test_capability_boundary_preserves_safe_sanitizer_pending_text():
@@ -592,24 +592,59 @@ def test_inflight_assistant_text_is_not_rejected_by_answer_length():
     assert finished.final_text == long_text + "safe answer"
 
 
-def test_unsafe_terminal_replacement_still_fails_closed():
+def test_terminal_sanitizer_fault_keeps_already_published_text():
     gate = _gate()
 
     assert gate.accept("safe partial") == ("safe ",)
     finished = gate.finish(final_text="raw-secret", release=True)
 
-    assert gate.failed is True
-    assert finished.chunks == ()
-    assert finished.final_text == ""
+    assert gate.failed is False
+    assert gate.failure_reason == "sanitizer_rejected"
+    assert gate.projection_omissions == 1
+    assert finished.chunks == ("partial",)
+    assert finished.final_text == "safe partial"
 
 
-def test_unsafe_sanitizer_result_fails_closed_without_raw_text():
+def test_sanitizer_fault_omits_fragment_and_continues():
     gate = _gate()
 
     assert gate.accept("raw-secret") == ()
-    assert gate.failed is True
+    assert gate.accept("safe after.") == ("safe ",)
+    finished = gate.finish(final_text="raw-secretsafe after.", release=True)
+
+    assert gate.failed is False
     assert gate.failure_reason == "sanitizer_rejected"
-    assert gate.finish(final_text="raw-secret", release=True).chunks == ()
+    assert gate.projection_omissions == 1
+    assert finished.chunks == ("after.",)
+    assert finished.final_text == "safe after."
+
+
+def test_sanitizer_exception_omits_faulted_fragment_and_continues():
+    failed_once = False
+
+    def flaky_sanitizer(value):
+        nonlocal failed_once
+        if not failed_once and "omit me" in value:
+            failed_once = True
+            raise RuntimeError("synthetic sanitizer failure")
+        return value
+
+    gate = PublicAnswerStreamGate(
+        private_replacements={},
+        sanitizer=flaky_sanitizer,
+        max_private_token_chars=64,
+    )
+
+    before = gate.accept("before ")
+    omitted = gate.accept("omit me")
+    after = gate.accept("after.")
+    finished = gate.finish(final_text="before omit meafter.", release=True)
+
+    assert "".join((*before, *omitted, *after, *finished.chunks)) == "before after."
+    assert finished.final_text == "before after."
+    assert gate.failed is False
+    assert gate.failure_reason == "sanitizer_failed"
+    assert gate.projection_omissions == 1
 
 
 def test_public_answer_continues_beyond_262145_codepoints():

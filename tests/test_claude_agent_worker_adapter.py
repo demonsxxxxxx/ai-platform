@@ -3828,6 +3828,79 @@ async def test_general_chat_with_files_stays_on_sdk_path(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sandbox_projection_omission_keeps_worker_success_and_artifact(
+    monkeypatch,
+    tmp_path,
+):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    adapter = ClaudeAgentWorkerAdapter()
+    stored = []
+
+    async def no_files(_payload, _workspace):
+        return []
+
+    class RecordingStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            stored.append((storage_key, content, content_type))
+            return StoredObject(
+                storage_key=storage_key,
+                sha256=hashlib.sha256(content).hexdigest(),
+                size_bytes=len(content),
+            )
+
+    def completed_response(_request):
+        output = sandbox_workspace_path(current_settings) / "output"
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "result.txt").write_text("artifact survived", encoding="utf-8")
+        return {
+            "status": "completed",
+            "message": "",
+            "answer_receipt": {
+                "schema_version": "ai-platform.assistant-answer-receipt.v1",
+                "message_id": "msg_answer_1482",
+                "delta_count": 1,
+                "text_length": 14,
+                "last_delta_event_id": "evt4_delta_1482",
+            },
+            "sdk_used": True,
+            "used_skills": [],
+            "used_skills_source": "",
+            "sdk_turn_diagnostics": {
+                "counters": {"public_projection_omissions": 1},
+            },
+        }
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.get_settings",
+        lambda: current_settings,
+    )
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", RecordingStorage)
+    install_sandbox_runtime(monkeypatch, executor_response=completed_response)
+
+    result = await adapter.submit_run(
+        sandbox_writing_payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            file_ids=[],
+            input={"message": "create a result"},
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.result["message"] == ""
+    assert result.result["artifact_count"] == 1
+    assert result.result["sdk_turn_diagnostics"]["counters"][
+        "public_projection_omissions"
+    ] == 1
+    assert result.executor_payload["answer_receipt"]["text_length"] == 14
+    assert [artifact.manifest["workspace_output"] for artifact in result.artifacts] == [
+        "output/result.txt"
+    ]
+    assert stored[0][1] == b"artifact survived"
+
+
+@pytest.mark.asyncio
 async def test_sandbox_required_general_chat_bridges_agent_event_to_keyword_worker_sink(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     received_events = []

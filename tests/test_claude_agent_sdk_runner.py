@@ -14,6 +14,7 @@ from app.executors.claude.capability_policy import (
     _mcp_server_options,
     internal_context_tool_policy_subjects,
 )
+from app.platform.public_payload import sanitize_public_event_candidate
 from app.required_tool_contract import (
     parse_required_tool_declaration,
     with_sandbox_local_tool_capability_subjects,
@@ -599,6 +600,7 @@ async def test_sandbox_grep_denies_outside_workspace_path(monkeypatch, tmp_path)
         "tool_policy_denials": 1,
         "tool_lifecycle_denials": 0,
         "skill_invocations": 0,
+        "public_projection_omissions": 0,
     }
 
 
@@ -3596,6 +3598,92 @@ async def test_sdk_complete_assistant_body_publishes_before_terminal_suffix(
     assert "".join(deltas) == "Complete Assistant body with terminal suffix"
     assert result.error is None
     assert result.message == "Complete Assistant body with terminal suffix"
+
+
+@pytest.mark.asyncio
+async def test_sdk_omits_one_failed_answer_candidate_and_keeps_successful_terminal(
+    monkeypatch, tmp_path
+):
+    captured, candidates, deltas = {}, [], []
+    omitted = "omit this fragment "
+    delivered = "Saved at /tmp/visible-result.txt."
+    failed_once = False
+
+    def fail_one_answer_candidate(value):
+        nonlocal failed_once
+        if (
+            not failed_once
+            and isinstance(value, dict)
+            and value.get("event_type") == "message.delta"
+            and value.get("payload", {}).get("delta") == omitted
+        ):
+            failed_once = True
+            raise RuntimeError("synthetic candidate projection failure")
+        return sanitize_public_event_candidate(value)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [
+                *_stream_steps(omitted, index=0),
+                *_stream_steps(delivered, index=1),
+            ],
+            result_text=omitted + delivered,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.sanitize_public_event_candidate",
+        fail_one_answer_candidate,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
+        run_id="run-1482",
+        attempt_id="attempt-1482",
+    )
+
+    message_events = [
+        candidate
+        for candidate in candidates
+        if candidate.event_type.startswith("message.")
+    ]
+    assert result.error is None
+    assert result.message == ""
+    assert "".join(deltas) == delivered
+    assert [event.event_type for event in message_events] == [
+        "message.started",
+        "message.delta",
+        "message.delta",
+        "message.completed",
+    ]
+    assert "".join(
+        event.payload["delta"]
+        for event in message_events
+        if event.event_type == "message.delta"
+    ) == delivered
+    assert message_events[-1].payload == {
+        "delta_count": 2,
+        "text_length": len(delivered),
+    }
+    assert result.answer_receipt == {
+        "schema_version": "ai-platform.assistant-answer-receipt.v1",
+        "message_id": message_events[0].message_id,
+        "delta_count": 2,
+        "text_length": len(delivered),
+        "last_delta_event_id": message_events[-2].event_id,
+    }
+    assert result.turn_diagnostics["counters"]["public_projection_omissions"] == 1
 
 
 @pytest.mark.asyncio

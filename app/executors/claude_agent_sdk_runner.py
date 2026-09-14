@@ -26,6 +26,7 @@ from app.control_plane_contracts import (
 )
 from app.platform.public_payload import (
     sanitize_public_answer_text,
+    sanitize_public_event_candidate,
     sanitize_public_reasoning_text,
 )
 from app.executors.claude.capability_policy import (
@@ -172,6 +173,7 @@ _PUBLIC_DIAGNOSTIC_COUNTERS = (
     "tool_policy_denials",
     "tool_lifecycle_denials",
     "skill_invocations",
+    "public_projection_omissions",
 )
 _TURN_LIMIT_ERROR_PATTERN = re.compile(
     r"(?:reached\s+)?maximum\s+(?:number\s+of\s+)?turns|"
@@ -990,6 +992,7 @@ async def run_claude_agent_sdk(
         "tool_policy_denials": 0,
         "tool_lifecycle_denials": 0,
         "skill_invocations": 0,
+        "public_projection_omissions": 0,
     }
     last_public_stage = "runtime"
     used_skill_names: list[str] = []
@@ -1001,6 +1004,8 @@ async def run_claude_agent_sdk(
     observed_read_only_invocation_states: dict[tuple[str, str], str] = {}
     runtime_tool_calls: dict[tuple[str, str], dict[str, Any]] = {}
     read_only_lifecycle_denials_finalized = False
+    answer_stream_gate: PublicAnswerStreamGate | None = None
+    agent_event_adapter: ClaudeSdkAgentEventAdapter | None = None
 
     def finalize_read_only_lifecycle_denials() -> None:
         nonlocal read_only_lifecycle_denials_finalized
@@ -1014,6 +1019,14 @@ async def run_claude_agent_sdk(
 
     def turn_diagnostics(error_code: str | None) -> dict[str, Any]:
         finalize_read_only_lifecycle_denials()
+        diagnostic_counters["public_projection_omissions"] = (
+            (answer_stream_gate.projection_omissions if answer_stream_gate else 0)
+            + (
+                agent_event_adapter.public_projection_omissions
+                if agent_event_adapter
+                else 0
+            )
+        )
         return project_sdk_turn_diagnostics(
             {
                 "counters": diagnostic_counters,
@@ -1490,13 +1503,14 @@ async def run_claude_agent_sdk(
             tool_policy_subjects=tool_policy_subjects,
             public_skill_metadata=public_skill_metadata,
             sanitizer=sanitize_public_answer_text,
-            payload_sanitizer=sanitize_public_payload,
+            payload_sanitizer=sanitize_public_event_candidate,
             reasoning_sanitizer=sanitize_public_reasoning_text,
         )
         if run_id and attempt_id and on_agent_event is not None
         else None
     )
 
+    agent_public_answer_chunks: list[str] = []
     agent_event_callback_failed = False
 
     async def publish_agent_candidates(candidates: tuple[Any, ...]) -> bool:
@@ -2415,21 +2429,29 @@ async def run_claude_agent_sdk(
     async def publish_terminal_text(value: str, *, project_agent: bool = True) -> bool:
         if not value:
             return True
+        projected_value = value
         if project_agent and agent_event_adapter is not None:
+            accepted_chunks: list[str] = []
             for offset in range(0, len(value), 8_192):
-                acknowledged = await publish_agent_candidates(
-                    agent_event_adapter.accept_answer_text(
-                        value[offset : offset + 8_192],
-                        already_gated=True,
-                    )
+                chunk = value[offset : offset + 8_192]
+                candidates = agent_event_adapter.accept_answer_text(
+                    chunk,
+                    already_gated=True,
                 )
-                if not acknowledged:
+                if not candidates:
+                    continue
+                if not await publish_agent_candidates(candidates):
                     return False
-        if on_text is None:
-            return True
-        callback_result = on_text(value)
-        if isawaitable(callback_result):
-            await callback_result
+                accepted_chunks.append(chunk)
+            projected_value = "".join(accepted_chunks)
+            if not projected_value:
+                return True
+        if on_text is not None:
+            callback_result = on_text(projected_value)
+            if isawaitable(callback_result):
+                await callback_result
+        if project_agent and agent_event_adapter is not None:
+            agent_public_answer_chunks.append(projected_value)
         return True
 
     async def consume() -> ClaudeAgentSdkRunResult:
@@ -2653,21 +2675,33 @@ async def run_claude_agent_sdk(
             final_text=answer_timeline.text,
             release=True,
         )
-        if not answer_stream_gate.failed and isinstance(terminal_result_message, ResultMessage):
-            terminal_text_acknowledged = True
+        terminal_text_acknowledged = True
+        if not answer_stream_gate.failed and isinstance(
+            terminal_result_message, ResultMessage
+        ):
             for public_text in finished_answer.chunks:
                 if not await publish_terminal_text(public_text):
                     terminal_text_acknowledged = False
                     terminal_error = "agent_event_callback_not_acknowledged"
                     break
-            if terminal_text_acknowledged and agent_event_adapter is not None:
-                if not await publish_agent_candidates(
-                    agent_event_adapter.accept_result(
-                        terminal_result_message,
-                        final_content=finished_answer.final_text,
-                    )
-                ):
-                    terminal_error = "agent_event_callback_not_acknowledged"
+        delivered_final_text = (
+            "".join(agent_public_answer_chunks)
+            if agent_event_adapter is not None
+            else finished_answer.final_text
+        )
+        if (
+            terminal_text_acknowledged
+            and not answer_stream_gate.failed
+            and isinstance(terminal_result_message, ResultMessage)
+            and agent_event_adapter is not None
+        ):
+            if not await publish_agent_candidates(
+                agent_event_adapter.accept_result(
+                    terminal_result_message,
+                    final_content=delivered_final_text,
+                )
+            ):
+                terminal_error = "agent_event_callback_not_acknowledged"
         if terminal_error is not None:
             seal_agent_candidates(terminal_error)
         answer_receipt = (
@@ -2678,7 +2712,7 @@ async def run_claude_agent_sdk(
         public_structured_result_text = (
             ""
             if terminal_error == "agent_event_callback_not_acknowledged"
-            else finished_answer.final_text if not answer_stream_gate.failed else ""
+            else delivered_final_text if not answer_stream_gate.failed else ""
         )
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
