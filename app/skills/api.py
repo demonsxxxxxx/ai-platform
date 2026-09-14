@@ -8,10 +8,6 @@ from app.skills.domain.version_labels import (
     next_uploaded_skill_display_version,
     resolve_uploaded_skill_display_versions,
 )
-from app.skills.infrastructure.postgres import (
-    list_uploaded_skill_display_version_rows,
-    lock_skill_for_version_upload,
-)
 
 
 class AdminSkillSummaryResponse(TypedDict):
@@ -31,6 +27,38 @@ class AdminSkillSummaryResponse(TypedDict):
 
 class AdminSkillListResponse(TypedDict):
     items: list[AdminSkillSummaryResponse]
+
+
+_skill_display_version_persistence: Any | None = None
+
+
+def configure_skill_display_version_persistence(persistence: Any) -> None:
+    global _skill_display_version_persistence
+    _skill_display_version_persistence = persistence
+
+
+def _display_version_persistence() -> Any:
+    if _skill_display_version_persistence is None:
+        raise RuntimeError("skill_display_version_persistence_not_configured")
+    return _skill_display_version_persistence
+
+
+async def lock_skill_for_version_upload(conn: Any, *, skill_id: str) -> None:
+    await _display_version_persistence().lock_skill_for_version_upload(
+        conn,
+        skill_id=skill_id,
+    )
+
+
+async def list_uploaded_skill_display_version_rows(
+    conn: Any,
+    *,
+    skill_ids: list[str],
+) -> list[dict[str, Any]]:
+    return await _display_version_persistence().list_uploaded_skill_display_version_rows(
+        conn,
+        skill_ids=skill_ids,
+    )
 
 
 _ADMITTED_MANIFEST_COLLECTION_FIELDS = (
@@ -102,6 +130,7 @@ __all__ = [
     "AdminSkillListResponse",
     "AdminSkillSummaryResponse",
     "INTERNAL_DEPENDENCY_SKILL_IDS",
+    "configure_skill_display_version_persistence",
     "is_internal_dependency_skill",
     "list_uploaded_skill_display_version_rows",
     "lock_skill_for_version_upload",
