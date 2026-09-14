@@ -613,6 +613,7 @@ async def _persist_probe_terminal(
     terminal_result: dict[str, Any],
     claim_token: str,
     run_diagnostics: RunDiagnosticsService | None = None,
+    protocol_failure: dict[str, Any] | None = None,
 ) -> None:
     terminal_receipt = executor_terminal_receipt_payload(terminal_result)
     async with transaction() as conn:
@@ -627,17 +628,33 @@ async def _persist_probe_terminal(
             claim_token=claim_token,
         )
         if run_diagnostics is not None:
-            await run_diagnostics.capture_failure_result(
-                conn,
-                tenant_id=str(lease_row["tenant_id"]),
-                run_id=str(lease_row["run_id"]),
-                attempt_id=str(lease_row["attempt_id"]),
-                source="executor_probe",
-                stage="terminal_receipt",
-                error_code=str(terminal_result.get("error_code") or executor_status),
-                result_json=terminal_result,
-                lease_id=str(lease_row["id"]),
-            )
+            if protocol_failure is not None:
+                try:
+                    async with conn.transaction():
+                        await run_diagnostics.capture_executor_protocol_failure(
+                            conn,
+                            tenant_id=str(lease_row["tenant_id"]),
+                            run_id=str(lease_row["run_id"]),
+                            attempt_id=str(lease_row["attempt_id"]),
+                            lease_id=str(lease_row["id"]),
+                            task_status=protocol_failure.get("task_status"),
+                            terminal_result=protocol_failure.get("terminal_result"),
+                            validation_errors=protocol_failure.get("validation_errors"),
+                        )
+                except Exception:  # noqa: BLE001 - diagnostics cannot change Run outcome.
+                    _logger.exception("Failed to persist executor protocol diagnostics")
+            else:
+                await run_diagnostics.capture_failure_result(
+                    conn,
+                    tenant_id=str(lease_row["tenant_id"]),
+                    run_id=str(lease_row["run_id"]),
+                    attempt_id=str(lease_row["attempt_id"]),
+                    source="executor_probe",
+                    stage="terminal_receipt",
+                    error_code=str(terminal_result.get("error_code") or executor_status),
+                    result_json=terminal_result,
+                    lease_id=str(lease_row["id"]),
+                )
 
 
 async def probe_suspect_executor_tasks_once(
@@ -686,20 +703,53 @@ async def probe_suspect_executor_tasks_once(
             )
             terminal_result = status.get("terminal_result")
             if terminal_result is not None:
+                validation_errors: list[dict[str, Any]] = []
                 try:
                     canonical_result = ExecutorTerminalResult.model_validate(
                         terminal_result
                     ).model_dump(mode="json", exclude_none=True)
-                except ValueError:
+                except ValueError as exc:
                     canonical_result = None
-                executor_status = (
-                    normalize_executor_terminal_status(
+                    error_details = getattr(exc, "errors", None)
+                    validation_errors = (
+                        error_details(
+                            include_url=False,
+                            include_context=False,
+                            include_input=False,
+                        )
+                        if callable(error_details)
+                        else [
+                            {
+                                "loc": [],
+                                "type": "value_error",
+                                "msg": "Terminal result validation failed",
+                            }
+                        ]
+                    )
+                if canonical_result is None:
+                    executor_status = None
+                elif canonical_result.get("run_id") != str(lease_row["run_id"]):
+                    executor_status = None
+                    validation_errors = [
+                        {
+                            "loc": ["run_id"],
+                            "type": "run_id_mismatch",
+                            "msg": "Terminal result Run does not match the claimed Run",
+                        }
+                    ]
+                else:
+                    executor_status = normalize_executor_terminal_status(
                         status.get("status"),
                         canonical_result.get("status"),
                     )
-                    if canonical_result is not None
-                    else None
-                )
+                    if executor_status is None:
+                        validation_errors = [
+                            {
+                                "loc": ["status"],
+                                "type": "status_mismatch",
+                                "msg": "Executor task status does not match terminal result status",
+                            }
+                        ]
                 if executor_status is None:
                     await _persist_probe_terminal(
                         lease_row,
@@ -713,6 +763,11 @@ async def probe_suspect_executor_tasks_once(
                         },
                         claim_token=claim_token,
                         run_diagnostics=run_diagnostics,
+                        protocol_failure={
+                            "task_status": status.get("status"),
+                            "terminal_result": terminal_result,
+                            "validation_errors": validation_errors,
+                        },
                     )
                     persisted_count += 1
                     continue

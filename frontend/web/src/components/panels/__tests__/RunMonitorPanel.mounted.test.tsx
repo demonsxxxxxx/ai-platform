@@ -253,6 +253,38 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
           reason: "tool_parameters_not_authorized",
         },
       ],
+      executor_protocol: {
+        reported: {
+          task_status: "callback_failed",
+          terminal_status: "completed",
+          run_id_matches: true,
+          fields: {
+            message: {
+              present: true,
+              type: "string",
+              bytes: 0,
+              non_empty: false,
+            },
+            answer_receipt: { present: false, type: "missing" },
+          },
+          additional_field_count: 3,
+        },
+        validation: [
+          {
+            location: "$",
+            type: "value_error",
+            message: "Terminal result violates a protocol rule",
+          },
+        ],
+        validation_omitted_count: 0,
+        canonical: {
+          status: "failed",
+          error_code: "executor_protocol_invalid",
+          message_non_empty: false,
+          answer_receipt_present: false,
+          structured_error_present: true,
+        },
+      },
     },
     versions: {
       run_diagnostics: "ai-platform.run-diagnostics.v1",
@@ -335,6 +367,10 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     assert.match(container.textContent ?? "", /ACTUAL_SDK_FAILURE_MARKER/);
     assert.match(container.textContent ?? "", /ACTUAL_STACK_TAIL_MARKER/);
     assert.match(container.textContent ?? "", /tool_parameters_not_authorized/);
+    assert.match(container.textContent ?? "", /终态协议证据/);
+    assert.match(container.textContent ?? "", /上报结构（已脱敏）/);
+    assert.match(container.textContent ?? "", /\$ · value_error/);
+    assert.match(container.textContent ?? "", /executor_protocol_invalid/);
     assert.match(container.textContent ?? "", /历史记录|部分采集/);
     assert.doesNotMatch(container.textContent ?? "", /PRIVATE_PROMPT_MARKER/);
     assert.doesNotMatch(container.textContent ?? "", /PRIVATE_RESULT_MARKER/);

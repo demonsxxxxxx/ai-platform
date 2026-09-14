@@ -112,6 +112,44 @@ upstream failure according to the owning code mapping.
 
 Public-answer projection remains fail-closed for secrets, concrete Skill implementation/source details, and structured executor or storage fields. Ordinary paths in natural-language answer and thinking text are allowed as user-visible project context. A rejected public projection is not a model or Run execution failure: the executor preserves its authoritative terminal status and omits the unsafe answer from ordinary-user projections. Historical records with the retired projection-failure code are presented as the generic fixed `run_failed` terminal state.
 
+## Change Contract: executor terminal protocol evidence
+
+- **Owner:** Runs owns the bounded private diagnostic record and platform-admin
+  projection; the Sandbox terminal validator supplies one pre-normalization
+  failure observation.
+- **Bounded paths:** executor probe terminal validation, the existing lease receipt
+  claim fence, existing Runs diagnostic application/domain contracts, the
+  platform-admin diagnostics response and Run Monitor section, their focused
+  tests, and this document.
+- **Reached invariants:** Run, Attempt, lease, callback and terminal authorities
+  remain unchanged; ordinary-user routes and events receive no new fields;
+  platform-admin reads remain tenant-scoped. Stored evidence contains only task
+  and terminal statuses, known-field types/counts/lengths, Run-ID match state,
+  bounded validation issues, and the fixed canonical replacement. It never
+  stores message text, answer-receipt values, additional field names, executor
+  payloads, paths, prompts, commands, credentials or secrets.
+- **Acceptance and regression proof:** an invalid probed terminal result records
+  its bounded structural summary alongside the unchanged generic failure; a
+  diagnostic-storage failure cannot replace that terminal result. Run-ID mismatch
+  is classified as protocol-invalid, and only the current receipt claim may append
+  evidence. The existing administrator endpoint and Run Monitor show reported,
+  validation and canonical views; tests prove capture, tenant/admin authorization,
+  and absence of supplied private marker values.
+- **Evidence ceiling:** source and local focused tests do not prove deployed
+  OpenSandbox behavior, packaged images, migrations or browser acceptance.
+- **Migration and rollback:** the existing versioned `run_diagnostics` JSONB
+  envelope carries the additive field, so no schema migration or compatibility
+  reader is introduced. Rollback removes the additive capture/projection; older
+  records remain readable because unknown diagnostic fields are already dropped.
+- **Stop conditions:** stop and revise this contract if implementation requires a
+  schema migration, ordinary-user exposure, weaker redaction or tenant fencing,
+  a second diagnostic store, or any change to callback or terminal semantics.
+- **Retirement and compatibility disposition:** no superseded production path,
+  selector, documentation or configuration is in scope; the existing generic
+  `executor_protocol_invalid` terminal remains active. Receipt idempotency remains
+  for callbacks without a claim and retries holding the same claim; a stale probe
+  claim may no longer accept another claimant's identical receipt.
+
 ## Private diagnostics and reconciliation
 
 Ordinary-user routes, SSE, history and status cards must never render private SDK

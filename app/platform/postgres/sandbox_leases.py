@@ -398,6 +398,11 @@ async def record_sandbox_executor_terminal(
         if (
             existing == terminal_result
             and str(current.get("executor_status") or "") == executor_status
+            and (
+                claim_token is None
+                or str(current.get("executor_reconciliation_claim_token") or "")
+                == claim_token
+            )
         ):
             return dict(current)
         raise SandboxExecutorTerminalConflictError("sandbox_executor_terminal_conflict")
