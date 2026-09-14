@@ -3714,8 +3714,8 @@ async def test_chat_stream_appends_canonical_product_events(monkeypatch):
     ]
     assert product_events[0]["payload"]["visible_to_user"] is True
     assert product_events[1]["payload"]["selected_capability"] == "document_review"
-    assert product_events[3]["payload"]["skill_id"] == "qa-file-reviewer"
-    assert product_events[4]["payload"]["file_ids"] == ["file_doc"]
+    assert product_events[2]["payload"]["skill_id"] == "qa-file-reviewer"
+    assert product_events[3]["payload"]["file_ids"] == ["file_doc"]
     assert any(
         event["event_type"] == "queued"
         and event["stage"] == "queue"
