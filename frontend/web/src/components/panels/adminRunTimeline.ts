@@ -1,4 +1,8 @@
-import type { AdminRunEvent, AdminRunSummary } from "../../services/api/adminRuns";
+import type {
+  AdminRunDiagnosticsResponse,
+  AdminRunEvent,
+  AdminRunSummary,
+} from "../../services/api/adminRuns";
 
 export type AdminRunTimelineKind = "activity" | "tool" | "terminal";
 export type AdminRunTimelineStatus = "info" | "running" | "succeeded" | "failed" | "denied" | "cancelled";
@@ -146,20 +150,19 @@ function diagnosticText(value: unknown): string | null {
   return null;
 }
 
-function failureDetail(run: AdminRunSummary, event: AdminRunEvent): string | null {
+function failureDetail(
+  run: AdminRunSummary,
+  event: AdminRunEvent,
+  diagnostics: AdminRunDiagnosticsResponse | null,
+): string | null {
   const base = eventDetail(event) ?? run.error_code ?? null;
-  const diagnostics = run.result?.runtime_diagnostics;
   if (!diagnostics || event.error_code !== "executor_failure") return base;
-  const sdk = diagnostics.sdk;
-  const sdkDiagnostics = sdk && typeof sdk === "object" && !Array.isArray(sdk)
-    ? (sdk as Record<string, unknown>)
-    : null;
   const reason =
-    diagnosticText(diagnostics.exception_message) ??
-    diagnosticText(sdkDiagnostics?.exception_message) ??
-    diagnosticText(sdkDiagnostics?.errors) ??
-    diagnosticText(diagnostics.failure_source) ??
-    diagnosticText(diagnostics.failure_stage);
+    diagnosticText(diagnostics.root?.message) ??
+    diagnosticText(diagnostics.details.sdk.exception_message) ??
+    diagnosticText(diagnostics.details.sdk.errors) ??
+    diagnosticText(diagnostics.root?.source) ??
+    diagnosticText(diagnostics.root?.stage);
   if (!reason || base?.includes(reason)) return base;
   return `${base ?? "执行器失败"} · 原因：${reason}`;
 }
@@ -237,6 +240,7 @@ function mergeProgress(
 export function buildAdminRunMonitorView(
   run: AdminRunSummary,
   events: AdminRunEvent[],
+  diagnostics: AdminRunDiagnosticsResponse | null = null,
 ): AdminRunMonitorView {
   const modelOutput = run.model_output ?? "";
   const timeline: AdminRunTimelineItem[] = [];
@@ -375,10 +379,14 @@ export function buildAdminRunMonitorView(
         kind: "terminal",
         status: terminalStatus(type),
         label: EVENT_LABELS[type] ?? "运行已结束",
-        detail: failureDetail(run, {
-          ...event,
-          error_code: event.error_code ?? run.error_code,
-        }),
+        detail: failureDetail(
+          run,
+          {
+            ...event,
+            error_code: event.error_code ?? run.error_code,
+          },
+          diagnostics,
+        ),
         created_at: event.created_at ?? null,
         count: 1,
       });

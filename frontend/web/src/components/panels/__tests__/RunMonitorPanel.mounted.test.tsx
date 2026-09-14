@@ -74,17 +74,7 @@ const paginatedRuns: AdminRunSummary[] = [
 
 test("Run Monitor compacts queue aliases and explains executor failures", () => {
   const view = buildAdminRunMonitorView(
-    {
-      ...runs[1],
-      result: {
-        runtime_diagnostics: {
-          failure_source: "sdk_exception",
-          sdk: {
-            exception_message: "Model provider unavailable",
-          },
-        },
-      },
-    },
+    runs[1],
     [
       { event_id: "queue-1", type: "run_queued", message: "任务已进入队列" },
       { event_id: "skill-1", type: "skill_selected", message: "已选择后台能力" },
@@ -102,6 +92,12 @@ test("Run Monitor compacts queue aliases and explains executor failures", () => 
         error_code: "executor_failure",
       },
     ],
+    {
+      root: null,
+      details: {
+        sdk: { exception_message: "Model provider unavailable" },
+      },
+    } as AdminRunDiagnosticsResponse,
   );
 
   const queueItems = view.recentActivity.filter((item) => item.label === "已进入队列");
