@@ -1,8 +1,30 @@
 import json
+import os
 from pathlib import Path
 
 from app.runtime.sandbox.contracts import SandboxRuntimeRequest, WorkspaceLease
+from app.sandbox.api import PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME
 from app.settings import get_settings
+
+
+PLATFORM_CLAUDE_PROJECT_INSTRUCTIONS = """# AI Platform 任务默认规则
+
+- 默认使用简体中文回复用户。
+- 面向用户的计划、进度说明、思考摘要和最终答复使用简体中文。
+- 代码、命令、文件名、路径、接口字段和必须保持准确的专有名词可以保留原文。
+- 用户明确指定其他语言时，遵循用户本次要求。
+"""
+
+
+def _write_platform_claude_instructions(workspace: Path, internal: Path) -> None:
+    target = workspace / PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME
+    temporary = internal / ".platform-claude-instructions.tmp"
+    try:
+        temporary.write_text(PLATFORM_CLAUDE_PROJECT_INSTRUCTIONS, encoding="utf-8")
+        temporary.chmod(0o444)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 class SandboxWorkspaceManager:
@@ -35,6 +57,7 @@ class SandboxWorkspaceManager:
         runtime = run_root / "runtime"
         for directory in (workspace, inputs, outputs, delivery, internal, logs, runtime):
             directory.mkdir(parents=True, exist_ok=True)
+        _write_platform_claude_instructions(workspace, internal)
 
         meta = {
             "tenant_id": request.tenant_id,

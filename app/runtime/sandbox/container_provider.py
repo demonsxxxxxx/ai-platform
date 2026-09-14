@@ -67,10 +67,6 @@ from app.platform.sandbox.docker_governed_network import (
     governed_egress_proof_key_id as _governed_egress_proof_key_id,
     runtime_release_commit as _runtime_release_commit,
 )
-from app.platform.sandbox.workspace_artifacts import (
-    workspace_directory_allowed,
-    workspace_file_allowed,
-)
 from app.platform.sandbox.errors import (
     ContainerCleanupFailedError,
     ContainerStartFailedError,
@@ -83,6 +79,10 @@ from app.platform.sandbox.errors import (
     OpenSandboxStartupFailedError,
     OpenSandboxUnavailableError,
     SandboxRuntimeError,
+)
+from app.sandbox.api import (
+    workspace_collection_directory_allowed as workspace_directory_allowed,
+    workspace_collection_file_allowed as workspace_file_allowed,
 )
 from app.execution_boundary import (
     GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID,

@@ -28,6 +28,18 @@ from app.sandbox.domain.runtime_diagnostics import (
 from app.sandbox.domain.runtime_diagnostics import (
     runtime_diagnostic_value as runtime_diagnostic_value,
 )
+from app.sandbox.domain.workspace_policy import (
+    PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME as PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME,
+)
+from app.sandbox.domain.workspace_policy import (
+    workspace_collection_directory_allowed as workspace_collection_directory_allowed,
+)
+from app.sandbox.domain.workspace_policy import (
+    workspace_collection_file_allowed as workspace_collection_file_allowed,
+)
+from app.sandbox.domain.workspace_policy import (
+    workspace_mutation_allowed as workspace_mutation_allowed,
+)
 
 
 @dataclass(frozen=True, slots=True)

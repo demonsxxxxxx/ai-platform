@@ -69,6 +69,7 @@ from app.sandbox.api import (
     normalize_sdk_runtime_diagnostics,
     runtime_diagnostic_text as _runtime_diagnostic_text,
     runtime_diagnostic_value as _runtime_diagnostic_value,
+    workspace_mutation_allowed,
 )
 from app.settings import get_settings
 from app.skills.execution_profiles import (
@@ -843,14 +844,7 @@ def _workspace_path_parameters_authorized(
         return True
 
     def writable_path_parts_authorized(relative: Path) -> bool:
-        lowered = tuple(part.lower() for part in relative.parts)
-        if len(lowered) >= 2 and lowered[0] == "output":
-            return True
-        return (
-            len(lowered) >= 3
-            and lowered[0] == "outputs"
-            and "delivery" in lowered[1:-1]
-        )
+        return workspace_mutation_allowed(PurePosixPath(relative.as_posix()))
 
     def path_authorized(raw: object, *, mutating: bool = False) -> bool:
         relatives = normalized_relatives(raw)
