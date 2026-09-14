@@ -7005,19 +7005,9 @@ async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_ten
     class RegistryCursor:
         async def fetchone(self):
             return {
-                "tool_id": "qa-search",
-                "server_id": "qa-mcp",
-                "name": "QA Search",
-                "description": "Search QA records.",
-                "registry_status": "active",
-                "server_status": "active",
-                "registry_write_capable": False,
-                "registry_risk_level": "low",
-                "registry_visible_to_user": True,
-                "policy_status": "active",
-                "policy_write_capable": False,
-                "policy_risk_level": "low",
-                "policy_visible_to_user": True,
+                "name": "qa-mcp",
+                "transport": "streamable_http",
+                "status": "active",
             }
 
     class RegistryConnection:
@@ -7033,20 +7023,14 @@ async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_ten
     row = await repositories.get_mcp_tool_registry_entry(
         conn,
         tenant_id="tenant-a",
-        tool_id="qa-search",
+        tool_id="qa-mcp::qa.search",
     )
 
     sql, params = conn.calls[0]
-    assert "join mcp_servers" in sql
-    assert "mcp_servers.tenant_id = %s" in sql
-    assert "mcp_servers.name = mcp_tools.server_id" in sql
-    assert "mcp_tools.id = %s" in sql
-    assert "catalog_entry.tenant_id = %s" in sql
-    assert "catalog_entry.catalog_generation = catalog_server.catalog_generation" in sql
-    assert "catalog_server.catalog_status = 'available'" in sql
-    assert "catalog_any" not in sql
-    assert sql.count("%s") == len(params)
-    assert params == ("tenant-a", "qa-search", "tenant-a")
+    assert "from mcp_servers" in sql
+    assert "mcp_tools" not in sql
+    assert "mcp_tool_catalog_entries" not in sql
+    assert params == ("tenant-a", "qa-mcp")
     assert row is not None
     assert {
         key: row[key]
@@ -7061,25 +7045,24 @@ async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_ten
             "risk_level",
             "visible_to_user",
             "effective_status",
-            "source",
         )
     } == {
-        "tool_id": "qa-search",
+        "tool_id": "qa-mcp::qa.search",
         "server_id": "qa-mcp",
-        "name": "QA Search",
-        "description": "Search QA records.",
+        "name": "qa.search",
+        "description": "",
         "registry_status": "active",
         "server_status": "active",
-        "write_capable": False,
-        "risk_level": "low",
+        "write_capable": True,
+        "risk_level": "high",
         "visible_to_user": True,
         "effective_status": "active",
-        "source": "tenant",
     }
+    assert repositories.mcp_runtime_metadata_usable(row)
 
 
 @pytest.mark.asyncio
-async def test_chat_catalog_query_accepts_only_the_known_builtin_or_current_tenant_catalog():
+async def test_chat_catalog_query_accepts_only_the_known_builtin_as_local_compatibility():
     class Cursor:
         async def fetchall(self):
             return []
@@ -7097,9 +7080,9 @@ async def test_chat_catalog_query_accepts_only_the_known_builtin_or_current_tena
     conn = Connection()
     assert await repositories.list_chat_mcp_tool_catalog_entries(conn, tenant_id="tenant-a") == []
 
-    assert "ragflow-knowledge-search" in conn.sql
-    assert "catalog_entry.tenant_id = %s" in conn.sql
-    assert "catalog_any" not in conn.sql
+    assert "mcp_tools.id = 'ragflow-knowledge-search'" in conn.sql
+    assert "mcp_tools.server_id = 'ragflow'" in conn.sql
+    assert "catalog_entry.tenant_id = %s" not in conn.sql
     assert conn.params == ("tenant-a", "tenant-a")
 
 
