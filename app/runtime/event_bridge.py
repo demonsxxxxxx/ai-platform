@@ -1,6 +1,7 @@
 import re
 
 from app.control_plane_contracts import sanitize_public_payload
+from app.platform.public_payload import sanitize_public_answer_text
 from app.public_execution import (
     PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
     PUBLIC_EXECUTION_EVENT_TYPES,
@@ -90,9 +91,7 @@ _V4_MESSAGE_EVENT_TYPES = frozenset(
         "subagent.cancelled",
     }
 )
-_V4_NATURAL_TEXT_EVENT_TYPES = frozenset(
-    {"message.delta", "message.completed", "thinking.delta", "thinking.completed"}
-)
+_V4_TEXT_PAYLOAD_EVENT_TYPES = frozenset({"message.delta", "thinking.delta"})
 _V4_RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _V4_SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$")
 _V4_EVENT_ID_PATTERN = _V4_SAFE_REF_PATTERN
@@ -189,9 +188,22 @@ def _v4_agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
     identity_candidate = {**candidate, "payload": {}}
     if not _public_strings_are_identity_safe(identity_candidate):
         return _private_executor_event()
-    preserve_paths = event.type in _V4_NATURAL_TEXT_EVENT_TYPES
-    if sanitize_public_payload(
-        event.payload, preserve_paths=preserve_paths
+    if event.type in _V4_TEXT_PAYLOAD_EVENT_TYPES:
+        if not isinstance(event.payload, dict):
+            return _private_executor_event()
+        delta = event.payload.get("delta")
+        structured_payload = {
+            key: value for key, value in event.payload.items() if key != "delta"
+        }
+        if (
+            not isinstance(delta, str)
+            or sanitize_public_answer_text(delta) != delta
+            or sanitize_public_payload(structured_payload)
+            != _without_none_public_values(structured_payload)
+        ):
+            return _private_executor_event()
+    elif sanitize_public_payload(
+        event.payload
     ) != _without_none_public_values(event.payload):
         return _private_executor_event()
     stage = _V4_EVENT_STAGES.get(event.type)
@@ -207,9 +219,7 @@ def _v4_agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
             message_id=event.message_id,
             causation_event_id=event.causation_event_id,
             payload=dict(event.payload),
-            payload_sanitizer=lambda value: sanitize_public_payload(
-                value, preserve_paths=event.type in _V4_NATURAL_TEXT_EVENT_TYPES
-            ),
+            payload_sanitizer=sanitize_public_payload,
         )
     except (TypeError, ValueError):
         return _private_executor_event()

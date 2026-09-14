@@ -61,7 +61,7 @@ def _assert_sandbox_answer_receipt(result, candidates, answer):
     assert all(len(candidate.payload["delta"]) <= 8_192 for candidate in delta_candidates)
 
 
-def test_v4_callback_bridge_rejects_private_strings_even_when_shape_is_valid():
+def test_v4_callback_bridge_preserves_safe_text_and_rejects_private_fields():
     safe = AgentEvent(
         type="message.delta",
         payload={"delta": "safe answer"},
@@ -69,14 +69,20 @@ def test_v4_callback_bridge_rejects_private_strings_even_when_shape_is_valid():
         run_id="run-1187",
         message_id="message-1",
     )
-    private = AgentEvent(
+    path_text = AgentEvent(
         type="message.delta",
         payload={"delta": r"C:\\agent-workspaces\\run-1187\\output.txt"},
         event_id="event-2",
         run_id="run-1187",
         message_id="message-1",
     )
-
+    private_payload_field = AgentEvent(
+        type="message.delta",
+        payload={"delta": "safe answer", "path": "agent-workspaces/private"},
+        event_id="event-3",
+        run_id="run-1187",
+        message_id="message-1",
+    )
     private_envelope = AgentEvent(
         type="message.delta",
         payload={"delta": "safe answer"},
@@ -87,7 +93,11 @@ def test_v4_callback_bridge_rejects_private_strings_even_when_shape_is_valid():
     )
 
     assert agent_event_to_executor_event(safe)["event_type"] == "message.delta"
-    assert agent_event_to_executor_event(private)["event_type"] == "message.delta"
+    assert agent_event_to_executor_event(path_text)["event_type"] == "message.delta"
+    assert (
+        agent_event_to_executor_event(private_payload_field)["event_type"]
+        == "executor_private_event"
+    )
     assert agent_event_to_executor_event(private_envelope)["event_type"] == "executor_private_event"
 
 

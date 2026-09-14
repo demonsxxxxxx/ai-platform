@@ -76,19 +76,25 @@ def test_stateful_assignment_sanitizer_holds_split_secret_values_and_matches_ter
                 )
 
 
-def test_stateful_assignment_sanitizer_fails_closed_at_bounded_ceiling():
+def test_stateful_assignment_sanitizer_recovers_after_bounded_fragment_failure():
     gate = PublicAnswerStreamGate(
         private_replacements={},
         sanitizer=sanitize_public_text,
         max_private_token_chars=32,
     )
     assert gate.accept('access_token="') == ()
-    assert gate.accept("x" * 64) == ()
-    assert gate.failed is True
+    assert gate.accept("x" * 64) == ("[content unavailable]",)
+    assert gate.failed is False
     assert gate.failure_reason == "sanitizer_bound_exceeded"
-    assert (
-        gate.finish(final_text='access_token="' + ("x" * 64), release=True).chunks == ()
+    assert gate.accept(" later") == (" ",)
+
+    finished = gate.finish(
+        final_text='access_token="' + ("x" * 64) + " later",
+        release=True,
     )
+
+    assert finished.chunks == ("later",)
+    assert finished.final_text == "[content unavailable] later"
 
 
 def _sanitize(value):
@@ -605,21 +611,21 @@ def test_terminal_sanitizer_fault_keeps_already_published_text():
     assert finished.final_text == "safe partial"
 
 
-def test_sanitizer_fault_omits_fragment_and_continues():
+def test_sanitizer_fault_replaces_fragment_and_continues():
     gate = _gate()
 
-    assert gate.accept("raw-secret") == ()
+    assert gate.accept("raw-secret") == ("[content unavailable]",)
     assert gate.accept("safe after.") == ("safe ",)
     finished = gate.finish(final_text="raw-secretsafe after.", release=True)
 
     assert gate.failed is False
     assert gate.failure_reason == "sanitizer_rejected"
-    assert gate.projection_omissions == 1
+    assert gate.projection_omissions == 2
     assert finished.chunks == ("after.",)
-    assert finished.final_text == "safe after."
+    assert finished.final_text == "[content unavailable]safe after."
 
 
-def test_sanitizer_exception_omits_faulted_fragment_and_continues():
+def test_sanitizer_exception_replaces_faulted_fragment_and_continues():
     failed_once = False
 
     def flaky_sanitizer(value):
@@ -640,8 +646,10 @@ def test_sanitizer_exception_omits_faulted_fragment_and_continues():
     after = gate.accept("after.")
     finished = gate.finish(final_text="before omit meafter.", release=True)
 
-    assert "".join((*before, *omitted, *after, *finished.chunks)) == "before after."
-    assert finished.final_text == "before after."
+    assert "".join((*before, *omitted, *after, *finished.chunks)) == (
+        "before [content unavailable]after."
+    )
+    assert finished.final_text == "before [content unavailable]after."
     assert gate.failed is False
     assert gate.failure_reason == "sanitizer_failed"
     assert gate.projection_omissions == 1
