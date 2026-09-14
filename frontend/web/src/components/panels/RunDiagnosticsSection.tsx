@@ -20,6 +20,14 @@ function diagnosticValue(value: unknown): string {
   }
 }
 
+function diagnosticJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "[无法显示]";
+  }
+}
+
 function AttemptStatus({ status }: { status: string }) {
   return (
     <span className="shrink-0 rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[11px] text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
@@ -68,6 +76,7 @@ export function RunDiagnosticsSection({
     ...diagnostics.details.tool_calls,
     ...diagnostics.details.tool_policy_denials,
   ];
+  const protocolEvidence = diagnostics.details.executor_protocol;
   return (
     <section className="p-4" data-run-runtime-diagnostics>
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -140,6 +149,57 @@ export function RunDiagnosticsSection({
                   </li>
                 ))}
               </ul>
+            </div>
+          ) : null}
+          {protocolEvidence ? (
+            <div
+              className="rounded-md border border-[var(--theme-border)] p-3"
+              data-executor-protocol-evidence
+            >
+              <h4 className="text-xs font-medium text-[var(--theme-text)]">
+                终态协议证据
+              </h4>
+              <div className="mt-2 space-y-3 text-[11px]">
+                <div>
+                  <p className="font-medium text-[var(--theme-text-secondary)]">
+                    上报结构（已脱敏）
+                  </p>
+                  <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono leading-5 text-[var(--theme-text-tertiary)]">
+                    {diagnosticJson(protocolEvidence.reported)}
+                  </pre>
+                </div>
+                <div className="border-t border-[var(--theme-border)] pt-3">
+                  <p className="font-medium text-[var(--theme-text-secondary)]">
+                    协议校验
+                  </p>
+                  {protocolEvidence.validation.length ? (
+                    <ul className="mt-1 space-y-1 font-mono leading-5 text-[var(--theme-danger)]">
+                      {protocolEvidence.validation.map((item, index) => (
+                        <li key={`${item.location}-${item.type}-${index}`} className="break-words">
+                          {item.location} · {item.type} · {item.message}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-1 text-[var(--theme-text-tertiary)]">
+                      无结构化校验明细
+                    </p>
+                  )}
+                  {protocolEvidence.validation_omitted_count ? (
+                    <p className="mt-1 text-[var(--theme-warning)]">
+                      另省略 {protocolEvidence.validation_omitted_count} 条校验结果
+                    </p>
+                  ) : null}
+                </div>
+                <div className="border-t border-[var(--theme-border)] pt-3">
+                  <p className="font-medium text-[var(--theme-text-secondary)]">
+                    规范化替代结果
+                  </p>
+                  <pre className="mt-1 overflow-auto whitespace-pre-wrap break-words font-mono leading-5 text-[var(--theme-text-tertiary)]">
+                    {diagnosticJson(protocolEvidence.canonical)}
+                  </pre>
+                </div>
+              </div>
             </div>
           ) : null}
           {toolEvidence.length ? (

@@ -606,27 +606,135 @@ async def test_probe_persists_private_diagnostics_before_bounded_terminal_receip
 
 
 @pytest.mark.asyncio
+async def test_probe_persists_only_structural_protocol_evidence(
+    monkeypatch,
+):
+    calls = []
+
+    async def record_terminal(conn, **kwargs):
+        calls.append(("receipt", conn, kwargs))
+
+    class RecordingDiagnostics:
+        async def capture_executor_protocol_failure(self, conn, **kwargs):
+            calls.append(("protocol", conn, kwargs))
+
+        async def capture_failure_result(self, *_args, **_kwargs):
+            raise AssertionError("invalid payload diagnostics must not be captured")
+
+    monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
+    monkeypatch.setattr(
+        "app.executor_reconciler.sandbox_lease_repository.record_sandbox_executor_terminal",
+        record_terminal,
+    )
+    reported_result = {
+        "status": "completed",
+        "run_id": "run-a",
+        "message": "",
+        "error_code": "PRIVATE_REPORTED_ERROR_CODE",
+        "runtime_diagnostics": {
+            "schema_version": "ai-platform.sdk-runtime-diagnostics.v1",
+            "error_code": "provider_timeout",
+        },
+    }
+    validation_errors = [
+        {
+            "loc": [],
+            "type": "value_error",
+            "msg": "successful terminal result requires output",
+        }
+    ]
+
+    await _persist_probe_terminal(
+        _suspect_lease_row(),
+        executor_status="failed",
+        terminal_result={
+            "run_id": "run-a",
+            "status": "failed",
+            "error_code": "executor_protocol_invalid",
+            "error_message": "Sandbox executor returned an invalid terminal result",
+        },
+        claim_token="claim-a",
+        run_diagnostics=RecordingDiagnostics(),
+        protocol_failure={
+            "task_status": "callback_failed",
+            "terminal_result": reported_result,
+            "validation_errors": validation_errors,
+        },
+    )
+
+    assert [item[0] for item in calls] == ["receipt", "protocol"]
+    assert calls[0][1] is calls[1][1]
+    assert calls[1][2]["terminal_result"] is reported_result
+    assert calls[1][2]["validation_errors"] is validation_errors
+    assert "runtime_diagnostics" not in str(calls[0][2]["terminal_result"])
+
+
+@pytest.mark.asyncio
+async def test_probe_keeps_terminal_receipt_when_protocol_diagnostics_fail(
+    monkeypatch,
+):
+    calls = []
+
+    async def record_terminal(conn, **kwargs):
+        calls.append(("receipt", conn, kwargs))
+
+    class FailingDiagnostics:
+        async def capture_executor_protocol_failure(self, conn, **_kwargs):
+            calls.append(("protocol", conn))
+            raise RuntimeError("diagnostic storage unavailable")
+
+    monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
+    monkeypatch.setattr(
+        "app.executor_reconciler.sandbox_lease_repository.record_sandbox_executor_terminal",
+        record_terminal,
+    )
+
+    await _persist_probe_terminal(
+        _suspect_lease_row(),
+        executor_status="failed",
+        terminal_result={
+            "run_id": "run-a",
+            "status": "failed",
+            "error_code": "executor_protocol_invalid",
+            "error_message": "Sandbox executor returned an invalid terminal result",
+        },
+        claim_token="claim-a",
+        run_diagnostics=FailingDiagnostics(),
+        protocol_failure={
+            "task_status": "completed",
+            "terminal_result": {"run_id": "run-a", "status": "completed"},
+            "validation_errors": [],
+        },
+    )
+
+    assert [item[0] for item in calls] == ["receipt", "protocol"]
+    assert calls[0][1] is calls[1][1]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     (
         "task_status",
         "result_status",
         "success_message",
+        "result_run_id",
         "expected_executor_status",
     ),
     [
-        ("completed", "completed", "done", "completed"),
-        ("succeeded", "succeeded", "done", "completed"),
-        ("callback_failed", "completed", "done", "completed"),
-        ("callback_failed", "succeeded", "done", "completed"),
-        ("failed", "failed", None, "failed"),
-        ("callback_failed", "failed", None, "failed"),
-        ("cancelled", "cancelled", None, "cancelled"),
-        ("canceled", "cancelled", None, "cancelled"),
-        ("callback_failed", "canceled", None, "cancelled"),
-        ("completed", "failed", None, "protocol_invalid"),
-        ("failed", "completed", "done", "protocol_invalid"),
-        ("finished", "completed", "done", "protocol_invalid"),
-        ("callback_failed", "completed", "", "protocol_invalid"),
+        ("completed", "completed", "done", "run-a", "completed"),
+        ("succeeded", "succeeded", "done", "run-a", "completed"),
+        ("callback_failed", "completed", "done", "run-a", "completed"),
+        ("callback_failed", "succeeded", "done", "run-a", "completed"),
+        ("failed", "failed", None, "run-a", "failed"),
+        ("callback_failed", "failed", None, "run-a", "failed"),
+        ("cancelled", "cancelled", None, "run-a", "cancelled"),
+        ("canceled", "cancelled", None, "run-a", "cancelled"),
+        ("callback_failed", "canceled", None, "run-a", "cancelled"),
+        ("completed", "failed", None, "run-a", "protocol_invalid"),
+        ("failed", "completed", "done", "run-a", "protocol_invalid"),
+        ("finished", "completed", "done", "run-a", "protocol_invalid"),
+        ("callback_failed", "completed", "", "run-a", "protocol_invalid"),
+        ("completed", "completed", "done", "run-other", "protocol_invalid"),
     ],
 )
 async def test_probe_preserves_matching_terminal_status_and_rejects_contradictions(
@@ -634,6 +742,7 @@ async def test_probe_preserves_matching_terminal_status_and_rejects_contradictio
     task_status,
     result_status,
     success_message,
+    result_run_id,
     expected_executor_status,
 ):
     persisted = []
@@ -647,7 +756,7 @@ async def test_probe_preserves_matching_terminal_status_and_rejects_contradictio
     async def persist(lease_row, **kwargs):
         persisted.append((lease_row, kwargs))
 
-    terminal_result = {"run_id": "run-a", "status": result_status}
+    terminal_result = {"run_id": result_run_id, "status": result_status}
     if result_status in {"completed", "succeeded"}:
         terminal_result["message"] = success_message
     else:
@@ -694,7 +803,21 @@ async def test_probe_preserves_matching_terminal_status_and_rejects_contradictio
     assert persisted[0][0]["id"] == "lease-a"
     assert isinstance(persisted[0][1].pop("claim_token"), str)
     assert persisted[0][1].pop("run_diagnostics") is None
+    protocol_failure = persisted[0][1].pop("protocol_failure", None)
     if expected_executor_status == "protocol_invalid":
+        assert protocol_failure is not None
+        assert protocol_failure["task_status"] == task_status
+        assert protocol_failure["terminal_result"] == terminal_result
+        assert protocol_failure["validation_errors"]
+        assert "input" not in str(protocol_failure["validation_errors"])
+        if result_run_id != "run-a":
+            assert protocol_failure["validation_errors"] == [
+                {
+                    "loc": ["run_id"],
+                    "type": "run_id_mismatch",
+                    "msg": "Terminal result Run does not match the claimed Run",
+                }
+            ]
         assert persisted[0][1] == {
             "executor_status": "failed",
             "terminal_result": {
@@ -706,6 +829,7 @@ async def test_probe_preserves_matching_terminal_status_and_rejects_contradictio
             },
         }
     else:
+        assert protocol_failure is None
         expected_result = {**terminal_result}
         expected_result.setdefault("message", "")
         assert persisted[0][1] == {
@@ -1443,6 +1567,57 @@ async def test_probe_terminal_receipt_rejects_a_stale_claim_token():
     assert "executor_reconciliation_status = 'claimed'" in update_sql
     assert "executor_reconciliation_claim_token = %s" in update_sql
     assert update_params[-2:] == ("stale-probe-claim", "stale-probe-claim")
+
+
+@pytest.mark.asyncio
+async def test_probe_terminal_receipt_is_claim_fenced_when_receipt_matches():
+    statements = []
+    terminal_result = {"run_id": "run-a", "status": "failed"}
+
+    class Cursor:
+        async def fetchone(self):
+            return {
+                "id": "lease-a",
+                "executor_status": "failed",
+                "executor_terminal_json": terminal_result,
+                "executor_reconciliation_claim_token": "newer-claim",
+            }
+
+    class Connection:
+        async def execute(self, sql, params):
+            statements.append((" ".join(sql.split()).lower(), params))
+            return Cursor()
+
+    with pytest.raises(
+        sandbox_lease_repository.SandboxExecutorTerminalConflictError,
+        match="sandbox_executor_terminal_conflict",
+    ):
+        await sandbox_lease_repository.record_sandbox_executor_terminal(
+            Connection(),
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            lease_id="lease-a",
+            executor_status="failed",
+            terminal_result=terminal_result,
+            claim_token="stale-probe-claim",
+        )
+
+    assert len(statements) == 1
+
+    recorded = await sandbox_lease_repository.record_sandbox_executor_terminal(
+        Connection(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        lease_id="lease-a",
+        executor_status="failed",
+        terminal_result=terminal_result,
+        claim_token="newer-claim",
+    )
+
+    assert recorded["executor_reconciliation_claim_token"] == "newer-claim"
+    assert len(statements) == 2
 
 
 @pytest.mark.asyncio

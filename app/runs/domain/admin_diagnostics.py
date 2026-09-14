@@ -73,12 +73,50 @@ class AdminRunDiagnosticToolEvidence(TypedDict):
     reason: NotRequired[str]
 
 
+class AdminRunDiagnosticProtocolField(TypedDict):
+    present: bool
+    type: str
+    bytes: NotRequired[int]
+    non_empty: NotRequired[bool]
+    items: NotRequired[int]
+
+
+class AdminRunDiagnosticProtocolValidation(TypedDict):
+    location: str
+    type: str
+    message: str
+
+
+class AdminRunDiagnosticProtocolReported(TypedDict):
+    task_status: str | None
+    terminal_status: str | None
+    run_id_matches: bool | None
+    fields: dict[str, AdminRunDiagnosticProtocolField]
+    additional_field_count: int
+
+
+class AdminRunDiagnosticProtocolCanonical(TypedDict):
+    status: str
+    error_code: str
+    message_non_empty: bool
+    answer_receipt_present: bool
+    structured_error_present: bool
+
+
+class AdminRunDiagnosticExecutorProtocol(TypedDict):
+    reported: AdminRunDiagnosticProtocolReported
+    validation: list[AdminRunDiagnosticProtocolValidation]
+    validation_omitted_count: int
+    canonical: AdminRunDiagnosticProtocolCanonical
+
+
 class AdminRunDiagnosticDetails(TypedDict):
     schema_version: str | None
     sdk: AdminRunDiagnosticSdk
     tool_lifecycles: list[AdminRunDiagnosticToolEvidence]
     tool_calls: list[AdminRunDiagnosticToolEvidence]
     tool_policy_denials: list[AdminRunDiagnosticToolEvidence]
+    executor_protocol: AdminRunDiagnosticExecutorProtocol | None
 
 
 class AdminRunDiagnosticCounts(TypedDict):

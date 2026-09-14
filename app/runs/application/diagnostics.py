@@ -8,6 +8,7 @@ from typing import Any, Callable, Protocol
 
 from app.runs.domain.diagnostics import (
     RUN_DIAGNOSTICS_SCHEMA_VERSION,
+    build_executor_protocol_diagnostics,
     build_failure_observation,
     sanitize_run_diagnostic_text,
     sanitize_run_diagnostic_losses,
@@ -87,6 +88,40 @@ class RunDiagnosticsService:
                 observation=observation,
             )
         return public_result
+
+    async def capture_executor_protocol_failure(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_id: str,
+        attempt_id: str | None,
+        lease_id: str | None,
+        task_status: object,
+        terminal_result: object,
+        validation_errors: object,
+    ) -> None:
+        observation = build_failure_observation(
+            attempt_id=attempt_id,
+            source="executor_probe",
+            stage="terminal_result_validation",
+            error_code="executor_protocol_invalid",
+            runtime_diagnostics=build_executor_protocol_diagnostics(
+                runtime_schema_version=self.runtime_diagnostics_schema_version,
+                task_status=task_status,
+                terminal_result=terminal_result,
+                expected_run_id=run_id,
+                validation_errors=validation_errors,
+            ),
+            received_at=self.clock(),
+            lease_id=lease_id,
+        )
+        await self.persistence.append_observation(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            observation=observation,
+        )
 
     async def capture_reconciliation_failure(
         self,
@@ -272,7 +307,14 @@ def _project_observations(
 ]:
     root = None
     handling: list[dict[str, Any]] = []
-    details: dict[str, Any] = {}
+    details: dict[str, Any] = {
+        "schema_version": None,
+        "sdk": {},
+        "tool_lifecycles": [],
+        "tool_calls": [],
+        "tool_policy_denials": [],
+        "executor_protocol": None,
+    }
     losses: list[dict[str, Any]] = []
     for record_index, raw in enumerate(observations):
         if not isinstance(raw, dict):
@@ -296,7 +338,13 @@ def _project_observations(
                 "tool_policy_denials": evidence.get("tool_policy_denials")
                 if isinstance(evidence.get("tool_policy_denials"), list)
                 else [],
+                "executor_protocol": evidence.get("executor_protocol")
+                if isinstance(evidence.get("executor_protocol"), dict)
+                else None,
             }
+        protocol_evidence = evidence.get("executor_protocol")
+        if details["executor_protocol"] is None and isinstance(protocol_evidence, dict):
+            details["executor_protocol"] = protocol_evidence
         for item in failures[1:] if record_index == 0 else failures:
             handling.append(_failure_projection(raw, item, kind="handling"))
         if record_index > 0 or len(failures) <= 1:

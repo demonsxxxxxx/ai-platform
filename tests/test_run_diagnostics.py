@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import datetime, timezone
 
 import pytest
@@ -7,8 +8,10 @@ from app.runs.application.diagnostics import RunDiagnosticsService
 from app.runs.domain.diagnostics import (
     RUN_DIAGNOSTICS_MAX_BYTES,
     RUN_DIAGNOSTICS_SCHEMA_VERSION,
+    build_executor_protocol_diagnostics,
     build_failure_observation,
     merge_run_diagnostics,
+    sanitize_runtime_diagnostics,
 )
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -337,6 +340,149 @@ async def test_capture_redacts_private_tool_values_before_storage_and_admin_proj
 
 
 @pytest.mark.asyncio
+async def test_protocol_failure_capture_keeps_structure_and_drops_reported_values():
+    persistence = InMemoryDiagnostics()
+    service = RunDiagnosticsService(
+        persistence=persistence,
+        normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        clock=lambda: NOW,
+    )
+    private_marker = "sk-private-terminal-marker"
+    private_path = "/home/operator/private/result.json"
+
+    await service.capture_failure_result(
+        object(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        source="worker_executor",
+        stage="terminalization",
+        error_code="provider_timeout",
+        result_json={"runtime_diagnostics": runtime_diagnostics()},
+    )
+
+    await service.capture_executor_protocol_failure(
+        object(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        lease_id="lease-a",
+        task_status="callback_failed",
+        terminal_result={
+            "status": "completed",
+            "run_id": "run-other",
+            "message": private_marker,
+            "answer_receipt": {
+                "message_id": private_marker,
+                "path": private_path,
+            },
+            "error_message": private_path,
+            "secret_extra_name": private_marker,
+        },
+        validation_errors=[
+            {
+                "loc": ("answer_receipt", "message_id"),
+                "type": "value_error",
+                "msg": f"invalid receipt token={private_marker} at {private_path}",
+                "input": {"secret": private_marker},
+            }
+        ],
+    )
+
+    serialized = str(persistence.payload)
+    assert private_marker not in serialized
+    assert private_path not in serialized
+    assert "secret_extra_name" not in serialized
+    protocol = persistence.payload["observations"][1]["runtime_diagnostics"][
+        "executor_protocol"
+    ]
+    assert protocol["reported"]["task_status"] == "callback_failed"
+    assert protocol["reported"]["terminal_status"] == "completed"
+    assert protocol["reported"]["run_id_matches"] is False
+    assert protocol["reported"]["fields"]["message"] == {
+        "present": True,
+        "type": "string",
+        "bytes": len(private_marker),
+        "non_empty": True,
+    }
+    assert protocol["reported"]["fields"]["answer_receipt"] == {
+        "present": True,
+        "type": "object",
+        "items": 2,
+    }
+    assert protocol["reported"]["additional_field_count"] == 1
+    assert protocol["validation"] == [
+        {
+            "location": "answer_receipt.message_id",
+            "type": "value_error",
+            "message": "Terminal result violates a protocol rule",
+        }
+    ]
+    assert protocol["canonical"]["error_code"] == "executor_protocol_invalid"
+
+    malformed_protocol = deepcopy(protocol)
+    malformed_protocol["canonical"]["message_non_empty"] = 0
+    persistence.payload["observations"][0]["runtime_diagnostics"][
+        "executor_protocol"
+    ] = malformed_protocol
+
+    persistence.snapshot = {
+        "run": {
+            "run_id": "run-a",
+            "session_id": "session-a",
+            "user_id": "user-a",
+            "workspace_id": "workspace-a",
+            "status": "failed",
+            "trace_id": None,
+            "created_at": NOW,
+            "queued_at": NOW,
+            "started_at": NOW,
+            "finished_at": NOW,
+            "error_code": "executor_protocol_invalid",
+        },
+        "result_json": {},
+        "diagnostic": {
+            "diagnostic_id": "rdiag-a",
+            "schema_version": RUN_DIAGNOSTICS_SCHEMA_VERSION,
+            "revision": 1,
+            "payload_json": persistence.payload,
+        },
+        "attempts": [],
+    }
+    response = await service.read_admin(object(), tenant_id="tenant-a", run_id="run-a")
+
+    assert response["root"]["error_code"] == "provider_timeout"
+    assert response["details"]["executor_protocol"] == protocol
+    assert [item["error_code"] for item in response["handling"]].count(
+        "executor_protocol_invalid"
+    ) == 1
+    assert private_marker not in str(response)
+    assert private_path not in str(response)
+
+
+def test_protocol_diagnostics_drops_unrecognized_status_values():
+    private_marker = "untrusted-status-value"
+
+    evidence = build_executor_protocol_diagnostics(
+        runtime_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        task_status=private_marker,
+        terminal_result={"status": private_marker, "run_id": "run-a"},
+        expected_run_id="run-a",
+        validation_errors=[{"loc": [], "type": "value_error", "msg": private_marker}],
+    )
+
+    reported = evidence["executor_protocol"]["reported"]
+    assert reported["task_status"] is None
+    assert reported["terminal_status"] is None
+    assert private_marker not in str(evidence)
+
+    evidence["executor_protocol"]["validation"][0]["type"] = []
+    evidence["executor_protocol"]["validation"][0]["location"] = "9" * 5_000
+    assert "executor_protocol" not in sanitize_runtime_diagnostics(evidence)
+
+
+@pytest.mark.asyncio
 async def test_admin_projection_returns_structured_root_attempts_and_losses():
     normalized = normalize_sdk_runtime_diagnostics(runtime_diagnostics())
     observation = build_failure_observation(
@@ -437,6 +583,14 @@ async def test_admin_projection_marks_legacy_and_absent_records_explicitly():
     assert legacy["root"]["error_code"] == "provider_timeout"
     assert absent["coverage"] == "not_collected"
     assert absent["root"] is None
+    assert absent["details"] == {
+        "schema_version": None,
+        "sdk": {},
+        "tool_lifecycles": [],
+        "tool_calls": [],
+        "tool_policy_denials": [],
+        "executor_protocol": None,
+    }
 
 
 @pytest.mark.asyncio

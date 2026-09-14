@@ -118,6 +118,37 @@ export interface AdminRunDiagnosticToolEvidence {
   reason?: string | null;
 }
 
+export interface AdminRunDiagnosticProtocolField {
+  present: boolean;
+  type: string;
+  bytes?: number | null;
+  non_empty?: boolean | null;
+  items?: number | null;
+}
+
+export interface AdminRunDiagnosticExecutorProtocol {
+  reported: {
+    task_status?: string | null;
+    terminal_status?: string | null;
+    run_id_matches?: boolean | null;
+    fields: Record<string, AdminRunDiagnosticProtocolField>;
+    additional_field_count: number;
+  };
+  validation: Array<{
+    location: string;
+    type: string;
+    message: string;
+  }>;
+  validation_omitted_count: number;
+  canonical: {
+    status: string;
+    error_code: string;
+    message_non_empty: boolean;
+    answer_receipt_present: boolean;
+    structured_error_present: boolean;
+  };
+}
+
 export interface AdminRunDiagnosticsResponse {
   schema_version: "ai-platform.run-diagnostics.v1";
   diagnostic_id?: string | null;
@@ -142,6 +173,7 @@ export interface AdminRunDiagnosticsResponse {
     tool_lifecycles: AdminRunDiagnosticToolEvidence[];
     tool_calls: AdminRunDiagnosticToolEvidence[];
     tool_policy_denials: AdminRunDiagnosticToolEvidence[];
+    executor_protocol?: AdminRunDiagnosticExecutorProtocol | null;
   };
   versions: Record<string, string | null>;
   counts: {
