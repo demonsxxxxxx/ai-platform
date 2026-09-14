@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 from xml.parsers import expat
 
+from app.sandbox.api import workspace_collection_file_allowed
+
 _MAX_WORKSPACE_ARTIFACT_FILES = 128
 _MAX_WORKSPACE_ARTIFACT_FILE_BYTES = 64 * 1024 * 1024
 _MAX_WORKSPACE_ARTIFACT_TOTAL_BYTES = 256 * 1024 * 1024
@@ -16,29 +18,6 @@ _MAX_DOCX_ARCHIVE_ENTRIES = 2000
 _MAX_DOCX_ARCHIVE_ENTRY_BYTES = 32 * 1024 * 1024
 _MAX_DOCX_ARCHIVE_TOTAL_BYTES = 64 * 1024 * 1024
 
-_WORKSPACE_INTERNAL_DIRS = {
-    ".ai-platform",
-    ".claude",
-    ".claude-config",
-    ".home",
-    ".pins",
-    ".tmp",
-    "inputs",
-    "logs",
-    "runtime",
-    "_audit",
-    "_debug",
-    "artifacts",
-    "tasks",
-}
-_WORKSPACE_INTERNAL_FILES = {
-    "run-state.json",
-    "step-event.json",
-    "step-response.json",
-}
-
-# These directories belong to the platform or contain inputs and installed
-# Skills. They stay inside the run workspace but are never user artifacts.
 def _parse_docx_xml(raw_xml: bytes) -> ElementTree.Element:
     parser = expat.ParserCreate()
 
@@ -167,16 +146,7 @@ def artifact_label(filename: str, kind: str) -> str:
 
 def _is_user_workspace_file(path: Path, workspace: Path) -> bool:
     """Keep collection rooted in the platform workspace and exclude internals."""
-    relative = path.relative_to(workspace)
-    if (
-        not relative.parts
-        or relative.parts[0] == "review"
-        or any(part in _WORKSPACE_INTERNAL_DIRS for part in relative.parts[:-1])
-    ):
-        return False
-    if path.name in _WORKSPACE_INTERNAL_FILES:
-        return False
-    return relative.parts[0] != "outputs" or "delivery" in relative.parts[1:-1]
+    return workspace_collection_file_allowed(path.relative_to(workspace).as_posix())
 
 
 def collect_workspace_artifacts(

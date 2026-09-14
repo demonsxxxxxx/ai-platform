@@ -1,8 +1,10 @@
 import json
+import stat
 from pathlib import Path
 
 from app.runtime.sandbox.contracts import SandboxRuntimeRequest
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
+from app.runtime.sandbox.workspace_manager import PLATFORM_CLAUDE_PROJECT_INSTRUCTIONS
 
 
 def request(**overrides) -> SandboxRuntimeRequest:
@@ -58,6 +60,10 @@ def test_prepare_creates_platform_workspace_namespace(tmp_path):
     assert (run_root / "workspace" / "inputs").is_dir()
     assert (run_root / "workspace" / "outputs" / "delivery").is_dir()
     assert (run_root / "workspace" / ".ai-platform").is_dir()
+    claude_instructions = run_root / "workspace" / "CLAUDE.md"
+    assert claude_instructions.read_text(encoding="utf-8") == PLATFORM_CLAUDE_PROJECT_INSTRUCTIONS
+    assert "默认使用简体中文回复用户" in PLATFORM_CLAUDE_PROJECT_INSTRUCTIONS
+    assert stat.S_IMODE(claude_instructions.stat().st_mode) == 0o444
     assert (run_root / "logs").is_dir()
     assert meta_path.exists()
     assert json.loads(meta_path.read_text(encoding="utf-8")) == {
@@ -70,6 +76,19 @@ def test_prepare_creates_platform_workspace_namespace(tmp_path):
         "sandbox_mode": "ephemeral",
         "browser_enabled": True,
     }
+
+
+def test_prepare_restores_platform_claude_instructions(tmp_path):
+    manager = SandboxWorkspaceManager(root=tmp_path)
+    manager.prepare(request())
+    claude_instructions = expected_run_root(tmp_path) / "workspace" / "CLAUDE.md"
+    claude_instructions.chmod(0o600)
+    claude_instructions.write_text("overridden", encoding="utf-8")
+
+    manager.prepare(request())
+
+    assert claude_instructions.read_text(encoding="utf-8") == PLATFORM_CLAUDE_PROJECT_INSTRUCTIONS
+    assert stat.S_IMODE(claude_instructions.stat().st_mode) == 0o444
 
 
 def test_workspace_lease_paths_match_platform_namespace(tmp_path):

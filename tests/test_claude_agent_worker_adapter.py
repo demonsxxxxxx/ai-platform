@@ -971,8 +971,16 @@ def test_collect_workspace_artifacts_scans_platform_workspace_and_excludes_inter
     (workspace / "inputs" / "source.docx").write_bytes(b"input")
     (workspace / ".claude" / "skills").mkdir(parents=True)
     (workspace / ".claude" / "skills" / "SKILL.md").write_text("internal", encoding="utf-8")
+    (workspace / "CLAUDE.md").write_text("platform instructions", encoding="utf-8")
     (workspace / "outputs" / "job" / "_debug").mkdir(parents=True)
     (workspace / "outputs" / "job" / "_debug" / "trace.txt").write_text("debug", encoding="utf-8")
+    (workspace / "outputs" / "job" / "facts.json").write_text("{}", encoding="utf-8")
+    (workspace / "artifacts").mkdir()
+    (workspace / "artifacts" / "notes.txt").write_text("notes", encoding="utf-8")
+    (workspace / "tasks").mkdir()
+    (workspace / "tasks" / "result.txt").write_text("result", encoding="utf-8")
+    (workspace / "review").mkdir()
+    (workspace / "review" / "draft.txt").write_text("draft", encoding="utf-8")
     stored = []
 
     class FakeStorage:
@@ -987,8 +995,14 @@ def test_collect_workspace_artifacts_scans_platform_workspace_and_excludes_inter
         workspace,
     )
 
-    assert [artifact.manifest["workspace_output"] for artifact in artifacts] == ["report.docx"]
-    assert len(stored) == 1
+    assert [artifact.manifest["workspace_output"] for artifact in artifacts] == [
+        "artifacts/notes.txt",
+        "outputs/job/facts.json",
+        "report.docx",
+        "review/draft.txt",
+        "tasks/result.txt",
+    ]
+    assert len(stored) == 5
 
 
 def test_collect_workspace_artifacts_assigns_safe_mime_types_and_keeps_unknown_files_generic(monkeypatch, tmp_path):
@@ -5330,6 +5344,8 @@ async def test_sdk_runner_does_not_expose_worker_local_bash_fast_path(monkeypatc
 @pytest.mark.asyncio
 async def test_sdk_runner_removes_project_settings_before_sdk_launch(monkeypatch, tmp_path):
     captured = {}
+    claude_instructions = tmp_path / "CLAUDE.md"
+    claude_instructions.write_text("默认使用简体中文回复用户。", encoding="utf-8")
     project_claude_dir = tmp_path / ".claude"
     skills_dir = project_claude_dir / "skills" / "qa-file-reviewer"
     skills_dir.mkdir(parents=True)
@@ -5367,6 +5383,7 @@ async def test_sdk_runner_removes_project_settings_before_sdk_launch(monkeypatch
         assert not (project_claude_dir / "settings.json").exists()
         assert not (project_claude_dir / "settings.local.json").exists()
         assert skills_dir.is_dir()
+        assert claude_instructions.read_text(encoding="utf-8") == "默认使用简体中文回复用户。"
         yield AssistantMessage([TextBlock("ok")])
         yield ResultMessage()
 

@@ -117,6 +117,29 @@ SDK to routes or workers:
 Renaming these methods is not a correctness requirement. Consolidating their
 invocation and durable receipts behind the application control authority is.
 
+## Task workspace and Claude project instructions
+
+Each attempt receives a platform-owned `CLAUDE.md` at the root of its assigned
+workspace. Claude Agent SDK runs with the workspace as `cwd` and project setting
+sources enabled, so the file supplies the default Simplified Chinese response
+instruction. An explicit user language request takes precedence. The platform
+rewrites this file when it prepares an attempt, excludes it from artifact
+collection, and denies SDK Write/Edit access to it.
+
+Skill writes are allowed anywhere else in the assigned workspace. The protected
+roots remain `inputs/`, `.claude/`, `.ai-platform/`, the runtime configuration
+roots, and the OpenSandbox attempt sentinel. Lexical and resolved paths must both
+remain inside the workspace, which preserves traversal and symlink-escape
+protection.
+
+Artifact collection traverses ordinary workspace directories regardless of
+whether a Skill selected `output/`, `outputs/**/delivery/`, `tasks/`,
+`artifacts/`, `review/`, or another directory name. It continues to exclude
+inputs, installed Skills, platform/runtime state, debug/audit trees, native-tool
+scratch space, and platform instruction files. The former output-directory
+write allowlist and `outputs/**/delivery/`-only collection rule are retired
+together so a permitted write cannot disappear solely because of its path.
+
 ## Delivery slices
 
 The first slice closes immediately unsafe competing-writer paths:

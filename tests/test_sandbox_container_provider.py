@@ -1303,6 +1303,7 @@ async def test_opensandbox_stages_skills_inputs_and_attempt_sentinel_after_ready
     (local_workspace / ".ai-platform").mkdir()
     (local_workspace / ".claude" / "skills" / "reporting").mkdir(parents=True)
     (local_workspace / "brief.txt").write_text("brief", encoding="utf-8")
+    (local_workspace / "CLAUDE.md").write_text("默认使用简体中文回复用户。", encoding="utf-8")
     (local_workspace / "inputs" / "input.txt").write_text("input", encoding="utf-8")
     (local_workspace / ".ai-platform" / "manifest.json").write_text("{}", encoding="utf-8")
     (local_workspace / ".claude" / "skills" / "reporting" / "SKILL.md").write_text(
@@ -1320,6 +1321,7 @@ async def test_opensandbox_stages_skills_inputs_and_attempt_sentinel_after_ready
     remote_files = {entry.path: entry.data for entry in sandbox_files.written}
     assert sandbox_files.operations[:1] == ["mkdir"]
     assert remote_files["/workspace/brief.txt"] == b"brief"
+    assert remote_files["/workspace/CLAUDE.md"] == "默认使用简体中文回复用户。".encode()
     assert remote_files["/workspace/inputs/input.txt"] == b"input"
     assert remote_files["/workspace/.ai-platform/manifest.json"] == b"{}"
     assert remote_files["/workspace/.claude/skills/reporting/SKILL.md"] == (
@@ -1423,7 +1425,7 @@ async def test_opensandbox_workspace_stream_contract(mode):
 
 @pytest.mark.asyncio
 @requires_secure_opensandbox_transfer
-async def test_opensandbox_collects_only_legacy_and_delivery_outputs_atomically(monkeypatch, tmp_path):
+async def test_opensandbox_collects_user_files_from_arbitrary_workspace_directories_atomically(monkeypatch, tmp_path):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
     monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
@@ -1439,6 +1441,8 @@ async def test_opensandbox_collects_only_legacy_and_delivery_outputs_atomically(
             FakeOpenSandboxFile(path="/workspace/output/legacy.txt", data=b"legacy"),
             FakeOpenSandboxFile(path="/workspace/outputs/review/delivery/final.txt", data=b"final"),
             FakeOpenSandboxFile(path="/workspace/outputs/review/private.txt", data=b"private"),
+            FakeOpenSandboxFile(path="/workspace/tasks/facts.json", data=b"{}"),
+            FakeOpenSandboxFile(path="/workspace/CLAUDE.md", data=b"platform instructions"),
         ]
     )
 
@@ -1446,7 +1450,9 @@ async def test_opensandbox_collects_only_legacy_and_delivery_outputs_atomically(
 
     assert (local_workspace / "output" / "legacy.txt").read_bytes() == b"legacy"
     assert (local_workspace / "outputs" / "review" / "delivery" / "final.txt").read_bytes() == b"final"
-    assert not (local_workspace / "outputs" / "review" / "private.txt").exists()
+    assert (local_workspace / "outputs" / "review" / "private.txt").read_bytes() == b"private"
+    assert (local_workspace / "tasks" / "facts.json").read_bytes() == b"{}"
+    assert not (local_workspace / "CLAUDE.md").exists()
 
 
 @pytest.mark.parametrize("relative_path", ["", "/absolute.txt", "../escape.txt", "nested/../escape.txt", "nul\x00.txt"])
