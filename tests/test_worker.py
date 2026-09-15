@@ -1420,7 +1420,7 @@ def default_cancel_not_requested(monkeypatch):
             )
             self.snapshot = _DefaultCatalogSnapshot(skill_id, materialized_skill_ids)
 
-        def runtime_input_updates(self):
+        def runtime_input_updates(self, *, pinned_manifests=None):
             return {}
 
     async def resolve_authorized_skill_catalog(*_args, **kwargs):

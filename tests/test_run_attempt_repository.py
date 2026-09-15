@@ -103,6 +103,30 @@ async def test_create_run_attempt_binds_created_state_and_exact_canonical_spec()
     assert sql.count("%s") == len(params)
     canonical_json = spec.canonical_json.decode("utf-8")
     assert params[-3:] == (canonical_json, canonical_json, spec.spec_sha256)
+    assert "execution_spec_json" not in normalized_sql.split("returning", 1)[1]
+    assert "execution_spec_sha256" in normalized_sql.split("returning", 1)[1]
+
+
+@pytest.mark.asyncio
+async def test_queue_attempt_state_read_keeps_fence_without_loading_spec():
+    conn = _Connection({"id": "attempt-a", "execution_spec_sha256": "a" * 64})
+
+    row = await run_attempt_repository.get_run_attempt_for_queue_attempt(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        queue_attempt_id="queue-attempt-a",
+        for_update=True,
+    )
+
+    assert row is not None and row["execution_spec_sha256"] == "a" * 64
+    sql, params = conn.calls[0]
+    assert "select id, tenant_id" in sql
+    assert "execution_spec_sha256" in sql
+    assert "execution_spec_json" not in sql
+    assert "execution_spec_canonical_json" not in sql
+    assert "for update" in sql
+    assert params == ("tenant-a", "run-a", "queue-attempt-a")
 
 
 @pytest.mark.asyncio
@@ -153,6 +177,8 @@ async def test_transition_run_attempt_uses_exact_owner_fenced_cas_and_trigger_pr
     assert "and status = %s and owner_kind = %s and owner_id = %s" in normalized_sql
     assert "and owner_generation = %s" in normalized_sql
     assert "projected as ( update runs" not in normalized_sql
+    assert "execution_spec_json" not in normalized_sql.split("returning", 1)[1]
+    assert "execution_spec_sha256" in normalized_sql.split("returning", 1)[1]
     assert normalized_sql.endswith("select * from transitioned")
     assert params[:11] == (
         "tenant-a",
@@ -206,7 +232,8 @@ async def test_transition_run_attempt_idempotency_still_checks_owner_fence():
 
     assert row["status"] == "running"
     sql, params = conn.calls[0]
-    assert "select *" in sql
+    assert "select id, tenant_id" in sql
+    assert "execution_spec_json" not in sql
     assert "update run_attempts" not in sql
     assert params[-1] == 3
 
