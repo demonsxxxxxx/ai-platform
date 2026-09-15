@@ -73,6 +73,9 @@ _BUILTIN_REQUIRED_PARAMETER_KEYS = {
     "Write": ("file_path", "content"),
     "Skill": ("skill",),
 }
+_SANDBOX_LOCAL_TOOL_IDENTITIES = frozenset(
+    {"Read", "Glob", "Grep", "LS", "Bash", "Write", "Edit", "NotebookEdit"}
+)
 
 
 def _canonical_tool_policy_subjects(value: object) -> dict[str, dict[str, Any]]:
@@ -329,6 +332,25 @@ def _parameters_match_subject(
     tool_name: str,
     tool_input: object,
 ) -> bool:
+    if (
+        subject.get("execution_strategy") == "sandbox_full_local"
+        and subject.get("parameter_validation") == "sdk"
+        and subject.get("identity") == tool_name
+        and tool_name in _SANDBOX_LOCAL_TOOL_IDENTITIES
+    ):
+        if not isinstance(tool_input, dict):
+            return False
+        if (
+            tool_name == "Bash"
+            and "run_in_background" in tool_input
+            and tool_input["run_in_background"] is not False
+        ):
+            return False
+        expected_objects = subject.get("object_constraints")
+        return not isinstance(expected_objects, dict) or not any(
+            tool_input.get(key) != value
+            for key, value in expected_objects.items()
+        )
     if tool_name == "Skill":
         return _skill_parameters_match_subject(subject, tool_input)
     if not isinstance(tool_input, dict):
