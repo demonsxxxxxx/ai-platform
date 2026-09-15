@@ -8,6 +8,7 @@ import sys
 import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from inspect import isawaitable
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -858,12 +859,21 @@ def _workspace_path_parameters_authorized(
         return all(authorize(relative) for relative in relatives)
 
     def glob_pattern_authorized(raw: object, *, search_path: object) -> bool:
-        if not path_authorized(raw):
+        if (
+            not isinstance(raw, str)
+            or not raw
+            or "\x00" in raw
+            or any(char in raw for char in "{}()![]?")
+            or not isinstance(search_path, str)
+            or not search_path
+        ):
             return False
-        assert isinstance(raw, str)
-        if ".." in raw or any(char in raw for char in "{}()!\\"):
-            return False
-        if not isinstance(search_path, str) or not search_path:
+        normalized = raw.replace("\\", "/")
+        if (
+            normalized.startswith("/")
+            or re.match(r"^[A-Za-z]:/", normalized)
+            or re.search(r"(^|/)\.\.(/|$)", normalized)
+        ):
             return False
         try:
             root = workspace_root.resolve(strict=True)
@@ -875,20 +885,23 @@ def _workspace_path_parameters_authorized(
             return False
         if search_relative.parts:
             return True
-        parts = tuple(
-            part for part in raw.replace("\\", "/").split("/") if part not in {"", "."}
-        )
+        parts = tuple(part for part in normalized.split("/") if part not in {"", "."})
         if not parts:
             return False
-        first = parts[0]
-        lowered = tuple(part.lower() for part in parts)
-        if first.startswith("."):
-            return len(lowered) >= 2 and lowered[:2] == (".claude", "skills")
-        if len(parts) > 1 and not all(
-            char.isalnum() or char in {"_", "-", "."} for char in first
-        ):
+        first = parts[0].casefold()
+        if fnmatchcase(".", first):
             return False
-        return first != "**"
+        for protected_root in (*_WORKSPACE_INTERNAL_ROOTS, ".claude"):
+            if fnmatchcase(protected_root, first):
+                if (
+                    protected_root == ".claude"
+                    and first == ".claude"
+                    and len(parts) >= 2
+                    and parts[1].casefold() == "skills"
+                ):
+                    continue
+                return False
+        return True
 
     if not isinstance(tool_input, dict):
         return False
