@@ -51,10 +51,10 @@ function UserMessageSkeleton({
   msg: { bubble: string; lines: string[] };
 }) {
   return (
-    <div className="w-full px-2 py-3 sm:py-4 sm:px-4 group">
-      <div className="mx-auto flex max-w-3xl lg:max-w-4xl xl:max-w-5xl justify-end px-2">
+    <div className="group w-full px-2 py-2 sm:px-4 sm:py-3">
+      <div className="mx-auto flex max-w-[68rem] justify-end px-1 sm:px-2">
         <div
-          className={`flex flex-col items-stretch max-w-[90%] ${msg.bubble}`}
+          className={`flex max-w-[90%] flex-col items-stretch sm:max-w-[75%] ${msg.bubble}`}
         >
           <div
             className="rounded-lg w-full px-5 py-2 shadow-sm border"
@@ -80,9 +80,9 @@ function UserMessageSkeleton({
 function AssistantMessageSkeleton() {
   return (
     <div className="group w-full animate-[fade-in_0.3s_ease-out] scroll-mt-6 rounded-lg">
-      <div className="mx-auto flex flex-col max-w-3xl lg:max-w-4xl xl:max-w-5xl px-4 sm:px-6">
+      <div className="mx-auto flex max-w-[68rem] flex-col px-3 sm:px-5">
         {/* Avatar + name */}
-        <div className="mb-3 flex items-center gap-2">
+        <div className="mb-2 flex items-center gap-2">
           <div className="skeleton-line size-6 rounded-full shrink-0" />
           <SkeletonLine
             width="w-16 sm:w-20"
@@ -168,8 +168,8 @@ export function ChatSkeletonMessagesOnly({ count = 3 }: { count?: number }) {
 /** Shared ChatInput skeleton — matches real ChatInput container + toolbar */
 function ChatInputSkeleton() {
   return (
-    <div className="shrink-0 sm:px-4 pb-3 pt-1">
-      <div className="mx-auto max-w-3xl lg:max-w-4xl xl:max-w-5xl px-2">
+    <div className="shrink-0 px-3 py-2">
+      <div className="mx-auto max-w-[68rem] px-2">
         <div
           className="flex flex-col w-full rounded-lg px-1 border"
           style={{
@@ -194,7 +194,7 @@ function ChatInputSkeleton() {
           </div>
         </div>
         {/* Keyboard shortcut hint — desktop only */}
-        <div className="hidden sm:flex mx-auto mt-3 px-2 max-w-3xl lg:max-w-4xl xl:max-w-5xl justify-center">
+        <div className="mx-auto mt-2 hidden max-w-[68rem] justify-center px-2 sm:flex">
           <SkeletonLine width="w-40" className="!h-3" />
         </div>
       </div>

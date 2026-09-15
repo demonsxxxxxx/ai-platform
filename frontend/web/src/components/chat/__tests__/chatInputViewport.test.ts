@@ -18,6 +18,19 @@ test("resizeTextareaForContent keeps the newest typed content visible", () => {
   assert.equal(textarea.scrollTop, 420);
 });
 
+test("keeps an empty textarea at one compact line", () => {
+  const textarea = {
+    style: { height: "" },
+    scrollHeight: 420,
+    scrollTop: 9,
+  };
+
+  resizeTextareaForContent(textarea, 250, false);
+
+  assert.equal(textarea.style.height, "34px");
+  assert.equal(textarea.scrollTop, 0);
+});
+
 test("getTextareaMaxHeightPx uses a comfortable fraction of small mobile viewports", () => {
   assert.equal(
     getTextareaMaxHeightPx({ isMobile: true, viewportHeight: 500 }),

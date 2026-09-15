@@ -108,3 +108,20 @@ test("connects the visible recovery projection to the existing reconnect action"
     recovering_gap: "正在校准已接收内容和任务状态…",
   });
 });
+
+test("keeps active conversations wide, readable, and visually compact", () => {
+  const view = readFileSync(new URL("../ChatView.tsx", import.meta.url), "utf8");
+  const message = readFileSync(
+    new URL("../../../chat/ChatMessage/index.tsx", import.meta.url),
+    "utf8",
+  );
+  const userMessage = readFileSync(
+    new URL("../../../chat/ChatMessage/UserMessageBubble.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(view, /className="mx-auto max-w-\[68rem\] px-2"/);
+  assert.match(message, /max-w-\[68rem\]/);
+  assert.match(userMessage, /max-w-\[68rem\]/);
+  assert.match(userMessage, /sm:max-w-\[75%\]/);
+});

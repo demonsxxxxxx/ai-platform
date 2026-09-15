@@ -15,7 +15,7 @@ register(
 await new Promise<void>((resolve) => setImmediate(resolve));
 
 const {
-  AgentConversationIdentityBanner,
+  AgentConversationHeaderIdentity,
   areAgentConversationControlsLocked,
   exposeGenericChatControl,
   getChatToolAccess,
@@ -756,14 +756,12 @@ test("fails closed when Agent Conversation operation storage cannot be read or v
   }
 });
 
-test("renders only safe Agent identity and locks MCP catalog controls", () => {
+test("renders only the safe Agent identity in the compact Chat header", () => {
   const html = renderToStaticMarkup(
-    React.createElement(AgentConversationIdentityBanner, { identity: safeIdentity }),
+    React.createElement(AgentConversationHeaderIdentity, { identity: safeIdentity }),
   );
   assert.match(html, /支持助手/);
-  assert.match(html, /处理已授权的支持请求/);
-  assert.match(html, /处理已授权的支持请求/);
-  assert.match(html, /data-agent-conversation-profile/);
+  assert.doesNotMatch(html, /处理已授权的支持请求/);
   assert.match(html, /data-agent-avatar-ref="builtin:assistant"/);
   assert.doesNotMatch(html, /content_hash|model_id|skill_id|mcp_tool_ids|PRIVATE/);
   assert.equal(areAgentConversationControlsLocked("loading"), true);
@@ -786,6 +784,11 @@ test("projects the Agent description and starter prompts only in the empty Chat 
     "utf8",
   );
 
+  assert.match(
+    appContentSource,
+    /chatIdentity=\{[\s\S]*?<AgentConversationHeaderIdentity/,
+  );
+  assert.doesNotMatch(appContentSource, /data-agent-conversation-profile/);
   assert.match(chatViewSource, /messages\.length === 0[\s\S]*agentEmptyProfile/);
   assert.match(chatViewSource, /data-agent-chat-opening/);
   assert.match(chatViewSource, /<AgentIdentityAvatar/);

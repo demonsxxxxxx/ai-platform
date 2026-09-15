@@ -321,14 +321,14 @@ export const ChatMessage = memo(function ChatMessage({
       data-outline-id={createMessageAnchorId(message.id)}
       className="group w-full animate-[fade-in_0.3s_ease-out] scroll-mt-6 rounded-lg transition-[background-color,box-shadow] duration-300 data-[external-navigation-highlighted=true]:bg-amber-50/85 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/60 dark:data-[external-navigation-highlighted=true]:bg-amber-500/12 dark:data-[external-navigation-highlighted=true]:ring-amber-400/50"
     >
-      <div className="mx-auto flex flex-col max-w-3xl lg:max-w-4xl xl:max-w-5xl px-4 sm:px-6">
+      <div className="mx-auto flex max-w-[68rem] flex-col px-3 sm:px-5">
         {/* Content */}
-        <div className="min-w-0 min-h-0 py-1 sm:py-2">
+        <div className="min-h-0 min-w-0 py-1">
           {/* Header: Avatar + Role label + Stop button */}
-          <div className="mb-3 flex items-center gap-2">
+          <div className="mb-2 flex items-center gap-2">
             <AssistantAvatar className="size-6 shrink-0 rounded-full" />
             <span
-              className="text-base sm:text-lg font-semibold tracking-tight font-serif"
+              className="text-sm font-semibold"
               style={{ color: "var(--theme-text)" }}
             >
               {t("chat.message.assistant")}
@@ -349,7 +349,7 @@ export const ChatMessage = memo(function ChatMessage({
           {isStreaming && !hasParts && <ThinkingIndicator />}
 
           {hasParts ? (
-            <div className="space-y-3 px-2 my-2">
+            <div className="my-1.5 space-y-2">
               <MessageWorkActivity
                 messageId={message.id}
                 isStreaming={message.isStreaming}

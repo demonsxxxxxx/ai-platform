@@ -358,7 +358,7 @@ export const MarkdownContent = memo(function MarkdownContent({
                 id={id}
                 data-outline-anchor="true"
                 data-outline-id={id}
-                className="text-2xl font-bold text-stone-900 dark:text-stone-100 mt-4 mb-3 first:mt-0 group/head scroll-mt-4"
+                className="mt-3 mb-2 scroll-mt-4 text-xl font-bold text-stone-900 group/head dark:text-stone-100 first:mt-0"
               >
                 <a
                   href={`#${id}`}
@@ -376,7 +376,7 @@ export const MarkdownContent = memo(function MarkdownContent({
                 id={id}
                 data-outline-anchor="true"
                 data-outline-id={id}
-                className="text-xl font-bold text-stone-900 dark:text-stone-100 mt-3 mb-2 group/head scroll-mt-4"
+                className="mt-3 mb-1.5 scroll-mt-4 text-lg font-bold text-stone-900 group/head dark:text-stone-100"
               >
                 <a
                   href={`#${id}`}
@@ -394,7 +394,7 @@ export const MarkdownContent = memo(function MarkdownContent({
                 id={id}
                 data-outline-anchor="true"
                 data-outline-id={id}
-                className="text-lg font-semibold text-stone-900 dark:text-stone-100 mt-2 mb-1.5 group/head scroll-mt-4"
+                className="mt-2 mb-1 scroll-mt-4 text-base font-semibold text-stone-900 group/head dark:text-stone-100"
               >
                 <a
                   href={`#${id}`}
@@ -425,23 +425,23 @@ export const MarkdownContent = memo(function MarkdownContent({
           },
           // Paragraphs
           p: ({ children }) => (
-            <p className="text-stone-700 dark:text-stone-300 leading-relaxed mb-2 last:mb-0">
+            <p className="mb-2 text-[15px] leading-6 text-stone-700 last:mb-0 dark:text-stone-300">
               {children}
             </p>
           ),
           // Lists with better styling
           ul: ({ children }) => (
-            <ul className="list-disc space-y-1.5 mb-3 pl-5 marker:text-amber-500 dark:marker:text-amber-400 marker:text-[0.6em]">
+            <ul className="mb-2 list-disc space-y-1 pl-5 marker:text-[0.6em] marker:text-amber-500 dark:marker:text-amber-400">
               {children}
             </ul>
           ),
           ol: ({ children }) => (
-            <ol className="list-decimal list-inside space-y-1.5 mb-3 pl-5 marker:text-stone-500 dark:marker-stone-400 marker:font-semibold">
+            <ol className="mb-2 list-inside list-decimal space-y-1 pl-5 marker:font-semibold marker:text-stone-500 dark:marker-stone-400">
               {children}
             </ol>
           ),
           li: ({ children }) => (
-            <li className="text-stone-700 dark:text-stone-300 leading-relaxed">
+            <li className="text-[15px] leading-6 text-stone-700 dark:text-stone-300">
               {children}
             </li>
           ),

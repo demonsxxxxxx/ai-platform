@@ -333,35 +333,28 @@ export async function recoverAgentConversationIdentity(
   return identity;
 }
 
-/** Render only the public immutable Agent identity above canonical Chat. */
-export function AgentConversationIdentityBanner({
+/** Project the public immutable Agent identity into the compact Chat header. */
+export function AgentConversationHeaderIdentity({
   identity,
 }: {
   identity: AgentConversationIdentity;
 }) {
   return (
-    <section
-      data-agent-conversation-profile
-      className="border-b border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-4 py-3 text-[var(--theme-text)] sm:px-6"
-    >
-      <div className="mx-auto flex max-w-4xl items-center gap-3">
-        <AgentIdentityAvatar
-          agentId={identity.agent_id}
-          avatarRef={identity.avatar_ref}
-          avatarSeed={identity.avatar_seed}
-          name={identity.name}
-          size="sm"
-        />
-        <span className="min-w-0 flex-1">
-          <strong className="text-sm font-semibold sm:text-base">{identity.name}</strong>
-          {identity.description ? (
-            <span className="mt-1 block line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)] sm:text-sm">
-              {identity.description}
-            </span>
-          ) : null}
-        </span>
-      </div>
-    </section>
+    <>
+      <AgentIdentityAvatar
+        agentId={identity.agent_id}
+        avatarRef={identity.avatar_ref}
+        avatarSeed={identity.avatar_seed}
+        name={identity.name}
+        size="xs"
+      />
+      <strong
+        className="hidden max-w-64 truncate text-sm font-semibold text-[var(--theme-text)] sm:block"
+        title={identity.name}
+      >
+        {identity.name}
+      </strong>
+    </>
   );
 }
 
@@ -1311,6 +1304,14 @@ export function ChatAppContent({
       onOpenRunPlayback={handleOpenRunPlayback}
       showOutlineButton={shouldShowMessageOutline(visibleMessages)}
       onToggleOutline={handleToggleOutline}
+      chatIdentity={
+        agentConversationState.phase === "bound" &&
+        agentConversationState.identity ? (
+          <AgentConversationHeaderIdentity
+            identity={agentConversationState.identity}
+          />
+        ) : undefined
+      }
       sidebar={
         <SessionSidebar
           ref={sidebarRef}
@@ -1375,12 +1376,6 @@ export function ChatAppContent({
           >
             正在校验会话身份…
           </div>
-        ) : null}
-        {agentConversationState.phase === "bound" &&
-        agentConversationState.identity ? (
-          <AgentConversationIdentityBanner
-            identity={agentConversationState.identity}
-          />
         ) : null}
         <ChatMcpCatalogContext.Provider value={mcpCatalogContextValue}>
             <ChatView

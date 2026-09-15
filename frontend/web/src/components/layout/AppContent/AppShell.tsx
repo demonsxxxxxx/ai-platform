@@ -73,6 +73,7 @@ export interface AppShellProps {
   onToggleOutline?: () => void;
   allowNewSessionAction?: boolean;
   newSessionActionLabel?: string;
+  chatIdentity?: ReactNode;
 }
 
 export function AppShell({
@@ -91,6 +92,7 @@ export function AppShell({
   onToggleOutline,
   allowNewSessionAction = true,
   newSessionActionLabel,
+  chatIdentity,
 }: AppShellProps) {
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
@@ -295,6 +297,7 @@ export function AppShell({
             onToggleOutline={onToggleOutline}
             allowNewSessionAction={allowNewSessionAction}
             newSessionActionLabel={newSessionActionLabel}
+            chatIdentity={chatIdentity}
           />
 
           {children}

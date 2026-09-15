@@ -935,7 +935,7 @@ export function ChatView({
       )}
 
       {canRetryPendingSubmission && (
-        <div className="mx-auto mb-2 flex max-w-4xl px-2">
+        <div className="mx-auto mb-2 flex max-w-[68rem] px-2">
           <button
             type="button"
             onClick={() => void onRetryPendingSubmission()}
@@ -949,7 +949,7 @@ export function ChatView({
       )}
       {messages.length === 0 && agentEmptyProfile?.starter_prompts.length ? (
         <div
-          className="mx-auto mb-3 flex max-w-4xl flex-wrap gap-2 px-2"
+          className="mx-auto mb-3 flex max-w-[68rem] flex-wrap gap-2 px-2"
           data-agent-starter-prompts
         >
           <p className="w-full text-xs font-medium text-[var(--theme-text-secondary)]">
@@ -970,7 +970,7 @@ export function ChatView({
       ) : null}
       <ChatInput
         {...chatInputProps}
-        className="mx-auto max-w-4xl px-2"
+        className="mx-auto max-w-[68rem] px-2"
       />
     </div>
   );
